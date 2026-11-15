@@ -26,7 +26,7 @@ engine's. The sections after "Launching" cover what you need only if your subjec
 converses, does background work, or calls tools you want to record and replay.
 
 Quick's pieces build some of these as ordinary contract objects you mix with your own: `@measure(...)`
-(`threetears.evals.quick`) declares a `MetricDescriptor` on the function that computes it, so you register its
+(`threetears.evals.quick`, provisional) declares a `MetricDescriptor` on the function that computes it, so you register its
 `.descriptor` and grade with the function; `as_host([evals], store=...)` (`threetears.evals.quick`) is the host an
 `Eval` runs on, its kind over a plain function; and a `World`'s (`threetears.evals.World`) `registry` and
 `bindings(state)` are a simple world's declaration and its handles. The toy host's kind computes its measures
@@ -779,8 +779,8 @@ declare it. To page in your backend:
 
 - **Declare `after` by name**, keyword-only, as `exclude_in_items` is declared (`takes_after` is the probe;
   `**field_eq` does not count, because an old store reads `after=` as an equality predicate and answers nothing).
-  Call `check_after(after, order_by)` first: it refuses what the port refuses (`after` without `order_by`, a pair
-  that is not a scalar and a string id).
+  Refuse first what the port refuses, as `DocumentStore.by_doc_type`'s contract states and the store conformance kit
+  checks: an `after` given without `order_by`, or one that is not a pair of a scalar value and a `str` id.
 - **Break every ordered read's ties by `id`**, in the sort direction, the first page's included: a page cut where
   several documents share a `created_at` must end where the next one starts. On Postgres, descending:
   `ORDER BY data->>'created_at' DESC NULLS LAST, id DESC` (Postgres puts nulls first descending unless told; the
@@ -795,7 +795,7 @@ declare it. To page in your backend:
 **Declaring `after` means honouring it.** A strictly typed adapter must declare it to match the port, but one that
 declares it and drops it hands back the first page again, and a caller reading until `next` is `None` would never
 stop; `page_by_doc_type` refuses such a page with `PageNotPastAfter`, naming your adapter. If your backend cannot page
-yet, declare `after`, call `check_after`, and return `order_and_page(rows, order_by=..., descending=..., after=after,
+yet, declare `after`, refuse what the port refuses (above), and return `order_and_page(rows, order_by=..., descending=..., after=after,
 limit=limit)` over your own unlimited read: correct, and no dearer than the default.
 
 The kit's `page.walk_reads_each_once`, `page.holds_predicates_and_projection`, `page.after_is_honoured` and
@@ -1323,8 +1323,10 @@ count. It is the one way to do its thing. A name you type is taught on a rung or
 otherwise it is provisional. A name that fails one is demoted, and the totals by kind are reported on the surface
 page as a trend, not a budget. Use is read from code alone: another package's source, the shipped completion client,
 a shipped example, a code block on a page that imports, calls or names the name as code, or a host's production code
-as its generated import list records it. A page's prose does not count, and neither does a host's test. A port you
-implement, a shape you are handed and an action's function need no caller of their own: what names them is used.
+as its generated import list records it. A page's prose does not count, and neither does a host's test, except
+that a host's tests running a kit of the `tests` kind are that kit's use. A port you implement and a shape you are
+handed need no caller of their own: what names them is used. A function behind an action needs one like any other;
+the catalogue running it is not one, and such a function awaits demotion (issue #1199).
 `tests/test_declared_holdbacks.py` holds this.
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
@@ -1349,10 +1351,11 @@ def test_we_bind_only_declared_names() -> None:
 
 ## Upgrading: names that move
 
-**Every name that leaves a public root is written down, and only a host-contract name is kept for compatibility.**
+**Every name that leaves a public root is written down with what replaces it, and none is kept for compatibility.**
 When a release moves a public name to another root, renames it, or removes it, `packages/evals/MIGRATIONS.toml`
-records it under that release: the old name, its new home or `removed`, and why. A `stable` or `provisional` name
-has no shim at the old name; a `host-contract` one keeps working for a minor release first (above). The record starts
+records it under that release: the old name, its new home or `removed`, and why. No name keeps a shim at the old
+name, whatever its tier: the release cuts every move over at once, and its notes print each old name beside its
+replacement, so a host changes its imports once, against that map (above). The record starts
 at 0.70.0, the package's first release, which moved nothing. Pre-release tags are not releases and are not in it.
 The file is
 in the repository, not the installed package: read it at the tag you are moving to, on GitHub
@@ -1381,7 +1384,8 @@ snapshot:
   change shows up as a diff in review. A signature change needs no record in `MIGRATIONS.toml`. When it breaks
   callers, add it to the newest section's `notes`. A tier changes only by editing `HOST_CONTRACT`, and every name
   the README, this guide, the ladder or an example imports must be on it (`tests/test_api_tiers.py`); no name this
-  guide's prose teaches may be provisional (`tests/test_guide_names_are_declared.py`).
+  guide's prose teaches may be provisional unless the guide marks it so where it names it, and no page may name a
+  removed one as code (`tests/test_guide_names_are_declared.py`).
 - **A name moved, renamed or removed.** The test fails until `MIGRATIONS.toml`'s first section (the release being
   prepared) records it. The snapshot script refuses to write a snapshot that drops an unrecorded name. A name the last
   final release did not export never reached a porter, so it needs only a regeneration, and a record of it is
@@ -2074,9 +2078,9 @@ operator's own names, which the seed then leaves alone. `reset_definitions` runs
 every corpus template reading `current` after the reset (named in the call or not), so a release step's reset leaves
 no template waiting for the next boot for its names; it reports them under `DefinitionReset.presentation_named` and
 `DefinitionReset.presentation_fill_failed`, the same shapes as the seed's, and `DefinitionReset.render()` prints a
-line for each. A name holds at most `DECLARED_NAME_CHARS` characters, and
-`check_names(checks, {})` over the host's seeded checks shows which the namer leaves `GOAL_CHECK`, the ones worth a
-declared name.
+line for each. A name holds at most `DECLARED_NAME_CHARS` characters. A
+check a run summary's or a report's line prints as `GOAL_CHECK` is one worth a declared name: declare it on the
+template (`goal_check_names`) and read it back on that line.
 
 **A corpus edit reaches a seeded scope only through a reset.** The seed fills empty slots and never updates, so a
 template whose cases grew in git stays as first seeded. Every definition the seed writes records the digest of what it
@@ -2258,7 +2262,7 @@ cut lands while the cell is being judged, the evidence and the scores that came 
 unfinished dims are the cell's judge errors, which a re-judge can repair. A re-judge re-asks only dims
 that errored: a judge's "can't tell" is an answer. Every dim the judge phase asked records the prompt that asked
 it in `EvalResult.judge_config_ids`, an unfinished one included: a config's id with the reply format's
-fingerprint (`<config id>@<sha12>`; `judge_config_of` reads the id back), or the built-in prompt's `builtin:`
+fingerprint (`<config id>@<sha12>`; the config's id is the part before the `@`), or the built-in prompt's `builtin:`
 identity. A re-judge refuses a dim whose recorded identity is not the prompt it would send today.
 
 ## Provisional mechanisms

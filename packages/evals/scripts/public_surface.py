@@ -570,7 +570,8 @@ def surface_entry(root: str, name: str, obj: Any) -> SurfaceEntry:
 #: A name stays declared while production code or a shipped example uses it (admission criterion 2, owner ruling
 #: 2026-11-15; ``tests/test_declared_holdbacks.py`` says what counts as use, and a test or a page's prose never does),
 #: or while its kind needs no caller of its own: a shape a host is handed, a port a host implements, a type a declared
-#: signature names, an action's function. Otherwise it is demoted.
+#: signature names, a class a kept name's signature names. The function behind an action needs a caller like any other
+#: (ruling R-b, 2026-11-15). Otherwise it is demoted.
 HOST_CONTRACT: frozenset[str] = frozenset(
     {
         # The host: the one value every entrypoint takes, and the services it is built from.

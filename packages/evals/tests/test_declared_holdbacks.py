@@ -12,12 +12,15 @@ not count, and neither does a page's prose. A declared name is used when code na
 - a Python code block on a shipped page that imports the name, reads it off its module, calls it, decorates with it
   or otherwise refers to it as code. A word in prose, in a comment, in a string or in a text block is not use;
 - a host's production code, as ``tests/fixtures/host_imports/`` records it (generated from a checkout of the host by
-  ``scripts/record_host_imports.py``, which states what production is there; a host's tests never count).
+  ``scripts/record_host_imports.py``, which states what production is there; a host's tests never count);
+- for a kit of the ``tests`` kind only, a host's tests, as ``tests/fixtures/host_test_imports/`` records them (the same
+  script, the same header): a kit a host runs in its own tests is used there (owner ruling R-a, 2026-11-15).
 
 A name whose kind needs no caller of its own is held by criterion 1 instead: a ``received`` name (reached through a
 signature, which :mod:`test_api_tiers` holds), a protocol a host implements, a type a declared signature names (a
-shape, an alias, an exception or a constant comes with the operation or port that names it), and the function behind
-an action of the catalogue, which an agent invokes through the catalogue a host serves.
+shape, an alias, an exception or a constant comes with the operation or port that names it), and a class the signature
+of a name outside both registers names, which a host receives or passes on through it (ruling R-d). The function
+behind an action of the catalogue is not exempt: the catalogue running it is no caller (ruling R-b).
 
 The ledger, ``tests/fixtures/declared_holdbacks.txt``, records of each declared protocol who implements it, one
 ``<name> | <reason>`` per line:
@@ -36,6 +39,7 @@ public methods or properties, or of a ``:raises:`` line in their docstrings.
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import inspect
 import io
@@ -45,7 +49,7 @@ import textwrap
 import tokenize
 import typing
 import warnings
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -88,44 +92,60 @@ _IMPORT = re.compile(r"^[ \t]*from threetears\.evals(?:\.\w+)* import (?:\([^)]*
 _RAISES = re.compile(r":raises\s+~?([\w.]+)\s*:")
 #: The snapshot kinds of a name that does work when called or built: it needs a caller of its own.
 _OPERATIONS = ("function", "async function", "class")
-#: The function that builds the action catalogue: an action is used wherever it is.
-CATALOGUE = "threetears.evals.actions.eval_catalogue"
 
-#: Declared names that fail criterion 2 and await a ruling on the scope of their demotion (package V, fix round 2,
-#: 2026-11-15): each is a function or class that only tests (the package's or a host's), the toy host or a page's
-#: prose use. Demoting them rewrites what six pages teach and the imports of 188 test files, past that round's brief.
-#: The set only shrinks: :func:`test_a_name_awaiting_demotion_is_still_unused` fails once one is used or no longer
-#: declared, and a name leaves it by being demoted. Nothing tells an author to list a name here.
-AWAITING_DEMOTION: frozenset[str] = frozenset(
-    {
-        "threetears.evals.actions.render_jobs_started",
-        "threetears.evals.analysis.assemble_context_bundle",
-        "threetears.evals.analysis.gate_verdicts",
-        "threetears.evals.analysis.report_html",
-        "threetears.evals.kernel.CappedCompletion",
-        "threetears.evals.kernel.failed_call_output",
-        "threetears.evals.kernel.host.MemberActsOn",
-        "threetears.evals.kernel.host.Ordinal",
-        "threetears.evals.kernel.host.load_bar_registry",
-        "threetears.evals.negotiation.closest_settings",
-        "threetears.evals.ops.await_job",
-        "threetears.evals.ops.case_rename",
-        "threetears.evals.ops.start_action_job",
-        "threetears.evals.quick.run_cli",
-        "threetears.evals.run.JudgeService",
-        "threetears.evals.run.LaunchGroup",
-        "threetears.evals.run.admit_template",
-        "threetears.evals.run.launch_as_group",
-        "threetears.evals.run.load_seed_corpus",
-        "threetears.evals.run.mint_case_set",
-        "threetears.evals.run.quote_launch",
-        "threetears.evals.run.regrade",
-        "threetears.evals.run.start_run",
-        "threetears.evals.testing.RecordedPrompt",
-        "threetears.evals.testing.check_completion_conformance",
-        "threetears.evals.transports.fastmcp.CatalogueTool",
-    }
-)
+#: The two debt registers (``scripts/surface_kinds.py``), both tied to issue #1199: names that fail criteria 2 and 3
+#: and are to be demoted (ruling R-b), and names that are the only door to something a host must do and lack a shipped
+#: use (ruling R-e). :func:`test_a_registered_name_is_still_unused` drops a name once it is used or no longer declared.
+AWAITING_DEMOTION: frozenset[str] = kinds_of.AWAITING_DEMOTION
+AWAITING_SHIPPED_USE: frozenset[str] = frozenset(kinds_of.AWAITING_SHIPPED_USE)
+
+#: Each register as issue #1199 opened it (2026-11-15), and the SHA-256 of its names, sorted, one per line. A register
+#: only shrinks: :func:`test_no_name_joins_a_register` fails when it holds a name its opening did not. Never edit these.
+OPENED: dict[str, tuple[frozenset[str], str]] = {
+    "AWAITING_DEMOTION": (
+        frozenset(
+            {
+                "threetears.evals.actions.render_jobs_started",
+                "threetears.evals.analysis.assemble_context_bundle",
+                "threetears.evals.analysis.gate_verdicts",
+                "threetears.evals.analysis.report_html",
+                "threetears.evals.kernel.CappedCompletion",
+                "threetears.evals.kernel.host.load_bar_registry",
+                "threetears.evals.negotiation.closest_settings",
+                "threetears.evals.ops.await_job",
+                "threetears.evals.ops.campaign_export",
+                "threetears.evals.ops.case_rename",
+                "threetears.evals.ops.case_set_mint",
+                "threetears.evals.ops.case_sets_list",
+                "threetears.evals.ops.judge_case_author",
+                "threetears.evals.quick.run_cli",
+                "threetears.evals.run.admit_template",
+                "threetears.evals.run.launch_as_group",
+                "threetears.evals.run.load_seed_corpus",
+                "threetears.evals.run.mint_case_set",
+                "threetears.evals.run.quote_launch",
+                "threetears.evals.run.regrade",
+                "threetears.evals.run.start_run",
+                "threetears.evals.transports.fastmcp.CatalogueTool",
+            }
+        ),
+        "e8c446cd511eef2399c3e1a983df86da49a13a058bf0e41a539307fcaa42f07b",
+    ),
+    "AWAITING_SHIPPED_USE": (
+        frozenset(
+            {
+                "threetears.evals.kernel.failed_call_output",
+                "threetears.evals.kernel.host.MemberActsOn",
+                "threetears.evals.kernel.host.Ordinal",
+                "threetears.evals.ops.start_action_job",
+            }
+        ),
+        "8fd3a20bb28461313c3a3fa0576fbb74776d61d75da961a430b648e12985a45c",
+    ),
+}
+
+#: Where each host's tests' use of the package is recorded, beside its production list: read for ``tests`` kits only.
+HOST_TEST_IMPORTS = PACKAGE / "tests" / "fixtures" / "host_test_imports"
 
 
 def read_ledger() -> dict[str, str]:
@@ -295,6 +315,26 @@ def used_by_a_host() -> frozenset[str]:
     return frozenset(name for _, name in host_imports())
 
 
+def _host_list(directory: Path) -> frozenset[str]:
+    return frozenset(
+        line.strip()
+        for path in sorted(directory.glob("*.txt"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    )
+
+
+@cache
+def used_by_host_tests() -> frozenset[str]:
+    """Every package name a host's tests use, as its generated tests list records it."""
+    return _host_list(HOST_TEST_IMPORTS)
+
+
+def kits_host_tests_run(kinds: Mapping[str, str], used: Iterable[str]) -> frozenset[str]:
+    """What a host's tests' use admits: a name of the ``tests`` kind, and nothing else (ruling R-a)."""
+    return frozenset(name for name in used if kinds.get(name) == "tests")
+
+
 def _raised(member: Any) -> str:
     return " ".join(_RAISES.findall(inspect.getdoc(member) or ""))
 
@@ -323,11 +363,11 @@ def signature_words(name: str) -> set[str]:
 
 
 @cache
-def reached_by_a_signature() -> frozenset[str]:
-    """Every declared name another declared name's signature reaches."""
+def reached_by_a_signature(*, kept_only: bool = False) -> frozenset[str]:
+    """Every declared name another declared name's signature reaches; ``kept_only``, one outside both registers."""
     declared = declared_names()
     reachers: dict[str, set[str]] = {}
-    for name in declared:
+    for name in declared - (AWAITING_DEMOTION | AWAITING_SHIPPED_USE if kept_only else frozenset()):
         for word in signature_words(name):
             reachers.setdefault(word, set()).add(name)
     return frozenset(name for name in declared if reachers.get(name.rsplit(".", 1)[1], set()) - {name})
@@ -346,24 +386,24 @@ def ports() -> frozenset[str]:
 @cache
 def needs_no_caller() -> frozenset[str]:
     """Every declared name criterion 1 holds instead of criterion 2, by its kind: a received name, a protocol a host
-    implements, a type a declared signature names, and an action's function wherever the catalogue is used."""
+    implements, a type a declared signature names, and a class a kept name's signature names (ruling R-d)."""
     kinds = kinds_of.declared_kinds(surface.load_snapshot()).of
     recorded = surface.load_snapshot()
     sides = read_ledger()
-    catalogue_used = CATALOGUE in used_in_code() | used_on_a_page() | used_by_a_host()
     return frozenset(
         name
         for name in declared_names()
         if kinds.get(name) == "received"
         or sides.get(name) == HOST_IMPLEMENTS
         or (recorded[name].kind not in _OPERATIONS and name in reached_by_a_signature())
-        or (kinds.get(name) == "action" and catalogue_used)
+        or (recorded[name].kind == "class" and name in reached_by_a_signature(kept_only=True))
     )
 
 
 def unused() -> set[str]:
     """Every declared name nothing uses and nothing holds instead (criterion 2)."""
-    return set(declared_names() - used_in_code() - used_on_a_page() - used_by_a_host() - needs_no_caller())
+    kits = kits_host_tests_run(kinds_of.declared_kinds(surface.load_snapshot()).of, used_by_host_tests())
+    return set(declared_names() - used_in_code() - used_on_a_page() - used_by_a_host() - kits - needs_no_caller())
 
 
 def test_the_ledger_is_one_sorted_line_a_name() -> None:
@@ -450,6 +490,31 @@ def test_a_host_s_tests_are_not_its_production(tmp_path: Path) -> None:
     ):
         subprocess.run(["git", "-C", str(checkout), *command], check=True)
     assert host_record.host_uses(checkout) == {"threetears.evals.kernel.extract_json"}
+    assert host_record.host_uses(checkout, tests=True) == {
+        "threetears.evals.kernel.seed_digest",
+        "threetears.evals.run.start_run",
+        "threetears.evals.kernel.confusion_cell",
+    }
+
+
+def test_a_host_s_tests_admit_a_tests_kit_and_nothing_else() -> None:
+    """Ruling R-a: a host's tests running a ``tests`` kit are its use; any other name only they use stays unused."""
+    planted = {"threetears.evals.testing.kit": "tests", "threetears.evals.run.launch": "invoked"}
+    assert kits_host_tests_run(planted, planted) == {"threetears.evals.testing.kit"}
+    tested = used_by_host_tests()
+    assert {"threetears.evals.testing.check_completion_conformance", "threetears.evals.run.start_run"} <= tested
+    assert "threetears.evals.testing.check_completion_conformance" not in unused()
+    assert "threetears.evals.run.start_run" in unused(), "an invoked name only a host's tests use passed"
+
+
+def test_each_host_tests_list_is_generated() -> None:
+    """Never edited by hand: each opens with the generator's header, naming the host's commit and date."""
+    lists = sorted(HOST_TEST_IMPORTS.glob("*.txt"))
+    assert lists, f"no host tests list under {HOST_TEST_IMPORTS}"
+    for path in lists:
+        head = path.read_text(encoding="utf-8").splitlines()[:4]
+        assert "generated by packages/evals/scripts/record_host_imports.py" in head[0], f"{path.name} is hand-written"
+        assert any(line.startswith(f"# From {path.stem} ") for line in head), f"{path.name} names no host commit"
 
 
 def test_the_ledger_lists_every_declared_protocol_once() -> None:
@@ -463,7 +528,7 @@ def test_the_ledger_lists_every_declared_protocol_once() -> None:
 def test_every_declared_name_is_used() -> None:
     """Criterion 2: production code or a shipped example uses each declared name; a test alone does not count."""
     listed = {name for name, reason in read_ledger().items() if reason == UNREACHED}
-    unused_now = unused() - AWAITING_DEMOTION
+    unused_now = unused() - AWAITING_DEMOTION - AWAITING_SHIPPED_USE
     assert not unused_now and not listed, (
         "no production code or shipped example uses these declared names, and a test or a page's prose does not "
         "count (admission criterion 2, owner ruling 2026-11-15). Make each private: drop it from its root's "
@@ -474,13 +539,28 @@ def test_every_declared_name_is_used() -> None:
     )
 
 
-def test_a_name_awaiting_demotion_is_still_unused() -> None:
-    """The set awaiting a ruling only shrinks: a listed name something now uses, or that is no longer declared,
-    leaves it."""
-    stale = sorted(AWAITING_DEMOTION - unused())
-    assert not stale, "drop these from AWAITING_DEMOTION: each is used now, or no longer declared\n  " + "\n  ".join(
-        stale
+def test_a_registered_name_is_still_unused() -> None:
+    """A register holds only debt: a listed name something now uses, or that is no longer declared, leaves it."""
+    stale = sorted((AWAITING_DEMOTION | AWAITING_SHIPPED_USE) - unused())
+    assert not stale, (
+        "drop these from AWAITING_DEMOTION or AWAITING_SHIPPED_USE in packages/evals/scripts/surface_kinds.py: each is "
+        "used now, or no longer declared\n  " + "\n  ".join(stale)
     )
+    assert not AWAITING_DEMOTION & AWAITING_SHIPPED_USE, "a name is in both registers"
+
+
+def test_no_name_joins_a_register() -> None:
+    """Both registers only shrink (issue #1199): a name leaves by being demoted or used, and never joins."""
+    for register, now in (("AWAITING_DEMOTION", AWAITING_DEMOTION), ("AWAITING_SHIPPED_USE", AWAITING_SHIPPED_USE)):
+        opened, digest = OPENED[register]
+        assert hashlib.sha256("\n".join(sorted(opened)).encode()).hexdigest() == digest, (
+            f"{register}'s opening record was edited: it is fixed as issue #1199 opened it"
+        )
+        joined = sorted(now - opened)
+        assert not joined, (
+            f"these joined {register}, which only shrinks: make each private, or show its real use\n  "
+            + "\n  ".join(joined)
+        )
 
 
 def test_the_surface_page_gives_the_ledgers_counts() -> None:

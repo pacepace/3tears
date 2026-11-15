@@ -11,11 +11,13 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
 Both are read from each declared name's kind (``surface_kinds.py``) and, for a ``typed`` name, the rung that teaches it.
 ``docs/surface.md`` opens with the names a first eval needs and what each rung adds, then the host's contract, the
 functions a host's code calls, the functions behind actions, the action catalogue, a host's test kits, the shapes by the
-concept each belongs to, the reading states with their reasons and remedies, the near-duplicate shapes, and last the
-counts by kind, each kind with its meaning in one line, reported as a trend and never a budget; each line is a name and
-the first sentence of its own docstring. ``llms.txt`` is what an AI agent adopting the package reads first: what it is,
-the first example whole, how to get and run the examples, how to read what comes back, where a later task's names are,
-the actions, and the kinds, one line each. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only what an
+concept each belongs to, the two registers issue #1199 settles (awaiting demotion, and needing a shipped example), each
+name in its register's section and in no other, the reading states with their reasons and remedies, the near-duplicate
+shapes, and last the counts by kind, each kind with its meaning in one line, reported as a trend and never a budget;
+each line is a name and the first sentence of its own docstring. ``llms.txt`` is what an AI agent adopting the package
+reads first: what it is, the first example whole, how to get and run the examples, how to read what comes back, where a
+later task's names are, the names that need a shipped example (marked so), the actions, and the kinds, one line each;
+a name awaiting demotion is never offered to the agent. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only what an
 install holds or the repository by URL. ``tests/test_surface_docs.py`` fails while either committed file is not what
 this makes of the package.
 """
@@ -42,11 +44,14 @@ from public_surface import (
     paragraphs,
 )
 from surface_kinds import (
+    AWAITING_DEMOTION,
+    AWAITING_SHIPPED_USE,
     ENGINE_PROVIDES,
     FIRST_EVAL_GOAL,
     HOST_IMPLEMENTS,
     KIND_MEANINGS,
     KINDS,
+    REGISTER_ISSUE,
     THROUGH_RUNG_3_GOAL,
     TYPED,
     TYPED_IN_DOCS,
@@ -134,6 +139,9 @@ EXAMPLES_GUIDE = PACKAGE_ROOT / "examples" / "README.md"
 
 PREFIX = "threetears.evals."
 
+#: Every name either register holds, which no healthy section lists.
+REGISTERED: frozenset[str] = AWAITING_DEMOTION | frozenset(AWAITING_SHIPPED_USE)
+
 
 def short(qualified: str) -> str:
     """A name as both files print it: ``threetears.evals.`` dropped."""
@@ -182,7 +190,8 @@ class Surface:
         self._first: dict[int, str] = {}
 
     def of_kind(self, kind: Kind) -> list[str]:
-        return [name for name in self.entries if self.kinds[name] == kind]
+        """The names of one kind, less those a register holds: each register has its own section."""
+        return [name for name in self.entries if self.kinds[name] == kind and name not in REGISTERED]
 
     def line(self, qualified: str) -> str:
         """One name's line; the second spelling of one class or function says whose it is."""
@@ -355,6 +364,24 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
             yield ""
             yield from (surface.line(name) for name in groups[concept])
             yield ""
+    demoting = [name for name in surface.entries if name in AWAITING_DEMOTION]
+    yield f"## Awaiting demotion ({REGISTER_ISSUE}): {len(demoting)}"
+    yield ""
+    yield "Declared, and used by no production code and no shipped example (admission criteria 2 and 3): only tests, the"
+    yield "toy host, a page's prose or the action catalogue reach each. Where an action runs one, the action is the door"
+    yield f"to use. Issue {REGISTER_ISSUE} demotes them together with the namespace re-root, so a host migrates once; do"
+    yield "not start using one."
+    yield ""
+    yield from (f"{surface.line(name)} ({surface.kinds[name]})" for name in demoting)
+    yield ""
+    needing = [name for name in surface.entries if name in AWAITING_SHIPPED_USE]
+    yield f"## Needs a shipped example ({REGISTER_ISSUE}): {len(needing)}"
+    yield ""
+    yield "Each is the only door to something a host must be able to do, and no shipped example uses it yet: use it as"
+    yield f"its line says. Issue {REGISTER_ISSUE} adds the example."
+    yield ""
+    yield from (f"- `{short(name)}`: {md_text(AWAITING_SHIPPED_USE[name])}" for name in needing)
+    yield ""
     states = reading_states()
     yield f"## Reading states: {len(states)} reasons a reading is not counted, and what closes each"
     yield ""
@@ -378,6 +405,9 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     for kind in KINDS:
         yield f"| `{kind}` | {total[kind]} | {KIND_MEANINGS[kind]} |"
     yield f"| all | {sum(total.values())} | |"
+    yield ""
+    yield f"Of these, {len(AWAITING_DEMOTION)} await demotion and {len(AWAITING_SHIPPED_USE)} need a shipped example"
+    yield f"(issue {REGISTER_ISSUE}), each listed in its register's section above."
     yield ""
     yield "| Typed names | Names | Goal |"
     yield "|---|---|---|"
@@ -553,6 +583,10 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
         "  ",
     )
     yield from _wrapped(f"Every declared name, with one line each: {at_tag('docs/surface.md')}", "  ")
+    yield ""
+    yield f"NEEDS A SHIPPED EXAMPLE ({REGISTER_ISSUE}): the only door to each; no shipped example uses it yet"
+    for name in AWAITING_SHIPPED_USE:
+        yield from _wrapped(_plain(f"{short(name)}: {AWAITING_SHIPPED_USE[name]}"), "  ")
     yield ""
     actions = _actions()
     yield f"ACTIONS: {sum(len(each) for _, each in actions)}, called without writing Python"

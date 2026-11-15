@@ -14,7 +14,8 @@ line, as ``docs/surface.md`` and ``llms.txt`` print it):
   registry, a client, a kind seam, a function handed over as a value, a factory that builds one, and a shape a host
   builds for a seam.
 - ``action``: the function behind an action of the catalogue. An agent or an operator invokes the action by its name,
-  through the catalogue a host serves, and the action does the work; no host code need import the function.
+  through the catalogue a host serves, and the action does the work. The function still needs a caller of its own:
+  one that no production code or shipped example calls awaits demotion (:data:`AWAITING_DEMOTION`).
 - ``invoked``: a function a host's own code calls: to make the engine act (launch, run, judge, read, write, price), or
   to do one step the way the engine does it (a formatter, a digest, a wire reader).
 - ``received``: a value someone is handed and reads: a result or stored-document shape, a protocol the engine
@@ -375,6 +376,63 @@ THROUGH_RUNG_3_GOAL = 5
 
 #: The root whose every declared name is a host's test kit.
 TESTING_ROOT = "threetears.evals.testing"
+
+#: The issue that clears both registers below, cut over with the namespace re-root so a host migrates once.
+REGISTER_ISSUE = "#1199"
+
+#: Declared names that fail admission criteria 2 and 3 and are to be demoted under issue #1199 (owner ruling R-b,
+#: 2026-11-15): each is a function or class that no production code and no shipped example uses. Only tests (the
+#: package's or a host's), the toy host, a page's prose or the action catalogue reach it; the action is the host's
+#: door, and the Python function behind it is the debt. A debt register, not an admission: it only shrinks, and
+#: ``tests/test_declared_holdbacks.py`` fails when a name joins it, or stays in it once something uses it.
+AWAITING_DEMOTION: frozenset[str] = frozenset(
+    {
+        "threetears.evals.actions.render_jobs_started",
+        "threetears.evals.analysis.assemble_context_bundle",
+        "threetears.evals.analysis.gate_verdicts",
+        "threetears.evals.analysis.report_html",
+        "threetears.evals.kernel.CappedCompletion",
+        "threetears.evals.kernel.host.load_bar_registry",
+        "threetears.evals.negotiation.closest_settings",
+        "threetears.evals.ops.await_job",
+        "threetears.evals.ops.campaign_export",
+        "threetears.evals.ops.case_rename",
+        "threetears.evals.ops.case_set_mint",
+        "threetears.evals.ops.case_sets_list",
+        "threetears.evals.ops.judge_case_author",
+        "threetears.evals.quick.run_cli",
+        "threetears.evals.run.admit_template",
+        "threetears.evals.run.launch_as_group",
+        "threetears.evals.run.load_seed_corpus",
+        "threetears.evals.run.mint_case_set",
+        "threetears.evals.run.quote_launch",
+        "threetears.evals.run.regrade",
+        "threetears.evals.run.start_run",
+        "threetears.evals.transports.fastmcp.CatalogueTool",
+    }
+)
+
+#: Declared names that are the only door to something a host must be able to do, and that no shipped example uses yet
+#: (owner ruling R-e, 2026-11-15): not demoted, but missing a shipped use, which issue #1199 adds. Each with what a
+#: host does through it. Like :data:`AWAITING_DEMOTION`, it only shrinks.
+AWAITING_SHIPPED_USE: Mapping[str, str] = MappingProxyType(
+    {
+        "threetears.evals.kernel.failed_call_output": (
+            "A host's own kind routes a failed call through it, so an account refusal stops the run, a decline "
+            "excludes the cell and an unserved model is never judged."
+        ),
+        "threetears.evals.kernel.host.MemberActsOn": (
+            "A host marks a map field of its kind's overlay with it, so each entry is attributed to what it acts on."
+        ),
+        "threetears.evals.kernel.host.Ordinal": (
+            "A host marks a `Literal` or `Enum` knob of its kind's overlay with it, so the knob's values are ranked."
+        ),
+        "threetears.evals.ops.start_action_job": (
+            "A host's own action runs work that is not one paid call as a job through it (`start_paid_call` covers "
+            "one paid call)."
+        ),
+    }
+)
 
 
 # --- the walk: which engine types a public object names, and where ---------------------------------------------
@@ -1090,7 +1148,8 @@ def admission_problems(surface: Mapping[str, SurfaceEntry], kinds: Mapping[str, 
     Criterion 2 (production code or a shipped example uses it; a test alone does not count) is held by
     ``tests/test_declared_holdbacks.py``: a declared name is used in code by another package's source, a shipped
     example, a code block on a shipped page, or a host's production code (``tests/fixtures/host_imports/``, generated
-    by ``scripts/record_host_imports.py``), unless its kind needs no caller of its own. Criterion 5 is the tier: a
+    by ``scripts/record_host_imports.py``), or, for a ``tests`` kit only, a host's tests
+    (``tests/fixtures/host_test_imports/``), unless its kind needs no caller of its own. Criterion 5 is the tier: a
     name whose meaning cannot be promised is ``provisional``, never declared.
     """
     problems: list[str] = []

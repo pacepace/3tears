@@ -35,7 +35,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 
 - `Answer`: What a candidate returns to report its own spend beside its answer. Taught in [cost-and-budgets](cost-and-budgets.md).
 
-## The host's contract: 93 names a host implements or hands the engine
+## The host's contract: 87 names a host implements or hands the engine
 
 ### Ports a host implements (18)
 
@@ -58,13 +58,12 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `run.KindFactory`: Builds the candidate kind for one cell.
 - `providers.Pricer`: What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 
-### What a host builds and hands the engine (75)
+### What a host builds and hands the engine (69)
 
 - `schema.CellTrace`: What one cell's tracing yielded — filled by the sink, read by the engine.
 - `schema.EvalBaseModel`: Base model for the eval engine's own Pydantic models.
 - `schema.ProviderFailure`: What eval is allowed to know about a completion call that raised.
 - `schema.RunDisclosure`: What the launching host discloses about the launch a run came from: the machine, its load, how it measures.
-- `kernel.CappedCompletion`: One cell's view of a completion client: every call's cost counted in the cell's spend as it returns.
 - `kernel.default_job_timeout`: Enforce a job budget with `asyncio.timeout` and nothing else.
 - `kernel.EvalStorage`: Storage for eval documents over one document store.
 - `kernel.JobLeases`: The leases one process holds on its jobs' records, and the task that renews them.
@@ -79,10 +78,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `kernel.host.HostProfile`: Everything the engine knows about one consuming product.
 - `kernel.host.Interval`: Mark a numeric field's unit, rendered beside each level (`120words`).
 - `kernel.host.KindContract`: What one candidate kind's runs carry, declared as Pydantic models — see the module docstring.
-- `kernel.host.load_bar_registry`: Build a host's bar registry from a declaration kept as data — refusing any field it does not know.
 - `kernel.host.MeasureRegistry`: One host's declared measures, validated at construction.
-- `kernel.host.MemberActsOn`: Name the measure each listed ENTRY of an overlay map is supposed to move — `ActsOn` per member.
-- `kernel.host.Ordinal`: Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - `kernel.host.ResolvesInto`: Name the fixed host lever this overlay knob is WRITTEN INTO — its lever's `resolves_into`.
 - `kernel.host.SweepableRegistry`: The declared inputs for one host, validated at construction.
 - `kernel.host.TemplateChecks`: The questions about a template, and about one of its own cases, that only the host can answer, and the kinds it launches, read wherever a template or a template case is admitted.
@@ -124,10 +120,8 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `actions.Caller`: Who is calling, and the scope they act in — resolved by the host for every call.
 - `actions.definition_drift_actions`: `definitions_drift` and `definitions_reset`, for the host's catalogue.
 - `actions.eval_catalogue`: The engine's catalogue, the analyst's actions after the engine's, and the host's own after both.
-- `actions.render_jobs_started`: What a start returned: each job, and how to poll it.
 - `actions.standard_tools`: The two tools a host mounts by default: `<prefix>` and `<prefix>_admin`.
 - `transports.fastmcp.CallerResolver`: Resolves who is calling, and their scope, for one call — sync or async.
-- `transports.fastmcp.CatalogueTool`: One mounted tool, as FastMCP serves it: every call handed to the catalogue.
 - `transports.fastmcp.HostResolution`: What a host resolver may answer in place of the bare host: the host, and state of the host's own for the hooks.
 - `negotiation.LearnedSettings`: What providers refused, per provider and model, kept for as long as the callers that share it live.
 - `providers.AnthropicPublishedRates`: The default pricer: Anthropic's published rates for a direct Anthropic call, the catalogue for anything else.
@@ -136,7 +130,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `providers.describe_failure`: What the engine may know of a call through the client that raised: the host's `failure_describer`.
 - `providers.Model`: the same as `Model`.
 
-## Functions a host's code calls: 91
+## Functions a host's code calls: 75
 
 Each is `invoked`: your code imports it and calls it. None is an action; the actions follow.
 
@@ -152,12 +146,11 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `schema.label_key_of`: The label key of one judgement: `evidence` read on `dim`.
 - `schema.nested_schemas`: Every schema written directly inside `schema`, in declaration order.
 
-### `kernel` (8)
+### `kernel` (7)
 
 - `kernel.confusion_cell`: The value a classification reports under `confusion_cell`: `expected → predicted`.
 - `kernel.extract_json`: Extract a JSON object from provider output.
 - `kernel.extract_json_array`: Extract a JSON array from provider output, handling markdown code blocks.
-- `kernel.failed_call_output`: A cell's output for a model call that failed, routed by whose failure it was.
 - `kernel.fold_phase_timings`: Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
 - `kernel.prompt_drift`: Read a stored copy of a catalogue prompt against the package's shipped default.
 - `kernel.seed_digest`: The canonical digest of a seed's content: what a host records when it seeds a slot from it.
@@ -167,9 +160,8 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 
 - `kernel.host.check_seed`: Walk a world seed against the registry: every write it would make, checked, or the first refusal.
 
-### `run` (41)
+### `run` (34)
 
-- `run.admit_template`: Every refusal a template meets before it is first written, in `create_template`'s order.
 - `run.assert_preconditions`: Assert at t=0 that the world this template presumes actually holds.
 - `run.build_judge_service`: Build the `JudgeService` for a run, with its judge attribution.
 - `run.corpus_digests`: The digest of every definition of a corpus, by its key: what a seed of it records.
@@ -186,19 +178,14 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `run.grade_goal_checks`: Grade goal checks against a call ledger, an end state and what fired: the one evaluation every caller uses.
 - `run.judge_repeat_work`: Admit asking a finished run's judge to score its results' scored dims again — every call priced, none made.
 - `run.judge_temperature_work`: Admit re-judging a finished run's borderline cases at each temperature — every call priced, none made — as work.
-- `run.launch_as_group`: Launch one group of runs: admit it, prepare every arm, and start them together — or start none.
 - `run.launch_run`: Assemble, stamp, bound and hand over a run — the launch tail every candidate kind shares.
 - `run.list_results`: List every result for one eval run within its scope, read a page at a time in the store's order.
 - `run.list_runs`: List eval runs in a scope, optionally filtered by status.
-- `run.load_seed_corpus`: Read a corpus off disk, constructing each document through its model in `scope_id`.
 - `run.metered_cell_tally`: One cell's slice of the run's metered-call tally, or `None` when nothing counted.
-- `run.mint_case_set`: Store the next version of the case set `name`: version 1 for a new name, else one past the latest.
 - `run.plan_judge`: The judges one arm of `template` will be scored by, resolved as `build_judge_service` resolves them — building nothing.
 - `run.precondition_failure_text`: One line naming what was presumed and what the world held instead.
 - `run.price_subject_call_floor`: A floor under a subject arm's largest judge or simulator call, for its `LaunchableKind.price_largest_call`.
-- `run.quote_launch`: What `start_run` with the same arguments would make of its arms' prices — read-only.
 - `run.rate_result`: Record one rater's score for one judged dimension of one result — a person's, or an agent's.
-- `run.regrade`: Grade one stored result again from what its cell stored, and report every verdict that moved.
 - `run.require_candidate_model`: The model `request`'s arm runs on — the one it named, or the kind's role default — or the refusal.
 - `run.reset_definitions`: Write the corpus's content for the named definitions, each as a new revision or record, never in place.
 - `run.resolve_judge_pin`: The run-level judge pin an arm is scored under: the launch's, or the role default stepped off a candidate.
@@ -207,19 +194,16 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `run.run_judge_llm`: Run an LLM judge call against a set of criteria and parse the response.
 - `run.second_judge_work`: Admit a second judge's pass over a finished run — every call priced and admitted, none made — as work to run.
 - `run.seed_eval_definitions`: Create any corpus definition whose natural key is absent from the corpus's scope.
-- `run.start_run`: Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher.
 - `run.sweep_abandoned_runs`: Write lost every run left not ended by a process that has gone, in the scopes the host names.
 - `run.update_template`: Apply a partial update to a template and persist it.
 
-### `analysis` (19)
+### `analysis` (16)
 
-- `analysis.assemble_context_bundle`: Assemble the closed context bundle for a campaign's runs.
 - `analysis.campaign_report`: The campaign's page — THE answer to "what is this campaign's report", for every caller and every campaign.
 - `analysis.create_campaign`: Create and persist a campaign: one question, its arms, its aspects and its floors.
 - `analysis.dollars_text`: Spend as a person reads it: two significant figures, and dollars and cents from ten cents up.
 - `analysis.format_number`: Spell a number for a reader, the same way on every analysis surface.
 - `analysis.frontier`: Rank each subject's variants on quality x cost x latency, cheapest above bar.
-- `analysis.gate_verdicts`: Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided.
 - `analysis.humanize`: An identifier as a reader is shown it after its first mention.
 - `analysis.inspect_campaign_bundle`: Assemble one aspect's context bundle of a campaign and return it, without generating.
 - `analysis.inter_judge_agreement`: Pair each second judge's score with the first score it answers, and read agreement the way calibration does.
@@ -230,7 +214,6 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `analysis.judge_kind_readings`: Pool a judge campaign's trials into agreement with the labels, self-agreement and parse validity, per judge and criterion.
 - `analysis.judge_self_agreement`: Pair each repeated score with the first score it repeated, and read agreement the way calibration does.
 - `analysis.read_judge_temperatures`: Read a judge temperature comparison's answers into per-dimension variance and self-agreement, side by side.
-- `analysis.report_html`: Render a report as one standalone HTML page whose one script is the kit's, or, `static`, with none.
 - `analysis.tier_sentence`: One sentence a report states for a judge's tier on a dimension: the tier, and the two measurements behind it.
 
 ### `gen` (3)
@@ -239,21 +222,13 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `gen.plan_draft`: The one call a rubric proposal sends, on either axis, built before anything is priced or made.
 - `gen.propose_draft`: Make an admitted rubric proposal on `axis` and read its draft.
 
-### `quick` (1)
+### `ops` (1)
 
-- `quick.run_cli`: Parse `argv` and carry out the command, printing to stdout and refusals to stderr.
-
-### `ops` (4)
-
-- `ops.await_job`: Await started jobs to their end in the foreground, and return how each ended — its result included.
-- `ops.case_rename`: Rename a stored case: write its `name`, and nothing else but the seed name drift would have found it by.
-- `ops.start_action_job`: Start a host action's work as a job whose record (`EvalActionJob`) holds its result.
 - `ops.start_paid_call`: Start a host action's one paid model call: admitted against its cap in the call, made in a job.
 
-### `negotiation` (8)
+### `negotiation` (7)
 
 - `negotiation.anthropic_thinking`: The `thinking` an Anthropic request carries for `sent`, or `None` for none.
-- `negotiation.closest_settings`: What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved.
 - `negotiation.facts_from_router_catalogue`: The facts a router's catalogue row states of a model: each parameter it does not list, as not taken.
 - `negotiation.negotiate`: Send the closest settings the model is known to take; on a recognised refusal, learn it and send again.
 - `negotiation.read_anthropic_refusal`: Whether Anthropic's answer refuses a request for a setting it carried, which, and in what words.
@@ -261,20 +236,16 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `negotiation.read_router_refusal`: Whether OpenRouter's answer refuses a request for a setting it carried, which, and in what words.
 - `negotiation.wire_settings_for`: What a client asks for when it is asked for `settings` at `temperature`: the engine's values, as wire ones.
 
-## The functions behind actions: 17
+## The functions behind actions: 13
 
 Each is `action`: the function an action of the catalogue (below) runs, under the same name. An agent or an
 operator invokes the action by name; a host's code may also call the function.
 
 - `ops.campaign_create`: Create a campaign over runs already in the scope, declared as it is created when the definition says so.
-- `ops.campaign_export`: Assemble one campaign's closure, read-only: the documents, the profile declaration and the manifest a writer case is minted from.
 - `ops.campaign_record`: Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
 - `ops.campaigns_list`: One page of the scope's campaigns, newest first, and the next page's cursor.
-- `ops.case_set_mint`: Store the next version of a named case set: append-only, so a change is a new version, never an edit.
-- `ops.case_sets_list`: The scope's case sets — every version, or every version of one name.
 - `ops.job_cancel`: Ask a running job to stop — from any process — then report where it stands.
 - `ops.job_poll`: Where a job stands, read from the record its work writes — the same answer in every process.
-- `ops.judge_case_author`: Write one judge case by hand into a judge template: an output, its criterion, and the verdict it must get.
 - `ops.judge_profiles_record`: Record the profile of every judge and criterion a judge campaign's runs measured.
 - `ops.report_read`: The campaign's report, serialized in one form — the same report the command line's `report` prints.
 - `ops.run_get`: One run, summarised from its stored results.
@@ -728,6 +699,46 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `negotiation.MAX_RESENDS`: The most times one call is resent for a refused setting: one per setting a client can drop or move (the temperature, the reasoning parameter, the reply format, enforcement).
 - `providers.CATALOGUE_FETCH_TIMEOUT_S`: How long the catalogue fetch may take, in seconds, on a client the catalogue opens itself.
 
+## Awaiting demotion (#1199): 22
+
+Declared, and used by no production code and no shipped example (admission criteria 2 and 3): only tests, the
+toy host, a page's prose or the action catalogue reach each. Where an action runs one, the action is the door
+to use. Issue #1199 demotes them together with the namespace re-root, so a host migrates once; do
+not start using one.
+
+- `kernel.CappedCompletion`: One cell's view of a completion client: every call's cost counted in the cell's spend as it returns. (bound)
+- `kernel.host.load_bar_registry`: Build a host's bar registry from a declaration kept as data — refusing any field it does not know. (bound)
+- `run.admit_template`: Every refusal a template meets before it is first written, in `create_template`'s order. (invoked)
+- `run.launch_as_group`: Launch one group of runs: admit it, prepare every arm, and start them together — or start none. (invoked)
+- `run.load_seed_corpus`: Read a corpus off disk, constructing each document through its model in `scope_id`. (invoked)
+- `run.mint_case_set`: Store the next version of the case set `name`: version 1 for a new name, else one past the latest. (invoked)
+- `run.quote_launch`: What `start_run` with the same arguments would make of its arms' prices — read-only. (invoked)
+- `run.regrade`: Grade one stored result again from what its cell stored, and report every verdict that moved. (invoked)
+- `run.start_run`: Refuse what no kind can run, admit the launch, and dispatch each arm to its kind's launcher. (invoked)
+- `analysis.assemble_context_bundle`: Assemble the closed context bundle for a campaign's runs. (invoked)
+- `analysis.gate_verdicts`: Gate a report's typed verdicts: fail on the outcomes named, and never pass one the evidence left undecided. (invoked)
+- `analysis.report_html`: Render a report as one standalone HTML page whose one script is the kit's, or, `static`, with none. (invoked)
+- `quick.run_cli`: Parse `argv` and carry out the command, printing to stdout and refusals to stderr. (invoked)
+- `ops.await_job`: Await started jobs to their end in the foreground, and return how each ended — its result included. (invoked)
+- `ops.campaign_export`: Assemble one campaign's closure, read-only: the documents, the profile declaration and the manifest a writer case is minted from. (action)
+- `ops.case_rename`: Rename a stored case: write its `name`, and nothing else but the seed name drift would have found it by. (invoked)
+- `ops.case_set_mint`: Store the next version of a named case set: append-only, so a change is a new version, never an edit. (action)
+- `ops.case_sets_list`: The scope's case sets — every version, or every version of one name. (action)
+- `ops.judge_case_author`: Write one judge case by hand into a judge template: an output, its criterion, and the verdict it must get. (action)
+- `actions.render_jobs_started`: What a start returned: each job, and how to poll it. (bound)
+- `transports.fastmcp.CatalogueTool`: One mounted tool, as FastMCP serves it: every call handed to the catalogue. (bound)
+- `negotiation.closest_settings`: What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved. (invoked)
+
+## Needs a shipped example (#1199): 4
+
+Each is the only door to something a host must be able to do, and no shipped example uses it yet: use it as
+its line says. Issue #1199 adds the example.
+
+- `kernel.failed_call_output`: A host's own kind routes a failed call through it, so an account refusal stops the run, a decline excludes the cell and an unserved model is never judged.
+- `kernel.host.MemberActsOn`: A host marks a map field of its kind's overlay with it, so each entry is attributed to what it acts on.
+- `kernel.host.Ordinal`: A host marks a `Literal` or `Enum` knob of its kind's overlay with it, so the knob's values are ranked.
+- `ops.start_action_job`: A host's own action runs work that is not one paid call as a job through it (`start_paid_call` covers one paid call).
+
 ## Reading states: 18 reasons a reading is not counted, and what closes each
 
 | State | Reason | Remedy |
@@ -770,6 +781,9 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | `received` | 258 | a value someone is handed and reads |
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
 | all | 488 | |
+
+Of these, 22 await demotion and 4 need a shipped example
+(issue #1199), each listed in its register's section above.
 
 | Typed names | Names | Goal |
 |---|---|---|

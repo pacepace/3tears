@@ -14,7 +14,10 @@ a user types is taught on a rung or a page, and its meaning can be promised. `te
 can: every received shape is reached through a signature or a docstring, two near-duplicate shapes say why both
 exist, and a typed name is taught. `tests/test_declared_holdbacks.py` checks that each declared name is used in code:
 another package's source, the shipped client, a shipped example, a Python block on a shipped page, or a host's
-production code. A page's prose, a host's tests and the toy host never count. The per-kind ceilings and budgets are
+production code. A page's prose and the toy host never count, and a host's tests count only for a kit of the `tests`
+kind a host runs there (`tests/fixtures/host_test_imports/`, generated beside the production list). The function
+behind an action needs a caller of its own like any other name; the catalogue running it is not one. A class a kept
+name's signature names is a shape a host receives through it. The per-kind ceilings and budgets are
 gone; `docs/surface.md` reports the totals by kind as a trend. The adopter's goals stay as tests: a first eval needs 2
 names, rungs 0 to 3 need 5.
 
@@ -29,9 +32,24 @@ engine's own storage satisfies) is kind `received`, not `bound`. `Answer` is a t
 (`docs/cost-and-budgets.md`). The reach walk reads what a module imports only for type checking and the classes a
 docstring names.
 
+**Changed:** two debt registers, both settled by issue #1199 with the namespace re-root so a host migrates once.
+`AWAITING_DEMOTION` (22 names: functions and classes no production code or shipped example uses, among them
+`run.start_run`, `run.regrade`, `run.quote_launch` and the functions behind the `campaign_export`, `case_set_mint`,
+`case_sets_list` and `judge_case_author` actions, whose actions stay the door) and `AWAITING_SHIPPED_USE` (4 names
+that are the only door to something a host must do: `ops.start_action_job`, `kernel.failed_call_output`,
+`kernel.host.Ordinal`, `kernel.host.MemberActsOn`). Both only shrink: a test fails when a name joins either.
+`docs/surface.md` lists each in its own section, never among the healthy names, and `llms.txt` offers an agent only
+the second, marked.
+
+**Changed:** a shipped page that names, as code, a name `MIGRATIONS.toml` records removed fails a test, unless the
+page marks it removed where it names it; a page that teaches a provisional name, the `@name(...)` spelling included,
+must mark it provisional there. `@measure(...)` is marked provisional on the two pages that teach it, and the pages that
+told a reader to call `check_after`, `check_names`, `judge_config_of` or `is_builtin_judge_config_id` now give the
+replacement inline.
+
 **Changed:** a host-contract name moves only with a `MIGRATIONS.toml` record naming its replacement, in a single
-cut-over with no shim (owner ruling, 2026-11-15). The host guide, the README, the reference and `MIGRATIONS.toml`'s
-header said a deprecation cycle; they no longer do.
+cut-over with no shim (owner ruling, 2026-11-15). The host guide (its stability tiers and its upgrading section),
+the README, the reference and `MIGRATIONS.toml`'s header said a deprecation cycle; they no longer do.
 
 **Removed:** names no production code uses, from their public roots: `kernel.CassetteStore`,
 `kernel.DefinitionStore`, `kernel.RunRecordStore`, `kernel.production_replicating_cost`,
