@@ -536,6 +536,38 @@ class SQLiteBackend:
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}"
         self._in_write_transaction(lambda conn: conn.executemany(sql, values))
 
+    def delete_many_by_id_across(self, deletes: Sequence[tuple[str, Sequence[Any], KeyColumn | KeyColumns]]) -> None:
+        """delete many rows by primary key from several tables in one write transaction.
+
+        One ``BEGIN IMMEDIATE`` and one ``COMMIT`` for every row of every table, as :meth:`delete_many_by_id` takes
+        for one table's. A failure rolls every row back and propagates unchanged.
+
+        :param deletes: each table, its pk values (or tuples of them in declared column order) and its pk column or
+            columns; a table naming nothing deletes nothing
+        :ptype deletes: Sequence[tuple[str, Sequence[Any], KeyColumn | KeyColumns]]
+        :return: nothing
+        :rtype: None
+        """
+        statements: list[tuple[str, list[Any]]] = []
+        for table, entity_ids, primary_key in deletes:
+            if not entity_ids:
+                continue
+            pk_cols = self._pk_columns(primary_key)
+            values = [
+                self._serialize_pk_values(table, pk_cols, self._pk_values(entity_id, pk_cols))
+                for entity_id in entity_ids
+            ]
+            pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+            statements.append((f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}", values))
+        if not statements:
+            return
+
+        def write(conn: Any) -> None:
+            for sql, values in statements:
+                conn.executemany(sql, values)
+
+        self._in_write_transaction(write)
+
     def _in_write_transaction(self, write: Callable[[Any], object]) -> None:
         """run one write in an immediate transaction on this thread's connection.
 
