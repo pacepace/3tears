@@ -18,7 +18,11 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
     UnexercisedFactor,
 )
-from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
+from threetears.evals.analysis.lenses.frontier import (
+    DEFINITIONS_APART_READING,
+    PASS_HAT_K_CELL_READING,
+    pass_hat_k_cell_lines,
+)
 from threetears.evals.analysis.report.aspect.common import (
     _case_namer,
     _control_key,
@@ -490,9 +494,9 @@ def _run_disclosures(
     if cell_lines:
         # What "kept out" covers, once, before the first: the arm's tables above still count those runs.
         say("runs", PASS_HAT_K_CELL_READING)
-    else:
+    elif bundle.frontier.definitions_apart:
         # Where the contestants' definitions differ: the reading's last sentence, which no cell line brought.
-        say("runs", bundle.frontier.definitions_pooled_disclosure)
+        say("runs", DEFINITIONS_APART_READING)
     for line in cell_lines:
         say("runs", line)
 

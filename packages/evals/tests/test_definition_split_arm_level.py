@@ -35,6 +35,9 @@ from threetears.evals.analysis import (
     report_markdown,
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis import lens_text as lens_text_module
+from threetears.evals.analysis.lenses import frontier as frontier_module
+from threetears.evals.analysis.report.aspect import method as method_module
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.analyst.snapshot import analyst_input
@@ -270,13 +273,35 @@ def test_a_frontier_read_under_one_definition_throughout_says_nothing_of_definit
     read = _Read({_CONTROL: [_AFTER], _CANDIDATE: [_AFTER, _AFTER]})
     frontier = read.bundle.frontier
 
-    assert frontier.definitions_pooled_disclosure is None
-    assert "definitions_pooled_disclosure" not in frontier.model_dump(), "it serializes, and digests, as it did"
+    assert frontier.definitions_apart is False
+    assert "definitions_apart" not in frontier.model_dump(), "it serializes, and digests, as it did"
     # Its candidate's two runs recorded no measurement context, so the cell sentence (which ends with the dominance
     # sentence) is said as it always was; what a frontier says of differing definitions is not.
     said = "Contestants here were read under different definitions of the host's measures"
     assert said not in frontier_text(frontier)
     assert said not in report_markdown(read.aspect())
+
+
+def test_rewording_what_a_frontier_says_of_differing_definitions_moves_no_stored_bundle_and_no_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bundle stores the fact (``definitions_apart``); the sentence is rendered at read, so a wording change moves
+    the text a reader sees and nothing stored: identity is over inputs and typed facts, never words."""
+    definitions = {_CONTROL: [_BEFORE], _CANDIDATE: [_AFTER]}
+    before = _Read(definitions)
+    reworded = "Contestants were read under other definitions; dominance still reads across them."
+    for module in (frontier_module, lens_text_module, method_module):
+        monkeypatch.setattr(module, "DEFINITIONS_APART_READING", reworded)
+    after = _Read(definitions)
+
+    assert after.bundle.frontier.definitions_apart is True, "not vacuous: the fact is set"
+    assert reworded in frontier_text(after.bundle.frontier), "not vacuous: the reader says the new words"
+    assert reworded in report_markdown(after.aspect())
+    stored = after.bundle.model_dump_json()
+    assert stored == before.bundle.model_dump_json(), "no stored bundle byte moves"
+    assert after.bundle.fingerprint() == before.bundle.fingerprint(), "no fingerprint moves"
+    assert _DOMINANCE_POOLS not in stored and reworded not in stored, "the sentence is not stored, either wording"
+    assert '"definitions_apart":true' in stored
 
 
 def _scoreboard_row(first_screen: str, arm: str) -> list[str]:

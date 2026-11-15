@@ -128,10 +128,12 @@ definitions stays unrecorded, and says so as it is taken up (a WARNING).
 **Not yet:** two readers still pool across definitions of a host measure, and each says so where it is read. The
 frontier's dominance and cheapest-pick tests read contestants' headline cells whatever definition read each. A
 frontier says so, once, in its text and on an aspect page's method, wherever a subject's contestants were not all read
-under one definition (or one recorded none), in `FrontierResult.definitions_pooled_disclosure` (new, left out when
-unset), and wherever a contestant's run is kept out of its headline cell, as the last sentence of the cell sentence
-(`PASS_HAT_K_CELL_READING`). A frontier read under one definition throughout, with no run kept out, says nothing of
-definitions. A launch estimate's `detectable_effect` plans from variance pooled over every earlier run of the
+under one definition (or one recorded none), and wherever a contestant's run is kept out of its headline cell, as the last sentence of the cell sentence
+(`PASS_HAT_K_CELL_READING`). The frontier stores the fact, not the sentence: `FrontierResult.definitions_apart` (new,
+a boolean, left out of a dump when false) is carried in a stored aspect bundle's `frontier`, the sentence is rendered
+at read (`DEFINITIONS_APART_READING`), and rewording it moves no stored bundle and no fingerprint. A frontier read
+under one definition throughout, with no run kept out, says nothing of definitions, and its bundle reads and digests
+as before. A launch estimate's `detectable_effect` plans from variance pooled over every earlier run of the
 template: where those runs were not all read under one definition, or some recorded none, its `assumptions` end
 saying so.
 

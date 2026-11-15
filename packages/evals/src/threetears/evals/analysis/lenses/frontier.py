@@ -419,9 +419,10 @@ PASS_HAT_K_CELL_READING = (
     "with nothing. " + _DOMINANCE_READS_EVERY_DEFINITION
 )
 
-#: What a frontier says, once, where its contestants were not all read under one definition of the host's measures
-#: and no cell line already said :data:`PASS_HAT_K_CELL_READING` (:attr:`FrontierResult.definitions_pooled_disclosure`).
-_DEFINITIONS_POOLED = (
+#: What a frontier's readers say, once, where its contestants were not all read under one definition of the host's
+#: measures (:attr:`FrontierResult.definitions_apart`) and no cell line already said :data:`PASS_HAT_K_CELL_READING`.
+#: Rendered at read, never stored: rewording it moves no stored bundle and no fingerprint.
+DEFINITIONS_APART_READING = (
     "Contestants here were read under different definitions of the host's measures, or under none recorded. "
     + _DOMINANCE_READS_EVERY_DEFINITION
 )
@@ -898,12 +899,12 @@ class FrontierResult(EvalDocumentModel):
     #: subjects' results in each judge's evidence tier). ``None`` on a whole-scope read, and then left out of a dump,
     #: so an answer read whole serializes, and digests, as it did before the field existed.
     narrowed_read_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
-    #: Set where, in some subject, two or more contestants' headline cells were not all read under one definition of
-    #: the host's measures, or one recorded none (as the cells read a rig): the sentence saying dominance and the
-    #: cheapest pick are still tested between them. ``None`` where every
+    #: True where, in some subject, two or more contestants' headline cells were not all read under one definition of
+    #: the host's measures, or one recorded none (as the cells read a rig); dominance and the cheapest pick are still
+    #: tested between them, which a reader says at read (:data:`DEFINITIONS_APART_READING`). False where every
     #: subject's contestants share one definition, and then left out of a dump, so a frontier read under one
     #: definition serializes, and digests, as it did before the field existed.
-    definitions_pooled_disclosure: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    definitions_apart: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 def _frontier_point(
@@ -2181,7 +2182,7 @@ def compute_frontier(
     )
 
     subjects: list[SubjectFrontier] = []
-    definitions_pooled = False
+    definitions_apart = False
     for resolved in sorted(by_subject):
         groups = by_subject[resolved]
         subject_k = k_by_subject[resolved]
@@ -2215,7 +2216,7 @@ def compute_frontier(
                 if point.variant_key == earlier_control.variant_key:
                     point.earlier_control = earlier_control_mark(earlier_control)
         _decide_dominance(points, point_cases)
-        definitions_pooled = definitions_pooled or _definitions_apart(built, placed_runs)
+        definitions_apart = definitions_apart or _definitions_apart(built, placed_runs)
         common = _place_common_depth(points, point_cases)
         if profile is not None and profile.model_pass_hat_k:
             # Opt-in, and after dominance: nothing ranked reads it.
@@ -2351,7 +2352,7 @@ def compute_frontier(
         contended_latency_disclosure=contended_latency_sentence(
             sum(1 for result in considered if result.id in contended), len(considered)
         ),
-        definitions_pooled_disclosure=_DEFINITIONS_POOLED if definitions_pooled else None,
+        definitions_apart=definitions_apart,
     )
 
 

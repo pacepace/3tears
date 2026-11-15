@@ -27,6 +27,7 @@ from threetears.evals.analysis.report.verdict import MIN_CASES
 from threetears.evals.analysis.reporting import ProjectionExclusions
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier, TierCriterion
 from threetears.evals.analysis.lenses.frontier import (
+    DEFINITIONS_APART_READING,
     PASS_HAT_K_CELL_READING,
     FrontierPoint,
     FrontierResult,
@@ -137,7 +138,7 @@ def frontier_text(result: FrontierResult) -> str:
             result.narrowed_read_disclosure,
             result.identity_span_disclosure,
             result.contended_latency_disclosure,
-            None if cell_lines_shown else result.definitions_pooled_disclosure,
+            DEFINITIONS_APART_READING if result.definitions_apart and not cell_lines_shown else None,
         )
         if text
     ]
