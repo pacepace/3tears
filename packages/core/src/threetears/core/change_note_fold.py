@@ -55,9 +55,9 @@ import pyarrow.csv as pacsv
 
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.shared_arrow import JobContext, SharedArrowPool, SharedArrowStore
-from threetears.observe import get_logger, remove_tree
+from threetears.observe import contain, get_logger, remove_tree
 
-__all__ = ["FOLDER"]
+__all__ = ["RestoreFolder"]
 
 log = get_logger(__name__)
 
@@ -293,12 +293,30 @@ _STORE_BYTES: Final = 48 << 20
 _WORKER_PRIVATE_BYTES: Final = 512 << 20
 
 
-class _PageFolder:
-    """the restore's worker process and the shared-memory store its pages and records cross, made at the first page.
+def _ready(_context: JobContext) -> None:
+    """nothing: the job a restore's folder runs first, so its worker spawns and imports while the restore sizes.
 
-    One per process (:data:`FOLDER`): a restore is rare (a lost log), and the worker, once spawned (about half a second,
-    on a thread), is kept for the next. The store's directory is a fresh one, memory-backed where the system has
-    ``/dev/shm``, removed at the process's exit.
+    :param _context: the job's context (unused)
+    :ptype _context: JobContext
+    :return: nothing
+    :rtype: None
+    """
+
+
+class RestoreFolder:
+    """one restore's worker process and the shared-memory store its pages and records cross: made for the restore,
+    gone with it.
+
+    WHY one per restore, never kept (R4, 2026-11-15, Pace: memory only for a measured need): the first version kept
+    one worker per process from its first restore to its exit. Measured after a 200,000-note fold
+    (S/r4/rss.py, macOS arm64, Python 3.14, the keeper's modules imported as a hub imports them): the kept worker
+    held 193 MiB resident and its store directory stayed, for a restore that comes only at a cold start or a lost
+    log. Now the worker exits and the store is removed when the restore ends (:meth:`close`): nothing is left. The
+    cost is a spawn per restore (about 0.6 s, the worker's imports), started on a thread as the restore begins
+    (:meth:`start`), beside its sizing reads, so it is off the loop and mostly hidden; the loop-hold and speed tests
+    (``test_change_note_restore_speed_live``) measure it on PG and YugabyteDB.
+
+    The store's directory is a fresh one, memory-backed where the system has ``/dev/shm``. Used as ``async with``.
     """
 
     def __init__(self) -> None:
@@ -306,6 +324,14 @@ class _PageFolder:
         self._lock = threading.Lock()
         self._pool: SharedArrowPool | None = None
         self._root: Path | None = None
+        #: the worker's spawn, started by :meth:`start`
+        self._warming: asyncio.Future[None] | None = None
+
+    async def __aenter__(self) -> RestoreFolder:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
 
     def _opened(self) -> SharedArrowPool:
         """the pool, made on first use (on a thread: the store's start sweeps its directory).
@@ -318,7 +344,8 @@ class _PageFolder:
                 shm = Path("/dev/shm")
                 parent = shm if shm.is_dir() else Path(tempfile.gettempdir())
                 self._root = Path(tempfile.mkdtemp(prefix="change-note-restore-", dir=parent))
-                atexit.register(remove_tree, self._root, log=log, what="the change-note restore's store")
+                # a process that dies mid-restore never reaches close(): its exit removes the store
+                atexit.register(self._remove_root)
                 self._pool = SharedArrowPool(
                     SharedArrowStore(self._root, max_bytes=_STORE_BYTES),
                     workers=1,
@@ -326,6 +353,36 @@ class _PageFolder:
                     name="change-note-restore",
                 )
             return self._pool
+
+    def _remove_root(self) -> None:
+        """remove the store's directory, once (at :meth:`close`, or at the process's exit).
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._lock:
+            root, self._root = self._root, None
+        if root is not None:
+            atexit.unregister(self._remove_root)
+            remove_tree(root, log=log, what="the change-note restore's store")
+
+    async def _warm(self) -> None:
+        """make the pool and spawn its worker (on a thread), running :func:`_ready`.
+
+        :return: nothing
+        :rtype: None
+        """
+        pool = await asyncio.to_thread(self._opened)
+        await pool.run(_ready, read=False)
+
+    def start(self) -> None:
+        """spawn the worker now, off the loop, so the first page finds it ready; once.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._warming is None:
+            self._warming = asyncio.ensure_future(self._warm())
 
     async def fold(
         self, page: bytes, *, final: bool, form: tuple[bytes, ...], chunk_rows: int, max_bytes: int
@@ -376,6 +433,28 @@ class _PageFolder:
             await asyncio.to_thread(segment.close)
         return int(result.value), folded
 
+    async def _shut(self) -> None:
+        """wait for the spawn, shut the worker down (waiting for it to exit) and remove the store.
 
-#: the process's folder
-FOLDER: Final = _PageFolder()
+        :return: nothing
+        :rtype: None
+        """
+        if self._warming is not None:
+            try:
+                await self._warming
+            except Exception as exc:  # noqa: BLE001 -- the restore already has its answer; a failed spawn is only said
+                contain(exc, log=log, what="the change-note restore's worker failed to start", level="warning")
+        with self._lock:
+            pool = self._pool
+        if pool is not None:
+            await pool.close()
+        await asyncio.to_thread(self._remove_root)
+
+    async def close(self) -> None:
+        """end the restore's worker and remove its store: nothing of the folder is left. A caller cancelled meanwhile
+        leaves the shutdown to finish on its own.
+
+        :return: nothing
+        :rtype: None
+        """
+        await asyncio.shield(asyncio.ensure_future(self._shut()))
