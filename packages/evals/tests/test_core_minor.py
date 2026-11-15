@@ -656,6 +656,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
     from threetears.evals.schema.completion import StopReason
     from threetears.evals.schema.judge_attribution import JudgeAttributionSource
     from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome
+    from threetears.evals.schema.reading_states import SampleKind
     from threetears.evals.schema.world_events import WorldEventCause, WorldEventKind
 
     def values(alias: Any) -> frozenset[Any]:
@@ -699,6 +700,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "OutOfRunOutcome": values(OutOfRunOutcome),
         "SecondJudgeAskedBy": values(SecondJudgeAskedBy),
         "StopReason": values(StopReason),
+        "SampleKind": values(SampleKind),
         "rate_drop": frozenset({"rate_drop"}),
         "cost_lower": frozenset({"cost_lower"}),
     }

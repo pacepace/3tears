@@ -180,6 +180,8 @@ the document, so extending one is a major. Each, and why:
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
+- ``SampleKind`` — whether the items a measurement was read on stand for what they were drawn from; a figure is read
+  only from a random draw, so a new kind of sample changes what an older build may claim from it.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
   cause it does not name (``truncated``), kept apart from a call that failed (``error``).
 - Every ``doc_type`` — a new type is a new model, never a new value.

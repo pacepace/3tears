@@ -160,7 +160,8 @@ class TestTheShare:
         control, candidate = self._side(1), self._side(1)
         share = judge_share(control, candidate, ["a", "b", "c"], [-1.0, 0.0, 1.0])
         assert share is not None
-        assert share.low < share.point == pytest.approx(0.5) < share.high
+        assert share.point == pytest.approx(0.5)
+        assert share.low < share.point < share.high
 
     def test_its_range_is_one_interval_on_the_sum_not_the_share_at_each_end_of_the_arms_ranges(self) -> None:
         # Two arms' errors partly cancel: the sum's range sits strictly inside the both-ends bound, and is narrower.
