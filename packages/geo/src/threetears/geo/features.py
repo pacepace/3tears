@@ -24,12 +24,12 @@ least recently read chunk going first, rows and index entries together. with
 no L1 bound it holds nothing: every read is one loader call.
 
 the R-Tree needs integer keys and features are keyed by
-``(layer, source_version, feature_id)``, so each instance assigns a surrogate
-id per feature key and keeps the two maps in memory, beside the rows it holds.
-several caches of one scope share the L1 (the hub builds one per layer), and
-each keeps its rows in memory, so each has an R-Tree of its own and indexes
-and evicts only its own entries. an instance's tree is dropped when it is
-garbage-collected.
+``(layer, source_version, feature_id)``, so a companion map table assigns a
+surrogate id per feature key (:class:`~threetears.core.cache.rtree.SQLiteRTree`
+keeps both). several caches of one scope share the L1 (the hub builds one per
+layer), and each keeps its rows in memory, so each has a tree and map of its
+own and indexes and evicts only its own entries. an instance's tables are
+dropped when it is garbage-collected.
 """
 
 from __future__ import annotations
@@ -149,12 +149,6 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         # names this instance's own R-Tree, so instances sharing the L1 never read or evict each
         # other's entries
         self._instance_key = secrets.token_hex(6)
-        # the R-Tree's integer id of each indexed feature key, and back: held here, beside the rows,
-        # rather than in a map table joined to the tree (see ``ensure_index``). an id is a slot of
-        # ``_tree_keys`` (id - 1); a freed slot is reused before the list grows
-        self._tree_ids: dict[str, int] = {}
-        self._tree_keys: list[str | None] = []
-        self._free_tree_ids: list[int] = []
         self._tree: SQLiteRTree | None = None
 
     @property
@@ -169,34 +163,22 @@ class FeatureCache(BaseCollection[FeatureEntity]):
     # R-Tree companion
     # ------------------------------------------------------------------
 
-    # each instance holds its own R-Tree, so a collected instance's entries go by dropping its
-    # table, never by finding its rows among another instance's
+    # each instance holds its own R-Tree and key map, so a collected instance's entries go by dropping
+    # its two tables, never by finding its rows among another instance's
     @property
     def _rtree_table(self) -> str:
         return f"{self.table_name}_{self._instance_key}_rtree"
 
+    @property
+    def _map_table(self) -> str:
+        return f"{self.table_name}_{self._instance_key}_rtree_map"
+
     def ensure_index(self) -> None:
-        """create the R-Tree if absent.
+        """create the R-Tree and its key map if absent.
 
         idempotent and cheap after the first call. built lazily rather than at
         construction so a collection that never runs a spatial query never
         pays for the virtual table.
-
-        WHY no key-map table (2026-11-15): the tree's integer ids were a SQLite table
-        ``(id INTEGER PRIMARY KEY, feature_key TEXT UNIQUE)`` joined to the tree on every read
-        and kept by ``INSERT ... SELECT`` / ``DELETE ... IN (SELECT ...)``. since c4d4bfefb each
-        instance has a tree of its own, so the map only ever answered this instance's own keys,
-        which it already holds in memory (``_rows``, ``_holders``); two dicts of ints beside them
-        cost less than the rows they index, and every statement is then the tree's own, by id or
-        by a box (:class:`~threetears.core.cache.rtree.SQLiteRTree`).
-
-        measured cost (2026-11-15, macOS arm64, Python 3.14, scratchpad d6/mem/measure.py: rows of
-        ``04013-PCT-000123``-shaped ids held through ``_hold`` in 2,000-row chunks, process RSS
-        growth, two runs each, identical): 100,000 held features (the default bound) 50.0 MB with
-        the map table -> 64.2 MB (+14.2 MB); 180,000 (every precinct of a national layer)
-        104.6 -> 111.4 MB (+6.8 MB; the dicts' resize steps fall differently). the rows themselves
-        dominate either way. the key -> id dict is the cost: the key objects are the rows' own
-        (``_hold`` hands them on) and id -> key is a list slot.
         """
         if self._rtree_ready:
             return
@@ -206,7 +188,7 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             # index and every lookup falls through to the loader.
             log.debug("no L1 backend bound to %s; spatial index disabled", self.table_name)
             return
-        tree = SQLiteRTree(backend, self._rtree_table)
+        tree = SQLiteRTree(backend, self._rtree_table, self._map_table)
         tree.create()
         self._tree = tree
         self._rtree_ready = True
@@ -255,13 +237,9 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         if tree is None:
             return []
         prefix = self._feature_key(layer, source_version, "")
-        keys = (
-            self._tree_keys[tree_id - 1]
-            for tree_id in tree.overlapping(bounds.min_lon, bounds.max_lon, bounds.min_lat, bounds.max_lat)
-        )
-        # the tree holds every layer and generation this instance indexed: a prefix compare keeps the asked one's
-        # (a plain prefix, so a layer name's own % or _ is no wildcard)
-        return [key for key in keys if key is not None and key.startswith(prefix)]
+        # the tree holds every layer and generation this instance indexed: the prefix keeps the asked one's (a plain
+        # prefix, so a layer name's own % or _ is no wildcard)
+        return tree.overlapping(bounds.min_lon, bounds.max_lon, bounds.min_lat, bounds.max_lat, prefix=prefix)
 
     # ------------------------------------------------------------------
     # read path
@@ -490,7 +468,6 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             count = self._holders.get(key, 0)
             if count == 0:
                 self._rows[key] = row
-                # the same key object the rows hold, so the index's maps add no second copy of it
                 fresh.append((key, self._row_bounds(row)))
             self._holders[key] = count + 1
         return fresh
@@ -531,42 +508,21 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         self._unindex_keys(gone)
 
     def _index_many(self, features: list[tuple[str, BoundingBox]]) -> None:
-        """record features' bounds in the R-Tree by feature key, in one transaction.
-
-        the maps share the rows' key objects and keep id -> key as a list slot, so the index adds one dict of
-        ints per held feature (the cost, measured: ``ensure_index``'s note).
-        """
+        """record features' bounds in the R-Tree by feature key, in one transaction."""
         if not features:
             return
         self.ensure_index()
         tree = self._tree
         if tree is None:
             return
-        boxes: list[tuple[int, float, float, float, float]] = []
-        for key, b in features:
-            tree_id = self._tree_ids.get(key)
-            if tree_id is None:
-                # a key indexed again keeps its id: its box is replaced, as the map's INSERT OR IGNORE kept it
-                if self._free_tree_ids:
-                    tree_id = self._free_tree_ids.pop()
-                    self._tree_keys[tree_id - 1] = key
-                else:
-                    self._tree_keys.append(key)
-                    tree_id = len(self._tree_keys)
-                self._tree_ids[key] = tree_id
-            boxes.append((tree_id, b.min_lon, b.max_lon, b.min_lat, b.max_lat))
-        tree.put(boxes)
+        tree.put([(key, b.min_lon, b.max_lon, b.min_lat, b.max_lat) for key, b in features])
 
     def _unindex_keys(self, keys: list[str]) -> None:
         """drop features from the spatial index by feature key, in one transaction."""
         tree = self._tree
         if not keys or tree is None:
             return
-        gone = [tree_id for tree_id in (self._tree_ids.pop(key, None) for key in keys) if tree_id is not None]
-        for tree_id in gone:
-            self._tree_keys[tree_id - 1] = None
-        self._free_tree_ids.extend(gone)
-        tree.remove(gone)
+        tree.remove(keys)
 
     def _row_bounds(self, row: dict[str, Any]) -> BoundingBox:
         """the row's own bounding rectangle, via the caller-supplied extractor."""
