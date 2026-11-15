@@ -52,6 +52,7 @@ from threetears.interfaces.keyed.point import (
     TextRank,
     read_by_statement,
     read_nearest_statement,
+    read_row_beside_statement,
     read_row_statement,
 )
 from threetears.interfaces.keyed.rows import (
@@ -217,6 +218,7 @@ __all__ = [
     "read_by_statement",
     "read_nearest_statement",
     "read_keyed_statements",
+    "read_row_beside_statement",
     "read_row_statement",
     "relation",
     "renumbered",

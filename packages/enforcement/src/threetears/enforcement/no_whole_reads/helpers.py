@@ -75,6 +75,9 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         "read_keyed_arrow",
         "read_by",
         "read_row",
+        # a point read and, beside it, a step its row decides, in one statement: judged as the point read; the step
+        # where it is built (threetears.core.keyed.read_row_beside)
+        "read_row_beside",
         "read_value",
         "read_nearest",
         "read_joined",
@@ -115,6 +118,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
         *(
             "read_by_statement",
             "read_row_statement",
+            "read_row_beside_statement",
             "read_nearest_statement",
             "read_keyed_statements",
             "keyset_page_statement",
@@ -134,6 +138,7 @@ KEYED_HELPER_CALLS: Final[frozenset[str]] = frozenset(
 BUILDER_CALLS: Final[Mapping[str, str]] = {
     "read_by_statement": "read_by",
     "read_row_statement": "read_row",
+    "read_row_beside_statement": "read_row_beside",
     "read_nearest_statement": "read_nearest",
     "read_keyed_statements": "read_keyed",
     "keyset_page_statement": "keyset_page",
@@ -526,6 +531,12 @@ def _read_by(call: ast.Call) -> list[str]:
     # states (``where=[Fragment("kind = 'live'")]``) is stated by the read
     filtered, _ = _filters(call, place)
     order = _written_order(_argument(call, "order", None))
+    beside = _argument(call, "beside", None)
+    if isinstance(beside, ast.Call) and _name(beside) == "Derived":
+        # ``read_row``'s derived row read beside the table's (``FROM (<derived>) AS b CROSS JOIN <table> AS t``),
+        # judged on its own text as every derived relation is; a step beside a row (``read_row_beside``) is judged
+        # where it is built
+        own = [*own, *_relation(beside, "beside")[1]]
     return [f"SELECT {_selected_list(call)} FROM {table} AS t{_where([*pinned, *filtered])}{order}", *own]
 
 
@@ -1269,6 +1280,7 @@ _SYNTHESIZERS: Final = {
     "read_keyed_arrow": _read_keyed,
     "read_by": _read_by,
     "read_row": _read_by,
+    "read_row_beside": _read_by,
     "read_value": _read_by,
     "read_nearest": _read_nearest,
     "read_joined": _read_joined,
@@ -1325,6 +1337,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "read_link_chain",
             "read_reached",
             "read_row",
+            "read_row_beside",
             "read_value",
             "read_nearest",
             "any_rows",
@@ -1349,6 +1362,7 @@ _READ_RELATION: Final[Mapping[str, tuple[str, int]]] = {
             "delete_before",
             "update_before",
             "read_row_statement",
+            "read_row_beside_statement",
             "read_by_statement",
             "read_nearest_statement",
             "read_keyed_statements",

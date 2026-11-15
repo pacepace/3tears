@@ -282,6 +282,7 @@ _BY_HELPERS: frozenset[str] = frozenset(
         "read_by",
         "read_nearest",
         "read_row",
+        "read_row_beside",
         "read_value",
         "update_keyed",
     }

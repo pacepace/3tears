@@ -373,7 +373,7 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
     # before it gains it at the next install.
     by_table = tuple(
         "-- purpose: packages/core/src/threetears/core/collections/change_notes.py::ChangeNoteKeeper.notes_found; "
-        "packages/core/src/threetears/core/collections/change_notes.py::_noted_rows_sql; "
+        "packages/core/src/threetears/core/collections/change_notes.py::_noted_rows_step; "
         "packages/core/src/threetears/core/collections/change_notes.py::_noted_keys_sql\n"
         "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_table_reads_a_tables_notes_since_a_time\n"
         "-- reason: a table's notes since a time, carrying the columns the reconciler's read answers so it never "
