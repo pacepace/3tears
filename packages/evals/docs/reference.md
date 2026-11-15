@@ -1202,7 +1202,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `prior_insights` | `list[EvalInsight]` | `[]` | Subject-scoped prior insights (newest first), one per claim and at most the reporting cap of the newest. |
 | `prior_insights_omitted` | `int` | `0` | Live prior insights the ledger holds that `prior_insights` does not carry: an older insight stating the same claim as a carried one, and every insight beyond the cap, oldest dropped first. |
 | `retracted_insights` | `dict[str, str]` | `{}` | Insight id → the archived analysis that minted it, for every insight the ledger held that is NOT in `prior_insights` because its analysis was archived as shown false. |
-| `checks` | `list[Check]` | `[]` | The checks of the rig: identical arms read on the same reading. |
+| `checks` | `list[RigCheck]` | `[]` | The checks of the rig: identical arms read on the same reading. |
 | `evidence` | `EvidenceManifest \| None` | `None` | What the bundle was assembled from, as one digest and one count per kind of input the assembly read (`analysis.bundle.evidence`): the pre-image of a `v3:` fingerprint, which hashes the evidence and no statistic computed from it. |
 
 <a id="goal-checks"></a>

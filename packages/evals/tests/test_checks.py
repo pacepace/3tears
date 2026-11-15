@@ -52,9 +52,10 @@ from threetears.evals.analysis.checks import (
     speaking_check,
     tier_checks,
 )
-from threetears.evals.analysis.caveats import raise_caveats
+from threetears.evals.analysis.caveats import caveat_step, raise_caveats, remedy
 from threetears.evals.analysis.report.call import implied_caveats, shown_better
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import CaveatEntry, ReportInput
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.stats import paired_equivalence
 from threetears.evals.kernel.evidence_tiers import CriterionState, tier_of
 from threetears.evals import Eval
@@ -63,6 +64,8 @@ from threetears.evals.quick import as_host
 from threetears.evals.quick.blind import judge_lines
 from threetears.evals.schema import EvalResult, JudgeEvidence, RubricDim, RubricScore, label_key_of
 from threetears.evals.schema.blind_read import BlindAnswer, BlindArm, BlindRead, BlindVerdict
+from threetears.evals.schema.hashing import input_digest
+from threetears.evals.schema.reading_states import NotAvailableReason
 from packages.evals.tests.factories import make_eval_result
 
 GROUNDED = RubricDim(name="answer.grounded", description="Every fact is in the policy.", scale="pass_fail")
@@ -225,12 +228,14 @@ def test_an_undecided_check_carries_the_bound_the_test_reached_and_the_items_it_
         return paired_equivalence([leans[i % 100] for i in range(count)], 0.10, value_range=(-1.0, 1.0))[0]
 
     assert shown(needed) is True and shown(100) is False
-    # A lean at the bar or past it is never shown inside it: more than the search reads would be needed.
+    # A lean at the bar or past it is shown inside it at no count of items like these: the check carries no count.
     at_bar = reviewer_check(
         REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(400), leans=_leans(30, toward=3)
     )
     assert at_bar.result == "undecided"
-    assert (at_bar.pair_items_needed, at_bar.pair_items_needed_above) == (None, 1000)
+    assert (at_bar.pair_items_needed, at_bar.pair_items_needed_above) == (None, None)
+    with pytest.raises(ValidationError, match="at no count"):
+        at_bar.model_validate({**at_bar.model_dump(), "pair_items_needed_above": 1000})
     # Each projection belongs to an undecided check only.
     with pytest.raises(ValidationError, match="only an undecided check"):
         _check("reviewer", "met", lean_bound=0.2)
@@ -599,6 +604,155 @@ def test_a_judge_with_no_check_of_any_kind_is_said_uncalibrated_by_its_tier_as_b
     dimensions = ["__outcome__", "__transcript__", "persona.booth_stays_offstage", "persona.holds_character"]
     raised = {entry.id for entry in raise_caveats(_r5_checked({dimension: short for dimension in dimensions}))}
     assert not {"judge_uncalibrated", "judge_partly_uncalibrated"} & raised
+
+
+@pytest.mark.parametrize("reason", get_args(NotAvailableReason))
+def test_a_thin_check_against_people_is_closed_by_a_person_rating_answers_whatever_made_it_thin(reason: str) -> None:
+    """The step that closes it is a person's ratings: never a launch of more cases, which adds no person's label, and
+    never a rerun, which records none."""
+    entry = CaveatEntry.model_validate(
+        {
+            "id": f"check:{GROUNDED.name}:{GROUNDED.name}:people",
+            "kind": "check",
+            "class": "C",
+            "reach": "report",
+            "against": "people",
+            "criterion": GROUNDED.name,
+            "check": "insufficient",
+            "reason": reason,
+        }
+    )
+    assert remedy(entry) == "check_against_people"
+    step = caveat_step(entry)
+    assert step.action == "result_rate_person" and not step.spends and step.planned_cases is None
+
+
+def test_the_scaled_campaign_s_thin_people_check_offers_the_step_of_rating_its_judge_s_answers() -> None:
+    from packages.evals.tests.test_hot_path_oracle import subject
+    from threetears.evals.analysis.service import assemble_campaign_bundle
+
+    read = subject("scaled")
+    built = report_input(assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id))
+    assert built.first_screen is not None and built.caveat_list is not None
+    thin = [entry for entry in built.caveat_list if entry.against == "people" and entry.check == "insufficient"]
+    assert thin, "the scaled campaign's judge has no person's rating"
+    assert "judge_uncalibrated" not in {entry.id for entry in built.caveat_list}
+    steps = {step.closes: step for step in built.first_screen.steps}
+    assert any(entry.id in steps for entry in thin), "the fact's one caveat reaches the first screen"
+    for entry in thin:
+        if entry.id in steps:
+            assert steps[entry.id].action == "result_rate_person"
+            assert steps[entry.id].remedy == "check_against_people"
+
+
+def test_a_judge_whose_checks_hold_none_against_people_is_said_uncalibrated_once_with_the_person_s_step() -> None:
+    """A missing check against people is no check: with checks only against itself, none met, the judge is set aside
+    as unchecked, and the uncalibrated caveat (no check caveat names it) says so once, closed by a person's ratings."""
+    itself_only = [_judge("itself", "insufficient", "too_few")]
+    dimensions = ["__outcome__", "__transcript__", "persona.booth_stays_offstage", "persona.holds_character"]
+    held = _r5_checked({dimension: itself_only for dimension in dimensions})
+    raised = {entry.id: entry for entry in raise_caveats(held)}
+    assert "judge_uncalibrated" in raised and "judge_partly_uncalibrated" not in raised
+    assert not any(entry.kind == "check" for entry in raised.values())
+    assert caveat_step(raised["judge_uncalibrated"]).action == "result_rate_person"
+    set_aside, arm = _r5_with(itself_only, tier="calibrated")
+    assert not shown_better(set_aside, arm)
+    # One dimension so: the partial caveat names it, beside the three whose thin check says it.
+    thin = [_judge("people", "insufficient", "too_few")]
+    mixed = _r5_checked({"__outcome__": itself_only, **{dimension: thin for dimension in dimensions[1:]}})
+    (partly,) = [caveat for caveat in implied_caveats(mixed) if caveat.kind == "judge_partly_uncalibrated"]
+    assert partly.measures == ("__outcome__",)
+    # Met against itself, it is checked: neither caveat.
+    met = _r5_checked({dimension: [_judge("itself", "met")] for dimension in dimensions})
+    assert not {"judge_uncalibrated", "judge_partly_uncalibrated"} & {entry.id for entry in raise_caveats(met)}
+
+
+def test_an_input_with_no_check_is_read_by_the_checks_its_stated_tier_implies() -> None:
+    """The stated tier, read once as checks: undetermined and insufficient is no check; separation is checked; an input
+    that states nothing about a judge is not stated uncalibrated (that it should read not recorded is the owner's)."""
+    from threetears.evals.analysis.answer import judge_described, stated_uncalibrated
+
+    for tier, calibration, unchecked in (
+        ("undetermined", "insufficient", True),
+        ("undetermined", None, True),
+        ("undetermined", "undecided", False),
+        ("separation", "insufficient", False),
+        ("incidental", "insufficient", False),
+        ("calibrated", None, False),
+    ):
+        data: dict[str, Any] = json.loads(_R5.read_text(encoding="utf-8"))
+        data["judged"]["__outcome__"].update(tier=tier, calibration=calibration)
+        data["caveats"]["judge_tiers"]["__outcome__"] = tier
+        assert stated_uncalibrated(ReportInput.model_validate(data), "__outcome__") is unchecked, (tier, calibration)
+    data = json.loads(_R5.read_text(encoding="utf-8"))
+    data["judged"]["__outcome__"].update(tier=None, calibration=None, judge_model=None)
+    del data["caveats"]["judge_tiers"]["__outcome__"]
+    silent = ReportInput.model_validate(data)
+    assert not stated_uncalibrated(silent, "__outcome__") and not judge_described(silent, "__outcome__")
+
+
+def test_a_stored_check_leaves_its_unset_fields_out_and_reads_the_same_either_way() -> None:
+    check = _check("people", "insufficient", "too_few")
+    stored = CHECK.dump_python(check, mode="json")
+    assert None not in stored.values() and [] not in stored.values()
+    assert set(stored) == {"kind", "instrument", "against", "criterion", "result", "reason"}
+    with_nulls = {**{name: None for name in type(check).model_fields}, **stored, "same_family_as": []}
+    assert CHECK.validate_python(with_nulls) == CHECK.validate_python(stored) == check
+    assert input_digest(stored) == input_digest(dict(reversed(list(stored.items()))))
+
+
+def _printed(read: BlindRead, results: list[EvalResult], own: ReviewerCheck) -> str:
+    """The judge's lines with the model's own check replaced by ``own``, as one run of words."""
+    closed = close_blind_read(read, results)
+    checks = [check for check in blind_read_checks(closed, results) if not isinstance(check, ReviewerCheck)]
+    lines = judge_lines(closed.read, labels_name="labels.csv", labels_there=True, checks=[*checks, own])
+    return " ".join(" ".join(lines).split())
+
+
+def _own(leans: list[float]) -> ReviewerCheck:
+    check = reviewer_check(
+        REVIEWER,
+        GROUNDED.name,
+        "pass_fail",
+        kappa_pairs=_agreeing_pairs(400),
+        leans=leans,
+        served_model=f"{REVIEWER}-0613",
+    )
+    assert isinstance(check, ReviewerCheck) and check.result == "undecided"
+    return check
+
+
+def test_the_undecided_line_labels_its_count_a_projection_and_says_where_the_read_cannot_supply_it() -> None:
+    own = _own(_leans(30))
+    assert own.pair_items_needed is not None and own.pair_items_needed > 30
+    more = own.pair_items_needed - 30
+    projection = (
+        f"if further cases lean as these did, about {more} more read on both arms would show it inside the bar, and "
+        "a fresh sample may not"
+    )
+    # The read holds the cases: the projection, and nothing about a larger run.
+    roomy = _printed(*_both_read(30 + more + 5, 30), own)
+    assert projection in roomy and "a run with more cases" not in roomy
+    # The read holds fewer than it would take.
+    short = _printed(*_both_read(30 + more - 4, 30), own)
+    assert projection in short
+    assert f"this read holds {more - 4} more case(s) to read on both arms, so the rest needs a run with more cases" in (
+        short
+    )
+    # The read holds none.
+    whole = _printed(*_both_read(30, 30), own)
+    assert "this read holds no more case to read on both arms, so they need a run with more cases" in whole
+
+
+def test_the_undecided_line_says_a_lean_at_or_past_the_bar_fails_on_what_was_read_and_names_no_count() -> None:
+    own = _own(_leans(9, toward=3))
+    assert own.lean is not None and own.lean_bar is not None and abs(own.lean) >= own.lean_bar
+    printed = _printed(*_both_read(30, 30), own)
+    assert (
+        "the lean seen is at or past the bar of 0.10, so on what was read the check fails: more cases leaning as "
+        "these did would not show it inside the bar at any count"
+    ) in printed
+    assert "more than" not in printed and "would show it inside the bar, and" not in printed
 
 
 # --- the tier stays what it was ---------------------------------------------------------------------------------------

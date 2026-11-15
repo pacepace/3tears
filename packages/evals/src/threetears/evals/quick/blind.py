@@ -908,8 +908,11 @@ def _check_clause(check: JudgeCheck, table: BlindVerdictTable | None) -> str:
     return f"{counted}  {figure}  {'checked against people: ' if person else ''}{said}{caught}"
 
 
-def _reviewer_clause(check: ReviewerCheck, shown: Mapping[str, str], candidate: str | None, control: str | None) -> str:
-    """A model's own check against people on one criterion: its kappa, its lean toward an arm, and what they read."""
+def _reviewer_clause(
+    check: ReviewerCheck, shown: Mapping[str, str], candidate: str | None, control: str | None, to_read: int
+) -> str:
+    """A model's own check against people on one criterion: its kappa, its lean toward an arm, and what they read.
+    ``to_read`` is how many of the read's cases are not yet read on both arms by both."""
     words = f"{check.instrument} against people on {check.criterion}"
     if check.reason == "identity_unrecorded" and check.coordinate == "served_model" and not check.pair_items:
         return f"{words}: which model served {check.reads or 0} of its reads was not recorded, so none is read"
@@ -934,17 +937,36 @@ def _reviewer_clause(check: ReviewerCheck, shown: Mapping[str, str], candidate: 
         return f"{words}: every case read on both arms was left out, so its lean is not read"
     if check.result == "insufficient":
         return f"{words}: no case read on both arms by both, so its lean is not read"
+    have = check.pair_items or 0
+    if check.lean is not None and check.lean_bar is not None and abs(check.lean) >= check.lean_bar:
+        return (
+            f"{words}: the lean seen is at or past {bar}, so on what was read the check fails: more cases leaning "
+            "as these did would not show it inside the bar at any count"
+        )
     said = (
         f"a lean toward either arm up to {_figure(check.lean_bound)} is not ruled out ({bar})"
         if check.lean_bound is not None
         else f"a lean toward either arm is not ruled out ({bar})"
     )
-    if check.pair_items_needed_above is not None:
-        said += f"; more than {check.pair_items_needed_above} cases read on both arms would be needed to rule it out"
-    elif check.pair_items_needed is not None and check.pair_items_needed <= (check.pair_items or 0):
-        said += "; its agreement with people is what is not yet decided"
-    elif check.pair_items_needed is not None:
-        said += f"; about {check.pair_items_needed} cases read on both arms would decide it"
+    if check.pair_items_needed is not None and check.pair_items_needed <= have:
+        return f"{words}: {said}; its agreement with people is what is not yet decided"
+    if check.pair_items_needed is not None:
+        more = check.pair_items_needed - have
+        said += (
+            f"; if further cases lean as these did, about {more} more read on both arms would show it inside the "
+            "bar, and a fresh sample may not"
+        )
+    elif check.pair_items_needed_above is not None:
+        more = check.pair_items_needed_above - have
+        said += f"; if further cases lean as these did, more than {more} more read on both arms would be needed"
+    else:
+        return f"{words}: {said}"
+    if more > to_read:
+        said += (
+            f"; this read holds {to_read} more case(s) to read on both arms, so the rest needs a run with more cases"
+            if to_read
+            else "; this read holds no more case to read on both arms, so they need a run with more cases"
+        )
     return f"{words}: {said}"
 
 
@@ -1175,7 +1197,8 @@ def judge_lines(
                 "    ",
             )
         for own_check in measured:
-            lines += under(_reviewer_clause(own_check, names, candidate, control), "    ")
+            to_read = max(0, len(read.items) - (own_check.pair_items or 0) - (own_check.left_out or 0))
+            lines += under(_reviewer_clause(own_check, names, candidate, control, to_read), "    ")
     refused: dict[str, str] = {}
     for check in judged:
         if check.against_id is None:

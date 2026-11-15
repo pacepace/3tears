@@ -94,6 +94,7 @@ from threetears.evals.analysis.answer import (
     dominant_options,
     judge_described,
     judged_dimensions,
+    judges_not_checked_against_people,
     late_immaterial,
     people_checks_too_thin,
     stated_uncalibrated,
@@ -633,13 +634,16 @@ def unstated_judges(report_input: ReportInput) -> tuple[str, ...]:
 
 
 def uncalibrated_judges(report_input: ReportInput) -> tuple[str, ...]:
-    """The judged dimensions whose judge the input states uncalibrated and no check of it states so.
+    """The judged dimensions whose judge the input states uncalibrated where no check caveat says so.
 
-    One fact, one caveat: that a judge has no passing check against people is said once. Where a check of the
-    dimension's judge against people states it (:func:`~threetears.evals.analysis.answer.people_checks_too_thin`),
-    that check's caveat (:func:`_checks`) owns the fact, carrying which check, what it reached and what it needs, and
-    the dimension is not among these; ``judge_uncalibrated`` and ``judge_partly_uncalibrated`` say only the rest. A
-    judge with no check of any kind is said by them, as its tier states it.
+    One fact, one caveat: that a judge has no passing check against people is said once. Where the input holds a
+    check of the dimension's judge against people too thin to decide
+    (:func:`~threetears.evals.analysis.answer.people_checks_too_thin`), that check's caveat (:func:`_checks`) says it,
+    naming the check and its result, with the step that closes it (a person rating the judge's answers,
+    :func:`remedy`), and the dimension is not among these. ``judge_uncalibrated`` and ``judge_partly_uncalibrated``
+    say the rest: a judge stated uncalibrated by its tier alone, and a judge whose checks hold none against people and
+    none met (:func:`~threetears.evals.analysis.answer.judges_not_checked_against_people`), which no check caveat
+    names.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -649,7 +653,11 @@ def uncalibrated_judges(report_input: ReportInput) -> tuple[str, ...]:
     return tuple(
         dimension
         for dimension in judged_dimensions(report_input)
-        if stated_uncalibrated(report_input, dimension) and not people_checks_too_thin(report_input, dimension)
+        if stated_uncalibrated(report_input, dimension)
+        and (
+            not people_checks_too_thin(report_input, dimension)
+            or judges_not_checked_against_people(report_input, dimension)
+        )
     )
 
 
@@ -1074,13 +1082,18 @@ def call_read(call: CampaignCall, bundle: CampaignBundle) -> CallRead:
 
 
 def remedy(caveat: CaveatEntry) -> Remedy:
-    """The one act that would close ``caveat``: its reason's, else its kind's, else ``no_action``.
+    """The one act that would close ``caveat``: a person's ratings for a judge's check against people too thin to
+    decide; else its reason's, else its kind's, else ``no_action``.
 
     :param caveat: The caveat.
     :ptype caveat: CaveatEntry
     :return: The act.
     :rtype: Remedy
     """
+    if caveat.kind == "check" and caveat.against == "people" and caveat.check == "insufficient":
+        # A judge's check against people too thin to decide, whatever made it thin, is closed by a person rating more
+        # of its answers: new cases add no person's rating, and a rerun records none.
+        return "check_against_people"
     if caveat.reason is not None:
         return REMEDY_OF_REASON[caveat.reason]
     return _REMEDY_OF_KIND.get(caveat.kind, "no_action")

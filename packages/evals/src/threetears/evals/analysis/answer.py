@@ -87,7 +87,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Literal
+from typing import Final, Literal, get_args
 
 from threetears.evals.analysis.bundle.schema import SEPARATED_VERDICTS
 from threetears.evals.analysis.checks import Check, JudgeCheck
@@ -103,6 +103,8 @@ from threetears.evals.analysis.report_input import (
     ReportInput,
 )
 from threetears.evals.analysis.report_margins import flip_margin
+from threetears.evals.kernel.evidence_tiers import CriterionState
+from threetears.evals.schema.reading_states import Reason
 
 #: ``report_kind`` is this module's own step, and ``DecisionAxis`` and ``ReportKind`` the closed words its reads
 #: return: nothing outside it names them.
@@ -119,6 +121,7 @@ __all__ = [
     "floors_not_held",
     "judge_described",
     "judged_dimensions",
+    "judges_not_checked_against_people",
     "late_immaterial",
     "people_checks_too_thin",
     "separating_contrasts",
@@ -129,9 +132,14 @@ __all__ = [
     "weighed_axes",
 ]
 
-#: Judge tiers and calibration states that mean no human calibration stands behind the judge, as an input that holds no
-#: check states it (one stored before checks were recorded, or written by hand).
-_UNCALIBRATED = frozenset({"undetermined", "insufficient"})
+#: The reason a check a stated tier implies carries, by its result: a tier records none.
+_STATED_REASON: Final[Mapping[str, Reason]] = {"insufficient": "not_recorded", "not_met": "instrument_below_bar"}
+
+#: The stated words that say no check stands behind a judge: a tier undetermined, a calibration state insufficient.
+_NO_CHECK: Final = frozenset({"undetermined", "insufficient"})
+
+#: A check's results, as a stated calibration state may name one.
+_RESULTS: Final = frozenset(get_args(CriterionState))
 
 #: What a report is, from its arms.
 ReportKind = Literal["measurement", "change", "choice"]
@@ -193,20 +201,51 @@ def comparisons(report_input: ReportInput) -> list[frozenset[str]]:
     return [frozenset(pair) for pair in combinations(arms, 2)]
 
 
-def _stated_standing(report_input: ReportInput, dimension: str) -> tuple[bool, bool]:
-    """What an input that holds no check of a judged dimension's judge states of it, by its tier and calibration state:
-    whether it states either, and whether every one it states is undetermined or insufficient.
+def _stated_standing(report_input: ReportInput, dimension: str) -> list[JudgeCheck]:
+    """The checks an input that holds none of a judged dimension's judge states by its tier and calibration state: the
+    one place the stated tier is turned into checks, for an input stored before checks were recorded or written by
+    hand. ``tests/test_no_decision_reads_the_tier.py`` pins it here, to go when such inputs are no longer read.
 
-    The one place a decision reads the tier, for an input stored before checks were recorded or written by hand; an
-    input that holds checks is read by them (:func:`people_checks_too_thin`).
-    ``tests/test_no_decision_reads_the_tier.py`` pins it here, to go when such inputs are no longer read.
+    A stated value is a recorded statement, read as the two checks it implies
+    (:func:`~threetears.evals.kernel.evidence_tiers.tier_of` read backwards; a calibration state may hold a tier's
+    word). Where every value stated is ``undetermined`` or ``insufficient``, no check stands behind the judge: both
+    checks are ``insufficient``. Otherwise, against people: ``met`` where a value says ``calibrated``, ``not_met``
+    where one says ``incidental``, else the stated calibration state where it is a check's result (an
+    ``insufficient`` one only beside a ``separation`` tier), else ``undecided``, a statement read as a check made and
+    not decided; against itself: ``met`` where a value says ``separation``, ``not_met`` where one says
+    ``incidental``, else ``insufficient``. A tier records no reason, so an ``insufficient`` check reads
+    ``not_recorded`` and a ``not_met`` one ``instrument_below_bar``. An input that states neither has none.
     """
     judged = report_input.judged.get(dimension)
-    stated = [report_input.caveats.judge_tiers.get(dimension)]
-    if judged is not None:
-        stated += [judged.tier, judged.calibration]
-    standing = {value for value in stated if value is not None}
-    return bool(standing), bool(standing) and standing <= _UNCALIBRATED
+    calibration = judged.calibration if judged is not None else None
+    stated = {report_input.caveats.judge_tiers.get(dimension), judged.tier if judged is not None else None, calibration}
+    stated.discard(None)
+    if not stated:
+        return []
+    people: str = "undecided"
+    if stated <= _NO_CHECK:
+        people = "insufficient"
+    elif "calibrated" in stated:
+        people = "met"
+    elif "incidental" in stated:
+        people = "not_met"
+    elif calibration in _RESULTS and (calibration != "insufficient" or "separation" in stated):
+        people = str(calibration)
+    itself = "met" if "separation" in stated else "not_met" if "incidental" in stated else "insufficient"
+    instrument = (judged.judge_model if judged is not None else None) or dimension
+    return [
+        JudgeCheck.model_validate(
+            {
+                "kind": "judge",
+                "instrument": instrument,
+                "criterion": dimension,
+                "against": against,
+                "result": result,
+                "reason": _STATED_REASON.get(result),
+            }
+        )
+        for against, result in (("people", people), ("itself", itself))
+    ]
 
 
 def _checks_of(report_input: ReportInput, dimension: str) -> list[JudgeCheck]:
@@ -216,22 +255,14 @@ def _checks_of(report_input: ReportInput, dimension: str) -> list[JudgeCheck]:
     return [check for check in held if isinstance(check, JudgeCheck)]
 
 
-def people_checks_too_thin(report_input: ReportInput, dimension: str) -> list[JudgeCheck]:
-    """The checks against people that say a judge on one judged dimension is checked by nothing: a judge's check
-    against people too thin to decide, where no check of that judge is met. A judge checked and found short (a check
-    ``not_met`` or ``undecided``) is checked, and has none here.
+def _stated_checks(report_input: ReportInput, dimension: str) -> list[JudgeCheck]:
+    """The checks a judged dimension's judges are read by: those the input holds, else those its stated tier implies
+    (:func:`_stated_standing`)."""
+    return _checks_of(report_input, dimension) or _stated_standing(report_input, dimension)
 
-    The fact :func:`stated_uncalibrated` reads where the input holds checks, and the one each of these checks states as
-    its own caveat (:func:`~threetears.evals.analysis.caveats.from_states`), which the caveats keep as its one owner.
 
-    :param report_input: The report input.
-    :ptype report_input: ReportInput
-    :param dimension: The judged dimension, by key.
-    :ptype dimension: str
-    :return: The checks, in the input's order; empty where every judge on it is checked, or the input holds no check.
-    :rtype: list[JudgeCheck]
-    """
-    checks = _checks_of(report_input, dimension)
+def _thin(checks: Sequence[JudgeCheck]) -> list[JudgeCheck]:
+    """Of each judge none of whose checks is met, its checks against people that are too thin to decide."""
     found: list[JudgeCheck] = []
     for judge in dict.fromkeys(check.instrument for check in checks):
         mine = [check for check in checks if check.instrument == judge]
@@ -240,43 +271,77 @@ def people_checks_too_thin(report_input: ReportInput, dimension: str) -> list[Ju
     return found
 
 
-def judge_described(report_input: ReportInput, dimension: str) -> bool:
-    """Whether the input describes one judged dimension's judge at all: its model, tier or calibration state.
+def _not_against_people(checks: Sequence[JudgeCheck]) -> list[str]:
+    """The judges that hold checks, none of them against people and none met."""
+    judges = dict.fromkeys(check.instrument for check in checks)
+    return [
+        judge
+        for judge in judges
+        if not any(check.against == "people" or check.result == "met" for check in checks if check.instrument == judge)
+    ]
+
+
+def people_checks_too_thin(report_input: ReportInput, dimension: str) -> list[JudgeCheck]:
+    """The checks the input holds against people that say a judge on one judged dimension has no passing check
+    against people: a judge's check against people too thin to decide, where no check of that judge is met. A judge
+    checked and found short (a check ``not_met`` or ``undecided``) is checked, and has none here.
+
+    Each is held on the input, so each is raised as its own caveat
+    (:func:`~threetears.evals.analysis.caveats.from_states`), which the caveats keep as that fact's one owner.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
     :param dimension: The judged dimension, by key.
     :ptype dimension: str
-    :return: True where it states the judge's model, tier or calibration state.
+    :return: The checks, in the input's order; empty where every judge on it is checked, or the input holds no check.
+    :rtype: list[JudgeCheck]
+    """
+    return _thin(_checks_of(report_input, dimension))
+
+
+def judges_not_checked_against_people(report_input: ReportInput, dimension: str) -> list[str]:
+    """The judges on one judged dimension the input holds checks of, none against people and none met: a missing check
+    against people is no check, and no check caveat states it, so the judge's uncalibrated caveat does.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param dimension: The judged dimension, by key.
+    :ptype dimension: str
+    :return: The judges, by instrument, in the input's order.
+    :rtype: list[str]
+    """
+    return _not_against_people(_checks_of(report_input, dimension))
+
+
+def judge_described(report_input: ReportInput, dimension: str) -> bool:
+    """Whether the input describes one judged dimension's judge at all: its checks, model, tier or calibration state.
+
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param dimension: The judged dimension, by key.
+    :ptype dimension: str
+    :return: True where it holds or states a check of the judge, or states its model.
     :rtype: bool
     """
     judged = report_input.judged.get(dimension)
-    return (
-        bool(_checks_of(report_input, dimension))
-        or _stated_standing(report_input, dimension)[0]
-        or (judged is not None and judged.judge_model is not None)
-    )
+    return bool(_stated_checks(report_input, dimension)) or (judged is not None and judged.judge_model is not None)
 
 
 def stated_uncalibrated(report_input: ReportInput, dimension: str) -> bool:
-    """Whether the input states one judged dimension's judge uncalibrated: its checks say a judge on it is checked by
-    nothing (its check against people too thin to decide, and no check of it met). An input that holds no check of the
-    judge (stored before checks were recorded, or written by hand) states it by the judge's tier and calibration state,
-    every one it states undetermined or insufficient. The one reading of a judge's calibration the caveats and the
-    asked standing share.
+    """Whether the input states one judged dimension's judge uncalibrated: by its checks (those it holds, else those
+    its stated tier implies), a judge on it has no passing check against people and no check of it is met: its check
+    against people too thin to decide, or none against people at all. The one reading of a judge's calibration the
+    caveats and the asked standing share.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
     :param dimension: The judged dimension, by key.
     :ptype dimension: str
-    :return: True where the judge's checks, or else every tier or calibration state it states, say no check stands
-        behind it.
+    :return: True where the judge's checks say no check against people stands behind it.
     :rtype: bool
     """
-    checks = _checks_of(report_input, dimension)
-    if checks:
-        return bool(people_checks_too_thin(report_input, dimension))
-    return _stated_standing(report_input, dimension)[1]
+    checks = _stated_checks(report_input, dimension)
+    return bool(_thin(checks)) or bool(_not_against_people(checks))
 
 
 def judged_dimensions(report_input: ReportInput) -> list[str]:

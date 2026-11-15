@@ -21,20 +21,27 @@ its lean inside a tenth of the scale's width (`analysis.checks.REVIEWER_LEAN_BAR
 check as `lean_bar`; a caller passes no margin), and its kappa is above the bar. That test is valid at every count
 and on coarse scores, and costs items: on pass/fail no reviewer is `met` below 59 cases read on both arms, an unbiased
 one about 40% of the time at 105 and 98% at 260. Shown to lean over 10 cases or more it is `not_met`,
-`instrument_leans`; most read `undecided`, carrying the larger lean the test cannot rule out (`lean_bound`) and about
-how many cases like these would decide it (`pair_items_needed`, or `pair_items_needed_above` past the search).
+`instrument_leans`; most read `undecided`, carrying the larger lean the test cannot rule out (`lean_bound`) and, where
+the lean seen is inside the bar, a projection: if further cases lean as these did, about how many in all would show
+it inside (`pair_items_needed`, or `pair_items_needed_above` past the search); a fresh sample of that size may not. A
+lean seen at the bar or past it carries no count, since none would show it inside, and the print says the check fails
+on what was read. The print labels the count a projection and says where the read holds fewer cases than it takes.
 `analysis.checks.speaking_check` says which check speaks for a judge: people's once decided, else a decided check
 against a model not shown below the bar against people, else none. A check is one of three kinds
-(`analysis.JudgeCheck`, `ReviewerCheck` and `RigCheck`, the A/A check a contrast's `aa` holds; `analysis.Check` is
-their union), each holding only its own fields, and names its `kind`.
+(`analysis.JudgeCheck`, `ReviewerCheck` and `RigCheck`, the A/A check a contrast's `aa` and a bundle's `checks` hold;
+`analysis.Check` is their union), each holding only its own fields, and names its `kind`. A stored check leaves its
+unset fields out of the document.
 
 **Changed:** whether an improvement on a judged dimension is set aside is read from its judge's checks: set aside
 where the judge's check against people is too thin to decide and none of its checks is met. A report input that holds
-no check (stored before checks, or written by hand) is read by the tier it states, as before. That a judge has no
-passing check against people is one caveat: where its check against people is too thin to decide, that check's caveat
-(`check:<dimension>:<criterion>:people`) says it, and `judge_uncalibrated` (or `judge_partly_uncalibrated`) says it
-only for the judged dimensions holding no such check, so it takes one first-screen slot, not two. A judge with no
-check of any kind is said by `judge_uncalibrated` as before.
+no check (stored before checks, or written by hand) is read by the two checks the tier it states implies, as before;
+one that states nothing of a judge is not stated uncalibrated. A judge whose checks hold none against people, and none
+met, is set aside as unchecked: a missing check against people is no check. That a judge has no passing check against
+people is one caveat: where its check against people is too thin to decide, that check's caveat
+(`check:<dimension>:<criterion>:people`) says it, and its step is a person rating the judge's answers
+(`result_rate_person`), whatever made it thin, never a launch of more cases; `judge_uncalibrated` (or
+`judge_partly_uncalibrated`) says it only for the judged dimensions holding no such check, so it takes one first-screen
+slot, not two. A judge with no check of any kind, or none against people, is said by `judge_uncalibrated`.
 
 **Added:** `EvalHost.model_family` (optional): the host's word on which family a model is of; with none, the
 provider part of the id. A check against a model names the arms whose candidate is of its family, and whether the
@@ -48,8 +55,9 @@ line reads `checked against people: ...`; a model's own check prints its lean; `
 **For hosts:** a host pinning the quick print's judge lines updates its match. A host that builds a `Check` names its
 kind and builds the kind's own shape. Nothing stored moves: the stored tier is computed as before, and a model's
 answers move no tier. A bundle with a judged dimension now holds its checks, so its document moves; its fingerprint,
-over its inputs, does not. To have a model's own check decided, collect double reads on about 105 to 260 cases (on
-pass/fail; more on 1-5): the undecided check says how many.
+over its inputs, does not. An unbiased model's own check is decided `met` about 40% of the time over 105 cases read
+on both arms and 98% over 260 (on pass/fail; more on 1-5); the undecided check's count is a projection from the cases
+in hand, not a promise.
 
 ### evals: a judge checked against itself: re-score noise in the judge's own table
 

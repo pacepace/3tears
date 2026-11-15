@@ -33,7 +33,7 @@ from threetears.evals.kernel.evidence_tiers import (
     JudgeEvidenceTier,
 )
 from threetears.evals.analysis.judge_drift import JudgeDrift
-from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
+from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore, RigCheck
 from threetears.evals.schema.reading_states import ArmIdentity, AttestableCoordinate, StateOf
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
@@ -3954,7 +3954,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     )
     # Left out of the document while empty, so a bundle assembled before the field existed serializes, and is
     # fingerprinted, as it did.
-    checks: list[Check] = Field(
+    checks: list[RigCheck] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
         description="The checks of the rig: identical arms read on the same reading.",
@@ -4229,6 +4229,10 @@ _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
 )
 
 
+#: Fields of a judged measure first filled after the freeze, which a version 2 pre-image leaves out of each one.
+_JUDGED_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset({"checks"})
+
+
 #: The cell model every version 2 fingerprint was taken under: bundle shape 66 and cell model 14 moved together, and
 #: no build wrote a version 2 fingerprint after cell model 15.
 _V2_CELL_MODEL_VERSION: Final[int] = 14
@@ -4342,6 +4346,10 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
         # What a page calls a declared lever and each of its levels (AXIS_PRESENTATION_FIELDS,
         # LEVEL_PRESENTATION_FIELDS) is no part of what the bundle read either.
         evidence["declared"] = {**declared, "design": unnamed_axes(design)}
+    if isinstance(judged := evidence.get("judged_measures"), list):
+        # A judged measure's checks of its judges are first filled after the freeze (no version 2 document holds
+        # them), and are read off its judges' tiers, which version 2 hashes already.
+        evidence["judged_measures"] = unpresented(judged, _JUDGED_ADDED_SINCE_V2)
     if _ADDED_SINCE_V2:
         evidence = _without(evidence, _ADDED_SINCE_V2)
     if isinstance(manifest, Mapping):

@@ -142,6 +142,16 @@ def _result_and_reason(
         raise ValueError("an unrecorded identity names its coordinate, and only it names one")
 
 
+def _unset(value: object) -> bool:
+    """Whether a check's optional field is unset, so its document leaves it out."""
+    return value is None
+
+
+def _empty(value: Sequence[object]) -> bool:
+    """Whether a check's list field is empty, so its document leaves it out."""
+    return not value
+
+
 class _CheckBase(_Shape):
     """What every kind of check holds: the instrument, the criterion, the sample, and one result with its reason.
 
@@ -155,17 +165,24 @@ class _CheckBase(_Shape):
         description="Which one: a judge by its served model, config, temperature and sent settings "
         "(`judge_instrument`), a reviewer by the model id it was asked as, the rig by its launch group."
     )
-    criterion: str | None = Field(default=None, description="The criterion the check decides, where it names one.")
+    criterion: str | None = Field(
+        default=None, exclude_if=_unset, description="The criterion the check decides, where it names one."
+    )
     sample: SampleKind | None = Field(
         default=None,
+        exclude_if=_unset,
         description="Whether the items it was read on were drawn at random, chosen, or no sample stands behind it.",
     )
-    sample_results: int | None = Field(default=None, description="Results read.")
-    sample_cases: int | None = Field(default=None, description="Distinct cases behind them.")
+    sample_results: int | None = Field(default=None, exclude_if=_unset, description="Results read.")
+    sample_cases: int | None = Field(default=None, exclude_if=_unset, description="Distinct cases behind them.")
     result: CriterionState = Field(description="met, not_met, undecided or insufficient.")
-    reason: Reason | None = Field(default=None, description="Why the result is not met, where a shared reason says it.")
+    reason: Reason | None = Field(
+        default=None, exclude_if=_unset, description="Why the result is not met, where a shared reason says it."
+    )
     coordinate: Coordinate | None = Field(
-        default=None, description="The coordinate an unrecorded identity names, where that is the reason."
+        default=None,
+        exclude_if=_unset,
+        description="The coordinate an unrecorded identity names, where that is the reason.",
     )
 
     @model_validator(mode="after")
@@ -183,26 +200,38 @@ class JudgeCheck(_CheckBase):
 
     kind: Literal["judge"] = Field(description="A judge's check.")
     against: Literal["people", "model", "itself"] = Field(description="What it was checked against.")
-    against_id: str | None = Field(default=None, description="The model it was checked against, by the id asked as.")
-    against_served_model: str | None = Field(
-        default=None, description="The model that served that model's answers, as the provider named it."
+    against_id: str | None = Field(
+        default=None, exclude_if=_unset, description="The model it was checked against, by the id asked as."
     )
-    against_effort: str | None = Field(default=None, description="The effort that model was asked for, where it was.")
+    against_served_model: str | None = Field(
+        default=None,
+        exclude_if=_unset,
+        description="The model that served that model's answers, as the provider named it.",
+    )
+    against_effort: str | None = Field(
+        default=None, exclude_if=_unset, description="The effort that model was asked for, where it was."
+    )
     same_family_as: list[str] = Field(
         default_factory=list,
+        exclude_if=_empty,
         description="The arms whose candidate model is of the family of the model checked against.",
     )
     same_family_as_judge: bool | None = Field(
         default=None,
+        exclude_if=_unset,
         description="Whether the model checked against is of the judge's own family; None where either family is not "
         "recorded, or no model was checked against.",
     )
-    skipped: int | None = Field(default=None, description="Items a reader skipped.")
-    read_id: str | None = Field(default=None, description="The blind read the sample is, by id.")
-    kappa: float | None = Field(default=None, description="Agreement beyond chance.")
-    kappa_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
+    skipped: int | None = Field(default=None, exclude_if=_unset, description="Items a reader skipped.")
+    read_id: str | None = Field(default=None, exclude_if=_unset, description="The blind read the sample is, by id.")
+    kappa: float | None = Field(default=None, exclude_if=_unset, description="Agreement beyond chance.")
+    kappa_interval: tuple[float, float] | None = Field(
+        default=None, exclude_if=_unset, description="The interval on it."
+    )
     reads: int | None = Field(
-        default=None, description="Pairs read behind the figures; on a check with no figure, the pairs left out."
+        default=None,
+        exclude_if=_unset,
+        description="Pairs read behind the figures; on a check with no figure, the pairs left out.",
     )
 
 
@@ -214,52 +243,66 @@ class ReviewerCheck(_CheckBase):
     against: Literal["people"] = Field(default="people", description="A reviewer is checked against people.")
     served_model: str | None = Field(
         default=None,
+        exclude_if=_unset,
         description="The model that served the answers, as the provider named it; None where it was not recorded, "
         "and then no figure is read.",
     )
-    effort: str | None = Field(default=None, description="The effort the model was asked for, where it was.")
-    skipped: int | None = Field(default=None, description="Items a reader skipped.")
-    read_id: str | None = Field(default=None, description="The blind read the sample is, by id.")
-    kappa: float | None = Field(default=None, description="Agreement with people beyond chance.")
-    kappa_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
+    effort: str | None = Field(
+        default=None, exclude_if=_unset, description="The effort the model was asked for, where it was."
+    )
+    skipped: int | None = Field(default=None, exclude_if=_unset, description="Items a reader skipped.")
+    read_id: str | None = Field(default=None, exclude_if=_unset, description="The blind read the sample is, by id.")
+    kappa: float | None = Field(default=None, exclude_if=_unset, description="Agreement with people beyond chance.")
+    kappa_interval: tuple[float, float] | None = Field(
+        default=None, exclude_if=_unset, description="The interval on it."
+    )
     reads: int | None = Field(
         default=None,
+        exclude_if=_unset,
         description="The model's reads of the criterion; on a check with no figure, the reads left out.",
     )
     pair_items: int | None = Field(
-        default=None, description="The pair items its lean was read over, both arms read by both."
+        default=None, exclude_if=_unset, description="The pair items its lean was read over, both arms read by both."
     )
     left_out: int | None = Field(
         default=None,
+        exclude_if=_unset,
         description="The pair items left out of its lean because a run of theirs has an unrecorded coordinate, which "
         "matches nothing.",
     )
     lean: float | None = Field(
-        default=None, description="The lean toward the candidate arm: the model's difference less people's."
+        default=None,
+        exclude_if=_unset,
+        description="The lean toward the candidate arm: the model's difference less people's.",
     )
     lean_interval: tuple[float, float] | None = Field(
-        default=None, description="The t interval on it, at the house level: what shows a lean."
+        default=None, exclude_if=_unset, description="The t interval on it, at the house level: what shows a lean."
     )
     lean_bar: float | None = Field(
         default=None,
+        exclude_if=_unset,
         description="The lean the equivalence test holds it inside, in score units: REVIEWER_LEAN_BAR of the scale's "
         "width. Set wherever a lean was read.",
     )
     lean_bound: float | None = Field(
         default=None,
+        exclude_if=_unset,
         description="On an undecided check, the smallest lean toward either arm the bounded equivalence test rules "
         "out at 5%: a lean up to it is not ruled out. None where no bound within the scale's width is reached.",
     )
     pair_items_needed: int | None = Field(
         default=None,
-        description="On an undecided check over two pair items or more: about how many pair items like these (the "
-        "observed leans repeated to the count) the bounded test would show inside the bar at.",
+        exclude_if=_unset,
+        description="On an undecided check over two pair items or more whose lean is inside the bar: a projection, "
+        "not a promise. If further pair items lean as these did (the observed leans repeated to the count), about "
+        "how many in all the bounded test would show inside the bar at; a fresh sample of that size may not.",
     )
     pair_items_needed_above: int | None = Field(
         default=None,
-        description="On an undecided check where no count up to its search's cap shows the lean inside the bar (as "
-        "where the observed lean is at the bar or past it): that cap, ten times the pair items in hand and at least "
-        "1,000. More than this many would be needed.",
+        exclude_if=_unset,
+        description="On an undecided check whose lean is inside the bar where no count up to its search's cap shows "
+        "it inside (the same projection): that cap, ten times the pair items in hand and at least 1,000. None where "
+        "the observed lean is at the bar or past it: no count of items like these would show it inside.",
     )
 
     @model_validator(mode="after")
@@ -273,12 +316,11 @@ class ReviewerCheck(_CheckBase):
             raise ValueError("only an undecided check carries the bound it reached and the pair items it needs")
         if self.pair_items_needed is not None and self.pair_items_needed_above is not None:
             raise ValueError("a check needs a count of pair items, or more than its search read: not both")
-        if (
-            self.result == "undecided"
-            and (self.pair_items or 0) >= 2
-            and self.pair_items_needed is None
-            and self.pair_items_needed_above is None
-        ):
+        past = self.lean is not None and self.lean_bar is not None and abs(self.lean) >= self.lean_bar
+        counted = self.pair_items_needed is not None or self.pair_items_needed_above is not None
+        if past and counted:
+            raise ValueError("a lean at the bar or past it is shown inside it at no count: a check carries none")
+        if self.result == "undecided" and (self.pair_items or 0) >= 2 and not past and not counted:
             raise ValueError("an undecided check over two pair items or more says how many it needs")
         return self
 
@@ -292,13 +334,18 @@ class RigCheck(_CheckBase):
     )
     state: StateOf | None = Field(
         default=None,
+        exclude_if=_unset,
         description="Where the check could not be made at all (both sides replayed a recording): not available, why.",
     )
-    delta: float | None = Field(default=None, description="The difference between identical arms.")
-    interval: tuple[float, float] | None = Field(default=None, description="The interval on that difference.")
-    p_adjusted: float | None = Field(default=None, description="Its adjusted p.")
-    reading: str | None = Field(default=None, description="The reading a check of the rig covers.")
-    covers_arms: list[str] = Field(default_factory=list, description="The arms a check of the rig covers.")
+    delta: float | None = Field(default=None, exclude_if=_unset, description="The difference between identical arms.")
+    interval: tuple[float, float] | None = Field(
+        default=None, exclude_if=_unset, description="The interval on that difference."
+    )
+    p_adjusted: float | None = Field(default=None, exclude_if=_unset, description="Its adjusted p.")
+    reading: str | None = Field(default=None, exclude_if=_unset, description="The reading a check of the rig covers.")
+    covers_arms: list[str] = Field(
+        default_factory=list, exclude_if=_empty, description="The arms a check of the rig covers."
+    )
 
 
 #: One check of one instrument: what it was checked against, on what sample, with one result. Its ``kind`` names which
@@ -452,15 +499,14 @@ def _pair_items_needed(leans: Sequence[float], bar: float, width: float) -> tupl
     lands either side of it.
 
     :return: ``(needed, above)``: the count, the observed count where the lean already shows (the kappa is what is
-        undecided), with ``above`` None; or None and the search's cap (:data:`_NEEDED_SEARCH_FACTOR` times the items in
-        hand, at least :data:`_NEEDED_SEARCH_FLOOR`) where no count up to it shows, as where the observed lean is at
-        the bar or past it.
+        undecided), with ``above`` None; None and the search's cap (:data:`_NEEDED_SEARCH_FACTOR` times the items in
+        hand, at least :data:`_NEEDED_SEARCH_FLOOR`) where no count up to it shows; neither where the observed lean is
+        at the bar or past it, since no count of items like these shows it inside.
     """
     observed = len(leans)
     cap = max(_NEEDED_SEARCH_FLOOR, _NEEDED_SEARCH_FACTOR * observed)
     if abs(math.fsum(leans) / observed) >= bar:
-        # No count of items like these shows a lean at the bar or past it inside the bar.
-        return None, cap
+        return None, None
 
     def shows(count: int) -> bool:
         return _shown_inside([leans[i % len(leans)] for i in range(count)], bar, width)
@@ -538,9 +584,10 @@ def reviewer_check(
     criterion), or the lean's t interval excluding zero over :data:`REVIEWER_LEAN_MIN_PAIR_ITEMS` items or more
     (``instrument_leans``: an improvement read by a judge checked only against this model is set aside for the arm it
     leans toward). With no pair item it is ``insufficient``: ``identity_unrecorded`` on a coordinate where every one
-    was left out for an unrecorded one, else ``not_recorded``. Anything else is ``undecided``, carrying the bound the equivalence test
-    reached (a lean of either sign up to it is not ruled out, and "cannot tell apart" is never "no lean") and about how
-    many pair items like these would decide it.
+    was left out for an unrecorded one, else ``not_recorded``. Anything else is ``undecided``, carrying the bound the
+    equivalence test reached (a lean of either sign up to it is not ruled out, and "cannot tell apart" is never "no
+    lean") and, where its lean is inside the bar, a projection: about how many pair items would show it inside if
+    further ones lean as these did. A lean at the bar or past it carries no count: none would show it inside.
 
     :param reviewer: The model's id, as it was asked.
     :ptype reviewer: str
