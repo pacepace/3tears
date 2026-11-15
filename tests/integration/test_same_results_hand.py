@@ -18,16 +18,28 @@ other engine).
   modules' ``UPDATE workspaces SET current_version = GREATEST(current_version, $1)`` ->
   ``tools.helpers.raise_workspace_version``; the reset's plain set -> ``update_keyed``): held as write entries of the
   rewrite harness (:func:`threetears.core.testing.rewrites.assert_rewrite_same`), the table after each compared.
+- pages whose key now runs the way their order does (``date_created DESC`` completed by the key ``DESC``, so one
+  index walks the page; completed ascending, YugabyteDB read and sorted them): memory's
+  ``MemoryRefsCollection.find_by_conversation`` (v037) and workspace's
+  ``WorkspaceFileVersionCollection.find_by_workspace`` / ``find_by_workspace_and_path`` (v006), each against the
+  statement as it read before its key was completed (``ORDER BY date_created DESC LIMIT n``): rows tied on the date
+  may come in either order, and of those tied with a page's last row only how many (``limited``).
 """
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from operator import itemgetter
 from typing import Any
 
 import pytest
 
+from threetears.agent.memory.collections import MemoryRefsCollection
+from threetears.agent.workspace.collections import WorkspaceFileVersionCollection
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_page, keyset_rows, read_by, update_keyed
 from threetears.core.testing.rewrites import assert_rewrite_same
 from threetears.core.testing.same_results import Seeded, assert_same_results
@@ -356,3 +368,126 @@ async def test_a_hand_keyed_write_leaves_the_table_as_its_statement_did(db: Any,
     """Flips if a hand conversion's update_keyed (an increment, a GREATEST fragment, a plain set) leaves its table
     other than the statement it replaced did."""
     await assert_rewrite_same(db, entry)
+
+
+_NS = uuid.UUID("2f0c51f4-5b0e-4f5e-8a77-61c0de0f4a99")
+_T0 = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
+#: tenant 0's and tenant 1's agent (one conversation: the agent is the boundary) and workspace
+_AGENTS = (uuid.uuid5(_NS, "agent-0"), uuid.uuid5(_NS, "agent-1"))
+_CONVERSATION = uuid.uuid5(_NS, "conversation")
+_WORKSPACES = (uuid.uuid5(_NS, "workspace-0"), uuid.uuid5(_NS, "workspace-1"))
+#: the page each read asks (the harness's page boundary sits at it)
+_KEYED_PAGE = 5
+_REF_COLUMNS = ("conversation_id", "item_id", "item_type", "short_desc", "date_created", "agent_id")
+_VERSION_COLUMNS = ("version_id", "workspace_id", "relative_path", "version", "sha256", "action", "date_created")
+
+
+def _collection(db: Any, kind: type[Any]) -> Any:
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=db)
+    config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    if kind is WorkspaceFileVersionCollection:
+        return kind(registry, config, db)
+    return kind(registry, config)
+
+
+def _ref(seed: Seeded) -> dict[str, Any]:
+    # newer with each row, so past the tenant boundary the other agent's refs are the conversation's newest: a read
+    # that dropped the agent pin would page them
+    return {
+        "conversation_id": _CONVERSATION,
+        "item_id": uuid.uuid5(_NS, f"ref-{seed.index}"),
+        "item_type": "memory",
+        "short_desc": f"ref {seed.index}",
+        "date_created": _T0 + timedelta(hours=seed.tie),
+        "date_updated": _T0,
+        "agent_id": _AGENTS[seed.tenant],
+    }
+
+
+def _version(seed: Seeded) -> dict[str, Any]:
+    return {
+        "version_id": uuid.uuid5(_NS, f"version-{seed.index}"),
+        "workspace_id": _WORKSPACES[seed.tenant],
+        # two paths interleaved, so the path read keeps some of a workspace's rows and drops others
+        "relative_path": f"p{seed.index % 2}.md",
+        "version": seed.index,
+        "content": b"c",
+        "sha256": "0" * 64,
+        "action": "update",
+        "label": None if seed.null else f"l{seed.index}",
+        "actor_id": _AGENTS[0],
+        "correlation_id": _NS,
+        "date_created": _T0 - timedelta(hours=seed.tie),
+    }
+
+
+async def _workspaces(db: Any) -> None:
+    """both tenants' workspaces, the parents every journal row references (seeded before the harness's cases)."""
+    await db.executemany(
+        "INSERT INTO workspaces (workspace_id, agent_id, name, created_by, current_version, date_created,"
+        " date_updated) VALUES ($1, $2, $3, $2, 0, $4, $4) ON CONFLICT DO NOTHING",
+        [(workspace, _AGENTS[0], f"w{n}", _T0) for n, workspace in enumerate(_WORKSPACES)],
+    )
+
+
+def _dicts(entities: Sequence[Any]) -> list[dict[str, Any]]:
+    return [entity.to_dict() for entity in entities]
+
+
+async def test_an_agent_s_refs_page_is_its_newest_refs(db: Any) -> None:
+    """Flips if find_by_conversation's page (completed by item_id DESC, v037) is not the agent's newest refs in the
+    conversation, newest first, as ORDER BY date_created DESC LIMIT read them (the collection hands them back oldest
+    first; reversed here to the read's order)."""
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        found = await _collection(conn, MemoryRefsCollection).find_by_conversation(
+            _CONVERSATION, _AGENTS[0], limit=_KEYED_PAGE
+        )
+        return list(reversed(_dicts(found)))
+
+    await assert_same_results(
+        db,
+        table="conversation_memory_refs",
+        row=_ref,
+        old_sql=(
+            f"SELECT {', '.join(_REF_COLUMNS)} FROM conversation_memory_refs"
+            " WHERE conversation_id = $1 AND agent_id = $2 ORDER BY date_created DESC LIMIT $3"
+        ),
+        params=[_CONVERSATION, _AGENTS[0], _KEYED_PAGE],
+        helper=helper,
+        columns=_REF_COLUMNS,
+        order_by=["date_created"],
+        page_size=_KEYED_PAGE,
+        limited=True,
+    )
+
+
+@pytest.mark.parametrize("path", [None, "p0.md"], ids=["workspace", "path"])
+async def test_a_workspace_s_history_page_is_its_newest_versions(db: Any, path: str | None) -> None:
+    """Flips if find_by_workspace's or find_by_workspace_and_path's page (completed by version_id DESC, v006) is not
+    the workspace's (or the path's) newest journal rows, newest first, as ORDER BY date_created DESC LIMIT read them."""
+    await _workspaces(db)
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        versions = _collection(conn, WorkspaceFileVersionCollection)
+        if path is None:
+            return _dicts(await versions.find_by_workspace(_WORKSPACES[0], _KEYED_PAGE))
+        return _dicts(await versions.find_by_workspace_and_path(_WORKSPACES[0], path, _KEYED_PAGE))
+
+    narrowed = "" if path is None else " AND relative_path = $3"
+    await assert_same_results(
+        db,
+        table="workspace_file_versions",
+        row=_version,
+        old_sql=(
+            f"SELECT {', '.join(_VERSION_COLUMNS)} FROM workspace_file_versions"
+            f" WHERE workspace_id = $1{narrowed} ORDER BY date_created DESC LIMIT $2"
+        ),
+        params=[_WORKSPACES[0], _KEYED_PAGE] + ([] if path is None else [path]),
+        helper=helper,
+        columns=_VERSION_COLUMNS,
+        order_by=["date_created"],
+        page_size=_KEYED_PAGE,
+        limited=True,
+    )

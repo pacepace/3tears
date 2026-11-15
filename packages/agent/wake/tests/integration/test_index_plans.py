@@ -10,7 +10,7 @@ index by an index condition (:func:`threetears.core.testing.plans.plan_uses_inde
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -310,6 +310,38 @@ async def _wake_count(busy: SimpleNamespace, *, webhook: bool) -> tuple[str, tup
     # a per-wake count of zero is under the cap: the agent's count follows it, which the agent's index serves
     assert all("ws.agent_id" in sql for sql, _args in rest), captured.asked
     return asked
+
+
+def _node_types(node: Mapping[str, Any]) -> Iterator[str]:
+    yield str(node.get("Node Type", ""))
+    for child in node.get("Plans", ()):
+        yield from _node_types(child)
+
+
+async def test_wake_schedules_conv_created(conn: asyncpg.Connection) -> None:
+    """Flips if a conversation's listing (newest first, completed by ``schedule_id``) stops reading
+    idx_wake_schedules_conv_created in its order, so a page reads and sorts the conversation's schedules (v016:
+    completed ascending, no index held the order; YugabyteDB has no incremental sort). The conversation holds 2,000
+    schedules, four pages of the listing's 500 (one page of a conversation's every schedule PostgreSQL rightly reads by
+    the primary key and sorts), a tenth of them at one instant so the key alone orders those."""
+    conversation = uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO agent_wake_schedules (conversation_id, schedule_id, user_id, agent_id, schedule_type, status,"
+        " date_created) SELECT $1, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'cron', 'expired',"
+        " CASE WHEN g % 10 = 0 THEN timestamptz '2026-11-14' ELSE timestamptz '2026-11-01' + g * interval '1 s' END"
+        " FROM generate_series(1, 2000) g",
+        conversation,
+    )
+    await conn.execute("ANALYZE agent_wake_schedules")
+    captured = CapturedL3()
+    await _collections(captured).schedules.list_for_conversation(conversation)
+    (sql, args), *_ = _of(captured, "agent_wake_schedules")
+    plan = await explain_statement(conn, sql, *args)
+    assert plan_uses_index(plan, "idx_wake_schedules_conv_created"), (sql, plan.plan)
+    assert not set(_node_types(plan.plan)) & {"Sort", "Incremental Sort"}, (sql, plan.plan)
+    # the first page: keyset_rows' 500 and the one row past it that says more follow, off the index's first rows
+    assert plan.rows_returned == 501, plan
+    assert plan.rows_scanned <= 2 * 501, plan
 
 
 async def test_wake_schedules_conv_active(conn: asyncpg.Connection) -> None:
