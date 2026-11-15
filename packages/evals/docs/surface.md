@@ -35,7 +35,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 
 - `Answer`: What a candidate returns to report its own spend beside its answer. Taught in [cost-and-budgets](cost-and-budgets.md).
 
-## The host's contract: 87 names a host implements or hands the engine
+## The host's contract: 89 names a host implements or hands the engine
 
 ### Ports a host implements (18)
 
@@ -58,7 +58,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `run.KindFactory`: Builds the candidate kind for one cell.
 - `providers.Pricer`: What a call is billed at, as the host knows it: the port a `Model` is handed (`pricer=`), or `AnthropicPublishedRates` by default (the module docstring says when).
 
-### What a host builds and hands the engine (69)
+### What a host builds and hands the engine (71)
 
 - `schema.CellTrace`: What one cell's tracing yielded — filled by the sink, read by the engine.
 - `schema.EvalBaseModel`: Base model for the eval engine's own Pydantic models.
@@ -79,6 +79,8 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `kernel.host.Interval`: Mark a numeric field's unit, rendered beside each level (`120words`).
 - `kernel.host.KindContract`: What one candidate kind's runs carry, declared as Pydantic models — see the module docstring.
 - `kernel.host.MeasureRegistry`: One host's declared measures, validated at construction.
+- `kernel.host.MemberActsOn`: Name the measure each listed ENTRY of an overlay map is supposed to move — `ActsOn` per member.
+- `kernel.host.Ordinal`: Mark a `Literal` or `Enum` field as ordered: its levels rank in the order they are declared.
 - `kernel.host.ResolvesInto`: Name the fixed host lever this overlay knob is WRITTEN INTO — its lever's `resolves_into`.
 - `kernel.host.SweepableRegistry`: The declared inputs for one host, validated at construction.
 - `kernel.host.TemplateChecks`: The questions about a template, and about one of its own cases, that only the host can answer, and the kinds it launches, read wherever a template or a template case is admitted.
@@ -731,14 +733,6 @@ not start using one.
 - `transports.fastmcp.CatalogueTool`: One mounted tool, as FastMCP serves it: every call handed to the catalogue. (bound)
 - `negotiation.closest_settings`: What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved. (invoked)
 
-## Needs a shipped example (#1199): 2
-
-Each is the only door to something a host must be able to do, and no shipped example uses it yet: use it as
-its line says. Issue #1199 adds the example.
-
-- `kernel.host.MemberActsOn`: A host marks a map field of its kind's overlay with it, so each entry is attributed to what it acts on.
-- `kernel.host.Ordinal`: A host marks a `Literal` or `Enum` knob of its kind's overlay with it, so the knob's values are ranked.
-
 ## Reading states: 18 reasons a reading is not counted, and what closes each
 
 | State | Reason | Remedy |
@@ -782,8 +776,7 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
 | all | 488 | |
 
-Of these, 22 await demotion and 2 need a shipped example
-(issue #1199), each listed in its register's section above.
+Of these, 22 await demotion (issue #1199), listed in their section above.
 
 | Typed names | Names | Goal |
 |---|---|---|

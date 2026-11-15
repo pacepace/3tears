@@ -377,7 +377,7 @@ THROUGH_RUNG_3_GOAL = 5
 #: The root whose every declared name is a host's test kit.
 TESTING_ROOT = "threetears.evals.testing"
 
-#: The issue that clears both registers below, cut over with the namespace re-root so a host migrates once.
+#: The issue that clears the register below, cut over with the namespace re-root so a host migrates once.
 REGISTER_ISSUE = "#1199"
 
 #: Declared names that fail admission criteria 2 and 3 and are to be demoted under issue #1199 (owner ruling R-b,
@@ -412,19 +412,8 @@ AWAITING_DEMOTION: frozenset[str] = frozenset(
     }
 )
 
-#: Declared names that are the only door to something a host must be able to do, and that no shipped example uses yet
-#: (owner ruling R-e, 2026-11-15): not demoted, but missing a shipped use, which issue #1199 adds. Each with what a
-#: host does through it. Like :data:`AWAITING_DEMOTION`, it only shrinks.
-AWAITING_SHIPPED_USE: Mapping[str, str] = MappingProxyType(
-    {
-        "threetears.evals.kernel.host.MemberActsOn": (
-            "A host marks a map field of its kind's overlay with it, so each entry is attributed to what it acts on."
-        ),
-        "threetears.evals.kernel.host.Ordinal": (
-            "A host marks a `Literal` or `Enum` knob of its kind's overlay with it, so the knob's values are ranked."
-        ),
-    }
-)
+#: The second register issue #1199 opened, ``AWAITING_SHIPPED_USE`` (ruling R-e: the only door to something a host must
+#: do, with no shipped use), is gone: the courier host (``tests/fixtures/courierhost/``) uses each of its four names.
 
 
 # --- the walk: which engine types a public object names, and where ---------------------------------------------

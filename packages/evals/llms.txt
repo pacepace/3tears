@@ -88,12 +88,6 @@ EMBEDDING IT IN AN APP (https://github.com/pacepace/3tears/blob/<tag>/packages/e
   Every declared name, with one line each:
     https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/surface.md
 
-NEEDS A SHIPPED EXAMPLE (#1199): the only door to each; no shipped example uses it yet
-  kernel.host.MemberActsOn: A host marks a map field of its kind's overlay with it, so each entry is
-    attributed to what it acts on.
-  kernel.host.Ordinal: A host marks a `Literal` or `Enum` knob of its kind's overlay with it, so the
-    knob's values are ranked.
-
 ACTIONS: 87, called without writing Python
   actions.eval_catalogue() holds them; transports.fastmcp.mount_fastmcp serves them over MCP
     (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/serving.md).

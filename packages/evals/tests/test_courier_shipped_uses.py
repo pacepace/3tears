@@ -1,9 +1,11 @@
-"""The courier host's uses of names, each the only door to something a host must do (issue #1199).
+"""The courier host's uses of four names, each the only door to something a host must do (issue #1199).
 
 Offline throughout: the courier's planner model is scripted, so nothing here spends.
 
 - ``failed_call_output``: a round planned while the planner's endpoint is overloaded is excluded as the provider's,
   and the run goes on; the courier's describer is what says whose failure it was.
+- ``Ordinal`` and ``MemberActsOn``: a launch through the catalogue turns the courier's knobs and the planner runs at
+  them; the solver's levels rank, and the downtown slack names the measure it acts on.
 - ``start_action_job``: the courier's own action proposes cases as a job, read back through ``job_poll``.
 """
 
@@ -18,11 +20,15 @@ from threetears.evals.kernel import withhold_failure_detail
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import OpsHost
 from threetears.evals.run import RunnerOptions, execute_run
-from threetears.evals.schema import EvalResult, EvalTestCase
+from threetears.evals.schema import EvalResult, EvalTestCase, OrdinalScale
 from packages.evals.tests.fixtures.courierhost import (
+    COURIER_CONTRACT,
     COURIER_KIND,
     COURIER_SCOPE,
+    COURIER_SUBJECT,
     COURIER_TEMPLATE_ID,
+    DEPOT_ZONE,
+    ON_TIME_RATE,
     RoutePlannerKind,
     courier_cases,
     courier_catalogue,
@@ -102,6 +108,52 @@ async def _settled(tool: MountedTool, host: OpsHost, job_id: str) -> dict[str, A
         while not (status := await _call(tool, host, {"action": "job_poll", "job_id": job_id}))["done"]:
             await asyncio.sleep(0.01)
     return status
+
+
+async def test_a_launch_turns_the_courier_s_knobs_and_the_planner_runs_at_them() -> None:
+    host = off_loop(courier_ops_host)  # the factory stores the courier's template, a blocking call
+    (tool, _admin) = courier_catalogue().mount_all(standard_tools())
+    knobs = {"solver": "exhaustive", "zone_slack_min": {DEPOT_ZONE: 10}}
+
+    started = await _call(
+        tool,
+        host,
+        {
+            "action": "run_launch",
+            "template_id": COURIER_TEMPLATE_ID,
+            "subject_id": COURIER_SUBJECT.subject_id,
+            "models": ["planner-lite"],
+            "k_runs": 1,
+            "overlays": knobs,
+        },
+    )
+    status = await _settled(tool, host, started["jobs"][0]["job_id"])
+
+    assert status["state"] == "completed", status
+    (run_id,) = status["run_ids"]
+    storage = host.launch.eval_host.storage
+    run = off_loop(storage.load_eval_run, run_id, COURIER_SCOPE)
+    assert run is not None and run.overlays == knobs
+    results = off_loop(storage.query_eval_results_by_run, run_id, COURIER_SCOPE)
+    # The lite model plans greedily on its own and misses the closed roads; searching exhaustively, it misses none.
+    assert results and all(result.host_measures[ON_TIME_RATE] == 1.0 for result in results)
+
+
+def test_the_solver_s_levels_rank_and_the_downtown_slack_names_what_it_acts_on() -> None:
+    world = courier_host().profile.world
+    assert world is not None
+    ranks = [
+        COURIER_CONTRACT.levels(
+            courier_run("planner-lite", cases=courier_cases(), world=world).model_copy(
+                update={"overlays": {"solver": solver, "zone_slack_min": {}}}
+            )
+        )["route_planner.solver"].scale
+        for solver in ("greedy", "auto", "exhaustive")
+    ]
+    assert ranks == [OrdinalScale(rank=0), OrdinalScale(rank=1), OrdinalScale(rank=2)]
+
+    family = courier_host().profile.sweepables.get("route_planner.zone_slack_min.*")
+    assert family is not None and family.member_acts_on == {f"route_planner.zone_slack_min.{DEPOT_ZONE}": ON_TIME_RATE}
 
 
 async def test_the_courier_s_own_action_proposes_cases_as_a_job_read_back_through_job_poll() -> None:

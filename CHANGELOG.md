@@ -12,8 +12,10 @@ packages (bumped in lock-step).
 does. Its kind routes the planner model's failed call through `kernel.failed_call_output`, with a failure describer
 of its own: an overloaded endpoint is the provider's, so the cell is excluded and the run goes on. Its own action,
 `courier_cases_propose`, runs as a job through `ops.start_action_job`, served beside the engine's actions
-(`courier_catalogue`) and read back with `job_poll`. The planner's cells are as they were. Both names leave the
-`AWAITING_SHIPPED_USE` register.
+(`courier_catalogue`) and read back with `job_poll`. Its kind contract declares launch overlays: a `solver` knob
+ranked with `kernel.host.Ordinal`, and a per-zone slack map whose downtown entry names the measure it moves with
+`kernel.host.MemberActsOn`. Each default keeps the planner's cells as they were. The `AWAITING_SHIPPED_USE` register is
+deleted: each of its four names is used, and `docs/surface.md` and `llms.txt` list them among the healthy names.
 
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 

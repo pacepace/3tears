@@ -45,7 +45,7 @@ import logging
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -82,6 +82,8 @@ from threetears.evals.kernel.host import (
     HostProfile,
     KindContract,
     MeasureRegistry,
+    MemberActsOn,
+    Ordinal,
     SeedRefused,
     Sweepable,
     TemplateChecks,
@@ -240,10 +242,32 @@ def courier_levers(run: EvalRun) -> dict[str, SweepableValue]:
     return {"search_depth": SweepableValue.of(depth, scale=IntervalScale(value=float(depth), unit=None))}
 
 
+#: The zone the north depot's rounds run in.
+DEPOT_ZONE = "downtown"
+
+
+class CourierOverlays(BaseModel):
+    """The knobs a launch of the planner may turn. Each default is how the planner has always run."""
+
+    #: ``Ordinal()`` ranks the levels in the order written, so a report reads them as less and more search rather than
+    #: as three unrelated names. ``auto`` is the planner's own choice (exhaustive on a ``-pro`` model, greedy
+    #: otherwise), so on every model it searches at least as hard as ``greedy`` and at most as hard as ``exhaustive``.
+    solver: Annotated[Literal["greedy", "auto", "exhaustive"], Ordinal()] = Field(
+        "auto", title="solver", description="how hard the planner searches for a round's ordering"
+    )
+    #: A map is an open family: each zone a launch sets is a knob of its own. ``MemberActsOn`` names the measure an
+    #: entry is meant to move, so a report checks that more downtown slack moved the on-time rate, and says so.
+    zone_slack_min: Annotated[dict[str, int], MemberActsOn({DEPOT_ZONE: ON_TIME_RATE})] = Field(
+        default_factory=dict, title="zone slack", description="minutes of slack added to each stop's window, by zone"
+    )
+
+
 #: The seats the planner fills: the traffic feed it plans against, and its spend ceiling. Nothing here is
 #: graded by a model or talks to a simulated user, so the judge and simulator seats are not filled. Its
-#: store also receives an eval's runs, which read the same feed and run uncapped.
-COURIER_CONTRACT = KindContract(COURIER_KIND, seats=frozenset({"traffic_feed", "max_cost_usd"}))
+#: store also receives an eval's runs, which read the same feed and run uncapped. Its overlays are the knobs above.
+COURIER_CONTRACT = KindContract(
+    COURIER_KIND, overlays=CourierOverlays, seats=frozenset({"traffic_feed", "max_cost_usd"})
+)
 
 #: The kind an eval's runs are of (``Eval(...).run(host=...)``), by the name its template states: the courier declares
 #: it so the evals it runs into its store are held to the seats they fill, the traffic feed and nothing of the engine's.
@@ -283,7 +307,9 @@ class _Route:
     eta_miss_min: float
 
 
-async def ask_planner(model: str, *, stops: int, road_closures: int, exhaustive: bool, outage: bool) -> _Route:
+async def ask_planner(
+    model: str, *, stops: int, road_closures: int, exhaustive: bool, slack_min: int, outage: bool
+) -> _Route:
     """Ask the planner model for one round's route, and how it went. Scripted: no model is called.
 
     :param model: The planner model asked.
@@ -294,6 +320,8 @@ async def ask_planner(model: str, *, stops: int, road_closures: int, exhaustive:
     :ptype road_closures: int
     :param exhaustive: Whether the solver searches every ordering, which routes around every closure.
     :ptype exhaustive: bool
+    :param slack_min: Minutes of slack on each stop's window: every five keep one more stop on time.
+    :ptype slack_min: int
     :param outage: Whether the endpoint is in an outage.
     :ptype outage: bool
     :return: The route's late stops, detour and arrival-time miss.
@@ -305,7 +333,7 @@ async def ask_planner(model: str, *, stops: int, road_closures: int, exhaustive:
         raise PlannerOverloaded(f"{model}: 529 overloaded")
     late = 0 if exhaustive else min(stops, road_closures)
     return _Route(
-        late=late,
+        late=max(0, late - slack_min // 5),
         detour_km=road_closures * (0.5 if exhaustive else 1.5),
         eta_miss_min=road_closures * (2.0 if exhaustive else 6.0),
     )
@@ -340,10 +368,12 @@ class RoutePlannerKind:
         self,
         world: WorldRegistry,
         *,
+        overlays: CourierOverlays | None = None,
         describe: Callable[[BaseException], ProviderFailure] = describe_courier_failure,
     ) -> None:
-        """Bind the world this kind seeds through, and the host's failure describer."""
+        """Bind the world this kind seeds through, the knobs its launch turned, and the host's failure describer."""
         self._world = world
+        self._overlays = overlays if overlays is not None else CourierOverlays()
         self._describe = describe
 
     async def prepare(
@@ -371,12 +401,14 @@ class RoutePlannerKind:
         A case whose variation sets ``outage`` stands for a round planned while the planner's endpoint is overloaded.
         """
         stops = int(test_case.variation_params["stops"])
+        solver = self._overlays.solver
         try:
             route = await ask_planner(
                 instance.model,
                 stops=stops,
                 road_closures=instance.road_closures,
-                exhaustive=instance.model.endswith("-pro"),
+                exhaustive=instance.model.endswith("-pro") if solver == "auto" else solver == "exhaustive",
+                slack_min=self._overlays.zone_slack_min.get(DEPOT_ZONE, 0),
                 outage=test_case.variation_params.get("outage") == "true",
             )
         except PlannerOverloaded as overloaded:
@@ -496,6 +528,8 @@ def courier_run(model: str, *, cases: Sequence[EvalTestCase], world: WorldRegist
         # The pro arm ran on the newer traffic feed: a confound the bundle has to name, which is
         # also what puts the courier's apparatus vocabulary in front of a reader.
         host_payload={_PAYLOAD: {"search_depth": 3, "traffic_feed": FEEDS[model]}},
+        # What a launch freezes onto its run: the knobs the planner ran at, defaults included.
+        overlays=CourierOverlays().model_dump(mode="json"),
         world_placements=world.place(seeded=("road_closures",), carriers=RoutePlannerKind.CARRIERS),
         # What the launch stamps: each of the host's measures' definitions.
         measure_definitions=MeasureRegistry(COURIER_MEASURES).definition_digests(),
@@ -571,8 +605,8 @@ def courier_launch_host() -> LaunchHost:
     """The courier as a launching host, with its scenario already authored in its store.
 
     A zero-argument factory, which is the shape the engine's command line names a host by. Its launcher
-    captures the one subject the courier deploys, freezes the scenario's three rounds, and records
-    each arm's search depth and traffic feed on the run.
+    captures the one subject the courier deploys, freezes the scenario's three rounds, records
+    each arm's search depth and traffic feed on the run, and runs the planner at the knobs the launch turned.
 
     :return: The launching host.
     :rtype: LaunchHost
@@ -593,7 +627,10 @@ def courier_launch_host() -> LaunchHost:
                 remedy=f"launch one of {', '.join(COURIER_MODELS)}",
             )
         payload = {"search_depth": 3, "traffic_feed": feed}
-        kind = RoutePlannerKind(world, describe=eval_host.failure_describer)
+        # The launch validated the knobs it turned against CourierOverlays; the planner runs at them.
+        kind = RoutePlannerKind(
+            world, overlays=request.overlays_as(CourierOverlays), describe=eval_host.failure_describer
+        )
         return await launch_run(
             launch_host,
             request,
@@ -727,7 +764,9 @@ __all__ = [
     "RoutePlannerKind",
     "COURIER_SUBJECT",
     "COURIER_TEMPLATE_ID",
+    "CourierOverlays",
     "DEPOT_ROUND_HISTORY",
+    "DEPOT_ZONE",
     "PlannerOverloaded",
     "ask_planner",
     "courier_cases",

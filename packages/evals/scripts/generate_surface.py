@@ -45,7 +45,6 @@ from public_surface import (
 )
 from surface_kinds import (
     AWAITING_DEMOTION,
-    AWAITING_SHIPPED_USE,
     ENGINE_PROVIDES,
     FIRST_EVAL_GOAL,
     HOST_IMPLEMENTS,
@@ -139,8 +138,8 @@ EXAMPLES_GUIDE = PACKAGE_ROOT / "examples" / "README.md"
 
 PREFIX = "threetears.evals."
 
-#: Every name either register holds, which no healthy section lists.
-REGISTERED: frozenset[str] = AWAITING_DEMOTION | frozenset(AWAITING_SHIPPED_USE)
+#: Every name the register holds, which no healthy section lists.
+REGISTERED: frozenset[str] = AWAITING_DEMOTION
 
 
 def short(qualified: str) -> str:
@@ -374,14 +373,6 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     yield ""
     yield from (f"{surface.line(name)} ({surface.kinds[name]})" for name in demoting)
     yield ""
-    needing = [name for name in surface.entries if name in AWAITING_SHIPPED_USE]
-    yield f"## Needs a shipped example ({REGISTER_ISSUE}): {len(needing)}"
-    yield ""
-    yield "Each is the only door to something a host must be able to do, and no shipped example uses it yet: use it as"
-    yield f"its line says. Issue {REGISTER_ISSUE} adds the example."
-    yield ""
-    yield from (f"- `{short(name)}`: {md_text(AWAITING_SHIPPED_USE[name])}" for name in needing)
-    yield ""
     states = reading_states()
     yield f"## Reading states: {len(states)} reasons a reading is not counted, and what closes each"
     yield ""
@@ -406,8 +397,7 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
         yield f"| `{kind}` | {total[kind]} | {KIND_MEANINGS[kind]} |"
     yield f"| all | {sum(total.values())} | |"
     yield ""
-    yield f"Of these, {len(AWAITING_DEMOTION)} await demotion and {len(AWAITING_SHIPPED_USE)} need a shipped example"
-    yield f"(issue {REGISTER_ISSUE}), each listed in its register's section above."
+    yield f"Of these, {len(AWAITING_DEMOTION)} await demotion (issue {REGISTER_ISSUE}), listed in their section above."
     yield ""
     yield "| Typed names | Names | Goal |"
     yield "|---|---|---|"
@@ -583,10 +573,6 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
         "  ",
     )
     yield from _wrapped(f"Every declared name, with one line each: {at_tag('docs/surface.md')}", "  ")
-    yield ""
-    yield f"NEEDS A SHIPPED EXAMPLE ({REGISTER_ISSUE}): the only door to each; no shipped example uses it yet"
-    for name in AWAITING_SHIPPED_USE:
-        yield from _wrapped(_plain(f"{short(name)}: {AWAITING_SHIPPED_USE[name]}"), "  ")
     yield ""
     actions = _actions()
     yield f"ACTIONS: {sum(len(each) for _, each in actions)}, called without writing Python"

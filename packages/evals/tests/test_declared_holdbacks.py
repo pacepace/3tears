@@ -93,11 +93,12 @@ _RAISES = re.compile(r":raises\s+~?([\w.]+)\s*:")
 #: The snapshot kinds of a name that does work when called or built: it needs a caller of its own.
 _OPERATIONS = ("function", "async function", "class")
 
-#: The two debt registers (``scripts/surface_kinds.py``), both tied to issue #1199: names that fail criteria 2 and 3
-#: and are to be demoted (ruling R-b), and names that are the only door to something a host must do and lack a shipped
-#: use (ruling R-e). :func:`test_a_registered_name_is_still_unused` drops a name once it is used or no longer declared.
+#: The debt register (``scripts/surface_kinds.py``) tied to issue #1199: names that fail criteria 2 and 3 and are to be
+#: demoted (ruling R-b). :func:`test_a_registered_name_is_still_unused` drops a name once it is used or no longer
+#: declared. Its twin, ``AWAITING_SHIPPED_USE`` (ruling R-e: the only door to something a host must do, lacking a
+#: shipped use), emptied when the courier host used its four names, and is gone
+#: (:func:`test_the_shipped_use_register_is_gone`).
 AWAITING_DEMOTION: frozenset[str] = kinds_of.AWAITING_DEMOTION
-AWAITING_SHIPPED_USE: frozenset[str] = frozenset(kinds_of.AWAITING_SHIPPED_USE)
 
 #: Each register as issue #1199 opened it (2026-11-15), and the SHA-256 of its names, sorted, one per line. A register
 #: only shrinks: :func:`test_no_name_joins_a_register` fails when it holds a name its opening did not. Never edit these.
@@ -367,7 +368,7 @@ def reached_by_a_signature(*, kept_only: bool = False) -> frozenset[str]:
     """Every declared name another declared name's signature reaches; ``kept_only``, one outside both registers."""
     declared = declared_names()
     reachers: dict[str, set[str]] = {}
-    for name in declared - (AWAITING_DEMOTION | AWAITING_SHIPPED_USE if kept_only else frozenset()):
+    for name in declared - (AWAITING_DEMOTION if kept_only else frozenset()):
         for word in signature_words(name):
             reachers.setdefault(word, set()).add(name)
     return frozenset(name for name in declared if reachers.get(name.rsplit(".", 1)[1], set()) - {name})
@@ -528,7 +529,7 @@ def test_the_ledger_lists_every_declared_protocol_once() -> None:
 def test_every_declared_name_is_used() -> None:
     """Criterion 2: production code or a shipped example uses each declared name; a test alone does not count."""
     listed = {name for name, reason in read_ledger().items() if reason == UNREACHED}
-    unused_now = unused() - AWAITING_DEMOTION - AWAITING_SHIPPED_USE
+    unused_now = unused() - AWAITING_DEMOTION
     assert not unused_now and not listed, (
         "no production code or shipped example uses these declared names, and a test or a page's prose does not "
         "count (admission criterion 2, owner ruling 2026-11-15). Make each private: drop it from its root's "
@@ -541,17 +542,28 @@ def test_every_declared_name_is_used() -> None:
 
 def test_a_registered_name_is_still_unused() -> None:
     """A register holds only debt: a listed name something now uses, or that is no longer declared, leaves it."""
-    stale = sorted((AWAITING_DEMOTION | AWAITING_SHIPPED_USE) - unused())
+    stale = sorted(AWAITING_DEMOTION - unused())
     assert not stale, (
-        "drop these from AWAITING_DEMOTION or AWAITING_SHIPPED_USE in packages/evals/scripts/surface_kinds.py: each is "
-        "used now, or no longer declared\n  " + "\n  ".join(stale)
+        "drop these from AWAITING_DEMOTION in packages/evals/scripts/surface_kinds.py: each is used now, or no longer "
+        "declared\n  " + "\n  ".join(stale)
     )
-    assert not AWAITING_DEMOTION & AWAITING_SHIPPED_USE, "a name is in both registers"
+
+
+def test_the_shipped_use_register_is_gone() -> None:
+    """Each name ``AWAITING_SHIPPED_USE`` opened with is used by the courier host now, and the register is not back."""
+    opened, _ = OPENED["AWAITING_SHIPPED_USE"]
+    assert not hasattr(kinds_of, "AWAITING_SHIPPED_USE"), "AWAITING_SHIPPED_USE is back; it only shrank, to nothing"
+    courier = PACKAGE / "tests" / "fixtures" / "courierhost"
+    used_there = {
+        name for path in courier.rglob("*.py") for name in host_record.used_names(path.read_text("utf-8"), str(path))
+    }
+    assert opened <= used_there, f"the courier host no longer uses {sorted(opened - used_there)}"
+    assert not opened & unused(), f"declared and unused again: {sorted(opened & unused())}"
 
 
 def test_no_name_joins_a_register() -> None:
-    """Both registers only shrink (issue #1199): a name leaves by being demoted or used, and never joins."""
-    for register, now in (("AWAITING_DEMOTION", AWAITING_DEMOTION), ("AWAITING_SHIPPED_USE", AWAITING_SHIPPED_USE)):
+    """The register only shrinks (issue #1199): a name leaves by being demoted or used, and never joins."""
+    for register, now in (("AWAITING_DEMOTION", AWAITING_DEMOTION),):
         opened, digest = OPENED[register]
         assert hashlib.sha256("\n".join(sorted(opened)).encode()).hexdigest() == digest, (
             f"{register}'s opening record was edited: it is fixed as issue #1199 opened it"
