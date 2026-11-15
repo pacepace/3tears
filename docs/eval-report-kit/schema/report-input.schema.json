@@ -1416,6 +1416,17 @@
       }
      ],
      "description": "The arm's one cost reading, the fallback from cost per reply decided once."
+    },
+    "state": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/StateOf"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The row's state where its passes and failures are not counted, with its reason: withheld where the cells keep the arm apart on a coordinate, which it names; none reads counted."
     }
    },
    "additionalProperties": false,

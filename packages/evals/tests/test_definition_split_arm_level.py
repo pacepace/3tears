@@ -360,6 +360,14 @@ def test_the_report_input_scoreboard_row_of_an_arm_read_under_two_definitions_ha
     assert (split.ran, split.usable, split.passed, split.failed) == (2 * CASES, 2 * CASES, None, {})
     assert split.reply_cost_usd is not None, "a definition reads what a reply scored, never what it cost"
     assert (control.passed, control.failed) == (1, {"check": CASES - 1})
+    # The typed fact a reader withholds the row's counts by, naming the coordinate it is split on.
+    assert split.state is not None
+    assert (split.state.state, split.state.reason, split.state.coordinate) == (
+        "withheld",
+        "split",
+        "measure_definition",
+    )
+    assert control.state is None
     (note,) = [line for line in built.caveats.unreported if _CANDIDATE in line]
     assert "more than one definition of a host measure" in note
 

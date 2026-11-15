@@ -203,12 +203,13 @@ def _failed_trials_count(report_input: ReportInput, values: tuple[str, ...], pat
 
 
 def _withheld_on(report_input: ReportInput, aspect: str, arm: str) -> bool:
-    """Whether the input withholds an arm's passes on an aspect (its scoreboard row there states none): an arm the cells
-    keep apart, answered by more than one model or read under more than one definition of a host measure."""
+    """Whether the input withholds an arm's counts on an aspect (its scoreboard row there is in the withheld state): an
+    arm the cells keep apart, answered by more than one model or read under more than one definition of a host measure.
+    Never read off a missing ``passed``, which an input that never stated it shares."""
     if aspect not in {held.id for held in report_input.aspects}:
         return False
     row = aspect_board(report_input, aspect).get(arm)
-    return row is not None and row.passed is None
+    return row is not None and row.state is not None and row.state.state == "withheld"
 
 
 # --- whether two aspects ran the same cases -------------------------------------------------------------------------

@@ -370,11 +370,32 @@ def test_a_written_page_cites_no_failure_count_for_the_split_arm_and_the_control
     """The report input withholds the split arm's failures as an empty count, which no key reads as 0 failed."""
     built = report_input(_Read([_MARCH, _JUNE]).whole)
 
+    held = built.scoreboard[_ALIAS].state
+    assert held is not None and (held.state, held.reason, held.coordinate) == ("withheld", "split", "served_model")
+    assert built.scoreboard[_CONTROL].state is None
     for key in (f"scoreboard.{_ALIAS}.failed", f"aspects.{ASPECT}.scoreboard.{_ALIAS}.failed"):
         with pytest.raises(UnstatedFigure):
             resolve(key, built)
     for key in (f"scoreboard.{_CONTROL}.failed", f"aspects.{ASPECT}.scoreboard.{_CONTROL}.failed"):
         assert resolve(key, built).value == CASES - 5
+
+
+def test_an_input_that_states_no_passes_and_splits_no_arm_reads_its_failures_as_it_did() -> None:
+    """A row's failures are refused because its typed state withholds them, never because ``passed`` is missing: an
+    input that never stated passes, and keeps no arm apart (the report inputs written before the cells split an arm),
+    reads its failures as it always did."""
+    built = analyst_input(_Read([_MARCH]).whole)  # one answering model throughout: no arm is split
+    assert all(row.state is None for row in built.scoreboard.values())
+    unstated = built.model_copy(
+        update={"scoreboard": {arm: row.model_copy(update={"passed": None}) for arm, row in built.scoreboard.items()}}
+    )
+
+    for arm, row in built.scoreboard.items():
+        failed = sum(row.failed.values())
+        assert failed > 0, "a held count, so reading it asserts something"
+        for key in (f"scoreboard.{arm}.failed", f"aspects.{ASPECT}.scoreboard.{arm}.failed"):
+            assert resolve(key, unstated).value == failed
+        assert resolve(f"count.failures.{ASPECT}.{arm}", unstated).value == failed
 
 
 def test_the_failures_key_refuses_the_split_arm_on_its_aspect_and_the_campaign_total_still_resolves() -> None:

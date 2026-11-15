@@ -74,7 +74,7 @@ from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.schema.reading_states import Coordinate
+from threetears.evals.schema.reading_states import Coordinate, StateOf
 from threetears.evals.analysis.completeness import unfinished_opening
 from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
@@ -213,6 +213,14 @@ def report_input(
     """
     return _Builder(bundle).build(
         provenance=provenance, examples=examples, per_slice=per_slice, excerpt=excerpt, counted=counted
+    )
+
+
+def _split_state(on: Mapping[Coordinate, int]) -> StateOf:
+    """A scoreboard row's state where the cells keep its arm apart on ``on``: withheld, split, on the answering model
+    where that is one of the coordinates (the one :meth:`_Builder._split_note` names first), else the first."""
+    return StateOf(
+        state="withheld", reason="split", coordinate="served_model" if "served_model" in on else next(iter(on))
     )
 
 
@@ -625,6 +633,9 @@ class _Builder:
                 else None,
                 # None where the census read none, which the row leaves out of its document.
                 pricing=_pricing(row.pricing),
+                # The typed fact a reader withholds the row's counts by: never the counts' absence, which an input
+                # that never stated them shares.
+                state=_split_state(split[row.variant_key]) if row.variant_key in split else None,
             )
             for row in aspect.scoreboard
         }
