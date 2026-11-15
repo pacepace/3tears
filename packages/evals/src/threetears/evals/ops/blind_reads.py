@@ -49,7 +49,13 @@ from threetears.evals.analysis.blind_read import (
 )
 from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
-from threetears.evals.kernel.errors import ConflictError, EvalServiceError, NotFoundError, ValidationFailedError
+from threetears.evals.kernel.errors import (
+    ConflictError,
+    EvalServiceError,
+    NotFoundError,
+    StorageError,
+    ValidationFailedError,
+)
 from threetears.evals.kernel.host.eval_host import EvalHost
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.job_context import running_job
@@ -1002,6 +1008,18 @@ def _instant(stamp: str) -> datetime | None:
     return instant if instant.tzinfo is not None else None
 
 
+class _RatingsUnwritten(StorageError):
+    """The store refused a closed read's rating: a store failure whose remedy names the call that finishes the close."""
+
+    def __init__(self, message: str):
+        EvalServiceError.__init__(
+            self,
+            message=message,
+            status_code=503,
+            remedy="close the read again (blind_read_close) once the store answers: it writes the ratings still missing",
+        )
+
+
 def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: str) -> BlindReadLine:
     """Close the read: store what the core read, refuse every later answer, then write its answers as ratings.
 
@@ -1027,9 +1045,11 @@ def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
     :return: The closed read, with what it found and the ratings written.
     :rtype: BlindReadLine
     :raises NotFoundError: No such read.
-    :raises ConflictError: It is already closed with nothing left to write, or an answer landed while it was being
-        closed; ask again.
-    :raises StorageError: A rating could not be written; the read is closed, and closing it again writes the rest.
+    :raises ConflictError: It is already closed with every rating stored; or closed, and each rating still missing
+        is refused (listed with why, in the message and ``details["not_written"]``); or an answer landed while it was
+        being closed (ask again).
+    :raises StorageError: The store refused a rating; the read is closed, the store's failure is the cause, and the
+        remedy is to close it again, which writes the ratings still missing.
     """
     read, etag = _loaded(host, read_id, scope_id)
     result_ids = list(dict.fromkeys(output.result_id for item in read.items for output in item.outputs))
@@ -1069,10 +1089,31 @@ def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
         except (NotFoundError, ConflictError, ValidationFailedError) as refused:
             not_written.append(f"{rating.rater} on {rating.rubric_dim} of result {rating.result_id}: {refused}")
             continue
+        except StorageError as failed:
+            log.warning(
+                "eval.blind_read_close ratings_unwritten read=%s scope=%s written=%d of=%d",
+                read_id,
+                scope_id,
+                written,
+                len(ratings),
+                exc_info=True,
+            )
+            raise _RatingsUnwritten(
+                f"blind read {read_id} is closed, and the store refused a rating after {written} of {len(ratings)} "
+                f"were written: {failed.message}"
+            ) from failed
         written += 1
     if read.closed_at is not None and not written:
-        # Every rating already stored, or none of the missing ones can be written: nothing is left to close.
-        _refuse_closed(read, "second close")
+        if not not_written:
+            # Every rating is stored: nothing is left to close.
+            _refuse_closed(read, "second close")
+        refused_all = ConflictError(
+            f"blind read {read_id} is closed, and none of the {len(not_written)} rating(s) it has not written can be: "
+            + "; ".join(not_written),
+            remedy="nothing is left to close: each rating listed stays unwritten for the reason given",
+        )
+        refused_all.details["not_written"] = not_written
+        raise refused_all
     log.info(
         "eval.blind_read_close read=%s scope=%s by=%s early=%s ratings=%d not_written=%d resumed=%s",
         read_id,

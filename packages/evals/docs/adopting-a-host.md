@@ -1818,7 +1818,7 @@ quick path's `blind_read.html` uses:
 | `blind_read_sheet` | a reader | What a rater sees: content, criteria and slots, from `next`. No arm, run, result or case id, no judge score, no label key, no count of answers |
 | `blind_read_answer` | a writer you attest | One person's answer to one item: `verdicts` keyed `<slot>/<criterion>`, `prefer`, or `skip`. Refused (403) unless your `attests_person` vouches for the caller relaying that person |
 | `blind_read_review` | a writer | The declared reviewer model answers what it has not, priced against your out-of-run cap first, as a job; its answers enter the read only from inside that job |
-| `blind_read_close` | a writer | Every answer becomes a rating (a person's as theirs, naming the read and the caller who relayed it; a model's as an agent's), and later answers are refused |
+| `blind_read_close` | a writer | Every answer becomes a rating (a person's as theirs, naming the read and the caller who relayed it; a model's as an agent's), and later answers are refused. A close whose ratings were not all written (the store refused one, a 503 naming this remedy) is completed by closing again, which writes the ones missing |
 | `blind_read_get`, `blind_reads_list` | a reader | A read's line: who answered how far (each with their `sample`: random or not); once closed, the judge's checks and the preferences |
 
 A read closed before anyone answered every planned item is closed early, and its preference is read by the anytime

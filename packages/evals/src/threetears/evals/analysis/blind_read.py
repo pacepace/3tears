@@ -1010,7 +1010,8 @@ def close_blind_read(
     )
     preferences: list[BlindPreference] = []
     if "preference" in read.ask:
-        for kind in ("person", "model"):
+        makers: tuple[Maker, ...] = ("person", "model")
+        for kind in makers:
             for group in _preference_groups(read, kind):
                 if group:
                     preferences.append(_preference(read, group, samples, closing=closing))

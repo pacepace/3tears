@@ -37,6 +37,7 @@ from threetears.evals.ops.blind_reads import (
     BlindReadLine,
     BlindReadListing,
     blind_read_answer,
+    blind_read_close,
     blind_read_create,
     blind_read_get,
     keep_review,
@@ -601,9 +602,12 @@ async def test_an_answer_landing_as_the_read_closes_refuses_the_close_and_no_rat
     assert closed.structured["ratings_written"] == len(first.outputs) + len(second.outputs), "asking again closes it"
 
 
-async def test_a_close_whose_rating_write_fails_is_completed_by_closing_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The recovery path: the read is closed before its ratings are written; a rating write that fails reaches the
-    caller, and the next close writes what the first did not, then a further close is refused."""
+async def test_a_close_whose_rating_write_fails_is_completed_by_closing_again(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The recovery path: the read is closed before its ratings are written; a rating write the store refuses reaches
+    the caller as a 503 naming the remedy (close it again), the store's failure attached and logged; the next close
+    writes what the first did not, then a further close is refused."""
     host, fixture, _ = _world()
     line = await _pair_read(host, fixture)
     read, _ = _stored(host, line["read_id"])
@@ -622,21 +626,29 @@ async def test_a_close_whose_rating_write_fails_is_completed_by_closing_again(mo
     save_rating = storage.save_calibration_rating
     writes: list[str] = []
 
-    def the_second_write_fails(rating: CalibrationRating) -> None:
+    def the_second_and_third_writes_fail(rating: CalibrationRating) -> None:
         writes.append(rating.id)
-        if len(writes) == 2:
+        if len(writes) in (2, 3):
             raise StorageError("the ratings table is read-only for maintenance")
         save_rating(rating)
 
-    monkeypatch.setattr(storage, "save_calibration_rating", the_second_write_fails)
+    monkeypatch.setattr(storage, "save_calibration_rating", the_second_and_third_writes_fail)
     failed = await _call(host, "blind_read_close", read_id=read.id)
     after_failure, _ = _stored(host, read.id)
     partly = _ratings(host, after_failure)
+    with pytest.raises(StorageError) as again_refused:
+        off_loop(blind_read_close, host.eval_host, read.id, TOYHOST_SCOPE, closed_by=CALLER.identity)
     completed = await _call(host, "blind_read_close", read_id=read.id)
     again = await _call(host, "blind_read_close", read_id=read.id)
 
-    assert failed.is_error and "read-only for maintenance" in failed.text, "the failed write reaches the caller"
+    assert failed.is_error and failed.refusal is not None
+    assert (failed.refusal.kind, failed.refusal.status) == ("storage_failed", 503)
+    assert "read-only for maintenance" in failed.text, "the store's own reason"
+    assert "close the read again (blind_read_close)" in failed.text, "the refusal names the call that finishes it"
     assert after_failure.closed_at is not None and len(partly) == 1, "closed, with one of its two ratings written"
+    cause = again_refused.value.__cause__
+    assert isinstance(cause, StorageError) and "read-only for maintenance" in cause.message, "the cause is attached"
+    assert [r for r in caplog.records if "ratings_unwritten" in r.getMessage() and r.exc_info], "and recorded"
     assert not completed.is_error, completed.text
     assert (completed.structured["ratings_written"], completed.structured["ratings_not_written"]) == (1, [])
     assert completed.structured["closed_at"] == after_failure.closed_at, "the read was closed once"
@@ -646,6 +658,47 @@ async def test_a_close_whose_rating_write_fails_is_completed_by_closing_again(mo
         (PERSON, "person", f"blind_read:{read.id}", 2),
         (PERSON, "person", f"blind_read:{read.id}", 4),
     ]
+
+
+async def test_a_closed_read_whose_missing_ratings_are_all_refused_says_why_and_not_to_draw_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, fixture, _ = _world()
+    line = await _pair_read(host, fixture)
+    read, _ = _stored(host, line["read_id"])
+    first = read.items[0]
+    await _call(
+        host,
+        "blind_read_answer",
+        read_id=read.id,
+        item=first.item,
+        person=PERSON,
+        verdicts={f"{output.slot}/{DIM.name}": "4" for output in first.outputs},
+    )
+    storage = host.eval_host.storage
+    save_rating = storage.save_calibration_rating
+    lost: list[str] = []
+
+    def the_first_write_fails(rating: CalibrationRating) -> None:
+        if not lost:
+            lost.append(rating.result_id)
+            raise StorageError("the ratings table is read-only for maintenance")
+        save_rating(rating)
+
+    monkeypatch.setattr(storage, "save_calibration_rating", the_first_write_fails)
+    failed = await _call(host, "blind_read_close", read_id=read.id)
+    assert failed.is_error and failed.refusal is not None and failed.refusal.status == 503
+    assert _ratings(host, read) == [], "the first refusal stopped the close before any rating was written"
+    # The results the unwritten ratings are of are deleted before the read is closed again.
+    gone = [output.result_id for output in first.outputs]
+    assert all(off_loop(storage.delete_eval_result, result_id, TOYHOST_SCOPE) for result_id in gone)
+
+    refused = await _call(host, "blind_read_close", read_id=read.id)
+
+    assert refused.is_error and refused.refusal is not None and refused.refusal.status == 409, refused.text
+    assert "draw another read" not in refused.text, "the read is not the problem: each rating is"
+    assert "nothing is left to close" in refused.text
+    assert all(result_id in refused.text for result_id in gone), "each refused rating, with why"
 
 
 async def test_an_early_close_reads_the_preference_by_the_anytime_test() -> None:

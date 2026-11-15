@@ -995,6 +995,11 @@ def test_the_files_a_rung_2_read_wrote_before_answers_said_who_made_them_still_r
         ("scripted/reviewer", "model"),
     }
     assert {reading.anchor for reading in closed.read.report.agreement} == {"person", "model"}
+    # The print names a model as a model wherever it names who answered, never by its bare id as a person is named.
+    lines = judge_lines(closed.read, labels_name="labels.csv", labels_there=True, shown={})
+    assert any("by a model (scripted/reviewer)" in line for line in lines), lines
+    bare = [line for line in lines for lead in ("by ", "of ", "against ") if f"{lead}scripted/reviewer" in line]
+    assert bare == [], bare
 
 
 def test_an_older_to_label_sheet_and_another_draw_s_labels_still_read_as_not_drawn_at_random(tmp_path: Path) -> None:

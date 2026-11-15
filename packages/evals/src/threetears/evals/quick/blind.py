@@ -28,7 +28,7 @@ import io
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, NamedTuple, assert_never
 
 from threetears.evals.analysis.blind_read import PREFERENCE_MIN_ITEMS, blind_sheet, exact_sign_test_p
 from threetears.evals.analysis.report.forms import PageForms
@@ -39,6 +39,7 @@ from threetears.evals.run.blind_review import answer_score
 from threetears.evals.run.blind_review import answer_sheet as read_sheet
 from threetears.evals.schema.completion import PricedCompletion
 from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.reading_states import Maker
 from threetears.evals.kernel.text_block import under
 from threetears.evals.schema import (
     SCALES,
@@ -649,8 +650,14 @@ def _figure(value: float) -> str:
     return PageForms.off_page().reading(value).text
 
 
-def _who(kind: str, name: str) -> str:
-    return f"a model ({name})" if kind == "model" else name
+def _who(kind: Maker, name: str) -> str:
+    """Who answered, as the print names them: a model always as a model, a person by name. A file's older word for
+    a model (``reference``) is read as ``model`` before it gets here, and any other value is a type error."""
+    if kind == "model":
+        return f"a model ({name})"
+    if kind == "person":
+        return name
+    assert_never(kind)
 
 
 def _sample_words(sample: BlindSample, *, several: bool) -> str:

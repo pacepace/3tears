@@ -18,7 +18,8 @@ sheet, priced and admitted first, as a job; its answers enter the read only from
 to start leaves the read free for the next review. `blind_read_close` stores the closed read first, so an answer landing
 meanwhile refuses the close (409) and no rating exists for a read still open; it then writes every answer as a rating
 (a person's as theirs, a model's as an agent's) and refuses later answers. A rating write that fails reaches the caller
-with the read closed, and closing again writes the ratings still missing. A read closed before anyone answered every
+with the read closed, as a 503 whose remedy is to close it again, which writes the ratings still missing; a closed read
+whose missing ratings are each refused (their result gone) says so, rating by rating. A read closed before anyone answered every
 planned item reads its preference by the anytime test, valid wherever it stopped.
 `blind_read_get` and `blind_reads_list` read them back. A read is a new durable document (durable minor 17.3), carried
 by a campaign's export. Who made each answer is stored as `made_by` (`person` or `model`, the one `Maker` a recorded call

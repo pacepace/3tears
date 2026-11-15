@@ -310,7 +310,8 @@ def blind_read_actions(workflow: str) -> tuple[Action, ...]:
             detail=(
                 "A person's answers become their ratings (naming the read and who relayed them), a model's an "
                 "agent's. Later answers are refused. Closed before anyone answered every planned item, its "
-                "preference is read by the anytime test, valid wherever it stopped."
+                "preference is read by the anytime test, valid wherever it stopped. A close whose ratings were not "
+                "all written (the store refused one) is completed by closing again, which writes the ones missing."
             ),
         ),
         Action(
