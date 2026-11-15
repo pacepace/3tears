@@ -60,10 +60,10 @@ HAND_SITES = [
 
 #: The dry run's counts over ``before/``.
 BEFORE_COUNTS = {
-    "files_scanned": 13,
-    "files_changed": 13,
+    "files_scanned": 14,
+    "files_changed": 14,
     "files_skipped": 3,
-    "statements_rewritten": 24,
+    "statements_rewritten": 25,
     "code_names_rewritten": 11,
     "strings_rewritten": 10,
     "prose_tokens_rewritten": 13,

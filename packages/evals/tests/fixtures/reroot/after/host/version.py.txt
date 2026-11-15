@@ -1,0 +1,10 @@
+"""The package root is not a former root: a bare import of it, its chains and a prefix string stay as written."""
+
+import threetears.evals
+from threetears.evals.shapes import DEFAULT_JOB_LEASE_S
+
+OWNED = ("discodon.", "threetears.evals.")
+
+
+def stamp() -> str:
+    return f"computed under 3tears-evals {threetears.evals.__version__}, lease {DEFAULT_JOB_LEASE_S}"
