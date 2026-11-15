@@ -21,7 +21,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_notes import ChangeNoteKeeper, noted_keys_page, noted_rows_since
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.ddl.change_notes import note_table
 from threetears.core.testing.plans import PlanRecorder, plan_uses_index
@@ -131,6 +131,39 @@ async def test_threetears_change_notes_0_table_reads_the_scrubs_any_note_look(ri
     """Flips if the scrub's look for whether a table has any note stops planning through the table-and-time index."""
     plans = await _scrub_plans(ring)
     assert any(plan_uses_index(plan, "threetears_change_notes_0_table") for plan in plans), [p.plan for p in plans]
+
+
+async def test_threetears_change_notes_0_table_reads_a_tables_notes_since_a_time(ring: _Ring) -> None:
+    """Flips if any read of one table's notes since a time stops planning through the table-and-time index: the
+    scrub's any-note look, the write-mark reconciler's read (``noted_rows_since``, its statement built by
+    ``_noted_rows_sql``) and a follower's keys page (``noted_keys_page``, each notes read built by
+    ``_noted_keys_sql``), each on the ring's current table."""
+    plans = await _scrub_plans(ring)
+    assert any(plan_uses_index(plan, "threetears_change_notes_0_table") for plan in plans), [p.plan for p in plans]
+    now = await ring.conn.fetchval("SELECT now()")
+    reconciled = PlanRecorder(ring.conn)
+    found = await noted_rows_since(
+        _Pool(reconciled), notes_schema=ring.schema, table="table_7", since=now - timedelta(hours=1), cap=1_000
+    )
+    assert not isinstance(found, str) and len(found.rows) == _NOTES // _TABLES, found
+    [plan] = reconciled.plans
+    assert plan_uses_index(plan, "threetears_change_notes_0_table"), plan.plan
+    paged = PlanRecorder(ring.conn)
+    page = await noted_keys_page(
+        paged,
+        notes_schema=ring.schema,
+        table="table_7",
+        tenant_token=None,
+        noted_between=(now - timedelta(hours=1), now + timedelta(minutes=1)),
+        cursor=None,
+        limit=10,
+        max_bytes=1_000_000,
+    )
+    assert not isinstance(page, str) and 0 < len(page.keys) <= 10, page  # a page ends at a whole instant
+    current = [plan for plan in paged.plans if f'"{note_table(0)}"' in plan.sql]
+    assert current and all(plan_uses_index(plan, "threetears_change_notes_0_table") for plan in current), [
+        p.plan for p in paged.plans
+    ]
 
 
 async def test_threetears_change_notes_0_ring_read_reads_a_switchs_count(ring: _Ring) -> None:
