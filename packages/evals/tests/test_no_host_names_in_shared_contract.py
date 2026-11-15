@@ -508,6 +508,8 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # listing order, so a host noun here would be one host's codec written into every host's paging.
     "kernel/list_pages.py",
     "schema/job_lease.py",
+    # The shared reading states: the engine's own closed sets, which every layer holds.
+    "schema/reading_states.py",
     "schema/refusal.py",
     # The generic trial loop and the per-result covariate derivation, both importing nothing of the
     # host. Moved off _HOST_COUPLED_MODULES when a host tool's delivery record became

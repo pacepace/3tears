@@ -119,7 +119,7 @@ def test_a_rater_who_stops_as_soon_as_the_read_separates_is_wrong_at_most_five_p
     """The rater has no preference, closes the read after every item, and stops the moment it says one arm is better.
 
     Read after every item, the sign test would be falsely separated about 18% of the time. The shipped read gives no
-    verdict before its planned length and reads only the planned items, so every look but one says ``withheld``.
+    verdict before its planned length and reads only the planned items, so every look but one is withheld.
     """
     read, results = _draw(40, arms=2, seed=11, ask=("preference",))
     assert read.draw.planned_items == 30
@@ -135,7 +135,7 @@ def test_a_rater_who_stops_as_soon_as_the_read_separates_is_wrong_at_most_five_p
             assert report is not None
             (preference,) = report.preferences
             if len(answers) < 30:
-                seen_early += preference.verdict != "withheld"
+                seen_early += not preference.withheld
             if preference.verdict in ("improved", "regressed"):
                 fooled += 1
                 break

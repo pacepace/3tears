@@ -35,7 +35,7 @@ from threetears.evals.analysis.campaign_readings import (
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.campaign.names import AspectNames
-from threetears.evals.analysis.report.words import campaign_arm_tags, declared_arm_names
+from threetears.evals.analysis.report.words import campaign_arm_tags
 from threetears.evals.analysis.report.model import (
     ChartBlock,
     CostQualityPoint,
@@ -45,6 +45,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.analysis.style import declared_arm_names
 
 __all__ = ["EQUAL_WEIGHT_ROW", "WITHHELD", "aggregate_blocks", "equal_weight_figures"]
 

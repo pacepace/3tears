@@ -899,7 +899,7 @@ def _preference_line(preference: BlindPreference, shown: Mapping[str, str]) -> s
     head = "preference"
     if preference.anchor == "reference":
         head = f"preference of {_who('reference', preference.anchor_names[0])}, not a person"
-    if preference.verdict == "withheld":
+    if preference.withheld:
         return (
             f"{head}: shown when the first {preference.planned} cases are answered "
             f"({preference.answered} of {preference.planned})"
@@ -917,7 +917,7 @@ def _preference_line(preference: BlindPreference, shown: Mapping[str, str]) -> s
     lean = exact_sign_test_p(preference.slot_a, preference.slot_choices)
     if lean is not None and lean < SIGNIFICANCE_ALPHA:
         notes += f", output A chosen on {preference.slot_a} of {preference.slot_choices}"
-    if preference.verdict == "too_few" or preference.p is None:
+    if preference.verdict is None or preference.p is None:
         return f"{head}: {counted}{notes}: too few to test ({PREFERENCE_MIN_ITEMS} needed)"
     test = "sign test" if preference.test == "exact_sign" else "bounded test on shares"
     said = {

@@ -40,7 +40,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from typing import Final, NamedTuple
+from typing import Final, Literal, NamedTuple
 
 from threetears.evals.analysis.agreement import (
     DimensionAgreement,
@@ -65,11 +65,9 @@ from threetears.evals.schema.blind_read import (
     BlindOutput,
     BlindPreference,
     BlindPreferenceTest,
-    BlindPreferenceVerdict,
     BlindRaterKind,
     BlindRead,
     BlindReadReport,
-    BlindSampleKind,
     BlindSheet,
     BlindSlot,
     BlindSample,
@@ -81,6 +79,7 @@ from threetears.evals.schema.blind_read import (
     SheetOutput,
 )
 from threetears.evals.schema.hashing import canonical_digest
+from threetears.evals.schema.reading_states import SampleKind, StateOf
 from threetears.evals.schema.models import (
     SCALES,
     CalibrationRating,
@@ -94,7 +93,7 @@ from threetears.evals.schema.models import (
 #: The seed a read is drawn by unless its caller names one: fixed, so a door that stores no draw recomputes it.
 BLIND_READ_SEED: Final = 20261114
 
-#: The fewest non-tie items a preference is tested over; below it the reading is ``too_few``.
+#: The fewest non-tie items a preference is tested over; below it the reading is not available, as too few.
 #: Five cannot separate at the two-sided 5% level: five of five has p 0.0625.
 PREFERENCE_MIN_ITEMS: Final = 6
 
@@ -438,9 +437,7 @@ def sample_standing(read: BlindRead, rater: str, kind: BlindRaterKind = "person"
     answered = {answer.item for answer in own}
     order = [item.item for item in read.items]
     items = {item.item: item for item in read.items}
-    sample: BlindSampleKind = (
-        "none" if not answered else "random" if answered == set(order[: len(answered)]) else "selected"
-    )
+    sample: SampleKind = "none" if not answered else "random" if answered == set(order[: len(answered)]) else "selected"
     return BlindSample(
         rater=rater,
         rater_kind=kind,
@@ -663,7 +660,8 @@ def _preference(
             ties=0,
             test="exact_sign",
             p=None,
-            verdict="withheld",
+            verdict=None,
+            state=StateOf(state="withheld", reason="unfinished"),
             slot_a_share=None,
             slot_choices=0,
         )
@@ -692,10 +690,11 @@ def _preference(
     decided = for_candidate + for_control
     one_each = all(len(given) == 1 for given in shares.values())
     test: BlindPreferenceTest = "exact_sign" if one_each else "bounded_share"
-    verdict: BlindPreferenceVerdict
+    verdict: Literal["improved", "regressed", "not_separated"] | None = None
+    state: StateOf | None = None
     p: float | None = None
     if decided < PREFERENCE_MIN_ITEMS:
-        verdict = "too_few"
+        state = StateOf(state="not_available", reason="too_few")
     else:
         p = (
             exact_sign_test_p(for_candidate, decided)
@@ -722,6 +721,7 @@ def _preference(
         test=test,
         p=p,
         verdict=verdict,
+        state=state,
         slot_a_share=slot_a / slot_choices if slot_choices else None,
         slot_a=slot_a,
         slot_choices=slot_choices,

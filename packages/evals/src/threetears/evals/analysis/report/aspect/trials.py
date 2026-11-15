@@ -38,10 +38,10 @@ from threetears.evals.analysis.report.verdict import (
     fail_words,
     loss_words,
 )
-from threetears.evals.analysis.report.words import trial_dimension
 from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.style import check_held, code
 from threetears.evals.kernel.metrics import MATCH_MEASURE, goal_check_of
+from threetears.evals.analysis.style import trial_dimension
 
 #: A trial's state as a mark in the cases table, always beside words for a lost one.
 _MARKS = {"passed": "✓", "failed": "✗", "lost": "–"}

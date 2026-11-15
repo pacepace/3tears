@@ -62,7 +62,7 @@ from threetears.evals.analysis.report.call import (
 )
 from threetears.evals.analysis.report_margins import CriterionFigure, criterion_figures
 from threetears.evals.analysis.report_input import Aspect, Criterion, ReportInput, Stat
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
 

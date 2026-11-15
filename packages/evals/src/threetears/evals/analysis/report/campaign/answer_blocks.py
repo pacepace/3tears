@@ -12,7 +12,7 @@ from collections.abc import Mapping
 
 from threetears.evals.analysis.campaign_readings import CampaignReadings, FloorStatus
 from threetears.evals.analysis.report.campaign.common import floor_of
-from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
+from threetears.evals.analysis.report.campaign.names import AspectNames
 from threetears.evals.analysis.floors import floor_statement
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import DisclosureBlock, Report, ReportBlock
@@ -20,6 +20,7 @@ from threetears.evals.analysis.style import code
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignCall, Floor, aware_instant, resolve_control_arm
 from threetears.evals.kernel.metrics import goal_check_of
+from threetears.evals.analysis.style import measure_name_of
 
 __all__ = [
     "NO_LONGER_READS",

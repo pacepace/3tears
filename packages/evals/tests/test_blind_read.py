@@ -65,6 +65,7 @@ from threetears.evals.schema.blind_read import (
     BlindReview,
     BlindVerdict,
 )
+from threetears.evals.schema.reading_states import StateOf
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.report_kit_support import chromium_unavailable, rendered
 
@@ -503,7 +504,8 @@ def test_the_preference_is_withheld_until_the_planned_length_and_reads_only_thos
     partial = close_blind_read(_with(read, [_answer(read, n) for n in range(11)]), results).read.report
     assert partial is not None
     (withheld,) = partial.preferences
-    assert (withheld.verdict, withheld.planned, withheld.answered) == ("withheld", 12, 11)
+    assert (withheld.verdict, withheld.planned, withheld.answered) == (None, 12, 11)
+    assert withheld.withheld and withheld.state == StateOf(state="withheld", reason="unfinished")
     assert (withheld.items, withheld.prefer_candidate, withheld.p, withheld.slot_a_share) == (0, 0, None, None)
     lines = judge_lines(
         close_blind_read(_with(read, [_answer(read, n) for n in range(11)]), results).read,
@@ -526,7 +528,7 @@ def test_the_preference_is_withheld_until_the_planned_length_and_reads_only_thos
     assert preference.p == pytest.approx(exact_sign_test_p(9, 12)) and preference.verdict == "not_separated"
     # Out of order, the planned items are not all answered, so it stays withheld.
     hunted = close_blind_read(_with(read, [_answer(read, n) for n in range(20, 40)]), results).read.report
-    assert hunted is not None and hunted.preferences[0].verdict == "withheld"
+    assert hunted is not None and hunted.preferences[0].withheld and hunted.preferences[0].verdict is None
     with pytest.raises(ValidationError, match="withheld"):
         BlindPreference.model_validate({**withheld.model_dump(), "prefer_candidate": 3})
 
@@ -542,7 +544,9 @@ def test_the_exact_sign_test_is_the_design_s_table_and_five_items_cannot_separat
     results, evidence = _campaign(5)
     read = _draw(results, evidence)
     report = close_blind_read(_with(read, [_answer(read, n) for n in range(5)]), results).read.report
-    assert report is not None and (report.preferences[0].verdict, report.preferences[0].p) == ("too_few", None)
+    assert report is not None and (report.preferences[0].verdict, report.preferences[0].p) == (None, None)
+    assert report.preferences[0].too_few
+    assert report.preferences[0].state == StateOf(state="not_available", reason="too_few")
 
 
 def test_ties_are_counted_and_never_split_and_skips_are_said() -> None:
@@ -1108,5 +1112,6 @@ def test_the_pure_core_imports_no_page_form_or_quick_path_module() -> None:
         "threetears.evals.schema.blind_read",
         "threetears.evals.schema.hashing",
         "threetears.evals.schema.models",
+        "threetears.evals.schema.reading_states",
     }
     assert files.blind_sheet is core.blind_sheet, "the quick path calls the core's sheet, and builds none of its own"

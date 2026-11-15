@@ -22,7 +22,6 @@ from threetears.evals.analysis.arms import (
     ELISION,
     LABEL_LEVEL_CHARS,
     applicable_levers,
-    arm_names,
     distinguishing_axes,
     elide_level,
     naming_levels,
@@ -31,8 +30,8 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Compa
 from threetears.evals.kernel.analysis_measures import BarDecision
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE
 from threetears.evals.analysis.style import (
-    arm_display_name,
-    arm_name,
+    named_arm_labels,
+    printed_arm_labels,
     cannot_tell_apart,
     lever_reader_name,
     humanize,
@@ -43,10 +42,9 @@ from threetears.evals.kernel.host.kinds import EMPTY_VALUE_DISPLAY, NO_VALUE_DIS
 from threetears.evals.kernel.campaign import (
     ConfidenceTier,
 )
-from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
+from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, MATCH_MEASURE, goal_check_of
 from threetears.evals.kernel.surface import DecisionSurface, GuardrailDecision
-from threetears.evals.schema.models import OUTCOME_DIM_ID, TRANSCRIPT_DIM_ID
 
 if TYPE_CHECKING:
     from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
@@ -291,23 +289,6 @@ def judged_heading(name: str) -> str:
     return f"{judged_name(name)} (judged)"
 
 
-#: How a trial's drill-down names a reserved judge axis, where a reader sees it: never by its stored id.
-_RESERVED_AXIS_WORDS: dict[str, str] = {TRANSCRIPT_DIM_ID: "transcript", OUTCOME_DIM_ID: "outcome"}
-
-
-def trial_dimension(dimension: str) -> str:
-    """A judged dimension as a trial's drill-down and its examples name it: a reserved axis by its word (``outcome``),
-    any other by its id as the rubric names it. A bundle's trials hold every dimension by its id
-    (:attr:`~threetears.evals.analysis.bundle.schema.TrialJudgement.dim`); this names it when a page is rendered.
-
-    :param dimension: The dimension's id.
-    :ptype dimension: str
-    :return: What a trial prints for it.
-    :rtype: str
-    """
-    return _RESERVED_AXIS_WORDS.get(dimension, dimension)
-
-
 def _judged_label(heading: str) -> str:
     """A judged dimension's heading as a table prints it in a row or a header: the heading :func:`judged_heading`
     writes (a score's scale or a ruler's words after it where the table adds them), starting with a capital, as every
@@ -531,7 +512,7 @@ def campaign_arm_tags(
     """Each arm's letter tag across a campaign's pages (:func:`arm_tags`), in the one order every page tags arms in:
     the campaign's own arms as it declares them (``arms``), then the other variants its aspects index, aspect by
     aspect, then any its scoreboards list besides, then ``also``'s. It is the order a campaign's report input lists
-    its arms in (``report.input_build``), so the code page, every aspect's page and the report document's page tag
+    its arms in (``report_input_build``), so the code page, every aspect's page and the report document's page tag
     and colour one arm alike (the review's P40); an arm one aspect lacks shifts no other arm's tag.
 
     :param bundles: Each aspect's bundle, in the campaign's order.
@@ -563,74 +544,6 @@ def campaign_arm_tags(
         first.setdefault(named(key), key)
     tagged = arm_tags(list(first.values()), first.get(named(control)) if control is not None else None)
     return {key: tagged[first[named(key)]] for key in listed}
-
-
-def declared_arm_names(arms: Iterable[CampaignArm]) -> dict[str, str]:
-    """The short name each arm declares (``CampaignArm.short_name``), by every variant key that names its cells: its
-    own, and those it resolves to under this build's identity predicate. A declared name is what a page prints for
-    the arm in its tight places, ahead of any short name a page would compute (GENERATOR.md §6.1); an arm declaring
-    none is absent.
-
-    :param arms: A campaign's arms.
-    :ptype arms: Iterable[CampaignArm]
-    :return: Variant key -> declared short name.
-    :rtype: dict[str, str]
-    """
-    return {
-        key: arm.short_name
-        for arm in arms
-        if arm.short_name is not None
-        for key in (arm.variant_key, *resolve_control_arm(arm).variant_keys)
-    }
-
-
-def printed_arm_labels(bundle: CampaignBundle) -> dict[str, str]:
-    """The name every page prints for each arm of a campaign, by every variant key a label names: the one display-name
-    rule (:func:`~threetears.evals.analysis.style.arm_display_name`) every surface reads, the doc page's ``Arm.name``,
-    the campaign page's folds and readings, and the plan page alike.
-
-    "Computed" is read from data: an arm no arm of the campaign's declaration covers is labelled by code. One code
-    spelled from several levers is printed from the spelling the bundle carries for it
-    (:class:`~threetears.evals.analysis.campaign_bundle.ArmSpelling`: each lever by id and its level), each lever by the
-    name every page calls it (``lever_names``), never by reading its frozen label's text back; the bundle refuses a
-    spelling that does not spell the label. Any other arm, a person's or one labelled by a single level, keeps its label
-    as written. The labels themselves, which name the arms as ids and are frozen and fingerprinted with the evidence,
-    are unchanged: a name is applied here, at render time only.
-
-    :param bundle: The campaign's evidence.
-    :ptype bundle: CampaignBundle
-    :return: Variant key -> the name a page prints.
-    :rtype: dict[str, str]
-    """
-    return {
-        key: arm_display_name(label, levers, bundle.lever_names)
-        for key, (label, levers) in _named_labels(bundle).items()
-    }
-
-
-def _named_labels(bundle: CampaignBundle) -> dict[str, tuple[str, tuple[str, ...]]]:
-    """Each arm's label by every variant key a label names, a derived arm code spelled from several levers printed
-    from its spelling with each lever named as every page names it (:attr:`CampaignBundle.arm_spellings`), and the
-    levers code spelled it from (none for a label a person gave): what :func:`printed_arm_labels` prints by the display
-    rule, and :func:`reader_arms` names an arm by."""
-    given = {key for arm in bundle.declaration.arms for key in bundle.arm_keys(arm)}
-    entries = {entry.variant_key: entry for aspect in bundle.aspects for entry in aspect.variant_index}
-    spelled = arm_names(list(entries.values()))
-    spellings = {
-        key: spelling
-        for arm in bundle.arms
-        if (spelling := bundle.arm_spellings.get(arm.variant_key)) is not None
-        for key in bundle.arm_keys(arm)
-    }
-    keys = [*(key for arm in bundle.arms for key in bundle.arm_keys(arm)), *entries]
-    labels: dict[str, tuple[str, tuple[str, ...]]] = {}
-    for key in dict.fromkeys(keys):
-        if (spelling := spellings.get(key)) is not None:
-            labels[key] = (spelling.label(bundle.lever_names), tuple(spelling.levers))
-            continue
-        levers = arm_name(spelled[key]).levers if key in spelled and key not in given else ()
-        labels[key] = (bundle.label_of(key), levers)
-    return labels
 
 
 # --- an arm's reader name: what a page prints for a computed name that holds a cut level or a placeholder ---------
@@ -863,7 +776,7 @@ def reader_arm_labels(bundle: CampaignBundle, tags: Mapping[str, str]) -> dict[s
 def input_arm_tags(bundle: CampaignBundle) -> dict[str, str]:
     """Each arm's tag as the campaign's report document page tags it, by every variant key that names it: over the
     arms in its report input's order (the campaign's arms, then the other variants its aspects index, one per label;
-    :func:`~threetears.evals.analysis.report.input_build.report_input`), the control ``P``. It is
+    :func:`~threetears.evals.analysis.report_input_build.report_input`), the control ``P``. It is
     :func:`campaign_arm_tags` over the campaign's declared arms, the call the code page tags by, so every page of a
     campaign tags an arm alike. Read off the bundle, so a surface that prints the document's words beside code's (the
     campaign listing) tags an arm as the document does.
@@ -895,7 +808,7 @@ def reader_arms(bundle: CampaignBundle, tags: Mapping[str, str]) -> list[Campaig
     :return: The arms, in the bundle's order.
     :rtype: list[CampaignArm]
     """
-    printed, reader, named = printed_arm_labels(bundle), reader_arm_labels(bundle, tags), _named_labels(bundle)
+    printed, reader, named = printed_arm_labels(bundle), reader_arm_labels(bundle, tags), named_arm_labels(bundle)
     arms = []
     for arm in bundle.arms:
         key = arm.variant_key
@@ -925,8 +838,6 @@ __all__ = [
     "LOWER_IS_BETTER",
     "arm_tags",
     "campaign_arm_tags",
-    "declared_arm_names",
-    "printed_arm_labels",
     "TOLD_APART",
     "input_arm_tags",
     "reader_arm_labels",
@@ -942,7 +853,6 @@ __all__ = [
     "aspect_stratum_key",
     "given_name",
     "judged_heading",
-    "trial_dimension",
     "label_case",
     "table_label",
     "stratum_name",

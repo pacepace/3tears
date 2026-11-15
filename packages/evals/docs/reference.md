@@ -1192,7 +1192,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused. |
 | `first_result_at` | `str \| None` | `None` | When the aspect's readings could first be seen (ISO-8601): the earliest `scored_at` among the results of the runs it reads. |
 | `package_version` | `str \| None` | `None` | The 3tears-evals version that assembled the bundle; None when the build carries no distribution metadata (a source tree on the path). |
-| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, late_criteria=[], untimed_results=0, exploratory_measures=[], exploratory_dimensions=[], disclosure=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
+| `reading_scope` | `ReadingScope` | `ReadingScope(questions_declared=False, late_criteria=[], untimed_results=0, exploratory_measures=[], exploratory_dimensions=[], disclosure=None, looks=None)` | Which readings no declared question asked about: exploratory, reportable as leads and never as confirmed answers. |
 | `exclusions` | `list[ArmExclusions]` | `[]` | Per arm (cell), in coordinate order: how many of its trials were left out of its measures, by cause — `infra` (the harness faulted it), `truncated` (a judge reply cut off at the cap it was sent, named in `truncated_sent_caps`), `judge_cannot_tell` — so a shrunken n says why, arm by arm. |
 | `differential_exclusions` | `list[DifferentialExclusion]` | `[]` | Every (arm, cause) where one cause took more than DIFFERENTIAL_EXCLUSION_SHARE (10%) of the arm's trials, with every other arm's share of the same cause beside it. |
 | `verdict_order` | `VerdictOrder` | `VerdictOrder(merit_priority=[], tiers=[], unranked_bar_measure_ids=[], question=None)` | The order verdicts are read in, as declared: the bars on each axis of `merit_priority`, strongest first, the bars on no ranked axis, and for the aspect's question the bars on the axes it names. |
@@ -1227,6 +1227,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `prior_insights` | `list[EvalInsight]` | `[]` | Subject-scoped prior insights (newest first), one per claim and at most the reporting cap of the newest. |
 | `prior_insights_omitted` | `int` | `0` | Live prior insights the ledger holds that `prior_insights` does not carry: an older insight stating the same claim as a carried one, and every insight beyond the cap, oldest dropped first. |
 | `retracted_insights` | `dict[str, str]` | `{}` | Insight id → the archived analysis that minted it, for every insight the ledger held that is NOT in `prior_insights` because its analysis was archived as shown false. |
+| `checks` | `list[Check]` | `[]` | The checks of the rig: identical arms read on the same reading. |
 | `evidence` | `EvidenceManifest \| None` | `None` | What the bundle was assembled from, as one digest and one count per kind of input the assembly read (`analysis.bundle.evidence`): the pre-image of a `v3:` fingerprint, which hashes the evidence and no statistic computed from it. |
 
 <a id="goal-checks"></a>

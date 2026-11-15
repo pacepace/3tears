@@ -80,7 +80,7 @@ _CAMPAIGN_FINGERPRINT_PREFIX: Final[str] = "v3:"
 #: The version a ``v3:`` campaign fingerprint named each aspect's bundle in.
 _ASPECT_NAMED_IN_V3: Final[str] = "v2:"
 
-#: What each kind of campaign asks of its report, as the report input says it (``report.input_build``).
+#: What each kind of campaign asks of its report, as the report input says it (``report_input_build``).
 KIND_MEANS: dict[str, str] = {
     "measurement": "One arm, measured: there is nothing to choose between, so the report recommends no arm.",
     "choice": (

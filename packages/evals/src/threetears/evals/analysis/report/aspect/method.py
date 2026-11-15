@@ -26,7 +26,6 @@ from threetears.evals.analysis.report.aspect.common import (
     _namer,
     _readings_table,
 )
-from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.campaign.provenance import calibration_blocks, setup_disclosure
 from threetears.evals.analysis.report.cost_unit import PRICED_TRIALS_TEMPLATE, money_ruler
 from threetears.evals.analysis.report.forms import PageForms
@@ -57,6 +56,7 @@ from threetears.evals.schema.models import (
     ClientRequestSettings,
     sent_settings_phrase,
 )
+from threetears.evals.analysis.style import measure_name_of
 
 #: What the methods say of a report no analysis was written for.
 NO_ANALYSIS = "none written yet; generating an analysis writes one from this same evidence"
