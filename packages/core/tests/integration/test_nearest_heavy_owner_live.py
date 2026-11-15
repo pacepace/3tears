@@ -8,7 +8,8 @@ rows on PostgreSQL 16 + pgvector 0.8.7 (2026-11-14). A platform pool
 ybhnsw applies the owner pin inside its index scan, and refuses ``SET hnsw.*``: there the read gets every row with or
 without the setting, and sends no ``SET``.
 
-The plan is forced onto the index (``enable_seqscan = off``, a session default) as the heavy owner's plan is.
+The plan is forced onto the index (``enable_seqscan = off``, a session default) as the heavy owner's plan is. The
+re-sort's cost is budgeted against the same read unwrapped (the hand-written statement it was) on the same session.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import asyncpg
 import pytest
 
 from threetears.core.keyed import Nearest, read_nearest
+from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.testing.plans import on_yugabyte
 from threetears.core.utils.pg_pool_kwargs import create_pool_with_startup_timeout
 
@@ -68,6 +70,12 @@ async def world(db_container: str) -> AsyncIterator[tuple[str, str, bool]]:
         await held.close()
 
 
+#: the query vector: ``[1, 0, ...]``
+_QUERY = "[" + ",".join(["1", *["0"] * (_DIM - 1)]) + "]"
+#: reads a timed run makes: one read is a few milliseconds, under the timer's noise alone
+_READS = 20
+
+
 async def _nearest(pool: asyncpg.Pool, small: str) -> tuple[list[dict[str, Any]], list[str]]:
     """the small owner's nearest rows to ``[1, 0, ...]`` through ``read_nearest``, and every statement the read sent."""
     sent: list[str] = []
@@ -77,7 +85,7 @@ async def _nearest(pool: asyncpg.Pool, small: str) -> tuple[list[dict[str, Any]]
             conn,
             "m",
             by={"owner": uuid.UUID(small)},
-            nearest=Nearest("embedding", "[" + ",".join(["1", *["0"] * (_DIM - 1)]) + "]", similarity="similarity"),
+            nearest=Nearest("embedding", _QUERY, similarity="similarity"),
             limit=_K,
             columns=("id",),
         )
@@ -131,3 +139,53 @@ async def test_without_the_iterative_scan_postgres_gets_fewer_rows_than_asked(
         assert len(rows) == _K
     else:
         assert len(rows) < _K
+
+
+async def test_the_re_sort_costs_within_twice_the_read_unwrapped(
+    db_container: str, world: tuple[str, str, bool]
+) -> None:
+    """Flips if ``read_nearest``'s wrapper (the read under its LIMIT in a subquery, re-sorted by distance) takes more
+    than twice the same read unwrapped, the hand-written statement it was, on the same platform session, for the
+    small owner and the heavy one; or answers other rows than it."""
+    schema, small, _yugabyte = world
+    pool = await create_pool_with_startup_timeout(
+        db_container,
+        pool_name="nearest_heavy_speed",
+        min_size=1,
+        max_size=1,
+        server_settings={"search_path": f'"{schema}", public', **_INDEX_PLAN},
+    )
+    try:
+        async with pool.acquire() as conn:
+            heavy = await conn.fetchval("SELECT owner FROM m WHERE owner <> $1 LIMIT 1", uuid.UUID(small))
+            for owner in (uuid.UUID(small), heavy):
+                bare_sql = (
+                    "SELECT t.id, 1 - (t.embedding OPERATOR(public.<=>) $2::text::public.vector) AS similarity "
+                    "FROM m AS t WHERE t.owner = $1 "
+                    "ORDER BY t.embedding OPERATOR(public.<=>) $2::text::public.vector LIMIT $3"
+                )
+
+                async def bare(who: uuid.UUID = owner, sql: str = bare_sql) -> list[Any]:
+                    return [await conn.fetch(sql, who, _QUERY, _K) for _ in range(_READS)]
+
+                async def wrapped(who: uuid.UUID = owner) -> list[Any]:
+                    return [
+                        await read_nearest(
+                            conn,
+                            "m",
+                            by={"owner": who},
+                            nearest=Nearest("embedding", _QUERY, similarity="similarity"),
+                            limit=_K,
+                            columns=("id",),
+                        )
+                        for _ in range(_READS)
+                    ]
+
+                old = {row["id"] for row in (await bare())[0]}
+                new = {row["id"] for row in (await wrapped())[0]}
+                assert new == old
+                baseline, took = await best_seconds_interleaved(bare, wrapped)
+                problem = budget_problem(f"{_READS} nearest reads of owner {owner}", took, baseline)
+                assert problem is None, problem
+    finally:
+        await pool.close()
