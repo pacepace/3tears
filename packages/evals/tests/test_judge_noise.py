@@ -267,9 +267,10 @@ class TestTheBundleFillsTheJudgesTable:
         assert rescored and all(path.startswith("/judged_measures[0]/arms[") for path in rescored), rescored
         shared = _paths(document, "rescore_share")
         assert shared and all(path.startswith("/multiple_comparisons/families[") for path in shared), shared
+        # The report input may carry them in the judge's own table and nowhere else: no caveat, no first screen.
         built = report_input(campaign_bundle(bundle)).model_dump(mode="json", by_alias=True)
         for key in ("rescore", "rescore_share", "fail_given_pass", "ceiling_low", "ceiling_high"):
-            assert not _paths(built, key), key
+            assert all(path.startswith("/judged/") for path in _paths(built, key)), key
 
     def test_an_arm_nobody_repeated_carries_no_figure(self) -> None:
         bundle = _bundle(repeated=False)
