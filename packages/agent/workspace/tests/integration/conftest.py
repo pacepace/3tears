@@ -63,6 +63,7 @@ from uuid import UUID, uuid4, uuid7
 
 import pytest
 
+from packages.agent.workspace.tests.helpers.asyncpg_shims import asks_journal_max
 from threetears.core.testing.kv import FakeNatsClient as _FakeNatsKVClient
 
 from threetears.agent.tools.call_scope import (
@@ -228,7 +229,7 @@ class _FakeStore:
                 "sha256": row.sha256,
                 "version": row.version,
             }
-        if "COALESCE(MAX(version)" in q and "FROM workspace_file_versions" in q:
+        if asks_journal_max(q):
             workspace_id_j: UUID = args[0]
             relative_path_j: str = args[1]
             matches_j = [

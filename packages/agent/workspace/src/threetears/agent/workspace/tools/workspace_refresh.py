@@ -50,7 +50,7 @@ from threetears.agent.workspace.sandbox import WorkspaceSandbox
 from threetears.agent.workspace.tools.helpers import (
     NoWorkspacePinned,
     WorkspaceNotFound,
-    _next_journal_version,
+    next_journal_version,
     raise_workspace_version,
     resolve_workspace,
     authorize_workspace,
@@ -264,7 +264,7 @@ class WorkspaceRefreshTool(TearsTool):
             async with self._db_pool.acquire() as conn:
                 async with conn.transaction(namespace=workspace.namespace_name):
                     for rel, content, sha in creates:
-                        new_version = await _next_journal_version(
+                        new_version = await next_journal_version(
                             conn,
                             workspace.id,
                             rel,
@@ -283,7 +283,7 @@ class WorkspaceRefreshTool(TearsTool):
                             correlation_id=correlation_id,
                         )
                     for rel, content, sha in updates:
-                        new_version = await _next_journal_version(
+                        new_version = await next_journal_version(
                             conn,
                             workspace.id,
                             rel,

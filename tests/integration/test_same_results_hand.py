@@ -24,20 +24,29 @@ other engine).
   ``WorkspaceFileVersionCollection.find_by_workspace`` / ``find_by_workspace_and_path`` (v006), each against the
   statement as it read before its key was completed (``ORDER BY date_created DESC LIMIT n``): rows tied on the date
   may come in either order, and of those tied with a page's last row only how many (``limited``).
+- workspace ``tools.helpers``: ``next_journal_version`` (``COALESCE(MAX(version), 0)`` -> ``aggregate_keyed`` ``Max``)
+  and ``enrich_workspace_identity`` (the namespace row by its whole primary key -> ``read_row``); wake
+  ``rate_limit`` active-schedule cap (its two ``COUNT(*)`` statements -> ``aggregate_keyed``), through
+  ``check_active_schedule_cap`` (create) and ``resume_schedule_serialized`` (resume, the wake left out).
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from operator import itemgetter
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from threetears.agent.memory.collections import MemoryRefsCollection
+from threetears.agent.wake import rate_limit
 from threetears.agent.workspace.collections import WorkspaceFileVersionCollection
+from threetears.agent.workspace.tools import helpers as workspace_helpers
+from threetears.agent.workspace.tools.helpers import next_journal_version
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.keyed import Fragment, Sort, delete_keyed, keyset_page, keyset_rows, read_by, update_keyed
@@ -490,4 +499,169 @@ async def test_a_workspace_s_history_page_is_its_newest_versions(db: Any, path: 
         order_by=["date_created"],
         page_size=_KEYED_PAGE,
         limited=True,
+    )
+
+
+async def test_a_path_s_next_journal_version_is_one_past_its_largest(db: Any) -> None:
+    """Flips if ``next_journal_version``'s keyed largest version (``aggregate_keyed`` ``Max`` over the UNIQUE
+    (workspace_id, relative_path, version) prefix) is not the ``COALESCE(MAX(version), 0)`` its statement read: another
+    path's or workspace's version, or no 0 for a path with no journal row."""
+    await _workspaces(db)
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        return [{"max_version": await next_journal_version(conn, _WORKSPACES[0], "p0.md") - 1}]
+
+    await assert_same_results(
+        db,
+        table="workspace_file_versions",
+        row=_version,
+        old_sql=(
+            "SELECT COALESCE(MAX(version), 0) AS max_version FROM workspace_file_versions"
+            " WHERE workspace_id = $1 AND relative_path = $2"
+        ),
+        params=[_WORKSPACES[0], "p0.md"],
+        helper=helper,
+    )
+
+
+def _namespace(seed: Seeded) -> dict[str, Any]:
+    """a namespace row: every other one the platform's (no customer), the rest a tenant's customer's."""
+    platform = seed.index % 2 == 1
+    return {
+        "row_scope": "platform" if platform else "customer",
+        "namespace_id": uuid.uuid5(_NS, f"namespace-{seed.index}"),
+        "name": f"ns-{seed.index}",
+        "namespace_type": "shared" if platform else "workspace",
+        "customer_id": None if platform else _AGENTS[seed.tenant],
+        "date_created": _T0,
+        "date_updated": _T0 + timedelta(hours=seed.tie),
+    }
+
+
+class _Unrouted:
+    """the session's connection for a read bound to a namespace (``with_options(namespace=)``): the schema under test
+    is already on the path, so the routing keyword is dropped."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    async def fetch(self, sql: str, *params: Any, **routing: Any) -> list[Any]:
+        del routing
+        return list(await self._conn.fetch(sql, *params))
+
+
+@pytest.mark.parametrize("index", [0, 1], ids=["customer", "platform"])
+async def test_a_workspace_s_customer_is_its_namespace_row_s(
+    db: Any, monkeypatch: pytest.MonkeyPatch, index: int
+) -> None:
+    """Flips if ``enrich_workspace_identity``'s keyed read of the namespace row (both row scopes and the id: the whole
+    primary key) answers another row than its ``row_scope IN ('platform', 'customer')`` statement did."""
+    kept: list[Any] = []
+    real = workspace_helpers.read_row
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        row = await real(*args, **kwargs)
+        kept.append(row)
+        return row
+
+    monkeypatch.setattr(workspace_helpers, "read_row", spy)
+    target = uuid.uuid5(_NS, f"namespace-{index}")
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        kept.clear()
+        await workspace_helpers.enrich_workspace_identity(SimpleNamespace(id=target, customer_id=None), _Unrouted(conn))
+        (row,) = kept
+        return [] if row is None else [dict(row)]
+
+    await assert_same_results(
+        db,
+        table="namespaces",
+        row=_namespace,
+        old_sql="SELECT customer_id FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1",
+        params=[target],
+        helper=helper,
+    )
+
+
+def _schedule(seed: Seeded) -> dict[str, Any]:
+    """a wake of its tenant's agent: active, paused, active, expired in turn; every third active one protected."""
+    status = ("active", "paused", "active", "expired")[seed.index % 4]
+    return {
+        "conversation_id": _CONVERSATION,
+        "schedule_id": uuid.uuid5(_NS, f"schedule-{seed.index}"),
+        "user_id": _AGENTS[0],
+        "agent_id": _AGENTS[seed.tenant],
+        "schedule_type": "cron",
+        "status": status,
+        "protected": status == "active" and seed.index % 3 == 2,
+        "name": None if seed.null else f"wake {seed.index}",
+        "date_created": _T0 + timedelta(hours=seed.tie),
+        "date_updated": _T0,
+    }
+
+
+class _OnePool:
+    """a pool of the session's one connection (the harness's transaction is open on it)."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[Any]:
+        yield self._conn
+
+
+class _Resumed:
+    """the schedule collection's resume, as resume_schedule_serialized calls it after the cap: nothing written."""
+
+    async def resume(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+
+
+@pytest.mark.parametrize("excluding", [None, 0], ids=["create", "resume"])
+async def test_an_agent_s_active_count_is_its_unprotected_active_wakes(
+    db: Any, monkeypatch: pytest.MonkeyPatch, excluding: int | None
+) -> None:
+    """Flips if the cap's keyed count (``aggregate_keyed`` over idx_wake_schedules_agent_status) counts other wakes
+    than its ``COUNT(*)`` did: another agent's, a paused or expired one, a protected one, or (on resume) the wake
+    being resumed. Read through the front doors: ``check_active_schedule_cap`` (create) and
+    ``resume_schedule_serialized`` (resume), the count each sends kept by a spy."""
+    left_out = None if excluding is None else uuid.uuid5(_NS, f"schedule-{excluding}")
+    kept: list[Any] = []
+    real = rate_limit.aggregate_keyed
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        rows = await real(*args, **kwargs)
+        kept.append(rows)
+        return rows
+
+    monkeypatch.setattr(rate_limit, "aggregate_keyed", spy)
+
+    async def helper(conn: Any) -> list[dict[str, Any]]:
+        kept.clear()
+        if left_out is None:
+            await rate_limit.check_active_schedule_cap(agent_id=_AGENTS[0], cap=10**6, pool=conn)
+        else:
+            await rate_limit.resume_schedule_serialized(
+                collection=_Resumed(),  # type: ignore[arg-type]
+                agent_id=_AGENTS[0],
+                conversation_id=_CONVERSATION,
+                schedule_id=left_out,
+                next_fire_at=_T0,
+                cap=10**6,
+                pool=_OnePool(conn),
+            )
+        ((counted,),) = kept
+        return [{"n": counted["n"]}]
+
+    old_sql = (
+        "SELECT COUNT(*) AS n FROM agent_wake_schedules WHERE agent_id = $1 AND status = 'active' AND NOT protected"
+    )
+    await assert_same_results(
+        db,
+        table="agent_wake_schedules",
+        row=_schedule,
+        old_sql=old_sql if left_out is None else old_sql + " AND schedule_id != $2",
+        params=[_AGENTS[0]] if left_out is None else [_AGENTS[0], left_out],
+        helper=helper,
     )

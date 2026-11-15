@@ -83,7 +83,7 @@ from uuid import UUID, uuid7
 from threetears.agent.audit import AuditEvent, publish_audit
 from threetears.agent.tools.call_scope import current_scope
 from threetears.agent.workspace.bind_policy import BindConflictPolicy
-from threetears.agent.workspace.tools.helpers import _next_journal_version, raise_workspace_version
+from threetears.agent.workspace.tools.helpers import next_journal_version, raise_workspace_version
 from threetears.core.keyed import delete_keyed, read_row
 from threetears.core.utils.atomic_write import atomic_write
 from threetears.observe import contain, counter, get_logger
@@ -653,7 +653,7 @@ async def _seed_l3_import_all(
     async with db_pool.acquire() as conn:
         async with conn.transaction(namespace=workspace.namespace_name):
             for rel, (content, sha) in disk.items():
-                new_version = await _next_journal_version(
+                new_version = await next_journal_version(
                     conn,
                     workspace.id,
                     rel,
@@ -760,7 +760,7 @@ async def _seed_l3_disk_wins(
         async with db_pool.acquire() as conn:
             async with conn.transaction(namespace=workspace.namespace_name):
                 for rel, content, sha in creates:
-                    new_version = await _next_journal_version(
+                    new_version = await next_journal_version(
                         conn,
                         workspace.id,
                         rel,
@@ -792,7 +792,7 @@ async def _seed_l3_disk_wins(
                         now,
                     )
                 for rel, content, sha in updates:
-                    new_version = await _next_journal_version(
+                    new_version = await next_journal_version(
                         conn,
                         workspace.id,
                         rel,
@@ -824,7 +824,7 @@ async def _seed_l3_disk_wins(
                         now,
                     )
                 for rel in deletes:
-                    new_version = await _next_journal_version(
+                    new_version = await next_journal_version(
                         conn,
                         workspace.id,
                         rel,
@@ -1022,7 +1022,7 @@ async def _handle_watch_batch(
                         )
                         if head is None:
                             continue
-                        new_version = await _next_journal_version(
+                        new_version = await next_journal_version(
                             conn,
                             workspace.id,
                             rel,
@@ -1083,7 +1083,7 @@ async def _handle_watch_batch(
                             # import as create -- net-new content the
                             # agent cannot have produced.
                             if change is Change.added and head is None:
-                                new_version = await _next_journal_version(
+                                new_version = await next_journal_version(
                                     conn,
                                     workspace.id,
                                     rel,
@@ -1117,7 +1117,7 @@ async def _handle_watch_batch(
                                 changed.append(rel)
                             continue
                         # DISK_WINS: import every add / modify event.
-                        new_version = await _next_journal_version(
+                        new_version = await next_journal_version(
                             conn,
                             workspace.id,
                             rel,
@@ -1344,7 +1344,7 @@ async def _capture_back(
                     # derive version from journal so re-creating a path
                     # that was previously bind-deleted does not collide
                     # on (workspace_id, relative_path, version).
-                    new_version = await _next_journal_version(conn, workspace.id, rel)
+                    new_version = await next_journal_version(conn, workspace.id, rel)
                     max_version = max(max_version, new_version)
                     await conn.execute(
                         _INSERT_WORKSPACE_FILE_VERSION_SQL,
@@ -1381,7 +1381,7 @@ async def _capture_back(
                     # version is no longer a safe basis for "prior + 1"
                     # -- a naive bump would collide with the watcher's
                     # INSERT on (workspace_id, relative_path, version).
-                    new_version = await _next_journal_version(
+                    new_version = await next_journal_version(
                         conn,
                         workspace.id,
                         rel,
@@ -1416,7 +1416,7 @@ async def _capture_back(
 
                 for rel in deletes:
                     # same watcher-collision rationale as updates above.
-                    new_version = await _next_journal_version(
+                    new_version = await next_journal_version(
                         conn,
                         workspace.id,
                         rel,
@@ -1824,7 +1824,7 @@ async def recover(
                     # derive version from journal, not the head cache,
                     # so re-created paths never collide with deleted
                     # history on the unique-constraint triple.
-                    new_version = await _next_journal_version(conn, workspace.id, rel)
+                    new_version = await next_journal_version(conn, workspace.id, rel)
                     max_version = max(max_version, new_version)
                     await conn.execute(
                         _INSERT_WORKSPACE_FILE_VERSION_SQL,
@@ -1858,7 +1858,7 @@ async def recover(
                     # so a concurrent bind on another pod could bump the
                     # journal in parallel; the unique constraint would
                     # reject a naive prior_version+1 INSERT.
-                    new_version = await _next_journal_version(
+                    new_version = await next_journal_version(
                         conn,
                         workspace.id,
                         rel,

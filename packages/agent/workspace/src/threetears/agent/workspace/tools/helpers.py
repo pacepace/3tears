@@ -33,7 +33,17 @@ from uuid import UUID, uuid7
 
 from threetears.agent.acl import AclCache
 from threetears.agent.tools.call_scope import current_scope, no_call_scope_message
-from threetears.core.keyed import Fragment, read_row, update_keyed, with_options
+from threetears.core.keyed import (
+    AnyOf,
+    Fragment,
+    Max,
+    Sort,
+    aggregate_keyed,
+    keyset_page,
+    read_row,
+    update_keyed,
+    with_options,
+)
 from threetears.core.namespaces import PLATFORM_RBAC_READ_NAMESPACE
 
 __all__ = [
@@ -44,6 +54,7 @@ __all__ = [
     "authorize_workspace",
     "authorize_workspace_file",
     "enrich_workspace_identity",
+    "next_journal_version",
     "raise_workspace_version",
     "resolve_ref",
     "resolve_workspace",
@@ -185,7 +196,6 @@ def workspace_audit_identity(workspace: Workspace) -> WorkspaceAuditIdentity:
 
 if TYPE_CHECKING:
     from threetears.agent.tools.context import ToolContextManager
-
     from threetears.agent.workspace.collections import (
         WorkspaceCollection,
         WorkspaceFileCollection,
@@ -194,8 +204,8 @@ if TYPE_CHECKING:
     from threetears.agent.workspace.config import ValidatorEntry
     from threetears.agent.workspace.entities import Workspace
 
-from threetears.agent.workspace import pin as pin_module
 from threetears.agent.workspace import authorize as authorize_module
+from threetears.agent.workspace import pin as pin_module
 from threetears.agent.workspace.validators import dispatch_validators
 
 
@@ -291,9 +301,7 @@ class Sha256Mismatch(RuntimeError):
 #: only fail there. What puts those tables on the path is the
 #: :data:`PLATFORM_RBAC_READ_NAMESPACE` binding the one caller passes.
 #: Both row scopes and the id: the whole primary key ``(row_scope, namespace_id)``, two point reads.
-_SELECT_NAMESPACE_CUSTOMER_SQL = (
-    "SELECT customer_id FROM namespaces WHERE row_scope IN ('platform', 'customer') AND namespace_id = $1"
-)
+_NAMESPACE_ROW_SCOPES = AnyOf(("platform", "customer"), cast=None)
 
 
 async def authorize_workspace(
@@ -460,10 +468,12 @@ async def enrich_workspace_identity(
     :return: the same ``workspace`` instance (returned for chaining)
     :rtype: Workspace
     """
-    row = await db_pool.fetchrow(
-        _SELECT_NAMESPACE_CUSTOMER_SQL,
-        workspace.id,
-        namespace=PLATFORM_RBAC_READ_NAMESPACE,
+    row = await read_row(
+        with_options(db_pool, namespace=PLATFORM_RBAC_READ_NAMESPACE),
+        "namespaces",
+        by={"row_scope": _NAMESPACE_ROW_SCOPES, "namespace_id": workspace.id},
+        columns=("customer_id",),
+        records=True,
     )
     if row is not None:
         raw = row["customer_id"] if isinstance(row, dict) else row["customer_id"]
@@ -523,14 +533,7 @@ async def resolve_workspace(
     return result
 
 
-_SELECT_JOURNAL_MAX_VERSION_SQL = (
-    "SELECT COALESCE(MAX(version), 0) AS max_version "
-    "FROM workspace_file_versions "
-    "WHERE workspace_id = $1 AND relative_path = $2"
-)
-
-
-async def _next_journal_version(
+async def next_journal_version(
     conn: Any,
     workspace_id: UUID,
     relative_path: str,
@@ -553,9 +556,15 @@ async def _next_journal_version(
     :return: next version number to use for an insert on this path
     :rtype: int
     """
-    row = await conn.fetchrow(_SELECT_JOURNAL_MAX_VERSION_SQL, workspace_id, relative_path)
-    max_version = 0 if row is None else int(row["max_version"])
-    return max_version + 1
+    # the largest version of the path, read off the UNIQUE (workspace_id, relative_path, version) by its prefix;
+    # a path with no journal row answers None (the hand-written COALESCE(MAX(version), 0) answered 0)
+    (row,) = await aggregate_keyed(
+        conn,
+        "workspace_file_versions",
+        aggregates={"max_version": Max('t."version"')},
+        by={"workspace_id": workspace_id, "relative_path": relative_path},
+    )
+    return int(row["max_version"] or 0) + 1
 
 
 _INSERT_WORKSPACE_FILE_VERSION_SQL = """
@@ -698,7 +707,7 @@ async def write_file_atomic(
             # action while leaving the journal intact. a later re-create
             # at the same path would otherwise collide on the
             # (workspace_id, relative_path, version) unique constraint.
-            new_version = await _next_journal_version(conn, workspace.id, relative_path)
+            new_version = await next_journal_version(conn, workspace.id, relative_path)
             await conn.execute(
                 _INSERT_WORKSPACE_FILE_VERSION_SQL,
                 uuid7(),
@@ -729,14 +738,6 @@ async def write_file_atomic(
     return new_version, new_sha256
 
 
-_SELECT_LATEST_VERSION_ROW_SQL = (
-    "SELECT version_id, workspace_id, relative_path, version, content, sha256, "
-    "action, label, actor_id, correlation_id, date_created "
-    "FROM workspace_file_versions "
-    "WHERE workspace_id = $1 AND relative_path = $2 "
-    "ORDER BY version DESC LIMIT 1"
-)
-
 #: the columns every journal-row read selects
 _VERSION_ROW_COLUMNS = (
     "version_id",
@@ -750,15 +751,6 @@ _VERSION_ROW_COLUMNS = (
     "actor_id",
     "correlation_id",
     "date_created",
-)
-
-_SELECT_CHECKPOINT_ROW_SQL = (
-    "SELECT version_id, workspace_id, relative_path, version, content, sha256, "
-    "action, label, actor_id, correlation_id, date_created "
-    "FROM workspace_file_versions "
-    "WHERE workspace_id = $1 AND relative_path = $2 "
-    "AND action = 'checkpoint' AND label = $3 "
-    "ORDER BY version DESC LIMIT 1"
 )
 
 
@@ -835,19 +827,67 @@ async def resolve_ref(
             records=True,
         )
     elif ref == "head":
-        row = await conn.fetchrow(
-            _SELECT_LATEST_VERSION_ROW_SQL,
-            workspace_id,
-            relative_path,
-            **kwargs,
+        row = next(
+            iter(
+                (
+                    await keyset_page(
+                        with_options(conn, **kwargs),
+                        "workspace_file_versions",
+                        columns=(
+                            "version_id",
+                            "workspace_id",
+                            "relative_path",
+                            "version",
+                            "content",
+                            "sha256",
+                            "action",
+                            "label",
+                            "actor_id",
+                            "correlation_id",
+                            "date_created",
+                        ),
+                        by={"workspace_id": workspace_id, "relative_path": relative_path},
+                        order=[Sort("version", descending=True)],
+                        limit=1,
+                        records=True,
+                    )
+                ).rows
+            ),
+            None,
         )
     else:
-        row = await conn.fetchrow(
-            _SELECT_CHECKPOINT_ROW_SQL,
-            workspace_id,
-            relative_path,
-            ref,
-            **kwargs,
+        row = next(
+            iter(
+                (
+                    await keyset_page(
+                        with_options(conn, **kwargs),
+                        "workspace_file_versions",
+                        columns=(
+                            "version_id",
+                            "workspace_id",
+                            "relative_path",
+                            "version",
+                            "content",
+                            "sha256",
+                            "action",
+                            "label",
+                            "actor_id",
+                            "correlation_id",
+                            "date_created",
+                        ),
+                        by={
+                            "workspace_id": workspace_id,
+                            "relative_path": relative_path,
+                            "action": "checkpoint",
+                            "label": ref,
+                        },
+                        order=[Sort("version", descending=True)],
+                        limit=1,
+                        records=True,
+                    )
+                ).rows
+            ),
+            None,
         )
     if row is None:
         result = None
