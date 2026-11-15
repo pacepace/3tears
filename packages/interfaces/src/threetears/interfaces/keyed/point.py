@@ -117,7 +117,7 @@ def _sql(
     :raises ValueError: when nothing is pinned, or ``columns`` is empty
     """
     selected, conditions, tail, params = _clauses(table, by, columns, limit, lock, where, order, also)
-    return f"SELECT {selected} FROM {relation(table, 't')} WHERE {conditions}{tail}", params
+    return f"SELECT {selected} FROM {relation(table, 't', params)} WHERE {conditions}{tail}", params
 
 
 def _beside_sql(
@@ -137,7 +137,7 @@ def _beside_sql(
     """
     selected, conditions, tail, params = _clauses(table, by, columns, True, lock, where)
     return (
-        f"SELECT {selected} FROM {relation(beside, 'b')} CROSS JOIN {relation(table, 't')} WHERE {conditions}{tail}",
+        f"SELECT {selected} FROM {relation(beside, 'b', params)} CROSS JOIN {relation(table, 't', params)} WHERE {conditions}{tail}",
         params,
     )
 
@@ -349,6 +349,45 @@ class TextRank:
         return f"ts_rank_cd(t.{quote_identifier(self.column)}, websearch_to_tsquery('{self.config}', ${place}))"
 
 
+@dataclass(frozen=True)
+class PatternCount:
+    """the rank a ranked read orders by, best first: how many of ``patterns`` the row matches, a pattern matched when
+    any of ``fields`` is ``ILIKE`` it; then ``then``, ascending. A row matching none is not read. The patterns are bound
+    as ONE array whatever their number (``$n::text[]``), counted a pattern a ``CASE`` over the array's element
+    (``CASE WHEN t."f1" ILIKE ($n::text[])[1] OR ... THEN 1 ELSE 0 END + ...``); the rows pass by
+    ``t."f1" ILIKE ANY($n::text[]) OR ...``. A field names a column of the row or a column a ``LEFT`` join of the
+    read adds (``threetears.core.keyed.read_nearest``'s ``joins=``, by the name it lands under), so a field the read's
+    table does not hold (a template's description) ranks the row too.
+
+    WHY (hub use-the-helper, 2026-11-15): the hub's schema search wrote one ``CASE WHEN <field> ILIKE $k ...`` a token
+    summed into ``match_score`` (``schema_endpoints._fetch_search_results``), its text growing with the tokens. Read a
+    token at a time through the keyed helpers it cost 1.15-1.87x the one statement on PostgreSQL and up to 3.27x on
+    YugabyteDB at real size (117,540 columns of 5,615 tables; scratchpad h2/search pg2.log, yb1.log), so the rank stays
+    one statement, written here, its pins judged as every keyed read's: 0.60-1.03x the hand-written statement on
+    PostgreSQL, 0.98-1.09x on YugabyteDB (scratchpad h3/search pg2.log, yb1.log; the cost of each shape at
+    ``threetears.core.keyed.point._pattern_count_statement``).
+
+    :param fields: the matched fields, TRUSTED identifiers: a column of the row, or a joined column's name
+    :ptype fields: tuple[str, ...]
+    :param patterns: the ``ILIKE`` patterns, as the caller wrote them (``%age%``); none reads no row
+    :ptype patterns: Sequence[str]
+    :param rank: the name each row carries its count under
+    :ptype rank: str
+    :param then: the columns of the row ordering rows of the same count, ascending (the key after the pins, so the
+        order is total); TRUSTED identifiers
+    :ptype then: tuple[str, ...]
+    """
+
+    fields: tuple[str, ...]
+    patterns: Sequence[str]
+    rank: str = "match_score"
+    then: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.fields:
+            raise ValueError("a pattern count names at least one field it matches")
+
+
 def read_nearest_statement(
     table: str | Derived,
     *,
@@ -395,6 +434,8 @@ def read_nearest_statement(
         1
         + len(by_conditions(by, alias="t", stated=stated_literals(table))[1])
         + sum(len(fragment.params) for fragment in where)
+        # a derived relation's parameters, bound after the pins' and the filters' (:func:`relation`)
+        + (len(table.params) if isinstance(table, Derived) else 0)
     )
     distance = nearest.distance(place)
     if isinstance(nearest, TextRank):

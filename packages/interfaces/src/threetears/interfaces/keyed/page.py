@@ -535,6 +535,8 @@ def page_statement(
         )
     )
 
+    # the relation once, its parameters (a derived relation's) bound after every condition's: each leg reads it
+    source = relation(table, "t", params)
     statements: list[str] = []
     for condition, leg_order in legs:
         every = [*conditions, *([condition] if condition is not None else []), *after]
@@ -544,7 +546,7 @@ def page_statement(
         # PostgreSQL folds to ``NOT is_deleted``, no equality it drops from the order) made the page sort its rows
         # rather than walk the index
         by_clause = f" ORDER BY {order_by_terms(leg_order)}" if leg_order else ""
-        statements.append(f"SELECT {selected} FROM {relation(table, 't')}{clause}{by_clause} LIMIT {rows}")
+        statements.append(f"SELECT {selected} FROM {source}{clause}{by_clause} LIMIT {rows}")
     if len(statements) == 1:
         sql = statements[0]
     elif chain_legs:

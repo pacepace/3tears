@@ -171,10 +171,8 @@ async def count_at_most(
         raise ValueError(f"a bounded count counts at least none, got {at_most}")
     where, values = _where(by or {})
     ordered = _ordered(table, order)
-    sql = (
-        f"SELECT count(*) AS held FROM (SELECT 1 FROM {relation(table, 'r')}{where}{ordered} "
-        f"LIMIT ${len(values) + 1}) AS held"
-    )
+    source = relation(table, "r", values)
+    sql = f"SELECT count(*) AS held FROM (SELECT 1 FROM {source}{where}{ordered} LIMIT ${len(values) + 1}) AS held"
     rows = await sent_by(conn).fetch(sql, *values, at_most + 1)
     held = int(rows[0]["held"])
     return BoundedCount(count=min(held, at_most), more=held > at_most)
@@ -197,9 +195,8 @@ async def holds_any(
     :rtype: bool
     """
     where, values = _where(by or {})
-    rows = await sent_by(conn).fetch(
-        f"SELECT 1 AS held FROM {relation(table, 'r')}{where}{_ordered(table, order)} LIMIT 1", *values
-    )
+    source = relation(table, "r", values)
+    rows = await sent_by(conn).fetch(f"SELECT 1 AS held FROM {source}{where}{_ordered(table, order)} LIMIT 1", *values)
     return bool(rows)
 
 
@@ -357,7 +354,7 @@ def _aggregate_statement(
             function = "SUM" if isinstance(aggregate, Sum) else "MAX" if isinstance(aggregate, Max) else "MIN"
             items.append(f"{function}({aggregate.expression}) AS {quote_identifier(name)}")
     clause = f" GROUP BY {', '.join(grouped)}" if grouped else ""
-    sql = f"SELECT {', '.join(items)} FROM {relation(table, 't')} WHERE {' AND '.join(conditions)}{clause}"
+    sql = f"SELECT {', '.join(items)} FROM {relation(table, 't', params)} WHERE {' AND '.join(conditions)}{clause}"
     return (sql, *params)
 
 
@@ -487,7 +484,7 @@ async def _counts_paged(
             params.append(last)
             conditions.append(f"{quoted} > ${len(params)}{'' if cast is None else f'::{cast}'}")
         sql = hint + (
-            f"SELECT {quoted} AS counted, count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}"
+            f"SELECT {quoted} AS counted, count(*) AS held FROM {relation(table, 'r', params)} WHERE {' AND '.join(conditions)}"
             f" GROUP BY {quoted} ORDER BY {quoted} LIMIT {batch}"
         )
         rows = await sent_by(conn).fetch(sql, *params)
@@ -504,7 +501,7 @@ async def _counts_paged(
     conditions, params = by_conditions(nulls)
     hint = await yugabyte_index_hint(conn, table, nulls, [], alias="r")
     rows = await sent_by(conn).fetch(
-        f"{hint}SELECT count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}", *params
+        f"{hint}SELECT count(*) AS held FROM {relation(table, 'r', params)} WHERE {' AND '.join(conditions)}", *params
     )
     if rows and int(rows[0]["held"]):
         counted[None] = int(rows[0]["held"])
@@ -708,7 +705,7 @@ async def counts_by_relations(
             params += list(fragment.params)
         clauses = _branch_clauses(labels, conditions, params, own)
         parts = [
-            f"SELECT {index} AS relation, {quoted} AS counted, count(*) AS held FROM {relation(tables[label], 'r')} "
+            f"SELECT {index} AS relation, {quoted} AS counted, count(*) AS held FROM {relation(tables[label], 'r', params)} "
             f"WHERE {clauses[label]} GROUP BY {quoted}"
             for index, label in enumerate(labels)
         ]
@@ -806,7 +803,7 @@ async def _counts_seeking(
         )
         parts = [
             f"SELECT {index} AS relation, counted_keys.counted_key AS counted, c.held FROM {keys} CROSS JOIN LATERAL "
-            f"(SELECT count(*) AS held FROM {relation(tables[label], 'r')} WHERE {clauses[label]}) AS c "
+            f"(SELECT count(*) AS held FROM {relation(tables[label], 'r', params)} WHERE {clauses[label]}) AS c "
             "WHERE c.held > 0"
             for index, label in enumerate(labels)
         ]
@@ -866,7 +863,7 @@ async def _counts_packed(
     texts = " UNION ALL ".join(
         f"SELECT '{index}' || CHR(31) || {_nullable_text(quoted)} || CHR(31) || CAST(count(*) AS {_PACKED_TEXT}) "
         f"AS {alias} "
-        f"FROM {relation(tables[label], 'r')} WHERE {clauses[label]} GROUP BY {quoted}"
+        f"FROM {relation(tables[label], 'r', params)} WHERE {clauses[label]} GROUP BY {quoted}"
         for index, label in enumerate(labels)
     )
     for fields in await _packed_rows(conn, texts, params, items, packed_rows, alias):
@@ -957,7 +954,7 @@ async def read_packed(
     alias = quote_identifier(packed_as)
     text = column.expression if isinstance(column, Selected) else f"r.{quote_identifier(column)}"
     clause = f" WHERE {' AND '.join(conditions)}" if conditions else ""
-    texts = f"SELECT CAST({text} AS {_PACKED_TEXT}) AS {alias} FROM {_filters.relation(relation, 'r')}{clause}"
+    texts = f"SELECT CAST({text} AS {_PACKED_TEXT}) AS {alias} FROM {_filters.relation(relation, 'r', params)}{clause}"
     return await _packed_cells(conn, texts, params, items, packed_rows, alias)
 
 
@@ -1023,7 +1020,7 @@ async def _counts_since(
         group_text = "CAST(NULL AS VARCHAR)" if grouped is None else f"CAST({quote_identifier(grouped)} AS VARCHAR)"
         flag = "0" if fresh is None else f"max(CASE WHEN {compared[fresh]} THEN 1 ELSE 0 END)"
         clause = " AND ".join([*conditions, past])
-        tail = f"FROM {relation(tables[label], 'r')} WHERE {clause} GROUP BY {quoted}"
+        tail = f"FROM {relation(tables[label], 'r', params)} WHERE {clause} GROUP BY {quoted}"
         parts.append((index, group_text, flag, tail, "" if grouped is None else f", {quote_identifier(grouped)}"))
     if packed_rows is not None:
         if packed_rows < 1:

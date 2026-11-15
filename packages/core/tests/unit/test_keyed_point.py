@@ -20,6 +20,7 @@ from threetears.core.keyed import (
     Joined,
     Lock,
     Nearest,
+    PatternCount,
     Selected,
     Sort,
     TextRank,
@@ -268,6 +269,59 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
         f"ORDER BY {rank} DESC LIMIT $5"
     )
     assert params == ("a", "u", "red apples", "red apples", 3)
+
+
+async def test_a_pattern_ranked_read_counts_its_patterns_in_one_statement_with_its_left_joins_inside() -> None:
+    """Flips if ``read_nearest`` given a ``PatternCount`` does not send ONE statement: the pins first, a row passing
+    when any field matches any pattern, the patterns bound once as one array, each ``LEFT`` join inside the ranked
+    read (a joined field ranks the row before the limit cuts; a later join reads an earlier one's name), the count
+    under its name, best first then the ``then`` columns, its LIMIT last."""
+    conn = _Answering([{"id": 1, "match_score": 2}])
+    rows = await read_nearest(
+        conn,
+        "columns",
+        by={"source_id": "s"},
+        nearest=PatternCount(("name", "doc"), ["%a%", "%b%"], then=("name",)),
+        limit=5,
+        joins=(
+            Joined(
+                "tables", on={"source_id": "source_id", "table": "table"}, columns={"bound": "template_id"}, left=True
+            ),
+            Joined("template_docs", on={"template_id": "bound", "name": "name"}, columns={"doc": "text"}, left=True),
+        ),
+    )
+    assert rows == [{"id": 1, "match_score": 2}]
+    [(sql, params)] = conn.calls
+    fields = ['t."name"', 'j2."text"']
+    assert sql == (
+        'SELECT t.*, j1."template_id" AS "bound", j2."text" AS "doc", '
+        f"(CASE WHEN {fields[0]} ILIKE ($2::text[])[1] OR {fields[1]} ILIKE ($2::text[])[1] THEN 1 ELSE 0 END + "
+        f"CASE WHEN {fields[0]} ILIKE ($2::text[])[2] OR {fields[1]} ILIKE ($2::text[])[2] THEN 1 ELSE 0 END) "
+        'AS "match_score" '
+        'FROM "columns" AS t LEFT JOIN "tables" AS j1 ON j1."source_id" = t."source_id" AND j1."table" = t."table" '
+        'LEFT JOIN "template_docs" AS j2 ON j2."template_id" = j1."template_id" AND j2."name" = t."name" '
+        f'WHERE t."source_id" = $1 AND ({fields[0]} ILIKE ANY($2::text[]) OR {fields[1]} ILIKE ANY($2::text[])) '
+        'ORDER BY "match_score" DESC, t."name" LIMIT $3'
+    )
+    assert params == ("s", ["%a%", "%b%"], 5)
+
+
+async def test_a_pattern_ranked_read_refuses_what_it_cannot_rank() -> None:
+    """Flips if a pattern-ranked read pinning nothing, or joining other than a plain LEFT join, is sent."""
+    rank = PatternCount(("name",), ["%a%"])
+    with pytest.raises(ValueError, match="pins at least one column"):
+        await read_nearest(_Answering([]), "columns", by={}, nearest=rank, limit=5)
+    with pytest.raises(ValueError, match="plain LEFT joins only"):
+        await read_nearest(
+            _Answering([]),
+            "columns",
+            by={"source_id": "s"},
+            nearest=rank,
+            limit=5,
+            joins=(Joined("tables", on={"source_id": "source_id"}, columns={"bound": "template_id"}),),
+        )
+    with pytest.raises(ValueError, match="at least one field"):
+        PatternCount((), ["%a%"])
 
 
 class _Answering:

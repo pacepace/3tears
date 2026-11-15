@@ -921,6 +921,55 @@ class TestFiltersLocksAndJoins:
         assert [row["b"] for row in read.rows] == [row[0] for row in expected]
 
 
+class TestDerivedParameters:
+    """a :class:`Derived` binding parameters is renumbered into the statement that reads it, as a ``Fragment`` is: its
+    ``$1`` bound after every parameter the helper binds before naming it."""
+
+    async def test_counts_by_relations_reads_each_derived_relation_with_its_own_binds(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a derived relation's ``$1`` is left as written (it would read the counted values, or a pin), its
+        binds are not appended, or two derived relations share one set of binds."""
+        reader = _Recording(db)
+        counted = await counts_by_relations(
+            reader,
+            {
+                "low": Derived("SELECT a, b FROM t WHERE b < $1 AND v >= $2", (50, 0)),
+                "high": Derived("SELECT a, b FROM t WHERE b >= $1", (90,)),
+            },
+            column="a",
+            values=AnyOf(["k1", "k2"]),
+            where=[Fragment('"b" <> $1', (-1,))],
+        )
+        assert counted == {"low": {"k1": 5, "k2": 5}, "high": {"k1": 1, "k2": 1}}
+        ((sql, params),) = reader.statements
+        assert "b < $3 AND v >= $4" in sql and "b >= $5" in sql, sql
+        assert list(params)[2:] == [50, 0, 90]
+
+    async def test_a_bounded_count_and_a_page_bind_a_derived_relations_parameters(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if count_at_most's LIMIT or keyset_page's pins take the derived relation's place."""
+        low = Derived("SELECT a, b FROM t WHERE b < $1", (30,))
+        bounded = await count_at_most(_Recording(db), low, at_most=100, order=["a", "b"], by={"a": "k1"})
+        assert bounded == BoundedCount(count=3, more=False)
+        page = await keyset_page(_Recording(db), low, columns=["a", "b"], by={"a": "k2"}, order=[Sort("b")], limit=2)
+        assert [row["b"] for row in page.rows] == [2, 12]
+
+    async def test_a_helper_that_cannot_place_the_binds_refuses_the_relation(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if a derived relation's parameters are dropped, or sent as written, by a helper that numbers its own
+        placeholders before it names the relation (a keyed batch)."""
+        with pytest.raises(ValueError, match="binds them"):
+            await read_keyed(
+                _Recording(db),
+                Derived("SELECT a, b FROM t WHERE b < $1", (30,)),
+                keys=KeyBatch(("a", "b"), [("k1", 1)]),
+                columns=["a", "b"],
+            )
+
+
 class TestRelations:
     async def test_counts_of_several_relations_come_in_one_statement(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if each relation is counted by its own statement, or a relation's counts land on another's label."""
