@@ -112,6 +112,10 @@
    "anyOf": [{"type": "array", "items": {"$ref": "#/$defs/RunRig"}}, {"type": "null"}],
    "description": "The rig each run was measured with, for each run that recorded one past a serial run pinning and declaring nothing; none where no run did, or the bundle carried none."
   },
+  "across_aspects": {
+   "anyOf": [{"$ref": "#/$defs/AcrossAspects"}, {"type": "null"}],
+   "description": "Each arm's figures across every aspect, each aspect weighed alike; none where the bundle read none."
+  },
   "caveat_list": {
    "anyOf": [
     {
@@ -582,6 +586,10 @@
      ],
      "description": "The cases that baseline is the mean of."
     },
+    "arm_mean": {
+     "type": ["number", "null"],
+     "description": "The arm's mean over the cases the test paired: what the delta is a change to."
+    },
     "family": {
      "anyOf": [
       {
@@ -607,6 +615,10 @@
       }
      ],
      "description": "Why the delta is not the difference of the two means printed beside it, where it is not."
+    },
+    "margin": {
+     "type": ["number", "null"],
+     "description": "The margin the delta was read against, in the measure's units: its equivalence margin, else the measure's declared materiality threshold, else the margin its runs declared; none for none."
     },
     "corrected": {
      "anyOf": [
@@ -1156,6 +1168,16 @@
      "type": "array",
      "items": {"type": "string"},
      "description": "What the pipeline says about it."
+    },
+    "per_arm": {
+     "type": ["object", "null"],
+     "additionalProperties": {"$ref": "#/$defs/Stat"},
+     "description": "Each arm's pass^k at k, 0 to 1, by arm: mean, and the cases scored k times or more (n_cases); an arm no case reached k for is not available, too_few."
+    },
+    "at_common_depth": {
+     "type": ["object", "null"],
+     "additionalProperties": {"$ref": "#/$defs/Stat"},
+     "description": "Each arm's pass^k at the common depth, 0 to 1, by arm, over the cases every arm ran (n_cases); none where the arms share no case."
     }
    },
    "additionalProperties": false,
@@ -1509,6 +1531,56 @@
    },
    "additionalProperties": false,
    "description": "One arm's figure on one measure: a mean with its spread, a latency's percentiles, or a distribution."
+  },
+  "AcrossFigure": {
+   "type": "object",
+   "required": ["value", "interval"],
+   "properties": {
+    "value": {"type": ["number", "null"], "description": "The equal-weight mean of the aspects' figures; none where withheld."},
+    "interval": {
+     "type": ["array", "null"],
+     "items": {"type": "number"},
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "Its interval, low then high; none where withheld."
+    },
+    "missing": {
+     "type": "array",
+     "items": {"type": "string"},
+     "description": "The aspects lacking the figure or its standard error, by id; set exactly where it is withheld."
+    }
+   },
+   "additionalProperties": false,
+   "description": "One arm's figure across every aspect, each aspect weighed alike, with its interval at the aggregate's level; or withheld, naming the aspects that lack it, since a mean over the aspects that have it would weigh the rest at nought."
+  },
+  "ArmAcross": {
+   "type": "object",
+   "required": ["pass_rate", "cost"],
+   "properties": {
+    "pass_rate": {"$ref": "#/$defs/AcrossFigure", "description": "Its pass rate, percent: each aspect's usable trials passed."},
+    "change": {
+     "anyOf": [{"$ref": "#/$defs/AcrossFigure"}, {"type": "null"}],
+     "description": "A change's candidate: its change against the control, in points; none otherwise."
+    },
+    "cost": {"$ref": "#/$defs/AcrossFigure", "description": "What a reply costs it, US dollars: each aspect's cost per reply."}
+   },
+   "additionalProperties": false,
+   "description": "One arm's figures across every aspect. Descriptive: none is tested, and none decides a reading."
+  },
+  "AcrossAspects": {
+   "type": "object",
+   "required": ["weights", "level", "per_arm"],
+   "properties": {
+    "weights": {"type": "object", "additionalProperties": {"type": "number"}, "description": "Each aspect's weight, by id; they sum to 1."},
+    "level": {"type": "string", "description": "The level every interval here is read at."},
+    "per_arm": {
+     "type": "object",
+     "additionalProperties": {"$ref": "#/$defs/ArmAcross"},
+     "description": "Each arm's figures, by arm, in the scorecard's order."
+    }
+   },
+   "additionalProperties": false,
+   "description": "Every arm's figures across a campaign's aspects, each aspect weighed alike, its intervals taking the aspects as independent: the campaign aggregate, copied."
   },
   "Stratum": {
    "type": "object",

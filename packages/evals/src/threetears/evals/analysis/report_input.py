@@ -227,6 +227,19 @@ class PassK(_Part):
     shares_no_case: bool = Field(description="Whether the arms share no case at that depth.")
     unmeasured_for: list[str] = Field(default_factory=list, description="Arms pass^k is not measured for.")
     said: list[str] = Field(default_factory=list, description="What the pipeline says about it.")
+    # The two below are left out of the document when unset, so an input built before they existed digests as it did.
+    per_arm: dict[str, Stat] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Each arm's pass^k at k, 0 to 1, by arm: mean, and the cases scored k times or more (n_cases); "
+        "an arm no case reached k for is not available, too_few.",
+    )
+    at_common_depth: dict[str, Stat] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Each arm's pass^k at the common depth, 0 to 1, by arm, over the cases every arm ran (n_cases); "
+        "none where the arms share no case.",
+    )
 
 
 class Unanswered(_Part):
@@ -658,6 +671,11 @@ class Contrast(_Part):
         exclude_if=lambda value: value is None,
         description="The cases that baseline is the mean of.",
     )
+    arm_mean: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The arm's mean over the cases the test paired: what the delta is a change to.",
+    )
     family: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -667,6 +685,12 @@ class Contrast(_Part):
         default=None,
         exclude_if=lambda value: value is None,
         description="Why the delta is not the difference of the two means printed beside it, where it is not.",
+    )
+    margin: Number | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The margin the delta was read against, in the measure's units: its equivalence margin, else the "
+        "measure's declared materiality threshold, else the margin its runs declared; none for none.",
     )
     corrected: Corrected | None = Field(
         default=None,
@@ -696,6 +720,38 @@ class ContrastFamily(_Part):
     family_size: int | None = Field(default=None, description="Contrasts in the family.")
     disclosure: str | None = Field(default=None, description="What the correction means, in plain words.")
     level: str | None = Field(default=None, description="Each interval's level.")
+
+
+class AcrossFigure(_Part):
+    """One arm's figure across every aspect, each aspect weighed alike, with its interval at the aggregate's level; or
+    withheld, naming the aspects that lack it, since a mean over the aspects that have it would weigh the rest at
+    nought."""
+
+    value: Number | None = Field(description="The equal-weight mean of the aspects' figures; none where withheld.")
+    interval: tuple[Number, Number] | None = Field(description="Its interval, low then high; none where withheld.")
+    missing: list[str] = Field(
+        default_factory=list,
+        description="The aspects lacking the figure or its standard error, by id; set exactly where it is withheld.",
+    )
+
+
+class ArmAcross(_Part):
+    """One arm's figures across every aspect. Descriptive: none is tested, and none decides a reading."""
+
+    pass_rate: AcrossFigure = Field(description="Its pass rate, percent: each aspect's usable trials passed.")
+    change: AcrossFigure | None = Field(
+        default=None, description="A change's candidate: its change against the control, in points; none otherwise."
+    )
+    cost: AcrossFigure = Field(description="What a reply costs it, US dollars: each aspect's cost per reply.")
+
+
+class AcrossAspects(_Part):
+    """Every arm's figures across a campaign's aspects, each aspect weighed alike, its intervals taking the aspects as
+    independent: the campaign aggregate, copied."""
+
+    weights: dict[str, Number] = Field(description="Each aspect's weight, by id; they sum to 1.")
+    level: str = Field(description="The level every interval here is read at.")
+    per_arm: dict[str, ArmAcross] = Field(description="Each arm's figures, by arm, in the scorecard's order.")
 
 
 class Stratum(_Part):
@@ -1408,6 +1464,13 @@ class ReportInput(_Part):
         exclude_if=lambda value: value is None,
         description="The rig each run was measured with, for each run that recorded one past a serial run pinning and "
         "declaring nothing; none where no run did, or the bundle carried none.",
+    )
+    # Left out of the document when unset, so an input built before the field existed digests as it did.
+    across_aspects: AcrossAspects | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Each arm's figures across every aspect, each aspect weighed alike; none where the bundle read "
+        "none.",
     )
     # The two below are left out of the document when unset, so an input built before they existed digests as it did.
     caveat_list: list[CaveatEntry] | None = Field(

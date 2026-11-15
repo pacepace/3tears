@@ -180,10 +180,15 @@ def flip_margin(reading: Reading) -> float | None:
 
 
 def margin_informative(margin: float | None, readings: Sequence[Reading]) -> bool | None:
-    """Whether a declared margin could change a reading on its aspect (GENERATOR §3): a margin larger than twice the
-    worst drop any reading's interval allows (the largest :func:`flip_margin`) is one no plausible result could fail,
-    and so is any margin where no interval allows a drop at all. Upstream ask U6:
-    https://github.com/pacepace/3tears/issues/1142.
+    """Whether a declared margin could change a reading on its aspect, by GENERATOR §3's heuristic: a margin larger
+    than twice the worst drop any reading's interval allows is one no plausible result could fail, and so is any
+    margin where no interval allows a drop at all. Upstream ask U6: https://github.com/pacepace/3tears/issues/1142.
+
+    **The worst drop is read from each interval's lower bound** (the largest :func:`flip_margin`), never from a point
+    estimate: a reading's verdict is decided by its interval's lower bound against ``-margin``, so whether a margin
+    could change a verdict is a question about that bound, and a point estimate, never further below zero than the
+    bound, would mark margins that decide the reading as uninformative. The factor of two is the heuristic's, stated
+    by GENERATOR §3 and not derived here: no error rate is claimed for it.
 
     :param margin: The aspect's declared margin, in points; None for none.
     :ptype margin: float | None

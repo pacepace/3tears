@@ -5,21 +5,38 @@ fact computed for one page and never carried to the other. It is closed by const
 instance. For each hot-path campaign, the campaign's code page is read as a host reads it, and every figure its forms
 handed out is collected from their ledgers (:attr:`~threetears.evals.analysis.report.forms.PageForms.ledger`: each
 figure by its measure, its kind and its role). The report input is built from the same campaign's bundle, and every
-figure the code page issued for a measure must resolve from that input: a value the input holds for the same measure
-and kind, in a field of the same role, at the scale the page printed it at.
+figure the code page issued for a measure must resolve from that input:
 
-Values and roles are compared, never text. A ledger entry names no arm, so a figure resolves when any arm's or any
-contrast's figure of its measure is the same value: what the written page can state, not where it states it.
+- **the same measure and kind**: a stratum's figure is filed under its measure or its judged dimension, by which of
+  the input's tables names it;
+- **a field of the same role** (:func:`bucket_of`): a level resolves against levels only, a change against changes, a
+  half-width against half-widths and spreads, a declared margin against margins and thresholds, an interval against
+  intervals; a table's column, which holds its figure rounded to the places it prints, against any of them at those
+  places;
+- **at a scale the measure's unit is printed at** (:func:`scales_of`): as stored, or its one printed scale (a share in
+  percent, money per thousand, milliseconds in seconds), never every scale;
+- **a value the input holds as it is**: nothing is derived here but a scoreboard row's passes over its usable trials,
+  the pass rate the input states as two counts.
 
-**The allowance** lists each figure the code page states that the input does not yet hold, by campaign, measure, kind
-and role, with what holds it apart (:data:`ALLOWANCE`). A figure missing from the input that the allowance does not
-name fails; so does an allowance entry nothing issues any more, so the allowance never outlives its gap.
+Values and roles are compared, never text. A ledger entry names no arm (``_Issued`` holds the measure, kind, role and
+value), so a figure resolves when one of its measure's figures of that role is the same value: what the written page
+can state, not yet where. Recording the arm on the ledger is the page forms' rework, chunk S5c.
+
+**The allowance** lists each figure the code page states that the input does not hold, by campaign, measure, kind,
+role and the value issued, with what holds it apart (:data:`ALLOWANCE`): a new figure missing from the input fails
+even where the same measure and role are allowed for another value. An allowance entry nothing issues any more fails
+too, so the allowance never outlives its gap. Every reason is one the written page's renderer closes from fields the
+input already holds (:data:`GAP_REASONS`): the input has a field for every figure.
+
+**Nothing passes for having checked nothing**: each campaign's page must have been assembled in forms, and must have
+resolved at least the figures it resolves today (:data:`RESOLVED_AT_LEAST`).
 """
 
 from __future__ import annotations
 
+import functools
 import math
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,35 +45,35 @@ import pytest
 from packages.evals.tests.test_hot_path_oracle import REPORT_NOW, WITH_BUNDLES, subject
 from threetears.evals.analysis import service as analysis_service
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.report_input import SHARE_UNIT, ReportInput
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.ops import report_read
 
-#: The scales a page prints a stored figure at: as stored, a share in percent, money per thousand replies, and a
-#: percent stored as a share.
-SCALES = (1.0, 100.0, 1000.0, 0.01)
+#: The scale each unit is printed at beside as stored: a share in percent, money per thousand replies, milliseconds in
+#: seconds. The pass rate is a share, and the input states some of its figures in percent and points.
+UNIT_SCALES: dict[str, tuple[float, ...]] = {
+    SHARE_UNIT: (100.0,),
+    "pass_fail": (100.0,),
+    "class_label": (100.0,),
+    "usd": (1000.0,),
+    "ms": (0.001,),
+    "trial": (100.0, 0.01),
+}
 
-#: The roles whose figure is a level of its measure: an arm's figure, a threshold, a baseline.
+#: The roles whose figure is a level of its measure: an arm's figure, as a page states it.
 LEVEL_ROLES = frozenset({"level", "pass_k", "lone", "reading", "echoed", "check", "money", "share", "hits"})
 
 #: The fields of the input that hold a measure's level.
 LEVEL_FIELDS = frozenset(
-    {
-        "mean",
-        "p95",
-        "no_variation",
-        "value",
-        "bar",
-        "threshold",
-        "baseline",
-        "reply_cost_usd",
-        "test_cost_usd",
-    }
+    {"mean", "p95", "no_variation", "value", "baseline", "arm_mean", "reply_cost_usd", "test_cost_usd"}
 )
 
-#: The fields of the input that hold a change of a measure: an arm minus the control, a drop, a margin.
-CHANGE_FIELDS = frozenset({"change", "delta", "worst_drop", "margin", "short_by", "flip_margin"})
+#: The fields of the input that hold a change of a measure: an arm minus the control, a drop, how far it flips.
+CHANGE_FIELDS = frozenset({"change", "delta", "worst_drop", "short_by", "flip_margin"})
+
+#: The fields of the input that hold a line a figure is read against: a margin, a threshold, a bar.
+DECLARED_FIELDS = frozenset({"margin", "threshold", "bar"})
 
 #: The fields of the input that hold the half-width of an interval, or a spread.
 WIDTH_FIELDS = frozenset({"half_width", "own_half_width", "sem", "spread"})
@@ -67,10 +84,13 @@ INTERVAL_FIELDS = frozenset({"ci", "interval", "within_interval", "gain_interval
 
 @dataclass
 class Held:
-    """What the input holds for one measure of one kind, by role."""
+    """What the input holds for one measure of one kind, by the role of the field that holds it, and the scales its
+    unit is printed at."""
 
+    scales: tuple[float, ...] = (1.0,)
     levels: set[float] = field(default_factory=set)
     changes: set[float] = field(default_factory=set)
+    declared: set[float] = field(default_factory=set)
     widths: set[float] = field(default_factory=set)
     intervals: set[tuple[float, float]] = field(default_factory=set)
 
@@ -95,32 +115,54 @@ class Held:
             self.widths.update(float(width) for width in value.values() if _number(width))
             return
         if not _number(value):
-            if key.endswith("passed") and isinstance(value, str) and " of " in value:
-                passed, _, of = value.partition(" of ")
-                if passed.isdigit() and of.isdigit() and int(of):
-                    self.levels.add(int(passed) / int(of))
             return
-        if key in LEVEL_FIELDS:
-            self.levels.add(float(value))
-        elif key in CHANGE_FIELDS:
-            self.changes.add(float(value))
-        elif key in WIDTH_FIELDS:
-            self.widths.add(float(value))
+        for fields, figures in (
+            (LEVEL_FIELDS, self.levels),
+            (CHANGE_FIELDS, self.changes),
+            (DECLARED_FIELDS, self.declared),
+            (WIDTH_FIELDS, self.widths),
+        ):
+            if key in fields:
+                figures.add(float(value))
 
     def scalars(self, role: str) -> set[float]:
-        """The figures a role resolves against."""
-        if role in LEVEL_ROLES:
-            return self.levels
-        if role == "change":
-            return self.changes
-        if role == "half_width":
-            return self.widths
-        # A table's column holds whatever figure it prints: any of them.
-        return self.levels | self.changes | self.widths
+        """The figures a role resolves against (:func:`bucket_of`)."""
+        return {
+            "levels": self.levels,
+            "changes": self.changes,
+            "declared": self.declared,
+            "widths": self.widths,
+            "any": self.levels | self.changes | self.declared | self.widths,
+        }[bucket_of(role)]
+
+
+def bucket_of(role: str) -> str:
+    """Which of the input's figures a ledger role resolves against: a table's column any, since it holds whatever
+    figure its column prints."""
+    if role in LEVEL_ROLES:
+        return "levels"
+    if role in ("change", "half_width", "declared"):
+        return {"change": "changes", "half_width": "widths", "declared": "declared"}[role]
+    if role == "column":
+        return "any"
+    raise AssertionError(f"a measure's figure of role {role!r} has no field of the input to resolve against")
 
 
 def _number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def scales_of(document: Mapping[str, Any], name: str, kind: str) -> tuple[float, ...]:
+    """The scales a measure's figure is printed at: as stored, and its unit's one printed scale."""
+    if kind == "trial":
+        return (1.0, *UNIT_SCALES["trial"])
+    if kind == "judged":
+        scale = (document["judged"].get(name) or {}).get("scale")
+        return (1.0, *UNIT_SCALES.get(scale or "", ()))
+    measure = document["measures"].get(name) or {}
+    unit, grade = measure.get("unit") or "", measure.get("grade") or ""
+    printed = UNIT_SCALES.get(grade) or UNIT_SCALES.get(unit) or UNIT_SCALES.get(unit.split("_per_")[0], ())
+    return (1.0, *printed)
 
 
 def held_by_measure(built: ReportInput) -> dict[tuple[str, str], Held]:
@@ -129,45 +171,41 @@ def held_by_measure(built: ReportInput) -> dict[tuple[str, str], Held]:
     held: dict[tuple[str, str], Held] = {}
 
     def of(measure: str, kind: str) -> Held:
-        return held.setdefault((measure, kind), Held())
+        if (measure, kind) not in held:
+            held[measure, kind] = Held(scales=scales_of(document, measure, kind))
+        return held[measure, kind]
 
     for name, measure in document["measures"].items():
         of(name, "measure").take(measure)
     for name, judged in document["judged"].items():
         of(name, "judged").take(judged)
     for stratum in document["strata"]:
-        for dimensions in stratum["per_arm"].values():
-            for name, stat in dimensions.items():
-                of(name, "judged").take(stat)
+        for figures in stratum["per_arm"].values():
+            for name, stat in figures.items():
+                of(name, "measure" if name in document["measures"] else "judged").take(stat)
     for contrast in document["contrasts"]:
-        held_by = of(contrast["measure"], _kind(contrast.get("kind")))
-        held_by.take(contrast)
-        # The contrast's arm side: its delta is the difference of the two means the test read, so the arm's is the
-        # paired baseline plus the delta.
-        if _number(contrast.get("baseline")) and _number(contrast.get("delta")):
-            held_by.levels.add(contrast["baseline"] + contrast["delta"])
+        of(contrast["measure"], _kind(contrast.get("kind"))).take(contrast)
     for bar in document["bars"]:
         of(bar["measure"], "measure").take(bar)
     for criterion in document["criteria"]:
         of(criterion["measure"], "measure").take(criterion)
     for guardrail in document["guardrails"]:
         of(guardrail["name"], _kind(guardrail.get("reading"))).take(guardrail)
-    # The pass rate: each aspect's readings and pairs, each arm's scoreboard, each floor.
+    # The pass rate: each aspect's readings, pairs and pass^k, each arm's scoreboard, each floor, and each arm's figures
+    # across the aspects.
     passed = of("passed", "trial")
     for aspect in document["aspects"]:
-        passed.take({"readings": aspect["readings"], "pairs": aspect["pairs"]})
+        passed.take({"readings": aspect["readings"], "pairs": aspect["pairs"], "pass_k": aspect.get("pass_k") or []})
     for board in [document["scoreboard"], *(aspect.get("scoreboard") or {} for aspect in document["aspects"])]:
         for row in board.values():
             if row.get("usable"):
                 passed.levels.add(row["passed"] / row["usable"])
-            # The one cost reading, and the reply's cost, are each arm's cost per reply.
-            cost = Held()
-            cost.take(row)
-            for key, kind in held:
-                if kind == "measure" and key.startswith(("cost", "production_")):
-                    held[key, kind].levels |= cost.levels
     for floor in document["floors"]:
         passed.take(floor)
+    for arm in ((document.get("across_aspects") or {}).get("per_arm") or {}).values():
+        passed.take({"value": arm["pass_rate"]["value"], "interval": arm["pass_rate"]["interval"]})
+        if arm.get("change") is not None:
+            passed.take({"change": arm["change"]["value"], "interval": arm["change"]["interval"]})
     return held
 
 
@@ -177,16 +215,16 @@ def _kind(kind: str | None) -> str:
 
 
 def resolves(held: Held | None, role: str, value: float | tuple[float, float]) -> bool:
-    """Whether the input holds ``value`` in a field of ``role``, at a scale a page prints it at."""
+    """Whether the input holds ``value`` in a field of ``role``, at a scale its measure is printed at."""
     if held is None:
         return False
     if isinstance(value, tuple):
         return any(
             _same(low * scale, value[0], role) and _same(high * scale, value[1], role)
             for low, high in held.intervals
-            for scale in SCALES
+            for scale in held.scales
         )
-    return any(_same(figure * scale, value, role) for figure in held.scalars(role) for scale in SCALES)
+    return any(_same(figure * scale, value, role) for figure in held.scalars(role) for scale in held.scales)
 
 
 def _same(stored: float, issued: float, role: str) -> bool:
@@ -200,131 +238,68 @@ def _same(stored: float, issued: float, role: str) -> bool:
     return places is not None and abs(stored - issued) <= 0.5 * 10**-places + 1e-9
 
 
+#: A value as an allowance names it: nine significant figures, an interval's ends each.
+Value = float | tuple[float, float]
+
+
+def _keyed(value: float | tuple[float, float]) -> Value:
+    if isinstance(value, tuple):
+        return (float(f"{value[0]:.9g}"), float(f"{value[1]:.9g}"))
+    return float(f"{value:.9g}")
+
+
 @dataclass(frozen=True)
 class Gap:
-    """A figure the code page states that the input does not hold: its campaign, measure, kind and role."""
+    """A figure the code page states that the input does not hold: its campaign, measure, kind, role and value."""
 
     campaign: str
     measure: str
     kind: str
     role: str
+    value: Value
 
 
-#: Why a figure the code page states is not yet in the input. None is a structure field the report input was shaped
-#: for (a contrast's baseline, a figure's spread, an arm's cost, a reading's flip margin: those resolve); each is a
-#: figure the input has no field for, worked out by a code page's part at render time.
+#: Why a figure the code page states is not in the input as it is printed. Each is one the written page's renderer
+#: (chunk S5b) closes from fields the input holds: none is a figure the input has no field for.
 GAP_REASONS: dict[str, str] = {
-    "readings_table": (
-        "an aspect page's readings table: each stratum's figure on a measure, and each figure's standard error beside "
-        "its mean; the input's strata carry judged dimensions only and a measure's figure no standard error (#1142 U4)"
+    "outcome_share": (
+        "the share of an arm's trials drawn on the scoreboard's outcome bar where some were lost: the row's passes "
+        "over every trial it ran (ScoreboardRow.passed over ran), which the renderer divides as it does passes over "
+        "usable trials"
     ),
-    "judged_interval": (
-        "a judged dimension's own interval on a contrast's row, worked out of its standard error when the page is read "
-        "(references.resolve_reading); the bundle's judged reading stores none to copy"
-    ),
-    "declared_margin": "a measure's declared materiality threshold, named beside an immaterial change",
-    "pass_k": "each arm's pass^k figure; the input's pass_k states its depth and its sentences, never the figure",
-    "aggregate": "the campaign aggregate's equal-weight pass rate across aspects, computed by the code page's lens",
-    "outcome_share": "the share of an arm's trials in each outcome on the scoreboard's bar",
-    "across_aspects": "the scorecard's change in pass rate across every aspect, computed by the code page",
 }
 
-#: Each figure the code page states that the input does not yet hold, by campaign, measure, kind and role, with why
-#: (:data:`GAP_REASONS`).
-ALLOWANCE: dict[Gap, str] = {
-    Gap("scaled", "goal_state:state.ticket.status == 'resolved'", "measure", "half_width"): "readings_table",
-    Gap("scaled", "goal_state:state.ticket.status == 'resolved'", "measure", "level"): "readings_table",
-    Gap("scaled", "__outcome__", "judged", "interval"): "judged_interval",
-    Gap("scaled", "__transcript__", "judged", "interval"): "judged_interval",
-    Gap("scaled", "candidate_s", "measure", "half_width"): "readings_table",
-    Gap("scaled", "candidate_s", "measure", "level"): "readings_table",
-    Gap("scaled", "cost_per_document_usd", "measure", "declared"): "declared_margin",
-    Gap("scaled", "cost_per_document_usd", "measure", "half_width"): "readings_table",
-    Gap("scaled", "cost_per_document_usd", "measure", "level"): "readings_table",
-    Gap("scaled", "cost_usd", "measure", "half_width"): "readings_table",
-    Gap("scaled", "cost_usd", "measure", "level"): "readings_table",
-    Gap("scaled", "field_accuracy", "measure", "half_width"): "readings_table",
-    Gap("scaled", "field_accuracy", "measure", "level"): "readings_table",
-    Gap("scaled", "field_count_error", "measure", "half_width"): "readings_table",
-    Gap("scaled", "field_count_error", "measure", "level"): "readings_table",
-    Gap("scaled", "fields_stripped", "measure", "half_width"): "readings_table",
-    Gap("scaled", "fields_stripped", "measure", "level"): "readings_table",
-    Gap("scaled", "goal_state:state.refund.amount <= state.order.total", "measure", "half_width"): "readings_table",
-    Gap("scaled", "goal_state:state.refund.amount <= state.order.total", "measure", "level"): "readings_table",
-    Gap("scaled", "goal_state:state.ticket.tags.length >= 1", "measure", "half_width"): "readings_table",
-    Gap("scaled", "goal_state:state.ticket.tags.length >= 1", "measure", "level"): "readings_table",
-    Gap("scaled", "judge_s", "measure", "half_width"): "readings_table",
-    Gap("scaled", "judge_s", "measure", "level"): "readings_table",
-    Gap("scaled", "manual_review_rate", "measure", "half_width"): "readings_table",
-    Gap("scaled", "manual_review_rate", "measure", "level"): "readings_table",
-    Gap("scaled", "p95_extract_ms", "measure", "half_width"): "readings_table",
-    Gap("scaled", "p95_extract_ms", "measure", "level"): "readings_table",
-    Gap("scaled", "passed", "trial", "column"): "pass_k",
-    Gap("scaled", "passed", "trial", "interval"): "aggregate",
-    Gap("scaled", "passed", "trial", "pass_k"): "pass_k",
-    Gap("scaled", "passed", "trial", "share"): "outcome_share",
-    Gap("scaled", "production_replicating_cost", "measure", "half_width"): "readings_table",
-    Gap("scaled", "production_replicating_cost", "measure", "level"): "readings_table",
-    Gap("scaled", "reply.accuracy", "judged", "interval"): "judged_interval",
-    Gap("scaled", "reply.grounding", "judged", "interval"): "judged_interval",
-    Gap(
-        "scaled_two_aspects", "goal_state:state.ticket.status == 'resolved'", "measure", "half_width"
-    ): "readings_table",
-    Gap("scaled_two_aspects", "goal_state:state.ticket.status == 'resolved'", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "__outcome__", "judged", "interval"): "judged_interval",
-    Gap("scaled_two_aspects", "__transcript__", "judged", "interval"): "judged_interval",
-    Gap("scaled_two_aspects", "candidate_s", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "candidate_s", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "cost_per_document_usd", "measure", "declared"): "declared_margin",
-    Gap("scaled_two_aspects", "cost_per_document_usd", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "cost_per_document_usd", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "cost_usd", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "cost_usd", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "field_accuracy", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "field_accuracy", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "field_count_error", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "field_count_error", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "fields_stripped", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "fields_stripped", "measure", "level"): "readings_table",
-    Gap(
-        "scaled_two_aspects", "goal_state:state.refund.amount <= state.order.total", "measure", "half_width"
-    ): "readings_table",
-    Gap(
-        "scaled_two_aspects", "goal_state:state.refund.amount <= state.order.total", "measure", "level"
-    ): "readings_table",
-    Gap("scaled_two_aspects", "goal_state:state.ticket.tags.length >= 1", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "goal_state:state.ticket.tags.length >= 1", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "judge_s", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "judge_s", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "manual_review_rate", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "manual_review_rate", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "p95_extract_ms", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "p95_extract_ms", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "passed", "trial", "change"): "across_aspects",
-    Gap("scaled_two_aspects", "passed", "trial", "column"): "pass_k",
-    Gap("scaled_two_aspects", "passed", "trial", "interval"): "aggregate",
-    Gap("scaled_two_aspects", "passed", "trial", "level"): "aggregate",
-    Gap("scaled_two_aspects", "passed", "trial", "pass_k"): "pass_k",
-    Gap("scaled_two_aspects", "passed", "trial", "share"): "outcome_share",
-    Gap("scaled_two_aspects", "production_replicating_cost", "measure", "half_width"): "readings_table",
-    Gap("scaled_two_aspects", "production_replicating_cost", "measure", "level"): "readings_table",
-    Gap("scaled_two_aspects", "reply.accuracy", "judged", "interval"): "judged_interval",
-    Gap("scaled_two_aspects", "reply.grounding", "judged", "interval"): "judged_interval",
-    Gap("toyhost", "passed", "trial", "column"): "pass_k",
-    Gap("toyhost", "passed", "trial", "pass_k"): "pass_k",
-}
+#: Each figure the code page states that the input does not hold as printed, by campaign, measure, kind, role and
+#: value, with why (:data:`GAP_REASONS`).
+ALLOWANCE: dict[Gap, str] = {}
+
+#: The fewest figures each campaign's code page resolves from its input: what it resolves today.
+RESOLVED_AT_LEAST: dict[str, int] = {}
 
 
-def _forms_of_the_code_page(name: str) -> Iterator[PageForms]:
-    """Every set of forms the campaign's code page was assembled in, read as a host reads the page."""
-    built: list[Any] = []
+@dataclass(frozen=True)
+class Issued:
+    """One figure of a measure the code page's forms handed out."""
+
+    measure: str
+    kind: str
+    role: str
+    value: float | tuple[float, float]
+
+
+@functools.cache
+def code_page(name: str) -> tuple[Issued, ...]:
+    """Every figure of a measure campaign ``name``'s code page stated, read as a host reads the page."""
+    built: dict[str, list[Any]] = {"of_campaign": [], "of_aspects": [], "of_bundle": []}
     patch = pytest.MonkeyPatch()
-    for constructor in ("of_campaign", "of_aspects", "of_bundle"):
+    for constructor, made_by in built.items():
         original = getattr(PageForms, constructor).__func__
 
-        def spying(cls: type[PageForms], *args: Any, __original: Any = original, **kwargs: Any) -> Any:
+        def spying(
+            cls: type[PageForms], *args: Any, __original: Any = original, __made: Any = made_by, **kwargs: Any
+        ) -> Any:
             made = __original(cls, *args, **kwargs)
-            built.append(made)
+            __made.append(made)
             return made
 
         patch.setattr(PageForms, constructor, classmethod(spying))
@@ -334,23 +309,37 @@ def _forms_of_the_code_page(name: str) -> Iterator[PageForms]:
         report_read(read.host, read.campaign_id, read.scope_id, format="markdown")
     finally:
         patch.undo()
-    for made in built:
-        yield from made.values() if isinstance(made, Mapping) else [made]
+    assert built["of_campaign"], f"{name}: the code page was assembled in no campaign forms, so nothing is checked"
+    forms: Iterator[PageForms] = (
+        one for made in sum(built.values(), []) for one in (made.values() if isinstance(made, Mapping) else [made])
+    )
+    return tuple(
+        Issued(entry.measure, entry.kind or "measure", entry.role, entry.value)
+        for one in forms
+        for entry in one.ledger
+        if entry.measure and entry.value is not None
+    )
 
 
-def gaps_of(name: str) -> set[Gap]:
-    """Every figure campaign ``name``'s code page states that its report input does not hold."""
+@functools.cache
+def built_input(name: str) -> ReportInput:
+    """The report input built from campaign ``name``'s bundle."""
     read = subject(name)
-    held = held_by_measure(report_input(assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)))
+    return report_input(assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id))
+
+
+def gaps_of(name: str, plant: Callable[[ReportInput], ReportInput] = lambda built: built) -> tuple[set[Gap], int]:
+    """Every figure campaign ``name``'s code page states that its report input (as ``plant`` leaves it) does not hold,
+    and how many it does."""
+    held = held_by_measure(plant(built_input(name)))
     found: set[Gap] = set()
-    for forms in _forms_of_the_code_page(name):
-        for entry in forms.ledger:
-            if not entry.measure or entry.value is None:
-                continue
-            kind = entry.kind or "measure"
-            if not resolves(held.get((entry.measure, kind)), entry.role, entry.value):
-                found.add(Gap(name, entry.measure, kind, entry.role))
-    return found
+    resolved = 0
+    for issued in code_page(name):
+        if resolves(held.get((issued.measure, issued.kind)), issued.role, issued.value):
+            resolved += 1
+        else:
+            found.add(Gap(name, issued.measure, issued.kind, issued.role, _keyed(issued.value)))
+    return found, resolved
 
 
 def test_every_allowed_gap_has_a_stated_reason() -> None:
@@ -358,12 +347,40 @@ def test_every_allowed_gap_has_a_stated_reason() -> None:
     assert set(GAP_REASONS) <= set(ALLOWANCE.values()), "a reason no gap holds is slack"
 
 
+def test_every_campaign_is_held_to_a_count_it_resolves() -> None:
+    assert set(RESOLVED_AT_LEAST) == set(WITH_BUNDLES)
+
+
 @pytest.mark.parametrize("name", WITH_BUNDLES)
 def test_every_figure_the_code_page_states_the_input_holds(name: str) -> None:
-    found = gaps_of(name)
+    found, resolved = gaps_of(name)
     allowed = {gap for gap in ALLOWANCE if gap.campaign == name}
 
     assert not found - allowed, (
         f"the code page states figures the input does not hold: {sorted(found - allowed, key=str)}"
     )
     assert not allowed - found, f"the allowance names gaps that are closed: {sorted(allowed - found, key=str)}"
+    assert resolved >= RESOLVED_AT_LEAST[name], f"{name}: {resolved} figures resolved, fewer than it resolves today"
+
+
+def _without_pass_k(built: ReportInput) -> ReportInput:
+    """The input with every arm's pass^k taken off its aspects, as it was before the field was filled."""
+    aspects = [
+        aspect.model_copy(
+            update={
+                "pass_k": [held.model_copy(update={"per_arm": None, "at_common_depth": None}) for held in aspect.pass_k]
+                if aspect.pass_k
+                else aspect.pass_k
+            }
+        )
+        for aspect in built.aspects
+    ]
+    return built.model_copy(update={"aspects": aspects})
+
+
+def test_a_figure_taken_out_of_the_input_is_a_gap_the_guard_names() -> None:
+    """The guard is no tautology: taking a filled field back out of the input fails it, naming the figure."""
+    found, _ = gaps_of("toyhost", _without_pass_k)
+    allowed = {gap for gap in ALLOWANCE if gap.campaign == "toyhost"}
+
+    assert {(gap.measure, gap.kind, gap.role) for gap in found - allowed} >= {("passed", "trial", "pass_k")}

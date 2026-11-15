@@ -2010,26 +2010,6 @@ class FamilyComparison(EvalDocumentModel):
         exclude_if=lambda value: value is None,
         description="The contrast's state where it is not counted, with its reason; none reads counted.",
     )
-    baseline: float | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="The control's mean over the cases the test paired: what `delta` is a change from.",
-    )
-    baseline_n_cases: int | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="The cases that baseline is the mean of.",
-    )
-    family: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="The family the comparison was corrected in, by id.",
-    )
-    delta_note: Literal["paired_cases", "adjusted"] | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="Why `delta` is not the difference of the two means beside it, where it is not.",
-    )
     corrected: Corrected | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -4184,11 +4164,15 @@ _V2_FIELDS: Final[frozenset[str]] = frozenset(
     }
 )
 
-#: Field names added, since the freeze, INSIDE a value one of :data:`_V2_FIELDS` holds (a new field of a comparison, a
-#: scoreboard row, a cell), which a version 2 pre-image leaves out at every depth. A change that adds such a field
-#: names it here; a name any shape-66 document already uses at any depth cannot be listed.
-#: ``spread`` and ``no_variation``: a numeric measure summary's spread of its cases and their common value (S5a-3).
+#: Field names added, since the freeze, to a measure summary (an object in the list a cell's, a stratum's, a run's or
+#: the telemetry's measures hold under ``measures``, held under ``measures``), which a version 2 pre-image leaves out
+#: of every such summary and nowhere else (:func:`_without`): a key a host names, a measure in the catalogue or a
+#: margin called ``spread``, is evidence. ``spread`` and ``no_variation``: a numeric measure summary's spread of its
+#: cases and their common value (S5a-3).
 _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset({"no_variation", "spread"})
+
+#: Where a measure summary sits, as the last three steps of its path: under ``measures``, in the list held there.
+_SUMMARY_PATH: Final = ("measures", "measures", "[]")
 
 
 def known_fingerprint(fingerprint: str) -> bool:
@@ -4303,12 +4287,18 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     return fingerprint_digest(evidence)
 
 
-def _without(value: Any, fields: frozenset[str]) -> Any:
-    """``value`` with every mapping key in ``fields`` left out, at every depth."""
+def _without(value: Any, fields: frozenset[str], path: tuple[str, ...] = ()) -> Any:
+    """``value`` with each key in ``fields`` left out of every measure summary (:data:`_SUMMARY_PATH`), and of nothing
+    else: a host's key of the same name, at any other place, is kept. ``path`` is the last steps to ``value``."""
     if isinstance(value, Mapping):
-        return {key: _without(held, fields) for key, held in value.items() if key not in fields}
+        summary = path == _SUMMARY_PATH
+        return {
+            key: _without(held, fields, (*path[-2:], key))
+            for key, held in value.items()
+            if not (summary and key in fields)
+        }
     if isinstance(value, list):
-        return [_without(held, fields) for held in value]
+        return [_without(held, fields, (*path[-2:], "[]")) for held in value]
     return value
 
 

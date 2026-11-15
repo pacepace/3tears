@@ -69,6 +69,7 @@ from threetears.evals.kernel.surface import (
 )
 from threetears.evals.analysis.bundle.schema import (
     TRIAL_PASS_NAME,
+    AnalysisContextBundle,
     ComparedCell,
     ComparisonFamily,
     ComparisonReading,
@@ -616,6 +617,28 @@ def _margin_of(
     if (margin := run_margins.get(reading[1])) is not None:
         return margin, "run"
     return None, None
+
+
+def contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
+    """The margin a contrast's delta is read against, decided once on the numbers side for every page: its equivalence
+    margin where an equivalence test read one, else, for a measure, the margin its reading has
+    (:func:`_margin_of`: the measure's declared materiality threshold, else the margin its runs declared). None for a
+    judged dimension and the pass rate, which have none.
+
+    :param bundle: The aspect's evidence, whose catalogue and runs declare the margins.
+    :ptype bundle: AnalysisContextBundle
+    :param comparison: The contrast.
+    :ptype comparison: FamilyComparison
+    :return: The margin, in the measure's units; None for none.
+    :rtype: float | None
+    """
+    if comparison.equivalence_margin is not None:
+        return comparison.equivalence_margin
+    if comparison.reading != "measure":
+        return None
+    if comparison.name not in bundle.measure_catalog:
+        return bundle.run_margins.get(comparison.name)
+    return _margin_of((comparison.reading, comparison.name), bundle.measure_catalog, bundle.run_margins)[0]
 
 
 def _family_disclosure(
@@ -1263,6 +1286,7 @@ def _guardrails_of(
 
 __all__ = [
     "PlanningReading",
+    "contrast_margin",
     "multiple_comparisons",
     "planning_readings",
     "reading_scope",

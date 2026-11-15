@@ -13,6 +13,7 @@ from threetears.evals.analysis.bundle.schema import (
     ComparisonFamily,
     FamilyComparison,
 )
+from threetears.evals.analysis.bundle.comparisons import contrast_margin
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
@@ -402,18 +403,6 @@ def _family_guarantee(family: ComparisonFamily, forms: PageForms, *, noun: str =
     return FAMILY_LEVEL_TEMPLATE.format(joint=f"{_level_text(joint, forms)}{after}", size=size)
 
 
-def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
-    """The margin a contrast's reading has — its equivalence margin, or the margin no equivalence test could read."""
-    if comparison.equivalence_margin is not None:
-        return comparison.equivalence_margin
-    if comparison.reading != "measure":
-        return None
-    descriptor = bundle.measure_catalog.get(comparison.name)
-    if descriptor is not None and descriptor.materiality_threshold is not None:
-        return descriptor.materiality_threshold
-    return bundle.run_margins.get(comparison.name)
-
-
 def _margin_text(margin: float, ruler: MeasureRuler, forms: PageForms, comparison: FamilyComparison) -> str:
     """A margin as the row's reading is stated: on its measure's one ruler, in the unit a change in it is stated in."""
     declared = forms.in_unit(
@@ -478,7 +467,7 @@ def contrast_verdicts(
             heading = reading_heading(
                 surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name)
             )
-            margin = _contrast_margin(bundle, comparison)
+            margin = contrast_margin(bundle, comparison)
             ruler = rulers.of(comparison.name, comparison.reading)
             reason, detail = _contrast_reason(comparison)
             named = arm(comparison.contrast.variant_key, comparison.contrast.apparatus_class_id)
@@ -638,7 +627,7 @@ def _comparison_blocks(
                         ruler,
                         comparison.delta,
                         interval=comparison.interval if arm_ok and control_ok and unvaried is None else None,
-                        margin=_contrast_margin(bundle, comparison),
+                        margin=contrast_margin(bundle, comparison),
                         form=form,
                         places=places.change if places is not None else None,
                         measure=comparison.name,

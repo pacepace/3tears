@@ -68,9 +68,12 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
-from threetears.evals.analysis.cells import answer_split_variants
+from threetears.evals.analysis.bundle.comparisons import contrast_margin
+from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.cells import answer_split_variants, cell_ref
 from threetears.evals.analysis.checks import Check
-from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
+from threetears.evals.analysis.campaign_readings import AggregateFigure, AspectReading, PairReading, reading_name
+from threetears.evals.analysis.lenses.frontier import SubjectFrontier
 from threetears.evals.analysis.floors import floor_subject
 from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
@@ -83,7 +86,10 @@ from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
     ANALYST_ASPECT_FIELDS,
     ANALYST_CONTRAST_FIELDS,
+    AcrossAspects,
+    AcrossFigure,
     ApparatusConfound,
+    ArmAcross,
     Arm,
     Aspect,
     BarRead,
@@ -120,6 +126,7 @@ from threetears.evals.analysis.report_input import (
     Unanswered,
 )
 from threetears.evals.analysis.report_margins import flip_margin, margin_informative
+from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.style import (
     check_held,
@@ -142,7 +149,7 @@ from threetears.evals.kernel.metrics import (
     reads_as_share,
 )
 from threetears.evals.kernel.analysis_measures import MeasureSummary
-from threetears.evals.kernel.surface import CellFacts
+from threetears.evals.kernel.surface import CellFacts, DecisionSurface, JudgedReading
 from threetears.evals.schema.reading_states import StateOf
 
 __all__ = ["arm_spellings", "report_input"]
@@ -333,6 +340,8 @@ class _Builder:
                     for insight in bundle.aspects[0].prior_insights
                 ],
                 **tallies,
+                # Only where the bundle read the figures across aspects, so an input from one that did not carries no key.
+                **({"across_aspects": across} if (across := self.across_aspects()) is not None else {}),
                 # Only where a run recorded its rig, so an input over runs that recorded none carries no key.
                 **({"apparatus": apparatus} if (apparatus := self.apparatus()) is not None else {}),
             }
@@ -354,6 +363,7 @@ class _Builder:
             run_date=max(created)[:10] if created else None,
             provenance=provenance,
             synthetic=False,
+            volume_per_month=bundle.declaration.volume_per_month,
         )
 
     def arms(self) -> list[Arm]:
@@ -463,6 +473,8 @@ class _Builder:
         declared = aspect.declared
         label = aspect.aspect
         depth = aspect_depth(aspect, self.arm)
+        # The frontier's subjects with a point, in the order the depths read them (`aspect_depth`).
+        frontier = [subject for subject in aspect.frontier.subjects if subject.points]
         pass_k = [
             PassK(
                 where=subject.where,
@@ -471,8 +483,9 @@ class _Builder:
                 shares_no_case=subject.shares_no_case,
                 unmeasured_for=subject.unmeasured_for,
                 said=subject.lines(),
+                **self.pass_k_figures(held),
             )
-            for subject in depth.subjects
+            for held, subject in zip(frontier, depth.subjects, strict=True)
             if subject.compared and subject.common_depth is not None
         ]
         margin = declared.margin if declared is not None else None
@@ -501,6 +514,44 @@ class _Builder:
             **_analyst_only(ANALYST_ASPECT_FIELDS, counted, lambda: self.how_trials_pass(aspect, depth)),
             # None where no margin is declared or read, which the aspect's document leaves out.
             margin_informative=informative,
+        )
+
+    def pass_k_figures(self, subject: SubjectFrontier) -> dict[str, dict[str, Stat]]:
+        """Each arm's pass^k on one frontier subject, copied off its points by label: at the subject's ``k`` over the
+        cases scored that often (not available, ``too_few``, where none was), and at the common depth over the cases
+        every arm ran, where the arms share one. A label two points carry (one variant placed at two identity
+        versions) states its first point's, as the frontier lists them."""
+        per_arm: dict[str, Stat] = {}
+        common: dict[str, Stat] = {}
+        for point in subject.points:
+            label = self.arm(point.variant_key)
+            per_arm.setdefault(
+                label,
+                Stat(mean=point.pass_hat_k, n_cases=point.n_pass_cases)
+                if point.pass_hat_k is not None
+                else Stat(n_cases=point.n_pass_cases, state=StateOf(state="not_available", reason="too_few")),
+            )
+            if point.common_pass_hat_k is not None:
+                common.setdefault(label, Stat(mean=point.common_pass_hat_k, n_cases=point.n_common_cases))
+        return {"per_arm": per_arm, **({"at_common_depth": common} if common else {})}
+
+    def across_aspects(self) -> AcrossAspects | None:
+        """Each arm's figures across every aspect, each aspect weighed alike, copied off the campaign's readings
+        (``CampaignReadings.aggregate``) by label; None where they hold none."""
+        aggregate = self.bundle.readings.aggregate
+        if aggregate is None:
+            return None
+        return AcrossAspects(
+            weights=dict(aggregate.weighting.weights),
+            level=_level_of(aggregate.level),
+            per_arm={
+                self.arm(arm.arm): ArmAcross(
+                    pass_rate=_across(arm.pass_rate),
+                    change=None if arm.change is None else _across(arm.change),
+                    cost=_across(arm.cost),
+                )
+                for arm in aggregate.arms
+            },
         )
 
     def how_trials_pass(self, aspect: AnalysisContextBundle, depth: AspectDepth) -> dict[str, Any]:
@@ -803,18 +854,7 @@ class _Builder:
                         if summary.name in aspect.measure_catalog:
                             facts.setdefault(summary.name, self.measure_facts(aspect, summary.name))
                         continue
-                    point = summary.rate if summary.rate is not None else summary.mean
-                    tail = summary.bad_tail() if summary.higher_is_better is False else None
-                    figures.setdefault(summary.name, {}).setdefault(aspect.aspect, {})[label] = Stat(
-                        mean=point,
-                        ci=(summary.ci_low, summary.ci_high)
-                        if summary.ci_low is not None and summary.ci_high is not None
-                        else None,
-                        n=summary.n,
-                        n_cases=summary.n_independent,
-                        p95=tail,
-                        **_spread_and_state(summary, point),
-                    )
+                    figures.setdefault(summary.name, {}).setdefault(aspect.aspect, {})[label] = _measure_stat(summary)
                     facts.setdefault(summary.name, self.measure_facts(aspect, summary.name))
             split = answer_split_variants(aspect.cells)
             for measured in self.bundle.readings.measures:
@@ -888,10 +928,15 @@ class _Builder:
         figures: dict[str, dict[str, dict[str, Stat]]] = {}
         evidence: dict[str, str] = {}
         for aspect in self.ordered:
+            surface = bundle_decision_surface(aspect)
             for label, cell in self.cells(aspect).items():
                 for reading in cell.judged:
                     figures.setdefault(reading.dimension, {}).setdefault(aspect.aspect, {})[label] = Stat(
-                        mean=reading.mean, sem=reading.sem, n=reading.n, n_cases=reading.n_independent
+                        mean=reading.mean,
+                        sem=reading.sem,
+                        n=reading.n,
+                        n_cases=reading.n_independent,
+                        **_judged_interval(reading, _judged_ci(surface, cell, reading)),
                     )
                     evidence.setdefault(reading.dimension, reading.evidence_tier)
         # Each judge's checks, as the bundle's judged measures hold them, each once: what raises a judge not checked.
@@ -910,6 +955,9 @@ class _Builder:
                 calibration=tier.calibration.state if tier is not None else None,
                 calibration_ratings=tier.calibration.n if tier is not None else None,
                 agreement=tier.calibration.agreement if tier is not None else None,
+                level=_level(INTERVAL_LEVEL)
+                if any(stat.ci is not None for arms in by_aspect.values() for stat in arms.values())
+                else None,
                 per_arm=by_aspect.get(self.lead.aspect, {}),
                 checks=checks.get(dimension, []),
                 by_aspect={label: arms for label, arms in by_aspect.items() if label != self.lead.aspect},
@@ -961,6 +1009,8 @@ class _Builder:
                                 reason=comparison.untested_reason or comparison.not_separated_reason,
                                 **_analyst_only(ANALYST_CONTRAST_FIELDS, counted, partial(_test_counts, comparison)),
                                 **self.paired(comparison, family_id(aspect.aspect, position), stated),
+                                # None where the reading has no margin, which the contrast's document leaves out.
+                                margin=contrast_margin(aspect, comparison),
                             ),
                         )
                     )
@@ -970,21 +1020,27 @@ class _Builder:
     def paired(
         self, comparison: FamilyComparison, family: str, stated: Mapping[tuple[str, str, str], float]
     ) -> dict[str, Any]:
-        """What a contrast's delta is a change from, copied off its comparison: the control's mean over the cases the
-        test read and how many those were, the family it was corrected in, and, where the delta is not the difference
-        of the two arms' stated figures, why (``delta_note``). Each is left out where the comparison holds none."""
+        """What a contrast's delta is a change from and to, copied off its comparison: the control's mean over the
+        cases the test read and how many those were, the arm's mean over them, the family it was corrected in, and, where both arms state a figure and the
+        delta is not their difference, why (``delta_note``). Each is left out where the comparison holds none, and the
+        note where a side states no figure, since no figure beside the delta then needs explaining."""
         control, contrast = comparison.control, comparison.contrast
         held: dict[str, Any] = {"family": family}
         if control.mean is not None:
             held |= {"baseline": control.mean, "baseline_n_cases": control.n_cases}
+        if contrast.mean is not None:
+            held["arm_mean"] = contrast.mean
         sides = [
             (stated.get((comparison.reading, comparison.name, self.arm(side.variant_key))), side.mean)
             for side in (control, contrast)
         ]
         # The test reads each case's mean over the cases both sides ran; an arm's stated figure is over all its
         # trials. They differ where a side ran cases the other did not, or ran its cases unequally often.
-        if comparison.delta is not None and any(
-            figure is None or mean is None or round_figures(figure) != round_figures(mean) for figure, mean in sides
+        both = [(figure, mean) for figure, mean in sides if figure is not None and mean is not None]
+        if (
+            comparison.delta is not None
+            and len(both) == len(sides)
+            and any(round_figures(figure) != round_figures(mean) for figure, mean in both)
         ):
             held["delta_note"] = "paired_cases"
         return held
@@ -1026,7 +1082,9 @@ class _Builder:
     # ------------------------------------------------------------------ strata and examples
 
     def strata(self) -> list[Stratum]:
-        """Every stratum of every aspect with each arm's judged means in it, the most cases first."""
+        """Every stratum of every aspect with each arm's figures in it, the most cases first: each measure's, as its
+        cell's figure is stated (:func:`_measure_stat`, a text or categorical measure none), then each judged
+        dimension's mean."""
         strata: list[Stratum] = []
         for aspect in self.ordered:
             rows: dict[str, dict[str, Any]] = {}
@@ -1035,8 +1093,15 @@ class _Builder:
                     name = held.stratum if held.stratum is not None else UNSTRATIFIED
                     row = rows.setdefault(name, {"n_cases": held.n_cases, "per_arm": {}})
                     row["per_arm"][label] = {
-                        reading.dimension: Stat(mean=reading.mean, sem=reading.sem, n=reading.n)
-                        for reading in held.judged
+                        **{
+                            summary.name: _measure_stat(summary)
+                            for summary in held.measures.measures
+                            if not (summary.texts or summary.categories)
+                        },
+                        **{
+                            reading.dimension: Stat(mean=reading.mean, sem=reading.sem, n=reading.n)
+                            for reading in held.judged
+                        },
                     }
             strata.extend(
                 Stratum(
@@ -1247,20 +1312,79 @@ def _unit(facts: MetricDescriptor, grade: str | None) -> str | None:
     return SHARE_UNIT if grade is None and reads_as_share(facts) else facts.unit
 
 
-def _spread_and_state(summary: MeasureSummary, point: float | None) -> dict[str, Any]:
+def _across(figure: AggregateFigure) -> AcrossFigure:
+    """One figure across the aspects, copied."""
+    return AcrossFigure(value=figure.value, interval=figure.interval, missing=list(figure.missing))
+
+
+def _measure_stat(summary: MeasureSummary) -> Stat:
+    """One measure's figure on one cell or stratum, copied off its summary: its point (a rate, else a mean), interval,
+    standard error, observations and cases, a lower-is-better measure's bad tail, and what :func:`_spread_and_state`
+    adds. The one way a measure's figure is stated, so a cell's and a stratum's read alike."""
+    point = summary.rate if summary.rate is not None else summary.mean
+    ci = (summary.ci_low, summary.ci_high) if summary.ci_low is not None and summary.ci_high is not None else None
+    return Stat(
+        mean=point,
+        ci=ci,
+        sem=summary.sem,
+        n=summary.n,
+        n_cases=summary.n_independent,
+        p95=summary.bad_tail() if summary.higher_is_better is False else None,
+        **_spread_and_state(summary, point, ci),
+    )
+
+
+def _spread_and_state(
+    summary: MeasureSummary, point: float | None, ci: tuple[float, float] | None
+) -> dict[str, Any]:
     """What a cell's figure carries past its mean and interval, copied off its summary: the spread of its cases and the
-    one value they all took where they did not vary, and, for a figure with no interval, its state: not available,
-    because the cases did not vary or because too few cases carry one (a spend or a time states an interval from five
-    cases above zero). Each is left out where the summary holds none, so an input reads as before them."""
+    one value they all took where they did not vary, and, for a figure with no interval to read, its state (not
+    available) with why: ``no_variation`` where the cases did not vary or the interval has no width, whatever it
+    holds, since an interval with no width is no interval; ``too_few`` where too few cases carry one (a spend or a time
+    states an interval from five cases above zero). Each is left out where the summary holds none, so an input reads
+    as before them."""
     held: dict[str, Any] = {}
     if summary.spread is not None:
         held["spread"] = summary.spread
     if summary.no_variation is not None:
         held["no_variation"] = summary.no_variation
-    if point is not None and (summary.ci_low is None or summary.ci_high is None):
-        held["state"] = StateOf(
-            state="not_available", reason="no_variation" if summary.no_variation is not None else "too_few"
-        )
+    if point is not None:
+        held |= _no_interval_state(ci, unvaried=summary.no_variation is not None)
+    return held
+
+
+def _no_interval_state(ci: tuple[float, float] | None, *, unvaried: bool = False) -> dict[str, StateOf]:
+    """A figure's state where it has no interval to read: not available, ``no_variation`` where its cases did not vary
+    or its interval has no width, else ``too_few`` where it has none; nothing where it has one of some width."""
+    if unvaried or (ci is not None and ci[0] == ci[1]):
+        return {"state": StateOf(state="not_available", reason="no_variation")}
+    if ci is None:
+        return {"state": StateOf(state="not_available", reason="too_few")}
+    return {}
+
+
+def _judged_ci(surface: DecisionSurface, cell: CellFacts, reading: JudgedReading) -> tuple[float, float] | None:
+    """A judged dimension's interval on one arm's cell, as every page reads it
+    (:func:`~threetears.evals.analysis.references.resolve_reading`: its mean and standard error over the cases, on the
+    dimension's scale); None where it has no standard error, or no mean."""
+    if reading.mean is None:
+        return None
+    resolved = resolve_reading(
+        surface, cell_ref(cell.variant_key, cell.apparatus_class_id), reading.dimension, "judged"
+    )
+    if resolved.ci_low is None or resolved.ci_high is None:
+        return None
+    return resolved.ci_low, resolved.ci_high
+
+
+def _judged_interval(reading: JudgedReading, ci: tuple[float, float] | None) -> dict[str, Any]:
+    """A judged mean's interval, and its state where it has none to read (:func:`_no_interval_state`); the one value
+    its cases took where the interval has no width. Nothing for a dimension with no mean."""
+    if reading.mean is None:
+        return {}
+    held: dict[str, Any] = {"ci": ci, **_no_interval_state(ci)}
+    if ci is not None and ci[0] == ci[1]:
+        held["no_variation"] = reading.mean
     return held
 
 
@@ -1329,7 +1453,12 @@ def family_id(aspect: str, position: int) -> str:
 
 def _level(level: float | None) -> str | None:
     """An interval level as the family's disclosure spells it, ``99.69%``; None where none was read."""
-    return None if level is None else f"{format_number(100 * level)}%"
+    return None if level is None else _level_of(level)
+
+
+def _level_of(level: float) -> str:
+    """An interval level read, as the family's disclosure spells it: ``99.69%``."""
+    return f"{format_number(100 * level)}%"
 
 
 def _loss(strata: Sequence[Stratum], dimension: str, control: str | None) -> dict[tuple[str, str], float]:

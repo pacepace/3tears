@@ -133,7 +133,6 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "schema/reading_states.py:WithheldReason",
         "Check.against",
         "Corrected.against",
-        "FamilyComparison.delta_note",
         "analysis/completeness.py:GateRule",
         "analysis/report_input.py:NoActionReason",
         "analysis/report_input.py:Remedy",
