@@ -181,6 +181,8 @@ def _real_size(backend: DuckDBBackend) -> list[str]:
     return [f"r{i}" for i in range(0, _REAL_KEYS * 97, 97)]
 
 
+# times against the host's quiet (best_seconds_interleaved): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 def test_a_page_of_keys_is_read_within_twice_the_statement_on_keys_duckdb_holds(backend: DuckDBBackend) -> None:
     """Flips if select_batch binds its keys a placeholder a value: DuckDB tries ``import pandas`` twice per value and,
     pandas absent, each try searches the whole import path (1,000 keys ~320 ms on a laptop against ~4.5 ms). Baseline:
@@ -211,6 +213,8 @@ def test_a_page_of_keys_is_read_within_twice_the_statement_on_keys_duckdb_holds(
     assert problem is None, problem
 
 
+# times against the host's quiet (best_seconds_interleaved): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 def test_a_page_of_composite_keys_is_read_within_twice_the_join_on_keys_duckdb_holds(backend: DuckDBBackend) -> None:
     """Flips if a composite key's page is an OR of one ``(a = ? AND b = ?)`` a key (300 keys ~490 ms against ~4 ms):
     baseline is the semi-join on the keys put in DuckDB by hand."""

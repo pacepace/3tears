@@ -447,7 +447,7 @@ markers = [
     # A wall-clock bound on the event loop is a bound on the machine as much as the code: beside three busy xdist
     # workers on a four-core runner the kernel preempts the thread holding the interpreter lock and the loop waits
     # on it. scripts/ci-unit-tests.sh runs these apart, one process, after every parallel session.
-    "loop_timing: asserts the event loop's responsiveness by wall clock; CI runs it apart and serially",
+    "loop_timing: asserts a wall-clock bound that needs a quiet host (a loop's lateness, a speed ratio); runs apart and serially (tests/timing_suite.py)",
     "memory_probe: measures a run's peak heap with tracemalloc; deselect with -m 'not memory_probe' if slow",
 ]
 # Note on the `allowed_objects` warning:
