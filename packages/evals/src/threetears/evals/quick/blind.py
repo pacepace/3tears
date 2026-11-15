@@ -854,8 +854,16 @@ def _who(kind: str, name: str) -> str:
     return f"a model ({name})" if kind == "reference" else name
 
 
-def _sample_words(sample: BlindSample, *, several: bool) -> str:
-    who = f" by {_who(sample.rater_kind, sample.rater)}" if sample.rater_kind == "reference" or several else ""
+def _whose(kind: str, names: Sequence[str], labels_name: str | None) -> str:
+    """Whose read a line states: a model by its id, a person by the name their labels give, else ``a person``."""
+    if kind == "reference":
+        return _who(kind, names[0])
+    named = [name for name in names if name != labels_name]
+    return ", ".join(named) if named else "a person"
+
+
+def _sample_words(sample: BlindSample, *, labels_name: str | None) -> str:
+    who = f" by {_whose(sample.rater_kind, [sample.rater], labels_name)}"
     read = f"{sample.answered} of {sample.items} cases read blind{who}"
     left = [f"{sample.skipped} skipped"] if sample.skipped else []
     left += [f"{sample.partial} answered in part"] if sample.partial else []
@@ -866,17 +874,19 @@ def _sample_words(sample: BlindSample, *, several: bool) -> str:
     return f"{read}, out of the drawn order (not drawn at random{aside})"
 
 
-def _agreement_clause(reading: BlindAgreement) -> str:
+def _agreement_clause(reading: BlindAgreement, *, labels_name: str | None, left: bool) -> str:
+    """One dimension's agreement; ``left`` says whether its reader has cases on the sheet still to read."""
     person = reading.anchor == "person"
-    who = "you" if person else "the model"
+    who = _whose(reading.anchor, reading.anchor_names, labels_name) if person else "the model"
     counted = f"{reading.pairs} results from {reading.cases} cases"
     table = reading.table
     caught = ""
     if table is not None and (failed := table.both_fail + table.rater_fail_judge_pass):
         caught = f"; the judge failed {table.both_fail} of the {failed} answers {who} failed"
+    # More results come from the cases left on the sheet, or, once it is read through, from more cases.
+    more = "" if left else ", from more cases than the run has"
     if reading.kappa is None:
-        # Reading further is a person's next step; a model has read every case it was asked.
-        further = "; read further" if person else ""
+        further = "; read further" if left else ""
         return f"{counted}  kappa undefined: {who} and the judge gave every answer the same verdict{further}{caught}"
     figure = f"kappa {_figure(reading.kappa)}"
     if reading.lower is not None and reading.upper is not None:
@@ -890,9 +900,9 @@ def _agreement_clause(reading: BlindAgreement) -> str:
     elif reading.calibration == "not_met":
         said += f"{': ' if person else ''}agreement is shown below the bar of {bar}"
     elif reading.calibration == "insufficient" and reading.results_needed is not None:
-        said += f"{': ' if person else ''}needs {reading.results_needed} more results"
+        said += f"{': ' if person else ''}needs {reading.results_needed} more results{more}"
     elif reading.calibration == "undecided" and reading.results_needed is not None:
-        said += f"{': ' if person else ''}about {reading.results_needed} more results would decide it"
+        said += f"{': ' if person else ''}about {reading.results_needed} more results would decide it{more}"
     return f"{counted}  {figure}  {said or 'not decided'}{caught}"
 
 
@@ -1009,14 +1019,14 @@ def judge_lines(
     samples = [sample for sample in (report.samples if report else []) if sample.sample != "none"]
     reviews = [line for review in read.reviews for line in _review_lines(review, kept)]
     not_read = _counted(f"label(s) in {labels_name} not read", unread)
+    why = (
+        "Judge(labels=...) names the labels file"
+        if labels_name is None
+        else f"{labels_name} is not there yet"
+        if not labels_there
+        else f"{labels_name} holds no label that pairs with this run's answers"
+    )
     if not samples and not loose:
-        why = (
-            "Judge(labels=...) names the labels file"
-            if labels_name is None
-            else f"{labels_name} is not there yet"
-            if not labels_there
-            else f"{labels_name} holds no label that pairs with this run's answers"
-        )
         return [
             f"judge: 0 of {len(read.items)} cases read blind: judge uncalibrated ({why}){_first_step(read, labels_name)}",
             *not_read,
@@ -1024,10 +1034,22 @@ def judge_lines(
         ]
     assert report is not None  # samples or loose labels come from a closed read
     people = [sample for sample in samples if sample.rater_kind == "person"]
-    several = len(people) > 1
     # Each model's read heads its own lines, below the people's, so no reading sits under another reader's count.
     models = [sample for sample in samples if sample.rater_kind != "person"]
-    lines = [f"judge: {_sample_words(sample, several=several)}" for sample in people]
+    lines = [f"judge: {_sample_words(sample, labels_name=labels_name)}" for sample in people]
+    if not people and not loose:
+        # A model's read earns no tier, so the person's first step is never dropped beside it.
+        lines.append(
+            f"judge: 0 of {len(read.items)} cases read blind by a person: judge uncalibrated ({why})"
+            f"{_first_step(read, labels_name)}"
+        )
+
+    def clause(reading: BlindAgreement) -> str:
+        # Whether the reader has cases left on the sheet: what "read further" and "more results" are decided by.
+        own = [sample for sample in samples if sample.rater in reading.anchor_names]
+        left = not own or any(sample.answered < sample.items for sample in own)
+        return _agreement_clause(reading, labels_name=labels_name, left=left)
+
     if loose:
         lines.append(
             f"judge: {loose} label(s) in {labels_name} are not on this run's draw (the answers changed since, or it is "
@@ -1037,17 +1059,17 @@ def judge_lines(
     # A dimension is named as every surface names it (``answer grounded (judged)``), never by its stored id.
     width = max((len(judged_heading(reading.dim)) for reading in report.agreement), default=0)
     by_person = [reading for reading in report.agreement if reading.anchor == "person"]
-    lines += [f"  {judged_heading(reading.dim).ljust(width)}  {_agreement_clause(reading)}" for reading in by_person]
+    lines += [f"  {judged_heading(reading.dim).ljust(width)}  {clause(reading)}" for reading in by_person]
     reviewers = dict.fromkeys(reading.anchor_names[0] for reading in report.agreement if reading.anchor == "reference")
     for reviewer in reviewers:
-        lines += [f"judge: {_sample_words(sample, several=several)}" for sample in models if sample.rater == reviewer]
+        lines += [f"judge: {_sample_words(s, labels_name=labels_name)}" for s in models if s.rater == reviewer]
         own = [r for r in report.agreement if r.anchor == "reference" and r.anchor_names[0] == reviewer]
         checked = [check for check in report.reviewer_checks if check.reviewer == reviewer]
         against = "" if checked else ", not yet against people"
         lines += under(
             f"{'beside it, ' if by_person else ''}checked against {_who('reference', reviewer)}{against}:", "  "
         )
-        lines += [f"    {judged_heading(reading.dim).ljust(width)}  {_agreement_clause(reading)}" for reading in own]
+        lines += [f"    {judged_heading(reading.dim).ljust(width)}  {clause(reading)}" for reading in own]
         if any(reading.shares_family for reading in own):
             lines += under(
                 f"{reviewer} and the judge are one provider's models: a lean they share would not show here", "    "
@@ -1056,7 +1078,7 @@ def judge_lines(
             kappa = "kappa undefined" if check.kappa is None else f"kappa {_figure(check.kappa)}"
             on = judged_heading(check.dim)
             lines += under(f"{reviewer} against people on {on}: {check.outputs} outputs, {kappa}", "    ")
-    lines += [f"judge: {_sample_words(sample, several=several)}" for sample in models if sample.rater not in reviewers]
+    lines += [f"judge: {_sample_words(s, labels_name=labels_name)}" for s in models if s.rater not in reviewers]
     for reviewer, reason in ((reviewer, reason) for reviewer, why in report.not_checked.items() for reason in why):
         lines += under(f"not checked against {_who('reference', reviewer)}: {reason}", "  ")
     lines += reviews

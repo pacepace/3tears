@@ -169,15 +169,15 @@ What it printed:
 
 ```text
 replies: reply passed 40 of 40 trials on 20 cases.
-judge: 20 of 20 cases read blind, in the drawn order (a random sample)
-  answer answers (judged)   20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more results would decide it; the judge failed 0 of the 2 answers you failed
-  answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more results would decide it; the judge failed 0 of the 2 answers you failed
-  answer safe (judged)      20 results from 20 cases  kappa undefined: you and the judge gave every answer the same verdict; read further
+judge: 20 of 20 cases read blind by Brooks, in the drawn order (a random sample)
+  answer answers (judged)   20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more results would decide it, from more cases than the run has; the judge failed 0 of the 2 answers Brooks failed
+  answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more results would decide it, from more cases than the run has; the judge failed 0 of the 2 answers Brooks failed
+  answer safe (judged)      20 results from 20 cases  kappa undefined: Brooks and the judge gave every answer the same verdict
 judge: 20 of 20 cases read blind by a model (claude-fable-5-2), in the drawn order (a random sample)
   beside it, checked against a model (claude-fable-5-2):
     answer answers (judged)   20 results from 20 cases  kappa undefined: the model and the judge gave every answer the same verdict
     answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-0.36, 0.42]  agreement is shown below the bar of 0.60; the judge failed 0 of the 10 answers the model failed
-    answer safe (judged)      20 results from 20 cases  kappa 0.00 [-1.00, 0.84]  about 20 more results would decide it; the judge failed 0 of the 1 answers the model failed
+    answer safe (judged)      20 results from 20 cases  kappa 0.00 [-1.00, 0.84]  about 20 more results would decide it, from more cases than the run has; the judge failed 0 of the 1 answers the model failed
     claude-fable-5-2 against people on answer grounded (judged): 20 outputs, kappa 0.00
     claude-fable-5-2 against people on answer answers (judged): 20 outputs, kappa 0.00
     claude-fable-5-2 against people on answer safe (judged): 20 outputs, kappa 0.00
@@ -203,14 +203,23 @@ all four as it must. On the replies it failed none that either reader failed:
 
 A person's read earns the [evidence tier](judges-and-calibration.md#step-7-evidence-tiers-and-how-many-ratings-they-take)
 (`undetermined` here); a model's read says what the judge was checked against and never names a tier. The last three
-lines of the model's block are the readers against each other: κ 0.00 on every dimension, so on these replies the
-model's read does not stand in for this person's.
+lines of the model's block are the readers against each other, in counts:
 
-**A tighter wording is a new question.** The judge got `grounded` wrong, so a second eval rewords it, after the model's
-read, and the same judge model grades the same recorded replies:
+| Dimension | Agreed, of 20 | Brooks alone failed | `claude-fable-5-2` alone failed | Both failed |
+|---|---|---|---|---|
+| grounded | 10 | 1 | 9 | 1 |
+| answers | 18 | 2 | 0 | 0 |
+| safe | 19 | 0 | 1 | 0 |
+
+They read `grounded` differently: they agree on 10 of 20, and the model failed 9 replies Brooks passed. On `answers`
+and `safe` the κ 0.00 between them is not disagreement: where one reader gives every reply one verdict, κ is 0 however
+many replies they agree on.
+
+**A tighter wording is a new question.** The judge passed every reply either reader failed on `grounded`, so a second
+eval rewords it, after the model's read, and the same judge model grades the same recorded replies:
 
 ```python
-# Written after the model's read, for the dimension the judge got wrong; new words are read again.
+# Written after the model's read, from these 20 replies; new words are a new question, so they are read again.
 redrafter = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")  # one Model per eval
 
 
@@ -230,11 +239,14 @@ tighter = Judge(
 tighter_eval = Eval("emails.jsonl", runner=reply_again, grader=[tighter], k=2, name="replies-tighter")
 ```
 
-A label pairs by a fingerprint of the words it answered, so Brooks's labels do not pair with the new wording and the
-model reads it again. It is still below the bar:
+A label pairs by a fingerprint of the words it answered, so Brooks's labels do not pair with the new wording: it is
+measured against the model's read of it only, and it is still below the bar. It was written from these 20 replies
+and scored on the same 20, so even a pass would not show it works on fresh replies. A second rewording, which had the
+judge list each claim, did worse (0 of the 10 the model failed) and is not shipped.
 
 ```text
 replies-tighter: reply_again passed 38 of 40 trials on 20 cases. Cases that failed a trial: locked-out, unlock-sooner.
+judge: 0 of 20 cases read blind by a person: judge uncalibrated (Judge(labels=...) names the labels file); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels where Judge(labels=...) names
 judge: 20 of 20 cases read blind by a model (claude-fable-5-2), in the drawn order (a random sample)
   checked against a model (claude-fable-5-2), not yet against people:
     answer grounded (judged)  20 results from 20 cases  kappa 0.08 [-0.25, 0.47]  agreement is shown below the bar of 0.60; the judge failed 1 of the 11 answers the model failed

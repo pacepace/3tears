@@ -557,16 +557,16 @@ async def test_a_judge_is_a_grader_its_answers_written_to_read_blind_and_read_ba
         ("owner", "person", "random", 4)
     ]
     lines = again.calibration_lines()
-    assert lines[0] == "judge: 4 of 4 cases read blind, in the drawn order (a random sample)"
+    assert lines[0] == "judge: 4 of 4 cases read blind by owner, in the drawn order (a random sample)"
     assert lines[1].startswith("  answer billing (judged)  4 results from 4 cases  kappa 1.00")
-    assert "undetermined: needs " in lines[1] and lines[1].endswith("the judge failed 2 of the 2 answers you failed")
+    assert "undetermined: needs " in lines[1] and lines[1].endswith("the judge failed 2 of the 2 answers owner failed")
     assert len(lines) == 2
 
     # Answered out of order, the same labels read as not drawn at random.
     _save(labels, [row if n in (1, 3) else {**row, "label": ""} for n, row in enumerate(rows)])
     hunted = await ev.run(store=tmp_path / "evals.sqlite")
     assert hunted.calibration_lines()[0] == (
-        "judge: 2 of 4 cases read blind, out of the drawn order (not drawn at random)"
+        "judge: 2 of 4 cases read blind by owner, out of the drawn order (not drawn at random)"
     )
 
 
@@ -666,7 +666,7 @@ async def test_two_arms_are_read_as_pairs_and_the_preference_is_printed_once_the
     assert report is not None
     (preference,) = report.preferences
     assert (preference.anchor, preference.random, preference.verdict) == ("person", True, "improved")
-    assert "judge: 8 of 8 cases read blind, in the drawn order (a random sample)" in str(done)
+    assert "judge: 8 of 8 cases read blind by a person, in the drawn order (a random sample)" in str(done)
 
 
 # parity-with: threetears.evals.schema.CompletionClient
@@ -726,7 +726,9 @@ async def test_a_model_answers_the_blind_read_and_is_read_as_a_model_never_as_a_
     assert [(r.reviewer, r.calls, r.reused, r.cost_usd) for r in found.reviews] == [
         ("scripted/reviewer", 8, 0, pytest.approx(0.0008))
     ]
-    lines = result.calibration_lines()
+    # No person has read, so the person's first step leads, never dropped beside a model's read.
+    assert result.calibration_lines()[0].startswith("judge: 0 of 8 cases read blind by a person: judge uncalibrated (")
+    lines = result.calibration_lines()[1:]
     assert lines[0] == (
         "judge: 8 of 8 cases read blind by a model (scripted/reviewer), in the drawn order (a random sample)"
     )
@@ -778,7 +780,7 @@ async def test_a_model_s_reading_is_held_to_the_eval_s_cost_cap_and_a_bad_reply_
     done = await Eval(PAIRED, {"terse": terse, "wordy": wordy}, [broken], k=1, name="tickets").run(store=":memory:")
     assert sum(summary.n_scored for summary in done.arms.values()) == 16
     lines = done.calibration_lines()
-    assert lines[0].endswith("(a random sample of the cases answered; 1 skipped)")
+    assert lines[1].endswith("(a random sample of the cases answered; 1 skipped)")
     assert "  1 case(s) not answered: case 2: its reply is not JSON (Expecting value)" in lines
 
 
@@ -809,7 +811,7 @@ async def test_a_case_a_model_answered_is_not_asked_again_on_the_same_draw(tmp_p
     assert {(row["rater"], row["rater_kind"]) for row in kept_rows} == {("scripted/reviewer", "reference")}
     assert sorted({row["served_model"] for row in kept_rows}) == ["", "scripted/reviewer"]
     assert [row["label"] for row in kept_rows].count("skip") == 1
-    assert again.calibration_lines()[0].endswith("(a random sample of the cases answered; 1 skipped)")
+    assert again.calibration_lines()[1].endswith("(a random sample of the cases answered; 1 skipped)")
     assert (
         f"reviewer: a model (scripted/reviewer) read the blind read for 0 call(s), 8 case(s) read from {kept.name} and "
         "not asked again; the cost of checking the judge, in no candidate's cost"

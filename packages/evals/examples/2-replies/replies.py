@@ -8,7 +8,8 @@ Both pair with these recorded replies only, and a reworded dimension pairs with 
 ``tighter_eval`` rewords ``grounded`` after the model's read, so the model reads it again. Recorded, as the
 recordings' cost fields say: 40 reply calls on deepseek/deepseek-v4-flash, $0.0017; 128 judge calls on
 google/gemini-2.5-flash-lite, $0.0159 (8 of them on the examples), and 40 judge calls on the tighter wording,
-$0.0049; 20 reader calls on claude-fable-5-2, $0.6387, and 20 reader calls on the tighter wording, $0.5223.
+$0.0049; 20 reader calls on claude-fable-5-2, about $0.64, and 20 reader calls on the tighter wording, about $0.52,
+both estimates from OpenRouter's catalogue, since Anthropic served the calls and the rates shipped do not list it.
 """
 
 from pathlib import Path
@@ -51,7 +52,7 @@ judge = Judge(
 )
 replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="replies")
 
-# Written after the model's read, for the dimension the judge got wrong; new words are read again.
+# Written after the model's read, from these 20 replies; new words are a new question, so they are read again.
 redrafter = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")  # one Model per eval
 
 

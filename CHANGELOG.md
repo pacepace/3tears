@@ -12,10 +12,15 @@ packages (bumped in lock-step).
 example with a judge ships calibrated). Two blind reads of its 20 recorded replies ship beside it and print apart,
 never pooled: a person's labels (`labels.csv`, Brooks's whole read) and a model's (`Judge(reviewer=...)` on
 `claude-fable-5-2`, recorded). The recorded judge failed none of the replies either reader failed. A second eval,
-`tighter_eval`, rewords `grounded` and is measured against the model's read of the new words: still below the bar. A
-model reader's `kappa undefined` line no longer ends "read further", which is a person's next step; each model's read
-heads its own block in the print, below the people's; and the print's agreement lines name a dimension as every
-surface does (`answer grounded (judged)`), never by its stored id.
+`tighter_eval`, rewords `grounded` and is measured against the model's read of the new words only: still below the
+bar.
+
+The quick print's judge lines changed with it. A person's read is named by the `rater` its labels give, else `a
+person`, never "you", which the package cannot know. "read further" and "more results" are decided by the cases left
+on the sheet, not by who read it. Once a model has read and no person has, the person's `0 of N cases read blind by a
+person: judge uncalibrated` line and its next step still print. Each model's read heads its own block below the
+people's, and an agreement line names a dimension as every surface does (`answer grounded (judged)`), never by its
+stored id.
 
 ### evals: a judge checked against itself: re-score noise in the judge's own table
 

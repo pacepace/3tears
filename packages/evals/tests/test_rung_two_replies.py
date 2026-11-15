@@ -42,21 +42,21 @@ RUNG = EXAMPLES / "2-replies"
 
 #: What the run prints about its judge against the person's read, then against the model's, apart.
 JUDGE_READ = [
-    "judge: 20 of 20 cases read blind, in the drawn order (a random sample)",
-    "  answer answers (judged)   20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more results "
-    "would decide it; the judge failed 0 of the 2 answers you failed",
-    "  answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more results "
-    "would decide it; the judge failed 0 of the 2 answers you failed",
-    "  answer safe (judged)      20 results from 20 cases  kappa undefined: you and the judge gave every answer the same "
-    "verdict; read further",
+    "judge: 20 of 20 cases read blind by Brooks, in the drawn order (a random sample)",
+    "  answer answers (judged)   20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more "
+    "results would decide it, from more cases than the run has; the judge failed 0 of the 2 answers Brooks failed",
+    "  answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more "
+    "results would decide it, from more cases than the run has; the judge failed 0 of the 2 answers Brooks failed",
+    "  answer safe (judged)      20 results from 20 cases  kappa undefined: Brooks and the judge gave every answer the "
+    "same verdict",
     "judge: 20 of 20 cases read blind by a model (claude-fable-5-2), in the drawn order (a random sample)",
     "  beside it, checked against a model (claude-fable-5-2):",
-    "    answer answers (judged)   20 results from 20 cases  kappa undefined: the model and the judge gave every answer the "
-    "same verdict",
-    "    answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-0.36, 0.42]  agreement is shown below the bar of "
-    "0.60; the judge failed 0 of the 10 answers the model failed",
-    "    answer safe (judged)      20 results from 20 cases  kappa 0.00 [-1.00, 0.84]  about 20 more results would decide "
-    "it; the judge failed 0 of the 1 answers the model failed",
+    "    answer answers (judged)   20 results from 20 cases  kappa undefined: the model and the judge gave every "
+    "answer the same verdict",
+    "    answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-0.36, 0.42]  agreement is shown below the "
+    "bar of 0.60; the judge failed 0 of the 10 answers the model failed",
+    "    answer safe (judged)      20 results from 20 cases  kappa 0.00 [-1.00, 0.84]  about 20 more results would "
+    "decide it, from more cases than the run has; the judge failed 0 of the 1 answers the model failed",
     "    claude-fable-5-2 against people on answer grounded (judged): 20 outputs, kappa 0.00",
     "    claude-fable-5-2 against people on answer answers (judged): 20 outputs, kappa 0.00",
     "    claude-fable-5-2 against people on answer safe (judged): 20 outputs, kappa 0.00",
@@ -64,12 +64,16 @@ JUDGE_READ = [
     "judge, in no candidate's cost",
 ]
 
-#: What the run prints about the tighter wording: read by the model alone, since no person has read these words.
+#: What the run prints about the tighter wording: no person has read these words, which it says with the next step, and
+#: the model's read of them below.
 TIGHTER_READ = [
+    "judge: 0 of 20 cases read blind by a person: judge uncalibrated (Judge(labels=...) names the labels file); next "
+    "step: open the blind_read.html the report writes, answer its cases from the top, and save its labels where "
+    "Judge(labels=...) names",
     "judge: 20 of 20 cases read blind by a model (claude-fable-5-2), in the drawn order (a random sample)",
     "  checked against a model (claude-fable-5-2), not yet against people:",
-    "    answer grounded (judged)  20 results from 20 cases  kappa 0.08 [-0.25, 0.47]  agreement is shown below the bar of "
-    "0.60; the judge failed 1 of the 11 answers the model failed",
+    "    answer grounded (judged)  20 results from 20 cases  kappa 0.08 [-0.25, 0.47]  agreement is shown below the "
+    "bar of 0.60; the judge failed 1 of the 11 answers the model failed",
     "reviewer: a model (claude-fable-5-2) read the blind read for $0.52 over 20 call(s); the cost of checking the "
     "judge, in no candidate's cost",
 ]
@@ -100,6 +104,7 @@ def _rows(path: Path) -> list[dict[str, str]]:
 def test_a_person_s_whole_read_ships_beside_the_blank_sheet() -> None:
     sheet = _rows(RUNG / "blind_read.csv")
     assert {row["label"] for row in sheet} == {""} and {row["rater"] for row in sheet} == {""}, "the sheet stays blank"
+    assert {row["prefer"] for row in sheet} == {""} and {row["rater_kind"] for row in sheet} == {""}
     assert not (RUNG / "to_label.csv").exists(), "the sheet in store order is retired"
     labels = _rows(RUNG / "labels.csv")
     # Every case on the sheet, on every dimension, once: a whole read, a person's, by name.
@@ -242,7 +247,7 @@ def _label(replies_dir: Path, positions: set[int]) -> None:
     rows = _rows(replies_dir / "blind_read.csv")
     for row in rows:
         if int(row["position"]) in positions:
-            row["label"], row["rater"] = "pass", "this test, not a person"
+            row["label"], row["rater"] = "pass", "a test"
     with (replies_dir / "labels.csv").open("w", encoding="utf-8", newline="") as written:
         writer = csv.DictWriter(written, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -258,11 +263,9 @@ def test_a_sheet_answered_from_the_top_is_read_back_as_a_random_sample_and_the_j
     assert main(["replies.py"]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    at = lines.index("judge: 14 of 20 cases read blind, in the drawn order (a random sample)")
+    at = lines.index("judge: 14 of 20 cases read blind by a test, in the drawn order (a random sample)")
     # The judge passed every reply and so did the labels, so kappa has nothing to measure: said, with what to do.
-    undefined = (
-        "14 results from 14 cases  kappa undefined: you and the judge gave every answer the same verdict; read further"
-    )
+    undefined = "14 results from 14 cases  kappa undefined: a test and the judge gave every answer the same verdict; read further"
     assert lines[at + 1 : at + 4] == [
         f"  answer answers (judged)   {undefined}",
         f"  answer grounded (judged)  {undefined}",
@@ -282,7 +285,7 @@ def test_a_sheet_answered_out_of_order_reads_as_not_drawn_at_random(
     assert main(["replies.py"]) == 0
 
     lines = capsys.readouterr().out.splitlines()
-    assert "judge: 3 of 20 cases read blind, out of the drawn order (not drawn at random)" in lines
+    assert "judge: 3 of 20 cases read blind by a test, out of the drawn order (not drawn at random)" in lines
     assert "next: for a random sample, answer blind_read.html from case 1, in order" in lines
 
 
@@ -318,7 +321,13 @@ def test_the_docstring_states_the_cost_its_recordings_record() -> None:
         ("reader.jsonl", "reader calls on claude-fable-5-2"),
         ("reader_tighter.jsonl", "reader calls on the tighter wording"),
     ):
-        calls, cost = recorded_cost(RUNG / "recordings" / recording)
+        path = RUNG / "recordings" / recording
+        calls, cost = recorded_cost(path)
+        sources = {line["result"]["price_source"] for line in recorded(path)}  # type: ignore[index]
+        if any(str(source).startswith("openrouter-catalogue:") for source in sources):
+            # A catalogue's rate is a third party's listing, not the bill: stated as an estimate, to the cent.
+            cost = f"about ${float(cost[1:]):.2f}"
+            assert "estimates from OpenRouter's catalogue" in said, f"replies.py states {recording}'s cost as billed"
         assert f"{calls} {calls_word}" in said and cost in said, f"replies.py does not state {recording}'s {cost}"
 
 

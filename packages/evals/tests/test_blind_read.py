@@ -491,9 +491,9 @@ def test_a_judge_that_passes_everything_is_shown_by_the_table_where_kappa_says_n
     lines = judge_lines(
         close_blind_read(_with(read, answers), results).read, labels_name="labels.csv", labels_there=True
     )
-    assert lines[0] == "judge: 30 of 30 cases read blind, in the drawn order (a random sample)"
+    assert lines[0] == "judge: 30 of 30 cases read blind by owner, in the drawn order (a random sample)"
     assert "30 results from 30 cases" in lines[1] and lines[1].endswith(
-        "the judge failed 0 of the 3 answers you failed"
+        "the judge failed 0 of the 3 answers owner failed"
     )
 
 
@@ -561,7 +561,7 @@ def test_ties_are_counted_and_never_split_and_skips_are_said() -> None:
     assert preference.p == pytest.approx(exact_sign_test_p(9, 9))
     lines = judge_lines(closed, labels_name="labels.csv", labels_there=True, shown={})
     assert lines[0] == (
-        "judge: 12 of 12 cases read blind, in the drawn order (a random sample of the cases answered; 1 skipped)"
+        "judge: 12 of 12 cases read blind by owner, in the drawn order (a random sample of the cases answered; 1 skipped)"
     )
     assert (
         "preference: v2 over v1 on 9 of 9 (2 ties), 1 with no preference given, sign test p 0.004: v2 preferred"
@@ -630,6 +630,9 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
     (preference,) = report.preferences
     assert (preference.anchor, preference.anchor_names) == ("reference", [reviewer])
     lines = judge_lines(closed.read, labels_name=None, labels_there=False, shown={})
+    # No person has read, so the person's first step leads, never dropped beside a model's read.
+    assert lines[0].startswith("judge: 0 of 24 cases read blind by a person: judge uncalibrated (")
+    lines = lines[1:]
     assert lines[0] == (
         f"judge: 24 of 24 cases read blind by a model ({reviewer}), in the drawn order (a random sample)"
     )
@@ -862,7 +865,8 @@ async def test_a_reply_that_cannot_be_used_leaves_its_case_not_answered_and_the_
     (sample,) = closed.report.samples
     assert (sample.sample, sample.answered, sample.skipped) == ("random", 6, 2)
     lines = judge_lines(closed, labels_name=None, labels_there=False)
-    assert lines[0] == (
+    assert lines[0].startswith("judge: 0 of 6 cases read blind by a person: judge uncalibrated (")
+    assert lines[1] == (
         "judge: 6 of 6 cases read blind by a model (scripted/reviewer), in the drawn order (a random sample of the "
         "cases answered; 2 skipped)"
     )
@@ -1078,7 +1082,8 @@ def test_a_case_answered_in_part_is_counted_and_a_missing_preference_is_said(tmp
     assert (preference.items, preference.missing) == (7, 1)
     lines = judge_lines(closed, labels_name="labels.csv", labels_there=True)
     assert lines[0] == (
-        "judge: 8 of 8 cases read blind, in the drawn order (a random sample of the cases answered; 2 answered in part)"
+        "judge: 8 of 8 cases read blind by a person, in the drawn order (a random sample of the cases answered; 2 "
+        "answered in part)"
     )
     assert any(line.startswith("preference: ") and ", 1 with no preference given, " in line for line in lines)
     # A whole answer is not a partial one, and a skip is its own count.

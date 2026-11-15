@@ -93,8 +93,9 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
 - **`guard`** puts dimensions on the boundary axis with their margins: `guard={"safe": 0.02}`
   ([Step 3](#step-3-guardrails-are-not-capabilities)).
 
-Until labels exist, the printed result says `judge: 0 of N cases read blind: judge uncalibrated` and the next step, a
-line no quiet print drops. The package provides the mechanism (the page to read, the pairing, κ, the tiers); collecting the labels
+Until a person's labels exist, the printed result says `judge: 0 of N cases read blind: judge uncalibrated` (`read
+blind by a person` once a model has read) and the next step, a line no quiet print drops. Each line names whose read
+it is: the `rater` the labels give, else `a person`. The package provides the mechanism (the page to read, the pairing, κ, the tiers); collecting the labels
 is each app's own work, and no label is ever authored for you. The calibrated tier's floor is 20 person-rated
 results; about 50 is a realistic plan for a good judge.
 

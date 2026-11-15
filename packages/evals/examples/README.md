@@ -133,10 +133,23 @@ does ([the print](../docs/ladder.md#rung-2-a-judge-checked-against-a-person)). R
 | answers | 2 | 0 | 0 |
 | safe | 0 | 1 | 0 |
 
-The judge failed none of the replies either reader failed, and the readers disagree with each other (κ 0.00 on every
-dimension). `tighter_eval` rewords `grounded` after the model's read, and the same judge model grades the same
-replies with it. New words are a new question: Brooks's labels do not pair with them, so the model reads them again.
-The judge then failed 1 of the 11 replies the model failed (κ 0.08), still below the bar of 0.60.
+The judge failed none of the replies either reader failed. The readers against each other:
+
+| Dimension | Agreed, of 20 | Brooks alone failed | `claude-fable-5-2` alone failed | Both failed |
+|---|---|---|---|---|
+| grounded | 10 | 1 | 9 | 1 |
+| answers | 18 | 2 | 0 | 0 |
+| safe | 19 | 0 | 1 | 0 |
+
+They read `grounded` differently: they agree on 10 of 20, and the model failed 9 replies Brooks passed. On `answers`
+and `safe` the print's κ 0.00 between them is not disagreement: where one reader gives every reply one verdict, κ is 0
+however many replies they agree on.
+
+`tighter_eval` rewords `grounded` after the model's read, and the same judge model grades the same replies with it.
+New words are a new question: Brooks's labels do not pair with them, so it is measured against the model's read of
+them only, and the judge failed 1 of the 11 replies the model failed (κ 0.08), still below the bar of 0.60. It was
+written from these 20 replies and scored on the same 20, so even a pass would not show it works on fresh replies. A
+second rewording, which had the judge list each claim, did worse (0 of the 10 the model failed) and is not shipped.
 
 **Your own judge needs your own read.** Both reads pair with these recorded replies and these words only: re-record
 the replies or reword a dimension, and neither pairs. To read your run:
@@ -145,12 +158,12 @@ the replies or reword a dimension, and neither pairs. To read your run:
    with no verdict ([`blind_read.csv`](2-replies/blind_read.csv) is the same order as rows, for a spreadsheet).
 2. Answer it from the top, press **Download labels.csv**, and save the file where `Judge(labels=...)` names. What you
    answered from the top is a random sample; 20 results per dimension is the floor of the calibrated tier.
-3. Run it again. The print shows the judge against you, and against any `reviewer=` model beside it, apart.
+3. Run it again. The print shows the judge against your read, and against any `reviewer=` model beside it, apart.
 
 Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017); 128 judge calls on `google/gemini-2.5-flash-lite`
 ($0.0159, 8 of them on the examples) and 40 on the tighter wording ($0.0049); 20 reader calls on `claude-fable-5-2`
-($0.6387) and 20 on the tighter wording ($0.5223). Each model's calls are in a recording of their own under
-`recordings/`.
+(about $0.64) and 20 on the tighter wording (about $0.52), estimates from OpenRouter's catalogue, since Anthropic
+served the calls. Each model's calls are in a recording of their own under `recordings/`.
 
 ### Rung 3a: two prompts compared, `3-invoices/compare.py`
 
