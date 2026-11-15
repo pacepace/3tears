@@ -217,7 +217,9 @@ def job_fires_table(metadata: MetaData) -> Table:
             info={
                 "purpose": (
                     "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.latest_for_jobs; "
-                    "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.list_for_job"
+                    "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.list_for_job; "
+                    # a job's delete reads the fires its ON DELETE CASCADE takes, by the job (DeleteCascade)
+                    "packages/core/src/threetears/core/collections/delete_cascade.py::_children"
                 ),
                 "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_job_fires_job_time",
             },
