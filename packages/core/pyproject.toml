@@ -31,6 +31,10 @@ dependencies = [
     "pydantic",
     "pyyaml>=6.0",  # duplicate-key-refusing loader for human-authored files (core.authored_yaml)
     "pydantic-core",  # to_jsonable_python (core.serialization); pydantic pins the release
+    # the change notes' restore folds its notes as Arrow (core.change_note_fold, 067057526), and change_notes imports
+    # it at module top, so every importer of the epoch follow needs it, not only the snapshot extra's: the SDK's suite
+    # against this tree failed 111 tests on ModuleNotFoundError until it was a dependency (SQ4, 2026-11-15)
+    "pyarrow>=17",
 ]
 
 [project.optional-dependencies]
