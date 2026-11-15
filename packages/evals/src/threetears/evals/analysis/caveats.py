@@ -1117,6 +1117,7 @@ def _reading_plan(aspect: Aspect, reading: Reading, *, fresh: bool) -> Plan:
     is lifted by, and what one candidate against its control reads a gain on. Its spread is read from that interval
     and the cases each arm ran; a reading with no margin holds no nominal interval, so its gain interval gives the
     spread, read at that interval's own level."""
+    level: float | None
     if reading.within_interval is not None:
         interval, level = reading.within_interval, INTERVAL_LEVEL
     elif reading.gain_interval is not None:
