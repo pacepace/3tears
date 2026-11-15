@@ -667,8 +667,9 @@ def served_attestation_disclosure(runs: Iterable[EvalRun]) -> str | None:
     :rtype: str | None
     """
     stated: dict[str, int] = {}
-    for model in attested_served_models(runs).values():
-        stated[model] = stated.get(model, 0) + 1
+    for run in runs:
+        if (attestation := run.served_model_attestation) is not None:
+            stated[attestation.served_model] = stated.get(attestation.served_model, 0) + 1
     if not stated:
         return None
     each = "; ".join(f"{model} of {count} run(s)" for model, count in sorted(stated.items()))

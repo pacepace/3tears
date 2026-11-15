@@ -268,6 +268,10 @@ async def test_the_hosts_statement_of_the_definitions_brings_the_runs_back_into_
     assert candidate.n_observations == 2 * control.n_observations
     assert _contrasted(bundle) == {candidate.apparatus_class_id}
     assert _DEFINITIONS not in candidate.unknown_dimensions and bundle.refused_merges == []
+    attested = {summary.run_id: summary.attested_coordinates for summary in bundle.run_summaries}
+    assert all(attested[batch.id] == ["measure_definition"] for batch, _ in batches), "the bundle carries the fact"
+    page = report_markdown(build_code_only_report(bundle, assembled_at="2026-11-15T00:00:00+00:00"))
+    assert "Attested, not recorded: the host stated after the fact the definitions of its measures 3 run(s)" in page
 
 
 # =============================================================================
@@ -324,6 +328,10 @@ def test_the_campaign_page_says_silent_runs_are_read_apart_and_names_the_remedy(
 async def test_the_hosts_statement_of_the_served_model_is_recorded_as_one_and_the_runs_pool() -> None:
     first, second = _silent("a"), _silent("b")
     storage = _stored([_named(_CONTROL, "control", _NOW), first, second])
+    as_recorded = {
+        run_id: [result.to_dict() for result in off_loop(storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)]
+        for run_id in (first[0].id, second[0].id)
+    }
     launch, _client = toyhost_launch_host(storage=storage)
     host = OpsHost(launch=launch)
     (tool, *_) = eval_catalogue().mount_all(standard_tools())
@@ -336,21 +344,29 @@ async def test_the_hosts_statement_of_the_served_model_is_recorded_as_one_and_th
     assert stated.structured["run_ids"] == [first[0].id, second[0].id], "one call takes many runs"
     assert stated.structured["coordinate"] == "served_model"
     assert stated.structured["stated"] == {"served_model": "vendor/extractor-next-2026-08"}
-    silent_left = [
-        row
-        for run_id in (first[0].id, second[0].id)
-        for result in off_loop(storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)
-        for row in result.usage
-        if row.role == "candidate" and not row.served_model
-    ]
-    assert silent_left == [], "every candidate row that named none now names the stated model"
+    for run_id, recorded in as_recorded.items():
+        now = [result.to_dict() for result in off_loop(storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)]
+        assert now == recorded, "evidence stays as recorded: no row is rewritten, a silence stays a silence"
     run = off_loop(storage.load_eval_run, first[0].id, TOYHOST_SCOPE)
     assert run is not None and run.served_model_attestation is not None
     assert run.served_model_attestation.attested_by == "agent:backfill", "stated, and by whom: never a response's word"
     assert run.served_model_attestation.served_model == "vendor/extractor-next-2026-08"
+    assert run.served_model_attestation.result_ids == sorted(result.id for result in first[1]), "what it covers"
     bundle = _bundle(storage)
     (control,), (candidate,) = _arm(bundle, control=True), _arm(bundle, control=False)
-    assert candidate.n_observations == 2 * control.n_observations and candidate.rig_class_id is None
+    assert candidate.n_observations == 2 * control.n_observations and candidate.rig_class_id is None, (
+        "the cells read the silent rows through the statement, and the runs pool"
+    )
+    # The bundle carries the typed fact, per arm and per run, so a caveat or a first-screen value can rank it.
+    (arm,) = [reading for reading in bundle.arm_served_models if reading.variant_key == candidate.variant_key]
+    assert (arm.state, arm.n_unrecorded) == ("unrecorded", 2 * control.n_observations), "what was recorded"
+    assert (arm.n_attested, arm.attested_models) == (2 * control.n_observations, ["vendor/extractor-next-2026-08"])
+    attested = {summary.run_id: summary.attested_coordinates for summary in bundle.run_summaries}
+    assert attested[first[0].id] == ["served_model"] and attested[second[0].id] == ["served_model"]
+    # The identity disclosure stays true, and says the model was stated, not recorded.
+    said = bundle.model_identity_disclosure or ""
+    assert "named no model" in said, said
+    assert "Attested, not recorded" in said and "vendor/extractor-next-2026-08 of 2 run(s)" in said, said
 
     again = await tool.call({**ask, "served_model": "vendor/extractor-next-2026-08"}, host=host, caller=caller)
     assert not again.is_error and again.structured is not None, again.text
@@ -429,8 +445,8 @@ async def test_stating_a_runs_served_model_is_evidence_and_moves_the_fingerprint
 
     assert before.evidence is not None and after.evidence is not None
     assert after.fingerprint() != before.fingerprint(), "a report over the runs as they were is no longer current"
-    assert after.evidence.runs != before.evidence.runs, "who stated it and when is on the run"
-    assert after.evidence.results != before.evidence.results, "and the stated model is on each result's usage rows"
+    assert after.evidence.runs != before.evidence.runs, "who stated it, when, and what it covers is on the run"
+    assert after.evidence.results == before.evidence.results, "no result was rewritten"
 
 
 async def test_stating_a_runs_measure_definitions_moves_the_fingerprint_too() -> None:
