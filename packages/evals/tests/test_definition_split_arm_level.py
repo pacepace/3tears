@@ -129,7 +129,12 @@ def test_an_arm_read_under_two_definitions_has_no_row_and_no_floor_and_the_split
     assert len(split_cells) == 2 and all(cell.split_on == ["measure_definition"] for cell in split_cells)
     assert read.readings.readings == [] and read.readings.floors == []
     (split,) = read.readings.answer_splits
-    assert (split.aspect, split.arm_label, split.cells, split.coordinate) == (ASPECT, _CANDIDATE, 2, "measure_definition")
+    assert (split.aspect, split.arm_label, split.cells, split.coordinate) == (
+        ASPECT,
+        _CANDIDATE,
+        2,
+        "measure_definition",
+    )
     assert split.served_models == [], "the served model is not what splits it"
 
 
@@ -176,7 +181,12 @@ def test_two_one_run_arms_under_different_definitions_share_no_setup_and_read_no
 
     assert read.readings.readings == [] and read.readings.floors == []
     (held,) = read.readings.answer_splits
-    assert (held.arm_label, held.cells, held.coordinate, held.unrecorded) == (_CANDIDATE, 1, "measure_definition", False)
+    assert (held.arm_label, held.cells, held.coordinate, held.unrecorded) == (
+        _CANDIDATE,
+        1,
+        "measure_definition",
+        False,
+    )
 
 
 def test_two_one_run_arms_whose_definitions_went_unrecorded_share_no_setup_either() -> None:

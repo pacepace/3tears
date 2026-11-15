@@ -495,8 +495,9 @@ def test_a_divergence_is_never_tested_between_runs_read_under_two_definitions_an
     """The divergence lens contrasts lever levels over cohorts of runs; under one definition it tests them, and where
     the cohorts were read under two, or under none recorded, it tests nothing and counts the pair untested."""
 
-
-    def timed(model: str, salt: str, definitions: dict[str, str] | None, llm_ms: float) -> tuple[EvalRun, list[EvalResult]]:
+    def timed(
+        model: str, salt: str, definitions: dict[str, str] | None, llm_ms: float
+    ) -> tuple[EvalRun, list[EvalResult]]:
         """A batch whose wall-clock holds a model-call part, so the lens has a whole and a part to test."""
         batch, results = _named(model, salt, definitions)
         return batch, [

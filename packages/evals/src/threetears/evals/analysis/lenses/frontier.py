@@ -1234,7 +1234,9 @@ def _pass_hat_k_cells(
     :return: Each run's cell, and a reading per cell with no pass^k yet.
     :rtype: _PointCells
     """
-    served = _served_by_run(results, attested_served_models(runs[run_id] for run_id in {result.eval_run_id for result in results}))
+    served = _served_by_run(
+        results, attested_served_models(runs[run_id] for run_id in {result.eval_run_id for result in results})
+    )
     weight: dict[str, int] = {}
     for result in results:
         weight[result.eval_run_id] = weight.get(result.eval_run_id, 0) + 1
