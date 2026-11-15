@@ -53,7 +53,7 @@ from typing import Literal, cast
 
 from pydantic import Field
 
-from threetears.evals.analysis.cells import answer_split_variants
+from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION, unread_arms
 from threetears.evals.analysis.bundle.schema import (
     FLOOR_COST_MEASURE,
     TRIAL_PASS_NAME,
@@ -876,9 +876,17 @@ def _cost_floor(readings: FloorReadings) -> tuple[FloorOutcome, FloorDecision]:
 
 
 def _answer_split(bundle: AnalysisContextBundle, *arms: str) -> bool:
-    """Whether any of ``arms`` holds a cell per answering candidate model on the bundle's aspect."""
-    split = answer_split_variants(bundle.cells)
-    return any(arm in split for arm in arms)
+    """Whether nothing is read for ``arms`` as arms on the bundle's aspect
+    (:func:`~threetears.evals.analysis.cells.unread_arms`): one of them is split on a coordinate of its identity
+    (the answering model, a host measure's definition), or the two were read under different definitions, or under
+    none recorded, and so share no test setup."""
+    return unread_arms(bundle.cells, *arms, definitions_moved=definitions_moved(bundle))
+
+
+def definitions_moved(bundle: AnalysisContextBundle) -> bool:
+    """Whether the bundle's runs were not all read under one recorded definition of each host measure, so that
+    measure definitions are a dimension of its rig (named among its ``apparatus_confounds``)."""
+    return any(confound.dimension == MEASURE_DEFINITIONS_DIMENSION for confound in bundle.apparatus_confounds)
 
 
 def _floor_contrast(
@@ -1022,7 +1030,8 @@ def floor_readings(
         on a check names it by; None names each by its expression.
     :ptype check_names: Mapping[str, str] | None
     :return: The readings; no rate where either arm is off the scoreboard, or where either holds a cell per answering
-        model on this aspect (:func:`~threetears.evals.analysis.cells.answer_split_variants`): the arm has no one
+        model, or per definition of a host measure, on this aspect, or the two share no test setup because their
+        definitions differ or are unrecorded (:func:`~threetears.evals.analysis.cells.unread_arms`): the arm has no one
         contrast against the other, and its counts pool the models its cells keep apart, so nothing is read for the
         arm and each cell's own contrast stands in the bundle.
     :rtype: FloorReadings
@@ -1168,7 +1177,7 @@ def aspect_pass_rate(
     :return: The rate, its bounded interval at ``confidence`` and the per-case shares it read (:class:`RateReading`),
         from the bundle's ``floor_contrasts`` whatever the family compares; its ``samples`` and ``interval`` None only
         where a side has fewer than two cases with a usable trial, or no control resolved. None where either arm is
-        off the scoreboard, or holds a cell per answering model on this aspect (as :func:`floor_readings` withholds).
+        off the scoreboard, or is not read as one arm against the other on this aspect (as :func:`floor_readings` withholds).
     :rtype: RateReading | None
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
@@ -1535,6 +1544,7 @@ __all__ = [
     "aspect_pass_rate",
     "case_cost_usd",
     "control_cannot_show",
+    "definitions_moved",
     "evaluate_floor",
     "floor_projection",
     "floor_readings",

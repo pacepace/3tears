@@ -222,11 +222,16 @@ class ResultServedReading(NamedTuple):
     :ivar requested: The candidate model the result's run asked for — the id an arm is keyed by.
     :ivar served: Every model the provider's responses named for its candidate calls.
     :ivar unrecorded: Some candidate row names no served model: a response that named none.
+    :ivar attested: The model the run's host stated afterwards as having answered the calls that named none
+        (``EvalRun.served_model_attestation``); ``None`` where it stated none. A statement, never a recording: the
+        rows stay as the responses left them, ``unrecorded`` stays true, and only pooling reads through it
+        (:func:`served_level`).
     """
 
     requested: str
     served: frozenset[str]
     unrecorded: bool
+    attested: str | None = None
 
 
 def served_reading(result: ResultView) -> ResultServedReading | None:
@@ -273,12 +278,63 @@ def served_level(reading: ResultServedReading) -> str | None:
     :ptype reading: ResultServedReading
     :return: The named models, sorted and joined with `` + `` (a result answered by two is itself a mixture, and a
         level of its own). ``None`` where some candidate call's response named no model: a silence beside a name
-        is still a silence, so the result is not placed with those the name alone describes.
+        is still a silence, so the result is not placed with those the name alone describes. Where the run's host
+        stated the model that answered those calls (``attested``), that model stands for them: a statement is what
+        pooling reads a silence through, and every surface says it was stated.
     :rtype: str | None
     """
-    if reading.unrecorded or not reading.served:
+    served, silent = pooled_as(reading)
+    if silent or not served:
         return None
-    return _SERVED_MODEL_JOIN.join(sorted(reading.served))
+    return _SERVED_MODEL_JOIN.join(sorted(served))
+
+
+def attested_served_models(runs: Iterable[EvalRun]) -> dict[str, str]:
+    """The model a run's host stated as having answered the candidate calls that named none, by the result it covers.
+
+    :param runs: The runs.
+    :ptype runs: Iterable[EvalRun]
+    :return: Result id -> the stated model, for each result a run's statement covers
+        (``EvalRun.served_model_attestation.result_ids``); a result written after the statement is not here.
+    :rtype: dict[str, str]
+    """
+    return {
+        result_id: stated.served_model
+        for run in runs
+        if (stated := run.served_model_attestation) is not None
+        for result_id in stated.result_ids
+    }
+
+
+def pooled_as(reading: ResultServedReading) -> tuple[frozenset[str], bool]:
+    """What a reading that pools by answering model reads a result as: its models, and whether it is a silence.
+
+    The responses' word where every call named a model; where some named none and its host stated what answered
+    (``attested``), the stated model stands for them. The one place a statement is read through, so the campaign's
+    cells (:func:`served_level`) and pass^k read it alike.
+
+    :param reading: The result's reading, from :func:`served_reading` (through :func:`through_attestation`).
+    :ptype reading: ResultServedReading
+    :return: ``(models, silent)``.
+    :rtype: tuple[frozenset[str], bool]
+    """
+    if reading.unrecorded and reading.attested:
+        return reading.served | {reading.attested}, False
+    return reading.served, reading.unrecorded
+
+
+def through_attestation(reading: ResultServedReading, attested: str | None) -> ResultServedReading:
+    """One result's reading with its host's statement beside it, where the reading has a silence to read through.
+
+    :param reading: The result's reading, from :func:`served_reading`.
+    :ptype reading: ResultServedReading
+    :param attested: The model the result's run was stated to have been answered by, or ``None``.
+    :ptype attested: str | None
+    :return: The reading, carrying ``attested`` where some call named no model; unchanged where every call named one
+        (a statement never stands beside a response's word) or nothing was stated.
+    :rtype: ResultServedReading
+    """
+    return reading._replace(attested=attested) if reading.unrecorded and attested else reading
 
 
 class ServedModelReading(EvalBaseModel):
@@ -316,6 +372,23 @@ class ServedModelReading(EvalBaseModel):
         )
     )
 
+    # Both left out of the document when nothing was stated, so a reading over runs no host attested is as it was.
+    n_attested: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "Of the unrecorded results, those whose run's host stated afterwards which model answered "
+            "(attested, not recorded). The responses still named none: n_unrecorded and state are what was "
+            "recorded, and pooling alone reads through the statement."
+        ),
+    )
+    attested_models: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The models those statements name, sorted. A host's word, never a response's.",
+    )
+
     @model_validator(mode="after")
     def _state_follows_the_counts(self) -> ServedModelReading:
         """The state is the one the served models and the unrecorded count imply, never a second opinion.
@@ -344,9 +417,15 @@ class ServedModelReading(EvalBaseModel):
             )
         if self.state == "unrecorded":
             named = f"; the rest named {self.served_models[0]}" if self.served_models else ""
+            stated = (
+                f"; the host stated afterwards that {', '.join(self.attested_models)} answered {self.n_attested} of "
+                "them, which is its statement and no response's"
+                if self.n_attested
+                else ""
+            )
             return (
                 f"{self.n_unrecorded} of {self.n_results} result(s) made candidate calls whose response named no "
-                f"model{named}, so whether one model answered them cannot be established"
+                f"model{named}, so whether one model answered them cannot be established{stated}"
             )
         return None
 
@@ -364,11 +443,14 @@ def pool_served_readings(readings: Iterable[ResultServedReading | None]) -> Serv
         return None
     models = sorted(set().union(*(reading.served for reading in own)))
     n_unrecorded = sum(1 for reading in own if reading.unrecorded)
+    stated = [reading.attested for reading in own if reading.unrecorded and reading.attested]
     return ServedModelReading(
         served_models=models,
         n_results=len(own),
         n_unrecorded=n_unrecorded,
         state=served_model_state(models, n_unrecorded),
+        n_attested=len(stated),
+        attested_models=sorted(set(stated)),
     )
 
 
@@ -571,6 +653,30 @@ class ModelIdentityTally:
                 )
             )
         return readings
+
+
+def served_attestation_disclosure(runs: Iterable[EvalRun]) -> str | None:
+    """What a reader is told where a host stated, after the fact, the model that answered some runs' candidate calls.
+
+    Said beside the unconfirmed-identity sentence, which stays true: the responses named no model, and what stands
+    in for them is the host's statement.
+
+    :param runs: The runs.
+    :ptype runs: Iterable[EvalRun]
+    :return: The sentence, naming each stated model and how many runs it was stated of, or ``None``.
+    :rtype: str | None
+    """
+    stated: dict[str, int] = {}
+    for run in runs:
+        if (attestation := run.served_model_attestation) is not None:
+            stated[attestation.served_model] = stated.get(attestation.served_model, 0) + 1
+    if not stated:
+        return None
+    each = "; ".join(f"{model} of {count} run(s)" for model, count in sorted(stated.items()))
+    return (
+        f"Attested, not recorded: the host stated afterwards which model answered the candidate calls whose "
+        f"response named none ({each}). Those runs pool with runs that model answered on the host's word."
+    )
 
 
 def model_identity_disclosure(identities: Sequence[UnconfirmedModelIdentity]) -> str | None:
@@ -2012,7 +2118,11 @@ __all__ = [
     "METRIC_SCORE",
     "METRIC_TOTAL_MS",
     "METRIC_TRANSCRIPT",
+    "attested_served_models",
+    "pooled_as",
     "model_identity_disclosure",
+    "served_attestation_disclosure",
+    "through_attestation",
     "ModelIdentityTally",
     "NULL_LEVEL",
     "request_settings_disclosure",

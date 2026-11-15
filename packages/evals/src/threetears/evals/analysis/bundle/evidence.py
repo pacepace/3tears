@@ -118,6 +118,7 @@ from threetears.evals.schema.models import (
     EvalRun,
     JudgeCutShort,
     MeasureAttestation,
+    ServedModelAttestation,
     MeasureDeclaration,
     MeasureRemeasure,
     RunCompleteness,
@@ -245,7 +246,12 @@ _REPEATED_SCORE: Final[Mapping[str, Any]] = {
     "repeat": _SCORE,
     "cannot_tell": _AS_STORED,
 }
-_REPEAT: Final[Mapping[str, Any]] = {"judge_config_ids": _AS_STORED, "scores": _Each(_REPEATED_SCORE)}
+_REPEAT: Final[Mapping[str, Any]] = {
+    "judge_config_ids": _AS_STORED,
+    "scores": _Each(_REPEATED_SCORE),
+    # Whether the repeat was a random draw decides whether an arm's re-score noise is read from it.
+    "sample": _AS_STORED,
+}
 _SECOND_SCORE: Final[Mapping[str, Any]] = {
     **{name: shape for name, shape in _REPEATED_SCORE.items() if name != "repeat"},
     "second": _SCORE,
@@ -394,6 +400,15 @@ _ATTESTATION_NOT: Final[Mapping[str, str]] = {
     "note": "the host's prose for why it knows; the definitions are the evidence"
 }
 
+#: A host's statement of the model that answered a run's candidate calls whose responses named none (#1187). The rows
+#: stay as the responses left them; the statement, and the results it covers, are what the cells read them through.
+_SERVED_ATTESTATION: Final[Mapping[str, Any]] = dict.fromkeys(
+    ("attested_at", "attested_by", "served_model", "result_ids"), _AS_STORED
+)
+_SERVED_ATTESTATION_NOT: Final[Mapping[str, str]] = {
+    "note": "the host's prose for why it knows; the stated model and the results it covers are the evidence"
+}
+
 #: One re-measure of a run: the definitions it held before and after, and what was read again.
 _REMEASURE: Final[Mapping[str, Any]] = dict.fromkeys(
     ("remeasured_at", "completed_at", "was", "now", "reread", "results_reread"), _AS_STORED
@@ -496,6 +511,7 @@ _RUN: Final[Mapping[str, Any]] = {
     # re-measure moved it afterwards, which decides which runs pool. None of the three on a run that recorded none.
     "measure_definitions": _AS_STORED,
     "measure_attestation": _ATTESTATION,
+    "served_model_attestation": _SERVED_ATTESTATION,
     "measure_remeasures": _Each(_REMEASURE),
 }
 
@@ -685,6 +701,7 @@ _census(AsyncExternalSpend, _EXTERNAL_SPEND)
 _census(JudgeCutShort, _CUT_SHORT)
 _census(EvalRun, _RUN, _RUN_NOT)
 _census(MeasureAttestation, _ATTESTATION, _ATTESTATION_NOT)
+_census(ServedModelAttestation, _SERVED_ATTESTATION, _SERVED_ATTESTATION_NOT)
 _census(MeasureRemeasure, _REMEASURE)
 _census(SubjectSnapshot, _SUBJECT, _SUBJECT_NOT)
 _census(SweepableValue, _LEVEL, _LEVEL_NOT)

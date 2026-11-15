@@ -23,6 +23,7 @@ from threetears.evals.analysis.report.keys.vocabulary import (
 from threetears.evals.analysis.report.keys.weakest import _cell_name
 from threetears.evals.analysis.report_input import Criterion, FailedTrials, ReportInput
 from threetears.evals.analysis.report_margins import (
+    aspect_board,
     aspect_of,
     criterion_misses,
     criterion_passes,
@@ -193,8 +194,22 @@ def _kept_count(report_input: ReportInput, values: tuple[str, ...], path: str) -
 def _failed_trials_count(report_input: ReportInput, values: tuple[str, ...], path: str) -> Figure:
     aspect, arm, *stratum = values
     held = _failures_held(report_input, [aspect], path)
+    if _withheld_on(report_input, aspect, arm):
+        # An arm the cells keep apart on the aspect has no one failure count, as its scoreboard row's `failed` has none:
+        # the count the input holds pools its cells.
+        return _number(path, None, "trials failed", "count")
     rows = [row for row in held if row.arm == arm and (not stratum or row.stratum == stratum[0])]
     return _count(path, sum(row.failed for row in rows))
+
+
+def _withheld_on(report_input: ReportInput, aspect: str, arm: str) -> bool:
+    """Whether the input withholds an arm's counts on an aspect (its scoreboard row there is in the withheld state): an
+    arm the cells keep apart, answered by more than one model or read under more than one definition of a host measure.
+    Never read off a missing ``passed``, which an input that never stated it shares."""
+    if aspect not in {held.id for held in report_input.aspects}:
+        return False
+    row = aspect_board(report_input, aspect).get(arm)
+    return row is not None and row.state is not None and row.state.state == "withheld"
 
 
 # --- whether two aspects ran the same cases -------------------------------------------------------------------------
