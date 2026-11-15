@@ -5392,7 +5392,7 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.Check": {
-      "kind": "model",
+      "kind": "type alias",
       "signature": "",
       "tier": "provisional"
     },
@@ -6126,6 +6126,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.JudgeCheck": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.judged_criteria": {
       "kind": "function",
       "signature": "",
@@ -6707,6 +6712,16 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.Rescore": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.ReviewerCheck": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.RigCheck": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"

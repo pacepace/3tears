@@ -457,7 +457,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `run.SeedJudgeCase`: One authored judge case a seed corpus writes: `judge_case_author`'s arguments, its templates named by name.
 - `analysis.Verdict`: One verdict the report states, typed: what a program reads instead of the words printed from it.
 - `quick.Grader`: A function or a field with what its reading declares: a margin, a guardrail, or a range.
-- `quick.JudgeCalibration`: How a judge's scores on one dimension agree with a person's labels, and the evidence tier that bears.
+- `quick.JudgeCalibration`: How a judge's scores on one dimension agree with a person's labels: its check against people.
 - `ops.JudgeCaseAuthor`: What authoring one judge case by hand names: the judge template, the output, its criterion and its verdict.
 - `ops.JudgeProfilesRecord`: What recording judge profiles names: the judge campaign's runs whose trials make up the measurement.
 

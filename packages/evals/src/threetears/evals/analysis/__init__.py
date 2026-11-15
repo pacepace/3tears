@@ -102,7 +102,7 @@ from threetears.evals.analysis.bundle.schema import (
 )
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
 from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
-from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
+from threetears.evals.analysis.checks import Check, Corrected, JudgeCheck, Looks, Rescore, ReviewerCheck, RigCheck
 from threetears.evals.analysis.report_input import (
     CallRead,
     CaveatEntry,
@@ -460,11 +460,14 @@ from threetears.evals.analysis.summary import (
 )
 
 __all__ = [
-    # The shapes of a check, which a bundle's fields hold.
+    # The shapes of a check, which a bundle's fields hold: the union of the three kinds, and each kind.
     "Check",
     "Corrected",
+    "JudgeCheck",
     "Looks",
     "Rescore",
+    "ReviewerCheck",
+    "RigCheck",
     # The one caveat list and the first screen read off it, which the campaign bundle holds.
     "CallRead",
     "CaveatEntry",

@@ -38,7 +38,7 @@ from threetears.evals.analysis.blind_read import (
     blind_sheet,
     exact_sign_test_p,
 )
-from threetears.evals.analysis.checks import Check, speaking_check
+from threetears.evals.analysis.checks import Check, JudgeCheck, ReviewerCheck, speaking_check
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel import CALIBRATION_MIN_AGREEMENT, CALIBRATION_MIN_RESULTS
@@ -873,7 +873,7 @@ def _sample_words(sample: BlindSample, *, several: bool) -> str:
     return f"{read}, out of the drawn order (not drawn at random{aside})"
 
 
-def _results_needed(check: Check) -> int | None:
+def _results_needed(check: JudgeCheck) -> int | None:
     """About how many more results would decide a judge's check, as its criterion projects it."""
     reads = check.reads or 0
     return calibration_criterion(
@@ -881,7 +881,7 @@ def _results_needed(check: Check) -> int | None:
     ).results_needed
 
 
-def _check_clause(check: Check, table: BlindVerdictTable | None) -> str:
+def _check_clause(check: JudgeCheck, table: BlindVerdictTable | None) -> str:
     """One criterion's line of the judge against people or against a model: what was read, the kappa, and the result
     in words. Never a tier: the line says what the judge was checked against, and how that came out."""
     person = check.against == "people"
@@ -908,33 +908,49 @@ def _check_clause(check: Check, table: BlindVerdictTable | None) -> str:
     return f"{counted}  {figure}  {'checked against people: ' if person else ''}{said}{caught}"
 
 
-def _reviewer_clause(check: Check, shown: Mapping[str, str], candidate: str | None, control: str | None) -> str:
+def _reviewer_clause(check: ReviewerCheck, shown: Mapping[str, str], candidate: str | None, control: str | None) -> str:
     """A model's own check against people on one criterion: its kappa, its lean toward an arm, and what they read."""
+    words = f"{check.instrument} against people on {check.criterion}"
+    if check.reason == "identity_unrecorded" and check.coordinate == "served_model" and not check.pair_items:
+        return f"{words}: which model served {check.reads or 0} of its reads was not recorded, so none is read"
     kappa = "kappa undefined" if check.kappa is None else f"kappa {_figure(check.kappa)}"
-    words = f"{check.instrument} against people on {check.criterion}: {check.sample_results or 0} outputs, {kappa}"
+    words += f": {check.sample_results or 0} outputs, {kappa}"
     if check.pair_items and check.lean is not None:
         words += f"; lean {_figure(check.lean)}"
-        if check.lean_interval is not None:
+        if check.reason == "instrument_leans" and check.lean_interval is not None:
             words += f" [{_figure(check.lean_interval[0])}, {_figure(check.lean_interval[1])}]"
         words += f" over {check.pair_items} case(s) read on both arms"
     if check.left_out:
         words += f", {check.left_out} left out where a run's identity was not recorded"
+    bar = f"the bar of {_figure(check.lean_bar)}" if check.lean_bar is not None else "the bar"
     if check.result == "met":
-        return f"{words}: no lean toward either arm beyond the bar"
+        return f"{words}: no lean toward either arm beyond {bar}"
     if check.reason == "instrument_below_bar":
         return f"{words}: agreement with people is shown below the bar, so the judge is not checked against it"
     if check.reason == "instrument_leans":
         toward = candidate if (check.lean or 0) > 0 else control
         return f"{words}: leans toward {shown.get(toward or '', toward or 'one arm')}"
+    if check.reason == "identity_unrecorded":
+        return f"{words}: every case read on both arms was left out, so its lean is not read"
     if check.result == "insufficient":
         return f"{words}: no case read on both arms by both, so its lean is not read"
-    if check.half_width is not None:
-        return f"{words}: a lean toward either arm is not ruled out below {_figure(check.half_width)}"
-    return f"{words}: a lean toward either arm is not ruled out"
+    said = (
+        f"a lean toward either arm up to {_figure(check.lean_bound)} is not ruled out ({bar})"
+        if check.lean_bound is not None
+        else f"a lean toward either arm is not ruled out ({bar})"
+    )
+    if check.pair_items_needed_above is not None:
+        said += f"; more than {check.pair_items_needed_above} cases read on both arms would be needed to rule it out"
+    elif check.pair_items_needed is not None and check.pair_items_needed <= (check.pair_items or 0):
+        said += "; its agreement with people is what is not yet decided"
+    elif check.pair_items_needed is not None:
+        said += f"; about {check.pair_items_needed} cases read on both arms would decide it"
+    return f"{words}: {said}"
 
 
-def _table_of(read: BlindRead, check: Check) -> BlindVerdictTable | None:
-    """The two-by-two the close read for the same criterion and reader, where it read one."""
+def _table_of(read: BlindRead, check: JudgeCheck, *, one_configuration: bool = True) -> BlindVerdictTable | None:
+    """The two-by-two the close read for the same criterion and reader, where it read one: for a model, only where it
+    answered under one configuration, since the close reads one two-by-two over every answer of a model id."""
     report = read.report
     if report is None:
         return None
@@ -943,7 +959,12 @@ def _table_of(read: BlindRead, check: Check) -> BlindVerdictTable | None:
             continue
         if check.against == "people" and reading.anchor == "person":
             return reading.table
-        if check.against == "model" and reading.anchor == "reference" and reading.anchor_names == [check.against_id]:
+        if (
+            check.against == "model"
+            and one_configuration
+            and reading.anchor == "reference"
+            and reading.anchor_names == [check.against_id]
+        ):
             return reading.table
     return None
 
@@ -1092,17 +1113,42 @@ def judge_lines(
     names = shown or {}
     candidate = next((arm.key for arm in read.arms if arm.role == "candidate"), None)
     control = next((arm.key for arm in read.arms if arm.role == "control"), None)
-    judged = [check for check in checks if check.kind == "judge"]
+    judged = [check for check in checks if isinstance(check, JudgeCheck)]
     width = max((len(check.criterion or "") for check in judged), default=0)
     by_person = [check for check in judged if check.against == "people"]
     lines += [
         f"  {(check.criterion or '').ljust(width)}  {_check_clause(check, _table_of(read, check))}"
         for check in by_person
     ]
+    # A model is one reviewer per configuration it answered under (served model and effort), each read apart.
+    configurations = dict.fromkeys(
+        (check.against_id, check.against_served_model, check.against_effort)
+        for check in judged
+        if check.against_id is not None
+    )
+    several = {model for model, _, _ in configurations if sum(1 for m, _, _ in configurations if m == model) > 1}
+
+    def reviewer_name(model: str, served: str | None, effort: str | None) -> str:
+        if model not in several:
+            return _who("reference", model)
+        asked = f", served as {served or 'an unrecorded model'}" + (f" at {effort} effort" if effort else "")
+        return f"a model ({model}{asked})"
+
     against_a_model = [check for check in judged if check.against == "model" and check.coordinate is None]
-    for reviewer in dict.fromkeys(check.against_id or "" for check in against_a_model):
-        own = [check for check in against_a_model if check.against_id == reviewer]
-        measured = [check for check in checks if check.kind == "reviewer" and check.instrument == reviewer]
+    for model, served, effort in dict.fromkeys(
+        (check.against_id or "", check.against_served_model, check.against_effort) for check in against_a_model
+    ):
+        own = [
+            check
+            for check in against_a_model
+            if (check.against_id, check.against_served_model, check.against_effort) == (model, served, effort)
+        ]
+        measured = [
+            check
+            for check in checks
+            if isinstance(check, ReviewerCheck)
+            and (check.instrument, check.served_model, check.effort) == (model, served, effort)
+        ]
         against = "" if measured else ", not yet against people"
         # "Beside it" where people's check speaks for the judge on every criterion the model read, and the model's
         # stands beside it; otherwise the model's is what the judge was checked against.
@@ -1112,38 +1158,36 @@ def judge_lines(
             for check in own
         )
         lines += under(
-            f"{'beside it, ' if beside else ''}checked against {_who('reference', reviewer)}{against}:", "  "
+            f"{'beside it, ' if beside else ''}checked against {reviewer_name(model, served, effort)}{against}:", "  "
         )
         lines += [
-            f"    {(check.criterion or '').ljust(width)}  {_check_clause(check, _table_of(read, check))}"
+            f"    {(check.criterion or '').ljust(width)}  "
+            f"{_check_clause(check, _table_of(read, check, one_configuration=model not in several))}"
             for check in own
         ]
         if any(check.same_family_as_judge for check in own):
             lines += under(
-                f"{reviewer} and the judge are models of one family: a lean they share would not show here", "    "
+                f"{model} and the judge are models of one family: a lean they share would not show here", "    "
             )
         for arm in dict.fromkeys(arm for check in own for arm in check.same_family_as):
             lines += under(
-                f"{reviewer} and {names.get(arm, arm)}'s model are of one family: a lean toward it would not show here",
+                f"{model} and {names.get(arm, arm)}'s model are of one family: a lean toward it would not show here",
                 "    ",
             )
-        for check in measured:
-            lines += under(_reviewer_clause(check, names, candidate, control), "    ")
+        for reviewer_check in measured:
+            lines += under(_reviewer_clause(reviewer_check, names, candidate, control), "    ")
     refused: dict[str, str] = {}
     for check in judged:
         if check.against_id is None:
             continue
+        name = reviewer_name(check.against_id, check.against_served_model, check.against_effort)
         if check.against == "itself":
-            refused.setdefault(check.against_id, REFUSED_SAME_MODEL)
+            refused.setdefault(name, REFUSED_SAME_MODEL)
         elif check.coordinate is not None:
-            unnamed = any(
-                answer.rater == check.against_id and not answer.skipped and answer.reviewer_served_model is None
-                for answer in read.answers
-            )
-            side = "the reviewer's answers" if unnamed else "the judge's scores"
-            refused.setdefault(check.against_id, REFUSED_UNRECORDED.format(side=side))
-    for reviewer, reason in refused.items():
-        lines += under(f"not checked against {_who('reference', reviewer)}: {reason}", "  ")
+            side = "the reviewer's answers" if check.against_served_model is None else "the judge's scores"
+            refused.setdefault(name, REFUSED_UNRECORDED.format(side=side))
+    for name, reason in refused.items():
+        lines += under(f"not checked against {name}: {reason}", "  ")
     lines += reviews
     lines += [_preference_line(preference, shown or {}) for preference in report.preferences]
     if people:

@@ -5,10 +5,18 @@ Held here, through ``analysis/checks.py`` and the quick print:
 - which check speaks for a judge on a criterion is the design's table, row for row (people once decided; else a
   decided check against a model, unless that model is shown below the bar against people; else none);
 - a model's own check against people returns each of the four criterion states and no other, from blind reads with 0,
-  15, 40 and 200 pair items read by both, and is ``met`` only with its lean shown inside ``±δ``;
-- pair items from a run with an unrecorded coordinate are left out of the lean, and counted;
+  15, 40 and 200 pair items read by both, and is ``met`` only with its lean shown inside ``±δ`` by the bounded test,
+  ``δ`` the package's bar recorded on the check, never a margin a caller passes;
+- an undecided check carries the bound the equivalence test reached (the larger lean it cannot rule out, not a t
+  interval's half-width) and about how many pair items like these would decide it, and the print states that bound;
+- pair items from a run with an unrecorded coordinate are left out of the lean, and counted; where every one was, the
+  check says so by the shared reason and its coordinate;
+- one model id answering under two served models is two reviewers, never pooled; answers whose served model was not
+  recorded are left out of every figure, and counted;
 - a model that answered changes no stored tier: a judge's tier reads as it did with no model check;
-- a check carries a reason only where its result does, and the rig alone is checked against identical arms;
+- a check is one of three kinds, each refusing another's fields, and names its kind; it carries a reason only where its
+  result does;
+- the decision that sets an improvement aside reads the judge's checks, not its tier;
 - no line the quick print says of the judge carries a tier value, "calibrated", "standing" or "anchor".
 """
 
@@ -18,10 +26,11 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, get_args
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from threetears.evals.analysis.agreement import (
     judge_agreement,
@@ -32,14 +41,20 @@ from threetears.evals.analysis.agreement import (
 )
 from threetears.evals.analysis.blind_read import close_blind_read, draw_blind_read
 from threetears.evals.analysis.checks import (
-    REVIEWER_MET_MIN_PAIR_ITEMS,
+    REVIEWER_LEAN_BAR,
     Check,
+    JudgeCheck,
+    ReviewerCheck,
+    RigCheck,
     blind_read_checks,
     judge_checks,
     reviewer_check,
     speaking_check,
     tier_checks,
 )
+from threetears.evals.analysis.report.call import shown_better
+from threetears.evals.analysis.report_input import ReportInput
+from threetears.evals.analysis.stats import paired_equivalence
 from threetears.evals.kernel.evidence_tiers import CriterionState, tier_of
 from threetears.evals import Eval
 from threetears.evals.kernel.host import EvalHost
@@ -56,19 +71,16 @@ CONTROL_RUN, CANDIDATE_RUN = "run-control", "run-candidate"
 JUDGE_INSTRUMENT = "the-judge"
 
 
+CHECK: TypeAdapter[Check] = TypeAdapter(Check)
+
+
 def _check(against: str, result: str, reason: str | None = None, **extra: Any) -> Check:
-    return Check.model_validate(
-        {
-            "instrument": JUDGE_INSTRUMENT if against != "reviewer" else REVIEWER,
-            "kind": "reviewer" if against == "reviewer" else "judge",
-            "criterion": GROUNDED.name,
-            "against": "people" if against == "reviewer" else against,
-            "against_id": REVIEWER if against == "model" else None,
-            "result": result,
-            "reason": reason,
-            **extra,
-        }
-    )
+    if against == "reviewer":
+        shape = {"kind": "reviewer", "instrument": REVIEWER}
+    else:
+        shape = {"kind": "judge", "instrument": JUDGE_INSTRUMENT, "against": against}
+        shape |= {"against_id": REVIEWER} if against == "model" else {}
+    return CHECK.validate_python({**shape, "criterion": GROUNDED.name, "result": result, "reason": reason, **extra})
 
 
 _REASON = {"not_met": "instrument_below_bar", "insufficient": "too_few"}
@@ -154,44 +166,74 @@ def test_a_model_s_own_check_reads_each_of_the_four_states_by_its_pair_items(
     )
     assert (check.result, check.reason) == expected
     assert (check.kind, check.instrument, check.against, check.pair_items) == ("reviewer", REVIEWER, "people", items)
+    assert check.lean_bar == pytest.approx(REVIEWER_LEAN_BAR * 1.0), "the bar it was read against is on the check"
     if items:
         assert check.lean is not None
     if items >= 2:
-        assert check.lean_interval is not None and check.half_width is not None
+        assert check.lean_interval is not None
+    # Only the undecided check carries the bound it reached and the items it needs.
+    assert (check.lean_bound is not None) == (check.result == "undecided")
+    assert (check.pair_items_needed is not None or check.pair_items_needed_above is not None) == (
+        check.result == "undecided"
+    )
 
 
-def test_met_is_an_equivalence_reading_and_needs_the_interval_inside_the_bound() -> None:
+def test_met_is_an_equivalence_reading_held_to_the_package_s_bar() -> None:
     quiet = _leans(200, toward=3, away=3)
     met = reviewer_check(REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(400), leans=quiet)
-    assert met.result == "met" and met.lean_interval is not None
-    assert -0.10 < met.lean_interval[0] and met.lean_interval[1] < 0.10
-    # The same items held to a margin the interval does not sit inside: undecided, never met.
-    tight = reviewer_check(
-        REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(400), leans=quiet, margin=0.02
-    )
-    assert (tight.result, tight.reason) == ("undecided", None)
-    # Quiet and inside a wide margin at the floor of pair items, met; one item under it, undecided.
-    at_floor, under_floor = (
-        reviewer_check(
-            REVIEWER,
-            GROUNDED.name,
-            "pass_fail",
-            kappa_pairs=_agreeing_pairs(400),
-            leans=_leans(items, toward=1, away=1),
-            margin=0.5,
+    assert met.result == "met" and met.lean_bar == pytest.approx(0.10)
+    assert paired_equivalence(quiet, 0.10, value_range=(-1.0, 1.0))[0] is True
+    # The bar is the package's, a tenth of the scale's width: on 1-5 it is 0.4 points, and no caller passes another.
+    on_five = reviewer_check(REVIEWER, GROUNDED.name, "1-5", kappa_pairs=[], leans=[0.0, 1.0])
+    assert on_five.lean_bar == pytest.approx(0.4)
+    with pytest.raises(TypeError):
+        reviewer_check(  # type: ignore[call-arg]
+            REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(400), leans=quiet, margin=5.0
         )
-        for items in (REVIEWER_MET_MIN_PAIR_ITEMS, REVIEWER_MET_MIN_PAIR_ITEMS - 1)
-    )
-    assert (at_floor.result, under_floor.result) == ("met", "undecided")
-    assert under_floor.lean_interval is not None and under_floor.lean_interval[1] < 0.5
+    # Quiet, and fewer items than any valid test needs at this bar (0.95 ** n stays above 5% below 59): undecided.
+    few = reviewer_check(REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(400), leans=_leans(50))
+    assert few.result == "undecided"
     # Quiet and inside, but a kappa too few outputs decide: undecided.
     loose = reviewer_check(REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(15), leans=quiet)
     assert loose.result == "undecided"
+    assert loose.pair_items_needed == 200, "the lean already shows: its agreement with people is what is undecided"
     # A kappa shown below the bar outranks everything: the judge is not checked against this model.
     below = reviewer_check(
         REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(200, disagree=100), leans=quiet
     )
     assert (below.result, below.reason) == ("not_met", "instrument_below_bar")
+
+
+def test_an_undecided_check_carries_the_bound_the_test_reached_and_the_items_it_needs() -> None:
+    # A lean of 0.03 with a t interval of about [-0.03, 0.09]: the lean not ruled out is the interval's far end or
+    # more, never its half-width.
+    leans = _leans(100, toward=6, away=3)
+    check = reviewer_check(REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(400), leans=leans)
+    assert check.result == "undecided" and check.lean_interval is not None and check.lean_bound is not None
+    low, high = check.lean_interval
+    assert check.lean_bound >= max(abs(low), abs(high)) > (high - low) / 2
+    # The bound is where the bounded test turns: shown inside it, not shown a little inside it.
+    assert paired_equivalence(leans, check.lean_bound, value_range=(-1.0, 1.0))[0] is True
+    assert paired_equivalence(leans, check.lean_bound - 0.002, value_range=(-1.0, 1.0))[0] is False
+    # Items like these, repeated to the count it names, are shown inside the bar; a twentieth fewer are not.
+    needed = check.pair_items_needed
+    assert needed is not None and needed > 100 and check.pair_items_needed_above is None
+
+    def shown(count: int) -> bool | None:
+        return paired_equivalence([leans[i % 100] for i in range(count)], 0.10, value_range=(-1.0, 1.0))[0]
+
+    assert shown(needed) is True and shown(int(needed * 0.95) - 1) is False
+    # A lean at the bar or past it is never shown inside it: more than the search reads would be needed.
+    at_bar = reviewer_check(
+        REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(400), leans=_leans(30, toward=3)
+    )
+    assert at_bar.result == "undecided"
+    assert (at_bar.pair_items_needed, at_bar.pair_items_needed_above) == (None, 1000)
+    # Each projection belongs to an undecided check only.
+    with pytest.raises(ValidationError, match="only an undecided check"):
+        _check("reviewer", "met", lean_bound=0.2)
+    with pytest.raises(ValidationError, match="says how many it needs"):
+        _check("reviewer", "undecided", pair_items=12)
 
 
 def test_no_fifth_result_and_each_result_carries_only_its_own_reasons() -> None:
@@ -220,11 +262,41 @@ def test_no_fifth_result_and_each_result_carries_only_its_own_reasons() -> None:
         _check("people", "insufficient")
     with pytest.raises(ValidationError, match="names its coordinate"):
         _check("model", "insufficient", "identity_unrecorded")
-    with pytest.raises(ValidationError, match="only the rig"):
-        Check(kind="rig", instrument="launch-1", against="people", result="met")
-    with pytest.raises(ValidationError, match="checked against people"):
-        Check(kind="reviewer", instrument=REVIEWER, against="model", result="met")
-    assert Check(instrument="launch-1", against="identical_arms", result="met").kind == "rig"
+
+
+#: One field each kind holds and the others do not.
+_OWN_FIELD: dict[str, tuple[str, Any]] = {
+    "judge": ("same_family_as_judge", True),
+    "reviewer": ("pair_items", 3),
+    "rig": ("covers_arms", ["v2"]),
+}
+
+#: The least each kind is built from.
+_LEAST: dict[str, dict[str, Any]] = {
+    "judge": {"kind": "judge", "instrument": JUDGE_INSTRUMENT, "against": "people", "result": "met"},
+    "reviewer": {"kind": "reviewer", "instrument": REVIEWER, "result": "insufficient", "reason": "not_recorded"},
+    "rig": {"kind": "rig", "instrument": "launch-1", "result": "met"},
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_LEAST))
+def test_each_kind_of_check_holds_its_own_fields_and_refuses_another_s(kind: str) -> None:
+    shape = {"judge": JudgeCheck, "reviewer": ReviewerCheck, "rig": RigCheck}[kind]
+    held = CHECK.validate_python(_LEAST[kind])
+    assert type(held) is shape and CHECK.validate_python(held.model_dump(mode="json")) == held
+    name, value = _OWN_FIELD[kind]
+    assert getattr(CHECK.validate_python({**_LEAST[kind], name: value}), name) == value
+    for other, (foreign, foreign_value) in _OWN_FIELD.items():
+        if other != kind:
+            with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+                CHECK.validate_python({**_LEAST[kind], foreign: foreign_value})
+    # A check names its kind: none is filled in, from what it was checked against or otherwise.
+    with pytest.raises(ValidationError, match="kind"):
+        CHECK.validate_python({key: field for key, field in _LEAST[kind].items() if key != "kind"})
+    # Each kind is checked only against what it is checked against.
+    against = {"judge": "identical_arms", "reviewer": "model", "rig": "people"}[kind]
+    with pytest.raises(ValidationError):
+        CHECK.validate_python({**_LEAST[kind], "against": against})
 
 
 # --- one blind read, end to end -------------------------------------------------------------------------------------
@@ -330,13 +402,16 @@ def test_a_read_yields_the_judge_against_people_and_the_model_and_the_model_agai
     key = judge_key(results[0], GROUNDED.name)
     assert key is not None and people.instrument == model.instrument == judge_instrument(key)
     assert (people.result, people.sample, people.reads, people.sample_cases) == ("met", "random", 60, 30)
+    assert isinstance(model, JudgeCheck) and isinstance(own, ReviewerCheck)
     assert (model.result, model.against_id, model.same_family_as, model.same_family_as_judge) == (
         "met",
         REVIEWER,
         ["v2"],
         False,
     )
-    # The model and the person agree on every output, and neither leans: undecided at 30 pair items, under the floor.
+    assert (model.against_served_model, own.served_model) == (f"{REVIEWER}-0613", f"{REVIEWER}-0613")
+    # The model and the person agree on every output, and neither leans: undecided at 30 pair items, fewer than the
+    # bounded test can show inside a tenth of the width at.
     assert (own.result, own.pair_items, own.left_out, own.lean, own.reads) == ("undecided", 30, 0, 0.0, 60)
     # People decided: their check speaks for the judge.
     assert speaking_check(checks, people.instrument, GROUNDED.name) == people
@@ -347,11 +422,18 @@ def test_pair_items_from_a_run_with_an_unrecorded_coordinate_are_left_out_of_the
     closed = close_blind_read(read, results)
     whole = next(c for c in blind_read_checks(closed, results) if c.kind == "reviewer")
     assert (whole.pair_items, whole.left_out, whole.result, whole.reason) == (30, 0, "not_met", "instrument_leans")
-    unrecorded = next(
-        c for c in blind_read_checks(closed, results, unrecorded_runs={CANDIDATE_RUN}) if c.kind == "reviewer"
-    )
+    left_out = blind_read_checks(closed, results, unrecorded_runs={CANDIDATE_RUN: "template"})
+    unrecorded = next(c for c in left_out if isinstance(c, ReviewerCheck))
+    assert isinstance(whole, ReviewerCheck)
     assert (unrecorded.pair_items, unrecorded.left_out, unrecorded.lean) == (0, 30, None)
-    assert (unrecorded.result, unrecorded.reason) == ("insufficient", "not_recorded")
+    # Every item was left out, and the check says why by the shared reason, naming the coordinate.
+    assert (unrecorded.result, unrecorded.reason, unrecorded.coordinate) == (
+        "insufficient",
+        "identity_unrecorded",
+        "template",
+    )
+    printed = "\n".join(judge_lines(closed.read, labels_name="labels.csv", labels_there=True, checks=left_out))
+    assert "every case read on both arms was left out" in printed and "no case read on both arms" not in printed
     # Kappa is about an instrument reading texts: it still reads every output.
     assert unrecorded.kappa == whole.kappa and unrecorded.sample_results == whole.sample_results
 
@@ -364,15 +446,15 @@ def test_a_judge_s_own_model_checks_it_against_itself_and_an_unrecorded_one_chec
         for n in range(24)
     ]
     closed = close_blind_read(read.model_copy(update={"answers": own}), results)
-    (itself,) = [c for c in blind_read_checks(closed, results) if c.kind == "judge"]
-    assert (itself.against, itself.against_id) == ("itself", REVIEWER)
+    (itself,) = [c for c in blind_read_checks(closed, results) if isinstance(c, JudgeCheck)]
+    assert (itself.against, itself.against_id, itself.against_served_model) == ("itself", REVIEWER, JUDGE)
     # Held to the bar a judge's agreement with its repeats is: 120 results, which 48 do not reach.
     assert (itself.result, itself.reason) == ("insufficient", "too_few")
     unnamed, unnamed_evidence = _campaign(24, served=None)
     blank_read = _read(unnamed, unnamed_evidence)
     answers = [_answer(blank_read, n, _judged(blank_read, unnamed, n), model=True) for n in range(24)]
     blank = close_blind_read(blank_read.model_copy(update={"answers": answers}), unnamed)
-    (nothing,) = [c for c in blind_read_checks(blank, unnamed) if c.kind == "judge"]
+    (nothing,) = [c for c in blind_read_checks(blank, unnamed) if isinstance(c, JudgeCheck)]
     assert (nothing.against, nothing.result, nothing.reason, nothing.coordinate) == (
         "model",
         "insufficient",
@@ -380,6 +462,95 @@ def test_a_judge_s_own_model_checks_it_against_itself_and_an_unrecorded_one_chec
         "served_model",
     )
     assert nothing.kappa is None, "an unrecorded model matches nothing, so no figure is read"
+
+
+def test_one_model_id_served_by_two_models_is_two_reviewers_and_an_unrecorded_one_is_left_out_and_counted() -> None:
+    read, results = _both_read(30, 30)
+    # The same model id, its answers served by one snapshot on the first 18 items, another on the next 8, and nobody
+    # recorded which on the last 4.
+    served = {**dict.fromkeys(range(18), f"{REVIEWER}-0613"), **dict.fromkeys(range(18, 26), f"{REVIEWER}-0901")}
+    items = {item.item: position for position, item in enumerate(read.items)}
+    answers = [
+        answer.model_copy(update={"reviewer_served_model": served.get(items[answer.item])})
+        if answer.rater_kind == "reference"
+        else answer
+        for answer in read.answers
+    ]
+    closed = close_blind_read(read.model_copy(update={"answers": answers}), results)
+    checks = blind_read_checks(closed, results)
+    against = {
+        check.against_served_model: check
+        for check in checks
+        if isinstance(check, JudgeCheck) and check.against == "model"
+    }
+    own = {check.served_model: check for check in checks if isinstance(check, ReviewerCheck)}
+    assert set(against) == set(own) == {f"{REVIEWER}-0613", f"{REVIEWER}-0901", None}
+    # Each configuration reads only its own answers: 18 and 8 items, two outputs each.
+    assert (against[f"{REVIEWER}-0613"].reads, against[f"{REVIEWER}-0901"].reads) == (36, 16)
+    assert (own[f"{REVIEWER}-0613"].pair_items, own[f"{REVIEWER}-0901"].pair_items) == (18, 8)
+    # The unrecorded answers are in no figure, and are counted.
+    for check in (against[None], own[None]):
+        assert (check.result, check.reason, check.coordinate, check.kappa, check.reads) == (
+            "insufficient",
+            "identity_unrecorded",
+            "served_model",
+            None,
+            8,
+        )
+    # A model shown below the bar under one served model does not silence the judge's check against the other.
+    below = own[f"{REVIEWER}-0901"].model_copy(update={"result": "not_met", "reason": "instrument_below_bar"})
+    spoken = speaking_check(
+        [against[f"{REVIEWER}-0613"].model_copy(update={"result": "met"}), below],
+        against[f"{REVIEWER}-0613"].instrument,
+        GROUNDED.name,
+    )
+    assert spoken is not None and spoken.against_served_model == f"{REVIEWER}-0613"
+    printed = "\n".join(judge_lines(closed.read, labels_name="labels.csv", labels_there=True, checks=checks))
+    assert f"a model ({REVIEWER}, served as {REVIEWER}-0901)" in printed
+    assert f"not checked against a model ({REVIEWER}, served as an unrecorded model)" in printed
+
+
+# --- the decision reads checks --------------------------------------------------------------------------------------
+
+#: kairo's report input (r5): every judge stated undetermined and insufficient, so an improvement it reads is set aside.
+_R5 = Path(__file__).resolve().parent / "fixtures" / "report_inputs" / "r5" / "input.json"
+
+
+def _r5_with(checks: list[dict[str, Any]], *, tier: str) -> tuple[ReportInput, str]:
+    """kairo's input with its candidate's outcome contrast improved, the outcome's judge stating ``tier`` and holding
+    ``checks``."""
+    data: dict[str, Any] = json.loads(_R5.read_text(encoding="utf-8"))
+    contrast = next(c for c in data["contrasts"] if c["arm"] == "qwen3.8-flash" and c["measure"] == "__outcome__")
+    contrast.update(aspect="character adherence (v2)", verdict="improved", delta=0.2, interval=[0.1, 0.3])
+    data["judged"]["__outcome__"].update(tier=tier, calibration="met" if tier == "calibrated" else "insufficient")
+    data["caveats"]["judge_tiers"]["__outcome__"] = tier
+    data["judged"]["__outcome__"]["checks"] = checks
+    return ReportInput.model_validate(data), "qwen3.8-flash"
+
+
+def _judge(against: str, result: str, reason: str | None = None) -> dict[str, Any]:
+    return {"kind": "judge", "instrument": JUDGE_INSTRUMENT, "against": against, "result": result, "reason": reason}
+
+
+def test_an_improvement_is_set_aside_by_the_judge_s_checks_and_not_by_its_tier() -> None:
+    # Its tier says undetermined, its checks say people agree with it: the improvement counts.
+    checked, arm = _r5_with([_judge("people", "met"), _judge("itself", "insufficient", "too_few")], tier="undetermined")
+    assert shown_better(checked, arm)
+    # Its tier says calibrated, its checks say nothing has checked it: the improvement is set aside.
+    unchecked, arm = _r5_with(
+        [_judge("people", "insufficient", "too_few"), _judge("itself", "not_met", "instrument_below_bar")],
+        tier="calibrated",
+    )
+    assert not shown_better(unchecked, arm)
+    # Checked and found short is checked: its improvement counts, as a judge measured below its bar always did.
+    short, arm = _r5_with(
+        [_judge("people", "not_met", "instrument_below_bar"), _judge("itself", "insufficient", "too_few")],
+        tier="undetermined",
+    )
+    assert shown_better(short, arm)
+    # An input holding no check is read by the tier it states, as before checks were recorded.
+    stated, arm = _r5_with([], tier="undetermined")
+    assert not shown_better(stated, arm)
 
 
 # --- the tier stays what it was ---------------------------------------------------------------------------------------

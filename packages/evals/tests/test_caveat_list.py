@@ -63,7 +63,7 @@ from threetears.evals.analysis.caveats import (
     remedy,
     screen,
 )
-from threetears.evals.analysis.checks import Check, Looks
+from threetears.evals.analysis.checks import JudgeCheck, Looks
 from threetears.evals.analysis.report.call import caveat_materiality, implied_caveats, report_caveats
 from threetears.evals.analysis.report_input import (
     CaveatEntry,
@@ -279,7 +279,9 @@ def _messy(*, unfinished: bool) -> CampaignBundle:
     split = _key_of(bundle, _SPLIT)
     (aspect,) = bundle.aspects
     run = aspect.run_summaries[0].run_id
-    check = Check(instrument=_JUDGE, criterion="kappa", against="model", against_id="reference-1", result="met")
+    check = JudgeCheck(
+        kind="judge", instrument=_JUDGE, criterion="kappa", against="model", against_id="reference-1", result="met"
+    )
     held = aspect.model_copy(
         update={
             "cells": [

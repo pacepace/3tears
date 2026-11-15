@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, get_args
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 import threetears.evals
 from packages.evals.tests.reading_state_vocabularies import NOT_ABOUT_A_READING, aliases, discovered
@@ -34,7 +34,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Famil
 from threetears.evals.analysis.campaign_readings import AnswerSplit, CampaignReadings
 from threetears.evals.analysis.caveats import CLASS_OF_KIND, REMEDY_OF_REASON
 from threetears.evals.analysis.report_input import Remedy
-from threetears.evals.analysis.checks import Check, Corrected, Rescore
+from threetears.evals.analysis.checks import Check, Corrected, Rescore, RigCheck
 from threetears.evals.schema.reading_states import (
     REASONS_OF,
     ArmIdentity,
@@ -263,15 +263,26 @@ def test_every_state_a_design_in_flight_needs_is_expressible(need: str) -> None:
 @pytest.mark.parametrize("need", NEEDED_CHECKS)
 def test_every_check_result_a_design_in_flight_needs_is_expressible(need: str) -> None:
     against, result, reason, coordinate = NEEDED_CHECKS[need]
-    check = Check.model_validate(
-        {"instrument": "helpfulness", "against": against, "result": result, "reason": reason, "coordinate": coordinate}
+    # A check names its kind: the rig's against identical arms, a judge's against people, a model or itself.
+    kind = "rig" if against == "identical_arms" else "judge"
+    adapter: TypeAdapter[Check] = TypeAdapter(Check)
+    check = adapter.validate_python(
+        {
+            "kind": kind,
+            "instrument": "helpfulness",
+            "against": against,
+            "result": result,
+            "reason": reason,
+            "coordinate": coordinate,
+        }
     )
-    assert Check.model_validate(check.model_dump(mode="json")) == check
+    assert adapter.validate_python(check.model_dump(mode="json")) == check
     assert result in get_args(CriterionState) and reason in set().union(*ARCHITECTURE.values())
 
 
 def test_a_check_that_could_not_be_made_says_so_as_a_state() -> None:
-    void = Check(
+    void = RigCheck(
+        kind="rig",
         instrument="rig",
         against="identical_arms",
         result="insufficient",

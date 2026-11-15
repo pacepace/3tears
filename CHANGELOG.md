@@ -13,11 +13,24 @@ packages (bumped in lock-step).
 by. A blind read yields its checks (`analysis.checks.blind_read_checks`): the judge against people, the judge against
 each model that answered it (against itself where the model is the judge's own, and `insufficient`,
 `identity_unrecorded` where which model served either side was not recorded), and each such model against people, by
-its kappa and by its lean toward an arm over the cases both read on both arms. A model's own check is `met` only as
-an equivalence reading: at least 40 such cases, the lean's 95% interval inside a tenth of the scale (or the reading's
-margin), and its kappa above the bar; shown to lean over 10 cases or more it is `not_met`, `instrument_leans`; most
-read `undecided`. `analysis.checks.speaking_check` says which check speaks for a judge: people's once decided, else a
-decided check against a model not shown below the bar against people, else none.
+its kappa and by its lean toward an arm over the cases both read on both arms. A model is one reviewer per
+configuration it answered under (the model that served it and the effort asked): answers under two are never pooled,
+and answers whose served model was not recorded are in no figure, their checks `insufficient`, `identity_unrecorded`,
+counting them. A model's own check is `met` only as an equivalence reading: the bounded equivalence test at 5% shows
+its lean inside a tenth of the scale's width (`analysis.checks.REVIEWER_LEAN_BAR`, the package's bar, recorded on the
+check as `lean_bar`; a caller passes no margin), and its kappa is above the bar. That test is valid at every count
+and on coarse scores, and costs items: on pass/fail no reviewer is `met` below 59 cases read on both arms, an unbiased
+one about 40% of the time at 105 and 98% at 260. Shown to lean over 10 cases or more it is `not_met`,
+`instrument_leans`; most read `undecided`, carrying the larger lean the test cannot rule out (`lean_bound`) and about
+how many cases like these would decide it (`pair_items_needed`, or `pair_items_needed_above` past the search).
+`analysis.checks.speaking_check` says which check speaks for a judge: people's once decided, else a decided check
+against a model not shown below the bar against people, else none. A check is one of three kinds
+(`analysis.JudgeCheck`, `ReviewerCheck`, `RigCheck`; `analysis.Check` is their union), each holding only its own
+fields, and names its `kind`.
+
+**Changed:** whether an improvement on a judged dimension is set aside is read from its judge's checks: set aside
+where the judge's check against people is too thin to decide and none of its checks is met. A report input that holds
+no check (stored before checks, or written by hand) is read by the tier it states, as before.
 
 **Added:** `EvalHost.model_family` (optional): the host's word on which family a model is of; with none, the
 provider part of the id. A check against a model names the arms whose candidate is of its family, and whether the
@@ -28,9 +41,11 @@ judge is.
 line reads `checked against people: ...`; a model's own check prints its lean; `one provider's models` reads
 `models of one family`. `JudgeCalibration.tier` is removed.
 
-**For hosts:** a host pinning the quick print's judge lines updates its match. Nothing stored moves: the stored tier
-is computed as before, and a model's answers move no tier. A bundle with a judged dimension now holds its checks, so
-its document moves; its fingerprint, over its inputs, does not.
+**For hosts:** a host pinning the quick print's judge lines updates its match. A host that builds a `Check` names its
+kind and builds the kind's own shape. Nothing stored moves: the stored tier is computed as before, and a model's
+answers move no tier. A bundle with a judged dimension now holds its checks, so its document moves; its fingerprint,
+over its inputs, does not. To have a model's own check decided, collect double reads on about 105 to 260 cases (on
+pass/fail; more on 1-5): the undecided check says how many.
 
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
