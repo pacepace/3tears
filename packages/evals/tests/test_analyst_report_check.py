@@ -490,7 +490,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when runs_attest's help came to say what a served-model statement does (#1187): it is
 #: recorded on the run with the results whose candidate rows named no model, read through, and rewrites no row; the
 #: help had said it was written to each such row. No other action's text moved.
-_EVALS_BYTES = "e200708cd13925547d09e07078b9a0ed2d46ba4c0202f3c70da9f984b5ae4e19"
+#: The evals tool moved again when a frontier came to store that its contestants' definitions differ (#1187): the
+#: frontier lens's help lists ``definitions_apart`` among the fields ``FrontierResult`` returns. No other text moved.
+_EVALS_BYTES = "8b2dd9578777df03b2e148c83486493d8fd5592c0ff89124e04ddf0974cd1a92"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
