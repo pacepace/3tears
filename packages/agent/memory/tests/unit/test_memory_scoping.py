@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import UUID
 
@@ -247,7 +248,11 @@ class TestBuildScopeClause:
     """
 
     async def test_required_triple(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
-        """both legs pin the triple in (agent, customer, user) order from $1, and bind the limit last."""
+        """both legs pin the triple in (agent, customer, user) order from $1, and bind the limit last.
+
+        The limit is asserted as bound, not as the statement's last words: the vector leg is read_nearest's
+        ``SELECT .. FROM (<read> LIMIT $k) AS n ORDER BY distance`` (the HNSW relaxed-order re-sort, 6671015f2), so
+        its ``LIMIT $k`` sits inside the wrapper."""
         pool = _RecordingPool()
         registry, config = _registry(pool)
         user_id, agent_id, customer_id = uuid7(), uuid7(), uuid7()
@@ -260,7 +265,8 @@ class TestBuildScopeClause:
         for sql, params in pool.statements:
             assert 'WHERE t."agent_id" = $1 AND t."customer_id" = $2 AND t."user_id" = $3' in sql
             assert list(params[0:3]) == [agent_id, customer_id, user_id]
-            assert sql.endswith(f"LIMIT ${len(params)}")
+            assert re.search(rf"\bLIMIT \${len(params)}(?!\d)", sql), "the limit is the last bind and limits the read"
+            assert sql.count(f"${len(params)}") == 1, "the limit's bind is used only as the limit"
             assert params[-1] == 7
 
     async def test_with_table_prefix(self) -> None:
