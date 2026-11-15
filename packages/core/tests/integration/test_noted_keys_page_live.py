@@ -266,3 +266,44 @@ class TestACommitsKeysAreReadBackFromItsNotes:
         print(f"paged {took * 1000:.1f} ms, bare {baseline * 1000:.1f} ms, {took / baseline:.2f}x")
         problem = budget_problem("noted_keys_page, every page", took, baseline)
         assert problem is None, problem
+
+
+async def test_a_key_holding_the_separator_and_a_whole_table_note_are_read_as_they_were_noted(ring: _Ring) -> None:
+    """Flips if a note whose key value holds the key separator (chr(31)) is answered split at it, or a whole-table
+    note in the bracket is not said: those notes are read again in their keys' array form (a page reads the notes'
+    separators first and checks them against their key text)."""
+    since, _ = ring.bracket
+    notes = f"{ring.schema}.{note_table(0)}"
+    at = since + timedelta(seconds=1)
+    await ring.conn.execute(
+        f"INSERT INTO {notes} (table_name, keys, key_text, tenant, noted_at) "  # noqa: S608
+        "VALUES ($1, ARRAY['a' || chr(31) || 'b', 'TX'], 'a' || chr(31) || 'b' || chr(31) || 'TX', $2, $3), "
+        "($1, NULL, NULL, $2, $3)",
+        _TABLE,
+        _TENANT,
+        at,
+    )
+    keys: set[tuple[str, ...]] = set()
+    whole = False
+    cursor: NotedKeysCursor | None = None
+    while True:
+        page = await noted_keys_page(
+            ring.conn,
+            notes_schema=ring.schema,
+            table=_TABLE,
+            tenant_token=_TENANT,
+            noted_between=ring.bracket,
+            cursor=cursor,
+            limit=5000,
+            max_bytes=4 << 20,
+        )
+        assert isinstance(page, NotedKeysPage), page
+        keys.update(page.keys)
+        whole = whole or page.whole_table
+        if page.next is None:
+            break
+        cursor = page.next
+    assert ("a\x1fb", "TX") in keys
+    assert ("a", "b", "TX") not in keys
+    assert keys - {("a\x1fb", "TX")} == {(str(g), "TX") for g in range(1, _COMMIT + 1)}
+    assert whole

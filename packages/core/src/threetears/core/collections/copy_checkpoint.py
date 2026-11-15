@@ -719,12 +719,13 @@ class CopyCheckpoints:
         # the table's primary key (_next_part over a read of it, or _patched_part: the old part's rows of every other
         # key, keyed.anti, beside the copy's rows of the touched keys), so the last-row-per-key pass a stage makes of
         # rows read from L3 finds nothing to drop. A part that breaks it anyway is refused, never loaded twice: the
-        # apply's insert into the copy's keyed table raises (test_a_part_holding_a_key_twice_is_refused_by_the_copys_key
-        # _when_it_is_applied). A new writer of parts must keep it. Skipped (unique_keys), the pass
-        # was most of what a start from a checkpoint cost over its bare decode and copy-in: 1,000,000 rows in 52
-        # parts, stage() 0.222 s against 0.125 s bare (1.78x; the pass alone 0.087 s), under measure-lock, 2026-11-15.
-        # test_checkpoint_stage_speed_at_real_size (2x budget) had run at 1.99x; with the skip, 0.13 s against 0.11 s
-        # bare (1.21x)
+        # apply's insert into the copy's keyed table raises (test_copy_checkpoint.py::
+        # test_a_part_holding_a_key_twice_is_refused_by_the_copys_key_when_it_is_applied). A new writer of parts must
+        # keep it. Why skip the pass (unique_keys): it was most of what a start from a checkpoint cost over its bare
+        # decode and copy-in. 1,000,000 rows in 52 parts, profiled under measure-lock (2026-11-15): stage() 0.222 s
+        # against 0.125 s bare (decode 0.010 s, copy-in 0.115 s), the pass alone 0.087 s. The real-size budget
+        # (test_copy_follower_whole_reads_live.py::test_checkpoint_stage_speed_at_real_size, 2x the bare decode and
+        # copy-in) ran at 1.99x with it; without it 1.21x locally and 1.06x on YugabyteDB lane 1 (0.10 s against 0.10 s)
         self._backend.stage_rows(stage, table.name, part, table.key, unique_keys=True)
 
     # --- writing ---------------------------------------------------------------------------------
