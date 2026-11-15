@@ -32,9 +32,12 @@ from threetears.evals.schema import (
     EvalRun,
     OutOfRunSpend,
     StopReason,
+)
+from threetears.evals.schema.completion import (
+    COMPLETION_RESULT_ATTRIBUTES,
+    OPTIONAL_COMPLETION_ATTRIBUTES,
     sent_settings_of,
 )
-from threetears.evals.schema.completion import COMPLETION_RESULT_ATTRIBUTES, OPTIONAL_COMPLETION_ATTRIBUTES
 from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,

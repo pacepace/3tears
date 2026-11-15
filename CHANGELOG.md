@@ -6,6 +6,81 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
+
+**Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone
+outside the package needs it, production code or a shipped example uses it, it is the one way to do its thing, a name
+a user types is taught on a rung or a page, and its meaning can be promised. `tests/test_api_tiers.py` checks what code
+can: every received shape is reached through a signature or a docstring, two near-duplicate shapes say why both
+exist, and a typed name is taught. `tests/test_declared_holdbacks.py` checks that each declared name is used in code:
+another package's source, the shipped client, a shipped example, a Python block on a shipped page, or a host's
+production code. A page's prose and the toy host never count, and a host's tests count only for a kit of the `tests`
+kind a host runs there (`tests/fixtures/host_test_imports/`, generated beside the production list). The function
+behind an action needs a caller of its own like any other name; the catalogue running it is not one. A class a kept
+name's signature names is a shape a host receives through it. The per-kind ceilings and budgets are
+gone; `docs/surface.md` reports the totals by kind as a trend. The adopter's goals stay as tests: a first eval needs 2
+names, rungs 0 to 3 need 5.
+
+**Changed:** a host's import list (`tests/fixtures/host_imports/discodon.txt`) holds its production code's use only,
+generated from the host's checkout by `scripts/record_host_imports.py`, which states what counts as production and
+heads the file with the host's commit and date. The `discodon-tests-only` hold-back is deleted.
+
+**Changed:** kinds. The function behind an action of the catalogue is kind `action` (an agent or operator invokes it
+by name), and `invoked` is now only a function a host's own code calls. `docs/surface.md` and `llms.txt` give each kind
+in one line. A protocol the engine implements and hands a host (a cell's sink, a delivery's recorder, a store area the
+engine's own storage satisfies) is kind `received`, not `bound`. `Answer` is a typed name taught on a page
+(`docs/cost-and-budgets.md`). The reach walk reads what a module imports only for type checking and the classes a
+docstring names.
+
+**Changed:** two debt registers, both settled by issue #1199 with the namespace re-root so a host migrates once.
+`AWAITING_DEMOTION` (22 names: functions and classes no production code or shipped example uses, among them
+`run.start_run`, `run.regrade`, `run.quote_launch` and the functions behind the `campaign_export`, `case_set_mint`,
+`case_sets_list` and `judge_case_author` actions, whose actions stay the door) and `AWAITING_SHIPPED_USE` (4 names
+that are the only door to something a host must do: `ops.start_action_job`, `kernel.failed_call_output`,
+`kernel.host.Ordinal`, `kernel.host.MemberActsOn`). Both only shrink: a test fails when a name joins either.
+`docs/surface.md` lists each in its own section, never among the healthy names, and `llms.txt` offers an agent only
+the second, marked.
+
+**Changed:** a shipped page that names, as code, a name `MIGRATIONS.toml` records removed fails a test, unless the
+page marks it removed where it names it; a page that teaches a provisional name, the `@name(...)` spelling included,
+must mark it provisional there. `@measure(...)` is marked provisional on the two pages that teach it, and the pages that
+told a reader to call `check_after`, `check_names`, `judge_config_of` or `is_builtin_judge_config_id` now give the
+replacement inline.
+
+**Changed:** a host-contract name moves only with a `MIGRATIONS.toml` record naming its replacement, in a single
+cut-over with no shim (owner ruling, 2026-11-15). The host guide (its stability tiers and its upgrading section),
+the README, the reference and `MIGRATIONS.toml`'s header said a deprecation cycle; they no longer do.
+
+**Removed:** names no production code uses, from their public roots: `kernel.CassetteStore`,
+`kernel.DefinitionStore`, `kernel.RunRecordStore`, `kernel.production_replicating_cost`,
+`schema.sent_settings_of`, `schema.check_after`, `schema.is_builtin_judge_config_id`, `schema.judge_config_of`,
+`schema.utc_now_iso`, `analysis.lint_prose`, `analysis.check_names` and `analysis.host_declarations_digest`. The
+engine still uses each inside; `MIGRATIONS.toml` records each released one with its port. `Log`, `quick.measure` and
+`quick.Measure` stay importable but are provisional now: `Eval`'s signature names `Log`, and the toy host declares its
+measures with `@measure`.
+
+**For hosts:** a single cut-over, with no deprecated re-export: an import of a removed name fails at once. Check your
+imports against this map:
+
+- `kernel.CassetteStore`, `kernel.DefinitionStore`: type the parameter as `kernel.EvalStorage`. `RunStore`,
+  `ResultStore` and `JobStore` hold no cassette or definition method.
+- `kernel.RunRecordStore`: `kernel.EvalStorage`, or `kernel.RunStore` where only runs are read and
+  `kernel.ResultStore` where only results are.
+- `schema.sent_settings_of`: `getattr(completion, "sent_settings", None)`.
+- `schema.is_builtin_judge_config_id`: `config_id is not None and config_id.startswith("builtin:")`.
+- `schema.judge_config_of`: the part of a recorded `<config id>@<sha12>` before the `@`; `None` for a built-in one.
+- `schema.utc_now_iso`: `datetime.now(UTC).isoformat()`.
+- `schema.check_after`: refuse an `after` given without `order_by`, or one that is not a (scalar, `str` id) pair.
+- `kernel.production_replicating_cost` (Discodon's tests import it): read an arm's production cost off the bundle
+  scoreboard, `ArmScoreboard.reply_cost_usd`.
+- `analysis.host_declarations_digest` (Discodon's tests import it): read `AnalysisContextBundle.host_declarations_digest`
+  off a bundle, or the profile file `ops.campaign_export` writes.
+- `analysis.check_names` (Discodon's tests import it): assert the name a page prints for a goal check, or declare it
+  in the template's `goal_check_names`.
+- `analysis.lint_prose`: no replacement; nothing imported it.
+
+Discodon's production code imports none of these. Nothing stored changes.
+
 ### evals: the one caveat list is filled and the first screen computed, with a typed next step per reason (#1192)
 
 **Added:** what S5a-1's shape was for, still rendering nothing. No page, print line, golden or recording moved; a
