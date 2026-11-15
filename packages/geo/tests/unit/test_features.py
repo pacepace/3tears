@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import random
+import sqlite3
 from typing import Any
 
 import pytest
@@ -705,9 +707,9 @@ class TestOneReadClaimsAtMostHalfTheBound:
 
 class TestACollectedCache:
     async def test_leaves_no_index_entries(self, request: pytest.FixtureRequest) -> None:
-        # caches of one scope share the L1, each with its own R-Tree and key map, so one that is
-        # dropped must take its entries -- and only its own: a second live cache on the same L1
-        # keeps every entry it holds
+        # caches of one scope share the L1, each with its own R-Tree, so one that is dropped must
+        # take its entries -- and only its own: a second live cache on the same L1 keeps every
+        # entry it holds
         tile = _chunk_tile(0)
         loader, calls = _recording_loader([_point_row("f", tile)])
         cache = _cache_over(request, loader)
@@ -718,11 +720,11 @@ class TestACollectedCache:
         await survivor.features_in_bbox("tracts", 1, tile_bounds(tile))
 
         def entries() -> int:
-            maps = backend.execute_query(
+            trees = backend.execute_query(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ?",
-                (f"geo_features_{SCOPE}_%_rtree_map",),
+                (f"geo_features_{SCOPE}_%_rtree",),
             )
-            return sum(int(backend.execute_query(f"SELECT count(*) AS n FROM {row['name']}")[0]["n"]) for row in maps)
+            return sum(int(backend.execute_query(f"SELECT count(*) AS n FROM {row['name']}")[0]["n"]) for row in trees)
 
         assert entries() == 2
 
@@ -734,3 +736,128 @@ class TestACollectedCache:
         found = await survivor.features_in_bbox("tracts", 1, tile_bounds(tile))
         assert [row["feature_id"] for row in found] == ["f"]
         assert len(calls) == 2, "the surviving cache's chunk should still be covered"
+
+
+#: the R-Tree statements FeatureCache sent before its key map moved into the instance (2026-11-15): the tree and a
+#: ``(id, feature_key)`` map table, written and read through the map
+_OLD_INDEX_DDL = (
+    "CREATE VIRTUAL TABLE old_rtree USING rtree(id, min_x, max_x, min_y, max_y)",
+    "CREATE TABLE old_map (id INTEGER PRIMARY KEY AUTOINCREMENT, feature_key TEXT NOT NULL UNIQUE)",
+)
+_OLD_MAP_INSERT = "INSERT OR IGNORE INTO old_map (feature_key) VALUES (?)"
+_OLD_TREE_PUT = (
+    "INSERT OR REPLACE INTO old_rtree (id, min_x, max_x, min_y, max_y) SELECT id, ?, ?, ?, ? FROM old_map "
+    "WHERE feature_key = ?"
+)
+_OLD_READ = (
+    "SELECT m.feature_key AS feature_key FROM old_rtree r JOIN old_map m ON m.id = r.id "
+    "WHERE r.max_x >= ? AND r.min_x <= ? AND r.max_y >= ? AND r.min_y <= ? AND substr(m.feature_key, 1, ?) = ?"
+)
+
+#: every box any test row lies in
+_WORLD = BoundingBox(-180.0, -85.0, 180.0, 85.0)
+
+
+def _tree_entries(backend: Any) -> int:
+    """every entry the L1's feature-cache R-Trees hold, found by name as the finalizer test finds them."""
+    trees = backend.execute_query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ?", (f"geo_features_{SCOPE}_%_rtree",)
+    )
+    return sum(int(backend.execute_query(f"SELECT count(*) AS n FROM {row['name']}")[0]["n"]) for row in trees)
+
+
+class TestTheIndexAnswersTheOldStatements:
+    def test_every_box_answers_what_the_map_table_answered(self, cache: FeatureCache) -> None:
+        """Flips if indexed_keys_in_bbox answers other feature ids than the old tree-and-map statements did over the
+        same writes: a box bound dropped or flipped, another layer or generation let in (a layer name carrying
+        LIKE's % and _ included), or a re-indexed feature's old box kept beside its new one."""
+        rng = random.Random(20261115)
+        old = sqlite3.connect(":memory:")
+        for ddl in _OLD_INDEX_DDL:
+            old.execute(ddl)
+        layers = ["tracts", "a_b", "axb", "t%s", "tracts2"]
+
+        def box() -> BoundingBox:
+            lon, lat = rng.uniform(-120.0, -70.0), rng.uniform(25.0, 48.0)
+            return BoundingBox(lon, lat, lon + rng.uniform(0.0, 4.0), lat + rng.uniform(0.0, 4.0))
+
+        def index(layer: str, version: int, feature_id: str, bounds: BoundingBox) -> None:
+            cache.index_feature(layer, version, feature_id, bounds)
+            # the old key, less the instance's token (one instance: the same for every key)
+            key = f"{layer}\x1f{version}\x1f{feature_id}"
+            old.execute(_OLD_MAP_INSERT, (key,))
+            old.execute(_OLD_TREE_PUT, (bounds.min_lon, bounds.max_lon, bounds.min_lat, bounds.max_lat, key))
+
+        features = [(rng.choice(layers), rng.choice((1, 2)), f"f{n}") for n in range(400)]
+        for layer, version, feature_id in features:
+            index(layer, version, feature_id, box())
+        for layer, version, feature_id in rng.sample(features, 60):  # moved: indexed again under a new box
+            index(layer, version, feature_id, box())
+        assert cache.l1_backend is not None
+        assert _tree_entries(cache.l1_backend) == old.execute("SELECT count(*) FROM old_rtree").fetchone()[0]
+
+        checked = answered = 0
+        for _ in range(300):
+            asked = box()
+            for layer in layers:
+                for version in (1, 2):
+                    prefix = f"{layer}\x1f{version}\x1f"
+                    expected = sorted(
+                        str(row[0]).split("\x1f", 2)[2]
+                        for row in old.execute(
+                            _OLD_READ,
+                            (asked.min_lon, asked.max_lon, asked.min_lat, asked.max_lat, len(prefix), prefix),
+                        ).fetchall()
+                    )
+                    assert sorted(cache.indexed_keys_in_bbox(layer, version, asked)) == expected, (
+                        layer,
+                        version,
+                        asked,
+                    )
+                    checked += 1
+                    answered += bool(expected)
+        assert answered > checked // 10, "too few boxes answered anything to compare"
+
+    async def test_an_evicted_chunk_s_features_leave_the_tree_itself(self, request: pytest.FixtureRequest) -> None:
+        """Flips if eviction stops answering a feature but leaves its entry in the tree (the tree growing behind
+        the bound): the tree holds exactly the features the cache answers, after every read."""
+        tiles = [_chunk_tile(dx) for dx in range(6)]
+        rows = [_point_row(f"f{n}-{dx}", tile) for dx, tile in enumerate(tiles) for n in range(3)]
+        loader, _ = _recording_loader(rows)
+        cache = _cache_over(request, loader, max_cached_rows=6)
+        for tile in [*tiles, *tiles[:2]]:
+            await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+            assert cache.l1_backend is not None
+            held = cache.indexed_keys_in_bbox("tracts", 1, _WORLD)
+            assert 0 < len(held) <= 6
+            assert _tree_entries(cache.l1_backend) == len(held)
+
+
+class TestAnL1HoldingAnOlderCachesTables:
+    async def test_a_new_cache_reads_only_its_own_tree(self, request: pytest.FixtureRequest) -> None:
+        """the upgrade path: the SQLite L1 is a named in-memory database (memdb), so a pod's new process starts
+        with no tables and nothing is migrated -- each cache creates its own tree on first use. Should an older
+        cache's tree and key map still sit in the same L1, a new cache never reads them: flips if it answers their
+        entries or they stop it indexing and reading its own."""
+        tile = _chunk_tile(0)
+        loader, _ = _recording_loader([_point_row("mine", tile)])
+        cache = _cache_over(request, loader)
+        backend = cache.l1_backend
+        assert backend is not None
+        conn = backend.get_connection()
+        stale = f"geo_features_{SCOPE}_0123456789ab"
+        conn.execute(f"CREATE VIRTUAL TABLE {stale}_rtree USING rtree(id, min_x, max_x, min_y, max_y)")
+        conn.execute(
+            f"CREATE TABLE {stale}_rtree_map (id INTEGER PRIMARY KEY AUTOINCREMENT, feature_key TEXT NOT NULL UNIQUE)"
+        )
+        conn.execute(
+            f"INSERT INTO {stale}_rtree_map (id, feature_key) VALUES (1, ?)", ("0123456789ab\x1ftracts\x1f1\x1fold",)
+        )
+        b = tile_bounds(tile)
+        conn.execute(f"INSERT INTO {stale}_rtree VALUES (1, ?, ?, ?, ?)", (b.min_lon, b.max_lon, b.min_lat, b.max_lat))
+        conn.commit()
+
+        found = await cache.features_in_bbox("tracts", 1, tile_bounds(tile))
+
+        assert [row["feature_id"] for row in found] == ["mine"]
+        assert cache.indexed_keys_in_bbox("tracts", 1, tile_bounds(tile)) == ["mine"]

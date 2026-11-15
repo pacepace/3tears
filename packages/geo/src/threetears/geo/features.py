@@ -24,24 +24,24 @@ least recently read chunk going first, rows and index entries together. with
 no L1 bound it holds nothing: every read is one loader call.
 
 the R-Tree needs integer keys and features are keyed by
-``(layer, source_version, feature_id)``, so a companion map table assigns a
-surrogate rowid per feature key. that indirection is the price of the built-in
-module; it is one extra table, not a second cache. each key also carries a
-token minted per instance: several caches of one scope share the L1's tables
-(the hub builds one per layer), and each keeps its rows in memory, so each
-indexes and evicts only its own entries. an instance's entries are deleted
-when it is garbage-collected.
+``(layer, source_version, feature_id)``, so each instance assigns a surrogate
+id per feature key and keeps the two maps in memory, beside the rows it holds.
+several caches of one scope share the L1 (the hub builds one per layer), and
+each keeps its rows in memory, so each has an R-Tree of its own and indexes
+and evicts only its own entries. an instance's tree is dropped when it is
+garbage-collected.
 """
 
 from __future__ import annotations
 
+import itertools
 import secrets
 import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, ClassVar
 
-from threetears.core.keyed import KeyColumn
+from threetears.core.cache.rtree import SQLiteRTree
 from threetears.core.collections.base import BaseCollection
 from threetears.core.entities.base import BaseEntity
 from threetears.core.serialization import deserialize_from_json, serialize_to_json
@@ -147,9 +147,15 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         self._holders: dict[str, int] = {}
         # chunks a read in progress depends on, which eviction skips until that read has answered
         self._pins: dict[_ChunkMarker, int] = {}
-        # leads every R-Tree key this instance writes, so instances sharing the tables never read
-        # or evict each other's entries
+        # names this instance's own R-Tree, so instances sharing the L1 never read or evict each
+        # other's entries
         self._instance_key = secrets.token_hex(6)
+        # the R-Tree's integer id of each indexed feature key, and back: held here, beside the rows,
+        # rather than in a map table joined to the tree (see ``ensure_index``)
+        self._tree_ids: dict[str, int] = {}
+        self._tree_keys: dict[int, str] = {}
+        self._next_tree_id = itertools.count(1)
+        self._tree: SQLiteRTree | None = None
 
     @property
     def table_name(self) -> str:
@@ -163,22 +169,26 @@ class FeatureCache(BaseCollection[FeatureEntity]):
     # R-Tree companion
     # ------------------------------------------------------------------
 
-    # each instance holds its own R-Tree and key map, so a collected instance's entries go by dropping
-    # its two tables, never by finding its rows among another instance's
+    # each instance holds its own R-Tree, so a collected instance's entries go by dropping its
+    # table, never by finding its rows among another instance's
     @property
     def _rtree_table(self) -> str:
         return f"{self.table_name}_{self._instance_key}_rtree"
 
-    @property
-    def _map_table(self) -> str:
-        return f"{self.table_name}_{self._instance_key}_rtree_map"
-
     def ensure_index(self) -> None:
-        """create the R-Tree and its key map if absent.
+        """create the R-Tree if absent.
 
         idempotent and cheap after the first call. built lazily rather than at
         construction so a collection that never runs a spatial query never
         pays for the virtual table.
+
+        WHY no key-map table (2026-11-15): the tree's integer ids were a SQLite table
+        ``(id INTEGER PRIMARY KEY, feature_key TEXT UNIQUE)`` joined to the tree on every read
+        and kept by ``INSERT ... SELECT`` / ``DELETE ... IN (SELECT ...)``. since c4d4bfefb each
+        instance has a tree of its own, so the map only ever answered this instance's own keys,
+        which it already holds in memory (``_rows``, ``_holders``); two dicts of ints beside them
+        cost less than the rows they index, and every statement is then the tree's own, by id or
+        by a box (:class:`~threetears.core.cache.rtree.SQLiteRTree`).
         """
         if self._rtree_ready:
             return
@@ -188,19 +198,11 @@ class FeatureCache(BaseCollection[FeatureEntity]):
             # index and every lookup falls through to the loader.
             log.debug("no L1 backend bound to %s; spatial index disabled", self.table_name)
             return
-        conn = backend.get_connection()
-        conn.execute(
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS {self._rtree_table} USING rtree(id, min_x, max_x, min_y, max_y)"
-        )
-        conn.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._map_table} ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  feature_key TEXT NOT NULL UNIQUE"
-            ")"
-        )
-        conn.commit()
+        tree = SQLiteRTree(backend, self._rtree_table)
+        tree.create()
+        self._tree = tree
         self._rtree_ready = True
-        weakref.finalize(self, _drop_index_entries, backend, self._rtree_table, self._map_table)
+        weakref.finalize(self, _drop_index_entries, tree)
 
     def _feature_key(self, layer: str, source_version: int, feature_id: Any) -> str:
         return f"{self._instance_key}\x1f{layer}\x1f{source_version}\x1f{feature_id}"
@@ -241,19 +243,17 @@ class FeatureCache(BaseCollection[FeatureEntity]):
     def _keys_in_bbox(self, layer: str, source_version: int, bounds: BoundingBox) -> list[str]:
         """the R-Tree feature keys of one layer and generation whose bounds overlap ``bounds``."""
         self.ensure_index()
-        backend = self._l1
-        if backend is None or not self._rtree_ready:
+        tree = self._tree
+        if tree is None:
             return []
         prefix = self._feature_key(layer, source_version, "")
-        rows = backend.execute_query(
-            f"SELECT m.feature_key AS feature_key FROM {self._rtree_table} r "
-            f"JOIN {self._map_table} m ON m.id = r.id "
-            "WHERE r.max_x >= ? AND r.min_x <= ? AND r.max_y >= ? AND r.min_y <= ? "
-            # a prefix compare, not LIKE: a layer name may carry the LIKE wildcards % and _
-            "AND substr(m.feature_key, 1, ?) = ?",
-            (bounds.min_lon, bounds.max_lon, bounds.min_lat, bounds.max_lat, len(prefix), prefix),
+        keys = (
+            self._tree_keys.get(tree_id)
+            for tree_id in tree.overlapping(bounds.min_lon, bounds.max_lon, bounds.min_lat, bounds.max_lat)
         )
-        return [str(row["feature_key"]) for row in rows]
+        # the tree holds every layer and generation this instance indexed: a prefix compare keeps the asked one's
+        # (a plain prefix, so a layer name's own % or _ is no wildcard)
+        return [key for key in keys if key is not None and key.startswith(prefix)]
 
     # ------------------------------------------------------------------
     # read path
@@ -526,45 +526,30 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         if not features:
             return
         self.ensure_index()
-        backend = self._l1
-        if backend is None or not self._rtree_ready:
+        tree = self._tree
+        if tree is None:
             return
-        keys = [(self._feature_key(layer, source_version, feature_id),) for feature_id, _bounds in features]
-        # the map's unique key, and the id the R-Tree and the map share as their key
-        # the map table's key and the R*Tree's rowid key
-        key_column: KeyColumn = "feature_key"
-        pk: KeyColumn = "id"
-        conn = backend.get_connection()
-        conn.executemany(f"INSERT OR IGNORE INTO {self._map_table} ({key_column}) VALUES (?)", keys)
-        conn.executemany(
-            f"INSERT OR REPLACE INTO {self._rtree_table} ({pk}, min_x, max_x, min_y, max_y) "
-            f"SELECT {pk}, ?, ?, ?, ? FROM {self._map_table} WHERE {key_column} = ?",
-            [
-                (b.min_lon, b.max_lon, b.min_lat, b.max_lat, key)
-                for (_feature_id, b), (key,) in zip(features, keys, strict=True)
-            ],
-        )
-        conn.commit()
+        boxes: list[tuple[int, float, float, float, float]] = []
+        for feature_id, b in features:
+            key = self._feature_key(layer, source_version, feature_id)
+            tree_id = self._tree_ids.get(key)
+            if tree_id is None:
+                # a key indexed again keeps its id: its box is replaced, as the map's INSERT OR IGNORE kept it
+                tree_id = next(self._next_tree_id)
+                self._tree_ids[key] = tree_id
+                self._tree_keys[tree_id] = key
+            boxes.append((tree_id, b.min_lon, b.max_lon, b.min_lat, b.max_lat))
+        tree.put(boxes)
 
     def _unindex_keys(self, keys: list[str]) -> None:
         """drop features from the spatial index by feature key, in one transaction."""
-        if not keys:
+        tree = self._tree
+        if not keys or tree is None:
             return
-        backend = self._l1
-        if backend is None or not self._rtree_ready:
-            return
-        params = [(key,) for key in keys]
-        # the map's unique key, and the id the R-Tree and the map share as their key
-        # the map table's key and the R*Tree's rowid key
-        key_column: KeyColumn = "feature_key"
-        pk: KeyColumn = "id"
-        conn = backend.get_connection()
-        conn.executemany(
-            f"DELETE FROM {self._rtree_table} WHERE {pk} IN (SELECT {pk} FROM {self._map_table} WHERE {key_column} = ?)",
-            params,
-        )
-        conn.executemany(f"DELETE FROM {self._map_table} WHERE {key_column} = ?", params)
-        conn.commit()
+        gone = [tree_id for tree_id in (self._tree_ids.pop(key, None) for key in keys) if tree_id is not None]
+        for tree_id in gone:
+            del self._tree_keys[tree_id]
+        tree.remove(gone)
 
     def _row_bounds(self, row: dict[str, Any]) -> BoundingBox:
         """the row's own bounding rectangle, via the caller-supplied extractor."""
@@ -609,8 +594,8 @@ class FeatureCache(BaseCollection[FeatureEntity]):
         return result
 
 
-def _drop_index_entries(backend: Any, rtree_table: str, map_table: str) -> None:
-    """drop a collected :class:`FeatureCache`'s own R-Tree and key map; best effort, never raises.
+def _drop_index_entries(tree: SQLiteRTree) -> None:
+    """drop a collected :class:`FeatureCache`'s own R-Tree; best effort, never raises.
 
     run by :func:`weakref.finalize`, so it may run on any thread -- whichever one triggers the
     collection -- during interpreter shutdown, or after the L1 has closed, and SQLite may refuse
@@ -618,10 +603,7 @@ def _drop_index_entries(backend: Any, rtree_table: str, map_table: str) -> None:
     no live cache reads, since the tables are the collected instance's own.
     """
     try:
-        conn = backend.get_connection()
-        conn.execute(f"DROP TABLE IF EXISTS {rtree_table}")
-        conn.execute(f"DROP TABLE IF EXISTS {map_table}")
-        conn.commit()
+        tree.drop()
     # prawduct:allow prawduct/broad-except -- a finalizer must not raise; whatever the L1 says on
     # the way down, the entries are unread and the table is in memory
     except Exception as exc:  # noqa: BLE001

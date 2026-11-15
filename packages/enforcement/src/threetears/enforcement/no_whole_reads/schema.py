@@ -47,6 +47,7 @@ __all__ = [
     "COPY_PREFIX",
     "MIN_REASON",
     "NEAREST_METHODS",
+    "SPATIAL_METHODS",
     "TENANT_COLUMNS",
     "SchemaCatalog",
     "bare_table",
@@ -69,6 +70,12 @@ TENANT_COLUMNS: Final[frozenset[str]] = frozenset({"row_scope", "customer_id"})
 #: the approximate-nearest-neighbour access methods (pgvector's, YugabyteDB's): such an index serves a read ordered by
 #: a distance from its column, bounded by a LIMIT -- the k nearest -- and no equality or range of it
 NEAREST_METHODS: Final[frozenset[str]] = frozenset({"hnsw", "ivfflat", "ybhnsw"})
+
+#: SQLite's R*Tree access methods: an R*Tree virtual table (``CREATE VIRTUAL TABLE <t> USING rtree(id, min_x, max_x,
+#: ...)``) is keyed by its integer id and is itself a spatial index over its coordinate columns: a read bounding every
+#: coordinate by a bound value (an overlap or containment of a box) walks the tree, as SQLite's ``xBestIndex`` answers
+#: it, and reads only the entries whose boxes the bounds can reach
+SPATIAL_METHODS: Final[frozenset[str]] = frozenset({"rtree", "rtree_i32"})
 
 #: more indexes than this on one table needs a written reason on each
 MAX_PLAIN_INDEXES: Final[int] = 3
@@ -98,6 +105,12 @@ _IDENT: Final[str] = r"(?:\"[^\"]+\"|[\w{}]+)"
 _QNAME: Final[str] = rf"({_IDENT}(?:\.{_IDENT})*)"
 _CREATE_TABLE: Final[re.Pattern[str]] = re.compile(
     rf"\bCREATE\s+(?:UNLOGGED\s+|TEMP\w*\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_QNAME}\s*\(", re.IGNORECASE
+)
+#: a SQLite R*Tree (``CREATE VIRTUAL TABLE [IF NOT EXISTS] <name> USING rtree(<id>, <min>, <max>, ...)``): its id is
+#: its key, its coordinates a spatial index (:data:`SPATIAL_METHODS`); ``+aux`` columns are neither
+_CREATE_RTREE: Final[re.Pattern[str]] = re.compile(
+    rf"\bCREATE\s+VIRTUAL\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{_QNAME}\s+USING\s+(?P<method>rtree(?:_i32)?)\s*\(",
+    re.IGNORECASE,
 )
 _CREATE_INDEX: Final[re.Pattern[str]] = re.compile(
     rf"\bCREATE\s+(UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?(?:{_QNAME}\s+)?ON\s+(?:ONLY\s+)?"
@@ -978,6 +991,28 @@ def _ddl_events(text: str) -> Iterator[tuple[str, Any]]:
                 ),
             )
         )
+    for match in _CREATE_RTREE.finditer(text):
+        inner, _ = _paren_body(text, match.end() - 1)
+        items = [item.strip() for item in _split_top(_strip_comments(inner))]
+        coordinates = tuple(_column_of(item) for item in items[1:] if not item.startswith("+"))
+        events.append((match.start(), "table", (match.group(1), (_column_of(items[0]),) if items else ())))
+        if coordinates:
+            # the tree itself, named for its table (``<table>_rtree``; SQLite names no index of it): its purpose and
+            # plan test are the ``-- purpose:`` / ``-- plan_test:`` lines before the DDL, as an index's are
+            events.append(
+                (
+                    match.start(),
+                    "index",
+                    (
+                        f"{match.group(1).strip(chr(34))}_rtree",
+                        match.group(1),
+                        coordinates,
+                        (),
+                        (False, False, "", False, match.group("method").lower()),
+                        _notes_before(text, match.start()),
+                    ),
+                )
+            )
     for match in _DROP_INDEX.finditer(text):
         for name in _split_top(match.group(1)):
             events.append((match.start(), "drop_index", name))

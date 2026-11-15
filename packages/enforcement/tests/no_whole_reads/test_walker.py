@@ -5879,6 +5879,53 @@ def test_a_table_its_caller_names_is_judged_by_the_module_s_published_ddl(tmp_pa
     assert "Tokens.scan" in functions, found
 
 
+_RTREE = """
+    RTREE_DDL = (
+        "-- purpose: src/spatial.py::Boxes.overlapping\\n"
+        "-- plan_test: tests/test_spatial.py::test_overlap_plan\\n"
+        "CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING rtree(id, min_x, max_x, min_y, max_y)"
+    )
+
+    class Boxes:
+        def __init__(self, conn, table):
+            self._conn = conn
+            self._table = table
+
+        def create(self):
+            self._conn.execute(RTREE_DDL.format(table=self._table))
+
+        def overlapping(self, box):
+            return self._conn.execute(
+                f"SELECT id FROM {self._table} WHERE max_x >= ? AND min_x <= ? AND max_y >= ? AND min_y <= ?", box
+            ).fetchall()
+
+        def one_axis(self, low, high):
+            return self._conn.execute(f"SELECT id FROM {self._table} WHERE max_x >= ? AND min_x <= ?", (low, high)).fetchall()
+
+        def unpurposed(self, box):
+            return self._conn.execute(
+                f"SELECT id FROM {self._table} WHERE max_y >= ? AND min_y <= ? AND max_x >= ? AND min_x <= ? LIMIT 5", box
+            ).fetchall()
+
+        def by_id(self, box_id):
+            return self._conn.execute(f"SELECT min_x FROM {self._table} WHERE id = ?", (box_id,)).fetchall()
+
+        def every(self):
+            return self._conn.execute(f"SELECT id FROM {self._table}").fetchall()
+"""
+
+
+def test_an_rtree_s_overlap_read_is_keyed_by_its_purposed_spatial_index(tmp_path: Path) -> None:
+    """Flips if a SQLite R*Tree's published DDL (``CREATE VIRTUAL TABLE {table} USING rtree(id, <min/max pairs>)``)
+    declares no key (its id) and no spatial index over its coordinates, or if a read bounding every coordinate is not
+    keyed through that index when its purpose names the reader: the overlap read and the read by id keyed; a read
+    bounding one axis of two, a bounded read the purpose does not name, and the whole read flagged."""
+    found = _symbols(_config(tmp_path, {"spatial.py": _RTREE}))
+    functions = {function for function, _ in found}
+    assert not functions & {"Boxes.overlapping", "Boxes.by_id", "Boxes.create"}, found
+    assert {"Boxes.one_axis", "Boxes.unpurposed", "Boxes.every"} <= functions, found
+
+
 # --- threetears_tables_only: the gate covers 3tears' data access only, a side database unchecked -------------------
 
 _SIDE_DATABASE = {
