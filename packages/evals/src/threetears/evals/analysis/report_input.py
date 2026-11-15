@@ -1121,16 +1121,20 @@ Remedy = Literal[
     "no_action",
 ]
 
-#: Why a step that is more evidence states no planned size: ``no_interval``, the figure it would settle states no
-#: interval or standard error (a percentile states none); ``no_spread``, every case read alike, so no spread per case
-#: sizes a design; ``on_the_line``, today's estimate sits exactly on its line, so no finite size settles it there;
-#: ``no_count``, no count says how many cases the figure rests on; ``nothing_to_settle``, the caveat names no figure
-#: with a line, a margin or a floor a size could be read against.
+#: Why a step that is more evidence states no planned size, and so makes no call: ``no_interval``, the figure it would
+#: settle states no interval or standard error; ``no_spread``, every case read alike, so at today's estimate no added
+#: case is expected to differ and no size can be promised; ``on_the_line``, today's estimate sits exactly on its line,
+#: so no finite size settles it there; ``no_count``, no count says how many cases the figure rests on;
+#: ``nothing_to_settle``, the caveat names no figure with a line, a margin or a floor a size could be read against.
 UnsizedReason = Literal["no_interval", "no_spread", "on_the_line", "no_count", "nothing_to_settle"]
 
-#: Why no act closes a caveat: ``unclassed_kind``, an analyst's own kind, outside the package's classes;
-#: ``method_only``, a kind that only ever lands in the method section and qualifies no answer.
-NoActionReason = Literal["unclassed_kind", "method_only"]
+#: Why no catalogue action takes a step: ``unclassed_kind``, an analyst's own kind, outside the package's classes;
+#: ``method_only``, a kind that only ever lands in the method section and qualifies no answer;
+#: ``no_interval_to_gain``, a figure the engine states no interval for at any size (a percentile, or a mean read from
+#: enough cases that still states none), so no added case gives it one; ``new_campaign_needed``, nothing added to this
+#: campaign closes it (its criterion was set, or its pick made, on these results), and the confirmation that answers it
+#: (unseen cases, in a new campaign declared before its results) takes several actions no one catalogue action joins.
+NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain", "new_campaign_needed"]
 
 #: A value one argument of a catalogue action's call takes.
 StepArgument = str | bool | int | list[str]
@@ -1141,11 +1145,13 @@ class RemedyStep(_Part):
     a value a person reads and an agent can take.
 
     Where an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the
-    step makes, every argument named and typed as the action's own parameters, and ``needs`` names the parameters the
-    step cannot fill from what the caveat holds, which the taker supplies to every call. Where the step is more
-    evidence, ``planned_cases`` is its size, read from the figure it would settle and stated before it runs, never
-    "until it separates"; where no size can be read, ``unsized`` says why. Taking such a step is one more declared look
-    at the readings it names. A step that spends names the action that prices it first; code never takes a step.
+    step makes, every argument named and typed as the action's own parameters (a step that adds cases passes its
+    planned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the
+    caveat holds, which the taker supplies to every call. Where the step is more evidence, ``planned_cases`` is its
+    size, read from the figure it would settle and stated before it runs, never "until it separates"; where no size
+    can be read, ``unsized`` says why and the step makes no call, so it is never taken open-ended. Where no one action
+    takes it, ``no_action`` says why. A step that spends names the action that prices it first; code never takes a
+    step.
     """
 
     remedy: Remedy = Field(description="What would close it.")
@@ -1167,12 +1173,25 @@ class RemedyStep(_Part):
     planned_cases: int | None = Field(
         default=None,
         ge=1,
-        description="For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from "
-        "the figure it would settle, planned before it runs.",
+        description="For more evidence: the new cases to add per arm named (on fresh cases, the cases to run), read "
+        "from the figure it would settle, planned before it runs, so that a design of that size clears the line the "
+        "caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's "
+        "estimate.",
     )
-    unsized: UnsizedReason | None = Field(default=None, description="For more evidence no size can be read for: why.")
+    unsized: UnsizedReason | None = Field(
+        default=None, description="For more evidence no size can be read for: why. Such a step makes no call."
+    )
+    size_bias: Literal["picked_best_of_n"] | None = Field(
+        default=None,
+        description="Why the planned size is known to be too small, where it is: picked_best_of_n, read from the pick's "
+        "own estimate, which reads high because the pick was the best of several, so fewer than four designs in five "
+        "of that size clear.",
+    )
     declared_look: bool = Field(
-        default=False, description="Whether taking it is one more look at the readings it names, declared as such."
+        default=False,
+        description="Whether taking it reads the same readings again with the cases it adds: one more look at them, "
+        "stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it "
+        "were the first, so adding cases and reading again more than once errs more often than that level says.",
     )
     results_needed: int | None = Field(
         default=None, ge=1, description="For a check: how many more results it needs before it can decide."
@@ -1184,16 +1203,28 @@ class RemedyStep(_Part):
     priced_by: str | None = Field(
         default=None, description="For a step that spends: the catalogue action that prices it before it is taken."
     )
-    no_action: NoActionReason | None = Field(default=None, description="For a caveat no act closes: why none does.")
+    no_action: NoActionReason | None = Field(
+        default=None,
+        description="Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action "
+        "takes, why not.",
+    )
 
     @model_validator(mode="after")
     def _priced_and_planned(self) -> Self:
         if self.spends and self.priced_by is None:
             raise ValueError("a step that spends names the action that prices it")
-        if self.declared_look and (self.planned_cases is None) == (self.unsized is None):
-            raise ValueError("a step that is one more look states its planned size, or why it has none, and not both")
-        if (self.remedy == "no_action") != (self.no_action is not None):
-            raise ValueError("a step that takes no action says why none does, and only such a step does")
+        if self.planned_cases is not None and self.unsized is not None:
+            raise ValueError("a step states its planned size, or why it has none, and not both")
+        if self.size_bias is not None and self.planned_cases is None:
+            raise ValueError("a size bias qualifies a planned size")
+        if self.declared_look and self.planned_cases is None:
+            raise ValueError("a step that is one more look states its planned size")
+        if self.unsized is not None and self.action is not None:
+            raise ValueError("a step with no planned size makes no call: it is never taken open-ended")
+        if self.remedy == "no_action" and self.no_action is None:
+            raise ValueError("a step that takes no action says why none does")
+        if self.no_action is not None and self.action is not None:
+            raise ValueError("a step an action takes has no reason no action takes it")
         if (self.action is None) != (not self.calls):
             raise ValueError("a step an action takes makes at least one call of it, and a step none takes makes none")
         return self

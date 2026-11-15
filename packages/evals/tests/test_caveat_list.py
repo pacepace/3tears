@@ -16,9 +16,11 @@ read back), never on entries built by hand:
 - **Every reason has its remedy**, the act that addresses it, and every caveat a typed step
   (:func:`~threetears.evals.analysis.caveats.next_step`), ``no_action`` with why where nothing closes it: each call it
   makes is one its catalogue action accepts, completed with the catalogue's own example for what it leaves to the
-  taker; a step that is more evidence is a declared look and states a planned size read from the figure it would
-  settle (a design that clears four times in five at today's estimate, held by a seeded simulation), or why none can
-  be read; a step that spends names the action that prices it.
+  taker; a step that adds cases states a planned size read from the figure it would settle, against the rule and
+  interval that lift its caveat (a design that lifts it at least four times in five at today's estimate, held by
+  seeded simulations through the code that raises it), and launches exactly that many new cases; one with no size,
+  or none that can close it (a percentile's point estimate, a criterion or a pick made on these results), says why
+  and makes no call; a step that spends names the action that prices it.
 - **Ids are unique by construction**: three coordinates split on one reading raise three caveats, and two raisers
   that raise different caveats under one id are refused.
 - **The numbers side imports nothing from the page**: the answer read, a criterion's status, the cost rule and the
@@ -32,7 +34,6 @@ import json
 import math
 import random
 from collections.abc import Iterator
-from statistics import NormalDist
 from pathlib import Path
 from typing import Any, get_args
 
@@ -40,7 +41,7 @@ import pytest
 
 from packages.evals.tests.caveat_pins import CASE_DIRS, PINS, read_fixture, built_inputs, caveat_reads, stored_inputs
 from threetears.evals.actions.engine import eval_catalogue
-from threetears.evals.analysis import answer, caveats, costs, criteria, per_input
+from threetears.evals.analysis import answer, caveats, costs, criteria, per_input, stats
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.caveats import (
     CLASS_OF_KIND,
@@ -68,6 +69,7 @@ from threetears.evals.analysis.report_input import (
     Remedy,
     RemedyStep,
     ReportInput,
+    ShortRun,
     report_input_digest,
 )
 from threetears.evals.analysis.report_input_build import report_input
@@ -428,7 +430,10 @@ def test_every_reason_a_first_screen_shows_has_its_step_in_its_order(name: str) 
     if value.gate is None:
         assert [step.closes for step in value.steps] == value.reasons
     for step in value.steps:
-        assert (step.remedy == "no_action") == (step.no_action is not None)
+        if step.remedy == "no_action":
+            assert step.no_action is not None
+        if step.no_action is not None:
+            assert step.action is None and step.calls == [], "a step no action takes makes no call"
 
 
 def _steps_of(remedied: Remedy) -> Iterator[RemedyStep]:
@@ -457,6 +462,10 @@ def test_every_call_a_step_makes_is_one_its_catalogue_action_accepts(remedied: R
             assert not set(call) & set(step.needs)
             assert required <= set(call) | set(step.needs), sorted(required - set(call) - set(step.needs))
             action.params.model_validate({**filled, **call})
+        if STEP_OF_REMEDY[remedied].adds_evidence:
+            assert step.planned_cases is not None and step.planned_cases > 0
+            for call in step.calls:
+                assert call["n_variations"] == step.planned_cases, "the planned size is the count of new cases"
         if step.spends:
             assert step.priced_by is not None
             pricer = _CATALOGUE[step.priced_by]
@@ -492,6 +501,7 @@ def test_no_step_reads_until_it_separates_and_none_is_taken_by_code() -> None:
         "runs",
         "planned_cases",
         "unsized",
+        "size_bias",
         "declared_look",
         "results_needed",
         "recording",
@@ -507,6 +517,10 @@ def test_no_step_reads_until_it_separates_and_none_is_taken_by_code() -> None:
         RemedyStep(remedy="add_cases", spends=True)
     with pytest.raises(ValueError, match="says why"):
         RemedyStep(remedy="no_action")
+    with pytest.raises(ValueError, match="open-ended"):
+        RemedyStep(remedy="add_cases", action="run_launch", calls=[{}], unsized="no_count")
+    with pytest.raises(ValueError, match="no reason no action"):
+        RemedyStep(remedy="confirm_on_fresh_cases", action="run_launch", calls=[{}], no_action="new_campaign_needed")
     source = Path(caveats.__file__).resolve().parents[1]
     readers = sorted(
         str(path.relative_to(source))
@@ -527,25 +541,50 @@ def test_a_caveat_with_no_reason_takes_its_kind_s_remedy() -> None:
         assert caveat_step(entry).remedy == remedied
 
 
-# --- a step that is more evidence is planned and a declared look -----------------------------------------------------
+# --- a step that is more evidence is planned, and launches its size or says why it cannot ----------------------------
 
 
-@pytest.mark.parametrize("remedied", ["add_cases", "confirm_on_fresh_cases"])
-def test_a_step_that_adds_cases_is_a_declared_look_with_its_planned_size_or_why_it_has_none(remedied: Remedy) -> None:
-    """IA section 9.2 D's guard, held by name: a step that adds cases states a planned size and counts as a declared
-    look, and one that can read no size says why rather than run open-ended."""
-    planned = next_step(remedied, arms=["a"], plan=Plan(7))
+def test_a_step_that_adds_cases_launches_its_planned_size_as_new_cases_or_says_why_it_has_none() -> None:
+    """IA section 9.2 D's guard, held by name: a step that adds cases states a planned size, launches exactly that many
+    new cases (never the stored ones again) and says it is one more look at its readings; one that can read no size
+    says why and makes no call, rather than run open-ended."""
+    planned = next_step("add_cases", arms=["a"], plan=Plan(7))
     assert (planned.declared_look, planned.planned_cases, planned.unsized) == (True, 7, None)
+    assert planned.calls == [{"n_variations": 7}]
     assert planned.spends and planned.priced_by == "launch_estimate"
-    unsized = next_step(remedied, arms=["a"])
-    assert (unsized.declared_look, unsized.planned_cases, unsized.unsized) == (True, None, "nothing_to_settle")
+    unsized = next_step("add_cases", arms=["a"])
+    assert (unsized.declared_look, unsized.planned_cases, unsized.unsized) == (False, None, "nothing_to_settle")
+    assert (unsized.action, unsized.calls, unsized.spends) == (None, [], False)
+
+
+def test_a_confirmation_on_fresh_cases_states_its_size_and_why_no_one_action_takes_it() -> None:
+    planned = next_step("confirm_on_fresh_cases", arms=["a"], plan=Plan(7))
+    assert (planned.planned_cases, planned.action, planned.calls, planned.no_action) == (
+        7,
+        None,
+        [],
+        "new_campaign_needed",
+    )
+    assert not planned.declared_look and planned.spends and planned.priced_by == "launch_estimate"
+    unsized = next_step("confirm_on_fresh_cases", arms=["a"])
+    assert (unsized.unsized, unsized.no_action, unsized.spends) == ("nothing_to_settle", "new_campaign_needed", False)
 
 
 def test_too_few_cases_gate_is_lifted_by_a_declared_look_sized_to_the_floor_from_the_fewest_an_arm_holds() -> None:
     step = gate_step(Gate(rule="too_small", fewest_cases=3))
-    assert (step.remedy, step.declared_look, step.planned_cases) == ("add_cases", True, 2)
+    assert (step.remedy, step.declared_look, step.planned_cases, step.calls) == (
+        "add_cases",
+        True,
+        2,
+        [{"n_variations": 2}],
+    )
     unknown = gate_step(Gate(rule="too_small"))
-    assert (unknown.declared_look, unknown.planned_cases, unknown.unsized) == (True, None, "no_count")
+    assert (unknown.declared_look, unknown.planned_cases, unknown.unsized, unknown.calls) == (
+        False,
+        None,
+        "no_count",
+        [],
+    )
 
 
 def test_a_campaign_too_small_to_read_is_gated_with_the_fewest_cases_an_arm_holds_and_planned_to_the_floor() -> None:
@@ -560,32 +599,39 @@ def test_a_campaign_too_small_to_read_is_gated_with_the_fewest_cases_an_arm_hold
     assert (value.gate.rule, value.gate.fewest_cases) == ("too_small", 3)
     (step,) = value.steps
     assert (step.remedy, step.declared_look, step.planned_cases) == ("add_cases", True, 2)
+    assert step.calls == [{"n_variations": 2}]
 
 
 @pytest.mark.parametrize("remedied", get_args(Remedy))
 def test_only_a_step_that_adds_cases_is_a_look_and_one_that_spends_is_priced(remedied: Remedy) -> None:
     for step in _steps_of(remedied):
-        assert step.declared_look == (remedied in ("add_cases", "confirm_on_fresh_cases"))
-        assert step.declared_look == (step.planned_cases is not None)
+        assert step.declared_look == (remedied == "add_cases"), "only a step that re-reads its readings looks again"
+        assert (step.planned_cases is not None) == (remedied in ("add_cases", "confirm_on_fresh_cases"))
         assert (step.priced_by is not None) == step.spends
 
 
 @pytest.mark.parametrize("name", sorted(BEFORE))
-def test_every_not_separated_reading_s_step_is_a_declared_look_with_a_size_or_why(name: str) -> None:
-    """Every precision caveat (class E) any fixture raises is closed by more evidence: a declared look whose size is
-    read from the input or says why none is."""
+def test_every_not_separated_reading_s_step_launches_its_size_or_says_why_it_cannot(name: str) -> None:
+    """Every precision caveat (class E) any fixture raises takes a step that can close it: a launch of exactly its
+    planned size in new cases, a look at the readings it names; or no call, saying why (no size can be read, or no
+    added case gives the figure an interval)."""
     held = _inputs()[name]
     for caveat in caveat_list(held):
         if caveat.cls != "E":
             continue
         step = caveat_step(caveat, plan=plan_of(held, caveat))
-        assert step.action == "run_launch" and step.declared_look, caveat.id
-        assert (step.planned_cases is None) != (step.unsized is None), caveat.id
+        if step.planned_cases is not None:
+            assert step.action == "run_launch" and step.declared_look, caveat.id
+            assert step.calls == [{"n_variations": step.planned_cases}], caveat.id
+        else:
+            assert (step.action, step.calls, step.declared_look) == (None, [], False), caveat.id
+            assert (step.unsized is None) != (step.no_action is None), caveat.id
 
 
-def test_a_first_screen_showing_a_precision_reason_offers_a_declared_look() -> None:
-    """On a stored input's own first screen, read through the list, the class E reason shown is closed by a declared
-    look: a gate cleared on a 95th percentile reads no interval, so the step says so instead of a size."""
+def test_a_first_screen_showing_a_percentile_s_point_estimate_offers_no_act_that_cannot_work() -> None:
+    """On a stored input's own first screen, read through the list, the class E reason shown is a gate cleared on a
+    95th percentile, which the engine states no interval for at any size: the step says no added case gives it one,
+    and offers no launch."""
     stored = _inputs()["stored:report_inputs/r2/input.json"]
     value = screen(stored, caveat_list(stored))
     by_id = {caveat.id: caveat for caveat in caveat_list(stored)}
@@ -593,8 +639,12 @@ def test_a_first_screen_showing_a_precision_reason_offers_a_declared_look() -> N
     shown = [step for step in value.steps if by_id[step.closes or ""].cls == "E"]
     assert shown, "the fixture's first screen shows a precision reason"
     for step in shown:
-        assert (step.remedy, step.declared_look) == ("add_cases", True)
-        assert (step.planned_cases, step.unsized) == (None, "no_interval")
+        assert (step.remedy, step.no_action, step.action, step.declared_look) == (
+            "no_action",
+            "no_interval_to_gain",
+            None,
+            False,
+        )
 
 
 def test_a_gate_cleared_exactly_on_its_line_reads_no_size() -> None:
@@ -623,94 +673,291 @@ def test_a_figure_with_too_few_cases_is_sized_to_the_floor_and_one_where_every_c
         assert plan_of(stored, entry) == plan, reason
 
 
-#: The seed, designs and tolerance of the planned size's simulation.
-_SEED, _DESIGNS, _TOLERANCE = 20261115, 4000, 0.025
+#: The seed of every planned size's simulation, and how far a share it states may sit below what it promises.
+_SEED, _TOLERANCE = 20261115, 0.025
+
+#: The gate the borderline simulation reads, its arm and the place it reads it (r1: resolves, in the trouble task).
+_GATE, _GATED, _GATE_TASK = "trouble.resolves", "atlas-m", "trouble"
 
 
-def _unsettled_input(change: float, spread: float, cases: int, margin: float, level: float) -> ReportInput:
-    """The reasoning-effort campaign with both candidates' readings on one aspect set to ``change``, its interval at
-    ``level`` read from a per-case spread of ``spread`` over ``cases`` paired cases, against ``margin``."""
+def _standardized(rng: random.Random, count: int, mean: float, spread: float) -> list[float]:
+    """``count`` values whose mean and sample spread are exactly ``mean`` and ``spread``: today's cases, read as the
+    truth a simulation draws new cases from."""
+    drawn = [rng.gauss(0.0, 1.0) for _ in range(count)]
+    centre = sum(drawn) / count
+    scale = math.sqrt(sum((value - centre) ** 2 for value in drawn) / (count - 1))
+    return [mean + spread * (value - centre) / scale for value in drawn]
+
+
+def _gate_input(values: list[float]) -> ReportInput:
+    """r1 with the gated arm's figure on the gate read from ``values`` by the pipeline's own mean interval (its
+    clustered standard error and :func:`~threetears.evals.analysis.stats.mean_interval`, at the table's 95%), and the
+    other survivor's figure cleared, so the borderline caveat is that arm's alone."""
+    held = _inputs()["stored:report_inputs/r1/input.json"]
+    count = len(values)
+    mean = sum(values) / count
+    sem = stats.clustered_standard_error(values, list(range(count)))
+    assert sem is not None
+    interval = stats.mean_interval(mean, sem, count)
+    assert interval is not None
+    figure = {"mean": mean, "ci": interval, "half_width": None, "sem": sem, "n": count, "n_cases": count}
+    tasks = []
+    for task in held.tasks:
+        if task.id == _GATE_TASK:
+            per_arm = {arm: dict(stats_of) for arm, stats_of in task.per_arm.items()}
+            per_arm[_GATED]["resolves"] = per_arm[_GATED]["resolves"].model_copy(update=figure)
+            per_arm["atlas-l"]["resolves"] = per_arm["atlas-l"]["resolves"].model_copy(update={"half_width": 0.5})
+            task = task.model_copy(update={"per_arm": per_arm})
+        tasks.append(task)
+    return held.model_copy(update={"tasks": tasks, "caveat_list": None})
+
+
+def _gate_lifted(values: list[float]) -> bool:
+    """Whether a design reading ``values`` lifts the borderline caveat by the code that raises it, on its passing side:
+    the gate's status there is ``pass``, and the list's implied raiser raises no borderline on it."""
+    held = _gate_input(values)
+    raised = {entry.id for entry in implied(held)}
+    (read,) = criteria.criterion_reads(held, _GATED, criterion=_GATE)
+    return read.status == "pass" and f"borderline:{_GATE}" not in raised
+
+
+def test_a_borderline_gate_s_planned_cases_lift_it_four_times_in_five_at_today_s_estimate() -> None:
+    """Seeded simulation through the real path, 2,000 designs. Today: 180 cases with a mean of 93 and a per-case spread
+    of 25 against a gate at 90, its 95% interval reaching below the line: borderline. Drawing the planned new cases
+    from today's estimate, pooling them with today's and reading the figure with the pipeline's own mean interval, the
+    list raises no borderline and the gate passes in 84.7% of designs (held: at least 77.5%); a fresh design of the
+    whole planned size lifts it in 80.5% (held within 2.5 points of 80%). Sized one-sided as before (z = 1.645 +
+    0.842, 256 cases to add, not 373), the fresh design lifted it in 69.1% and the pooled one in 77.4%, which both
+    bounds refuse."""
+    rng = random.Random(_SEED)
+    today = _standardized(rng, 180, 93.0, 25.0)
+    held = _gate_input(today)
+    caveat = next(entry for entry in implied(held) if entry.id == f"borderline:{_GATE}")
+    assert caveat.arms == [_GATED]
+    plan = plan_of(held, caveat)
+    assert plan is not None and plan.cases is not None and plan.unsized is None
+    step = caveat_step(caveat, plan=plan)
+    assert (step.remedy, step.action, step.calls, step.declared_look) == (
+        "add_cases",
+        "run_launch",
+        [{"n_variations": plan.cases}],
+        True,
+    )
+
+    designs = 2000
+    pooled = sum(_gate_lifted(today + [rng.gauss(93.0, 25.0) for _ in range(plan.cases)]) for _ in range(designs))
+    fresh = sum(_gate_lifted([rng.gauss(93.0, 25.0) for _ in range(180 + plan.cases)]) for _ in range(designs))
+    assert pooled / designs >= 0.80 - _TOLERANCE, pooled / designs
+    assert abs(fresh / designs - 0.80) <= _TOLERANCE, fresh / designs
+
+
+#: The paired outcomes of one case, control then candidate, and how often each comes up: a 4-point drop with a
+#: per-case spread of about 40 points (60 both pass, 10 the control only, 6 the candidate only, 24 neither, per 100).
+_PAIRS: tuple[tuple[tuple[int, int], int], ...] = (((1, 1), 60), ((1, 0), 10), ((0, 1), 6), ((0, 0), 24))
+#: The aspect the unsettled simulation reads, and its margin in points.
+_UNSETTLED, _MARGIN = "queue discipline", 10.0
+
+
+def _paired_input(pairs: list[tuple[int, int]]) -> ReportInput:
+    """The reasoning-effort campaign with both candidates' readings on one aspect read from ``pairs`` by the
+    pipeline's own nominal interval (:func:`~threetears.evals.analysis.stats.bounded_difference_interval`, paired, at
+    :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`), against a 10-point margin."""
     held = _inputs()["case:discodon-1017-reasoning-effort-01a18d4d"].model_copy(update={"caveat_list": None})
-    half = NormalDist().inv_cdf(0.5 + level / 2) * spread / math.sqrt(cases)
-    interval = (change - half, change + half)
+    control = [float(first) for first, _second in pairs]
+    candidate = [float(second) for _first, second in pairs]
+    bounded = stats.bounded_difference_interval(
+        control, candidate, paired=True, value_range=(0.0, 1.0), confidence=stats.INTERVAL_LEVEL
+    )
+    assert bounded is not None
+    interval = (bounded[0] * 100, bounded[1] * 100)
+    change = (sum(candidate) - sum(control)) / len(pairs) * 100
+    update = {
+        "change": change,
+        "within_interval": interval,
+        "gain_interval": interval,
+        "gain_confidence": stats.INTERVAL_LEVEL,
+        "margin": _MARGIN,
+        "cases": [len(pairs), len(pairs)],
+    }
     aspects = [
         aspect.model_copy(
-            update={
-                "margin": margin,
-                "readings": [
-                    reading.model_copy(
-                        update={
-                            "change": change,
-                            "within_interval": interval,
-                            "gain_interval": interval,
-                            "gain_confidence": level,
-                            "margin": margin,
-                            "cases": [cases, cases],
-                        }
-                    )
-                    for reading in aspect.readings
-                ],
-            }
+            update={"margin": _MARGIN, "readings": [reading.model_copy(update=update) for reading in aspect.readings]}
         )
-        if aspect.id == "queue discipline"
+        if aspect.id == _UNSETTLED
         else aspect
         for aspect in held.aspects
     ]
     return held.model_copy(update={"aspects": aspects})
 
 
-def _clearing_share(
-    rng: random.Random, change: float, spread: float, line: float, level: float, **design: int
-) -> float:
-    """How often a design's one-sided interval at ``level`` sits wholly above ``line`` when the truth is ``change``:
-    ``fresh`` cases drawn anew, after ``held`` cases that read exactly ``change`` where given."""
-    z = NormalDist().inv_cdf(level)
-    held, fresh = design.get("held", 0), design["fresh"]
-    cleared = 0
-    for _ in range(_DESIGNS):
-        drawn = [rng.gauss(change, spread) for _ in range(fresh)]
-        total = held + fresh
-        drawn_mean = sum(drawn) / fresh
-        variance = sum((value - drawn_mean) ** 2 for value in drawn) / (fresh - 1)
-        mean = (held * change + drawn_mean * fresh) / total
-        se = math.sqrt(variance / total)
-        cleared += mean - z * se > line
-    return cleared / _DESIGNS
+def _draw_pairs(rng: random.Random, count: int) -> list[tuple[int, int]]:
+    outcomes = [pair for pair, _weight in _PAIRS]
+    return rng.choices(outcomes, weights=[weight for _pair, weight in _PAIRS], k=count)
 
 
-def test_the_planned_size_clears_the_margin_four_times_in_five_at_today_s_estimate() -> None:
-    """Seeded simulation of the size an unsettled reading is planned at. Truth equal to today's estimate (a 4-point
-    drop, per-case spread 40 points, 80 paired cases, a 10-point margin), 4,000 designs: a fresh design of today's
-    cases plus the planned ones clears the margin's line in 80% of designs (held within 2.5 points), adding the planned
-    cases to the ones it rests on clears in at least that share, and today's size clears in under half. The size is
-    read from the reading's own interval, so a reading resting on more cases plans more, never a fixed few."""
-    change, spread, cases, margin, level = -4.0, 40.0, 80, 10.0, 0.95
-    held = _unsettled_input(change, spread, cases, margin, level)
-    caveat = next(entry for entry in raise_caveats(held) if entry.id == "unsettled:queue discipline")
+def test_an_unsettled_reading_s_planned_cases_lift_it_at_least_four_times_in_five() -> None:
+    """Seeded simulation through the real path, 800 designs each. Today: 100 paired cases, a 4-point drop against a
+    10-point margin, its nominal (bounded) interval reaching past the margin's line: unsettled. Drawing the planned new
+    cases from today's estimate, pooling them with today's and reading the interval with the pipeline's own bounded
+    function, :func:`~threetears.evals.analysis.answer.unsettled_arms` (what raises the caveat) no longer raises it in
+    94.4% of designs, and a fresh design of the whole planned size in 89.9% (each held at least 77.5%). The size reads
+    its spread off today's bounded interval, which is wider than its cases' own spread at a small count, so it lifts
+    more often than four in five: a size, never a shortfall. (For the same reason the one-sided size this replaced
+    reached 80.6% and 82.0% here; the borderline simulation above, on a t interval, is the one that refuses it.) The
+    plan is read from the nominal interval at its own level, never the gain interval at a corrected one, so a corrected
+    gain level changes nothing; the step names the control, whose new cases pair with the candidates'."""
+    today = [pair for pair, weight in _PAIRS for _ in range(weight)]
+    held = _paired_input(today)
+    caveat = next(entry for entry in raise_caveats(held) if entry.id == f"unsettled:{_UNSETTLED}")
     plan = plan_of(held, caveat)
-
     assert plan is not None and plan.cases is not None and plan.unsized is None
     step = screen(held, [caveat]).steps[0]
     assert (step.remedy, step.planned_cases, step.declared_look) == ("add_cases", plan.cases, True)
+    assert step.calls == [{"n_variations": plan.cases}]
+    control = answer.control_arm(held)
+    assert control is not None and step.arms == [*caveat.arms, control]
+    corrected = held.model_copy(
+        update={
+            "aspects": [
+                aspect.model_copy(
+                    update={
+                        "readings": [
+                            reading.model_copy(update={"gain_interval": (-20.0, 12.0), "gain_confidence": 0.9969})
+                            for reading in aspect.readings
+                        ]
+                    }
+                )
+                for aspect in held.aspects
+            ]
+        }
+    )
+    assert plan_of(corrected, caveat) == plan, "the gain interval at a corrected level is not what lifts it"
+
     rng = random.Random(_SEED)
-    total = cases + plan.cases
-    assert abs(_clearing_share(rng, change, spread, -margin, level, fresh=total) - 0.80) <= _TOLERANCE
-    assert _clearing_share(rng, change, spread, -margin, level, held=cases, fresh=plan.cases) >= 0.80 - _TOLERANCE
-    assert _clearing_share(rng, change, spread, -margin, level, fresh=cases) < 0.5
-    wider = _unsettled_input(change, spread * math.sqrt(10), cases * 10, margin, level)
-    wider_caveat = next(entry for entry in raise_caveats(wider) if entry.id == "unsettled:queue discipline")
-    wider_plan = plan_of(wider, wider_caveat)
-    assert wider_plan is not None and wider_plan.cases is not None and wider_plan.cases > 5 * plan.cases
+    designs = 800
+
+    def lifted(pairs: list[tuple[int, int]]) -> bool:
+        return f"unsettled:{_UNSETTLED}" not in answer.unsettled_arms(_paired_input(pairs))
+
+    pooled = sum(lifted(today + _draw_pairs(rng, plan.cases)) for _ in range(designs))
+    fresh = sum(lifted(_draw_pairs(rng, len(today) + plan.cases)) for _ in range(designs))
+    assert pooled / designs >= 0.80 - _TOLERANCE, pooled / designs
+    assert fresh / designs >= 0.80 - _TOLERANCE, fresh / designs
 
 
-def test_a_pick_among_many_is_confirmed_on_fresh_cases_at_a_size_read_from_the_pick() -> None:
+def test_a_gate_cleared_on_a_point_estimate_is_sized_to_the_floor_or_says_no_case_gives_it_an_interval() -> None:
+    """A mean read from fewer cases than the floor where its interval is first stated is sized to that floor and
+    launched as that many new cases; a percentile, or a mean read from that many that still states none, gains no
+    interval from more cases, so its step takes no action and says so."""
+    held = _inputs()["stored:report_inputs/r1/input.json"]
+    tasks = []
+    for task in held.tasks:
+        if task.id == _GATE_TASK:
+            per_arm = {arm: dict(stats_of) for arm, stats_of in task.per_arm.items()}
+            for arm in ("atlas-l", _GATED):
+                per_arm[arm]["resolves"] = per_arm[arm]["resolves"].model_copy(
+                    update={"half_width": None, "n": 3, "n_cases": 3}
+                )
+            task = task.model_copy(update={"per_arm": per_arm})
+        tasks.append(task)
+    few = held.model_copy(update={"tasks": tasks, "caveat_list": None})
+    caveat = next(entry for entry in implied(few) if entry.id == f"point_estimate:{_GATE}")
+    plan = plan_of(few, caveat)
+    assert plan == Plan(stats.SMALL_N_BAND_FLOOR - 3)
+    step = caveat_step(caveat, plan=plan)
+    assert (step.remedy, step.action, step.calls) == ("add_cases", "run_launch", [{"n_variations": 2}])
+
+    enough = few.model_copy(
+        update={
+            "tasks": [
+                task.model_copy(
+                    update={
+                        "per_arm": {
+                            arm: {
+                                key: stat.model_copy(update={"n": 40, "n_cases": 40}) if key == "resolves" else stat
+                                for key, stat in stats_of.items()
+                            }
+                            for arm, stats_of in task.per_arm.items()
+                        }
+                    }
+                )
+                for task in few.tasks
+            ]
+        }
+    )
+    percentile = next(entry for entry in caveat_list(held) if entry.kind == "point_estimate")
+    for source, entry in ((enough, caveat), (held, percentile)):
+        plan = plan_of(source, entry)
+        assert plan == Plan(no_action="no_interval_to_gain"), entry.id
+        step = caveat_step(entry, plan=plan)
+        assert (step.remedy, step.no_action, step.action, step.calls) == ("no_action", "no_interval_to_gain", None, [])
+
+
+def test_every_case_reading_alike_states_no_size_and_offers_nothing_to_repeat() -> None:
+    """At today's estimate no added case is expected to differ, so no size can be promised: the step says why, makes
+    no call and is no look."""
+    entry = CaveatEntry.model_validate(
+        {
+            "id": "not_available:no_variation",
+            "kind": "not_available",
+            "reach": "scoped",
+            "state": "not_available",
+            "reason": "no_variation",
+            "cases": 20,
+        }
+    )
+    step = caveat_step(entry, plan=plan_of(_inputs()["stored:report_inputs/r4/input.json"], entry))
+    assert (step.remedy, step.unsized, step.planned_cases) == ("add_cases", "no_spread", None)
+    assert (step.action, step.calls, step.declared_look, step.spends) == (None, [], False, False)
+
+
+def test_a_pick_among_many_is_confirmed_in_a_new_campaign_at_a_size_that_says_it_reads_high() -> None:
+    """No run added to this campaign lifts a pick among many (raised from how many candidates it holds, whatever they
+    read): the step says a new campaign is needed, makes no call that would re-run the cases the pick was made on, and
+    states the confirmation's size, read from the pick's own estimate and marked too small for it."""
     held = _inputs()["built:scaled"]
     caveat = next(entry for entry in caveat_list(held) if entry.kind == "best_of_n")
     plan = plan_of(held, caveat)
     step = caveat_step(caveat, plan=plan)
 
-    assert (step.remedy, step.action, step.declared_look) == ("confirm_on_fresh_cases", "run_launch", True)
+    assert (step.remedy, step.action, step.calls, step.no_action) == (
+        "confirm_on_fresh_cases",
+        None,
+        [],
+        "new_campaign_needed",
+    )
     assert plan is not None and step.planned_cases == plan.cases is not None
+    assert step.size_bias == "picked_best_of_n" and not step.declared_look
+    assert step.spends and step.priced_by == "launch_estimate"
+    control = answer.control_arm(held)
+    assert control is None or control in step.arms
+    settled = held.model_copy(
+        update={
+            "caveat_list": None,
+            "aspects": [
+                aspect.model_copy(
+                    update={
+                        "readings": [
+                            reading.model_copy(update={"change": 30.0, "within_interval": (25.0, 35.0)})
+                            for reading in aspect.readings
+                        ]
+                    }
+                )
+                for aspect in held.aspects
+            ],
+        }
+    )
+    assert "best_of_n" in {entry.id for entry in implied(settled)}, "however its readings settle, the pick stays one"
+
+
+def test_a_late_criterion_is_confirmed_in_a_new_campaign_never_by_re_running_its_cases() -> None:
+    for name, held in _inputs().items():
+        for caveat in caveat_list(held):
+            if caveat.kind != "late":
+                continue
+            step = caveat_step(caveat, plan=plan_of(held, caveat))
+            assert (step.remedy, step.action, step.calls) == ("confirm_on_fresh_cases", None, []), (name, caveat.id)
+            assert step.no_action == "new_campaign_needed" and not step.declared_look, (name, caveat.id)
 
 
 # --- ids are unique by construction ----------------------------------------------------------------------------------
@@ -726,6 +973,24 @@ def test_three_coordinates_split_on_one_reading_raise_three_caveats_under_three_
     split = [entry for entry in raise_caveats(held) if entry.reason == "split"]
     assert sorted(entry.coordinate or "" for entry in split) == ["rig", "served_model", "template"]
     assert len({entry.id for entry in split}) == 3
+
+
+def test_one_short_run_stated_on_two_arms_is_one_caveat_holding_both_never_one_dropped() -> None:
+    """A short run stated once per arm it ran is one caveat naming both arms and the run, its reach judged on both."""
+    stored = _inputs()["stored:report_inputs/r4/input.json"]
+    first, second = stored.arms[0].id, stored.arms[1].id
+    runs = [ShortRun(run="run-9", arm=arm, note="lost two trials") for arm in (first, second)]
+    held = stored.model_copy(
+        update={"caveats": stored.caveats.model_copy(update={"short_runs": runs}), "caveat_list": None}
+    )
+
+    (short,) = [entry for entry in raise_caveats(held) if entry.kind == "short_run"]
+    assert (short.id, short.arms, short.runs) == ("short_run:run-9", [first, second], ["run-9"])
+    one = held.model_copy(update={"caveats": held.caveats.model_copy(update={"short_runs": runs[:1]})})
+    (alone,) = [entry for entry in raise_caveats(one) if entry.kind == "short_run"]
+    assert alone.arms == [first], "the merge holds both parts, not the first one kept"
+    reach = "report" if all(comparison & {first, second} for comparison in answer.comparisons(held)) else "scoped"
+    assert short.reach == reach
 
 
 def test_one_id_stated_on_two_aspects_is_one_caveat_holding_both_never_one_dropped() -> None:

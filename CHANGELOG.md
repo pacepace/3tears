@@ -20,13 +20,19 @@ report input built from a bundle now carries `caveat_list` and `first_screen`.
   it names), at most three ranked reasons and the count past them, the call, and `steps`: what would change each
   reason, one per reason shown, as a typed `RemedyStep`: a remedy kind; the catalogue action that takes it, each
   call of it named and typed as the action's own parameters, and the parameters left to the taker (`needs`); for
-  more evidence, a declared look with a planned size read from the figure it would settle (the cases a design needs
-  to clear its line four times in five at today's estimate, or, below the floor where an interval is stated, the
-  cases that reach it), or `unsized` saying why none can be read; and the action that prices a step that spends.
-  Every one of the sixteen reasons, and every kind the first screen can show, has the act that addresses it (a judge
-  below its bar is replaced, raters who disagree sharpen the criterion, every case reading alike takes more cases, a
-  late criterion or a pick among many is confirmed on fresh cases); an analyst's own kind or a method-only kind takes
-  `no_action`, saying which.
+  more evidence, a planned size read from the figure it would settle, against the rule and the interval that lift its
+  caveat (the new cases a design needs for that two-sided interval to clear its line at least four times in five at
+  today's estimate, or, below the floor where an interval is stated, the cases that reach it), launched as exactly
+  that many new cases (`n_variations`); a step with no size states why (`unsized`) and makes no call; and the action
+  that prices a step that spends. A step that adds cases says it is one more look at its readings (`declared_look`);
+  nothing counts looks yet, so a reading taken after it is read at its full level, and adding cases and reading
+  again more than once errs more often than that level says. Every one of the sixteen reasons, and every kind the
+  first screen can show, has the act that addresses it (a judge below its bar is replaced, raters who disagree
+  sharpen the criterion, every case reading alike takes more cases, with no size it can promise); where no act the
+  engine takes can close a caveat, the step says why (`no_action`): a percentile's point estimate gains no interval
+  from more cases, and a late criterion or a pick among many is confirmed only on unseen cases in a new campaign,
+  which no one catalogue action takes (its size is stated, and a pick's is marked too small, `size_bias`); an
+  analyst's own kind or a method-only kind takes `no_action`, saying which.
 - Caveat ids are unique by construction: a typed caveat adds its reason, then its coordinate, where its reading holds
   another in the same state; one stated id on several parts (a late floor under one key on two aspects, a short run
   on two arms) is one caveat naming every part, where the second part was dropped before; and two raisers that raise

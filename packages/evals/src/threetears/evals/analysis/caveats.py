@@ -39,13 +39,22 @@ same evidence again; a caveat nothing closes takes ``no_action`` with why. The s
 (:func:`next_step`) is read off :data:`STEP_OF_REMEDY`: never stored in a digest, so a change to a remedy re-keys
 nothing. Its calls are named and typed as the catalogue action's own parameters, and what it cannot fill it names.
 
-**A step that is more evidence is planned** (:func:`plan_of`): its size is read from the figure it would settle, the
-cases a design needs for an interval at the figure's level, centred on today's estimate, to clear its line four times
-in five (:func:`~threetears.evals.analysis.separation.cases_to_separate` at
-:data:`~threetears.evals.analysis.separation.POWER`), less the cases it rests on; on fresh cases (a confirmation),
-the whole design. A figure that reads too few cases for an interval is sized to the floor where one is first stated.
-Where no size can be read, the step says why; it never reads "until it separates", and taking it is one declared
-look.
+**A step that is more evidence is planned** (:func:`plan_of`) against the rule that lifts its caveat, on the
+interval that rule reads: a gate's borderline is lifted when the figure's two-sided interval, at its table's stated
+level, clears the line (:mod:`~threetears.evals.analysis.criteria`); an unsettled reading when its nominal interval
+(``within_interval``, two-sided at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`) clears the margin's line
+(:func:`~threetears.evals.analysis.answer.unsettled_arms`). Its size is the cases a design needs for that two-sided
+interval, centred on today's estimate, to clear that line four times in five
+(:func:`~threetears.evals.analysis.separation.cases_to_separate`, ``sided=2``, at
+:data:`~threetears.evals.analysis.separation.POWER`), less the cases it rests on; on fresh cases, the whole design. A
+rate's nominal interval is the bounded one, wider than its cases' own spread at a small count, so a size read off it
+clears more often than four in five (the seeded simulation in ``test_caveat_list.py`` states the rate). A figure that
+reads too few cases for an interval is sized to the floor where one is first stated. A step that adds cases passes
+its size as the count of new cases its launch generates. Where no size can be read, the step says why and makes no
+call, so it is never taken open-ended; where no added case can close the caveat (a percentile's point estimate, a
+criterion set or a pick made on these results), the step says that instead of offering an act that cannot work.
+Taking a step that adds cases is one more look at the readings it names, and says so; nothing counts looks yet, so a
+reading after it is read at its full level as if it were the first.
 
 Nothing here reads an eval's kind, a campaign's shape or a measure's name.
 """
@@ -55,7 +64,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from types import MappingProxyType
-from typing import Any, Final, NamedTuple
+from typing import Any, Final, Literal, NamedTuple
 
 from threetears.evals.analysis.answer import (
     asked_aspects,
@@ -108,7 +117,7 @@ from threetears.evals.analysis.separation import (
     level_share,
     stat_spread,
 )
-from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
+from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.reading_states import CaveatClass, CaveatReach, Coordinate, ReadingState, Reason
 
@@ -156,7 +165,8 @@ CLASS_OF_KIND: Final[Mapping[str, CaveatClass | None]] = MappingProxyType(
 #: An instrument below its bar was checked and missed: checking it again is one more look at the same instrument, so
 #: it is fixed or replaced. People who disagree with each other say the criterion is unclear, which a new judge would
 #: read just as unclearly. Every case reading alike is no proof that none differs (twenty passes of twenty still allow
-#: a failure rate near fourteen in a hundred), and only more cases narrow that.
+#: a failure rate near fourteen in a hundred), and only more cases narrow that; at today's estimate no added case is
+#: expected to differ, so that step states no size and makes no call.
 REMEDY_OF_REASON: Final[Mapping[str, Remedy]] = MappingProxyType(
     {
         "instrument_unchecked": "check_against_people",
@@ -179,8 +189,8 @@ REMEDY_OF_REASON: Final[Mapping[str, Remedy]] = MappingProxyType(
 )
 
 #: What would close a caveat that carries no reason, by its kind. A criterion set after the results, or a pick among
-#: many, is confirmed on fresh cases, never by pooling more cases with the ones it was chosen on; a confound is
-#: re-run with the arms differing only in what is compared.
+#: many, is confirmed on fresh cases in a new campaign, never by pooling more cases with the ones it was chosen on (no
+#: run added to this campaign lifts either); a confound is re-run with the arms differing only in what is compared.
 _REMEDY_OF_KIND: Final[Mapping[str, Remedy]] = MappingProxyType(
     {
         "late": "confirm_on_fresh_cases",
@@ -210,12 +220,15 @@ class StepRule(NamedTuple):
 
     :ivar action: The catalogue action that takes it; None where a host or a person acts outside the engine.
     :ivar adds_evidence: Whether it is more evidence: it then states a planned size (or why it has none) before it
-        runs, and taking it is one more declared look at the readings it names.
+        runs.
     :ivar spends: Whether taking it costs money; it then names the action that prices it.
     :ivar priced_by: The catalogue action that prices it, for one that spends.
     :ivar needs: The action's parameters the step leaves to the taker, by the action's own names.
     :ivar fixed: The arguments the remedy itself sets on every call.
     :ivar per_run: The parameter one call per named run fills, and how the run's id is spelled into it.
+    :ivar sized_by: The parameter its planned size fills on every call: the count of new cases the action runs.
+    :ivar looks_again: Whether taking it reads the same readings again with what it adds: one more look at them.
+    :ivar unavailable: Why no one catalogue action takes it, where an act closes it but the engine has no single door.
     """
 
     action: str | None
@@ -225,6 +238,9 @@ class StepRule(NamedTuple):
     needs: tuple[str, ...] = ()
     fixed: Mapping[str, StepArgument] = MappingProxyType({})
     per_run: tuple[str, str] | None = None
+    sized_by: str | None = None
+    looks_again: bool = False
+    unavailable: NoActionReason | None = None
 
 
 #: What a re-run leaves to its taker: the template and subject to launch, and the models the arms it names ran.
@@ -233,8 +249,16 @@ _LAUNCH_NEEDS: Final = ("template_id", "subject_id", "models")
 #: A step that launches runs, priced by the estimate that takes the launch's own arguments.
 _LAUNCH: Final = StepRule("run_launch", spends=True, priced_by="launch_estimate", needs=_LAUNCH_NEEDS)
 
-#: A step that launches runs as more evidence.
-_MORE: Final = _LAUNCH._replace(adds_evidence=True)
+#: A step that launches runs on new cases as more evidence: its planned size is the count of new cases the template
+#: generates (``n_variations``; 0 would re-run the stored cases, which adds none), pooled with the ones it rests on.
+_MORE: Final = _LAUNCH._replace(adds_evidence=True, sized_by="n_variations", looks_again=True)
+
+#: A confirmation on cases the criterion or the pick never saw, in a new campaign declared before its results: a
+#: campaign created with the criteria, a launch of new cases, the runs joined to it. No one catalogue action does all
+#: three, so the step names the size and why no action takes it, and is priced as the launch it holds.
+_CONFIRM: Final = StepRule(
+    None, adds_evidence=True, spends=True, priced_by="launch_estimate", unavailable="new_campaign_needed"
+)
 
 #: How each remedy is taken. A remedy whose action depends on the coordinate it is about takes it from
 #: :data:`_STEP_BY_COORDINATE`. A run resumed is priced by the listing that states what it has spent and its cap; a
@@ -254,7 +278,7 @@ STEP_OF_REMEDY: Final[Mapping[Remedy, StepRule]] = MappingProxyType(
         "sharpen_criterion": StepRule(None),
         "repair_rig": StepRule(None),
         "add_cases": _MORE,
-        "confirm_on_fresh_cases": _MORE,
+        "confirm_on_fresh_cases": _CONFIRM,
         "record_and_rerun": _LAUNCH,
         "run_live": _LAUNCH,
         "draw_at_random": StepRule(None),
@@ -966,14 +990,21 @@ def _no_action(caveat: CaveatEntry) -> NoActionReason:
 
 
 class Plan(NamedTuple):
-    """The size of a step that is more evidence, read before it runs, or why none can be read.
+    """The size of a step that is more evidence, read before it runs, or why none can be read, or why no added case
+    can close the caveat.
 
     :ivar cases: The cases to add per arm it names (on fresh cases, the cases to run); None where none can be read.
     :ivar unsized: Why none can be read; None where one was.
+    :ivar no_action: Why no added case closes the caveat on this input; the step then takes no action.
+    :ivar size_bias: Why the size is known to be too small, where it is.
+    :ivar arms: The arms the planned design runs, where they are not the caveat's own (a paired reading's control).
     """
 
     cases: int | None = None
     unsized: UnsizedReason | None = None
+    no_action: NoActionReason | None = None
+    size_bias: Literal["picked_best_of_n"] | None = None
+    arms: tuple[str, ...] | None = None
 
 
 #: How near its line, relative to the figure's size, an estimate reads as on it: a distance of rounding, at which no
@@ -984,10 +1015,11 @@ _ON_THE_LINE: Final = 1e-9
 _NOTHING_TO_SETTLE: Final = Plan(unsized="nothing_to_settle")
 
 
-def _settling(spread: Spread, distance: float, *, fresh: bool) -> Plan:
-    """The cases that settle a figure ``distance`` from its line, one-sided at its spread's level, four in five
-    designs clearing if the truth is today's estimate (:func:`~threetears.evals.analysis.separation.cases_to_separate`
-    at :data:`~threetears.evals.analysis.separation.POWER`): the whole design on fresh cases, else the cases to add to
+def _settling(spread: Spread, distance: float, level: float, *, fresh: bool) -> Plan:
+    """The cases that settle a figure ``distance`` from its line on a two-sided interval at ``level`` (the interval the
+    rule that lifts its caveat reads), four in five designs clearing if the truth is today's estimate
+    (:func:`~threetears.evals.analysis.separation.cases_to_separate`, ``sided=2``, at
+    :data:`~threetears.evals.analysis.separation.POWER`): the whole design on fresh cases, else the cases to add to
     the ones it rests on."""
     if spread.per_case is None:
         return Plan(unsized="no_count")
@@ -996,7 +1028,7 @@ def _settling(spread: Spread, distance: float, *, fresh: bool) -> Plan:
     if spread.per_case <= 0:
         return Plan(unsized="no_spread")
     try:
-        needed = cases_to_separate(spread.per_case, distance, spread.level, sided=1, power=POWER)
+        needed = cases_to_separate(spread.per_case, distance, level, sided=2, power=POWER)
     except NoSpread:
         return Plan(unsized="no_spread")
     if fresh:
@@ -1006,9 +1038,12 @@ def _settling(spread: Spread, distance: float, *, fresh: bool) -> Plan:
 
 
 def _widest(plans: Iterable[Plan]) -> Plan:
-    """The largest size the plans read, so every figure named is settled; where one figure reads none, no size
-    settles them all, and the first such reason is the plan's."""
+    """The largest size the plans read, so every figure named is settled; where one figure no added case closes, none
+    closes them all, and where one reads no size, no size settles them all: the first such reason is the plan's."""
     found = list(plans)
+    closed = next((plan for plan in found if plan.no_action is not None), None)
+    if closed is not None:
+        return closed
     unsized = next((plan for plan in found if plan.cases is None), None)
     if unsized is not None:
         return unsized
@@ -1060,7 +1095,8 @@ def _figure_plan(
         return Plan(unsized="no_interval")
     line = float(criterion.threshold)
     distance = figure.value - line if criterion.direction == "higher_is_better" else line - figure.value
-    return _settling(spread, distance, fresh=fresh)
+    # A figure's status reads its interval two-sided at the level its table states it at (criteria's borderline).
+    return _settling(spread, distance, spread.level, fresh=fresh)
 
 
 def _criteria_plan(
@@ -1076,23 +1112,25 @@ def _criteria_plan(
 
 
 def _reading_plan(aspect: Aspect, reading: Reading, *, fresh: bool) -> Plan:
-    """The plan that settles a candidate's reading against its margin's line (no margin: against no change), from its
-    gain interval at its stated level and the cases each arm ran."""
-    if reading.gain_interval is None:
+    """The plan that settles a candidate's reading against its margin's line (no margin: against no change) on its
+    nominal interval, two-sided at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`: what an unsettled reading
+    is lifted by, and what one candidate against its control reads a gain on. Its spread is read from that interval
+    and the cases each arm ran; a reading with no margin holds no nominal interval, so its gain interval gives the
+    spread, read at that interval's own level."""
+    if reading.within_interval is not None:
+        interval, level = reading.within_interval, INTERVAL_LEVEL
+    elif reading.gain_interval is not None:
+        interval, level = reading.gain_interval, level_share(reading.gain_confidence)
+    else:
         return Plan(unsized="no_interval")
     counts = tuple(float(count) for count in reading.cases)
     try:
-        spread = difference_spread(
-            float(reading.change),
-            (float(reading.gain_interval[0]), float(reading.gain_interval[1])),
-            level_share(reading.gain_confidence),
-            counts,
-        )
+        spread = difference_spread(float(reading.change), (float(interval[0]), float(interval[1])), level, counts)
     except NoSpread:
         return Plan(unsized="no_interval")
     margin = reading.margin if reading.margin is not None else aspect.margin
     line = 0.0 if margin is None else -float(margin)
-    return _settling(spread, float(reading.change) - line, fresh=fresh)
+    return _settling(spread, float(reading.change) - line, INTERVAL_LEVEL, fresh=fresh)
 
 
 def _readings_plan(aspects: Iterable[Aspect], arms: Iterable[str], *, fresh: bool) -> Plan:
@@ -1112,6 +1150,35 @@ def _to_the_floor(cases: int | None) -> Plan:
     if cases >= SMALL_N_BAND_FLOOR:
         return _NOTHING_TO_SETTLE
     return Plan(SMALL_N_BAND_FLOOR - cases)
+
+
+def _point_estimate_plan(report_input: ReportInput, criterion: Criterion) -> Plan:
+    """A gate cleared on a figure with no interval, at each place it is (the caveat's own places,
+    :func:`cleared_on_point_estimate`): a mean read from fewer cases than the floor where its interval is first stated
+    is sized to that floor; a percentile, or a mean read from that many cases that still states none, gains no
+    interval from more cases, so no added case closes it."""
+    plans: list[Plan] = []
+    for arm, task, cell in cleared_on_point_estimate(report_input, criterion.id):
+        if criterion.statistic != "mean":
+            plans.append(Plan(no_action="no_interval_to_gain"))
+            continue
+        figure = next(
+            held for held in criterion_figures(report_input, criterion, arm) if (held.task, held.cell) == (task, cell)
+        )
+        n, cases = _figure_counts(report_input, criterion, arm, figure)
+        count = cases if cases is not None else n
+        if count is not None and count >= SMALL_N_BAND_FLOOR:
+            plans.append(Plan(no_action="no_interval_to_gain"))
+        else:
+            plans.append(_to_the_floor(count))
+    return _widest(plans)
+
+
+def _with_control(report_input: ReportInput, arms: Iterable[str]) -> tuple[str, ...]:
+    """The arms a design that re-reads a change against the control runs: the control's new cases pair with theirs."""
+    named = list(dict.fromkeys(arms))
+    control = control_arm(report_input)
+    return tuple(named if control is None or control in named else [*named, control])
 
 
 def _late_plan(report_input: ReportInput, caveat: CaveatEntry) -> Plan:
@@ -1150,14 +1217,21 @@ def plan_of(report_input: ReportInput, caveat: CaveatEntry) -> Plan | None:
     if caveat.reason == "no_variation":
         return Plan(unsized="no_spread")
     criteria = [held for held in report_input.criteria if held.id == caveat.criterion]
-    if caveat.kind in ("borderline", "point_estimate") and criteria:
+    if caveat.kind == "point_estimate" and criteria:
+        return _point_estimate_plan(report_input, criteria[0])
+    if caveat.kind == "borderline" and criteria:
         return _criteria_plan(report_input, criteria, caveat.arms, fresh=False)
     aspects = [aspect for aspect in report_input.aspects if f"{aspect.id}/{_PASSED}" in caveat.readings]
     if caveat.kind == "unsettled":
-        return _readings_plan(aspects, caveat.arms, fresh=False)
+        plan = _readings_plan(aspects, caveat.arms, fresh=False)
+        return plan._replace(arms=_with_control(report_input, caveat.arms))
     if caveat.kind == "best_of_n":
+        # No estimate the engine reads corrects a pick for having been the best of several, so the confirmation is
+        # sized from the pick's own and says it is too small.
         picks = [arm for arm in dominant_options(report_input) if arm in caveat.arms] or caveat.arms
-        return _readings_plan(asked_aspects(report_input) or report_input.aspects, picks, fresh=True)
+        plan = _readings_plan(asked_aspects(report_input) or report_input.aspects, picks, fresh=True)
+        bias: Literal["picked_best_of_n"] | None = "picked_best_of_n" if plan.cases is not None else None
+        return plan._replace(size_bias=bias, arms=_with_control(report_input, picks))
     if caveat.kind == "late":
         return _late_plan(report_input, caveat)
     return _NOTHING_TO_SETTLE
@@ -1189,7 +1263,8 @@ def next_step(
     :ptype runs: Sequence[str]
     :param coordinate: The coordinate it is about.
     :ptype coordinate: Coordinate | None
-    :param plan: For more evidence, its size or why it has none (:func:`plan_of`); None reads nothing to settle.
+    :param plan: For more evidence, its size or why it has none (:func:`plan_of`); None reads nothing to settle. A
+        step that adds cases passes the size as its count of new cases; one with no size makes no call.
     :ptype plan: Plan | None
     :param results_needed: For a check: the results it needs before it decides.
     :ptype results_needed: int | None
@@ -1203,6 +1278,10 @@ def next_step(
     rule = STEP_OF_REMEDY[remedied]
     if remedied == "remeasure_or_attest":
         rule = _STEP_BY_COORDINATE.get(coordinate or "", rule)
+    sized = (plan or _NOTHING_TO_SETTLE) if rule.adds_evidence else Plan()
+    if rule.adds_evidence and sized.cases is None:
+        # No size, no call: a step that adds cases with no planned count would run open-ended, or not at all.
+        rule = StepRule(None, unavailable=rule.unavailable)
     calls: list[dict[str, StepArgument]] = []
     needs = list(rule.needs)
     if rule.action is not None:
@@ -1213,7 +1292,8 @@ def next_step(
             calls = [dict(rule.fixed)]
             if rule.per_run is not None:
                 needs.append(rule.per_run[0])
-    sized = (plan or _NOTHING_TO_SETTLE) if rule.adds_evidence else Plan()
+        if rule.sized_by is not None and sized.cases is not None:
+            calls = [{**call, rule.sized_by: sized.cases} for call in calls]
     return RemedyStep(
         remedy=remedied,
         closes=closes,
@@ -1224,12 +1304,13 @@ def next_step(
         runs=list(runs),
         planned_cases=sized.cases,
         unsized=sized.unsized,
-        declared_look=rule.adds_evidence,
+        size_bias=sized.size_bias,
+        declared_look=rule.looks_again and sized.cases is not None,
         results_needed=results_needed if remedied == "check_against_people" else None,
         recording=list(recording),
         spends=rule.spends,
         priced_by=rule.priced_by,
-        no_action=(no_action or "unclassed_kind") if remedied == "no_action" else None,
+        no_action=(no_action or "unclassed_kind") if remedied == "no_action" else rule.unavailable,
     )
 
 
@@ -1240,7 +1321,8 @@ def caveat_step(
     results_needed: int | None = None,
     recording: Sequence[NextExperiment] = (),
 ) -> RemedyStep:
-    """The step that would close one caveat; ``no_action``, with why, where nothing does.
+    """The step that would close one caveat; ``no_action``, with why, where nothing does, or where its plan reads that
+    no added case closes it on this input.
 
     :param caveat: The caveat.
     :ptype caveat: CaveatEntry
@@ -1254,10 +1336,12 @@ def caveat_step(
     :rtype: RemedyStep
     """
     remedied = remedy(caveat)
+    if plan is not None and plan.no_action is not None:
+        return next_step("no_action", closes=caveat.id, arms=caveat.arms, runs=caveat.runs, no_action=plan.no_action)
     return next_step(
         remedied,
         closes=caveat.id,
-        arms=caveat.arms,
+        arms=list(plan.arms) if plan is not None and plan.arms is not None else caveat.arms,
         runs=caveat.runs,
         coordinate=caveat.coordinate,
         plan=plan,

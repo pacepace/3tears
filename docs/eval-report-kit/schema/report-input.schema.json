@@ -2772,7 +2772,7 @@
   },
   "RemedyStep": {
    "additionalProperties": false,
-   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters, and ``needs`` names the parameters the\nstep cannot fill from what the caveat holds, which the taker supplies to every call. Where the step is more\nevidence, ``planned_cases`` is its size, read from the figure it would settle and stated before it runs, never\n\"until it separates\"; where no size can be read, ``unsized`` says why. Taking such a step is one more declared look\nat the readings it names. A step that spends names the action that prices it first; code never takes a step.",
+   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters (a step that adds cases passes its\nplanned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the\ncaveat holds, which the taker supplies to every call. Where the step is more evidence, ``planned_cases`` is its\nsize, read from the figure it would settle and stated before it runs, never \"until it separates\"; where no size\ncan be read, ``unsized`` says why and the step makes no call, so it is never taken open-ended. Where no one action\ntakes it, ``no_action`` says why. A step that spends names the action that prices it first; code never takes a\nstep.",
    "properties": {
     "remedy": {
      "description": "What would close it.",
@@ -2888,7 +2888,7 @@
       }
      ],
      "default": null,
-     "description": "For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs.",
+     "description": "For more evidence: the new cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs, so that a design of that size clears the line the caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's estimate.",
      "title": "Planned Cases"
     },
     "unsized": {
@@ -2908,12 +2908,26 @@
       }
      ],
      "default": null,
-     "description": "For more evidence no size can be read for: why.",
+     "description": "For more evidence no size can be read for: why. Such a step makes no call.",
      "title": "Unsized"
+    },
+    "size_bias": {
+     "anyOf": [
+      {
+       "const": "picked_best_of_n",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Why the planned size is known to be too small, where it is: picked_best_of_n, read from the pick's own estimate, which reads high because the pick was the best of several, so fewer than four designs in five of that size clear.",
+     "title": "Size Bias"
     },
     "declared_look": {
      "default": false,
-     "description": "Whether taking it is one more look at the readings it names, declared as such.",
+     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it were the first, so adding cases and reading again more than once errs more often than that level says.",
      "title": "Declared Look",
      "type": "boolean"
     },
@@ -2963,7 +2977,9 @@
       {
        "enum": [
         "unclassed_kind",
-        "method_only"
+        "method_only",
+        "no_interval_to_gain",
+        "new_campaign_needed"
        ],
        "type": "string"
       },
@@ -2972,7 +2988,7 @@
       }
      ],
      "default": null,
-     "description": "For a caveat no act closes: why none does.",
+     "description": "Why no catalogue action takes it: for no_action, why no act closes it; for an act no one action takes, why not.",
      "title": "No Action"
     }
    },
