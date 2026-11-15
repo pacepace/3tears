@@ -36,12 +36,12 @@ unset fields out of the document.
 where the judge's check against people is too thin to decide and none of its checks is met. A report input that holds
 no check (stored before checks, or written by hand) is read by the two checks the tier it states implies, as before;
 one that states nothing of a judge is not stated uncalibrated. A judge whose checks hold none against people, and none
-met, is set aside as unchecked: a missing check against people is no check. That a judge has no passing check against
-people is one caveat: where its check against people is too thin to decide, that check's caveat
-(`check:<dimension>:<criterion>:people`) says it, and its step is a person rating the judge's answers
-(`result_rate_person`), whatever made it thin, never a launch of more cases; `judge_uncalibrated` (or
-`judge_partly_uncalibrated`) says it only for the judged dimensions holding no such check, so it takes one first-screen
-slot, not two. A judge with no check of any kind, or none against people, is said by `judge_uncalibrated`.
+met, is set aside as unchecked: a missing check against people is no check. A judge's check against people too thin
+to decide raises its caveat (`check:<dimension>:<criterion>:people`), whose step is a person rating the judge's answers
+(`result_rate_person`), whatever made it thin, never a launch of more cases. In the one caveat list, and so on the
+first screen, that fact is said once: `judge_uncalibrated` (or `judge_partly_uncalibrated`) is silenced
+(`subsumed_by`) by the check's caveat where every dimension it names has one. The stated caveats the analyst's list and
+the writer's page read still say `judge_uncalibrated`, as before.
 
 **Added:** `EvalHost.model_family` (optional): the host's word on which family a model is of; with none, the
 provider part of the id. A check against a model names the arms whose candidate is of its family, and whether the
