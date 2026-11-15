@@ -8,6 +8,7 @@ keep reading rows.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 from uuid import uuid4
 
@@ -348,3 +349,82 @@ class TestDropReadsOnlyTheEvictedTablesEntries:
         assert left == [{"dep_table": "conversations", "key": kept.as_string()}], "the gone entry's rows went with it"
         # the other table the entry depended on finds nothing left to drop
         assert cache.drop_for_table("concepts") == 0
+
+
+class TestAnEvictionOfATableNoScanDependsOnTouchesNoL1:
+    """counted, not timed: every local write runs an eviction, and almost none is for a table a cached scan depends
+    on, so such an eviction runs no L1 statement at all (the WHY and numbers at ``scan_cache._Dependents``)."""
+
+    def test_a_table_an_eviction_emptied_is_not_read_again_until_a_store_names_it(self, l1_statements: Any) -> None:
+        l1 = SQLiteBackend(db_name=f"scan-{uuid4().hex}")
+        cache = ScanCache(l1, trusted=lambda _tables: True)
+        key = ScanCacheKey("concepts", "user-1")
+        statements = l1_statements(l1)
+
+        # a table never evicted is read once (the backend may hold rows nobody here stored), then known empty
+        assert cache.drop_for_table("concepts") == 0
+        assert statements, "the first eviction of a table reads it"
+        statements.clear()
+        assert cache.drop_for_table("concepts") == 0
+        assert statements == []
+
+        cache.put(key, _ROWS, token=cache.begin_read(("concepts", "role_assignments")))
+        statements.clear()
+        assert cache.drop_for_table("concepts") == 1, "a store unmarks every table it depends on"
+        assert statements
+        assert cache.get(key) is None
+        statements.clear()
+        assert cache.drop_for_table("concepts") == 0
+        assert statements == []
+
+    def test_a_store_through_one_cache_is_evicted_through_another_on_the_same_backend(self) -> None:
+        l1 = SQLiteBackend(db_name=f"scan-{uuid4().hex}")
+        storing = ScanCache(l1, trusted=lambda _tables: True)
+        evicting = ScanCache(l1, trusted=lambda _tables: True)
+        assert evicting.drop_for_table("role_assignments") == 0
+        key = ScanCacheKey("concepts", "user-1")
+        storing.put(key, _ROWS, token=storing.begin_read(("concepts", "role_assignments")))
+
+        assert evicting.drop_for_table("role_assignments") == 1
+        assert storing.get(key) is None
+
+    def test_rows_a_backend_already_held_are_evicted_on_the_first_eviction(self) -> None:
+        name = f"scan-{uuid4().hex}"
+        first = SQLiteBackend(db_name=name)
+        earlier = ScanCache(first, trusted=lambda _tables: True)
+        earlier.drop_for_table("role_assignments")
+        key = ScanCacheKey("concepts", "user-1")
+        earlier.put(key, _ROWS, token=earlier.begin_read(("concepts", "role_assignments")))
+        # a second backend over the same in-memory database knows nothing of what the first marked
+        later = ScanCache(SQLiteBackend(db_name=name), trusted=lambda _tables: True)
+
+        assert later.drop_for_table("role_assignments") == 1
+        assert earlier.get(key) is None
+
+    def test_a_store_made_while_an_eviction_reads_keeps_its_table_unmarked(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cache = ScanCache(SQLiteBackend(db_name=f"scan-{uuid4().hex}"), trusted=lambda _tables: True)
+        key = ScanCacheKey("concepts", "user-1")
+        reading = ScanCache._drop_dependents  # noqa: SLF001 -- the eviction's read, to put a store inside it
+        stored = threading.Event()
+
+        def store() -> None:
+            cache.put(key, _ROWS, token=cache.begin_read(("concepts",)))
+            stored.set()
+
+        def read_then_let_a_store_in(self: ScanCache, table: str) -> int:
+            dropped = reading(self, table)
+            writer = threading.Thread(target=store)
+            writer.start()
+            # the store waits for the eviction to end; without the lock it lands here, after the read
+            stored.wait(0.2)
+            return dropped
+
+        monkeypatch.setattr(ScanCache, "_drop_dependents", read_then_let_a_store_in)
+        cache.drop_for_table("concepts")
+        stored.wait(5)
+        monkeypatch.undo()
+
+        assert cache.get(key) == _ROWS
+        assert cache.drop_for_table("concepts") == 1, "the eviction marked its table clean past the store's row"
