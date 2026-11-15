@@ -183,6 +183,7 @@ def test_every_engine_action_is_noun_verb_and_classed() -> None:
         "judge_drift_check",
         "judge_temperature",
         "writer_pairwise",
+        "blind_read_review",
     }
     assert {action.name for action in engine_actions() if action.permission == "spend"} == {
         action.name for action in engine_actions() if action.long_running

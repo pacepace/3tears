@@ -68,6 +68,7 @@ from threetears.evals.kernel.storage import UnreadableRecordError
 from threetears.evals.kernel.host import Bar, EvalHost, HostProfile, PassThreshold
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 from threetears.evals.schema import DOC_TYPE_FACTS, is_builtin_judge_config_id, judge_config_of
+from threetears.evals.schema.blind_read import BlindRead
 from threetears.evals.schema.hashing import canonical_digest, canonical_json
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.campaign import (
@@ -113,6 +114,7 @@ _CHUNK: Final = 16
 _BEYOND_ID: Final[Mapping[str, tuple[str, ...]]] = {
     str(model.model_fields["doc_type"].default): tuple(field for field in model.model_fields if field != "id")
     for model in (
+        BlindRead,
         CalibrationRating,
         CaseSet,
         EvalAnalysis,

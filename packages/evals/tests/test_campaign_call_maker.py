@@ -33,7 +33,7 @@ def _attests(*, scope_id: str, caller: str, person: str) -> str | None:
 
 
 def _choice(attests: Any = _attests) -> tuple[OpsHost, OpsFixture, str]:
-    """The toy corpus campaign as a choice (its first run's arm the control), and the other arm's label."""
+    """The toy corpus campaign as a choice (its first run's arm the control), and the control's variant key."""
     fixture = off_loop(ops_fixture)
     eval_host = fixture.host.eval_host
     off_loop(
@@ -44,8 +44,9 @@ def _choice(attests: Any = _attests) -> tuple[OpsHost, OpsFixture, str]:
         TOYHOST_SCOPE,
         updated_by=CALLER.identity,
     )
-    # The candidate, by the variant key its run's results carry: a call names an arm by label or variant key.
-    (held, *_) = off_loop(eval_host.storage.query_eval_results_by_run, fixture.campaign.run_ids[1], TOYHOST_SCOPE)
+    # The control, by the variant key its run's results carry (a call names an arm by label or variant key): the
+    # candidate misses a bar, which a call on it would have to override, and that is not what this file is about.
+    (held, *_) = off_loop(eval_host.storage.query_eval_results_by_run, fixture.campaign.run_ids[0], TOYHOST_SCOPE)
     arm = held.variant_key
     launch = fixture.host.launch
     host = replace(fixture.host, launch=replace(launch, eval_host=replace(eval_host, attests_person=attests)))
