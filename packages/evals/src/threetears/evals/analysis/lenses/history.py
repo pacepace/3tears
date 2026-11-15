@@ -32,6 +32,7 @@ from threetears.evals.kernel.scoring import (
     result_composite,
 )
 from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.reading_states import Coordinate, StateOf
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.reporting import (
     METRIC_COMPOSITE,
@@ -67,6 +68,7 @@ from threetears.evals.analysis.lenses.contestants import (
     ContestantKey,
 )
 from threetears.evals.analysis.bundle.measures import in_population
+from threetears.evals.analysis.bundle.observations import split_coordinates
 from threetears.evals.kernel.metrics import summary_population
 from threetears.evals.analysis.stats import (
     EQUIVALENCE_TEST_NAME,
@@ -311,8 +313,8 @@ class SeriesPoint(EvalBaseModel):
     suite-version boundary, and ``epoch_boundary`` marks the point where the suite
     changed — so a step caused by the denominator changing does not read as a
     regression. ``delta_from_baseline`` is the descriptive red/green move from the
-    series' first point; ``regression`` is the statistical verdict versus the
-    immediately preceding point.
+    first point of its stretch (the series' first point, or the first after a boundary ``split_on`` marks);
+    ``regression`` is the statistical verdict versus the immediately preceding point.
     """
 
     run_id: str
@@ -364,6 +366,17 @@ class SeriesPoint(EvalBaseModel):
     #: because a floating alias can resolve to a different model between two runs of one contestant, and the step
     #: between them then reads as a change in the contestant. ``None`` when no result's candidate made a call.
     served_models: ServedModelReading | None = None
+    #: The coordinates of its identity this point's run is apart from the previous point's run on, as a campaign's
+    #: cells keep runs apart (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`): answered by
+    #: another model, or read under another definition of a host measure, or either left unrecorded on one of the two
+    #: (an unrecorded coordinate matches nothing). A boundary the series marks and is not read across: the step into
+    #: this point has no ``regression``, and this point starts a stretch, its own baseline. On a point whose own run
+    #: is split (two models answered it, say), its value is withheld too, since it would pool them. Empty, and left
+    #: out of a dump, where nothing separates the two.
+    split_on: list[Coordinate] = Field(default_factory=list, exclude_if=lambda value: not value)
+    #: The state of the step into this point where it is not read: ``withheld``, ``split``, on the first coordinate
+    #: of ``split_on``. ``None`` where the step is read, or there is none.
+    state: StateOf | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class MeasureSeries(EvalBaseModel):
@@ -380,6 +393,10 @@ class MeasureSeries(EvalBaseModel):
     scored against; an identity bump may have moved what the contestant *is*, and the stamp
     cannot say whether it did — so holding both versions in one series would assert a
     continuity nothing can verify, in the one place a reader reads continuity.
+
+    A change of served model or of a host measure's definition between two runs, or either left unrecorded, is a
+    boundary inside the series (:attr:`SeriesPoint.split_on`): marked, with no verdict across it and a fresh
+    baseline after it, never pooled into one step and never a reason to withhold the rest of the series.
     """
 
     subject_id: str
@@ -818,6 +835,7 @@ def compute_history(
         ordered_run_ids = sorted(runs_in_series, key=lambda run_id: (runs_in_series[run_id].created_at, run_id))
 
         points: list[SeriesPoint] = []
+        prev_run_id: str | None = None
         prev_epoch_key: str | None = None
         prev_per_case: dict[str, float] = {}
         epoch_ordinal = 0
@@ -826,8 +844,16 @@ def compute_history(
             run = runs_in_series[run_id]
             per_case, n_observations = _per_case_means(rows_by_run[run_id], value_of)
             case_means = list(per_case.values())
-            value = math.fsum(case_means) / len(case_means) if case_means else None
-            sem = standard_error_of_mean(case_means)
+            # A run that is itself split (two models answered it) has no one value: its mean would pool them.
+            mixed = split_coordinates([run], rows_by_run[run_id])
+            value = math.fsum(case_means) / len(case_means) if case_means and not mixed else None
+            sem = standard_error_of_mean(case_means) if not mixed else None
+            # A change of identity coordinate between this run and the last is a boundary, read as the cells read it.
+            split_on = (
+                split_coordinates([runs_in_series[prev_run_id], run], rows_by_run[prev_run_id] + rows_by_run[run_id])
+                if prev_run_id is not None
+                else mixed
+            )
 
             epoch_key = _suite_epoch_key(run)
             boundary = index > 0 and epoch_key != prev_epoch_key
@@ -835,7 +861,7 @@ def compute_history(
                 epoch_ordinal += 1
 
             regression: RegressionFlag | None = None
-            if index > 0:
+            if index > 0 and not split_on:
                 # Compared against the immediately preceding run, because that is the pair
                 # the flag is about. A series-level "these modes differ" would be true of
                 # the whole series and would not say WHICH step crossed — the same reason
@@ -875,7 +901,7 @@ def compute_history(
                     min_relative_change=min_relative_change,
                 )
 
-            if index == 0:
+            if index == 0 or split_on:
                 baseline_value = value
             delta_from_baseline = value - baseline_value if (value is not None and baseline_value is not None) else None
 
@@ -890,7 +916,7 @@ def compute_history(
                     n_cases=len(per_case),
                     epoch=epoch_ordinal,
                     epoch_boundary=boundary,
-                    is_baseline=index == 0,
+                    is_baseline=index == 0 or bool(split_on),
                     delta_from_baseline=delta_from_baseline,
                     regression=regression,
                     # Only the cost series has a composition; asking a latency or quality
@@ -913,8 +939,11 @@ def compute_history(
                     # predicate and cannot disagree about which runs were short.
                     completeness_disclosure=degraded_by_run.get(run_id),
                     served_models=pooled_served_models(rows_by_run[run_id]),
+                    split_on=split_on,
+                    state=StateOf(state="withheld", reason="split", coordinate=split_on[0]) if split_on else None,
                 )
             )
+            prev_run_id = run_id
             prev_epoch_key = epoch_key
             prev_per_case = per_case
 
