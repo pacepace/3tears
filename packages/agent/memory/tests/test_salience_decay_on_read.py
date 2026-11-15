@@ -53,11 +53,11 @@ async def test_off_is_the_default_and_a_reinforcement_adds_to_the_stored_salienc
 ) -> None:
     """Flips if decay on read is on by default, or off a reinforcement adds to anything but the stored salience."""
     assert MemoriesCollection.salience_decay is None
-    assert "SET salience = LEAST(1.0, salience + $1), last_accessed = now()" in await _bumped(None, monkeypatch)
+    assert 'SET "salience" = LEAST(1.0, salience + $1), "last_accessed" = now()' in await _bumped(None, monkeypatch)
 
 
 async def test_on_a_reinforcement_folds_the_decay_and_stamps_the_row(monkeypatch: pytest.MonkeyPatch) -> None:
     """Flips if with decay on a reinforcement adds to the stored base (the decay since its stamp lost) or leaves the
     stamp where it was (the next read would decay the folded base again)."""
-    folded = f"SET salience = LEAST(1.0, {_DECAY.effective_sql()} + $1), last_decayed_at = now()"
+    folded = f'SET "salience" = LEAST(1.0, {_DECAY.effective_sql()} + $1), "last_decayed_at" = now()'
     assert folded in await _bumped(_DECAY, monkeypatch)

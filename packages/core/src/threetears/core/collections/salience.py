@@ -24,6 +24,8 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from threetears.interfaces.keyed.filters import Fragment
+
 __all__ = ["SalienceDecay"]
 
 #: what a row's salience is stamped by: its last stamp, else its creation
@@ -95,13 +97,17 @@ class SalienceDecay:
         rate = math.log(2.0) / self.half_life.total_seconds()
         return f"(ln(GREATEST(salience, {_LEAST_LOGGED!r})) + {rate!r} * EXTRACT(EPOCH FROM {_STAMPED_AT}))"
 
-    def reinforced_sql(self, bump: str) -> str:
-        """the ``SET`` of a reinforcement by key: the effective salience so far plus ``bump``, clamped to 1, stamped
-        now, so the decay to now is folded into the new base.
+    def reinforced_values(self, bump: float) -> dict[str, Fragment]:
+        """the values a reinforcement by key sets (``update_keyed``'s ``values=``): the effective salience so far plus
+        ``bump``, clamped to 1, stamped now, so the decay to now is folded into the new base. The same expression
+        :meth:`effective_sql` reads (332872d44), only bound as a value.
 
-        :param bump: the increment's bind (``$1``)
-        :ptype bump: str
-        :return: the assignments
-        :rtype: str
+        :param bump: the increment
+        :ptype bump: float
+        :return: column -> its new value
+        :rtype: dict[str, Fragment]
         """
-        return f"salience = LEAST(1.0, {self.effective_sql()} + {bump}), last_decayed_at = now()"
+        return {
+            "salience": Fragment(f"LEAST(1.0, {self.effective_sql()} + $1)", (bump,)),
+            "last_decayed_at": Fragment("now()", ()),
+        }
