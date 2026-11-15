@@ -3,7 +3,7 @@
 An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or a list of them, each one of:
 
 - **A function** ``(case, out) -> bool | float``. Its ``__name__`` names its measure and the first line of its
-  docstring describes it; higher is better, and one annotated ``-> bool`` is a pass/fail on 0 to 1.
+  docstring describes it; higher is better, and one returning a bool is a pass/fail on 0 to 1, a check its case fails.
 - **A field name** (``"category"``): the answer's ``category`` (``out.category`` on a pydantic model,
   ``out["category"]`` on a mapping, the answer itself when it is a plain value) against the case's ``category``. A
   field is graded as a label: the first field listed is the run's classifier, so the run carries its confusion

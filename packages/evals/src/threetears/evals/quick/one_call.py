@@ -38,10 +38,12 @@ comparable in a campaign — while a different case list is a different template
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
 import json
 import math
+import textwrap
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
@@ -313,8 +315,8 @@ def scorer_measure(
 ) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
-    A scorer whose return is annotated ``bool`` is a pass/fail — a check, ``pass_fail``, whose 0 fails the trial it is
-    on — and is declared on the range 0 to 1, margin or not: its intervals stay inside what a pass rate can be, and
+    A scorer that returns a bool (:func:`_returns_bool`: annotated ``-> bool``, or returning one in every ``return``) is a
+    pass/fail — a check, ``pass_fail``, whose 0 fails the trial it is on — and is declared on the range 0 to 1, margin or not: its intervals stay inside what a pass rate can be, and
     with a margin its equivalence test is the bounded one that holds its error rate at any n. Any other scorer is on
     the range its caller declares (``grader(range=...)``), or on none, since nothing else says what its values can
     be: its intervals are then the unclipped t intervals, and it takes no margin (:func:`refuse_unusable_margins`).
@@ -383,12 +385,65 @@ def _as_range(bounds: tuple[float, float] | None) -> tuple[float, float] | None:
 
 
 def _returns_bool(scorer: Scorer) -> bool:
-    """Whether ``scorer``'s return is annotated ``bool``, under postponed annotations or not."""
+    """Whether ``scorer`` says pass or fail: its return is annotated ``bool`` (under postponed annotations or not), or,
+    with no return annotation, every ``return`` in its source returns a bool (:func:`_returns_a_bool`).
+
+    Decided from the function alone, before it runs, so the measure it declares is one definition wherever it is read:
+    the run that graded it and any process that reads the run back through the same function. A grader written
+    ``def right(case, out): return out == case["label"]`` is a pass/fail as surely as one annotated ``-> bool``; one
+    whose bool comes from a call this cannot read (``return out.startswith("a")``) is told to say so at its first
+    answer (:class:`CallableKind`), never landed as a number.
+    """
     try:
         returned = inspect.signature(scorer).return_annotation
     except TypeError, ValueError:
         return False
-    return returned is bool or returned == "bool"
+    if returned is not inspect.Signature.empty:
+        return returned is bool or returned == "bool"
+    return _source_returns_bool(scorer)
+
+
+#: The calls whose result is always a bool, by the name they are called under.
+_BOOL_CALLS = frozenset({"bool", "isinstance", "issubclass", "callable", "hasattr", "all", "any"})
+
+
+def _returns_a_bool(node: ast.expr) -> bool:
+    """Whether an expression always evaluates to a bool: a comparison, ``not``, ``True``/``False``, a call of one of
+    :data:`_BOOL_CALLS`, and ``and``/``or`` or a conditional over those alone."""
+    match node:
+        case ast.Compare() | ast.UnaryOp(op=ast.Not()):
+            return True
+        case ast.Constant(value=bool()):
+            return True
+        case ast.Call(func=ast.Name(id=called)):
+            return called in _BOOL_CALLS
+        case ast.BoolOp(values=values):
+            return all(_returns_a_bool(value) for value in values)
+        case ast.IfExp(body=body, orelse=orelse):
+            return _returns_a_bool(body) and _returns_a_bool(orelse)
+    return False
+
+
+def _source_returns_bool(scorer: Scorer) -> bool:
+    """Whether every ``return`` of the function's own body (not of a function nested in it) returns a bool; ``False``
+    when there is none, or its source cannot be read (a builtin, a function made by ``exec``)."""
+    try:
+        source = textwrap.dedent(inspect.getsource(scorer))
+        tree = ast.parse(source)
+    except OSError, TypeError, SyntaxError:
+        return False
+    defined = next((node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)), None)
+    if defined is None:
+        return False
+    returns: list[ast.Return] = []
+    pending: list[ast.AST] = list(defined.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Return):
+            returns.append(node)
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+            pending.extend(ast.iter_child_nodes(node))
+    return bool(returns) and all(found.value is not None and _returns_a_bool(found.value) for found in returns)
 
 
 def refuse_unusable_margins(
@@ -791,7 +846,9 @@ class CallableKind:
     spend as the cell's ``candidate`` usage. A candidate that raises FAILS its cell (a
     candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or
     returns something that is not a number, EXCLUDES it, because the grader is the rig rather than
-    the thing under test; so does a score outside the range its measure declares. A classifying kind also lands ``match`` and ``confusion_cell`` against the
+    the thing under test; so does a score outside the range its measure declares, and a bool from a function grader
+    that does not say it grades pass or fail (:func:`_returns_bool`), which would otherwise read as a score no case
+    fails. A classifying kind also lands ``match`` and ``confusion_cell`` against the
     expected label its case carries, the answer counted as :data:`UNUSABLE_ANSWER` when it is no label.
     A judged kind is a document kind: every answer carries the evidence its judge reads
     (:func:`~threetears.evals.quick.judged.judge_evidence`), and the engine's judge scores it after ``invoke``.
@@ -845,6 +902,13 @@ class CallableKind:
         self._ranges = dict(ranges or {})
         self._tools = dict(tools) if tools is not None else None
         self._scorers = tuple(scorers)
+        # A function grader that does not say it is a pass/fail is landed as a number, so one that returns a bool
+        # anyway is stopped at its first answer rather than read as a score no trial can fail (a Measure declares itself).
+        self._numbers = frozenset(
+            _scorer_name(scorer)
+            for scorer in self._scorers
+            if not isinstance(scorer, Measure) and not _returns_bool(scorer)
+        )
         self._classifies = classifies
         self._label_field = label_field
         self._recording = recording
@@ -983,6 +1047,17 @@ class CallableKind:
                 return CandidateOutput(
                     output=trace,
                     infra_errors=[f"the scorer {name} returned {score!r}, not a finite number or a bool"],
+                    judge_evidence=evidence,
+                    telemetry=telemetry,
+                )
+            if isinstance(score, bool) and name in self._numbers:
+                return CandidateOutput(
+                    output=trace,
+                    infra_errors=[
+                        f"the scorer {name} returned a bool and does not say it grades pass or fail, so its False "
+                        f"would read as a score no case fails: annotate it def {name}(case, out) -> bool, or return "
+                        "float(...) to grade a number"
+                    ],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
