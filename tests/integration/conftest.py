@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -35,7 +35,6 @@ from sqlalchemy import Enum, MetaData
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import CreateEnumType
 from sqlalchemy.schema import CreateIndex, CreateTable
-
 from threetears.agent.acl.collections import ImpersonationGateCollection
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.audit.migrations import register as register_audit
