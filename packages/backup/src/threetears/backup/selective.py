@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
-from threetears.core.keyed import KeyColumns
-from threetears.core.keyed import read_row
+from threetears.core.keyed import Fragment, Sort, keyset_page, read_row
+from threetears.core.operator import operator_command
 from threetears.observe import get_logger
 
 __all__ = [
@@ -47,7 +47,7 @@ log = get_logger(__name__)
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
 _PK_SQL = """
-    SELECT a.attname
+    SELECT a.attname, format_type(a.atttypid, a.atttypmod) AS sql_type
       FROM pg_index i
       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
      WHERE i.indrelid = ($1 || '.' || $2)::regclass
@@ -61,6 +61,10 @@ _COLUMNS_SQL = """
      WHERE table_schema = $1 AND table_name = $2
      ORDER BY ordinal_position
 """
+
+
+#: the rows a statement of the scratch read asks for: a selection of 10,000 rows (the default bound) is 20 keyed pages
+_SELECTION_PAGE = 500
 
 
 class SelectionTooLargeError(RuntimeError):
@@ -186,24 +190,52 @@ class SelectiveRestore:
         self._live_dsn = live_dsn
         self._max_rows = max_rows
 
+    @operator_command(
+        "selective restore plan (the hub's admin endpoint, an operator's request): the rows the operator selected "
+        "from a restored scratch copy, a table and predicate named at run time, read a keyed page at a time by the "
+        "table's primary key, stopping one row past max_rows",
+        proof="packages/backup/tests/unit/test_selective_unit.py::test_plan_is_reached_only_from_an_operators_request",
+    )
     async def plan(self, selection: RowSelection) -> SelectiveRestorePlan:
         """Read-only: select rows from the scratch snapshot and classify them against live.
+
+        The selection is read from the scratch copy in keyset pages by the table's primary key (its columns and types
+        read from the copy's catalog), and the read stops one row past ``max_rows``: a fat-fingered selection is
+        refused having read at most that many rows, never the whole of what it matched.
 
         :raises SelectionTooLargeError: when the selection exceeds ``max_rows``.
         :raises ValueError: when ``id_column`` is needed but not given, or names are unsafe.
         """
         scratch = await self._connect(self._scratch_dsn)
         try:
-            pk_columns = await self._pk_columns(scratch, selection.schema, selection.table)
+            key = await self._pk_key(scratch, selection.schema, selection.table)
+            pk_columns = tuple(sort.column for sort in key)
             columns = await self._columns(scratch, selection.schema, selection.table)
             where, params = self._predicate(selection, pk_columns)
-            qualified = f"{_quote(selection.schema)}.{_quote(selection.table)}"
-            rows = await scratch.fetch(f"SELECT * FROM {qualified} WHERE {where}", *params)
+            # the names refused unless safe (_quote), then named as the keyed helper quotes them, a segment at a time
+            qualified = ".".join(_quote(name)[1:-1] for name in (selection.schema, selection.table))
+            rows: list[dict[str, Any]] = []
+            cursor: str | None = None
+            while True:
+                page = await keyset_page(
+                    scratch,
+                    qualified,
+                    columns=None,
+                    by={},
+                    order=key,
+                    limit=min(_SELECTION_PAGE, self._max_rows + 1 - len(rows)),
+                    cursor=cursor,
+                    where=[Fragment(where, tuple(params))],
+                )
+                rows.extend(page.rows)
+                cursor = page.next_cursor
+                if cursor is None or len(rows) > self._max_rows:
+                    break
         finally:
             await scratch.close()
         if len(rows) > self._max_rows:
             raise SelectionTooLargeError(
-                f"selection matched {len(rows)} rows; the bound is {self._max_rows} — narrow the "
+                f"selection matched more than {self._max_rows} rows (the bound) — narrow the "
                 f"selection or raise max_rows deliberately"
             )
 
@@ -285,12 +317,17 @@ class SelectiveRestore:
 
     # ------------------------------------------------------------------ internals
 
-    async def _pk_columns(self, conn: _Connection, schema: str, table: str) -> KeyColumns:
+    async def _pk_key(self, conn: _Connection, schema: str, table: str) -> list[Sort]:
+        """the table's primary key as the scratch read's order, each column cast back to its own type from a cursor.
+
+        :return: the sort, the key's columns in order
+        :rtype: list[Sort]
+        :raises ValueError: when the table has no primary key
+        """
         rows = await conn.fetch(_PK_SQL, _quote(schema), _quote(table))
-        pk = tuple(row["attname"] for row in rows)
-        if not pk:
+        if not rows:
             raise ValueError(f"{schema}.{table} has no primary key; selective restore needs one")
-        return pk
+        return [Sort(row["attname"], cast=row["sql_type"]) for row in rows]
 
     async def _columns(self, conn: _Connection, schema: str, table: str) -> tuple[str, ...]:
         rows = await conn.fetch(_COLUMNS_SQL, schema, table)
