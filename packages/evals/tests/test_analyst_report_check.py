@@ -481,7 +481,11 @@ def _served(tool: MountedTool) -> list[str]:
 #: its line to the tool's description and its help page; no other action's text moved.
 #: The evals tool moved again when the out-of-run ledger gained the purpose ``reviewer`` (a model's reading of a blind
 #: read's sheet; core v15.19): spend_list's purpose filter lists it. Nothing else it serves moved.
-_EVALS_BYTES = "8d87d33721480c08d204e5e31eef098518329dbc073ef03468aa9e072b97aed2"
+#: The evals tool moved again when it gained the blind read's host door (#1178, chunk A2): seven actions
+#: (blind_read_create, _sheet, _answer, _review, _close, _get, blind_reads_list), each a help page and a help-index line
+#: with its parameters in the input schema; and campaign_record says who made the call (made_by, person, call_model,
+#: on_behalf_of: its summary, detail, parameters and example). Nothing else it serves moved.
+_EVALS_BYTES = "965dab21fa9c8e75b02dd25d6a016485ff3c322b5b2a4e0225647941b40697bf"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).
