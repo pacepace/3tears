@@ -55,6 +55,7 @@ from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateKind,
+    CandidateKindDefect,
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
     JUDGE_KIND,
@@ -144,7 +145,7 @@ from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExa
 from threetears.evals.quick.levers import CallableLevers, levers_model
 from threetears.evals.quick.logged import Log
 from threetears.evals.quick.measures import Measure
-from threetears.evals.quick.graders import UNUSABLE_ANSWER, predicted_label
+from threetears.evals.quick.graders import UNUSABLE_ANSWER, declares_a_check, predicted_label
 from threetears.evals.quick.tools import CellTools, Tool, ToolRecording, ToolUsingCandidate
 from threetears.evals.quick.world import World, WorldAgent, WorldCellKind, WorldOutcome, world_case_payload
 from threetears.evals.storage import InMemoryDocumentStore
@@ -313,11 +314,14 @@ def scorer_measure(
 ) -> MetricDescriptor:
     """The measure one scorer function reports: a quality score, higher is better, over scored results.
 
-    A scorer whose return is annotated ``bool`` is a pass/fail — a check, ``pass_fail``, whose 0 fails the trial it is
-    on — and is declared on the range 0 to 1, margin or not: its intervals stay inside what a pass rate can be, and
-    with a margin its equivalence test is the bounded one that holds its error rate at any n. Any other scorer is on
-    the range its caller declares (``grader(range=...)``), or on none, since nothing else says what its values can
-    be: its intervals are then the unclipped t intervals, and it takes no margin (:func:`refuse_unusable_margins`).
+    A scorer its author declares a check (:func:`~threetears.evals.quick.graders.declares_a_check`: annotated
+    ``-> bool``, or declaring no number) is a
+    pass/fail — ``pass_fail``, whose 0 fails the trial it is on — and is declared on the range 0 to 1, margin or not:
+    its intervals stay inside what a pass rate can be, and with a margin its equivalence test is the bounded one that
+    holds its error rate at any n. A scorer declared to grade a number (annotated ``-> float`` or ``-> int``, or given
+    a range) is on the range its caller declares (``grader(range=...)``), or on none, since nothing else says what its
+    values can be: its intervals are then the unclipped t intervals, and it takes no margin
+    (:func:`refuse_unusable_margins`).
 
     Declared a guardrail (``guardrail=``), it is instead a measure no arm may get worse on: on no merit axis, so it
     joins no contrast and no composite, with the guardrail's direction and its margin as the measure's
@@ -330,17 +334,20 @@ def scorer_measure(
         still be too small to act on, so a contrast on it can read ``equivalent``. ``None`` declares none,
         and no contrast on it can.
     :ptype margin: float | None
-    :param value_range: The lowest and highest value a non-``bool`` scorer can return, or ``None``.
+    :param value_range: The lowest and highest value a scorer grading a number can return, or ``None``; given, it
+        declares the scorer grades a number, unless its return is annotated ``-> bool``.
     :ptype value_range: tuple[float, float] | None
     :param guardrail: Declares the measure a guardrail, with its margin and direction; ``None`` for a quality score.
         A guardrail takes no ``margin`` beside it: its margin is the guardrail's own.
     :ptype guardrail: Guardrail | None
     :return: The descriptor :func:`callable_host` registers for it.
     :rtype: MetricDescriptor
-    :raises ValueError: Both ``margin`` and ``guardrail`` are given.
+    :raises ValueError: Both ``margin`` and ``guardrail`` are given, or its return annotation is read as both kinds or
+        neither (:func:`~threetears.evals.quick.graders.declares_a_check`).
     """
     name = _scorer_name(scorer)
     doc = inspect.getdoc(scorer)
+    check = declares_a_check(scorer, ranged=value_range is not None)
     if guardrail is not None:
         if margin is not None:
             raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
@@ -356,8 +363,8 @@ def scorer_measure(
             guardrail=True,
             population="scored",
             materiality_threshold=guardrail.margin,
-            value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
-            pass_fail=_returns_bool(scorer),
+            value_range=(0.0, 1.0) if check else value_range,
+            pass_fail=check,
         )
     return MetricDescriptor(
         name=name,
@@ -372,8 +379,8 @@ def scorer_measure(
         merit_axis="quality",
         population="scored",
         materiality_threshold=margin,
-        value_range=(0.0, 1.0) if _returns_bool(scorer) else value_range,
-        pass_fail=_returns_bool(scorer),
+        value_range=(0.0, 1.0) if check else value_range,
+        pass_fail=check,
     )
 
 
@@ -382,13 +389,31 @@ def _as_range(bounds: tuple[float, float] | None) -> tuple[float, float] | None:
     return None if bounds is None else (float(bounds[0]), float(bounds[1]))
 
 
-def _returns_bool(scorer: Scorer) -> bool:
-    """Whether ``scorer``'s return is annotated ``bool``, under postponed annotations or not."""
-    try:
-        returned = inspect.signature(scorer).return_annotation
-    except TypeError, ValueError:
-        return False
-    return returned is bool or returned == "bool"
+class _GraderContradictsItsDeclaration(CandidateKindDefect):
+    """A function grader returned a value its declared kind cannot hold
+    (:func:`~threetears.evals.quick.graders.declares_a_check`): anything but True, False, 0 or 1 from a check (a
+    number, ``None``, a numpy bool), or a bool from a grader declared to grade a number.
+
+    The grader is the eval's own code, the rig, and the measure it lands under says something its value contradicts.
+    Excluding the cell would drop a verdict the grader gave and shrink the count every reading states over the rest,
+    so, as for a kind contradicting its declaration, the run fails at the first such answer, naming the declaration to
+    write. The cell is recorded with what it spent.
+    """
+
+    def __init__(self, message: str, *, kind: str, declared: JudgedArtifact, has_evidence: bool) -> None:
+        """Say what the grader returned and the declaration that fixes it.
+
+        :param message: What it returned, how it is declared, and what to write.
+        :ptype message: str
+        :param kind: The kind whose grader it is.
+        :ptype kind: str
+        :param declared: The kind's ``judged_artifact``.
+        :ptype declared: JudgedArtifact
+        :param has_evidence: Whether the cell carried judge evidence.
+        :ptype has_evidence: bool
+        """
+        super().__init__(kind, declared=declared, has_evidence=has_evidence)
+        self.args = (message,)
 
 
 def refuse_unusable_margins(
@@ -399,18 +424,19 @@ def refuse_unusable_margins(
     """Refuse a margin or a range no scorer's measure could carry, naming what can carry one.
 
     A margin is what lets a contrast read ``equivalent``, and the equivalence test needs the measure's range
-    (#695). A ``bool`` scorer is on 0 to 1; any other has the range ``ranges`` declares for it, or none, and a
-    margin on it with none is refused here rather than accepted and never tested.
+    (#695). A check (:func:`~threetears.evals.quick.graders.declares_a_check`) is on 0 to 1; a scorer declared to grade a number has the range ``ranges``
+    declares for it, or none, and a margin on it with none is refused here rather than accepted and never tested.
 
     :param scorers: The scorers whose measures the margins are declared on.
     :ptype scorers: Sequence[Scorer]
     :param margins: Each margin, by the name of the scorer it is declared on.
     :ptype margins: Mapping[str, float]
-    :param ranges: Each non-``bool`` scorer's range, by its name.
+    :param ranges: Each range declared on a scorer, by its name: it declares the scorer grades a number.
     :ptype ranges: Mapping[str, tuple[float, float]] | None
     :raises ValueError: A margin or range on a name no scorer has (the classifier's accuracy and every engine core
-        measure among them), a margin that is not a positive finite number, a range on a ``bool`` scorer or
-        one that is not two finite numbers, low below high, or a margin on a scorer with no range.
+        measure among them), a margin that is not a positive finite number, a range on a scorer annotated
+        ``-> bool`` or one that is not two finite numbers, low below high, or a margin on a scorer annotated to
+        return a number with no range.
     """
     ranges = dict(ranges or {})
     names = [_scorer_name(scorer) for scorer in scorers]
@@ -421,7 +447,7 @@ def refuse_unusable_margins(
                 f"a range names {name!r}, which no grader reports; a range is declared on a grader "
                 f"(grader(<function>, range=(1, 5))): {', '.join(map(repr, names)) or 'none were given'}"
             )
-        if _returns_bool(by_name[name]):
+        if declares_a_check(by_name[name], ranged=True):
             raise ValueError(
                 f"{name!r} returns a bool, a pass/fail, which is on 0 to 1 already: declare range= only on a "
                 "grader returning a number"
@@ -455,13 +481,13 @@ def refuse_unusable_margins(
                 f"the margin on {name!r} is a positive number in the measure's own units (0.05 is five points on a "
                 f"pass rate), not {margin!r}"
             )
-        if not _returns_bool(by_name[name]) and name not in ranges:
+        if name not in ranges and not declares_a_check(by_name[name]):
             raise ValueError(
-                f"a margin on {name!r} needs its range too: {name!r} does not return a bool, so nothing says what "
-                "its scores can be, and with no range no test can show two arms inside a margin (one rare large "
-                f"score can hide a move). Declare the lowest and highest score it can return beside the margin: "
-                f"grader({name}, margin=..., range=(1, 5)) for a 1-to-5 score. A pass/fail grader annotated -> bool "
-                "needs none"
+                f"a margin on {name!r} needs its range too: {name!r} is annotated to return a number, so nothing "
+                "says what its scores can be, and with no range no test can show two arms inside a margin (one rare "
+                f"large score can hide a move). Declare the lowest and highest score it can return beside the margin: "
+                f"grader({name}, margin=..., range=(1, 5)) for a 1-to-5 score. A pass/fail grader (annotated -> bool, "
+                "or not annotated) needs none"
             )
 
 
@@ -514,7 +540,9 @@ def refuse_unusable_guardrails(
             )
         if margins and name in margins:
             raise ValueError(_MARGIN_ON_A_GUARDRAIL.format(name=name))
-        bounds = (0.0, 1.0) if _returns_bool(by_name[name]) else (ranges or {}).get(name)
+        bounds = (
+            (0.0, 1.0) if declares_a_check(by_name[name], ranged=name in (ranges or {})) else (ranges or {}).get(name)
+        )
         if bounds is not None and guardrail.margin >= bounds[1] - bounds[0]:
             forms = PageForms.off_page()
             low, high = (forms.echoed(end, measure=name).text for end in bounds)
@@ -620,8 +648,9 @@ def callable_host(
         contrast on it can read ``equivalent``; ``None`` declares none. No margin is ever assumed.
     :ptype margins: Mapping[str, float] | None
     :param ranges: The lowest and highest score a scorer returning a number can give, by the scorer's name
-        (``{"rating": (1, 5)}``): its intervals stay inside it, and a margin on it can be tested. A ``bool``
-        scorer is on 0 to 1 already. A score outside its range excludes its cell, naming the scorer.
+        (``{"rating": (1, 5)}``), which declares that it grades a number: its intervals stay inside it, and a margin on
+        it can be tested. A check is on 0 to 1 already (:func:`~threetears.evals.quick.graders.declares_a_check`). A
+        score outside its range fails the run, naming the scorer and the case.
     :ptype ranges: Mapping[str, tuple[float, float]] | None
     :param store: Where every document is stored (any :class:`~threetears.evals.schema.DocumentStore`):
         :class:`~threetears.evals.storage.SqliteDocumentStore` keeps the runs in a file. ``None`` builds a fresh
@@ -732,7 +761,9 @@ def callable_kind(
     (:data:`JUDGED_CALLABLE_KIND` with a judge). Each cell calls the candidate with its case, read from the stored test
     case's ``host_payload["case"]``, where the quick path stores it, and each scorer with the case and the answer,
     landing each score as a host measure under the scorer's name. A candidate that raises fails its cell; a scorer that
-    raises, returns no number, or returns one outside its range excludes it.
+    raises excludes it; one returning a value its declaration cannot hold
+    (:func:`~threetears.evals.quick.graders.declares_a_check`: no finite number, one outside its range, or anything but
+    a bool from a check) fails the run.
 
     :param candidate: The callable under test.
     :ptype candidate: Candidate | ToolUsingCandidate
@@ -789,9 +820,13 @@ class CallableKind:
     ``invoke`` calls the candidate with the case it was given and each scorer with that case and the
     answer, and reports the scores as host measures, and an :class:`~threetears.evals.quick.answer.Answer`'s
     spend as the cell's ``candidate`` usage. A candidate that raises FAILS its cell (a
-    candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or
-    returns something that is not a number, EXCLUDES it, because the grader is the rig rather than
-    the thing under test; so does a score outside the range its measure declares. A classifying kind also lands ``match`` and ``confusion_cell`` against the
+    candidate error lowers the score; a broken candidate must not vanish); a scorer that raises, or a
+    :class:`~threetears.evals.quick.Measure` returning something that is not a number, EXCLUDES it, because the grader
+    is the rig rather than the thing under test. A function grader's value its declaration cannot hold
+    (:func:`~threetears.evals.quick.graders.declares_a_check`: anything but True, False, 0 or 1 from a check, ``None``
+    and a numpy bool among them; from a grader of a number, a bool, anything that is no finite number, or a score
+    outside the range declared for it) FAILS THE RUN at the first such answer, naming the case and the fix: dropping
+    the cell would drop a verdict the grader gave and shrink the count, or the mean, every reading states. A classifying kind also lands ``match`` and ``confusion_cell`` against the
     expected label its case carries, the answer counted as :data:`UNUSABLE_ANSWER` when it is no label.
     A judged kind is a document kind: every answer carries the evidence its judge reads
     (:func:`~threetears.evals.quick.judged.judge_evidence`), and the engine's judge scores it after ``invoke``.
@@ -845,6 +880,15 @@ class CallableKind:
         self._ranges = dict(ranges or {})
         self._tools = dict(tools) if tools is not None else None
         self._scorers = tuple(scorers)
+        # What each function grader declares it grades, which every value it returns is held to (a Measure declares
+        # itself): the checks, each by how it declares it (annotated -> bool, or declaring nothing), and the numbers.
+        functions = {_scorer_name(scorer): scorer for scorer in self._scorers if not isinstance(scorer, Measure)}
+        self._checks = {
+            name: "annotated -> bool" if declares_a_check(scorer, ranged=True) else "not annotated and given no range"
+            for name, scorer in functions.items()
+            if declares_a_check(scorer, ranged=name in self._ranges)
+        }
+        self._numbers = frozenset(functions) - set(self._checks)
         self._classifies = classifies
         self._label_field = label_field
         self._recording = recording
@@ -971,34 +1015,104 @@ class CallableKind:
                 score = scorer(case, answer)
             # prawduct:ok-broad-except — a scorer is the caller's grader, the rig: a raise excludes the cell and says which scorer
             except Exception as raised:
-                contain(raised, log=log, what=f"the scorer {name} raised {type(raised).__name__}: {raised}")
+                contain(raised, log=log, what=f"the grader {name} raised {type(raised).__name__}: {raised}")
                 return CandidateOutput(
                     output=trace,
-                    infra_errors=[f"the scorer {name} raised {type(raised).__name__}: {raised}"],
+                    infra_errors=[f"the grader {name} raised {type(raised).__name__}: {raised}"],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
-            # ``bool`` is an ``int``, so True and False pass here as 1 and 0.
+            # Held to its declaration first: a function grader's every value is a verdict or a reading, never a cell
+            # to drop, so one its declaration cannot hold fails the run.
+            if (contradicted := self._contradiction(name, score, _case_called(test_case))) is not None:
+                raise _GraderContradictsItsDeclaration(
+                    contradicted,
+                    kind=CALLABLE_KIND if self._judge is None else JUDGED_CALLABLE_KIND,
+                    declared=self.judged_artifact,
+                    has_evidence=evidence is not None,
+                )
+            # Only a Measure, which declares itself, reaches here with no number; a function grader's True and False
+            # (``bool`` is an ``int``) pass as 1 and 0.
             if not isinstance(score, int | float) or not math.isfinite(score):
                 return CandidateOutput(
                     output=trace,
-                    infra_errors=[f"the scorer {name} returned {score!r}, not a finite number or a bool"],
-                    judge_evidence=evidence,
-                    telemetry=telemetry,
-                )
-            if name in self._ranges and not self._ranges[name][0] <= score <= self._ranges[name][1]:
-                forms = PageForms.off_page()
-                low, high = (forms.echoed(end, measure=name).text for end in self._ranges[name])
-                return CandidateOutput(
-                    output=trace,
-                    infra_errors=[
-                        f"the scorer {name} returned {score!r}, outside the range {low} to {high} declared for it"
-                    ],
+                    infra_errors=[f"the grader {name} returned {score!r}, not a finite number or a bool"],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
             measures[name] = float(score)
         return CandidateOutput(output=trace, host_measures=measures, judge_evidence=evidence, telemetry=telemetry)
+
+    def _contradiction(self, name: str, score: object, case: str) -> str | None:
+        """What is wrong with a function grader's value on ``case``, by what it declares it grades, and the fix;
+        ``None`` where its declaration allows the value.
+
+        A check allows Python's ``True`` and ``False``, and the plain numbers 0 and 1, alone: ``None`` (a function that
+        falls off its end), a numpy bool or integer, a string or any other number is no verdict. A grader of a number
+        allows a finite number, never a bool, inside the range declared for it when one is: ``None``, NaN, infinity, a
+        string or a score off its scale is no reading, and a mean over the cells left would misstate it.
+        """
+        if name in self._checks:
+            if type(score) is bool or (type(score) in (int, float) and score in (0, 1)):
+                return None
+            read = f"it is read as pass or fail (it is {self._checks[name]}), so it returns True or False"
+            if score is None:
+                return (
+                    f"the grader {name} returned None on case {case}, and {read}: return one on every path (a "
+                    "function that ends without a return returns None)"
+                )
+            if type(score) in (int, float):
+                return (
+                    f"the grader {name} returned {score!r} on case {case}, and {read}: declare what it grades, "
+                    f"def {name}(case, out) -> float or grader({name}, range=(low, high)) for a number, or return a "
+                    "bool for pass or fail"
+                )
+            kind = f"{type(score).__module__}.{type(score).__qualname__}"
+            return (
+                f"the grader {name} returned {score!r}, a {kind}, on case {case}, and {read}, Python's own: return "
+                f"bool(...) of it to grade pass or fail, or declare a number, def {name}(case, out) -> float, to "
+                "grade one"
+            )
+        if name not in self._numbers:
+            return None
+        declared = "given a range" if name in self._ranges else "annotated to return a number"
+        if isinstance(score, bool):
+            return (
+                f"the grader {name} returned {score!r} on case {case}, a pass or fail, but it is {declared}, so its "
+                f"False would read as a low score, never as a failed case: annotate it def {name}(case, out) -> bool "
+                "to grade pass or fail, or return float(...) to grade a number"
+            )
+        if not isinstance(score, int | float) or not math.isfinite(score):
+            read = f"it is {declared}, so it returns a finite number on every path"
+            if score is None:
+                return (
+                    f"the grader {name} returned None on case {case}, and {read}: return one from every branch (a "
+                    "function that ends without a return returns None)"
+                )
+            if isinstance(score, int | float):
+                return (
+                    f"the grader {name} returned {score!r} on case {case}, and {read}: NaN and infinity are no score, "
+                    "so return a finite one, or raise where no score can be given"
+                )
+            kind = f"{type(score).__module__}.{type(score).__qualname__}"
+            return (
+                f"the grader {name} returned {score!r}, a {kind}, on case {case}, and {read}: return float(...) of "
+                "it, a Python number"
+            )
+        if name in self._ranges and not self._ranges[name][0] <= score <= self._ranges[name][1]:
+            forms = PageForms.off_page()
+            low, high = (forms.echoed(end, measure=name).text for end in self._ranges[name])
+            return (
+                f"the grader {name} returned {score!r} on case {case}, outside the range {low} to {high} declared for "
+                f"it: return a score on that scale, or declare the scale its scores have, "
+                f"grader({name}, range=(low, high))"
+            )
+        return None
+
+
+def _case_called(test_case: EvalTestCase) -> str:
+    """What a quick case is called in an error line: its own ``id``, else its position (:func:`_case_names`)."""
+    return test_case.name if test_case.name is not None else test_case.id.rsplit("-", 1)[-1]
 
 
 def _missed(expected: str) -> dict[str, bool | float | str]:
@@ -2121,11 +2235,15 @@ async def run_arms(
     await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
     if judge is not None and judge.examples:
         await run_blocking(host.blocking_executor, _seed_judge_examples, host, template, judge, expected)
-    # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact.
+    # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact. A
+    # check's 0 to 1 is not a range declared on it: the kind holds a check to 0 or 1 itself
+    # (:func:`~threetears.evals.quick.graders.declares_a_check`).
     ranges = {
         scorer: descriptor.value_range
         for scorer in map(_scorer_name, scorers)
-        if (descriptor := host.profile.measures.get(scorer)) is not None and descriptor.value_range is not None
+        if (descriptor := host.profile.measures.get(scorer)) is not None
+        and descriptor.value_range is not None
+        and not descriptor.pass_fail
     }
     recording = None if world is None or world.recording is None else ToolRecording(world.recording)
     if recording is not None:

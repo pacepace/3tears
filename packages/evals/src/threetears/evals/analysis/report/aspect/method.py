@@ -24,7 +24,7 @@ from threetears.evals.analysis.lenses.frontier import (
     pass_hat_k_cell_lines,
 )
 from threetears.evals.analysis.report.aspect.common import (
-    _case_namer,
+    case_namer,
     _control_key,
     _date,
     _listed,
@@ -112,7 +112,7 @@ def _not_tested_blocks(
             said.append(f"Each {lever} ran too few repeats to read what changing the {lever} does.")
     said += [_unexercised_sentence(factor, bundle, arm) for factor in bundle.unexercised_factors]
     usable = {(trial.arm, trial.case_id) for trial in bundle.trials if trial.state != "lost"}
-    case_name = _case_namer(bundle)
+    case_name = case_namer(bundle)
     for board in bundle.scoreboard:
         unusable = sorted(
             {

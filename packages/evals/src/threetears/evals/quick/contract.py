@@ -241,7 +241,9 @@ class Eval:
             first key is the control.
         :ptype runner: Any
         :param grader: One grader or a list: functions, field names, expressions over a world, a ``Judge``, each of the
-            first two optionally wrapped by ``grader(...)``.
+            first two optionally wrapped by ``grader(...)``. A function annotated ``-> bool``, or not annotated, grades
+            pass or fail; one annotated ``-> float`` or ``-> int``, or given a range, grades a number
+            (:func:`~threetears.evals.quick.graders.declares_a_check`).
         :ptype grader: Any
         :param k: Repeats per case, per arm.
         :ptype k: int
@@ -269,7 +271,7 @@ class Eval:
         :raises ValueError: A blank question, a margin that is no share strictly between 0 and 1 or one with no
             question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
-            known form, an expression grader with no world with state to read, or several arms with no name and no
+            known form, a function grader whose return annotation is read as both kinds or neither, an expression grader with no world with state to read, or several arms with no name and no
             cases file to name the eval by.
         """
         if question is not None and not question.strip():

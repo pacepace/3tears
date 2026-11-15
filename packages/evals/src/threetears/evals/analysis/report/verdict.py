@@ -36,6 +36,12 @@ After the decision, each arm
 is the subject of its figures and the interval says what it allows (:func:`interval_words`), never its level, which
 the table's header states. Each measure and guardrail is named as the page names it, and a cost is never the lead
 (:func:`_is_cost`).
+
+**No pass count where nothing graded can fail a trial.** An arm whose aspect declares no check and no judged dimension
+that counts (:func:`_holds_a_check`, read off the measure catalog, never the eval's kind) states how many it ran and
+that no grader says pass or fail: ``classify ran 3 of 3 cases; no grader here says pass or fail.`` Its readings carry
+the means. Two arms under the case floor say the same, with no pass comparison: ``b and a ran 3 cases each; no grader
+here says pass or fail; too few cases to call a difference.``
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ from threetears.evals.analysis.bundle.schema import (
     ArmScoreboard,
     FailCause,
 )
+from threetears.evals.analysis.bundle.trials import PassCount, pass_count
 from threetears.evals.analysis.quantities import is_money
 from threetears.evals.analysis.cells import split_arms, unread_arms
 from threetears.evals.analysis.completeness import SETUP_GATE_SHARE, lost_share, setup_failed, unfinished_opening
@@ -57,7 +64,13 @@ from threetears.evals.analysis.floors import definitions_moved
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import cannot_tell_apart, measure_name
 from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
-from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
+from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
+    MATCH_MEASURE,
+    METRIC_DESCRIPTORS,
+    RUBRIC_FAMILY,
+    goal_check_of,
+)
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
 from threetears.evals.schema.reading_states import Coordinate
 
@@ -365,26 +378,132 @@ class VerdictLine:
             object.__setattr__(self, "lead", self.text)
 
 
-def passed_clause(arm: str, passed: int, trials: int, cases: int) -> str:
-    """One arm's pass rate as a sentence states it: the count it is computed over, ``reply passed 40 of 40 trials on
-    20 cases``, or ``reply passed 18 of 20 cases`` where each case ran once. The percent and its interval are the
-    scorecard's, beside the same count: a sentence carries at most three figures
-    (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
+def passed_clause(arm: str, count: PassCount) -> str:
+    """One arm's pass count as every surface states it, the one owner of that clause: ``reply passed 18 of 20
+    cases``, or ``reply passed 40 of 40 trials on 20 cases`` where cases ran more than once; where trials ran that
+    nothing graded (a grader that raised, a declined call), the count is every trial that ran and says how many
+    were not graded beside it: ``classify passed 7 of 10 cases; 3 were not graded``. The percent and its interval are
+    the scorecard's, over the graded trials: a sentence carries at most three figures
+    (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`). The console's first line, a page's lead, an aspect fold's
+    heading and a listing's line all say it through this.
 
     :param arm: The arm, as the page names it.
     :ptype arm: str
-    :param passed: Its usable trials that passed.
-    :ptype passed: int
-    :param trials: Its usable trials.
-    :ptype trials: int
-    :param cases: The independent cases they ran on.
-    :ptype cases: int
+    :param count: Its count, read off the census
+        (:func:`~threetears.evals.analysis.bundle.trials.pass_count`).
+    :ptype count: PassCount
     :return: The clause, with no closing stop.
     :rtype: str
     """
-    if trials == cases:
-        return f"{arm} passed {passed} of {cases} cases"
-    return f"{arm} passed {passed} of {trials} trials on {cases} cases"
+    lost = count.ungraded
+    trials, cases = (count.ran, count.cases) if lost else (count.graded, count.graded_cases)
+    said = (
+        f"{arm} passed {count.passed} of {cases} cases"
+        if trials == cases
+        else f"{arm} passed {count.passed} of {trials} trials on {cases} cases"
+    )
+    if not lost:
+        return said
+    were = "was" if lost == 1 else "were"
+    if count.ran == count.cases:
+        return f"{said}; {lost} {were} not graded"
+    return f"{said}; {lost} trial{'' if lost == 1 else 's'} {were} not graded"
+
+
+#: Whose failure a recorded error was, by the role it was recorded under, as an ungraded trial's reason says it.
+_FAILED_ROLE_WORDS: Final[dict[str, str]] = {
+    "candidate": "the runner failed",
+    "test setup": "the test setup failed",
+    "judge": "the judge's call failed",
+    "runner": "the engine failed",
+}
+
+
+def ungraded_sentence(count: PassCount, case_name: Callable[[str], str], *, arm: str | None = None) -> str:
+    """`` Not graded: c0, c1, c2 (`the grader right raised TypeError: ...`).`` — after :func:`passed_clause`, the
+    cases of the trials nothing graded, the first :data:`_MISSES_NAMED` by name and a count of the rest, and why, in
+    the words the run recorded and whose failure it was: a grader's own error as it reads (``the grader right
+    raised ...``), a judge's as ``the judge's call failed`` (its error names dimensions by stored ids no page prints),
+    any other with its role (``the test setup failed: ...``), and where no trial's error is held, the census's cause in
+    plain words. A sentence of its own so the count before it keeps its figures (``Not graded on
+    b:`` where ``arm`` names the arm among several); empty where none was lost.
+
+    :param count: The arm's count.
+    :ptype count: PassCount
+    :param case_name: Names a case by its id.
+    :ptype case_name: Callable[[str], str]
+    :param arm: The arm's name, where the sentence stands among several arms'.
+    :ptype arm: str | None
+    :return: The sentence, with a leading space and its closing stop, or empty.
+    :rtype: str
+    """
+    if not count.ungraded:
+        return ""
+    on = f" on {arm}" if arm is not None else ""
+    if count.ungraded_role == "judge":
+        # A judge's error names its dimensions by their stored ids, which no page prints: whose failure it was is said,
+        # and the error itself stays on the trial's own record.
+        why = _FAILED_ROLE_WORDS["judge"]
+    elif count.ungraded_error is not None:
+        grader_s = count.ungraded_role == "test setup" and count.ungraded_error.startswith("the grader ")
+        whose = "" if grader_s else f"{_FAILED_ROLE_WORDS.get(count.ungraded_role or '', 'it failed')}: "
+        why = f"{whose}`{count.ungraded_error}`"
+    elif count.ungraded_causes:
+        why = f"because {loss_words(count.ungraded_causes[0]).words}"
+    else:
+        return ""
+    if not count.ungraded_cases:
+        return f" Not graded{on}: {why}."
+    cases = count.ungraded_cases
+    shown = [case_name(case) or case for case in cases[:_MISSES_NAMED]]
+    more = f", and {len(cases) - _MISSES_NAMED} more" if len(cases) > _MISSES_NAMED else ""
+    return f" Not graded{on}: {', '.join(shown)}{more} ({why})."
+
+
+def not_graded_words(count: PassCount) -> str:
+    """``3 not graded``, or ``6 trials not graded`` where cases ran more than once: a cell's note beside a count over
+    the graded trials, from the same count as :func:`passed_clause`; empty where every trial was graded.
+
+    :param count: The arm's count.
+    :ptype count: PassCount
+    :return: The words, or empty.
+    :rtype: str
+    """
+    if not count.ungraded:
+        return ""
+    if count.ran == count.cases:
+        return f"{count.ungraded} not graded"
+    return f"{count.ungraded} trial{'' if count.ungraded == 1 else 's'} not graded"
+
+
+def ungraded_sentences(
+    bundle: AnalysisContextBundle, arm: Callable[[str], str], case_name: Callable[[str], str]
+) -> str:
+    """For each arm of a comparison with trials nothing graded, that its figures are over its graded trials and how
+    many were not (``a's figures are over its graded trials: 3 of 10 were not graded.``), then which and why
+    (:func:`ungraded_sentence`); empty where every trial was graded. Every comparison's verdict line and a page's lead
+    on a compared aspect say it through this.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param arm: Names an arm by its variant key.
+    :ptype arm: Callable[[str], str]
+    :param case_name: Names a case by its id.
+    :ptype case_name: Callable[[str], str]
+    :return: The sentences, each with a leading space and its closing stop, or empty.
+    :rtype: str
+    """
+    said = ""
+    for board in bundle.scoreboard:
+        count = pass_count(bundle, board)
+        if count.ungraded and count.graded:
+            lost = count.ungraded
+            said += (
+                f" {arm(board.variant_key)}'s figures are over its graded trials: {lost} of {count.ran} "
+                f"{'was' if lost == 1 else 'were'} not graded."
+            )
+            said += ungraded_sentence(count, case_name, arm=arm(board.variant_key))
+    return said
 
 
 def interval_words(
@@ -560,14 +679,19 @@ def verdict_line(
             # Its trials are two cells' (two answering models, or two definitions): no one pass rate is the arm's.
             result = f"{arm(board.variant_key)} has no one pass rate: {_split_why(bundle, board.variant_key)}."
             return VerdictLine(rule="one_arm", text=result, lead=result)
-        result = f"{_one_arm(board, arm)}."
+        result = f"{_one_arm(bundle, board, arm, graded=_holds_a_check(bundle))}."
+        named = case_name or (lambda case: case)
         return VerdictLine(
-            rule="one_arm", text=result + _missed_cases(bundle, case_name or (lambda case: case)), lead=result
+            rule="one_arm",
+            text=result + ungraded_sentence(pass_count(bundle, board), named) + _missed_cases(bundle, named),
+            lead=result,
         )
     declared_question = bundle.question_declared
+    # Every figure below is over the graded trials: an arm that lost any says so, and which, beside them.
+    ungraded = ungraded_sentences(bundle, arm, case_name or (lambda case: case))
     if any(board.usable_cases < MIN_CASES for board in boards):
         lead = "" if declared_question else "Exploratory: "
-        return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm))
+        return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm) + ungraded)
     rule: VerdictRule = "declared" if declared_question else "exploratory"
     prefix = "" if declared_question else "Exploratory: "
     if verdicts:
@@ -583,7 +707,7 @@ def verdict_line(
             )
             return VerdictLine(
                 rule=rule,
-                text=prefix + text + _guardrail_sentences(verdicts) + _not_compared_sentences(bundle, arm),
+                text=prefix + text + ungraded + _guardrail_sentences(verdicts) + _not_compared_sentences(bundle, arm),
                 lead=result,
                 decisions=decisions,
                 undecided=any(verdict.outcome == "not_separated" for verdict in led),
@@ -630,7 +754,11 @@ def verdict_line(
         _guardrail_sentences(verdicts) if verdicts else "".join(f" {line}" for line in guardrail_lines(bundle, arm))
     ) + not_compared
     return VerdictLine(
-        rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.", decisions=(result,), undecided=undecided
+        rule=rule,
+        text=f"{prefix}{result}.{ungraded}{guardrails}",
+        lead=f"{result}.",
+        decisions=(result,),
+        undecided=undecided,
     )
 
 
@@ -751,11 +879,29 @@ def _not_compared_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], 
     return "".join(f" {_not_compared(bundle, arm, key)}" for key in _not_read(bundle))
 
 
-def _one_arm(board: ArmScoreboard, arm: Callable[[str], str]) -> str:
-    """One arm's pass rate as the count it is computed over (:func:`passed_clause`)."""
+def _one_arm(bundle: AnalysisContextBundle, board: ArmScoreboard, arm: Callable[[str], str], *, graded: bool) -> str:
+    """One arm's pass count over every trial that ran (:func:`passed_clause`); where nothing graded can fail a trial
+    (``graded`` False), how many it ran and that no grader says pass or fail, with no pass count, which would count
+    trials nothing judged: its readings carry what was measured."""
     if not board.usable:
         return f"{arm(board.variant_key)} ran {board.ran} trials, all lost to the test setup"
-    return passed_clause(arm(board.variant_key), board.passed, board.usable, board.usable_cases)
+    if not graded:
+        if board.ran == board.cases:
+            ran = f"{arm(board.variant_key)} ran {board.usable} of {board.ran} cases"
+        else:
+            ran = f"{arm(board.variant_key)} ran {board.usable} of {board.ran} trials on {board.usable_cases} cases"
+        return f"{ran}; no grader here says pass or fail"
+    return passed_clause(arm(board.variant_key), pass_count(bundle, board))
+
+
+def _holds_a_check(bundle: AnalysisContextBundle) -> bool:
+    """Whether anything the aspect grades can fail a trial, by what its measure catalog declares: a goal check, a
+    label match or a measure declared a check (``MetricDescriptor.is_check``), or a judged dimension that counts. Never
+    by the eval's kind: a measure no trial can fail on (a number) decides no pass."""
+    return any(
+        goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
+        for name, descriptor in bundle.measure_catalog.items()
+    ) or any(measure.family == RUBRIC_FAMILY and measure.axis == "capability" for measure in bundle.judged_measures)
 
 
 #: How many missed cases one arm's line names before it counts the rest.
@@ -826,12 +972,26 @@ def _guardrail_sentences(verdicts: Sequence[Verdict]) -> str:
 
 
 def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
-    """Which arm passed more of its usable trials than the control, in words, and that no difference is called.
-    An arm not read against the control (:func:`_not_read`) is left out: its own sentence says why."""
+    """Which arm passed more of its usable trials than the control, in words, and that no difference is called; where
+    nothing graded can fail a trial (:func:`_holds_a_check`), how many cases each arm ran and that no grader says pass
+    or fail, with no pass comparison, which would compare trials nothing judged. An arm not read against the control
+    (:func:`_not_read`) is left out: its own sentence says why."""
     control = _control_of(bundle)
     boards = {board.variant_key: board for board in bundle.scoreboard}
     reference = boards[control]
     apart = set(_not_read(bundle))
+    if not _holds_a_check(bundle):
+        ordered = [board for board in bundle.scoreboard if board.variant_key not in apart | {control}] + [reference]
+        names = [arm(board.variant_key) for board in ordered]
+        apart_said = _not_compared_sentences(bundle, arm)
+        if len(ordered) == 1:
+            return apart_said.strip()
+        # Every case that ran is the count; the trials nothing graded are said apart (:func:`ungraded_sentences`).
+        if len({board.cases for board in ordered}) == 1:
+            ran = f"{', '.join(names[:-1])} and {names[-1]} ran {reference.cases} cases each"
+        else:
+            ran = ", ".join(f"{name} ran {board.cases} cases" for name, board in zip(names, ordered, strict=True))
+        return f"{ran}; no grader here says pass or fail; too few cases to call a difference." + apart_said
 
     def share(board: ArmScoreboard) -> float:
         return board.passed / board.usable if board.usable else 0.0
@@ -1014,5 +1174,8 @@ __all__ = [
     "unfinished_line",
     "lost_share",
     "passed_clause",
+    "not_graded_words",
+    "ungraded_sentence",
+    "ungraded_sentences",
     "verdict_line",
 ]
