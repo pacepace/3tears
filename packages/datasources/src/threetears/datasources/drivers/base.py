@@ -73,6 +73,7 @@ try:
 except ImportError:  # NOSILENT: the tracing extra is optional; the drivers record no metric without it
     _OTEL_METRICS = False
 
+from threetears.core.declared import whole_read
 from threetears.core.sql_fragments import FilterValue, quote_identifier
 
 from threetears.datasources.bounded_rows import DEFAULT_PAGE_ROWS, BoundedRows, start_budget
@@ -253,7 +254,17 @@ def _build_coverage_by_dimension_sql(
     dimension = quote_identifier(dimension_column)
     selects = [f"{dimension} AS dim_value", "COUNT(*) AS total_rows"]
     selects.extend(f"COUNT(NULLIF({quote_identifier(col)}, 0)) AS nz_{i}" for i, col in enumerate(columns))
-    return f"SELECT {', '.join(selects)} FROM {qualified} GROUP BY {dimension}"
+    # the warehouse reads the client's relation whole and answers a row a dimension value: that aggregate IS the
+    # coverage (a column loaded for some states and all zero for others is seen only by counting every row of each).
+    # The relation is a datasource's (the hub's coverage reconcile names it), never one of our L3 tables: no change
+    # record of ours narrows it, and our speed bar is our own side, not the warehouse's
+    return whole_read(
+        f"SELECT {', '.join(selects)} FROM {qualified} GROUP BY {dimension}",
+        kind="unbounded_by_warehouse",
+        reason="a datasource relation's column coverage per dimension value: one grouped aggregate the warehouse answers a row a value, over the client's relation, which keeps no change record of ours",
+        ruling="Pace 2026-11-12: unbounded_by_warehouse; coordinator 2026-11-15 (D8 brief): a read over a client warehouse relation may declare it, with the why at the code",
+        proof="packages/datasources/tests/unit/test_coverage_reach.py::test_coverage_is_read_only_by_a_driver_over_its_datasources_relation",
+    )
 
 
 # ---------------------------------------------------------------------------
