@@ -1305,7 +1305,9 @@ class DuckDBBackend:
             # read a piece at a time, so the export's buffers fit the scope without counting it first
             return _fetch_arrow_pieces(self._db.execute(sql, params))
 
-    def storage_arrow(self, table: str, rows: Any, primary_key: KeyColumn | KeyColumns) -> tuple[list[str], Any]:
+    def storage_arrow(
+        self, table: str, rows: Any, primary_key: KeyColumn | KeyColumns, *, unique_keys: bool = False
+    ) -> tuple[list[str], Any]:
         """an Arrow table's rows in ``table``'s storage forms, the last row of each key kept: what
         :meth:`export_rows` makes of dict rows, never making a row a Python object where the column
         allows.
@@ -1324,6 +1326,9 @@ class DuckDBBackend:
         :ptype rows: pyarrow.Table
         :param primary_key: the table's key, as :meth:`upsert_many` takes it
         :ptype primary_key: KeyColumn | KeyColumns
+        :param unique_keys: the rows hold each key once already (read from a table keyed by it), so the last row of
+            each key is every row and none is looked for
+        :ptype unique_keys: bool
         :return: the columns written, and the rows in them, in that order
         :rtype: tuple[list[str], pyarrow.Table]
         :raises KeyError: when a key column is not among the rows' columns, as a dict row lacking it is refused
@@ -1336,7 +1341,7 @@ class DuckDBBackend:
         absent = [c for c in key if c not in named] if rows.num_rows else []
         if absent:
             raise KeyError(absent[0])
-        if rows.num_rows and key:
+        if rows.num_rows and key and not unique_keys:
             # the last row of each key, as a batch of dict rows keeps it
             indexed = rows.select(key).append_column("__row", pa.array(range(rows.num_rows), pa.int64()))
             last = indexed.group_by(key, use_threads=False).aggregate([("__row", "max")]).column("__row_max")
@@ -1604,7 +1609,15 @@ class DuckDBBackend:
         self._stage_name(stage)
         return stage[len(STAGE_PREFIX) :].replace('"', '""')
 
-    def stage_rows(self, stage: str, table: str, rows: Any, key: Annotated[Sequence[str], DeclaredKey]) -> int:
+    def stage_rows(
+        self,
+        stage: str,
+        table: str,
+        rows: Any,
+        key: Annotated[Sequence[str], DeclaredKey],
+        *,
+        unique_keys: bool = False,
+    ) -> int:
         """add rows to the staging table ``stage``, shaped as ``table`` and made on first use: rows no reader of
         ``table`` sees until :meth:`apply_staged` moves them in.
 
@@ -1620,6 +1633,10 @@ class DuckDBBackend:
         :ptype rows: pyarrow.Table
         :param key: the table's key columns
         :ptype key: Annotated[Sequence[str], DeclaredKey]
+        :param unique_keys: the rows hold each key once already (a checkpoint's part, written from the copy's own
+            table, keyed by its primary key): no last row of each key is looked for (:meth:`storage_arrow`). A
+            duplicate that got in anyway is refused by the table's primary key when the stage is applied
+        :ptype unique_keys: bool
         :return: the rows staged
         :rtype: int
         :raises ValueError: when ``table`` is unknown or ``stage`` is not a staging table's name
@@ -1633,7 +1650,7 @@ class DuckDBBackend:
                     f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT * FROM {quote_identifier(table)} WHERE FALSE"
                 )  # noqa: S608
             return 0
-        _, stored = self.storage_arrow(table, rows, tuple(key))
+        _, stored = self.storage_arrow(table, rows, tuple(key), unique_keys=unique_keys)
         with self._db_lock:
             self._db.execute(
                 f"CREATE TABLE IF NOT EXISTS {quoted} AS SELECT * FROM {quote_identifier(table)} WHERE FALSE"
