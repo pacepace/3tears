@@ -31,12 +31,14 @@ from pydantic import ValidationError
 from threetears.evals.analysis import blind_read as core
 from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.analysis.blind_read import (
+    BlindClose,
     blind_sheet,
     close_blind_read,
     draw_blind_read,
     exact_sign_test_p,
     sample_standing,
 )
+from threetears.evals.analysis.checks import blind_read_checks
 from threetears.evals.quick import blind as files
 from threetears.evals.quick.blind import (
     SHEET_COLUMNS,
@@ -170,6 +172,13 @@ def _answer(
 
 def _with(read: BlindRead, answers: list[BlindAnswer]) -> BlindRead:
     return read.model_copy(update={"answers": answers})
+
+
+def _lines(closed: BlindClose, results: list[EvalResult], **kwargs: Any) -> list[str]:
+    """What the print says of the judge, from the checks the closed read yields."""
+    family = kwargs.pop("family_of", lambda model: model.split("/", 1)[0] if "/" in model else None)
+    checks = blind_read_checks(closed, results, family_of=family, judge_models=kwargs.pop("judge_models", ()))
+    return judge_lines(closed.read, checks=checks, **kwargs)
 
 
 # --- the draw -------------------------------------------------------------------------------------------------------
@@ -488,9 +497,7 @@ def test_a_judge_that_passes_everything_is_shown_by_the_table_where_kappa_says_n
     assert reading.tier != "calibrated"
     table = reading.table
     assert table is not None and (table.rater_fail_judge_pass, table.both_fail, table.detection) == (3, 0, 0.0)
-    lines = judge_lines(
-        close_blind_read(_with(read, answers), results).read, labels_name="labels.csv", labels_there=True
-    )
+    lines = _lines(close_blind_read(_with(read, answers), results), results, labels_name="labels.csv", labels_there=True)
     assert lines[0] == "judge: 30 of 30 cases read blind, in the drawn order (a random sample)"
     assert "30 results from 30 cases" in lines[1] and lines[1].endswith(
         "the judge failed 0 of the 3 answers you failed"
@@ -629,7 +636,7 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
     assert not reading.shares_family and report.reviewer_checks == [] and report.not_checked == {}
     (preference,) = report.preferences
     assert (preference.anchor, preference.anchor_names) == ("reference", [reviewer])
-    lines = judge_lines(closed.read, labels_name=None, labels_there=False, shown={})
+    lines = _lines(closed, results, labels_name=None, labels_there=False, shown={})
     assert lines[0] == (
         f"judge: 24 of 24 cases read blind by a model ({reviewer}), in the drawn order (a random sample)"
     )
@@ -644,13 +651,14 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
 def test_a_model_that_is_the_judge_s_own_is_refused_and_one_of_its_family_is_said() -> None:
     results, evidence = _campaign(24)
     read = _draw(results, evidence)
-    own = close_blind_read(_with(read, [_reference(read, n, JUDGE_MODEL) for n in range(24)]), results).read
+    closed_own = close_blind_read(_with(read, [_reference(read, n, JUDGE_MODEL) for n in range(24)]), results)
+    own = closed_own.read
     assert own.report is not None and own.report.agreement == []
     assert own.report.not_checked == {JUDGE_MODEL: [core.REFUSED_SAME_MODEL]}
     assert (
         f"  not checked against a model ({JUDGE_MODEL}): the reviewer is the judge's own model, so its answers repeat "
         "the judge and are not read as a check of it"
-    ) in judge_lines(own, labels_name=None, labels_there=False)
+    ) in _lines(closed_own, results, labels_name=None, labels_there=False)
     # Named as another model, and served by the judge's on ONE case of the 24: refused all the same.
     served = [
         _reference(read, n, "alias/reviewer", reviewer_served_model=JUDGE_MODEL if n == 5 else "alias/reviewer-1")
@@ -664,9 +672,12 @@ def test_a_model_that_is_the_judge_s_own_is_refused_and_one_of_its_family_is_sai
         _with(read, [_reference(read, n, "judge-alias") for n in range(24)]), results, judge_models=["judge-alias"]
     ).read.report
     assert asked is not None and asked.not_checked == {"judge-alias": [core.REFUSED_SAME_MODEL]}
-    family = close_blind_read(_with(read, [_reference(read, n, "acme/reviewer-2") for n in range(24)]), results).read
-    assert family.report is not None and family.report.agreement[0].shares_family
-    assert any("one provider's models" in line for line in judge_lines(family, labels_name=None, labels_there=False))
+    family = close_blind_read(_with(read, [_reference(read, n, "acme/reviewer-2") for n in range(24)]), results)
+    assert family.read.report is not None and family.read.report.agreement[0].shares_family
+    assert any(
+        "acme/reviewer-2 and the judge are models of one family" in line
+        for line in _lines(family, results, labels_name=None, labels_there=False)
+    )
 
 
 def test_a_model_whose_served_model_is_not_recorded_on_every_answer_is_not_a_check_and_says_why() -> None:
@@ -677,12 +688,13 @@ def test_a_model_whose_served_model_is_not_recorded_on_every_answer_is_not_a_che
         _reference(read, n, "other/reviewer-9", **({"reviewer_served_model": None} if n == 7 else {}))
         for n in range(24)
     ]
-    closed = close_blind_read(_with(read, partly), results).read
+    partly_closed = close_blind_read(_with(read, partly), results)
+    closed = partly_closed.read
     assert closed.report is not None and closed.report.agreement == []
     assert closed.report.not_checked == {
         "other/reviewer-9": [core.REFUSED_UNRECORDED.format(side="the reviewer's answers")]
     }
-    lines = judge_lines(closed, labels_name=None, labels_there=False)
+    lines = _lines(partly_closed, results, labels_name=None, labels_there=False)
     assert (
         "  not checked against a model (other/reviewer-9): which model served the reviewer's answers was not "
         "recorded, so the reviewer cannot be shown to be another model than the judge, and its answers are not read "
@@ -724,7 +736,7 @@ def test_a_person_s_reading_decides_once_it_is_decided_and_the_anchor_is_measure
     assert (by_anchor["person"].pairs, by_anchor["reference"].pairs) == (6, 48)
     (check,) = few.read.report.reviewer_checks
     assert (check.reviewer, check.dim, check.outputs, check.exact_agreement) == (reviewer, GROUNDED.name, 6, 1.0)
-    lines = judge_lines(few.read, labels_name="labels.csv", labels_there=True)
+    lines = _lines(few, results, labels_name="labels.csv", labels_there=True)
     assert f"  beside it, checked against a model ({reviewer}):" in lines
     assert any(line.startswith(f"    {reviewer} against people on answer.grounded: 6 outputs") for line in lines)
     # A whole person read decides it, whatever the reference says.
@@ -1083,16 +1095,16 @@ def test_a_case_answered_in_part_is_counted_and_a_missing_preference_is_said(tmp
     assert sample_standing(_with(read, [_answer(read, 0)]), "owner").partial == 0
 
 
-def test_with_no_labels_the_line_says_the_judge_is_uncalibrated_and_the_one_next_step() -> None:
+def test_with_no_labels_the_line_says_the_judge_is_not_checked_and_the_one_next_step() -> None:
     results, evidence = _campaign(4, arms=1)
     read = close_blind_read(_draw(results, evidence, arms=1), results).read
     assert judge_lines(read, labels_name="labels.csv", labels_there=False) == [
-        "judge: 0 of 4 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the "
-        "blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv; the "
-        "calibrated tier's floor is 20 judged answers per dimension and the read holds 4, so it needs 16 more"
+        "judge: 0 of 4 cases read blind: judge not checked (labels.csv is not there yet); next step: open the "
+        "blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv; a "
+        "check against people needs 20 judged answers per dimension and the read holds 4, so it needs 16 more"
     ]
     assert judge_lines(None, labels_name=None, labels_there=False) == [
-        "judge: no judged answer to read blind: judge uncalibrated"
+        "judge: no judged answer to read blind: judge not checked"
     ]
 
 

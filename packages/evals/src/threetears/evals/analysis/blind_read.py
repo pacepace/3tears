@@ -952,6 +952,8 @@ def _preference_groups(read: BlindRead, kind: str) -> list[list[BlindAnswer]]:
 #: host door calls it; until then it is read through a closed read's report.
 __all__ = [
     "PREFERENCE_MIN_ITEMS",
+    "REFUSED_SAME_MODEL",
+    "REFUSED_UNRECORDED",
     "BlindClose",
     "blind_sheet",
     "close_blind_read",

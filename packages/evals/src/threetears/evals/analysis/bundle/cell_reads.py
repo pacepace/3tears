@@ -16,6 +16,7 @@ from threetears.evals.analysis.agreement import (
 )
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier
 from threetears.evals.analysis.arms import surface_order
+from threetears.evals.analysis.checks import judge_checks
 from threetears.evals.analysis.cells import Cell
 from threetears.evals.analysis.reporting import (
     METRIC_OUTCOME,
@@ -244,6 +245,16 @@ def judged_measures(
                     ),
                 )
             )
+        # The checks of every judge that served a counted score here, read off the tier each was decided by: what
+        # the judge was checked against, on what, with what result.
+        judges = {
+            judge
+            for rows in scored[dimension].values()
+            for row in rows
+            if row.value is not None
+            and row.outcome not in (ResultOutcome.INFRA_EXCLUDE.value, JUDGE_CANNOT_TELL_OUTCOME)
+            and (judge := judge_key(result_by_id[row.result_id], dimension)) is not None
+        }
         measures.append(
             JudgedMeasure(
                 name=dimension,
@@ -254,6 +265,7 @@ def judged_measures(
                 axis="boundary" if dimension in boundary else "capability",
                 bar_threshold=bars.get(dimension),
                 arms=arms,
+                checks=judge_checks(tiers, judges),
             )
         )
     return measures

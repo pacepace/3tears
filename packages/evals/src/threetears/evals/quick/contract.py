@@ -536,7 +536,7 @@ class Eval:
                 margin=self.margin,
                 measure_order=self.plan.readings,
             )
-            read, _loose = read_blind(judge, host, keyed, control, scope_id, self.name)
+            read, loose = read_blind(judge, host, keyed, control, scope_id, self.name)
             drawn.extend([read.id] if read is not None else [])
             return with_judge_examples(
                 replace(
@@ -545,7 +545,7 @@ class Eval:
                     fields=tuple(self.plan.fields),
                     judge=judge,
                     disclosures=disclosures,
-                    **blind_reading(judge, read, keyed),
+                    **blind_reading(judge, read, keyed, host=host, loose=loose),
                 ),
                 examples,
             )

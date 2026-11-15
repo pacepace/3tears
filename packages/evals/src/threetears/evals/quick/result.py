@@ -71,6 +71,7 @@ from threetears.evals.kernel import (
     confusion_of,
 )
 from threetears.evals.analysis.blind_read import BlindClose, blind_sheet, close_blind_read, draw_blind_read
+from threetears.evals.analysis.checks import Check, blind_read_checks
 from threetears.evals.schema import BlindReadReport, CalibrationRating, CompletionClient, EvalResult
 from threetears.evals.schema.blind_read import BlindAnswer, BlindArm, BlindRead
 from threetears.evals.schema.models import DECLARED_NAME_CHARS
@@ -176,16 +177,14 @@ def _shown_arm_name(arm: str) -> str:
 
 @dataclass(frozen=True)
 class JudgeCalibration:
-    """How a judge's scores on one dimension agree with a person's labels, and the evidence tier that bears.
+    """How a judge's scores on one dimension agree with a person's labels: its check against people.
 
     :ivar dimension: The judged dimension.
     :ivar labels: The labels paired with a judge score.
     :ivar kappa: Cohen's kappa on pass/fail, the quadratic-weighted one on 1-5; ``None`` when undefined.
     :ivar lower: The kappa's one-sided 95% lower bound; ``None`` when it has none.
     :ivar upper: Its one-sided 97.5% upper bound; ``None`` when it has none.
-    :ivar calibration: How the calibration criterion reads: ``met``, ``not_met``, ``undecided`` or ``insufficient``.
-    :ivar tier: The evidence tier the judge's readings bear: ``calibrated``, ``separation``, ``incidental`` or
-        ``undetermined``.
+    :ivar calibration: How the check against people reads: ``met``, ``not_met``, ``undecided`` or ``insufficient``.
     """
 
     dimension: str
@@ -194,10 +193,9 @@ class JudgeCalibration:
     lower: float | None
     upper: float | None
     calibration: str
-    tier: str
 
     def line(self) -> str:
-        """The calibration as one line."""
+        """The check against people as one line."""
         if self.kappa is None:
             figure = "kappa undefined"
         else:
@@ -206,7 +204,7 @@ class JudgeCalibration:
             figure = f"kappa {forms.reading(self.kappa).text}"
             if self.lower is not None:
                 figure += f" (lower bound {forms.reading(self.lower).text})"
-        return f"{self.dimension}: {self.labels} label(s), {figure}, calibration {self.calibration}; tier {self.tier}"
+        return f"{self.dimension}: {self.labels} label(s), {figure}, checked against people: {self.calibration}"
 
 
 @dataclass(frozen=True)
@@ -515,7 +513,11 @@ class Result:
             ).read
             if kept_at is not None:
                 keep_reviewed(kept_at, again, name)
-            return replace(self, reviews_kept=kept_at, **blind_reading(judge, again, self.arms, kept_at))
+            return replace(
+                self,
+                reviews_kept=kept_at,
+                **blind_reading(judge, again, self.arms, kept_at, host=self.host, loose=loose),
+            )
 
         return await run_blocking(self.host.blocking_executor, closed)
 
@@ -1398,10 +1400,17 @@ def model_slug(model: str | CompletionClient) -> str:
 
 
 def blind_reading(
-    judge: Judge | None, read: BlindRead | None, arms: Mapping[str, EvalSummary], kept: Path | None = None
+    judge: Judge | None,
+    read: BlindRead | None,
+    arms: Mapping[str, EvalSummary],
+    kept: Path | None = None,
+    *,
+    host: EvalHost | None = None,
+    loose: Sequence[CalibrationRating] = (),
 ) -> dict[str, Any]:
     """What a result carries of its blind read, as plain values: the files it writes, the lines it prints, and the
-    judge's agreement with people. The read itself stays the engine's.
+    judge's agreement with people. The read itself stays the engine's; the lines are printed from the checks it
+    yields (:func:`~threetears.evals.analysis.checks.blind_read_checks`), read against the results ``host`` stores.
 
     :param judge: The eval's judge, or ``None``.
     :ptype judge: Judge | None
@@ -1411,14 +1420,20 @@ def blind_reading(
     :ptype arms: Mapping[str, EvalSummary]
     :param kept: The file a model reviewer's answers are kept in, or ``None``.
     :ptype kept: Path | None
+    :param host: The host the arms' results are stored in; ``None`` reads no check, and prints none.
+    :ptype host: EvalHost | None
+    :param loose: People's labels that are not on the read's draw, which its check against people counts as selected.
+    :ptype loose: Sequence[CalibrationRating]
     :return: The result's ``blind_read``, ``blind_read_files``, ``judge_read`` and ``calibrations``.
     :rtype: dict[str, Any]
     """
     if judge is None:
         return {"blind_read": None, "blind_read_files": {}, "judge_read": (), "calibrations": ()}
     report = read.report if read is not None else None
+    checks = _blind_checks(judge, read, arms, host, loose) if read is not None and host is not None else []
     lines = judge_lines(
         read,
+        checks=checks,
         # The file by its name, never the path it was read from: a path is the machine's, not the reading's.
         labels_name=None if judge.labels is None else judge.labels.name,
         labels_there=judge.labels is not None and judge.labels.is_file(),
@@ -1438,6 +1453,29 @@ def blind_reading(
         "judge_read": tuple(lines),
         "calibrations": calibrations_of(read),
     }
+
+
+def _blind_checks(
+    judge: Judge, read: BlindRead, arms: Mapping[str, EvalSummary], host: EvalHost, loose: Sequence[CalibrationRating]
+) -> list[Check]:
+    """Every check a closed read yields, against the results the host stores for its arms. Reads the store."""
+    results = _results_of(host, arms, read.scope_id)
+    report = read.report
+    closed = close_blind_read(
+        read.model_copy(update={"report": None}),
+        results,
+        other_ratings=loose,
+        unread=report.unread if report is not None else (),
+        judge_models=[judge.model],
+    )
+    return blind_read_checks(
+        closed,
+        results,
+        other_ratings=loose,
+        judge_models=[judge.model],
+        family_of=host.family_of,
+        candidate_models={arm: summary.candidate_model for arm, summary in arms.items()},
+    )
 
 
 def calibrations_of(read: BlindRead | None) -> tuple[JudgeCalibration, ...]:
@@ -1460,7 +1498,6 @@ def calibrations_of(read: BlindRead | None) -> tuple[JudgeCalibration, ...]:
             lower=reading.lower,
             upper=reading.upper,
             calibration=reading.calibration,
-            tier=reading.tier,
         )
         for reading in read.report.agreement
         if reading.anchor == "person"

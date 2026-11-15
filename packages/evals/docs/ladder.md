@@ -166,7 +166,7 @@ What it printed:
 
 ```text
 replies: reply passed 40 of 40 trials on 20 cases.
-judge: 0 of 20 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv
+judge: 0 of 20 cases read blind: judge not checked (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv
 judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))
 40 result(s): 40 scored, 0 excluded
   answer grounded (judged), scored pass/fail: 100%, 40 of 40 trials

@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a judge is told about by its checks: what it was checked against, on what, with one result
+
+**Added:** the check record is filled. A campaign bundle's judged dimension carries each of its judges' checks
+(`JudgedMeasure.checks`): against people and against itself, read off the two criteria its evidence tier was decided
+by. A blind read yields its checks (`analysis.checks.blind_read_checks`): the judge against people, the judge against
+each model that answered it (against itself where the model is the judge's own, and `insufficient`,
+`identity_unrecorded` where which model served either side was not recorded), and each such model against people, by
+its kappa and by its lean toward an arm over the cases both read on both arms. A model's own check is `met` only as
+an equivalence reading: at least 40 such cases, the lean's 95% interval inside a tenth of the scale (or the reading's
+margin), and its kappa above the bar; shown to lean over 10 cases or more it is `not_met`, `instrument_leans`; most
+read `undecided`. `analysis.checks.speaking_check` says which check speaks for a judge: people's once decided, else a
+decided check against a model not shown below the bar against people, else none.
+
+**Added:** `EvalHost.model_family` (optional): the host's word on which family a model is of; with none, the
+provider part of the id. A check against a model names the arms whose candidate is of its family, and whether the
+judge is.
+
+**Changed:** the quick print says what the judge was checked against and never a tier. `judge uncalibrated` reads
+`judge not checked`; the next step says `a check against people needs 20 judged answers per dimension`; a person's
+line reads `checked against people: ...`; a model's own check prints its lean; `one provider's models` reads
+`models of one family`. `JudgeCalibration.tier` is removed.
+
+**For hosts:** a host pinning the quick print's judge lines updates its match. Nothing stored moves: the stored tier
+is computed as before, and a model's answers move no tier. A bundle with a judged dimension now holds its checks, so
+its document and fingerprint move.
+
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
 **Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer

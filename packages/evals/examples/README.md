@@ -121,7 +121,7 @@ apart is not grading the run's replies right. That takes a person's labels on th
 missing in the line it never quiets:
 
 ```text
-judge: 0 of 20 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv
+judge: 0 of 20 cases read blind: judge not checked (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv
 ```
 
 Calibrating it is yours to do; no person's labels ship with the rung.

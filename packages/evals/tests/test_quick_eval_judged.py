@@ -586,7 +586,7 @@ async def test_a_miss_is_said_with_its_verdicts_in_the_print_and_on_the_page_bes
     lines = str(result).splitlines()
     said = "judge: 1 of 2 examples graded as they must be on every one of 2 repeats ($0.0012 over 4 call(s))"
     at = lines.index(said)
-    assert lines[at - 1].startswith("judge: 0 of 2 cases read blind: judge uncalibrated"), "read beside its labels"
+    assert lines[at - 1].startswith("judge: 0 of 2 cases read blind: judge not checked"), "read beside its labels"
     assert lines[at + 1] == f"  missed: {miss}"
     (block,) = [block for block in result.page.blocks if block.anchor == "judge-examples"]
     assert block.section == "provenance" and block.source == "calibration"

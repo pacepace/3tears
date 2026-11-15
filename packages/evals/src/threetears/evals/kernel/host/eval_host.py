@@ -265,6 +265,10 @@ class EvalHost:
         ``judge_case_author``, whose case's verdict is its author's label). ``None`` for a host that vouches for no
         one, and those operations then refuse every call: the engine never takes a verdict as a person's on a
         caller's word.
+    :ivar model_family: The host's word on which family a model id is of (a provider, a lineage: the host's to say),
+        read wherever a model checks a judge: a model of the judge's family, or of an arm's candidate's, may share a
+        lean with it that agreement cannot show, so a check against it says so (:meth:`family_of`). ``None`` reads the
+        provider segment of the id instead.
     """
 
     profile: HostProfile
@@ -276,6 +280,22 @@ class EvalHost:
     clients: CompletionClients | None = None
     template_checks: TemplateChecks | None = None
     attests_person: AttestsPerson | None = None
+    model_family: Callable[[str], str | None] | None = None
+
+    def family_of(self, model: str) -> str | None:
+        """Which family ``model`` is of: the host's word (:attr:`model_family`), else the part of the id before its
+        first ``/`` (the provider, as a routed id names it).
+
+        :param model: A model id.
+        :ptype model: str
+        :return: The family; ``None`` where neither reads one (the host says none, or the id names no provider), which
+            is not recorded and matches no other model's family.
+        :rtype: str | None
+        """
+        if self.model_family is not None:
+            return self.model_family(model)
+        provider, slash, _ = model.partition("/")
+        return provider if slash and provider else None
 
     def completion_clients(self, purpose: str) -> CompletionClients:
         """The host's client factory, or a refusal naming what needed one.

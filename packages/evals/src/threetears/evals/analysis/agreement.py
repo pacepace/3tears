@@ -69,6 +69,7 @@ compute it two ways.
 
 from __future__ import annotations
 
+import json
 import math
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -216,6 +217,30 @@ def judge_key(result: ResultView, dim: str) -> JudgeKey | None:
         result.judge_config_ids.get(dim),
         score.judge_temperature,
         sent_settings_key(score.judge_sent_settings),
+    )
+
+
+def judge_instrument(key: JudgeKey) -> str:
+    """The judge a check names as its instrument: the key's served model, config, temperature and sent settings.
+
+    The dimension and scale are left out, since a check names its criterion beside its instrument. One canonical form
+    (sorted keys, no spaces), so two checks of one judge name it alike, and two judges a dimension was scored by are
+    two instruments.
+
+    :param key: The judge.
+    :ptype key: JudgeKey
+    :return: The canonical form.
+    :rtype: str
+    """
+    return json.dumps(
+        {
+            "config": key.judge_config_id,
+            "model": key.judge_model,
+            "settings": key.judge_sent_settings,
+            "temperature": key.judge_temperature,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
@@ -649,6 +674,47 @@ def _agreement_numbers(scale: RubricScale, pairs: Sequence[_Pair]) -> _Agreement
         weighted_kappa=pooled if scale == "ordinal" else None,
         cannot_tell=sum(1 for p in pairs if p.other is None),
         interval=interval,
+    )
+
+
+class InstrumentAgreement(NamedTuple):
+    """One instrument's agreement with several raters over the items both read, as a tier's criterion reads it.
+
+    :ivar n: The pairs read, one per rater per item.
+    :ivar results: The distinct items behind the pooled figure.
+    :ivar agreement: Kappa on pass/fail, quadratic-weighted on 1-5, per rater and pooled by item; None where every
+        rater's is undefined.
+    :ivar interval: Its one-sided bounds (:func:`agreement_interval`); None where it has none.
+    """
+
+    n: int
+    results: int
+    agreement: float | None
+    interval: tuple[float, float] | None
+
+
+def instrument_agreement(scale: RubricScale, pairs: Sequence[tuple[int, int, str, str]]) -> InstrumentAgreement:
+    """How one instrument's scores agree with several raters' on the same items: the computation a judge's agreement
+    with people is, for an instrument that is not a judge (a model that answered a blind read, read against people).
+
+    :param scale: The items' scale.
+    :ptype scale: RubricScale
+    :param pairs: ``(instrument score, rater score, rater, item)`` per pair: an item is whatever names one read thing
+        (a result, or an output's label key).
+    :ptype pairs: Sequence[tuple[int, int, str, str]]
+    :return: The agreement; ``n`` 0 and no figure with no pairs.
+    :rtype: InstrumentAgreement
+    """
+    if not pairs:
+        return InstrumentAgreement(n=0, results=0, agreement=None, interval=None)
+    numbers = _agreement_numbers(
+        scale, [_Pair(judge=mine, other=theirs, rater=rater, result_id=item) for mine, theirs, rater, item in pairs]
+    )
+    return InstrumentAgreement(
+        n=numbers.n,
+        results=numbers.results,
+        agreement=agreement_statistic(scale, numbers.kappa, numbers.weighted_kappa),
+        interval=numbers.interval,
     )
 
 
@@ -1425,6 +1491,7 @@ __all__ = [
     "InterJudgeDimension",
     "InterJudgeTally",
     "JudgeAgreement",
+    "InstrumentAgreement",
     "JudgeKey",
     "JudgeSelfAgreement",
     "SelfAgreementDimension",
@@ -1438,9 +1505,11 @@ __all__ = [
     "TIER_LOWER_CONFIDENCE",
     "TIER_UPPER_CONFIDENCE",
     "agreement_interval",
+    "instrument_agreement",
     "inter_judge_agreement",
     "judge_agreement",
     "judge_evidence_tiers",
+    "judge_instrument",
     "judge_key",
     "judge_key_of",
     "judge_self_agreement",

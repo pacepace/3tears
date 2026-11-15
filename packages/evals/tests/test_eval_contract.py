@@ -523,9 +523,9 @@ async def test_a_judge_is_a_grader_its_answers_written_to_read_blind_and_read_ba
 
     first = await ev.run(store=tmp_path / "evals.sqlite")
     assert first.calibration_lines() == [
-        f"judge: 0 of 4 cases read blind: judge uncalibrated ({labels.name} is not there yet); next step: open the "
+        f"judge: 0 of 4 cases read blind: judge not checked ({labels.name} is not there yet); next step: open the "
         f"blind_read.html the report writes, answer its cases from the top, and save its labels as {labels.name}; "
-        "the calibrated tier's floor is 20 judged answers per dimension and the read holds 4, so it needs 16 more"
+        "a check against people needs 20 judged answers per dimension and the read holds 4, so it needs 16 more"
     ]
     written = first.write(tmp_path / "report")
     assert (written["blind_read"].name, written["blind_read_csv"].name) == ("blind_read.html", "blind_read.csv")
@@ -731,7 +731,7 @@ async def test_a_model_answers_the_blind_read_and_is_read_as_a_model_never_as_a_
         "judge: 8 of 8 cases read blind by a model (scripted/reviewer), in the drawn order (a random sample)"
     )
     assert lines[1] == "  checked against a model (scripted/reviewer), not yet against people:"
-    assert "scripted/reviewer and the judge are one provider's models" in "\n".join(lines)
+    assert "scripted/reviewer and the judge are models of one family" in "\n".join(lines)
     assert not any(line.startswith("preference: ") or line.startswith("next:") for line in lines)
     assert not any("calibrated" in line or "reference reviewer" in line for line in lines)
     # It chose output A every time, whatever was in it: the slots are balanced, so that reads as no preference, said.
