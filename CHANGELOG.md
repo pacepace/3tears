@@ -14,9 +14,12 @@ the outputs, the arms and how many reads were drawn over them before (`earlier_r
 rater sees: content, criteria and slots, and no arm, run, result or case id, judge score, label key or count of answers.
 `blind_read_answer` records a person's answer only when the host attests the caller relaying it for that person (403
 otherwise, nothing written). `blind_read_review` has the reviewer model the read declared when it was drawn answer the
-sheet, priced and admitted first, as a job; its answers enter the read only from inside that job. `blind_read_close`
-writes every answer as a rating (a person's as theirs, a model's as an agent's) and refuses later answers; a read closed
-before anyone answered every planned item reads its preference by the anytime test, valid wherever it stopped.
+sheet, priced and admitted first, as a job; its answers enter the read only from inside that job, and a job that fails
+to start leaves the read free for the next review. `blind_read_close` stores the closed read first, so an answer landing
+meanwhile refuses the close (409) and no rating exists for a read still open; it then writes every answer as a rating
+(a person's as theirs, a model's as an agent's) and refuses later answers. A rating write that fails reaches the caller
+with the read closed, and closing again writes the ratings still missing. A read closed before anyone answered every
+planned item reads its preference by the anytime test, valid wherever it stopped.
 `blind_read_get` and `blind_reads_list` read them back. A read is a new durable document (durable minor 17.3), carried
 by a campaign's export.
 

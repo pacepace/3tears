@@ -19,10 +19,12 @@ the job runs), for the one model the read declared when it was drawn. No action 
 slots: no arm, run, result or case id, no judge score, no label key, and no count of who preferred what. A read's line
 carries no check, preference or rating until it is closed.
 
-**Close** (:func:`blind_read_close`) writes each answer as a rating through :func:`~threetears.evals.run.rate_result`
+**Close** (:func:`blind_read_close`) stores what the core read, conditionally on the read as loaded, and refuses
+every later answer; only then does it write each answer as a rating through :func:`~threetears.evals.run.rate_result`
 (a person's as the person's, naming the read and the caller that relayed it; a model's as an agent's, counted nowhere
-as a person's), stores what the core read, and refuses every later answer. A read closed before any rater answered
-every planned item is closed early, and its preference is read by the anytime test.
+as a person's), so no rating exists for a read still open. A rating write that fails reaches the caller, and closing
+again writes what is missing. A read closed before any rater answered every planned item is closed early, and its
+preference is read by the anytime test.
 
 These are the catalogue's operations (``blind_read_create`` and its siblings), called by name through the action
 catalogue: none is exported from :mod:`threetears.evals.ops`.
@@ -32,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from typing import Final, Literal
 
 from pydantic import Field
@@ -73,7 +76,7 @@ from threetears.evals.schema.blind_read import (
     BlindVerdictTable,
 )
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.schema.models import RESERVED_DIM_IDS, EvalResult, EvalRun, RubricDim
+from threetears.evals.schema.models import RESERVED_DIM_IDS, CalibrationRating, EvalResult, EvalRun, RubricDim
 from threetears.evals.schema.reading_states import Maker, SampleKind, StateOf
 
 log = get_logger(__name__)
@@ -842,7 +845,8 @@ async def blind_read_review(host: OpsHost, read_id: str, scope_id: str) -> JobsS
     Each unanswered item is one call (:func:`~threetears.evals.run.blind_review.plan_review`), admitted together
     against the host's out-of-run cap under the purpose ``reviewer``; a cap that cannot pay refuses the call and
     nothing is spent. The read records the job before it starts, and the job's answers are kept only from inside it
-    (:func:`keep_review`). ``job_poll`` on the job returns the read's line once it ends.
+    (:func:`keep_review`); a job that fails to start gives the read back its earlier job, and the failure reaches the
+    caller, so a later review can start. ``job_poll`` on the job returns the read's line once it ends.
 
     :param host: The host whose clients and job manager serve the review.
     :ptype host: OpsHost
@@ -856,6 +860,7 @@ async def blind_read_review(host: OpsHost, read_id: str, scope_id: str) -> JobsS
     :raises ConflictError: The read is closed, or its review is already running.
     :raises ValidationFailedError: The read declared no reviewer, the reviewer has answered every item, or the cap
         cannot pay for the calls.
+    :raises StorageError: The job's record could not be written; nothing started, and the read is as it was.
     """
     eval_host = host.eval_host
     read, _ = await run_blocking(eval_host.blocking_executor, _loaded, eval_host, read_id, scope_id)
@@ -945,19 +950,70 @@ async def blind_read_review(host: OpsHost, read_id: str, scope_id: str) -> JobsS
     except BaseException:
         await client.aclose()
         raise
-    return await start_job(host, AdmittedJob(work=work, kind="action", target_id=REVIEW_ACTION, label=label))
+
+    def release(current: BlindRead) -> BlindRead:
+        # The claim this call made, and no later one, goes back to the job before it.
+        if current.review_job_id != work.record_id:
+            return current
+        return current.model_copy(update={"review_job_id": read.review_job_id})
+
+    try:
+        return await start_job(host, AdmittedJob(work=work, kind="action", target_id=REVIEW_ACTION, label=label))
+    # prawduct:ok-broad-except — not handled: a job that did not start releases its claim, and what refused is re-raised
+    except BaseException:
+        # A claim on a job with no record would refuse every later review of the read (job_poll finds no such job).
+        await run_blocking(eval_host.blocking_executor, _rewrite, eval_host, read_id, scope_id, release)
+        raise
 
 
 # --- close, and reading back -----------------------------------------------------------------------------------
 
 
-def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: str) -> BlindReadLine:
-    """Close the read: write its answers as ratings, store what the core read, and refuse every later answer.
+def _unwritten(host: EvalHost, ratings: Sequence[CalibrationRating], scope_id: str) -> list[CalibrationRating]:
+    """Those of a closed read's ``ratings`` the store does not hold: none is stored under the rating's id given at the
+    same time or later (a later one is the rater's own, which stands)."""
+    stored: dict[str, dict[str, CalibrationRating]] = {}
+    pending: list[CalibrationRating] = []
+    for rating in ratings:
+        if rating.result_id not in stored:
+            stored[rating.result_id] = {
+                each.id: each for each in host.storage.query_calibration_ratings(scope_id, result_id=rating.result_id)
+            }
+        held = stored[rating.result_id].get(rating.id)
+        if held is None:
+            pending.append(rating)
+            continue
+        mine, theirs = _instant(rating.rated_at), _instant(held.rated_at)
+        if mine is not None and theirs is not None:
+            behind = theirs < mine
+        else:
+            behind = held.rated_at != rating.rated_at
+        if behind:
+            pending.append(rating)
+    return pending
 
-    Each verdict is written through :func:`~threetears.evals.run.rate_result`, which reads the result and binds the
-    rating to what was rated: a person's as the person's (naming the read and the caller that relayed it), a model's
-    as an agent's. A rating not written (its result gone, or the person's own later rating stands) is listed with
-    why, never dropped. A read closed before any rater answered every planned item is closed early, and its
+
+def _instant(stamp: str) -> datetime | None:
+    """``stamp`` as an aware instant; None where it is not ISO-8601 with an offset (then it is compared as written)."""
+    try:
+        instant = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    return instant if instant.tzinfo is not None else None
+
+
+def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: str) -> BlindReadLine:
+    """Close the read: store what the core read, refuse every later answer, then write its answers as ratings.
+
+    The conditional save of the closed read decides the close: an answer that lands after the read was loaded
+    refuses it (ask again), and no rating is written for a read still open. Only then is each verdict written through
+    :func:`~threetears.evals.run.rate_result`, which reads the result and binds the rating to what was rated: a
+    person's as the person's (naming the read and the caller that relayed it), a model's as an agent's. A rating not
+    written (its result gone, or the person's own later rating stands) is listed with why, never dropped.
+
+    A rating write that fails (the store) reaches the caller with the read closed. Closing it again writes the ratings
+    the first close did not; a closed read whose ratings are all stored, or none of whose missing ones can be written,
+    refuses a second close. A read closed before any rater answered every planned item is closed early, and its
     preference is the anytime test's.
 
     :param host: The host whose store holds the read and its results.
@@ -971,10 +1027,11 @@ def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
     :return: The closed read, with what it found and the ratings written.
     :rtype: BlindReadLine
     :raises NotFoundError: No such read.
-    :raises ConflictError: It is already closed, or an answer landed while it was being closed; ask again.
+    :raises ConflictError: It is already closed with nothing left to write, or an answer landed while it was being
+        closed; ask again.
+    :raises StorageError: A rating could not be written; the read is closed, and closing it again writes the rest.
     """
     read, etag = _loaded(host, read_id, scope_id)
-    _refuse_closed(read, "second close")
     result_ids = list(dict.fromkeys(output.result_id for item in read.items for output in item.outputs))
     results = [
         result for result_id in result_ids if (result := host.storage.load_eval_result(result_id, scope_id)) is not None
@@ -983,12 +1040,18 @@ def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
     judges = {
         run.judge_model for run_id in run_ids if (run := host.storage.load_eval_run(run_id, scope_id)) is not None
     }
-    closed = close_blind_read(
-        read, results, judge_models={judge for judge in judges if judge is not None}, closed_by=closed_by
-    )
+    judge_models = {judge for judge in judges if judge is not None}
+    if read.closed_at is None:
+        closed = close_blind_read(read, results, judge_models=judge_models, closed_by=closed_by)
+        host.storage.save_blind_read(closed.read, if_match=etag)
+        stored, ratings = closed.read, closed.ratings
+    else:
+        # A close whose rating writes failed after the read was closed: what it left unwritten, from the read as stored.
+        stored = read
+        ratings = _unwritten(host, close_blind_read(read, results, judge_models=judge_models).ratings, scope_id)
     written = 0
     not_written: list[str] = []
-    for rating in closed.ratings:
+    for rating in ratings:
         try:
             rate_result(
                 host.storage,
@@ -1007,17 +1070,20 @@ def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
             not_written.append(f"{rating.rater} on {rating.rubric_dim} of result {rating.result_id}: {refused}")
             continue
         written += 1
-    host.storage.save_blind_read(closed.read, if_match=etag)
+    if read.closed_at is not None and not written:
+        # Every rating already stored, or none of the missing ones can be written: nothing is left to close.
+        _refuse_closed(read, "second close")
     log.info(
-        "eval.blind_read_close read=%s scope=%s by=%s early=%s ratings=%d not_written=%d",
+        "eval.blind_read_close read=%s scope=%s by=%s early=%s ratings=%d not_written=%d resumed=%s",
         read_id,
         scope_id,
         closed_by,
-        closed.read.closed_early,
+        stored.closed_early,
         written,
         len(not_written),
+        read.closed_at is not None,
     )
-    return _line_of(host, closed.read, ratings_written=written, ratings_not_written=not_written)
+    return _line_of(host, stored, ratings_written=written, ratings_not_written=not_written)
 
 
 def blind_read_get(host: EvalHost, read_id: str, scope_id: str) -> BlindReadLine:
