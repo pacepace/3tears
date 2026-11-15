@@ -40,7 +40,9 @@ random sample (the first items of a blind read's drawn order) or rate every coun
 person chose to give leave it `not_available`, `not_drawn_at_random`; the code-only report says "not drawn at random".
 `PredictionPoweredReading.unavailable_reason`, a sentence, is replaced by `state`, a shared state and reason. Nothing
 stored changes: a frozen bundle or decision surface stored with the old key reads with it dropped and, where its
-estimate is missing, `not_available` with `too_few`, the only meaning the sentence had. No version moves.
+estimate is missing, `not_available` with `too_few`, the only meaning the sentence had. A bundle frozen before
+the evidence manifest keeps its `v2:` fingerprint, which was taken over the old key: that fingerprint is computed
+with the key put back exactly as stored, rebuilt from `n_labelled` and `min_labelled`. No version moves.
 
 **For hosts:** nothing stored needs regenerating. Code that read `PredictionPoweredReading.unavailable_reason` reads
 `state.reason` (`too_few` or `not_drawn_at_random`). A cell estimate that read ratings of part of a cell given

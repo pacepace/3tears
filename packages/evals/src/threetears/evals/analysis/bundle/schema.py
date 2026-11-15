@@ -4231,7 +4231,9 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     a value falls on a twelfth-figure rounding boundary; that is why version 3 replaced it. Its pre-image is frozen:
     a field added to the bundle since never enters it, and a document assembled since the manifest existed has each
     Hedges' g put back to the small-sample correction version 2 was taken with (:func:`_with_v2_hedges`), so a
-    stored ``v2:`` fingerprint is matched by the same evidence assembled today.
+    stored ``v2:`` fingerprint is matched by the same evidence assembled today. Each people's-ratings estimate is put
+    back to the ``unavailable_reason`` every version 2 build wrote (:func:`_with_v2_unavailable_reason`), so a stored
+    document read today, which dumps ``state`` instead, still matches.
 
     **Names are presentation, never evidence** (owner ruling, 2026-11-11), in both versions: naming or renaming a
     measure, a lever, a level or a test case moves no fingerprint. **So is pricing** (owner rulings, 2026-10-28 and
@@ -4296,6 +4298,8 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
         evidence["declared"] = {**declared, "design": unnamed_axes(design)}
     if _ADDED_SINCE_V2:
         evidence = _without(evidence, _ADDED_SINCE_V2)
+    # Every v2: fingerprint was taken while a people's-ratings estimate said why it was missing in a sentence.
+    evidence = _with_v2_unavailable_reason(evidence)
     if isinstance(manifest, Mapping):
         # Assembled since version 3 landed, so with the exact small-sample correction: version 2 read the earlier one.
         evidence = _with_v2_hedges(evidence)
@@ -4309,6 +4313,42 @@ def _without(value: Any, fields: frozenset[str]) -> Any:
     if isinstance(value, list):
         return [_without(held, fields) for held in value]
     return value
+
+
+def _with_v2_unavailable_reason(value: Any) -> Any:
+    """``value`` with each people's-ratings estimate (a ``prediction_powered`` mapping, at any depth) as version 2
+    hashed it: ``unavailable_reason`` in place of ``state``.
+
+    Every build that stored a ``v2:`` fingerprint wrote ``unavailable_reason`` beside every field of the estimate,
+    null where ``mean`` is stated, else one sentence built from two fields the estimate still stores
+    (:func:`_v2_unavailable_reason`); ``state`` replaced it, and a stored one is read into ``state``. So the key is put
+    back exactly, and a stored ``v2:`` fingerprint is matched by the same document read today. An estimate already in
+    the old shape (no ``state``) is left as it is, and so is one whose ``state`` no version 2 build could write
+    (``not_drawn_at_random``): its evidence did not exist then, and it is not dressed as if it had.
+    """
+    if isinstance(value, list):
+        return [_with_v2_unavailable_reason(held) for held in value]
+    if not isinstance(value, Mapping):
+        return value
+    moved = {key: _with_v2_unavailable_reason(held) for key, held in value.items()}
+    if isinstance(estimate := moved.get("prediction_powered"), Mapping) and "state" in estimate:
+        state = estimate["state"]
+        if state is None or (
+            isinstance(state, Mapping) and state.get("state") == "not_available" and state.get("reason") == "too_few"
+        ):
+            old = {key: held for key, held in estimate.items() if key != "state"}
+            old["unavailable_reason"] = None if state is None else _v2_unavailable_reason(estimate)
+            moved["prediction_powered"] = old
+    return moved
+
+
+def _v2_unavailable_reason(estimate: Mapping[str, Any]) -> str:
+    """The one sentence every version 2 build wrote for a missing people's-ratings estimate (#598 until ``state``
+    replaced it), from the labelled observations and the minimum it froze beside them."""
+    return (
+        f"not available: {estimate['n_labelled']} of the counted scores here were rated by a person, under the "
+        f"{estimate['min_labelled']} a prediction-powered estimate is stated from."
+    )
 
 
 def _hedges_j_v2(df: int) -> float:

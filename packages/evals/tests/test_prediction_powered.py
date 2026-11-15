@@ -18,9 +18,10 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import assemble_context_bundle
 from threetears.evals.analysis.agreement import person_scores_by_result
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, evidence_digest
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.report import TableBlock, build_code_only_report
+from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.stats import (
     PPI_MIN_LABELLED_RESULTS,
     clustered_standard_error,
@@ -390,3 +391,50 @@ class TestAReadingStoredBeforeStateStillReads:
         assert AnalysisContextBundle.from_dict(dumped) == frozen
         surface_again = read.aspects[0].decision_surface.to_dict()
         assert all("unavailable_reason" not in reading for reading in _readings(surface_again))
+
+    def test_one_frozen_before_the_evidence_manifest_matches_the_fingerprint_taken_over_the_old_key(self) -> None:
+        # A shape-66 aspect frozen before the manifest existed carries a v2: fingerprint, the digest of the document
+        # itself: taken over `unavailable_reason`, which the re-read bundle no longer dumps. The frame is fingerprinted
+        # over that old document, as the build that froze it did, never over today's shape.
+        store = InMemoryDocumentStore()
+        fixture = off_loop(ops_fixture, store=store)
+        host = fixture.host.eval_host
+        _, bundle = _bundle(rated={0: 36, 1: 3}, shift=-1)
+        analysis = make_analysis(
+            campaign_id=fixture.campaign.id,
+            scope_id=TOYHOST_SCOPE,
+            aspects=[analysed_aspect(bundle, decision_surface=bundle_decision_surface(bundle))],
+            campaign_bundle=campaign_bundle(bundle).frame(),
+        )
+        host.storage.save_analysis(analysis)
+        before = analyses_list(host, fixture.campaign.id, TOYHOST_SCOPE)
+
+        old = _as_stored_before_state({key: value for key, value in bundle.to_dict().items() if key != "evidence"})
+        assert isinstance(old, dict)
+        held = _readings(old)
+        assert any(reading["unavailable_reason"] is None for reading in held)
+        assert any(reading["unavailable_reason"] is not None for reading in held)
+        stored_fingerprint = evidence_digest(old)
+        assert stored_fingerprint.startswith("v2:")
+        raw = store.get(analysis.id, TOYHOST_SCOPE)
+        assert raw is not None
+        raw["aspects"][0] = {**raw["aspects"][0], "bundle": old, "bundle_fingerprint": stored_fingerprint}
+        raw["campaign_bundle"]["aspects"] = [{"aspect": bundle.aspect, "fingerprint": stored_fingerprint}]
+        store.upsert(raw)
+
+        # Read today, the bundle answers the fingerprint it was frozen under, in the version it was frozen in.
+        read = host.storage.load_analysis(analysis.id, TOYHOST_SCOPE)
+        assert read is not None
+        reread = AnalysisContextBundle.from_dict(dict(read.aspects[0].bundle))
+        assert all("unavailable_reason" not in reading for reading in _readings(reread.to_dict()))
+        assert reread.fingerprint() == stored_fingerprint
+        assert analysis_campaign_bundle(read).aspects[0] == reread
+        # It lists as it did, line for line: nothing about it needs regenerating.
+        assert analyses_list(host, fixture.campaign.id, TOYHOST_SCOPE) == before
+
+        # Saved again, it still reads as frozen.
+        host.storage.save_analysis(read)
+        again = host.storage.load_analysis(analysis.id, TOYHOST_SCOPE)
+        assert again is not None
+        assert analysis_campaign_bundle(again).aspects[0] == reread
+        assert analyses_list(host, fixture.campaign.id, TOYHOST_SCOPE) == before
