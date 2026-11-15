@@ -494,10 +494,10 @@ async def attest_served_model(
     (``EvalRun.served_model_attestation``: those whose candidate rows named no model when it was made). **No row is
     touched**: the evidence stays as the responses left it, so the identity disclosure stays true and a model a
     response named is always told from one a host stated. A reading that pools by answering model (a campaign's
-    cells, pass^k) reads those results' silent rows THROUGH the statement
-    (:func:`~threetears.evals.analysis.reporting.served_level`), and the bundle carries the fact that it did
-    (``ArmServedModel.n_attested``, ``RunSummary.attested_coordinates``). A comparison set, a history or a pivot does
-    not read it.
+    cells, pass^k, a comparison set's badges) reads those results' silent rows THROUGH the statement
+    (:func:`~threetears.evals.analysis.reporting.pooled_as`), and the bundle carries the fact that it did
+    (``ArmServedModel.n_attested``, ``RunSummary.attested_coordinates``). History and a pivot group by contestant and
+    read no served model at all.
 
     Every run is checked before any is written. Stating again what an earlier attestation stated is no error: the
     run is named in ``already_attested``. Stating ANOTHER model over an attestation is refused, and so is a run none

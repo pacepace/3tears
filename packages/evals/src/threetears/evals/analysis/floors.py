@@ -1177,7 +1177,7 @@ def aspect_pass_rate(
     :return: The rate, its bounded interval at ``confidence`` and the per-case shares it read (:class:`RateReading`),
         from the bundle's ``floor_contrasts`` whatever the family compares; its ``samples`` and ``interval`` None only
         where a side has fewer than two cases with a usable trial, or no control resolved. None where either arm is
-        off the scoreboard, or holds a cell per answering model on this aspect (as :func:`floor_readings` withholds).
+        off the scoreboard, or is not read as one arm against the other on this aspect (as :func:`floor_readings` withholds).
     :rtype: RateReading | None
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
