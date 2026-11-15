@@ -4170,7 +4170,7 @@ class _ModuleWalk(ast.NodeVisitor):
     def _rendered_calls(self, call: ast.Call) -> tuple[list[ast.Call], set[str]]:
         """the keyed helper call with each ``Derived(<renderer>(<template>, "<table>", ...), ...)`` it reads holding the
         text the module's declared renderer answers for it: that template's instance for that entry of the map
-        (:meth:`.sentinels.SentinelTemplates.rendered`). A derived relation the module renders from a declared template
+        (:meth:`.sentinels.SentinelTemplates.instance_for`). A derived relation the module renders from a declared template
         over a closed map is that template, filled from the map, so the call is judged over it (and it on its own, as a
         written derived relation is, where its template is). None when the module declares no renderer, the call reads
         no such ``Derived``, or a renderer call does not name a declared template and an entry of the map as literals:
@@ -4191,7 +4191,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if sentinels is None or sentinels.renderer is None:
             return [], set()
 
-        def rendered(node: ast.AST) -> str | None:
+        def instance_of(node: ast.AST) -> str | None:
             if not (isinstance(node, ast.Call) and _final(node) == "Derived"):
                 return None
             sql = next((given.value for given in node.keywords if given.arg == "sql"), None)
@@ -4206,12 +4206,12 @@ class _ModuleWalk(ast.NodeVisitor):
                 and isinstance(sql.args[1].value, str)
             ):
                 return None
-            return sentinels.rendered(sql.args[0].id, sql.args[1].value)
+            return sentinels.instance_for(sql.args[0].id, sql.args[1].value)
 
         copied = deepcopy(call)
         texts: set[str] = set()
         for node in ast.walk(copied):
-            text = rendered(node)
+            text = instance_of(node)
             if text is not None:
                 assert isinstance(node, ast.Call)
                 node.args, node.keywords = [ast.Constant(text)], []

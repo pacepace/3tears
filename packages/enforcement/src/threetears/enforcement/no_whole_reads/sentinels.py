@@ -12,9 +12,9 @@ written: its table is a sentinel, ``unknown-schema``. Nothing is let through unj
 A declaration naming a ``renderer`` (the module's function rendering a template, filled from the map, into SQL text)
 lets a keyed helper written in the module read a rendered template as a derived relation,
 ``Derived(<renderer>(<template>, "<table>", ...), params)``: the walk reads that relation as the template's instance
-for that entry (:meth:`SentinelTemplates.rendered`), so the helper's read over it is judged, as is the instance on its
-own. A ``Derived`` over any other run-time text, or a renderer call not naming a declared template and an entry as
-literals, stays unseen.
+for that entry (:meth:`SentinelTemplates.instance_for`), so the helper's read over it is judged (the instance on its
+own where its template is written). A ``Derived`` over any other run-time text, or a renderer call not naming a
+declared template and an entry as literals, stays unseen.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ class SentinelTemplates:
     renderer: str | None = None
     texts: Mapping[str, str] = field(default_factory=dict)
 
-    def rendered(self, template: str, table: str) -> str | None:
+    def instance_for(self, template: str, table: str) -> str | None:
         """the text the renderer answers for ``template`` filled with the map's entry ``table``
         (``<renderer>(<template>, "<table>", ...)``): the template's instance for that entry. None when there is no
         renderer, the template is not declared or its text was not read, or the entry is not in the map or does not
