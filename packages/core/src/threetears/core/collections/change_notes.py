@@ -2288,7 +2288,7 @@ class _StreamedChanges:
 
         The ``COPY`` streams into a buffer while the worker folds the page before: the loop moves bytes only. A
         page's last chunk may go on in the next page, so the worker answers the bytes it folded and the rest is
-        handed again at the next page's front (:func:`~threetears.core.change_note_fold._fold_page`).
+        handed again at the next page's front (:func:`~threetears.core.change_note_fold_job._fold_page`).
 
         :param conn: the connection, inside the restore's transaction
         :ptype conn: Any
