@@ -25,20 +25,32 @@ from threetears.agent.knowledge.collections import (
 )
 
 
-class _StubPool:
-    """L3 pool stand-in that records the last query and returns fixed rows."""
+#: what the caller's grants read answers in these tests: no customer, so only platform rows are visible
+_NO_GRANTS = {"is_all": False, "customer_ids": []}
 
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
+
+class _StubPool:
+    """L3 pool stand-in that records the last query and returns fixed rows: the listing's, or, for a read of the
+    bound tables, ``tables``; the caller's grants answer :data:`_NO_GRANTS`."""
+
+    def __init__(self, rows: list[dict[str, Any]], tables: list[dict[str, Any]] | None = None) -> None:
         self._rows = rows
+        self._tables = tables or []
         self.sql: str | None = None
         self.params: tuple[Any, ...] | None = None
         self.customer_scope: Any = None
+        self.grants_read = 0
+
+    async def fetchrow(self, sql: str, *params: Any, customer_scope: Any) -> dict[str, Any]:
+        assert "role_assignments" in sql, sql
+        self.grants_read += 1
+        return dict(_NO_GRANTS)
 
     async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[dict[str, Any]]:
         self.sql = sql
         self.params = params
         self.customer_scope = customer_scope
-        return list(self._rows)
+        return list(self._tables if 'FROM "datasource_tables"' in sql else self._rows)
 
 
 def _entries_over(rows: list[dict[str, Any]]) -> PlaybookEntryCollection:
@@ -139,6 +151,7 @@ class TestRowToSnapshot:
 
 class TestRowToConceptSnapshot:
     async def test_builds_with_table_ref(self) -> None:
+        table_id = uuid7()
         row = {
             "id": str(uuid7()),
             "customer_id": None,
@@ -148,15 +161,15 @@ class TestRowToConceptSnapshot:
             "aliases": ["actives"],
             "definition": "seen in last 30 days",
             "datasource_id": str(uuid7()),
-            "datasource_table_id": str(uuid7()),
+            "datasource_table_id": str(table_id),
             "sql_fragment": "last_seen > now() - interval '30 days'",
             "caveats": "excludes staff",
             "tags": ["metric"],
             "always_inject": False,
-            "bound_schema_name": "public",
-            "bound_table_name": "users",
         }
-        (snap,) = await _concepts_over([row]).list_visible_to_user(uuid7(), customer_scope=uuid7())
+        coll = ConceptCollection.__new__(ConceptCollection)
+        coll.l3_pool = _StubPool([row], tables=[{"id": str(table_id), "schema_name": "public", "table_name": "users"}])
+        (snap,) = await coll.list_visible_to_user(uuid7(), customer_scope=uuid7())
         assert snap.name == "active users"
         assert snap.aliases == ("actives",)
         assert snap.tags == ("metric",)
@@ -222,15 +235,16 @@ class TestPlaybookEntryCollectionSql:
         assert len(snaps) == 1
         sql = coll.l3_pool.sql
         assert sql is not None
-        assert "FROM playbook_entries" in sql
-        assert "status = 'active'" in sql
-        assert "datasource_id IN" not in sql  # no domain filter without datasource_id
+        assert 'FROM "playbook_entries"' in sql
+        assert "\"status\" = 'active'" in sql
+        assert '"datasource_id" IN' not in sql  # no domain filter without datasource_id
+        assert coll.l3_pool.grants_read == 1  # the caller's customers, read once
 
     async def test_list_visible_adds_datasource_gather(self) -> None:
         coll = PlaybookEntryCollection.__new__(PlaybookEntryCollection)
         coll.l3_pool = _StubPool([])
         await coll.list_visible_to_user(uuid7(), datasource_id=uuid7(), customer_scope=uuid7())
-        assert "datasource_id IN" in coll.l3_pool.sql
+        assert '"datasource_id" IN' in coll.l3_pool.sql
 
     async def test_list_visible_no_pool_returns_empty(self) -> None:
         coll = PlaybookEntryCollection.__new__(PlaybookEntryCollection)
@@ -270,9 +284,9 @@ class TestConceptCollectionSql:
         )
         sql = coll.l3_pool.sql
         assert sql is not None
-        assert "FROM concepts" in sql
-        assert "status = 'active'" in sql
-        assert "datasource_table_id =" in sql
+        assert 'FROM "concepts"' in sql
+        assert "\"status\" = 'active'" in sql
+        assert '"datasource_table_id" =' in sql
 
     async def test_list_own_drafts_target_concept(self) -> None:
         coll = ConceptCollection.__new__(ConceptCollection)
@@ -317,6 +331,9 @@ class _WriteLandsDuringReadPool:
         self._before = before
         self._after = after
         self.fetches = 0
+
+    async def fetchrow(self, sql: str, *params: Any, customer_scope: Any) -> dict[str, Any]:
+        return dict(_NO_GRANTS)
 
     async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[dict[str, Any]]:
         self.fetches += 1
@@ -422,8 +439,6 @@ def _concept_row() -> dict[str, Any]:
         "caveats": None,
         "tags": [],
         "always_inject": False,
-        "bound_schema_name": None,
-        "bound_table_name": None,
     }
 
 

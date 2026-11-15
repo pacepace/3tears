@@ -143,3 +143,44 @@ async def test_draft_owner_indexes(conn: asyncpg.Connection) -> None:
     assert plan_uses_index(entry_plan, "playbook_entries_draft_owner_idx"), entry_plan.plan
     concept_plan = await explain_statement(conn, concepts, *concept_args)
     assert plan_uses_index(concept_plan, "concepts_draft_owner_idx"), concept_plan.plan
+
+
+class _GrantedPool:
+    """the rbac-read proxy pool a visible listing reads through, its caller's grants answered as ``customers`` (the
+    grant tables are not this schema's); every listing statement recorded, unrun."""
+
+    def __init__(self, customers: list[uuid.UUID]) -> None:
+        self._customers = customers
+        self.asked: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def fetchrow(self, sql: str, *params: Any, customer_scope: Any) -> dict[str, Any]:
+        assert "role_assignments" in sql, sql
+        return {"is_all": False, "customer_ids": self._customers}
+
+    async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[Any]:
+        self.asked.append((sql, params))
+        return []
+
+
+async def test_visible_by_customer_indexes(conn: asyncpg.Connection) -> None:
+    """Flips if a caller's visible entries or concepts (a platform row, or one of the caller's customers, oldest
+    first, a page at a time) stop reading their table's customer-led listing index (the hub's v177)."""
+    customers = [uuid.uuid4() for _ in range(200)]
+    customer = "CASE WHEN g % 100 = 0 THEN NULL ELSE ($1::uuid[])[1 + g % 200] END"
+    await _seed(conn, "playbook_entries", customer_id=customer, _params=(customers,))
+    await _seed(conn, "concepts", customer_id=customer, _params=(customers,))
+    pool = _GrantedPool(customers[:2])
+    registry = CollectionRegistry()
+    registry.configure(l3_pool=pool)
+    cfg = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
+    entries = PlaybookEntryCollection(registry=registry, config=cfg)
+    entries.l3_pool = pool
+    concepts = ConceptCollection(registry=registry, config=cfg)
+    concepts.l3_pool = pool
+    await entries.list_visible_to_user(uuid.uuid4(), customer_scope=uuid.uuid4())
+    await concepts.list_visible_to_user(uuid.uuid4(), customer_scope=uuid.uuid4())
+    (entries_sql, entry_args), (concepts_sql, concept_args) = pool.asked
+    entry_plan = await explain_statement(conn, entries_sql, *entry_args)
+    assert plan_uses_index(entry_plan, "playbook_entries_visible_by_customer"), entry_plan.plan
+    concept_plan = await explain_statement(conn, concepts_sql, *concept_args)
+    assert plan_uses_index(concept_plan, "concepts_visible_by_customer"), concept_plan.plan

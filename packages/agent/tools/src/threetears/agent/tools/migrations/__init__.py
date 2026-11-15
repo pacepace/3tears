@@ -39,6 +39,8 @@ version history:
 - v006 (CONTRACT, held) drops ``ix_context_items_lru`` (no read uses it):
   attached only with ``held_contract=True`` (the test schemas now; every
   deployment from the release after this one).
+- v007 (expand) adds ``ix_context_items_conv_created`` (a conversation's rows in
+  creation order) and drops the ``ix_context_items_conv`` it covers.
 """
 
 from __future__ import annotations
@@ -60,6 +62,9 @@ from threetears.agent.tools.migrations.v005_context_items_agent_id import (
 )
 from threetears.agent.tools.migrations.v006_contract_lru_index_dropped import (
     drop_lru_index,
+)
+from threetears.agent.tools.migrations.v007_conversation_created_index import (
+    add_conversation_created_index,
 )
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -97,6 +102,7 @@ def register(runner: MigrationRunner, *, held_contract: bool = False) -> Package
     pkg.version(5)(context_items_agent_id)
     if held_contract:
         pkg.version(6)(drop_lru_index)
+    pkg.version(7)(add_conversation_created_index)
     runner.register(pkg)
     return pkg
 

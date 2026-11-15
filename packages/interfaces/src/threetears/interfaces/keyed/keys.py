@@ -72,8 +72,9 @@ __all__ = [
     "register_table_keys",
     "serving_index",
     "register_partial_predicates",
+    "not_null_guards",
+    "partial_predicate",
     "stated_literals",
-    "stated_predicate",
 ]
 
 
@@ -267,8 +268,12 @@ class DeclaredIndex:
     :ivar descending: the columns it sorts descending
     :ivar primary: whether it is the table's primary key (the planner's own choice; never hinted)
     :ivar stated: a partial index's predicate as the ``(column, text)`` pairs it names (``WHERE status = 'proposed'``,
-        :func:`stated_predicate`): it serves only a read pinning each column to exactly that text; empty for a whole
+        :func:`partial_predicate`): it serves only a read pinning each column to exactly that text; empty for a whole
         index
+    :ivar guarded: the columns a partial index's predicate holds ``IS NOT NULL`` (``WHERE alias IS NOT NULL``,
+        :func:`partial_predicate`): it serves only a read whose own guards state exactly that of each; empty for none
+    :ivar unique: whether no two rows share every value of its columns (a unique index or ``UNIQUE`` constraint): a
+        read binding each of its columns, a set of values allowed (``AnyOf``), reads one row a value
     """
 
     name: str
@@ -276,6 +281,8 @@ class DeclaredIndex:
     descending: frozenset[str] = frozenset()
     primary: bool = False
     stated: frozenset[tuple[str, str]] = frozenset()
+    guarded: frozenset[str] = frozenset()
+    unique: bool = False
 
     def __post_init__(self) -> None:
         """refuse an index naming anything but plain columns, or a name a hint could not carry unquoted.
@@ -284,7 +291,7 @@ class DeclaredIndex:
         """
         if not self.columns:
             raise ValueError(f"index {self.name!r} names at least one column")
-        for name in (self.name, *self.columns, *self.descending, *(column for column, _ in self.stated)):
+        for name in (self.name, *self.columns, *self.descending, *(column for column, _ in self.stated), *self.guarded):
             if not isinstance(name, str) or _COLUMN.fullmatch(name) is None:
                 raise ValueError(f"a declared index names plain identifiers only, not {name!r}")
         stray = self.descending - set(self.columns)
@@ -299,6 +306,56 @@ _STATED: list[tuple[Relation, str, str]] = []
 
 #: one conjunct of a partial index's predicate naming a column equal to a text literal: ``status = 'proposed'``
 _STATED_EQUALITY: Final[re.Pattern[str]] = re.compile(r"\s*\(?\s*\"?(\w+)\"?\s*=\s*'((?:[^']|'')*)'\s*\)?\s*")
+
+
+#: a read's guard that one column (of its alias, or bare) is not NULL: the column captured
+_NOT_NULL_GUARD: Final[re.Pattern[str]] = re.compile(
+    r"\s*\(?\s*(?:\w+\.)?\"?(\w+)\"?\s+IS\s+NOT\s+NULL\s*\)?\s*", re.IGNORECASE
+)
+
+
+def partial_predicate(where: str) -> tuple[frozenset[tuple[str, str]], frozenset[str]] | None:
+    """a partial index's predicate as the ``(column, text)`` pairs it names and the columns it holds ``IS NOT NULL``,
+    when it is nothing but ``column = 'text'`` and ``column IS NOT NULL`` conjuncts; None for any other predicate,
+    which no keyed read is judged to state.
+
+    WHY ``IS NOT NULL`` (D7, coordinator ruling 2026-11-15): left out, ``ix_memories_user_alias (agent_id, user_id,
+    alias) WHERE alias IS NOT NULL`` was never named to YugabyteDB, so a user merge's alias-collision lock (pinning the
+    agent and the user, guarded ``t.alias IS NOT NULL``) was hinted to the user's every memory by date. A read states
+    the guard in its own ``where=`` (:func:`not_null_guards`), never by its pins, so the index serves only a read
+    carrying exactly that guard; nothing measured argued against it (it was left out as unstateable, e124fe266).
+
+    :param where: the predicate, as declared
+    :ptype where: str
+    :return: the pairs and the guarded columns, or None
+    :rtype: tuple[frozenset[tuple[str, str]], frozenset[str]] | None
+    """
+    pairs: set[tuple[str, str]] = set()
+    guarded: set[str] = set()
+    for conjunct in re.split(r"\s+AND\s+", where, flags=re.IGNORECASE):
+        equal = _STATED_EQUALITY.fullmatch(conjunct)
+        held = None if equal is not None else _NOT_NULL.fullmatch(conjunct)
+        if equal is not None:
+            pairs.add((equal.group(1).lower(), equal.group(2).replace("''", "'")))
+        elif held is not None:
+            guarded.add(held.group(1).lower())
+        else:
+            return None
+    return (frozenset(pairs), frozenset(guarded)) if pairs or guarded else None
+
+
+def not_null_guards(guards: Iterable[str]) -> frozenset[str]:
+    """the columns a read's guards hold ``IS NOT NULL``, each a guard of nothing else (``t.alias IS NOT NULL``): what
+    the read states of a ``column IS NOT NULL`` partial index (:func:`partial_predicate`).
+
+    :param guards: the read's guards, as SQL
+    :ptype guards: Iterable[str]
+    :return: the columns
+    :rtype: frozenset[str]
+    """
+    return frozenset(
+        found.group(1).lower() for guard in guards if (found := _NOT_NULL_GUARD.fullmatch(guard)) is not None
+    )
 
 
 def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
@@ -333,25 +390,7 @@ def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
                 _STATED.append(stated)
 
 
-def stated_predicate(where: str) -> frozenset[tuple[str, str]] | None:
-    """a partial index's predicate as the ``(column, text)`` pairs it names, when it is nothing but ``column = 'text'``
-    conjuncts (``status = 'proposed'``); None for any other predicate, which no keyed read is judged to state.
-
-    :param where: the predicate, as declared
-    :ptype where: str
-    :return: the pairs, or None
-    :rtype: frozenset[tuple[str, str]] | None
-    """
-    pairs: set[tuple[str, str]] = set()
-    for conjunct in re.split(r"\s+AND\s+", where, flags=re.IGNORECASE):
-        found = _STATED_EQUALITY.fullmatch(conjunct)
-        if found is None:
-            return None
-        pairs.add((found.group(1).lower(), found.group(2).replace("''", "'")))
-    return frozenset(pairs) or None
-
-
-def _states(index: DeclaredIndex, by: Mapping[Any, Any]) -> bool:
+def _states(index: DeclaredIndex, by: Mapping[Any, Any], guarded: frozenset[str] = frozenset()) -> bool:
     """whether a read pinning ``by`` states ``index``'s partial predicate: each of its columns pinned to exactly its
     text (a whole index's empty predicate is stated by every read).
 
@@ -360,7 +399,9 @@ def _states(index: DeclaredIndex, by: Mapping[Any, Any]) -> bool:
     ``(agent_id, user_id, date_created) WHERE status = 'proposed'``; unhinted, YugabyteDB read 400 rows and
     sorted them for a page of 10, 3tears #98).
     """
-    return all(isinstance(by.get(column), str) and by[column] == text for column, text in index.stated)
+    return index.guarded <= guarded and all(
+        isinstance(by.get(column), str) and by[column] == text for column, text in index.stated
+    )
 
 
 def stated_literals(table: Any) -> frozenset[tuple[str, str]]:
@@ -420,7 +461,13 @@ def _leading_held(index: DeclaredIndex, pinned: set[str]) -> int:
     return held
 
 
-def _unordered_serving(relation: Relation, pinned: set[str], by: Mapping[Any, Any]) -> DeclaredIndex | None:
+def _unordered_serving(
+    relation: Relation,
+    pinned: set[str],
+    by: Mapping[Any, Any],
+    guarded: frozenset[str] = frozenset(),
+    sets: frozenset[str] = frozenset(),
+) -> DeclaredIndex | None:
     """the declared index that serves an unordered read of ``relation`` pinning ``pinned``: a secondary index binding
     more of the pins than the primary key (the one binding most, then the one binding more leading columns, then the
     narrower); else the primary key where it binds any (always when it binds all its columns: a point read); else
@@ -439,22 +486,34 @@ def _unordered_serving(relation: Relation, pinned: set[str], by: Mapping[Any, An
     set, none): naming it there would miss every other row. At equal binding the index binding more leading columns
     wins (it narrows inside the index too; the earlier contract, test_keyed_index_hint's
     ``o88_conv_agent_user_status``)."""
-    indexes = [index for named, index in _INDEXES if named == relation and _states(index, by)]
+    indexes = [index for named, index in _INDEXES if named == relation and _states(index, by, guarded)]
     primary = next((index for index in indexes if index.primary), None)
     floor = _leading_held(primary, pinned) if primary is not None else 0
     if primary is not None and floor == len(primary.columns):
         return primary
+    # WHY a set binds a unique index (D8 via the coordinator, 2026-11-15): an ``AnyOf`` pins no single value, so it
+    # bound nothing here, and datasources' schema priming (``name = ANY(...)`` and ``status = 'active'``) was hinted on
+    # YugabyteDB to idx_datasources_status, every active datasource read and filtered, rather than the unique name
+    # index, one row a name. A unique index whose every column is pinned or bound to a set reads one row a value: it
+    # serves the read before any index binding more pins one value each (the narrowest such index)
+    keyed = [index for index in indexes if index.unique and not index.primary and set(index.columns) <= pinned | sets]
+    if keyed:
+        return min(keyed, key=lambda index: len(index.columns))
     ranked = [
-        ((held + len(index.stated), held, -len(index.columns)), index)
+        ((held + len(index.stated) + len(index.guarded), held, -len(index.columns)), index)
         for index in indexes
-        if not index.primary and (held := _leading_held(index, pinned)) > 0 and held + len(index.stated) > floor
+        if not index.primary
+        and (held := _leading_held(index, pinned)) > 0
+        and held + len(index.stated) + len(index.guarded) > floor
     ]
     if ranked:
         return max(ranked, key=lambda pair: pair[0])[1]
     return primary if floor else None
 
 
-def serving_index(table: Any, by: Mapping[Any, Any], order: Sequence[Sort]) -> DeclaredIndex | None:
+def serving_index(
+    table: Any, by: Mapping[Any, Any], order: Sequence[Sort], *, guarded: frozenset[str] = frozenset()
+) -> DeclaredIndex | None:
     """the declared index that serves a keyed read of ``table`` pinning ``by``, in ``order``; None when none does.
 
     An unordered read (no sort, or one sorting only pinned columns) is served by the index binding most of its pins
@@ -466,6 +525,9 @@ def serving_index(table: Any, by: Mapping[Any, Any], order: Sequence[Sort]) -> D
     :ptype by: Mapping[Any, Any]
     :param order: the read's sort
     :ptype order: Sequence[Sort]
+    :param guarded: the columns the read's own guards hold ``IS NOT NULL`` (:func:`not_null_guards`), which a
+        ``column IS NOT NULL`` partial index needs stated
+    :ptype guarded: frozenset[str]
     :return: the index, or None
     :rtype: DeclaredIndex | None
     """
@@ -475,13 +537,14 @@ def serving_index(table: Any, by: Mapping[Any, Any], order: Sequence[Sort]) -> D
     pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
     sorts = [sort for sort in order if sort.expression is not None or sort.column not in pinned]
     if not sorts:
-        return _unordered_serving(relation, pinned, by)
+        sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
+        return _unordered_serving(relation, pinned, by, guarded, sets)
     if any(sort.expression is not None for sort in sorts):
         return None
     ranked = [
         (rank, index)
         for named, index in _INDEXES
-        if named == relation and _states(index, by) and (rank := _rank(index, pinned, sorts)) is not None
+        if named == relation and _states(index, by, guarded) and (rank := _rank(index, pinned, sorts)) is not None
     ]
     if not ranked:
         return None

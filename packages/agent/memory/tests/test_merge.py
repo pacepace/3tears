@@ -22,6 +22,9 @@ class _RoutingConn:
         self.order: list[str] = []
 
     async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        if sql == "SELECT version() AS v":
+            # a keyed read's dialect probe (its YugabyteDB index hint): this connection answers as PostgreSQL
+            return [{"v": "PostgreSQL 16.4"}]
         for needle, rows in self._routes.items():
             if needle in sql:
                 self.order.append(needle)
@@ -39,8 +42,8 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
     colliding = uuid4()
     conn = _RoutingConn(
         {
-            "DELETE FROM memories": [{"agent_id": agent, "memory_id": colliding}],
-            "FROM memories m WHERE": [{"agent_id": agent, "memory_id": colliding}],
+            'DELETE FROM "memories"': [{"agent_id": agent, "memory_id": colliding}],
+            'FROM "memories" AS t': [{"agent_id": agent, "memory_id": colliding}],
             'FROM "media_content"': [],
             'FROM "media" AS t': [],
             'FROM "memory_chunks"': [],
@@ -58,9 +61,9 @@ async def test_deletes_alias_collisions_before_repoint() -> None:
     # the DELETE must run before the memories repoint or the unique index
     # on (agent_id, user_id, alias) would reject the flipped survivor.
     # the DELETE is the first write: only the lookups that name what it will cascade to precede it.
-    delete_at = conn.order.index("DELETE FROM memories")
+    delete_at = conn.order.index('DELETE FROM "memories"')
     assert all(not step.startswith("UPDATE") for step in conn.order[:delete_at])
-    assert conn.order.index("DELETE FROM memories") < conn.order.index(
+    assert conn.order.index('DELETE FROM "memories"') < conn.order.index(
         'UPDATE "memories"',
     )
     assert len(result.removed["memories"]) == 1
@@ -108,20 +111,19 @@ async def test_a_repoint_naming_its_agent_pins_it_in_every_statement() -> None:
     class _CapturingConn:
         async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
             captured.append((sql, params))
-            if sql.startswith("SELECT m.agent_id, m.memory_id FROM memories m"):
+            if 'FROM "memories" AS t' in sql:
                 # one colliding memory, so the DELETE runs too
                 return [{"agent_id": agent_id, "memory_id": uuid4()}]
             return []
 
     await repoint_user(_CapturingConn(), from_user_id=from_id, to_user_id=uuid4(), agent_id=agent_id)
 
-    lock = next(params for sql, params in captured if sql.startswith("SELECT m.agent_id"))
-    assert lock[2] == agent_id
-    (lock_sql,) = [sql for sql, _ in captured if sql.startswith("SELECT m.agent_id")]
-    assert "m.agent_id = $3 AND m.user_id = $1" in lock_sql
+    ((lock_sql, lock),) = [(sql, params) for sql, params in captured if 'FROM "memories" AS t' in sql]
+    assert 't."agent_id" = $1 AND t."user_id" = $2' in lock_sql
+    assert lock[:2] == (agent_id, from_id)
     (delete_sql, delete_params) = next((sql, params) for sql, params in captured if sql.startswith("DELETE"))
-    assert "m.agent_id = $3 AND m.user_id = $1" in delete_sql
-    assert delete_params[2] == agent_id
+    assert '"agent_id" = $' in delete_sql and '"user_id" = $' in delete_sql
+    assert agent_id in delete_params and from_id in delete_params
     updates = {sql.split()[1].strip('"'): (sql, params) for sql, params in captured if sql.startswith("UPDATE")}
     assert set(updates) == {"memories", "media", "media_content", "memory_chunks"}
     for table, (sql, params) in updates.items():
@@ -138,7 +140,7 @@ async def test_alias_delete_is_scoped_to_source_and_master() -> None:
         async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
             if sql.startswith("DELETE"):
                 captured["delete"] = sql
-            if "FROM memories m WHERE" in sql and sql.startswith("SELECT"):
+            if 'FROM "memories" AS t' in sql:
                 # one colliding memory, so the DELETE runs.
                 return [{"agent_id": uuid4(), "memory_id": uuid4()}]
             return []
@@ -148,11 +150,11 @@ async def test_alias_delete_is_scoped_to_source_and_master() -> None:
     await repoint_user(_SqlConn(), from_user_id=from_id, to_user_id=to_id, agent_id=uuid4())
 
     delete_sql = captured["delete"]
-    assert "m.user_id = $1" in delete_sql  # source rows only
-    assert "alias IS NOT NULL" in delete_sql
-    assert "m2.user_id = $2" in delete_sql  # collide with master
-    assert "m2.alias = m.alias" in delete_sql
-    assert "m2.agent_id = m.agent_id" in delete_sql
+    assert '"user_id" = $' in delete_sql  # source rows only
+    assert "memories.alias IS NOT NULL" in delete_sql
+    assert "m2.user_id = $" in delete_sql  # collide with master
+    assert "m2.alias = memories.alias" in delete_sql
+    assert "m2.agent_id = memories.agent_id" in delete_sql
 
 
 @pytest.mark.asyncio
@@ -167,8 +169,8 @@ async def test_the_children_an_alias_collision_cascades_to_are_named() -> None:
     content_id, chunk_id, gist_id = uuid4(), uuid4(), uuid4()
     conn = _RoutingConn(
         {
-            "DELETE FROM memories": [{"agent_id": agent, "memory_id": memory_id}],
-            "FROM memories m WHERE": [{"agent_id": agent, "memory_id": memory_id}],
+            'DELETE FROM "memories"': [{"agent_id": agent, "memory_id": memory_id}],
+            'FROM "memories" AS t': [{"agent_id": agent, "memory_id": memory_id}],
             'FROM "media_content"': [{"agent_id": agent, "content_id": content_id}],
             'FROM "media" AS t': [{"agent_id": agent, "media_id": media_id}],
             'FROM "memory_chunks"': [{"agent_id": agent, "chunk_id": chunk_id}],
@@ -192,7 +194,7 @@ async def test_the_children_an_alias_collision_cascades_to_are_named() -> None:
         "memory_consolidations": [(agent, gist_id, memory_id)],
     }
     # every child is named before the DELETE takes it, inside the same transaction.
-    delete_at = conn.order.index("DELETE FROM memories")
+    delete_at = conn.order.index('DELETE FROM "memories"')
     for lookup in ('FROM "media" AS t', 'FROM "media_content"', 'FROM "memory_chunks"', 'FROM "memory_consolidations"'):
         assert conn.order.index(lookup) < delete_at, f"{lookup} ran after the DELETE had cascaded"
 
@@ -204,8 +206,8 @@ async def test_evict_names_every_touched_key_by_table_in_one_map() -> None:
     deleted, cascaded_media, moved, moved_media = uuid4(), uuid4(), uuid4(), uuid4()
     conn = _RoutingConn(
         {
-            "DELETE FROM memories": [{"agent_id": agent, "memory_id": deleted}],
-            "FROM memories m WHERE": [{"agent_id": agent, "memory_id": deleted}],
+            'DELETE FROM "memories"': [{"agent_id": agent, "memory_id": deleted}],
+            'FROM "memories" AS t': [{"agent_id": agent, "memory_id": deleted}],
             'FROM "media_content"': [],
             'FROM "media" AS t': [{"agent_id": agent, "media_id": cascaded_media}],
             'FROM "memory_chunks"': [],
@@ -265,8 +267,8 @@ async def test_the_summary_log_counts_what_the_cascade_removed(caplog: pytest.Lo
     memory_id = uuid4()
     conn = _RoutingConn(
         {
-            "DELETE FROM memories": [{"agent_id": agent, "memory_id": memory_id}],
-            "FROM memories m WHERE": [{"agent_id": agent, "memory_id": memory_id}],
+            'DELETE FROM "memories"': [{"agent_id": agent, "memory_id": memory_id}],
+            'FROM "memories" AS t': [{"agent_id": agent, "memory_id": memory_id}],
             'FROM "media_content"': [{"agent_id": agent, "content_id": uuid4()}],
             'FROM "media" AS t': [{"agent_id": agent, "media_id": uuid4()}],
             'FROM "memory_chunks"': [

@@ -134,7 +134,17 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             ),
         ),
         indexes=(
-            SchemaIndex("ix_context_items_conv", "conversation_id"),
+            # v007: a conversation's rows oldest first (the read pins only the partition column); it covers and
+            # replaces v003's ix_context_items_conv
+            SchemaIndex(
+                "ix_context_items_conv_created",
+                "conversation_id",
+                "date_created",
+                purpose="packages/agent/tools/src/threetears/agent/tools/collections.py::"
+                "ContextItemCollection.find_by_conversation",
+                plan_test="packages/agent/tools/tests/integration/test_index_plans.py::test_conv_created",
+                reason="context_items carries four indexes: a conversation's context in creation order",
+            ),
             SchemaIndex(
                 "ix_context_items_type",
                 "conversation_id",

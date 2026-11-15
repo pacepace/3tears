@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
@@ -593,7 +593,7 @@ class TestFindByRefPrefix:
     """tests for :meth:`ConversationsCollection.find_by_ref_prefix` SQL contract.
 
     The broader peer of find_by_ref: matches every ref STARTING WITH a prefix (a whole story's
-    chats across objects), via an exact, escaping-free ``left(...)`` prefix — not a LIKE pattern.
+    chats across objects), via an exact, escaping-free code-point range — not a LIKE pattern.
     """
 
     async def test_empty_result_returns_empty_list(self) -> None:
@@ -608,8 +608,8 @@ class TestFindByRefPrefix:
         assert result == []
 
     async def test_query_is_an_exact_prefix_match_newest_first(self) -> None:
-        """The SQL pins agent_id ($1) + channel_type ($2) and matches conversation_ref by an exact
-        ``left(...) = $3`` prefix (no LIKE wildcards to escape), newest-first."""
+        """The SQL pins agent_id ($1) + channel_type ($2) and matches conversation_ref by the prefix's code-point
+        range (``COLLATE "C"``, the prefix and its successor bound: no LIKE wildcards to escape); rows newest-first."""
         pg = _make_pg_mock()
         pg.fetch = AsyncMock(return_value=[])
         collection = ConversationsCollection.__new__(ConversationsCollection)
@@ -618,10 +618,27 @@ class TestFindByRefPrefix:
         agent_id = uuid7()
         await collection.find_by_ref_prefix(agent_id, "scriob-object-chat", "midnight:")
 
-        pg.fetch.assert_called_once()
-        sql, *params = pg.fetch.call_args.args
-        assert "agent_id = $1" in sql
-        assert "channel_type = $2" in sql
-        assert "left(conversation_ref, char_length($3)) = $3" in sql  # exact prefix, no LIKE wildcards
-        assert "ORDER BY date_created DESC" in sql
-        assert params == [agent_id, "scriob-object-chat", "midnight:"]
+        # the read's one statement (a version probe may precede it: the YugabyteDB index hint's)
+        (sql, *params) = next(c.args for c in pg.fetch.call_args_list if "conversations" in c.args[0])
+        assert 't."agent_id" = $1' in sql
+        assert 't."channel_type" = $2' in sql
+        assert 't."conversation_ref" COLLATE "C" >= $3 AND t."conversation_ref" COLLATE "C" < $4' in sql
+        assert params == [agent_id, "scriob-object-chat", "midnight:", "midnight;"]
+
+    async def test_rows_come_newest_first(self) -> None:
+        """The rows read in no order come back newest first."""
+        pg = _make_pg_mock()
+        older, newer = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
+        rows = [
+            {"date_created": older, "conversation_id": uuid7()},
+            {"date_created": newer, "conversation_id": uuid7()},
+        ]
+        pg.fetch = AsyncMock(side_effect=lambda sql, *_: rows if "conversations" in sql else [])
+        collection = ConversationsCollection.__new__(ConversationsCollection)
+        collection.l3_pool = pg
+        made = MagicMock()
+
+        with patch.object(ConversationsCollection, "entity_class", property(lambda _self: made)):
+            await collection.find_by_ref_prefix(uuid7(), "scriob-object-chat", "midnight:")
+
+        assert [call.args[0]["date_created"] for call in made.call_args_list] == [newer, older]

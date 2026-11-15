@@ -144,14 +144,17 @@ class TestRegisterAgentToolsMigrations:
         pkg = register(runner)
         assert pkg.depends_on == ("conversations",)
 
-    async def test_register_populates_versions_one_through_five(self) -> None:
+    async def test_register_populates_every_expand_version(self) -> None:
         """register attaches v001 (create), v002 (datetime promote),
         v003 (align context_items shape with prod parity), v004
-        (tool_result dedup partial-unique index), v005 (agent_id).
+        (tool_result dedup partial-unique index), v005 (agent_id) and
+        v007 (the conversation's creation-order index); v006, the held
+        contract step, only when asked.
         """
         runner = MigrationRunner()
         pkg = register(runner)
-        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5}
+        assert set(pkg.versions.keys()) == {1, 2, 3, 4, 5, 7}
+        assert set(register(MigrationRunner(), held_contract=True).versions.keys()) == {1, 2, 3, 4, 5, 6, 7}
 
     async def test_apply_in_isolation_runs_all_versions(self) -> None:
         """
@@ -163,8 +166,8 @@ class TestRegisterAgentToolsMigrations:
         register(runner)
         store = _FakeDataStore()
         first_count = await runner.apply_package(store, PACKAGE_NAME)
-        assert first_count == 5
-        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5]
+        assert first_count == 6
+        assert [row["version"] for row in store.migrations_rows] == [1, 2, 3, 4, 5, 7]
 
     async def test_apply_emits_context_items_create_statement(self) -> None:
         """the CREATE TABLE statement carries every column and type."""
@@ -311,7 +314,7 @@ class TestAlignContextItemsShapeMigration:
         store = _FakeDataStore()
         await align_context_items_shape(store)  # type: ignore[arg-type]
         joined = _joined_executed_sql(store)
-        assert "CREATE INDEX IF NOT EXISTS ix_context_items_conv" in joined
+        assert "CREATE INDEX IF NOT EXISTS ix_context_items_conv ON" in joined
         assert "CREATE INDEX IF NOT EXISTS ix_context_items_type" in joined
         assert "CREATE INDEX IF NOT EXISTS ix_context_items_lru" in joined
         assert "CREATE UNIQUE INDEX IF NOT EXISTS ix_context_items_var_key" in joined
