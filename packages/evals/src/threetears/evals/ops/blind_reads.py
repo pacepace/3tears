@@ -576,7 +576,10 @@ def blind_read_create(
     runs = _runs(host, [run_id for arm in arms for run_id in arm.run_ids], scope_id)
     asked = _criteria(host, runs, results, scope_id, criteria)
     judges = {run.judge_model for run in runs} | {
-        score.served_model for result in results for score in result.rubric_scores if score.dim in {d.name for d in asked}
+        score.served_model
+        for result in results
+        for score in result.rubric_scores
+        if score.dim in {d.name for d in asked}
     }
     if reviewer is not None and reviewer in judges:
         raise ValidationFailedError(

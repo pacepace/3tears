@@ -168,7 +168,9 @@ def test_a_rater_who_closes_the_read_early_when_it_looks_good_is_wrong_at_most_f
             (preference,) = closed.report.preferences
             assert preference.test == "anytime"
             caught = caught or preference.verdict in ("improved", "regressed")
-            sign = exact_sign_test_p(preference.prefer_candidate, preference.prefer_candidate + preference.prefer_control)
+            sign = exact_sign_test_p(
+                preference.prefer_candidate, preference.prefer_candidate + preference.prefer_control
+            )
             caught_by_sign = caught_by_sign or (sign is not None and sign < ALPHA)
             if caught and caught_by_sign:
                 break

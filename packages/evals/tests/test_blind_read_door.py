@@ -33,6 +33,8 @@ from threetears.evals.ops.blind_reads import blind_read_create, blind_read_get, 
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.schema import JudgedArtifact, JudgeEvidence, RubricDim, label_key_of
 from threetears.evals.schema.blind_read import BlindAnswer, BlindReview, BlindVerdict
+from threetears.evals.quick.blind import blind_read_html
+from threetears.evals.testing import SheetConformanceFailure, check_sheet_renderer
 from packages.evals.tests.factories import make_eval_trace, make_rubric_dim
 from packages.evals.tests.fixtured_client import FixturedClient
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
@@ -103,7 +105,9 @@ def _world(*, reviewer_reply: str | None = None) -> tuple[OpsHost, OpsFixture, l
                 judge_evidence=evidence,
                 judged_artifact=JudgedArtifact.DOCUMENT,
             )
-            off_loop(storage.save_eval_result, result.model_copy(update={"rubric_scores": scores, "has_trace": True}), trace)
+            off_loop(
+                storage.save_eval_result, result.model_copy(update={"rubric_scores": scores, "has_trace": True}), trace
+            )
     off_loop(
         campaign_update,
         eval_host,
@@ -225,7 +229,9 @@ async def test_the_sheet_holds_no_id_score_label_key_or_tally_that_would_unblind
         *(output.output_fingerprint for item in read.items for output in item.outputs),
         *(fp for item in read.items for output in item.outputs for fp in output.criterion_fingerprints.values()),
     }
-    assert not [value for value in forbidden if value in text], "the sheet names nothing that pairs an output with its arm"
+    assert not [value for value in forbidden if value in text], (
+        "the sheet names nothing that pairs an output with its arm"
+    )
     assert {"fingerprint", "score", "prefer", "control", "candidate"}.isdisjoint(_keys(sheet.structured))
     assert sheet.structured["answered"] == [first.item], "the rater's own progress, and nobody's answers"
     for open_line in (answered.structured, (await _call(host, "blind_read_get", read_id=read.id)).structured):
@@ -240,12 +246,20 @@ async def test_no_response_field_carries_a_word_kept_internal() -> None:
     line = await _pair_read(host, fixture)
     read = off_loop(host.eval_host.storage.load_blind_read_with_etag, line["read_id"], TOYHOST_SCOPE)[0]
     assert read is not None
-    answered = await _call(host, "blind_read_answer", read_id=read.id, item=read.items[0].item, person=PERSON, skip=True)
+    answered = await _call(
+        host, "blind_read_answer", read_id=read.id, item=read.items[0].item, person=PERSON, skip=True
+    )
     closed = await _call(host, "blind_read_close", read_id=line["read_id"])
     sheet = await _call(host, "blind_read_sheet", read_id=line["read_id"])
     listing = await _call(host, "blind_reads_list")
 
-    fields = _keys(line) | _keys(answered.structured) | _keys(closed.structured) | _keys(sheet.structured) | _keys(listing.structured)
+    fields = (
+        _keys(line)
+        | _keys(answered.structured)
+        | _keys(closed.structured)
+        | _keys(sheet.structured)
+        | _keys(listing.structured)
+    )
 
     assert "sample" in fields
     assert not [field for field in fields if any(word in field for word in INTERNAL_WORDS)], fields
@@ -278,7 +292,9 @@ async def test_an_unattested_person_s_answer_is_refused_and_nothing_is_written(c
     assert after is not None and after.answers == []
 
 
-async def test_an_attested_answer_is_the_host_s_name_for_the_person_and_an_answer_the_item_does_not_ask_is_refused() -> None:
+async def test_an_attested_answer_is_the_host_s_name_for_the_person_and_an_answer_the_item_does_not_ask_is_refused() -> (
+    None
+):
     host, fixture, _ = _world()
     line = await _pair_read(host, fixture)
     read = off_loop(host.eval_host.storage.load_blind_read_with_etag, line["read_id"], TOYHOST_SCOPE)[0]
@@ -433,3 +449,40 @@ async def test_an_early_close_reads_the_preference_by_the_anytime_test() -> None
     (preference,) = closed.structured["preferences"]
     assert (preference["made_by"], preference["test"], preference["prefer_candidate"]) == ("person", "anytime", 9)
     assert preference["verdict"] in ("improved", "not_separated") and preference["p"] is not None
+
+
+# --- the sheet conformance check -------------------------------------------------------------------------------
+
+
+def test_the_quick_path_s_page_keeps_the_sheet_s_order_next_and_slots() -> None:
+    check_sheet_renderer(blind_read_html)
+
+
+@pytest.mark.parametrize(
+    ("render", "rule"),
+    [
+        (lambda sheet: "\n".join(sorted(item.case_material for item in sheet.items)), "in order"),
+        (lambda sheet: "\n".join(item.case_material for item in sheet.items[2:]), "next first"),
+        (
+            lambda sheet: "\n".join(
+                f"{item.case_material}\n" + "\n".join(sorted(output.text for output in item.outputs))
+                for item in sheet.items
+            ),
+            "slots as given",
+        ),
+    ],
+    ids=["re-sorted items", "opens past next", "re-sorted slots"],
+)
+def test_a_renderer_that_re_sorts_or_skips_ahead_is_refused_by_the_rule_it_breaks(render: Any, rule: str) -> None:
+    with pytest.raises(SheetConformanceFailure, match=rule):
+        check_sheet_renderer(render)
+
+
+def test_a_renderer_that_shows_from_next_on_keeps_the_sheet() -> None:
+    check_sheet_renderer(
+        lambda sheet: "\n".join(
+            f"{item.case_material}\n" + "\n".join(f"{output.slot}: {output.text}" for output in item.outputs)
+            for item in sheet.items
+            if item.item not in sheet.answered
+        )
+    )
