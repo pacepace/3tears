@@ -34,7 +34,7 @@ from threetears.evals.kernel.evidence_tiers import (
 )
 from threetears.evals.analysis.judge_drift import JudgeDrift
 from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
-from threetears.evals.schema.reading_states import ArmIdentity, StateOf
+from threetears.evals.schema.reading_states import ArmIdentity, AttestableCoordinate, StateOf
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     Cell,
@@ -1367,7 +1367,7 @@ class RunSummary(EvalDocumentModel):
         ),
     )
     # Left out of the document when empty, so a run no host attested summarises as one did before the field existed.
-    attested_coordinates: list[Coordinate] = Field(
+    attested_coordinates: list[AttestableCoordinate] = Field(
         default_factory=list,
         exclude_if=lambda value: not value,
         description=(

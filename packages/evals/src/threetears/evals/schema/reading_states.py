@@ -32,6 +32,7 @@ __all__ = [
     "ArmIdentity",
     "CaveatClass",
     "CaveatReach",
+    "AttestableCoordinate",
     "Coordinate",
     "IdentityState",
     "Maker",
@@ -82,6 +83,11 @@ IdentityState = Literal["one", "split", "unrecorded"]
 
 #: The coordinates of a cell an arm can be split on, or leave unrecorded. Extended here and nowhere else.
 Coordinate = Literal["served_model", "measure_definition", "template", "rig"]
+
+#: The coordinates a host may state of a stored run after the fact (the ``runs_attest`` action): the two the package
+#: itself reads, which keep a run that left them unrecorded in a cell of its own. The others are recorded at launch.
+#: Extended here and nowhere else.
+AttestableCoordinate = Literal["served_model", "measure_definition"]
 
 #: What a caveat does to the answer, most serious first: ``A`` the answer was changed; ``B`` the evidence is not what
 #: it appears; ``C`` an instrument on an asked reading is unchecked, or checked against a model only; ``D`` the test's

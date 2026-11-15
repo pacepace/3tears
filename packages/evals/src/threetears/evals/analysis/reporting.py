@@ -283,23 +283,44 @@ def served_level(reading: ResultServedReading) -> str | None:
         pooling reads a silence through, and every surface says it was stated.
     :rtype: str | None
     """
-    served = reading.served | ({reading.attested} if reading.unrecorded and reading.attested else frozenset())
-    if (reading.unrecorded and not reading.attested) or not served:
+    served, silent = pooled_as(reading)
+    if silent or not served:
         return None
     return _SERVED_MODEL_JOIN.join(sorted(served))
 
 
 def attested_served_models(runs: Iterable[EvalRun]) -> dict[str, str]:
-    """The model each run's host stated as having answered its candidate calls that named none, by run id.
+    """The model a run's host stated as having answered the candidate calls that named none, by the result it covers.
 
     :param runs: The runs.
     :ptype runs: Iterable[EvalRun]
-    :return: Run id -> the stated model, for the runs carrying a statement (``EvalRun.served_model_attestation``).
+    :return: Result id -> the stated model, for each result a run's statement covers
+        (``EvalRun.served_model_attestation.result_ids``); a result written after the statement is not here.
     :rtype: dict[str, str]
     """
     return {
-        run.id: run.served_model_attestation.served_model for run in runs if run.served_model_attestation is not None
+        result_id: stated.served_model
+        for run in runs
+        if (stated := run.served_model_attestation) is not None
+        for result_id in stated.result_ids
     }
+
+
+def pooled_as(reading: ResultServedReading) -> tuple[frozenset[str], bool]:
+    """What a reading that pools by answering model reads a result as: its models, and whether it is a silence.
+
+    The responses' word where every call named a model; where some named none and its host stated what answered
+    (``attested``), the stated model stands for them. The one place a statement is read through, so the campaign's
+    cells (:func:`served_level`) and pass^k read it alike.
+
+    :param reading: The result's reading, from :func:`served_reading` (through :func:`through_attestation`).
+    :ptype reading: ResultServedReading
+    :return: ``(models, silent)``.
+    :rtype: tuple[frozenset[str], bool]
+    """
+    if reading.unrecorded and reading.attested:
+        return reading.served | {reading.attested}, False
+    return reading.served, reading.unrecorded
 
 
 def through_attestation(reading: ResultServedReading, attested: str | None) -> ResultServedReading:
@@ -2097,6 +2118,7 @@ __all__ = [
     "METRIC_TOTAL_MS",
     "METRIC_TRANSCRIPT",
     "attested_served_models",
+    "pooled_as",
     "model_identity_disclosure",
     "served_attestation_disclosure",
     "through_attestation",

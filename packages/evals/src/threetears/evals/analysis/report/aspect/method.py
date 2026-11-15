@@ -579,6 +579,15 @@ def _design_disclosures(
     for compared in bundle.comparison.comparison_sets:
         if compared.measure_definition_disclosure and (unrecorded or "measure_definitions_differ" in compared.badges):
             say("apparatus", compared.measure_definition_disclosure)
+    # A campaign that pools only because its host stated the definitions some runs ran under says so: the runs did not
+    # record them (#1187: an attestation is evidence read through, never a record).
+    attested = sum(1 for summary in bundle.run_summaries if "measure_definition" in summary.attested_coordinates)
+    if attested:
+        say(
+            "apparatus",
+            f"Attested, not recorded: the host stated after the fact the definitions of its measures {attested} "
+            "run(s) were read under, and they pool on its word.",
+        )
     for merge in bundle.refused_merges:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(

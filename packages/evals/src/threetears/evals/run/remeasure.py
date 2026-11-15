@@ -36,14 +36,15 @@ later be re-measured into the current ones.
 **The served model has the same door.** A run whose candidate responses named no model (a router that echoed a
 requested alias back, a logged output, a host's answer that named none) pools with no other run, since nothing says
 what answered it. :func:`attest_served_model` records its host's statement of the model that did
-(:class:`~threetears.evals.schema.models.ServedModelAttestation`) and writes that model to each of the run's
-candidate usage rows that named none. It never replaces a model a response named.
+(:class:`~threetears.evals.schema.models.ServedModelAttestation`), naming the results it covers, and touches no
+row: a reading that pools by answering model reads those silent rows through the statement, as attested, not
+recorded. It never stands beside a model a response named.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
@@ -57,7 +58,7 @@ from threetears.evals.run.run_document import update_eval_run
 from threetears.evals.run.runner import refuse_misfit_host_measures
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.schema.reading_states import Coordinate
+from threetears.evals.schema.reading_states import AttestableCoordinate
 from threetears.evals.schema.models import (
     NON_TERMINAL_RUN_STATUSES,
     MeasureAttestation,
@@ -344,7 +345,7 @@ def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> Non
 class Attested(EvalBaseModel):
     """What a host's statement of one coordinate of stored runs wrote: one shape, whichever coordinate."""
 
-    coordinate: Coordinate = Field(description="The coordinate stated: measure_definition or served_model.")
+    coordinate: AttestableCoordinate = Field(description="The coordinate stated: measure_definition or served_model.")
     run_ids: list[str] = Field(description="The runs stamped by this call, in the order given.")
     already_attested: list[str] = Field(
         default_factory=list,
@@ -486,19 +487,21 @@ async def attest_served_model(
     attested_by: str,
     note: str | None = None,
 ) -> Attested:
-    """Stamp stored runs whose candidate responses named no model with the model their host says answered them.
+    """Record a host's statement of the model that answered stored runs whose candidate responses named none.
 
-    The host's statement, never the engine's guess: the id a run asked for is not evidence of what answered it, and
-    nothing else a silent run stores is. Each run records who stated it, when and the model
-    (``EvalRun.served_model_attestation``), and the model is written to each of its candidate usage rows that named
-    none (``RoleUsage.served_model``), so every reading that keeps answering models apart (a campaign's cells, pass^k,
-    a comparison set) reads it. A row whose response named a model is never touched.
+    The host's word, never the engine's guess: the id a run asked for is not evidence of what answered it, and
+    nothing else a silent run stores is. Each run records who stated it, when, the model and the results it covers
+    (``EvalRun.served_model_attestation``: those whose candidate rows named no model when it was made). **No row is
+    touched**: the evidence stays as the responses left it, so the identity disclosure stays true and a model a
+    response named is always told from one a host stated. A reading that pools by answering model (a campaign's
+    cells, pass^k) reads those results' silent rows THROUGH the statement
+    (:func:`~threetears.evals.analysis.reporting.served_level`), and the bundle carries the fact that it did
+    (``ArmServedModel.n_attested``, ``RunSummary.attested_coordinates``). A comparison set, a history or a pivot does
+    not read it.
 
-    Every run is checked before any is written. A run is marked first and its results written after, each
-    conditional on what was read, so a call cut short leaves a run marked with some rows still silent: stating the
-    same model again finishes it. Stating again what an earlier attestation stated, whole, is no error: the run is
-    named in ``already_attested``. Stating ANOTHER model over an attestation is refused, and so is a run none of
-    whose candidate rows is silent: a statement never replaces a record.
+    Every run is checked before any is written. Stating again what an earlier attestation stated is no error: the
+    run is named in ``already_attested``. Stating ANOTHER model over an attestation is refused, and so is a run none
+    of whose candidate rows is silent: a statement never stands beside a response's word.
 
     :param host: The host whose store holds the runs.
     :ptype host: EvalHost
@@ -518,8 +521,7 @@ async def attest_served_model(
     :raises ValidationFailedError: ``served_model`` or ``attested_by`` is blank; a run is still pending or running; a
         run was attested with another model; or none of a run's candidate rows is silent. Raised before anything is
         written.
-    :raises ConflictError: A run or a result changed between the check and its write; what was written before it
-        stays written.
+    :raises ConflictError: A run changed between the check and its write; runs written before it stay stamped.
     """
     stated = served_model.strip()
     if not stated or not attested_by.strip():
@@ -528,7 +530,7 @@ async def attest_served_model(
             remedy="pass served_model, as a provider's response would name it, and attested_by",
         )
 
-    def write() -> tuple[list[str], int]:
+    def write() -> list[str]:
         storage = host.storage
         already: list[str] = []
         silent_by_run: dict[str, list[str]] = {}
@@ -542,41 +544,43 @@ async def attest_served_model(
                     remedy=f"attest once it has finished (job_poll run:{run.id})",
                 )
             before = run.served_model_attestation
-            if before is not None and before.served_model != stated:
-                raise ValidationFailedError(
-                    f"run '{run.id}' was already attested as answered by {before.served_model}; a statement is never "
-                    "replaced",
-                    remedy="leave it as stated; a host that stated the wrong model corrects the run's document itself",
-                )
-            silent = [
+            if before is not None:
+                if before.served_model != stated:
+                    raise ValidationFailedError(
+                        f"run '{run.id}' was already attested as answered by {before.served_model}; a statement is "
+                        "never replaced",
+                        remedy="leave it as stated; a host that stated the wrong model corrects the run's document "
+                        "itself",
+                    )
+                already.append(run.id)
+                continue
+            silent = sorted(
                 result.id
                 for result in storage.query_eval_results_by_run(run.id, scope_id)
                 if _silent_candidate_rows(result)
-            ]
+            )
             if not silent:
-                if before is not None:
-                    already.append(run.id)
-                    continue
                 raise ValidationFailedError(
                     f"run '{run.id}' holds no candidate usage row that names no served model: its responses named "
                     "what answered, or its candidate made no model call; a statement never replaces a record",
                     remedy="leave it as recorded",
                 )
             silent_by_run[run.id] = silent
-        record = ServedModelAttestation(attested_by=attested_by, served_model=stated, note=note)
 
-        def _stamp(current: EvalRun) -> dict[str, Any] | None:
-            held = current.served_model_attestation
-            if held is not None:
-                # Stamped since the check: by this same statement, or by another model (read below).
-                return None
-            data = current.to_dict()
-            data["served_model_attestation"] = record.to_dict()
-            return data
+        def _stamp_with(record: ServedModelAttestation) -> Callable[[EvalRun], dict[str, Any] | None]:
+            def _stamp(current: EvalRun) -> dict[str, Any] | None:
+                if current.served_model_attestation is not None:
+                    # Stamped since the check: by this same statement, or by another model (read below).
+                    return None
+                data = current.to_dict()
+                data["served_model_attestation"] = record.to_dict()
+                return data
 
-        rows = 0
+            return _stamp
+
         for run_id, silent in silent_by_run.items():
-            outcome = update_eval_run(storage, run_id, scope_id, _stamp)
+            record = ServedModelAttestation(attested_by=attested_by, served_model=stated, result_ids=silent, note=note)
+            outcome = update_eval_run(storage, run_id, scope_id, _stamp_with(record))
             now = storage.load_eval_run(run_id, scope_id)
             held = now.served_model_attestation if now is not None else None
             if held is None or held.served_model != stated:
@@ -585,34 +589,13 @@ async def attest_served_model(
                     "stamped, and the runs named before it were",
                     remedy="attest the remaining runs again",
                 )
-            for result_id in silent:
-                result, etag = storage.load_eval_result_with_etag(result_id, scope_id)
-                if result is None or not _silent_candidate_rows(result):
-                    continue
-                rows += _silent_candidate_rows(result)
-                named = result.model_copy(
-                    update={
-                        "usage": [
-                            row.model_copy(update={"served_model": stated})
-                            if row.role == "candidate" and not row.served_model
-                            else row
-                            for row in result.usage
-                        ]
-                    }
-                )
-                try:
-                    storage.replace_eval_result(named, if_match=etag)
-                except ConflictError as raced:
-                    raise ConflictError(
-                        f"result '{result.id}' changed while run '{run_id}' was being attested; the run is marked "
-                        "and some of its candidate rows still name no model",
-                        remedy="attest it again with the same model: a row already named is left as it is",
-                    ) from raced
-        return already, rows
+            if outcome != "saved":
+                already.append(run_id)
+        return already
 
-    already, rows = await run_blocking(host.blocking_executor, write)
+    already = await run_blocking(host.blocking_executor, write)
     stamped = [run_id for run_id in run_ids if run_id not in already]
-    log.info("eval.attest_served_model runs=%d already=%d rows=%d by=%s", len(stamped), len(already), rows, attested_by)
+    log.info("eval.attest_served_model runs=%d already=%d by=%s", len(stamped), len(already), attested_by)
     return Attested(
         coordinate="served_model",
         run_ids=stamped,

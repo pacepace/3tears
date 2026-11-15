@@ -81,7 +81,10 @@ from threetears.evals.analysis.depth import (
 )
 from threetears.evals.analysis.reporting import (
     place_results,
+    attested_served_models,
+    pooled_as,
     served_reading,
+    through_attestation,
     pooled_composite_basis,
     pooled_cost_compositions,
     pooled_served_models,
@@ -1171,7 +1174,7 @@ class _RunServed(NamedTuple):
     unrecorded: bool
 
 
-def _served_by_run(results: Sequence[ResultView]) -> dict[str, _RunServed]:
+def _served_by_run(results: Sequence[ResultView], attested: Mapping[str, str]) -> dict[str, _RunServed]:
     """The models the provider's responses named for each run's candidate calls, over one contestant's results.
 
     Read off the candidate usage rows (:func:`~threetears.evals.analysis.reporting.served_reading`), never the id
@@ -1180,6 +1183,9 @@ def _served_by_run(results: Sequence[ResultView]) -> dict[str, _RunServed]:
 
     :param results: One contestant's results.
     :ptype results: Sequence[ResultView]
+    :param attested: Result id → the model its run's host stated for its silent calls
+        (:func:`~threetears.evals.analysis.reporting.attested_served_models`).
+    :ptype attested: Mapping[str, str]
     :return: Run id → what its calls named, for every run of ``results``.
     :rtype: dict[str, _RunServed]
     """
@@ -1187,11 +1193,12 @@ def _served_by_run(results: Sequence[ResultView]) -> dict[str, _RunServed]:
     for result in results:
         reading = served_reading(result)
         before = served.get(result.eval_run_id, _RunServed(frozenset(), unrecorded=False))
-        served[result.eval_run_id] = (
-            before
-            if reading is None
-            else _RunServed(before.served | reading.served, unrecorded=before.unrecorded or reading.unrecorded)
-        )
+        if reading is None:
+            served[result.eval_run_id] = before
+            continue
+        # Read as the campaign's cells read it: a silence its host stated the model of stands for that model.
+        models, silent = pooled_as(through_attestation(reading, attested.get(result.id)))
+        served[result.eval_run_id] = _RunServed(before.served | models, unrecorded=before.unrecorded or silent)
     return served
 
 
@@ -1227,7 +1234,7 @@ def _pass_hat_k_cells(
     :return: Each run's cell, and a reading per cell with no pass^k yet.
     :rtype: _PointCells
     """
-    served = _served_by_run(results)
+    served = _served_by_run(results, attested_served_models(runs[run_id] for run_id in {result.eval_run_id for result in results}))
     weight: dict[str, int] = {}
     for result in results:
         weight[result.eval_run_id] = weight.get(result.eval_run_id, 0) + 1

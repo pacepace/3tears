@@ -127,6 +127,9 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
         "measure_definitions",
         "measure_attestation",
         "measure_remeasures",
+        # A host's statement of the model that answered: it names the results it covers, so the cells a take-up
+        # writes are not covered by it and their silence, if any, stays a silence.
+        "served_model_attestation",
         # Held by its outcome, never its number: the take-up's launch re-proves the run's own goal checks under the
         # proof rules in force (``goal_check_proofs``, pinned), so a rules change that proves them as the run's own
         # proofs did is taken up. The run then reads as proved under the newer rules, and each holding records the

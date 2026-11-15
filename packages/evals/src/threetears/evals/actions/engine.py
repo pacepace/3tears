@@ -34,7 +34,7 @@ from threetears.evals.schema import EvalRunStatus
 from threetears.evals.kernel import EvalStorage, ResultOutcome, ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema import KnownOutOfRunPurpose
-from threetears.evals.schema.reading_states import Coordinate
+from threetears.evals.schema.reading_states import AttestableCoordinate
 from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.ops import (
     EXPORT_PAGE_RESULTS,
@@ -987,7 +987,7 @@ class RunsAttestParams(EvalBaseModel):
 
     run_ids: RunIds
     coordinate: Annotated[
-        Coordinate,
+        AttestableCoordinate,
         Field(
             description="Which coordinate of the runs' identity is stated: measure_definition (what each host "
             "measure counted when the runs' values were read) or served_model (the model that answered their "
@@ -1677,12 +1677,11 @@ async def _run_remeasure(host: OpsHost, caller: Caller, params: RunRemeasurePara
 
 async def _runs_attest(host: OpsHost, caller: Caller, params: RunsAttestParams) -> Attested:
     eval_host = host.eval_host
-    stated_for = {"measure_definition": "measure_definitions", "served_model": "served_model"}
-    if params.coordinate not in stated_for:
-        raise ValidationFailedError(
-            f"the {params.coordinate} of a stored run is not stated after the fact: it is recorded at launch",
-            remedy=f"attest one of {', '.join(stated_for)}",
-        )
+    # The parameter each attestable coordinate is stated in: one entry per value of AttestableCoordinate.
+    stated_for: dict[AttestableCoordinate, str] = {
+        "measure_definition": "measure_definitions",
+        "served_model": "served_model",
+    }
     if misplaced := sorted(
         name
         for coordinate, name in stated_for.items()
