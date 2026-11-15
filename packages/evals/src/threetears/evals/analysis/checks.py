@@ -69,9 +69,6 @@ if TYPE_CHECKING:
 
 __all__ = ["Check", "Corrected", "Looks", "Rescore", "blind_read_checks", "judge_checks", "speaking_check"]
 
-#: What a check checks: a judge, a model that answered a blind read (a reviewer), or the rig.
-CheckKind = Literal["judge", "reviewer", "rig"]
-
 #: The fewest pair items a reviewer's lean is read as ``met`` over. On pass/fail an unbiased reviewer is shown inside
 #: ``±0.10`` in about 40% of reads at 105 items and 98% at 260, never at 40 (``tests/test_simulated_checks.py``).
 REVIEWER_MET_MIN_PAIR_ITEMS: Final = 40
@@ -102,7 +99,7 @@ class Check(_Shape):
     where the check could not be made at all. ``met`` and ``undecided`` carry none.
     """
 
-    kind: CheckKind = Field(
+    kind: Literal["judge", "reviewer", "rig"] = Field(
         description="What was checked: a judge, a model that answered a blind read, or the rig. A check that names "
         "none is the rig's when it is against identical arms, else a judge's."
     )
