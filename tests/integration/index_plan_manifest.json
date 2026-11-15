@@ -112,6 +112,26 @@
   "table": "intentions"
  },
  {
+  "index": "idx_skill_invocations_skill_time",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "skill_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "purpose": "fk:agent_skill_invocations_skill_fk",
+  "sql": "SELECT * FROM \"agent_skill_invocations\" AS t WHERE t.\"agent_id\" = $1 AND t.\"skill_id\" = $2",
+  "table": "agent_skill_invocations"
+ },
+ {
   "index": "idx_workspace_files_workspace",
   "pins": [
    {
@@ -190,6 +210,20 @@
   "table": "context_items"
  },
  {
+  "index": "ix_context_items_conv",
+  "pins": [
+   {
+    "column": "conversation_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   }
+  ],
+  "purpose": "packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.count_results; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.evict_lru; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.find_by_conversation",
+  "sql": "SELECT * FROM \"context_items\" AS t WHERE t.\"conversation_id\" = $1",
+  "table": "context_items"
+ },
+ {
   "index": "ix_context_items_type",
   "pins": [
    {
@@ -214,6 +248,26 @@
   "purpose": "packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.count_results; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.evict_lru",
   "sql": "SELECT * FROM \"context_items\" AS t WHERE t.\"agent_id\" = $1 AND t.\"conversation_id\" = $2 AND t.\"context_type\" = $3",
   "table": "context_items"
+ },
+ {
+  "index": "ix_intentions_agent_user",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "user_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "purpose": "packages/agent/intention/src/threetears/agent/intention/collections.py::IntentionsCollection.find_by_user; packages/agent/intention/src/threetears/agent/intention/collections.py::IntentionsCollection.find_open_for_deliberation; packages/agent/intention/src/threetears/agent/intention/collections.py::IntentionsCollection.find_similar_for_dedup",
+  "sql": "SELECT * FROM \"intentions\" AS t WHERE t.\"agent_id\" = $1 AND t.\"user_id\" = $2",
+  "table": "intentions"
  },
  {
   "index": "uq_folders_agent_user_name",

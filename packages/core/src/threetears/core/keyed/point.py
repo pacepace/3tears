@@ -25,6 +25,7 @@ from typing import Any, Literal, overload
 from threetears.core.keyed._filters import Fragment, Lock, Selected, sent_by
 from threetears.core.keyed._joining import Joined, check_joins, join_rows, joined_columns
 from threetears.core.keyed.page import yugabyte_index_hint
+from threetears.interfaces.keyed.filters import by_conditions, quote_identifier, quoted_table
 from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.point import (
     Nearest,
@@ -269,5 +270,72 @@ async def read_nearest(
         raise ValueError(f"a ranked read of {table} joins LEFT only (an inner join drops rows past the limit)")
     read, hidden = joined_columns(columns, joins)
     sql, params = read_nearest_statement(table, by=by, nearest=nearest, limit=limit, columns=read, where=where)
+    if all(not (join.counts or join.matched) for join in joins):
+        # One statement: the ranked rows, each joined to its parents by key (a LATERAL lookup per ranked row). The
+        # ranked read then a keyed batch of the parents (join_rows) cost a second round trip: at real size (20k
+        # media_content rows of one user, PostgreSQL) the FTS search took 5.96 ms against the hand-written join's
+        # 4.92 ms (A/A gap 5%), over the bar of "not slower than the old statement" (S/c2/lat, coordinator
+        # 2026-11-14). LATERAL keeps the lookup driven from the ranked rows: as a plain join YugabyteDB hashed every
+        # file of the agent. Counted and matched joins keep the two-step read.
+        joined_sql, joined_params = _joined_nearest_statement(sql, list(params), nearest, joins)
+        rows = [dict(row) for row in await sent_by(conn).fetch(joined_sql, *joined_params)]
+        for row in rows:
+            del row[_RANK]
+            for column in hidden:
+                del row[column]
+        return rows
     ranked = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
     return (await join_rows(conn, ranked, joins, batch=batch, hidden=hidden))[:limit]
+
+
+#: the name a ranked read's distance (or text rank) is selected under, to order its joined rows by
+_RANK = "__rank"
+
+
+def _joined_nearest_statement(
+    ranked_sql: str, params: list[Any], nearest: Nearest | TextRank, joins: Sequence[Joined]
+) -> tuple[str, list[Any]]:
+    """the ranked statement (:func:`~threetears.interfaces.keyed.read_nearest_statement`'s, its distance or rank
+    selected too) as a derived table, each of its rows ``LEFT JOIN LATERAL``-ed to the rows of each joined table its
+    columns name (``j1."media_id" = r."media_id"`` and the join's own pins), in the ranked order, up to the same
+    ``LIMIT``: what :func:`join_rows` over the ranked rows answered, a row matching several parents once for each.
+
+    :param ranked_sql: the ranked statement, ``SELECT ... ORDER BY <distance> [DESC] LIMIT $n``
+    :ptype ranked_sql: str
+    :param params: its binds, the vector (or query text) then the limit last
+    :ptype params: list[Any]
+    :param nearest: the rank it orders by
+    :ptype nearest: Nearest | TextRank
+    :param joins: the joins, each a plain LEFT one
+    :ptype joins: Sequence[Joined]
+    :return: the statement and its binds
+    :rtype: tuple[str, list[Any]]
+    """
+    place = len(params) - 1
+    distance = nearest.distance(place)
+    descending = isinstance(nearest, TextRank)
+    assert ranked_sql.startswith("SELECT ")
+    inner = f"SELECT {distance} AS {quote_identifier(_RANK)}, {ranked_sql[len('SELECT ') :]}"
+    qualifier: dict[str, str] = {}
+    selected: list[str] = ["r.*"]
+    laterals: list[str] = []
+    binds = list(params)
+    for number, join in enumerate(joins, start=1):
+        alias = f"j{number}"
+        conditions = [
+            f"j.{quote_identifier(column)} = {qualifier.get(row, 'r.' + quote_identifier(row))}"
+            for column, row in join.on.items()
+        ]
+        pinned, values = by_conditions(join.by or {}, first=len(binds) + 1, alias="j")
+        binds += values
+        wanted = ", ".join(quote_identifier(column) for column in dict.fromkeys(join.columns.values()))
+        laterals.append(
+            f"LEFT JOIN LATERAL (SELECT {wanted} FROM {quoted_table(join.table)} AS j"
+            f" WHERE {' AND '.join([*conditions, *pinned])}) AS {alias} ON TRUE"
+        )
+        for name, column in join.columns.items():
+            selected.append(f"{alias}.{quote_identifier(column)} AS {quote_identifier(name)}")
+            qualifier[name] = f"{alias}.{quote_identifier(column)}"
+    order = f"r.{quote_identifier(_RANK)}{' DESC' if descending else ''}"
+    sql = f"SELECT {', '.join(selected)} FROM ({inner}) AS r {' '.join(laterals)} ORDER BY {order} LIMIT ${place + 1}"
+    return sql, binds

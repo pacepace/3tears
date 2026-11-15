@@ -57,8 +57,8 @@ async def test_off_is_the_default_and_every_statement_reads_the_stored_salience(
     a reinforcement adds to anything but it."""
     assert IntentionsCollection.salience_decay is None
     listed, deliberated, bumped = await _statements(None, monkeypatch)
-    assert "ORDER BY salience DESC, date_created DESC" in listed
-    assert "ORDER BY salience DESC, date_created DESC" in deliberated
+    assert 'ORDER BY salience DESC, t."date_created" DESC' in listed
+    assert 'ORDER BY salience DESC, t."date_created" DESC' in deliberated
     assert 'SET "salience" = LEAST(1.0, salience + $1) WHERE' in bumped
 
 
@@ -69,6 +69,6 @@ async def test_on_the_reads_rank_by_the_decay_and_a_reinforcement_folds_and_stam
     """Flips if with decay on a ranked read orders by the stored base, or a reinforcement adds to the stored base or
     leaves the stamp where it was."""
     listed, deliberated, bumped = await _statements(_DECAY, monkeypatch)
-    assert f"ORDER BY {_DECAY.rank_sql()} DESC, date_created DESC" in listed
-    assert f"ORDER BY {_DECAY.rank_sql()} DESC, date_created DESC" in deliberated
+    assert f'ORDER BY {_DECAY.rank_sql()} DESC, t."date_created" DESC' in listed
+    assert f'ORDER BY {_DECAY.rank_sql()} DESC, t."date_created" DESC' in deliberated
     assert f'SET "salience" = LEAST(1.0, {_DECAY.effective_sql()} + $1), "last_decayed_at" = now()' in bumped

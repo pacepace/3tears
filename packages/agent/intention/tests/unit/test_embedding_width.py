@@ -117,8 +117,8 @@ class TestTheRegistrationTakesTheWidth:
             register(MigrationRunner(), embedding_dim=width)
 
     def test_the_ledger_name_is_the_same_at_any_width(self) -> None:
-        assert register(MigrationRunner(), embedding_dim=1536).descriptions == {1: "create_intentions_table"}
-        assert register(MigrationRunner()).descriptions == {1: "create_intentions_table"}
+        assert register(MigrationRunner(), embedding_dim=1536).descriptions == {1: "create_intentions_table", 3: "add_agent_user_index"}
+        assert register(MigrationRunner()).descriptions == {1: "create_intentions_table", 3: "add_agent_user_index"}
 
     @pytest.mark.parametrize(("width", "expected"), [(None, 1024), (1536, 1536), (3072, 3072)])
     async def test_the_table_is_created_at_the_width(self, width: int | None, expected: int) -> None:

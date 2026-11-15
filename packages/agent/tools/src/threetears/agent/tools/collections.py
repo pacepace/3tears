@@ -34,7 +34,7 @@ from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
 )
 from threetears.core.data.migrations import ConnectionSession, database_ddl_lock
-from threetears.core.keyed import Fragment, update_keyed
+from threetears.core.keyed import Count, Fragment, Sort, aggregate_keyed, keyset_page, read_by, update_keyed
 from threetears.core.data.migrations.backfill import backfill_pages
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import contain, get_logger
@@ -199,14 +199,14 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         read_ticket = self.scan_ticket()  # before the first await
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
         assert self.l3_pool is not None
-        rows = await self.l3_pool.fetch(
-            """
-            SELECT * FROM context_items
-            WHERE conversation_id = $1 AND ($2::uuid IS NULL OR agent_id = $2)
-            ORDER BY date_created ASC
-            """,
-            cid,
-            agent_id,
+        # one conversation's rows, by the primary key's lead (conversation_id); the agent, when named, narrows them
+        rows = await read_by(
+            self.l3_pool,
+            "context_items",
+            by={"conversation_id": cid},
+            where=[_agent_guard(agent_id)],
+            order=[Sort("date_created")],
+            records=True,
         )
         entities: list[ContextItemEntity] = []
         for row in rows:
@@ -418,16 +418,15 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         """
         cid = conversation_id if isinstance(conversation_id, UUID) else UUID(str(conversation_id))
         assert self.l3_pool is not None
-        row = await self.l3_pool.fetchrow(
-            """
-            SELECT COUNT(*) AS cnt FROM context_items
-            WHERE conversation_id = $1 AND context_type = 'tool_result'
-              AND ($2::uuid IS NULL OR agent_id = $2)
-            """,
-            cid,
-            agent_id,
+        # one conversation's tool results, by ix_context_items_type (conversation_id, context_type)
+        (counted,) = await aggregate_keyed(
+            self.l3_pool,
+            "context_items",
+            aggregates={"n": Count()},
+            by={"conversation_id": cid, "context_type": "tool_result"},
+            where=[_agent_guard(agent_id)],
         )
-        return int(row["cnt"]) if row else 0
+        return int(counted["n"] or 0)
 
     async def evict_lru(self, conversation_id: str | UUID, result_limit: int, agent_id: UUID | None = None) -> int:
         """evict oldest tool_result items exceeding the limit.
@@ -453,18 +452,20 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
 
         to_evict = count - result_limit
         assert self.l3_pool is not None
-        evict_rows = await self.l3_pool.fetch(
-            """
-            SELECT context_id FROM context_items
-            WHERE conversation_id = $1 AND context_type = 'tool_result'
-              AND ($3::uuid IS NULL OR agent_id = $3)
-            ORDER BY date_accessed ASC
-            LIMIT $2
-            """,
-            cid,
-            to_evict,
-            agent_id,
-        )
+        # the least recently read tool results of the conversation (ix_context_items_type's rows, sorted by their
+        # last read; the key breaks a tie, which LIMIT alone left to the engine)
+        evict_rows = (
+            await keyset_page(
+                self.l3_pool,
+                "context_items",
+                columns=("context_id", "date_accessed"),
+                by={"conversation_id": cid, "context_type": "tool_result"},
+                where=[_agent_guard(agent_id)],
+                order=[Sort("date_accessed"), Sort("context_id", "uuid")],
+                limit=to_evict,
+                records=True,
+            )
+        ).rows
 
         evicted = 0
         for row in evict_rows:
@@ -490,6 +491,11 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
             )
 
         return evicted
+
+
+def _agent_guard(agent_id: UUID | None) -> Fragment:
+    """the rows of one agent's turns when ``agent_id`` names one; every row when it is None."""
+    return Fragment("($1::uuid IS NULL OR t.agent_id = $1)", (agent_id,))
 
 
 def _long_desc_from_content(row: Mapping[str, Any]) -> dict[str, Any] | None:

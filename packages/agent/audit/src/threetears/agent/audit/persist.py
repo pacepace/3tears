@@ -53,7 +53,7 @@ from threetears.agent.audit.migrations.v001_create_audit_events import (
     AUDIT_EVENTS_V001_TIME_INDEX,
 )
 from threetears.agent.audit.migrations.v002_audit_time_range_index import AUDIT_EVENTS_V002_DDL
-from threetears.core.keyed import AnyOf, Fragment, Selected, Sort, keyset_page
+from threetears.core.keyed import AnyOf, Fragment, Selected, Sort, delete_before, keyset_page, update_keyed
 from threetears.core.serialization import json_datetime, to_stored_json
 from threetears.nats import Subjects
 from threetears.observe import cancel_and_wait, get_logger, spawn_background
@@ -365,30 +365,19 @@ async def prune_audit_events(
     if batch_size < 1:
         raise ValueError(f"batch_size must be at least 1, got {batch_size}")
     cutoff = (now if now is not None else datetime.now(UTC)) - older_than
-    deleted = 0
-    while True:
-        status = await db.execute(
-            "DELETE FROM audit_events WHERE id IN (SELECT id FROM audit_events WHERE timestamp < $1 LIMIT $2)",
-            cutoff,
-            batch_size,
-        )
-        count = _rowcount(status)
-        deleted += count
-        if count < batch_size:
-            break
-    return deleted
-
-
-def _rowcount(status: Any) -> int:  # noqa: ANN401 -- a driver status string
-    """the row count from a command status such as ``"DELETE 3"`` or ``"UPDATE 1"``.
-
-    :param status: the status
-    :ptype status: Any
-    :return: the count (0 when there is none)
-    :rtype: int
-    """
-    tail = str(status).rsplit(" ", 1)[-1]
-    return int(tail) if tail.isdigit() else 0
+    # a page at a time through idx_audit_events_time (timestamp), each page's ids named by RETURNING, until a short
+    # page: what the hand-written "DELETE ... WHERE id IN (SELECT id ... LIMIT $2)" loop deleted, the oldest first
+    # rather than whichever rows the engine found first. No collection or cache serves audit_events.
+    swept = await delete_before(
+        "audit_events",
+        collection=None,
+        key=("id",),
+        column="timestamp",
+        before=cutoff,
+        page=batch_size,
+        conn=db,
+    )
+    return swept.deleted
 
 
 def _anonymize_stored(raw: str | None, *, event_type: str) -> str | None:
@@ -476,14 +465,19 @@ async def anonymize_audit_rows(
             address = anonymize_ip(row["ip_address"])
             # the DATABASE decides "changed": jsonb renders non-ASCII and numbers its own way, so comparing
             # JSON text counted untouched rows as changed on every pass
-            status = await db.execute(
-                "UPDATE audit_events SET details = $1::text::jsonb, ip_address = $2 WHERE id = $3 "
-                "AND (details IS DISTINCT FROM $1::text::jsonb OR ip_address IS DISTINCT FROM $2)",
-                details,
-                address,
-                row["id"],
+            written = await update_keyed(
+                db,
+                "audit_events",
+                values={"details": Fragment("$1::text::jsonb", (details,)), "ip_address": address},
+                by={"id": row["id"]},
+                where=[
+                    Fragment(
+                        "(details IS DISTINCT FROM $1::text::jsonb OR ip_address IS DISTINCT FROM $2)",
+                        (details, address),
+                    )
+                ],
             )
-            changed += _rowcount(status)
+            changed += written.count
         after = rows[-1]["id"]
     log.info("audit rows anonymized", extra={"extra_data": {"rows_matched": matched, "rows_changed": changed}})
     return AuditAnonymization(rows_matched=matched, rows_changed=changed)

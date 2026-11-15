@@ -61,6 +61,12 @@ async def test_idx_intentions_open_ranked(engine_conn: Any) -> None:
     assert plan_uses_index(plan, "idx_intentions_open_ranked"), json.dumps(plan.plan)
 
 
+async def test_idx_skill_invocations_skill_time(engine_conn: Any) -> None:
+    """Flips if fk:agent_skill_invocations_skill_fk's read stops reading idx_skill_invocations_skill_time."""
+    plan = await explain_index_read(engine_conn, _ENTRIES["idx_skill_invocations_skill_time"])
+    assert plan_uses_index(plan, "idx_skill_invocations_skill_time"), json.dumps(plan.plan)
+
+
 async def test_idx_workspace_files_workspace(engine_conn: Any) -> None:
     """Flips if packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileCollection.find_by_workspace; packages/agent/workspace/src/threetears/agent/workspace/collections.py::WorkspaceFileCollection.find_by_workspace_and_relative_path; packages/agent/workspace/src/threetears/agent/workspace/materialize.py::_capture_back's read stops reading idx_workspace_files_workspace."""
     plan = await explain_index_read(engine_conn, _ENTRIES["idx_workspace_files_workspace"])
@@ -79,10 +85,22 @@ async def test_ix_context_items_agent_var_key(engine_conn: Any) -> None:
         await insert_duplicate(engine_conn, _ENTRIES["ix_context_items_agent_var_key"])
 
 
+async def test_ix_context_items_conv(engine_conn: Any) -> None:
+    """Flips if packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.count_results; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.evict_lru; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.find_by_conversation's read stops reading ix_context_items_conv."""
+    plan = await explain_index_read(engine_conn, _ENTRIES["ix_context_items_conv"])
+    assert plan_uses_index(plan, "ix_context_items_conv"), json.dumps(plan.plan)
+
+
 async def test_ix_context_items_type(engine_conn: Any) -> None:
     """Flips if packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.count_results; packages/agent/tools/src/threetears/agent/tools/collections.py::ContextItemCollection.evict_lru's read stops reading ix_context_items_type."""
     plan = await explain_index_read(engine_conn, _ENTRIES["ix_context_items_type"])
     assert plan_uses_index(plan, "ix_context_items_type"), json.dumps(plan.plan)
+
+
+async def test_ix_intentions_agent_user(engine_conn: Any) -> None:
+    """Flips if packages/agent/intention/src/threetears/agent/intention/collections.py::IntentionsCollection.find_by_user; packages/agent/intention/src/threetears/agent/intention/collections.py::IntentionsCollection.find_open_for_deliberation; packages/agent/intention/src/threetears/agent/intention/collections.py::IntentionsCollection.find_similar_for_dedup's read stops reading ix_intentions_agent_user."""
+    plan = await explain_index_read(engine_conn, _ENTRIES["ix_intentions_agent_user"])
+    assert plan_uses_index(plan, "ix_intentions_agent_user"), json.dumps(plan.plan)
 
 
 async def test_uq_folders_agent_user_name(engine_conn: Any) -> None:

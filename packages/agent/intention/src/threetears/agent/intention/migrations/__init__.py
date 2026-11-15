@@ -15,6 +15,8 @@ version history:
   the pgvector extension reference, and the three indexes (partial
   salience-ranked, cooldown btree, HNSW dedup). Presence/aliveness
   program, 3tears v0.15.0.
+- v002 (CONTRACT, held) drops the unread ``idx_intentions_last_surfaced``.
+- v003 (expand) builds ``ix_intentions_agent_user`` (``agent_id, user_id``): a person's every want, by key.
 
 The ``embedding`` column is created at the width :func:`register` is given
 (``embedding_dim``, default 1024, agent-memory's width too); see
@@ -36,6 +38,7 @@ from threetears.agent.intention.migrations.v001_create_intentions_table import (
 from threetears.agent.intention.migrations.v002_contract_last_surfaced_index_dropped import (
     drop_last_surfaced_index,
 )
+from threetears.agent.intention.migrations.v003_agent_user_index import add_agent_user_index
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, check_embedding_dim
 from threetears.core.data.migrations import (
     MigrationRunner,
@@ -100,6 +103,7 @@ def register(
     pkg.step(1, name=create_intentions_table.__name__)(create_at_width)
     if held_contract:
         pkg.version(2)(drop_last_surfaced_index)
+    pkg.version(3)(add_agent_user_index)
     runner.register(pkg)
     return pkg
 
