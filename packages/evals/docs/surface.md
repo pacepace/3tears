@@ -130,7 +130,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `providers.describe_failure`: What the engine may know of a call through the client that raised: the host's `failure_describer`.
 - `providers.Model`: the same as `Model`.
 
-## Functions a host's code calls: 75
+## Functions a host's code calls: 77
 
 Each is `invoked`: your code imports it and calls it. None is an action; the actions follow.
 
@@ -146,11 +146,12 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `schema.label_key_of`: The label key of one judgement: `evidence` read on `dim`.
 - `schema.nested_schemas`: Every schema written directly inside `schema`, in declaration order.
 
-### `kernel` (7)
+### `kernel` (8)
 
 - `kernel.confusion_cell`: The value a classification reports under `confusion_cell`: `expected → predicted`.
 - `kernel.extract_json`: Extract a JSON object from provider output.
 - `kernel.extract_json_array`: Extract a JSON array from provider output, handling markdown code blocks.
+- `kernel.failed_call_output`: A cell's output for a model call that failed, routed by whose failure it was.
 - `kernel.fold_phase_timings`: Fold one delivery's carried phase timings into a result's accumulator, and say what could not be folded.
 - `kernel.prompt_drift`: Read a stored copy of a catalogue prompt against the package's shipped default.
 - `kernel.seed_digest`: The canonical digest of a seed's content: what a host records when it seeds a slot from it.
@@ -222,8 +223,9 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `gen.plan_draft`: The one call a rubric proposal sends, on either axis, built before anything is priced or made.
 - `gen.propose_draft`: Make an admitted rubric proposal on `axis` and read its draft.
 
-### `ops` (1)
+### `ops` (2)
 
+- `ops.start_action_job`: Start a host action's work as a job whose record (`EvalActionJob`) holds its result.
 - `ops.start_paid_call`: Start a host action's one paid model call: admitted against its cap in the call, made in a job.
 
 ### `negotiation` (7)
@@ -729,15 +731,13 @@ not start using one.
 - `transports.fastmcp.CatalogueTool`: One mounted tool, as FastMCP serves it: every call handed to the catalogue. (bound)
 - `negotiation.closest_settings`: What to send for `asked`: the closest settings `facts` say the model accepts, and why each one moved. (invoked)
 
-## Needs a shipped example (#1199): 4
+## Needs a shipped example (#1199): 2
 
 Each is the only door to something a host must be able to do, and no shipped example uses it yet: use it as
 its line says. Issue #1199 adds the example.
 
-- `kernel.failed_call_output`: A host's own kind routes a failed call through it, so an account refusal stops the run, a decline excludes the cell and an unserved model is never judged.
 - `kernel.host.MemberActsOn`: A host marks a map field of its kind's overlay with it, so each entry is attributed to what it acts on.
 - `kernel.host.Ordinal`: A host marks a `Literal` or `Enum` knob of its kind's overlay with it, so the knob's values are ranked.
-- `ops.start_action_job`: A host's own action runs work that is not one paid call as a job through it (`start_paid_call` covers one paid call).
 
 ## Reading states: 18 reasons a reading is not counted, and what closes each
 
@@ -782,7 +782,7 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
 | all | 488 | |
 
-Of these, 22 await demotion and 4 need a shipped example
+Of these, 22 await demotion and 2 need a shipped example
 (issue #1199), each listed in its register's section above.
 
 | Typed names | Names | Goal |

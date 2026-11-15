@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the courier host uses the names that are the only door to what a host must do
+
+**Changed:** the courier host example (`packages/evals/tests/fixtures/courierhost/`) shows two more things a host
+does. Its kind routes the planner model's failed call through `kernel.failed_call_output`, with a failure describer
+of its own: an overloaded endpoint is the provider's, so the cell is excluded and the run goes on. Its own action,
+`courier_cases_propose`, runs as a job through `ops.start_action_job`, served beside the engine's actions
+(`courier_catalogue`) and read back with `job_poll`. The planner's cells are as they were. Both names leave the
+`AWAITING_SHIPPED_USE` register.
+
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
 **Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone

@@ -417,19 +417,11 @@ AWAITING_DEMOTION: frozenset[str] = frozenset(
 #: host does through it. Like :data:`AWAITING_DEMOTION`, it only shrinks.
 AWAITING_SHIPPED_USE: Mapping[str, str] = MappingProxyType(
     {
-        "threetears.evals.kernel.failed_call_output": (
-            "A host's own kind routes a failed call through it, so an account refusal stops the run, a decline "
-            "excludes the cell and an unserved model is never judged."
-        ),
         "threetears.evals.kernel.host.MemberActsOn": (
             "A host marks a map field of its kind's overlay with it, so each entry is attributed to what it acts on."
         ),
         "threetears.evals.kernel.host.Ordinal": (
             "A host marks a `Literal` or `Enum` knob of its kind's overlay with it, so the knob's values are ranked."
-        ),
-        "threetears.evals.ops.start_action_job": (
-            "A host's own action runs work that is not one paid call as a job through it (`start_paid_call` covers "
-            "one paid call)."
         ),
     }
 )

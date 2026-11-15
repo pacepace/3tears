@@ -21,8 +21,9 @@ What a product supplies, in the order it is written below:
    judge-only quadrant).
 4. **Its profile**, assembling the three, plus how one observation resolves its levers.
 5. **Its candidate kind** — ``prepare`` seeds the world through the engine's seed walk, ``invoke``
-   runs the candidate and reports its measures.
+   asks the planner model and reports its measures, or routes the model's failed call by whose it was.
 6. **Its host** — the profile, a store, and the three services with no safe default.
+7. **Its launching host**, and **8. its own action**, served beside the engine's.
 
 Everything else — the trial loop, the stored documents, the bundle — is the engine's.
 
@@ -34,15 +35,21 @@ launches adopts the engine: a :class:`~threetears.evals.run.LaunchHost` whose on
 (from a checkout's root, ``python -m threetears.evals run --host
 packages.evals.tests.fixtures.courierhost:courier_launch_host``; with this file copied out as ``courierhost.py``,
 ``--host courierhost:courier_launch_host`` from beside it) and waits on through the job manager's ``wait_for``.
+:func:`courier_catalogue` serves the engine's actions with the courier's own added, over :func:`courier_ops_host`.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+import logging
+from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from pydantic import BaseModel, Field
+
+from threetears.evals.actions import Action, ActionCatalogue, Caller, eval_catalogue
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateOutput,
@@ -57,6 +64,7 @@ from threetears.evals.kernel import (
     MetricDescriptor,
     WorldSession,
     VariantConfig,
+    failed_call_output,
     withhold_failure_detail,
 )
 from threetears.evals.schema import (
@@ -81,7 +89,8 @@ from threetears.evals.kernel.host import (
     WorldRegistry,
     default_cell_timeout,
 )
-from threetears.evals.schema import IntervalScale, SubjectSnapshot, SweepableValue
+from threetears.evals.ops import JobsStarted, OpsHost, start_action_job
+from threetears.evals.schema import IntervalScale, ProviderFailure, SubjectSnapshot, SweepableValue
 from threetears.evals.run import (
     KindWiring,
     LaunchHost,
@@ -100,6 +109,8 @@ COURIER_ID = "courier"
 COURIER_SCOPE = "courier-depot-north"
 COURIER_KIND = "route_planner"
 _PAYLOAD = "courier"
+
+_log = logging.getLogger(__name__)
 
 # --- 1. measures -----------------------------------------------------------------------------------
 
@@ -261,8 +272,63 @@ class _Planned:
     road_closures: int
 
 
+class PlannerOverloaded(Exception):
+    """The planner model's endpoint turned a call away because it is overloaded; the next call may be served."""
+
+
+@dataclass(frozen=True)
+class _Route:
+    late: int
+    detour_km: float
+    eta_miss_min: float
+
+
+async def ask_planner(model: str, *, stops: int, road_closures: int, exhaustive: bool, outage: bool) -> _Route:
+    """Ask the planner model for one round's route, and how it went. Scripted: no model is called.
+
+    :param model: The planner model asked.
+    :ptype model: str
+    :param stops: The round's stops.
+    :ptype stops: int
+    :param road_closures: The roads closed in the depot's world.
+    :ptype road_closures: int
+    :param exhaustive: Whether the solver searches every ordering, which routes around every closure.
+    :ptype exhaustive: bool
+    :param outage: Whether the endpoint is in an outage.
+    :ptype outage: bool
+    :return: The route's late stops, detour and arrival-time miss.
+    :rtype: _Route
+    :raises PlannerOverloaded: The endpoint is in an outage.
+    """
+    await asyncio.sleep(0)  # a real planner awaits its model; this yields like one
+    if outage:
+        raise PlannerOverloaded(f"{model}: 529 overloaded")
+    late = 0 if exhaustive else min(stops, road_closures)
+    return _Route(
+        late=late,
+        detour_km=road_closures * (0.5 if exhaustive else 1.5),
+        eta_miss_min=road_closures * (2.0 if exhaustive else 6.0),
+    )
+
+
+def describe_courier_failure(exc: BaseException) -> ProviderFailure:
+    """The courier's failure describer: whose failure a raised call was, which only the courier's own types can say.
+
+    The planner endpoint's overload is the provider's: the cell is excluded and the run goes on. Anything else is
+    described by its class alone and charged to the candidate, as :func:`withhold_failure_detail` does.
+
+    :param exc: What the call raised.
+    :ptype exc: BaseException
+    :return: Its description and owner.
+    :rtype: ProviderFailure
+    """
+    if isinstance(exc, PlannerOverloaded):
+        return ProviderFailure(str(exc), payload_withheld=False, owner="provider")
+    return withhold_failure_detail(exc)
+
+
 class RoutePlannerKind:
-    """A route planner, as the engine's candidate-kind seam sees one. Scripted: no model is called."""
+    """A route planner, as the engine's candidate-kind seam sees one. Its model is scripted (:func:`ask_planner`)."""
 
     judged_artifact = JudgedArtifact.UNJUDGED
     #: Serial: the courier's world is one table it does not bind per cell, so two cells would plan over one map.
@@ -270,9 +336,15 @@ class RoutePlannerKind:
     #: The carriers this kind attaches; a seed reaches the world only through these.
     CARRIERS: tuple[str, ...] = ("dispatch",)
 
-    def __init__(self, world: WorldRegistry) -> None:
-        """Bind the world this kind seeds through."""
+    def __init__(
+        self,
+        world: WorldRegistry,
+        *,
+        describe: Callable[[BaseException], ProviderFailure] = describe_courier_failure,
+    ) -> None:
+        """Bind the world this kind seeds through, and the host's failure describer."""
         self._world = world
+        self._describe = describe
 
     async def prepare(
         self,
@@ -294,16 +366,39 @@ class RoutePlannerKind:
         return _Planned(model=variant_config.candidate_model, road_closures=closures)
 
     async def invoke(self, instance: _Planned, test_case: EvalTestCase, sink: CellSink) -> CandidateOutput:
-        """Plan one round and report how it went, in the courier's own measures."""
-        await asyncio.sleep(0)  # a real planner awaits its solver; this yields like one
+        """Plan one round and report how it went, in the courier's own measures.
+
+        A case whose variation sets ``outage`` stands for a round planned while the planner's endpoint is overloaded.
+        """
         stops = int(test_case.variation_params["stops"])
-        careful = instance.model.endswith("-pro")
-        late = 0 if careful else min(stops, instance.road_closures)
-        detour = instance.road_closures * (0.5 if careful else 1.5)
-        eta_miss_min = instance.road_closures * (2.0 if careful else 6.0)
+        try:
+            route = await ask_planner(
+                instance.model,
+                stops=stops,
+                road_closures=instance.road_closures,
+                exhaustive=instance.model.endswith("-pro"),
+                outage=test_case.variation_params.get("outage") == "true",
+            )
+        except PlannerOverloaded as overloaded:
+            # Whose failure the call was is the host's describer's to say; what follows is the engine's rule, which
+            # failed_call_output holds: a provider's decline excludes the cell and the run goes on, an account's
+            # refusal stops the run, and anything else is charged to the planner.
+            failure = self._describe(overloaded)
+            return failed_call_output(
+                failure.owner,
+                failure.description,
+                refused="planner: the call was refused for the depot's account",
+                declined="planner: the endpoint declined the call",
+                failed="planner: the call failed",
+                log=lambda what, level: _log.log(level, "%s, case %s", what, test_case.id),
+            )
         return CandidateOutput(
-            output=[{"stops": stops, "late": late}],
-            host_measures={ON_TIME_RATE: (stops - late) / stops, DETOUR_KM: detour, FIELD_ACCURACY: eta_miss_min},
+            output=[{"stops": stops, "late": route.late}],
+            host_measures={
+                ON_TIME_RATE: (stops - route.late) / stops,
+                DETOUR_KM: route.detour_km,
+                FIELD_ACCURACY: route.eta_miss_min,
+            },
             telemetry=CandidateTelemetry(
                 usage=[
                     RoleUsage(
@@ -326,7 +421,7 @@ def courier_host() -> EvalHost:
     return EvalHost(
         profile=courier_profile(),
         storage=EvalStorage(InMemoryDocumentStore()),
-        failure_describer=withhold_failure_detail,
+        failure_describer=describe_courier_failure,
         trace_sink=None,
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
@@ -418,7 +513,7 @@ async def run_courier_campaign(host: EvalHost) -> EvalCampaign:
     """
     world = host.profile.world
     assert world is not None
-    kind = RoutePlannerKind(world)
+    kind = RoutePlannerKind(world, describe=host.failure_describer)
     template = courier_template()
     cases = courier_cases()
     await run_blocking(host.blocking_executor, host.storage.save_template, template)
@@ -485,7 +580,6 @@ def courier_launch_host() -> LaunchHost:
     eval_host = courier_host()
     world = eval_host.profile.world
     assert world is not None
-    kind = RoutePlannerKind(world)
     eval_host.storage.save_template(courier_template())
 
     async def launch(request: LaunchRequest) -> EvalRun:
@@ -499,6 +593,7 @@ def courier_launch_host() -> LaunchHost:
                 remedy=f"launch one of {', '.join(COURIER_MODELS)}",
             )
         payload = {"search_depth": 3, "traffic_feed": feed}
+        kind = RoutePlannerKind(world, describe=eval_host.failure_describer)
         return await launch_run(
             launch_host,
             request,
@@ -542,7 +637,85 @@ def courier_launch_host() -> LaunchHost:
     return launch_host
 
 
+# --- 8. its own action, served beside the engine's ----------------------------------------------
+
+#: The stops of each round the depot dispatched last season, oldest first. A product reads its dispatch log here.
+DEPOT_ROUND_HISTORY: tuple[int, ...] = (4, 6, 11, 6, 8, 14, 11, 6, 11, 4)
+
+
+class CasesProposeParams(BaseModel):
+    """What ``courier_cases_propose`` takes."""
+
+    max_rounds: int = Field(3, ge=1, le=20, description="the most round sizes to propose a case for")
+
+
+class ProposedCases(BaseModel):
+    """The cases ``courier_cases_propose`` proposes: one per round size the depot dispatched and no case covers, the
+    most dispatched first. Proposed, not stored: whoever asked decides which to add."""
+
+    cases: list[EvalTestCase]
+
+
+async def _cases_propose(host: OpsHost, caller: Caller, params: CasesProposeParams) -> JobsStarted:
+    """Read the depot's dispatch history for round sizes no case covers, as a job the caller polls."""
+
+    async def propose() -> ProposedCases:
+        await asyncio.sleep(0)  # a season's dispatch log is read in pages; this yields like one
+        covered = {int(case.variation_params["stops"]) for case in courier_cases()}
+        sizes = [stops for stops, _ in Counter(DEPOT_ROUND_HISTORY).most_common() if stops not in covered]
+        return ProposedCases(
+            cases=[
+                EvalTestCase(
+                    id=f"{COURIER_TEMPLATE_ID}:stops-{stops}",
+                    scope_id=caller.scope_id,
+                    template_id=COURIER_TEMPLATE_ID,
+                    variation_params={"stops": str(stops)},
+                )
+                for stops in sizes[: params.max_rounds]
+            ]
+        )
+
+    # Reading a season's log outlives any transport call, and it is not one paid model call (start_paid_call's case):
+    # start_action_job runs it as a job whose record holds the typed result, which job_poll returns once it is done.
+    return await start_action_job(
+        host, caller.scope_id, action="courier_cases_propose", run=propose, budget_s=60.0, label="round sizes"
+    )
+
+
+#: The courier's one action of its own: long work, so it returns the job it started and ``job_poll`` reads it back.
+COURIER_CASES_PROPOSE = Action(
+    name="courier_cases_propose",
+    summary="Propose a case for each round size the depot dispatched that no case covers yet.",
+    workflow="Courier",
+    permission="read",
+    params=CasesProposeParams,
+    result=JobsStarted,
+    handler=_cases_propose,
+    long_running=True,
+    example={"max_rounds": 3},
+)
+
+
+def courier_ops_host() -> OpsHost:
+    """The courier as the actions see it: its launching host, whose job manager runs every job.
+
+    :return: The host every action is called with.
+    :rtype: OpsHost
+    """
+    return OpsHost(launch=courier_launch_host())
+
+
+def courier_catalogue() -> ActionCatalogue:
+    """The engine's actions with the courier's own added: what the courier mounts and serves.
+
+    :return: The catalogue.
+    :rtype: ActionCatalogue
+    """
+    return eval_catalogue(host_actions=(COURIER_CASES_PROPOSE,))
+
+
 __all__ = [
+    "COURIER_CASES_PROPOSE",
     "COURIER_ID",
     "COURIER_KIND",
     "COURIER_MEASURES",
@@ -554,10 +727,16 @@ __all__ = [
     "RoutePlannerKind",
     "COURIER_SUBJECT",
     "COURIER_TEMPLATE_ID",
+    "DEPOT_ROUND_HISTORY",
+    "PlannerOverloaded",
+    "ask_planner",
     "courier_cases",
+    "courier_catalogue",
     "courier_host",
     "courier_launch_host",
+    "courier_ops_host",
     "courier_run",
+    "describe_courier_failure",
     "courier_template",
     "courier_profile",
     "courier_world",
