@@ -473,9 +473,9 @@ def _entry(report_input: ReportInput, id: str, kind: str, reach: CaveatReach, **
 
 
 def _judge_uncalibrated(report_input: ReportInput) -> bool:
-    """Whether every judged dimension's judge is stated uncalibrated and no check states it: the stored caveat, read
-    the way a stored input states it. Where a check of a judge against people states it on any dimension, that
-    check's caveat owns the fact there (:func:`uncalibrated_judges`), so the report-wide caveat is not raised."""
+    """Whether every judged dimension's judge is stated uncalibrated (:func:`uncalibrated_judges`): the stored caveat,
+    read the way a stored input states it. It is said here whether or not a check caveat says it too: the analyst's
+    and the writer's caveats read this part alone; the one list says the fact once (:func:`raise_caveats`)."""
     dimensions = judged_dimensions(report_input)
     return bool(dimensions) and len(uncalibrated_judges(report_input)) == len(dimensions)
 
@@ -634,16 +634,8 @@ def unstated_judges(report_input: ReportInput) -> tuple[str, ...]:
 
 
 def uncalibrated_judges(report_input: ReportInput) -> tuple[str, ...]:
-    """The judged dimensions whose judge the input states uncalibrated where no check caveat says so.
-
-    One fact, one caveat: that a judge has no passing check against people is said once. Where the input holds a
-    check of the dimension's judge against people too thin to decide
-    (:func:`~threetears.evals.analysis.answer.people_checks_too_thin`), that check's caveat (:func:`_checks`) says it,
-    naming the check and its result, with the step that closes it (a person rating the judge's answers,
-    :func:`remedy`), and the dimension is not among these. ``judge_uncalibrated`` and ``judge_partly_uncalibrated``
-    say the rest: a judge stated uncalibrated by its tier alone, and a judge whose checks hold none against people and
-    none met (:func:`~threetears.evals.analysis.answer.judges_not_checked_against_people`), which no check caveat
-    names.
+    """The judged dimensions whose judge the input states uncalibrated
+    (:func:`~threetears.evals.analysis.answer.stated_uncalibrated`): no passing check against people stands behind it.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -651,14 +643,20 @@ def uncalibrated_judges(report_input: ReportInput) -> tuple[str, ...]:
     :rtype: tuple[str, ...]
     """
     return tuple(
-        dimension
-        for dimension in judged_dimensions(report_input)
-        if stated_uncalibrated(report_input, dimension)
-        and (
-            not people_checks_too_thin(report_input, dimension)
-            or judges_not_checked_against_people(report_input, dimension)
-        )
+        dimension for dimension in judged_dimensions(report_input) if stated_uncalibrated(report_input, dimension)
     )
+
+
+def _said_by_its_check(report_input: ReportInput, dimension: str) -> list[str]:
+    """The ids of the check caveats that say a dimension's judge has no passing check against people: one per check of
+    a judge on it against people too thin to decide
+    (:func:`~threetears.evals.analysis.answer.people_checks_too_thin`); none where a judge on it holds no check
+    against people (:func:`~threetears.evals.analysis.answer.judges_not_checked_against_people`), which no check
+    caveat names."""
+    if judges_not_checked_against_people(report_input, dimension):
+        return []
+    thin = people_checks_too_thin(report_input, dimension)
+    return [check_id for check_id, held, check in _check_ids(report_input) if held == dimension and check in thin]
 
 
 def cleared_on_point_estimate(report_input: ReportInput, criterion_id: str) -> tuple[Place, ...]:
@@ -887,9 +885,10 @@ def _from_facts(report_input: ReportInput, facts: Iterable[_Fact]) -> list[Cavea
     return found
 
 
-def _checks(report_input: ReportInput) -> Iterator[CaveatEntry]:
-    """A caveat per check of a judge against people or a model. A check against people that is met qualifies
-    nothing, so it is said one step down, where it still silences a check against a model on its criterion."""
+def _check_ids(report_input: ReportInput) -> list[tuple[str, str, JudgeCheck]]:
+    """Each check of a judge against people or a model the input holds, with the id its caveat is raised under and
+    its dimension: ``check:<dimension>:<criterion>:<against>``, a second under one id numbered."""
+    found: list[tuple[str, str, JudgeCheck]] = []
     repeats: dict[str, int] = {}
     for dimension, judged in report_input.judged.items():
         for check in judged.checks:
@@ -897,25 +896,31 @@ def _checks(report_input: ReportInput) -> Iterator[CaveatEntry]:
                 continue
             check_id = f"check:{dimension}:{check.criterion or check.instrument}:{check.against}"
             repeats[check_id] = repeats.get(check_id, 0) + 1
-            if repeats[check_id] > 1:
-                check_id = f"{check_id}:{repeats[check_id]}"
-            met = check.result == "met"
-            if check.against == "people" and met:
-                reach: CaveatReach = "method"
-            else:
-                reach = _deciding_reach(report_input, [dimension])
-            yield _entry(
-                report_input,
-                check_id,
-                "check",
-                reach,
-                against=check.against,
-                criterion=check.criterion or check.instrument,
-                check=check.result,
-                same_family=bool(check.same_family_as),
-                reason=check.reason,
-                coordinate=check.coordinate if check.reason == "identity_unrecorded" else None,
-            )
+            found.append((check_id if repeats[check_id] == 1 else f"{check_id}:{repeats[check_id]}", dimension, check))
+    return found
+
+
+def _checks(report_input: ReportInput) -> Iterator[CaveatEntry]:
+    """A caveat per check of a judge against people or a model. A check against people that is met qualifies
+    nothing, so it is said one step down, where it still silences a check against a model on its criterion."""
+    for check_id, dimension, check in _check_ids(report_input):
+        met = check.result == "met"
+        if check.against == "people" and met:
+            reach: CaveatReach = "method"
+        else:
+            reach = _deciding_reach(report_input, [dimension])
+        yield _entry(
+            report_input,
+            check_id,
+            "check",
+            reach,
+            against=check.against,
+            criterion=check.criterion or check.instrument,
+            check=check.result,
+            same_family=bool(check.same_family_as),
+            reason=check.reason,
+            coordinate=check.coordinate if check.reason == "identity_unrecorded" else None,
+        )
 
 
 def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
@@ -1004,7 +1009,24 @@ def raise_caveats(report_input: ReportInput, bundle: CampaignBundle | None = Non
     found: dict[str, CaveatEntry] = {}
     for entry in raised:
         _keep_once(found, entry)
-    return list(found.values())
+    return [_said_once(report_input, entry) for entry in found.values()]
+
+
+def _said_once(report_input: ReportInput, entry: CaveatEntry) -> CaveatEntry:
+    """One fact, one caveat, in the one list: the tier's uncalibrated caveat silenced (``subsumed_by``) where every
+    dimension it names has a check caveat that says its judge has no passing check against people, which names the
+    check, its result and the step that closes it. Decided by the checks, never by a caveat's words; the stated part
+    (:func:`from_legacy`, :func:`implied`) still says it, for the readers that read only that part."""
+    if entry.kind == "judge_uncalibrated":
+        dimensions: Sequence[str] = judged_dimensions(report_input)
+    elif entry.kind == "judge_partly_uncalibrated":
+        dimensions = uncalibrated_judges(report_input)
+    else:
+        return entry
+    said = [_said_by_its_check(report_input, dimension) for dimension in dimensions]
+    if entry.subsumed_by is not None or not dimensions or not all(said):
+        return entry
+    return entry.model_copy(update={"subsumed_by": min(check_id for ids in said for check_id in ids)})
 
 
 def caveat_list(report_input: ReportInput) -> list[CaveatEntry]:

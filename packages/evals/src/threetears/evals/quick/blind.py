@@ -939,9 +939,12 @@ def _reviewer_clause(
         return f"{words}: no case read on both arms by both, so its lean is not read"
     have = check.pair_items or 0
     if check.lean is not None and check.lean_bar is not None and abs(check.lean) >= check.lean_bar:
+        seen = f"the lean seen, {_figure(check.lean)}"
+        if check.lean_interval is not None:
+            seen += f" [{_figure(check.lean_interval[0])}, {_figure(check.lean_interval[1])}]"
         return (
-            f"{words}: the lean seen is at or past {bar}, so on what was read the check fails: more cases leaning "
-            "as these did would not show it inside the bar at any count"
+            f"{words}: not decided: {seen}, is at or past {bar}, so cases leaning as these did would never show it "
+            "inside the bar and no count is given: more cases decide it only if they lean less"
         )
     said = (
         f"a lean toward either arm up to {_figure(check.lean_bound)} is not ruled out ({bar})"
