@@ -246,8 +246,8 @@ async def test_runs_launched_under_two_definitions_of_one_measure_never_share_a_
     assert BADGE_MEASURE_DEFINITIONS_DIFFER in grouped["badges"]
     disclosure = grouped["measure_definition_disclosure"]
     assert FIELD_ACCURACY in disclosure and redefined.id in disclosure
-    assert "pass^k keeps them in separate cells" in disclosure
-    assert "still pool them" in disclosure, "the page says what is not kept apart yet"
+    assert "pass^k and a campaign's cells keep them apart, and no contrast is read between them" in disclosure
+    assert "frontier's composite still pool them" in disclosure, "and names what still groups by contestant"
 
 
 async def test_runs_of_one_definition_carry_no_badge_and_no_disclosure() -> None:
