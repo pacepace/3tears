@@ -1014,8 +1014,6 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoriesCollection.find_similar_for_dedup; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
-                    "::MemoriesCollection.find_same_event; "
-                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoriesCollection.search_by_semantic; "
                     "packages/agent/memory/src/threetears/agent/memory/collections.py"
                     "::MemoriesCollection.search_by_fts; "
@@ -1031,7 +1029,31 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_user",
                 reason=(
-                    "memories carries six indexes: one user's memories under one agent, every per-user read and count"
+                    "memories carries seven indexes: one user's memories under one agent, every per-user read and count"
+                ),
+            ),
+            # v038: the memories one or two source messages wrote, for a writer's same-event lookup. Before it the
+            # lookup read the whole owner (a 20,000-memory owner: PostgreSQL scanned memories sequentially,
+            # YugabyteDB walked the owner's primary-key range; K1's probe and S2's red plan test, 2026-11-15).
+            # Led by the message so the enforced foreign key's ON DELETE SET NULL finds a deleted message's
+            # memories by it too; agent and user after it so YugabyteDB, which takes the index binding the most
+            # equality pins, prefers it to the owner index.
+            SchemaIndex(
+                "ix_memories_message_source",
+                "message_id_source",
+                "agent_id",
+                "user_id",
+                purpose=(
+                    "packages/agent/memory/src/threetears/agent/memory/collections.py"
+                    "::MemoriesCollection.find_same_event"
+                ),
+                plan_test=(
+                    "packages/agent/memory/tests/integration/test_vector_index_plans.py"
+                    "::test_ix_memories_message_source_serves_a_writers_same_event_lookup"
+                ),
+                reason=(
+                    "memories carries seven indexes: the few memories a turn's source messages wrote, before a "
+                    "writer stores the same event again"
                 ),
             ),
             # v004: every memory a conversation produced, for the
@@ -1045,7 +1067,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "::MemoryChunkCollection.find_by_conversation_id"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_mem_conversation",
-                reason="memories carries six indexes: the memories one conversation produced, for its chunks",
+                reason="memories carries seven indexes: the memories one conversation produced, for its chunks",
             ),
             SchemaIndex(
                 "ix_memories_user_alias",
@@ -1060,7 +1082,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "packages/agent/memory/src/threetears/agent/memory/merge.py::delete_colliding_memories"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_user_alias",
-                reason="memories carries six indexes: a memory by its name, unique per agent and user",
+                reason="memories carries seven indexes: a memory by its name, unique per agent and user",
             ),
             # v0.8.1: parity-gate enrichments relocated from upstream
             # alembic. tenancy-scope btree composites used by the
@@ -1090,7 +1112,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "packages/agent/memory/tests/integration/test_index_plans.py::test_memories_agent_customer_user"
                 ),
                 reason=(
-                    "memories carries six indexes: one owner's memories by the whole owner triple, every ambient read"
+                    "memories carries seven indexes: one owner's memories by the whole owner triple, every ambient read"
                 ),
             ),
             # no GIN over ``search_vector``: v027 dropped it. the keyword
@@ -1104,7 +1126,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
             # KEEP (coordinator, 2026-11-15; v001 idx_mem_embedding, renamed in 8060d75d7): an owner with many
             # memories is read nearest-first through it on both engines (an owner of 20,000: PostgreSQL and
             # YugabyteDB walk it for every read named below), a small one is sorted exactly off the owner index
-            # (test_vector_index_plans holds both). find_same_event is no reader: its message pin wins on both.
+            # (test_vector_index_plans holds both). find_same_event is no reader: ix_memories_message_source serves it.
             # Keep or drop on dev's owner sizes is a later performance call, not this declaration's.
             # KNOWN FOLLOW-UP, not fixed here (owner #101, 2026-11-14; a 50-row owner beside a 20,000-row one,
             # forced through the index): on YugabyteDB a small owner read through ybhnsw took ~100 ms at k=10
@@ -1129,7 +1151,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "::test_ix_memories_embedding_hnsw_serves_a_heavy_owners_nearest_reads"
                 ),
                 reason=(
-                    "memories carries six indexes: the k nearest memories of an owner too large to sort exactly, "
+                    "memories carries seven indexes: the k nearest memories of an owner too large to sort exactly, "
                     "for dedup, the search tool and ambient retrieval"
                 ),
             ),
@@ -1158,7 +1180,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                     "::test_idx_memories_tags_serves_a_scoped_searchs_every_tag_test"
                 ),
                 reason=(
-                    "memories carries six indexes: a scoped search's rare tag among one owner's many memories, "
+                    "memories carries seven indexes: a scoped search's rare tag among one owner's many memories, "
                     "found by containment"
                 ),
             ),

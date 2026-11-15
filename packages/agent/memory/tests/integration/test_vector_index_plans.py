@@ -11,8 +11,10 @@ scoped search's rare tag (twenty of the owner's rows) is found by containment. E
 Measured on this world (K1, 2026-11-15; PostgreSQL 16 + pgvector 0.8.7, YugabyteDB with vector 0.8.0-yb): the heavy
 owner's dedup, search-tool and ambient (current and history pool) reads walked ix_memories_embedding_hnsw on both
 engines, the file-content and chunk searches their HNSW indexes, and every ``tags @>`` scoped search idx_memories_tags.
-find_same_event (its message pin) and hybrid_search_within_memory (one memory's chunks) never read a vector index on
-either engine, so neither is a purpose. The small owner's reads stayed on the owner indexes on both.
+find_same_event and hybrid_search_within_memory (one memory's chunks) never read a vector index on either engine, so
+neither is a purpose. find_same_event read the whole heavy owner instead (PostgreSQL a sequential scan of memories,
+YugabyteDB the owner's primary-key range; S2, 2026-11-15): ix_memories_message_source now finds a turn's source
+messages' memories by key, and its test here holds that with every guard of the read deciding some row. The small owner's reads stayed on the owner indexes on both.
 """
 
 from __future__ import annotations
@@ -52,6 +54,11 @@ _HEAVY = 20_000
 _SMALL = 50
 #: the rows each read asks for
 _K = 10
+#: the memories each source message wrote (memory ``g`` came from message ``g // _PER_MESSAGE``), and the message ids
+#: prefix of each owner (the message number fills the last group)
+_PER_MESSAGE = 3
+_HEAVY_MESSAGES = "aaaaaaaa-0000-0000-0000-"
+_SMALL_MESSAGES = "bbbbbbbb-0000-0000-0000-"
 #: a tag twenty of the heavy owner's memories carry (each memory carries ``t<n % 1000>``)
 _RARE_TAG = "t7"
 #: the query vector
@@ -116,7 +123,7 @@ def _vector() -> str:
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def world(pg_url: str) -> AsyncIterator[_World]:
     """a fresh schema with the memory tables built and seeded: one agent's heavy owner (20,000 memories) and small
-    owner (50), a day apart (so each has memories older than ambient retrieval's recent week), each memory with a
+    owner (50), three memories from each source message, a day apart (so each has memories older than ambient retrieval's recent week), each memory with a
     file, its content and a chunk, each tagged ``t<n % 1000>``; analysed, and a platform pool on it."""
     schema = f"mem_vec_plans_{uuid.uuid4().hex[:12]}"
     conn = await asyncpg.connect(pg_url)
@@ -129,16 +136,18 @@ async def world(pg_url: str) -> AsyncIterator[_World]:
         register_memory(runner, embedding_dim=_DIM)
         await runner.apply_for_agent_schema(AsyncpgStore(conn))
         agent, customer, heavy, small = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-        for user, count in ((heavy, _HEAVY), (small, _SMALL)):
+        for user, count, prefix in ((heavy, _HEAVY, _HEAVY_MESSAGES), (small, _SMALL, _SMALL_MESSAGES)):
             await conn.execute(
                 "INSERT INTO memories (memory_id, agent_id, customer_id, user_id, conversation_id, type_memory,"
-                " content, date_created, date_updated, tags, embedding)"
+                " content, date_created, date_updated, tags, embedding, message_id_source)"
                 " SELECT gen_random_uuid(), $1, $2, $3, gen_random_uuid(), 'fact', 'memory number ' || g,"
                 " now() - g * interval '1 day', now(), jsonb_build_array('t' || g % 1000),"
-                f" {_vector()} FROM generate_series(1, {count}) g",
+                f" {_vector()}, ($4 || lpad(to_hex(g / {_PER_MESSAGE}), 12, '0'))::uuid"
+                f" FROM generate_series(1, {count}) g",
                 agent,
                 customer,
                 user,
+                prefix,
             )
         await conn.execute(
             "INSERT INTO media (media_id, memory_id, agent_id, customer_id, user_id, date_created, date_updated)"
@@ -372,3 +381,134 @@ async def test_idx_memories_tags_serves_a_scoped_searchs_every_tag_test(world: _
     assert len(plans) == 4, [plan.sql[:120] for plan in plans]
     missed = [_shape(plan) for plan in plans if not plan_uses_index(plan, "idx_memories_tags")]
     assert not missed, "\n\n".join(missed)
+
+
+def _messages(prefix: str, *numbers: int) -> list[uuid.UUID]:
+    """the ids of an owner's seeded source messages.
+
+    :param prefix: the owner's message id prefix
+    :ptype prefix: str
+    :param numbers: the messages' numbers
+    :ptype numbers: int
+    :return: their ids
+    :rtype: list[uuid.UUID]
+    """
+    return [uuid.UUID(f"{prefix}{number:012x}") for number in numbers]
+
+
+async def test_ix_memories_message_source_serves_a_writers_same_event_lookup(world: _World) -> None:
+    """Flips if a writer's same-event lookup (find_same_event: this turn's message and the one before) stops finding
+    its few memories through ix_memories_message_source, for a 20,000-memory owner and a 50-memory one, on PostgreSQL
+    and YugabyteDB, or reads more of the owner's rows than the messages wrote."""
+    plans: list[StatementPlan] = []
+    for owner, prefix in ((world.heavy, _HEAVY_MESSAGES), (world.small, _SMALL_MESSAGES)):
+
+        def same_event(
+            memories: MemoriesCollection, owner: uuid.UUID = owner, prefix: str = prefix
+        ) -> Awaitable[list[Any]]:
+            return memories.find_same_event(
+                user_id=owner,
+                agent_id=world.agent,
+                embedding=_QUERY,
+                message_ids=_messages(prefix, 10, 11),
+                threshold=-1.0,
+                top_k=_K,
+            )
+
+        rows, sent = await world.run(MemoriesCollection, same_event)
+        # memories 30..35 came from messages 10 and 11
+        assert rows == 2 * _PER_MESSAGE, (owner == world.heavy, rows)
+        plans.extend(_nearest(sent))
+    missed = [_shape(plan) for plan in plans if not plan_uses_index(plan, "ix_memories_message_source")]
+    assert not missed, "\n\n".join(missed)
+    wide = [(plan.rows_scanned, _shape(plan)) for plan in plans if plan.rows_scanned > 4 * _PER_MESSAGE]
+    assert not wide, wide
+
+
+#: the same-event read as it ran before ix_memories_message_source, with the message pin cast so no index on it can
+#: serve it: every guard find_same_event states, nearest first
+_SAME_EVENT_UNINDEXED = (
+    "SELECT t.memory_id FROM memories t WHERE t.agent_id = $1 AND t.user_id = $2"
+    " AND t.message_id_source::text = ANY($3::text[]) AND t.embedding IS NOT NULL"
+    " AND (t.superseded_by IS NULL OR NOT EXISTS"
+    " (SELECT 1 FROM memories g WHERE g.agent_id = t.agent_id AND g.memory_id = t.superseded_by))"
+    " AND NOT (COALESCE(t.tags, '[]'::jsonb) ? 'retracted')"
+    " ORDER BY t.embedding <=> $4::public.vector LIMIT $5"
+)
+
+
+async def test_a_same_event_lookup_through_its_index_answers_what_it_did_without(world: _World) -> None:
+    """Flips if find_same_event, read through ix_memories_message_source, answers other memories than the same read
+    with the message pin unindexed, on PostgreSQL and YugabyteDB. Beside the seeded rows the messages carry a memory
+    of each kind a guard turns away (another user's, a retracted one, one a live memory replaced, one with no
+    embedding) and one it keeps (replaced by a memory that is gone), so every guard decides some row."""
+    heavy_messages = _messages(_HEAVY_MESSAGES, 10, 11)
+    live = await world.pool.fetchval(
+        "SELECT memory_id FROM memories WHERE agent_id = $1 AND user_id = $2 LIMIT 1", world.agent, world.heavy
+    )
+    kept_id = uuid.uuid4()
+    turned_away = {
+        "other_user": uuid.uuid4(),
+        "retracted": uuid.uuid4(),
+        "replaced": uuid.uuid4(),
+        "blank": uuid.uuid4(),
+    }
+    # the pool's jsonb codec encodes the tags (a list), as the collections write them
+    added: list[tuple[uuid.UUID, uuid.UUID, list[str], uuid.UUID | None, bool]] = [
+        (kept_id, world.heavy, [], uuid.uuid4(), True),
+        (turned_away["other_user"], world.small, [], None, True),
+        (turned_away["retracted"], world.heavy, ["retracted"], None, True),
+        (turned_away["replaced"], world.heavy, [], live, True),
+        (turned_away["blank"], world.heavy, [], None, False),
+    ]
+    try:
+        for memory_id, user, tags, superseded_by, embedded in added:
+            await world.pool.execute(
+                "INSERT INTO memories (memory_id, agent_id, customer_id, user_id, conversation_id, type_memory,"
+                " content, date_created, date_updated, tags, superseded_by, message_id_source, embedding)"
+                " SELECT $1, $2, $3, $4, gen_random_uuid(), 'fact', 'an added memory', now(), now(), $5::jsonb, $6,"
+                f" $7, CASE WHEN $8 THEN {_vector()} END FROM generate_series(1, 1) g",
+                memory_id,
+                world.agent,
+                world.customer,
+                user,
+                tags,
+                superseded_by,
+                heavy_messages[0],
+                embedded,
+            )
+        for owner, messages in ((world.heavy, heavy_messages), (world.small, _messages(_SMALL_MESSAGES, 10, 11))):
+
+            def same_event(
+                memories: MemoriesCollection, owner: uuid.UUID = owner, messages: list[uuid.UUID] = messages
+            ) -> Awaitable[list[Any]]:
+                return memories.find_same_event(
+                    user_id=owner,
+                    agent_id=world.agent,
+                    embedding=_QUERY,
+                    message_ids=messages,
+                    threshold=-1.0,
+                    top_k=_K,
+                )
+
+            captured = CapturedL3(real=world.pool)
+            found = [row["memory_id"] for row in await same_event(world.collection(MemoriesCollection, captured))]
+            unindexed = await world.pool.fetch(
+                _SAME_EVENT_UNINDEXED,
+                world.agent,
+                owner,
+                [str(message) for message in messages],
+                "[" + ",".join(str(x) for x in _QUERY) + "]",
+                _K,
+            )
+            assert found == [row["memory_id"] for row in unindexed], owner == world.heavy
+            if owner == world.heavy:
+                assert kept_id in found
+                assert not {kind for kind, memory_id in turned_away.items() if memory_id in found}
+                assert len(found) == 2 * _PER_MESSAGE + 1, found
+    finally:
+        await world.pool.execute(
+            "DELETE FROM memories WHERE agent_id = $1 AND memory_id = ANY($2::uuid[])",
+            world.agent,
+            [memory_id for memory_id, *_ in added],
+        )

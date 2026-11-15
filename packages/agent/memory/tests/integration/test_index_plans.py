@@ -378,9 +378,6 @@ async def test_memories_agent_user(world: _World) -> None:
     await memories.find_similar_for_dedup(
         user_id=world.user, agent_id=world.agent, embedding=_vector(), top_k=5, threshold=0.9
     )
-    await memories.find_same_event(
-        user_id=world.user, agent_id=world.agent, embedding=_vector(), message_ids=[uuid.uuid4()], threshold=0.9
-    )
     await memories.search_by_semantic(
         user_id=world.user, agent_id=world.agent, embedding=_vector(), max_results=10, similarity_threshold=0.0
     )

@@ -1915,3 +1915,105 @@ async def test_the_running_follower_tries_a_failed_pass_again_after_a_wait_with_
     assert calls["n"] == 4
     assert _copy(backend) == l3.held()
     assert follower.status().failures == 0
+
+
+# --- a pass that only relabels the copy (E1, 2026-11-15) -------------------------------------------------------------
+
+
+def _applies_counted(backend: DuckDBBackend) -> list[int | None]:
+    """each mark ``backend.apply_staged`` is handed, in order: one per change the worker is asked to apply."""
+    marks: list[int | None] = []
+    real = backend.apply_staged
+
+    def apply_staged(changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+        marks.append(mark)
+        return real(changes, mark=mark)
+
+    backend.apply_staged = apply_staged  # type: ignore[method-assign]
+    return marks
+
+
+async def test_a_pass_that_only_relabels_the_copy_asks_the_backend_for_no_apply(world: Any) -> None:
+    """Flips if a pass with nothing heard and nothing staged sends the backend an empty change: on a pod's backend
+    that is a worker round trip, a settle and a publish of unchanged rows for a new label alone (F1, 2026-11-15)."""
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    applies = _applies_counted(backend)
+    heard: list[Any] = []
+    follower.on_change(heard.append)
+    applied = follower.status().applied
+    # the writer's stamp moves with no key of a followed table heard (a commit of nothing this copy holds)
+    lock.version += 1
+    assert await follower.catch_up()
+    assert applies == []
+    assert follower.stamp == lock.version
+    with follower.reading_marked() as (_cursor, stamp, marks):
+        # a reader of the copy as it is reads it at the new label, with the marks it holds now
+        assert stamp == lock.version
+        assert marks == follower.marks()
+    assert heard == [lock.version]
+    assert follower.status().applied == applied
+    assert follower.status().relabelled == 1
+    # a change after it applies as ever, at its own mark, its readers labelled with its stamp
+    l3.put([("VA", 1, 5)])
+    log.commit([("VA", 1)])
+    lock.version += 1
+    assert await follower.catch_up()
+    assert len(applies) == 1
+    assert _copy(backend) == l3.held()
+    with follower.reading() as (_cursor, stamp):
+        assert stamp == lock.version
+
+
+async def test_a_relabel_beside_a_write_that_holds_nothing_asks_for_no_apply_either_way() -> None:
+    """Flips if the passes around a write in progress that holds no scope the copy is behind on (a PartialStamp in,
+    the settled record out) each send the backend an empty change, as reports' pod did on every load (F1)."""
+    lock = _Scopes()
+    l3, log, backend, follower = _scoped_world(lock)
+    l3.put(_rows("VA", 5) + _rows("IL", 5))
+    log.commit([("VA", i) for i in range(5)] + [("IL", i) for i in range(5)])
+    await follower.warm()
+    assert await follower.catch_up()
+    applies = _applies_counted(backend)
+    before = _copy(backend)
+    lock.held = frozenset()
+    assert await follower.catch_up()
+    assert isinstance(follower.stamp, PartialStamp)
+    with follower.reading() as (_cursor, stamp):
+        assert stamp == follower.stamp
+    lock.held = None
+    assert await follower.catch_up()
+    assert not isinstance(follower.stamp, PartialStamp)
+    with follower.reading() as (_cursor, stamp):
+        assert stamp == follower.stamp
+    assert applies == []
+    assert _copy(backend) == before
+    assert follower.status().relabelled == 2
+
+
+async def test_a_relabel_never_hides_a_failed_apply_the_next_pass_tries_the_apply_again(world: Any) -> None:
+    """Flips if a pass after a failed apply (its stages kept, the copy at the change before) relabels the copy instead
+    of applying: readers would read the old rows under the new stamp."""
+    l3, log, lock, backend, follower = world
+    await _warmed(world, 10)
+    before = follower.stamp
+    l3.put([("VA", 1, 5)])
+    log.commit([("VA", 1)])
+    lock.version += 1
+    real = backend.apply_staged
+
+    def failing(changes: Sequence[StagedChange], *, mark: int | None = None) -> int:
+        raise RuntimeError("the apply failed")
+
+    backend.apply_staged = failing  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        await follower.catch_up()
+    assert follower.stamp == before
+    backend.apply_staged = real  # type: ignore[method-assign]
+    applies = _applies_counted(backend)
+    assert await follower.catch_up()
+    assert len(applies) == 1
+    assert _copy(backend) == l3.held()
+    with follower.reading() as (_cursor, stamp):
+        assert stamp == lock.version
+    assert follower.status().relabelled == 0
