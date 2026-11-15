@@ -112,7 +112,7 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import AbstractAsyncContextManager, aclosing, nullcontext, suppress
+from contextlib import AbstractAsyncContextManager, aclosing, nullcontext
 from dataclasses import dataclass, field
 from itertools import accumulate
 from operator import itemgetter, methodcaller
@@ -123,6 +123,7 @@ import asyncpg
 from pydantic import TypeAdapter
 from threetears.nats.change_log import ChangeLogState
 from threetears.observe import contain, get_logger
+from threetears.observe.background import cancel_and_wait
 from threetears.observe.metrics import counter, gauge
 
 from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, EpochChange, check_whole_reach
@@ -1630,9 +1631,8 @@ class ChangeNoteKeeper:
                     changes = None
         finally:
             if verdict is not None and not verdict.done():
-                verdict.cancel()
-                with suppress(asyncio.CancelledError):
-                    await verdict
+                # the stream failed before the sizing ruled: stop it, so its connection goes back
+                await cancel_and_wait(verdict)
         if chosen is None:
             _RESTORES_REFUSED.inc()
             log.error(
