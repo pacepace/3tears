@@ -1,19 +1,34 @@
-"""Significance: the three-way read of a test, and the disclosure that rides with it.
+"""Significance: the three-way read of a test, how often it was looked at, and the disclosure that rides with it.
 
 :func:`significance_read` decides whether a significance flag may be stated at all, :func:`format_significance`
 spells the read with its effect size, and :func:`significance_disclosure` / :func:`cross_subject_disclosure`
 say what the test did and did not cover.
+
+**Looks.** A look is one more reading of a contrast after the data behind its verdict changed: one more chance for a
+test with no true difference behind it to separate, the same thing a family's size counts. Reading a test at α after
+every batch of new cases, and stopping at the first separation, errs far more often than α
+(:data:`UNPLANNED_FALSE_SEPARATION`), so a design may declare how many looks it plans
+(``AspectDesign.planned_looks``): each of its ``L`` looks is then read at α/L (:func:`looks_alpha`, a union bound), and a
+claim that a drop stays within a margin at ``1 − (1 − level)/L`` (:func:`looks_confidence`), so the error the
+readings state holds over all ``L`` of them. Past ``L`` it does not, and nothing here pretends it does.
+
+:func:`looks_taken` counts the looks one contrast has had, from stored records at read time: the first, once both arms
+held a result, and one more for each launch (a launch group, or a run launched alone) whose first result there came
+after that, each completed re-measure or blind-read close after it, and each re-judge or judge repeat pass. A step that
+adds cases and reads the campaign again is a launch, and so a look. It is an upper bound: most readings are unstored
+reads by people and agents, so a count of stored readings would be a lower bound presented as a count, and a launch
+nobody read between counts here as a look.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Iterable, Mapping
+from datetime import datetime
+from types import MappingProxyType
+from typing import Final
 
-from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
+from threetears.evals.analysis.stats import PAIRED_TEST_NAME, SIGNIFICANCE_ALPHA, UNPAIRED_TEST_NAME
 from threetears.evals.kernel.numbers import format_number
-
-if TYPE_CHECKING:
-    pass
 
 
 # The reader-facing words for each read. Spelled out, never abbreviated: "n.s."
@@ -209,9 +224,92 @@ def cross_subject_disclosure(subject_a: str | None, subject_b: str | None) -> st
     )
 
 
+def looks_alpha(planned: int | None, alpha: float = SIGNIFICANCE_ALPHA) -> float:
+    """The level each look of a test is read at: α/L under a plan of ``L`` looks, α with none.
+
+    A union bound: if each of ``L`` readings errs at most α/L, the chance that any of them does is at most α, however
+    the readings depend on one another (they share every case the earlier ones read). With no plan the first look is
+    read at α, as every test always was; how many more were taken is counted (:func:`looks_taken`) and qualifies the
+    reading rather than tightening it after the fact.
+
+    :param planned: The looks the aspect's design declares (``AspectDesign.planned_looks``); None where none is.
+    :ptype planned: int | None
+    :param alpha: The error rate the readings state.
+    :ptype alpha: float
+    :return: The level each look reads at.
+    :rtype: float
+    """
+    return alpha / planned if planned else alpha
+
+
+def looks_confidence(confidence: float, planned: int | None) -> float:
+    """The two-sided level a claim of no worse than a margin is read at under a plan of ``planned`` looks.
+
+    ``held`` (a floor) and ``within_margin`` (a campaign's row) claim the drop stays within the margin, read off one
+    end of a two-sided interval; at ``1 − (1 − confidence)/L`` that end errs at most its nominal tail over all ``L``
+    looks. A broken or unclear reading still warns at every look at the nominal level: only the claim of safety is
+    tightened.
+
+    :param confidence: The nominal two-sided level.
+    :ptype confidence: float
+    :param planned: The looks the aspect's design declares; None where none is.
+    :ptype planned: int | None
+    :return: The level the claim is read at: ``confidence`` with no plan or a plan of one.
+    :rtype: float
+    """
+    return 1.0 - (1.0 - confidence) / planned if planned and planned > 1 else confidence
+
+
+def looks_taken(
+    batches: Mapping[str, Mapping[str, datetime]],
+    *,
+    changes: Iterable[datetime] = (),
+    passes: int = 0,
+) -> int | None:
+    """How many looks one contrast has had, counted from what is stored: an upper bound.
+
+    The first look is the moment both arms held a result. Each launch whose first result on either arm came after
+    that moment is one more, and so is each change to the data behind the verdict made after it (a completed
+    re-measure, a blind read closed); each re-judge or judge repeat pass is one more whenever it was made, since what
+    is stored of one does not say when its pass began.
+
+    :param batches: Each arm's launches, by arm then by launch (its launch group, or the run where it was launched
+        alone), each as when its first result on that arm was scored. A launch that ran both arms is one launch.
+    :ptype batches: Mapping[str, Mapping[str, datetime]]
+    :param changes: When each change to the data was made.
+    :ptype changes: Iterable[datetime]
+    :param passes: The re-judge and judge repeat passes over the contrast's runs.
+    :ptype passes: int
+    :return: The looks taken; None where fewer than two arms hold a result, so there is no contrast to look at.
+    :rtype: int | None
+    """
+    held = [min(launches.values()) for launches in batches.values() if launches]
+    if len(held) < 2:
+        return None
+    both = max(held)
+    first: dict[str, datetime] = {}
+    for launches in batches.values():
+        for launch, at in launches.items():
+            first[launch] = min(at, first.get(launch, at))
+    later = sum(1 for at in first.values() if at > both)
+    return 1 + later + sum(1 for at in changes if at > both) + passes
+
+
+#: The chance that a test with no true difference behind it separates at some look, read at α at every look and
+#: stopped at the first separation, by the looks taken: the mean of 20 to 60 cases on the t test, the cases added in
+#: equal batches, measured by ``tests/test_simulated_looks.py`` at its seed (which pins every value here). Past the
+#: last count it only grows.
+UNPLANNED_FALSE_SEPARATION: Final[Mapping[int, float]] = MappingProxyType(
+    {1: 0.05, 2: 0.08, 3: 0.105, 4: 0.12, 5: 0.135}
+)
+
+
 __all__ = [
     "cross_subject_disclosure",
     "format_significance",
+    "looks_alpha",
+    "looks_confidence",
+    "looks_taken",
     "NOT_SIGNIFICANT_LABEL",
     "NOT_TESTED_LABEL",
     "PAIRED_EFFECT_LABEL",
@@ -221,4 +319,5 @@ __all__ = [
     "SIGNIFICANT_LABEL",
     "UNPAIRED_EFFECT_LABEL",
     "UNPAIRED_HEDGES_LABEL",
+    "UNPLANNED_FALSE_SEPARATION",
 ]

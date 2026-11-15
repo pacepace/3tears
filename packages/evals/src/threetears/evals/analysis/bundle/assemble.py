@@ -161,6 +161,7 @@ from threetears.evals.analysis.bundle.cell_notes import (
 )
 from threetears.evals.analysis.bundle.comparisons import (
     multiple_comparisons,
+    aspect_looks,
     reading_scope,
 )
 from threetears.evals.analysis.bundle.judges import judge_change
@@ -918,7 +919,17 @@ def assemble_context_bundle(
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
     )
     bundle.reading_scope = reading_scope(
-        declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at
+        declared,
+        bundle.measure_catalog,
+        bundle.judged_measures,
+        first_result_at=first_result_at,
+        looks=aspect_looks(
+            runs,
+            results_by_cell,
+            control=control,
+            planned=declared_design.planned_looks if declared_design is not None else None,
+            plannable=campaign.looks_rule is not None,
+        ),
     ).model_copy(update={"untimed_results": untimed_results})
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then on).
     bundle.design_frozen_at = first_run_at

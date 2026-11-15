@@ -152,9 +152,9 @@ class CampaignStore(Protocol):
 #: ``created_by`` is here rather than in the authoring vocabulary because authorship a
 #: caller can type is not authorship: the surface knows who it is talking to and the caller does not have to be
 #: trusted about it, so the surface says. ``declared_at`` and ``declared_by`` are stamped on every write of the
-#: declaration for the same reason; ``call`` is recorded by its own write. The derived ``run_ids`` and
-#: ``exploratory`` are not here: a create naming either is refused, since runs belong to aspects and whether a
-#: campaign is exploratory is said beside the definition, never inside it.
+#: declaration for the same reason; ``call`` is recorded by its own write; ``looks_rule`` is stamped at creation.
+#: The derived ``run_ids`` and ``exploratory`` are not here: a create naming either is refused, since runs belong to
+#: aspects and whether a campaign is exploratory is said beside the definition, never inside it.
 CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
@@ -166,6 +166,7 @@ CAMPAIGN_SERVER_FIELDS: tuple[str, ...] = (
     "declared_at",
     "declared_by",
     "call",
+    "looks_rule",
 )
 
 #: What an operator may change on a campaign after it exists. Membership and the control have their own write paths
@@ -479,6 +480,8 @@ def create_campaign(
             floors=floors,
             declared_at=declared_at if declared else None,
             declared_by=declared_by if declared else "",
+            # Created once looks are counted: its looks past its plan, or more than one with none, qualify its report.
+            looks_rule=1,
             created_by=created_by,
         )
     except ValidationError as e:

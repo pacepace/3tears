@@ -82,10 +82,10 @@ from threetears.evals.analysis.floors import (
     project_rate,
     read_floor,
 )
+from threetears.evals.analysis.significance import looks_alpha
 from threetears.evals.analysis.said import Said, SaidFigure
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
-    SIGNIFICANCE_ALPHA,
     SMALL_N_BAND_FLOOR,
     bounded_difference_interval,
     holm_adjust,
@@ -1226,10 +1226,12 @@ def campaign_readings(
     **A change.** Per aspect and candidate, the aspect's pass rate
     (:func:`~threetears.evals.analysis.floors.aspect_pass_rate`): the change in points, shown better, shown
     worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
-    at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart; nothing corrects across
-    candidates. An aspect with no margin that a question asks is read against zero both ways (a superiority
+    at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, or at α/L where an aspect's design plans ``L`` looks
+    (the largest plan among them, :func:`~threetears.evals.analysis.significance.looks_alpha`), gains and drops apart;
+    nothing corrects across candidates. An aspect with no margin that a question asks is read against zero both ways (a superiority
     question: shown better, shown worse or unclear); one asked nothing is never shown worse and tests no drop. A row neither shown better nor shown worse reads ``within_margin`` where
-    the floor's own reading of its pass rate against the margin, at the nominal level, is ``held``. An unclear row
+    the floor's own reading of its pass rate against the margin, at the nominal level, is ``held`` (read, as a floor's
+    is, at the level a plan of looks tightens it to). An unclear row
     with a margin carries the cases that would show the candidate within it
     (:func:`~threetears.evals.analysis.floors.project_rate`, at the nominal level, as a floor's are).
     Per floor and candidate, :func:`~threetears.evals.analysis.floors.evaluate_floor`, at the nominal level
@@ -1265,7 +1267,10 @@ def campaign_readings(
     checked = _checked_bundles(campaign, bundles)
     every = _distinct(arms)
     kind = campaign_kind(every)
-    alpha = SIGNIFICANCE_ALPHA
+    # A candidate's gains and drops are one family across its aspects, read again whenever any of them is: under the
+    # largest plan of looks among them each look reads at α/L, so the family's error holds over every planned look.
+    planned = [bundle.reading_scope.looks.planned for bundle in checked.values() if bundle.reading_scope.looks]
+    alpha = looks_alpha(max((looks for looks in planned if looks is not None), default=None))
     labels = [aspect.label for aspect in campaign.aspects]
     bars = _bar_statuses(campaign, checked, every)
     control = campaign.control or next((arm for arm in every if arm.role == "control"), None)

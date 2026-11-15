@@ -4187,7 +4187,10 @@ _V2_FIELDS: Final[frozenset[str]] = frozenset(
 #: Field names added, since the freeze, INSIDE a value one of :data:`_V2_FIELDS` holds (a new field of a comparison, a
 #: scoreboard row, a cell), which a version 2 pre-image leaves out at every depth. A change that adds such a field
 #: names it here; a name any shape-66 document already uses at any depth cannot be listed.
-_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset()
+_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
+    # How often an aspect's test was looked at (`reading_scope.looks`), filled since judges D1.
+    {"looks"}
+)
 
 
 def known_fingerprint(fingerprint: str) -> bool:

@@ -382,6 +382,7 @@ def family_verdicts(
     *,
     margins: Sequence[float | None] | None = None,
     value_ranges: Sequence[tuple[float, float] | None] | None = None,
+    alpha: float = SIGNIFICANCE_ALPHA,
 ) -> list[FamilyVerdict]:
     """Decide one family of comparisons by the rule the analysis bundle's ``multiple_comparisons`` states.
 
@@ -398,7 +399,8 @@ def family_verdicts(
     (:func:`~threetears.evals.analysis.stats.interval_permits_separation`), in the direction its sign and
     ``higher_is_better`` give, and is
     otherwise equivalent when its adjusted TOST p is below α. Its interval is at ``1 − α/m`` over the ``m``
-    separations (:func:`~threetears.evals.analysis.stats.difference_interval`).
+    separations (:func:`~threetears.evals.analysis.stats.difference_interval`). ``alpha`` is the level the family is
+    read at: α, or α/L where the aspect's design plans ``L`` looks.
 
     This is composed here so a simulation can run it thousands of times without assembling a bundle each
     time. ``test_simulated_multiple_comparisons`` pins the bundle to it: on seeded campaigns, every
@@ -438,16 +440,16 @@ def family_verdicts(
             continue
         p_adjusted = next(adjusted)
         equivalence_adjusted = next(adjusted) if equivalence_p is not None else None
-        level = 1.0 - SIGNIFICANCE_ALPHA / m
+        level = 1.0 - alpha / m
         if separation.basis in ("bounded", "identical") and value_range is not None:
             # No spread, decided exactly: the bounded test's own interval stands beside its p.
             interval = bounded_difference_interval(a, b, paired=paired, value_range=value_range, confidence=level)
         else:
             interval = difference_interval(a, b, paired=paired, confidence=level)
         verdict = "not_separated"
-        if p_adjusted < SIGNIFICANCE_ALPHA and delta and interval_permits_separation(interval):
+        if p_adjusted < alpha and delta and interval_permits_separation(interval):
             verdict = "improved" if (delta > 0) == higher_is_better else "regressed"
-        elif equivalence_adjusted is not None and equivalence_adjusted < SIGNIFICANCE_ALPHA:
+        elif equivalence_adjusted is not None and equivalence_adjusted < alpha:
             verdict = "equivalent"
         verdicts.append(FamilyVerdict(p_raw, p_adjusted, verdict, interval, equivalence_adjusted))
     return verdicts

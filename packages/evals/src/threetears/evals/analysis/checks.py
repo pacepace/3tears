@@ -105,7 +105,21 @@ class Rescore(_Shape):
 
 
 class Looks(_Shape):
-    """How often a reading's test was looked at, against how often it planned to be."""
+    """How often a reading's test was looked at, against how often it planned to be.
+
+    ``taken`` is an upper bound (:func:`~threetears.evals.analysis.significance.looks_taken`): the most looks any one
+    contrast of the aspect has had, counted from stored launches, re-judges, repeat passes, re-measures and blind-read
+    closes.
+    """
 
     planned: int | None = Field(default=None, description="The looks declared; none where none were.")
     taken: int = Field(ge=1, description="The looks taken.")
+    # Left out where true, so the looks of a campaign created once looks were counted read {planned, taken} alone.
+    plannable: bool = Field(
+        default=True,
+        exclude_if=lambda value: value,
+        description=(
+            "Whether the campaign was created once looks were counted, so its design could have declared them. False "
+            "for an earlier campaign: its stored verdicts do not move, and its looks qualify the method only."
+        ),
+    )
