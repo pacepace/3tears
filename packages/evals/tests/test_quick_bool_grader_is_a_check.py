@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from threetears.evals import Eval, grader
+from threetears.evals.analysis import campaign_report_markdown
 from threetears.evals.kernel.scoring import failed_checks, measure_catalog_of
 from threetears.evals.quick import measure
 from threetears.evals.quick.one_call import callable_host, scorer_measure
@@ -492,7 +493,7 @@ async def test_a_grader_that_raises_leaves_its_cases_counted_as_not_graded_on_th
     first = result.render().splitlines()[0]
     # Never "passed 7 of 7 cases": every case that ran is the count, and the three nothing graded are named, with why.
     assert first == (
-        "classify: classify passed 7 of 10 cases; 3 were not graded. Not graded: c0, c1, c2 (`test setup: the scorer "
+        "classify: classify passed 7 of 10 cases; 3 were not graded. Not graded: c0, c1, c2 (`the grader "
         "raises_on_three raised TypeError: string indices must be integers`)."
     )
 
@@ -508,7 +509,7 @@ async def test_a_measure_s_non_number_leaves_its_case_counted_as_not_graded() ->
 
     first = result.render().splitlines()[0]
     assert first.startswith("classify: classify passed 7 of 10 cases; 3 were not graded. Not graded: c0, c1, c2 (")
-    assert "the scorer answered returned None, not a finite number or a bool" in first
+    assert "(`the grader answered returned None, not a finite number or a bool`)" in first
 
 
 @pytest.mark.expect_contained(TypeError, why="the grader raises on three cases on purpose: their cases are not graded")
@@ -522,3 +523,39 @@ async def test_a_comparison_says_beside_its_figures_how_many_of_each_arm_were_no
     assert "Of 7 trials each" in first
     assert " a's figures are over its graded trials: 3 of 10 were not graded. Not graded on a: c0, c1, c2 (" in first
     assert " b's figures are over its graded trials: 3 of 10 were not graded. Not graded on b: c0, c1, c2 (" in first
+
+
+@pytest.mark.expect_contained(TypeError, why="the grader raises on three cases on purpose: their cases are not graded")
+async def test_the_page_leads_on_the_count_of_every_case_that_ran_as_the_console_does() -> None:
+    result = await Eval(TEN, classify, [raises_on_three], k=1).run(store=":memory:")
+
+    console = result.render().splitlines()[0]
+    page = campaign_report_markdown(result.page).splitlines()
+    clause = "classify passed 7 of 10 cases; 3 were not graded."
+    # The console and the page say one clause, from one owner, for one result: never "passed 7 of 7 cases".
+    assert console.startswith(f"classify: {clause} ")
+    lead = next(line for line in page if "passed" in line)
+    assert clause in lead and "c0, c1, c2" in lead
+    assert not any("passed 7 of 7" in line for line in page)
+    # The aspect fold's heading words say it too.
+    assert clause in page
+
+
+@pytest.mark.expect_contained(TypeError, why="the grader raises on one case on purpose: its case is not graded")
+async def test_two_arms_under_the_case_floor_with_no_check_count_every_case_that_ran() -> None:
+    def near(case: Mapping[str, Any], out: Any) -> float:
+        if case["want"] == "q":
+            raise TypeError("cannot measure")
+        return 0.5
+
+    async def also(case: Mapping[str, Any]) -> str:
+        return "p"
+
+    five = [{"id": f"c{index}", "want": "q" if index == 0 else "p"} for index in range(5)]
+    result = await Eval(five, {"a": classify, "b": also}, [near], k=1, name="few").run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert first.startswith(
+        "few: Exploratory: b and a ran 5 cases each; no grader here says pass or fail; too few cases to call a "
+        "difference. a's figures are over its graded trials: 1 of 5 was not graded."
+    )

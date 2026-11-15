@@ -340,7 +340,9 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
         ]
         unfinished = {aspect.aspect for aspect in stopped}
         finished = [aspect.label for aspect in analysis.aspects if aspect.label not in unfinished]
-        verdict = " ".join([*opened, *([campaign_verdict(readings, finished, names)] if finished else [])])
+        held = {aspect.aspect: aspect for aspect in campaign.aspects}
+        said = [campaign_verdict(readings, finished, names, bundles=held)] if finished else []
+        verdict = " ".join([*opened, *said])
     else:
         aspect = campaign.aspects[0]
         declared = campaign.declaration.aspects[0]

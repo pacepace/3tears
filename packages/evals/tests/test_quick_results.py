@@ -128,7 +128,8 @@ async def test_a_grader_that_gives_zero_marks_a_miss_and_an_excluded_result_is_n
     by_case = {result.case: result for result in summary.results()}
     assert by_case["refund"].missed_because == ["Short score is 0"], "the check, as its pass rule words it failing"
     assert by_case["1"].outcome == "excluded" and not by_case["1"].missed
-    assert by_case["1"].errors == ["the scorer picky raised ValueError: cannot grade crashes"]
+    # Re-pinned deliberately (T1, Critic V3-2): the author's own function is named as what they call it, a grader.
+    assert by_case["1"].errors == ["the grader picky raised ValueError: cannot grade crashes"]
     assert [result.case for result in summary.misses()] == ["refund"]
 
 

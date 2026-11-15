@@ -1015,10 +1015,10 @@ class CallableKind:
                 score = scorer(case, answer)
             # prawduct:ok-broad-except — a scorer is the caller's grader, the rig: a raise excludes the cell and says which scorer
             except Exception as raised:
-                contain(raised, log=log, what=f"the scorer {name} raised {type(raised).__name__}: {raised}")
+                contain(raised, log=log, what=f"the grader {name} raised {type(raised).__name__}: {raised}")
                 return CandidateOutput(
                     output=trace,
-                    infra_errors=[f"the scorer {name} raised {type(raised).__name__}: {raised}"],
+                    infra_errors=[f"the grader {name} raised {type(raised).__name__}: {raised}"],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
@@ -1036,7 +1036,7 @@ class CallableKind:
             if not isinstance(score, int | float) or not math.isfinite(score):
                 return CandidateOutput(
                     output=trace,
-                    infra_errors=[f"the scorer {name} returned {score!r}, not a finite number or a bool"],
+                    infra_errors=[f"the grader {name} returned {score!r}, not a finite number or a bool"],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )

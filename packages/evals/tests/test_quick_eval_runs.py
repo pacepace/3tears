@@ -241,7 +241,8 @@ async def test_a_raising_grader_excludes_the_cell_and_names_the_grader() -> None
 
     summary = (await Eval(CASES[:1], double, [even, broken], k=1).run(store=MEMORY, scope=SCOPE)).summary
     assert summary.n_excluded == 1
-    assert "the scorer broken raised KeyError" in summary.errors[0]
+    # Re-pinned deliberately (T1, Critic V3-2): the author's own function is named as what they call it, a grader.
+    assert "the grader broken raised KeyError" in summary.errors[0]
 
 
 async def test_a_bool_scores_as_one_or_zero() -> None:

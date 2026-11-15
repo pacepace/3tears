@@ -94,6 +94,8 @@ from threetears.evals.analysis.report.model import (
     TableColumn,
     table_row,
 )
+from threetears.evals.analysis.bundle.trials import pass_count
+from threetears.evals.analysis.cells import unread_arms
 from threetears.evals.analysis.report.verdict import interval_words, passed_clause
 from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
@@ -1385,7 +1387,7 @@ def _settle_note(sizings: Sequence[_Sizing], forms: PageForms) -> str:
 # =============================================================================
 
 
-def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
+def aspect_shows(readings: CampaignReadings, aspect: str, *, bundle: AnalysisContextBundle | None = None) -> str:
     """What code read on one aspect, beside its fold's heading, by the campaign's kind: ``v2 shown worse``, ``alpha
     ahead of beta``, ``alpha misses a bar``, ``reply passed 40 of 40 trials on 20 cases``.
 
@@ -1393,8 +1395,12 @@ def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
     :ptype readings: CampaignReadings
     :param aspect: The aspect's label.
     :ptype aspect: str
+    :param bundle: The aspect's evidence, which a measurement's pass count is read off
+        (:func:`measured_figure`); a measurement's words need it.
+    :ptype bundle: AnalysisContextBundle | None
     :return: The words.
     :rtype: str
+    :raises ValueError: A measurement's words asked for with no ``bundle``.
     """
     if readings.kind == "choice":
         return pairs_words(readings, aspect) or "not compared"
@@ -1402,13 +1408,15 @@ def aspect_shows(readings: CampaignReadings, aspect: str) -> str:
         missed = [status.arm_label for status in readings.missed_bars() if status.aspect == aspect]
         if missed:
             return f"{', '.join(dict.fromkeys(missed))} misses a bar"
-        # The arm's pass rate as its count, as the lead states it, so no fold opens on a bare word.
+        if bundle is None:
+            raise ValueError(f"a measurement's words on {aspect!r} are its pass count, read off the aspect's bundle")
+        # The arm's pass count, as the lead states it, so no fold opens on a bare word.
         figures = [
             figure
             for reading in readings.measures
             # ``passed``: the trials' own pass rate, as the readings key it.
             if reading.aspect == aspect and reading.measure == "passed"
-            if (figure := measured_figure(reading)) is not None
+            if (figure := measured_figure(reading, bundle)) is not None
         ]
         return "; ".join(figures) or "measured"
     rows = readings.on_aspect(aspect)
@@ -1438,7 +1446,13 @@ def _rows_sentence(rows: Sequence[AspectReading], control: str) -> str:
     return "; ".join(clauses)
 
 
-def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str], names: AspectNames) -> str:
+def campaign_verdict(
+    readings: CampaignReadings,
+    aspects: Sequence[str],
+    names: AspectNames,
+    *,
+    bundles: Mapping[str, AnalysisContextBundle] | None = None,
+) -> str:
     """The verdict line of a campaign of several aspects, as code writes it: what code read on each aspect, as the
     campaign's page says it beside that aspect's fold, in the campaign's order — ``billing: v2 shown worse; tone: v2
     shown better``. Never the writer's words.
@@ -1449,10 +1463,15 @@ def campaign_verdict(readings: CampaignReadings, aspects: Sequence[str], names: 
     :ptype aspects: Sequence[str]
     :param names: What the page calls each aspect.
     :ptype names: AspectNames
+    :param bundles: Each aspect's evidence, by its label, which a measurement's words need (:func:`aspect_shows`).
+    :ptype bundles: Mapping[str, AnalysisContextBundle] | None
     :return: The verdict line.
     :rtype: str
     """
-    return "; ".join(f"{names(aspect)}: {aspect_shows(readings, aspect)}" for aspect in aspects)
+    held = bundles or {}
+    return "; ".join(
+        f"{names(aspect)}: {aspect_shows(readings, aspect, bundle=held.get(aspect))}" for aspect in aspects
+    )
 
 
 def pairs_words(readings: CampaignReadings, aspect: str, *, marked: bool = True) -> str | None:
@@ -2031,21 +2050,29 @@ def _measure_cell(
     return forms.of_measure(cell, measure=reading.measure, kind="measure")
 
 
-def measured_figure(reading: MeasureReading) -> str | None:
-    """One arm's pass rate as a sentence states it: the count it is computed over, ``reply passed 40 of 40 trials on
-    20 cases``, or ``reply passed 18 of 20 cases`` where each case ran once; None for a reading that is no pass rate,
-    or not read. The percent and its interval are the scorecard's, beside the same count, one step down: a sentence
+def measured_figure(reading: MeasureReading, bundle: AnalysisContextBundle) -> str | None:
+    """One arm's pass count as a sentence states it (:func:`~threetears.evals.analysis.report.verdict.passed_clause`,
+    the one-arm verdict line's own clause, as the aspect's page, its fold and the quick print say it): ``reply passed
+    18 of 20 cases``, over every trial that ran with those nothing graded beside it; None for a reading that is no
+    pass rate, or not read. The percent and its interval are the scorecard's, beside it, one step down: a sentence
     carries at most three figures (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
 
     :param reading: The arm's reading.
     :ptype reading: MeasureReading
+    :param bundle: The aspect's evidence, whose census counts every trial the arm ran.
+    :ptype bundle: AnalysisContextBundle
     :return: The figure, as a clause with no closing stop, or None.
     :rtype: str | None
     """
     if reading.value is None or reading.passed is None or reading.trials is None:
         return None
-    # The one-arm verdict line's own clause, as the aspect's page and the quick print say it.
-    return passed_clause(reading.arm_label, reading.passed, reading.trials, reading.cases)
+    if unread_arms(bundle.cells, reading.arm):
+        # A split arm has no one count (its cells keep two models or definitions apart); it has no reading either.
+        return None
+    board = next((board for board in bundle.scoreboard if board.variant_key == reading.arm), None)
+    if board is None:
+        return None
+    return passed_clause(reading.arm_label, pass_count(bundle, board))
 
 
 def _rate_counts(

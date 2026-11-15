@@ -46,6 +46,7 @@ from threetears.evals.analysis.bundle.caps import (
 )
 from threetears.evals.analysis.depth import depth_of
 from threetears.evals.analysis.bundle.schema import (
+    AnalysisContextBundle,
     ArmPricing,
     ArmScoreboard,
     FailCause,
@@ -106,6 +107,88 @@ def trial_order(case_id: str, arm_position: int, repeat: int) -> tuple[str, int,
     if numbered is None:
         return (case_id, -1, case_id, arm_position, repeat)
     return (numbered.group(1), int(numbered.group(2)), case_id, arm_position, repeat)
+
+
+#: The roles a trial's recorded errors are written under, in the order :attr:`TrialRow.error_words` lists them.
+ERROR_ROLES: tuple[str, ...] = ("candidate", "test setup", "judge", "runner")
+
+_ROLE_BREAK = re.compile("; (?=(?:" + "|".join(map(re.escape, ERROR_ROLES)) + "): )")
+
+
+def first_recorded_error(error_words: str) -> str:
+    """The first error a trial's :attr:`~threetears.evals.analysis.bundle.schema.TrialRow.error_words` records, in its
+    own words: the role it was written under taken off, and the errors after it (often the same words under another
+    role) left out. Split only where a role opens, so an error that itself holds ``; `` is kept whole.
+
+    :param error_words: The trial's recorded errors, each under its role, as a trial row joins them.
+    :ptype error_words: str
+    :return: The first error's words.
+    :rtype: str
+    """
+    first = _ROLE_BREAK.split(error_words, maxsplit=1)[0]
+    for role in ERROR_ROLES:
+        if first.startswith(f"{role}: "):
+            return first.removeprefix(f"{role}: ")
+    return first
+
+
+@dataclass(frozen=True)
+class PassCount:
+    """One arm's pass count over every trial that ran, as the engine's census holds it: the one count a first line, a
+    page's lead and a listing state, with the trials nothing graded beside it.
+
+    The pass rate, its interval and every verdict stay over the graded trials (``usable``); this says how many ran
+    beside them, so no reader states a share over the graded trials alone as if they were every trial.
+
+    :ivar passed: Graded trials that passed.
+    :ivar graded: Trials graded (the census's ``usable``).
+    :ivar ran: Trials that ran.
+    :ivar cases: Distinct cases that ran.
+    :ivar graded_cases: Distinct cases with a graded trial.
+    :ivar ungraded_cases: The cases of the trials not graded, in the trials' order; empty where the bundle holds only
+        some of its trials (``trials_omitted``), though ``ran - graded`` still counts them.
+    :ivar ungraded_error: The first ungraded trial's recorded error, in its own words; None where none is held.
+    """
+
+    passed: int
+    graded: int
+    ran: int
+    cases: int
+    graded_cases: int
+    ungraded_cases: tuple[str, ...]
+    ungraded_error: str | None
+
+    @property
+    def ungraded(self) -> int:
+        """Trials that ran and were not graded: lost to the test setup (a grader that raised, a declined call)."""
+        return self.ran - self.graded
+
+
+def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount:
+    """One arm's :class:`PassCount`, read off its census (``board``) and its trials in ``bundle``.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param board: The arm's scoreboard row in it.
+    :ptype board: ArmScoreboard
+    :return: The count.
+    :rtype: PassCount
+    """
+    lost = (
+        []
+        if bundle.trials_omitted
+        else [trial for trial in bundle.trials if trial.arm == board.variant_key and trial.state == "lost"]
+    )
+    recorded = next((trial.error_words for trial in lost if trial.error_words), None)
+    return PassCount(
+        passed=board.passed,
+        graded=board.usable,
+        ran=board.ran,
+        cases=board.cases,
+        graded_cases=board.usable_cases,
+        ungraded_cases=tuple(dict.fromkeys(trial.case_id for trial in lost)),
+        ungraded_error=None if recorded is None else first_recorded_error(recorded),
+    )
 
 
 @dataclass(frozen=True)
@@ -486,11 +569,10 @@ def _row(
     ]
     errors = [
         f"{who}: {error}"
-        for who, error in (
-            ("candidate", result.candidate_error),
-            ("test setup", result.infra_error),
-            ("judge", result.judge_error),
-            ("runner", result.runner_error),
+        for who, error in zip(
+            ERROR_ROLES,
+            (result.candidate_error, result.infra_error, result.judge_error, result.runner_error),
+            strict=True,
         )
         if error
     ]

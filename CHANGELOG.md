@@ -23,7 +23,10 @@ the first such answer, naming the case and the fix; no cell is dropped from the 
 raises, or a `Measure` that returns no number, leaves its case ungraded and the run goes on, but the first line counts
 every case that ran and says how many were not graded, which, and the first error as recorded (`classify passed 7 of
 10 cases; 3 were not graded. Not graded: c0, c1, c2 (...)`); a comparison says the same of each arm beside its
-figures. A grader written `async def`, or annotated with `None` among its kinds (`-> bool | None`), is refused when the
+figures. The report page's lead, an aspect fold's heading and an analysis listing's line say the same clause, from one
+owner (`analysis.bundle.trials.pass_count`, worded by `report.verdict.passed_clause`), never a count over the graded
+cases alone; the pass rate, its interval and every verdict stay over the graded trials. A grader's own error is named
+as the author's: `the grader right raised TypeError: ...`, where it read `the scorer`. A grader written `async def`, or annotated with `None` among its kinds (`-> bool | None`), is refused when the
 `Eval` is built. Where no grader is a check and no judged dimension counts, one arm's first line states no pass count
 (`classify ran 3 of 3 cases; no grader here says pass or fail.`, its readings carrying the means), and two arms under
 the case floor compare none (`b and a ran 3 cases each; no grader here says pass or fail; too few cases to call a
