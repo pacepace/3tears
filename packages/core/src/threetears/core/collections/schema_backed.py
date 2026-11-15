@@ -922,7 +922,7 @@ def l2_order_columns() -> list[Column]:
 
 
 def _servable_index(
-    name: str, columns: Sequence[tuple[str, bool]], *, plain: bool, where: str | None
+    name: str, columns: Sequence[tuple[str, bool]], *, plain: bool, where: str | None, unique: bool = False
 ) -> DeclaredIndex | None:
     """a declared index as a keyed read's pins and order can be served by it, or None when none can be: one with an
     operator class or other access method (``plain`` False: it orders by something else), or a predicate of anything
@@ -940,6 +940,8 @@ def _servable_index(
     :ptype plain: bool
     :param where: its predicate, or None for a whole index
     :ptype where: str | None
+    :param unique: whether it is unique (a unique index or ``UNIQUE`` constraint)
+    :ptype unique: bool
     :return: the index, or None
     :rtype: DeclaredIndex | None
     """
@@ -955,6 +957,7 @@ def _servable_index(
         frozenset(column for column, descending in columns if descending),
         stated=stated,
         guarded=guarded,
+        unique=unique,
     )
 
 
@@ -1310,12 +1313,19 @@ class TableSchema:
                     tuple((column, column in index.desc) for column in columns),
                     plain=index.using is None and not index.ops,
                     where=index.where,
+                    # a unique index cut short at a collated column is unique no longer
+                    unique=index.unique and columns == tuple(index.columns),
                 )
                 if columns
                 else None
             )
             if served is not None:
                 indexes.append(served)
+        # each UNIQUE constraint, a unique B-tree of its columns: a read binding them all (a set of values allowed)
+        indexes.extend(
+            DeclaredIndex(constraint.name, tuple(constraint.columns), unique=True)
+            for constraint in self.unique_constraints
+        )
         return indexes
 
     def _declared_keys(self, pk_cols: tuple[str, ...], partition_column: str | None) -> list[TableKey]:

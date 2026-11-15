@@ -273,6 +273,8 @@ class DeclaredIndex:
         index
     :ivar guarded: the columns a partial index's predicate holds ``IS NOT NULL`` (``WHERE alias IS NOT NULL``,
         :func:`partial_predicate`): it serves only a read whose own guards state exactly that of each; empty for none
+    :ivar unique: whether no two rows share every value of its columns (a unique index or ``UNIQUE`` constraint): a
+        read binding each of its columns, a set of values allowed (``AnyOf``), reads one row a value
     """
 
     name: str
@@ -281,6 +283,7 @@ class DeclaredIndex:
     primary: bool = False
     stated: frozenset[tuple[str, str]] = frozenset()
     guarded: frozenset[str] = frozenset()
+    unique: bool = False
 
     def __post_init__(self) -> None:
         """refuse an index naming anything but plain columns, or a name a hint could not carry unquoted.
@@ -478,7 +481,11 @@ def _leading_held(index: DeclaredIndex, pinned: set[str]) -> int:
 
 
 def _unordered_serving(
-    relation: Relation, pinned: set[str], by: Mapping[Any, Any], guarded: frozenset[str] = frozenset()
+    relation: Relation,
+    pinned: set[str],
+    by: Mapping[Any, Any],
+    guarded: frozenset[str] = frozenset(),
+    sets: frozenset[str] = frozenset(),
 ) -> DeclaredIndex | None:
     """the declared index that serves an unordered read of ``relation`` pinning ``pinned``: a secondary index binding
     more of the pins than the primary key (the one binding most, then the one binding more leading columns, then the
@@ -503,6 +510,14 @@ def _unordered_serving(
     floor = _leading_held(primary, pinned) if primary is not None else 0
     if primary is not None and floor == len(primary.columns):
         return primary
+    # WHY a set binds a unique index (D8 via the coordinator, 2026-11-15): an ``AnyOf`` pins no single value, so it
+    # bound nothing here, and datasources' schema priming (``name = ANY(...)`` and ``status = 'active'``) was hinted on
+    # YugabyteDB to idx_datasources_status, every active datasource read and filtered, rather than the unique name
+    # index, one row a name. A unique index whose every column is pinned or bound to a set reads one row a value: it
+    # serves the read before any index binding more pins one value each (the narrowest such index)
+    keyed = [index for index in indexes if index.unique and not index.primary and set(index.columns) <= pinned | sets]
+    if keyed:
+        return min(keyed, key=lambda index: len(index.columns))
     ranked = [
         ((held + len(index.stated) + len(index.guarded), held, -len(index.columns)), index)
         for index in indexes
@@ -541,7 +556,8 @@ def serving_index(
     pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
     sorts = [sort for sort in order if sort.expression is not None or sort.column not in pinned]
     if not sorts:
-        return _unordered_serving(relation, pinned, by, guarded)
+        sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
+        return _unordered_serving(relation, pinned, by, guarded, sets)
     if any(sort.expression is not None for sort in sorts):
         return None
     ranked = [

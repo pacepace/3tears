@@ -22,6 +22,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     Index,
     TableSchema,
+    UniqueConstraint,
     register_sa_table_indexes,
 )
 from threetears.core.keyed import (
@@ -116,6 +117,17 @@ TableSchema(
         Index("d7_mem_date", "agent_id", "user_id", "date_created"),
         Index("d7_mem_alias", "agent_id", "user_id", "alias", where="alias IS NOT NULL"),
     ),
+)
+
+#: datasources as declared: a unique name (a UNIQUE constraint) and an index of the status
+_NAMED = "d7_hint_datasources"
+
+TableSchema(
+    name=_NAMED,
+    primary_key="id",
+    columns=[Column("id", UUID_TYPE), Column("name", STRING_TYPE), Column("status", STRING_TYPE)],
+    indexes=(Index("d7_ds_status", "status"),),
+    unique_constraints=(UniqueConstraint("d7_ds_name", "name"),),
 )
 
 _BY_STATUS = [Sort("status", descending=True), Sort("conversation_id", cast="uuid", descending=True)]
@@ -434,3 +446,17 @@ class TestACollatedOrGuardedIndexServesWhatItCan:
             assert named.startswith("/*+ IndexOnlyScan(t d7_mem_alias) */ ") is hinted, named
             assert "d7_mem_alias" not in other, other
             assert ("/*+" in other) is hinted, other
+
+
+class TestASetOfAUniqueKeyIsBound:
+    def test_a_set_of_names_reads_the_unique_name_index(self) -> None:
+        """Flips if an unordered read binding a unique key's every column, a set of values among them, is not served by
+        that key's index but by an index binding one pinned value (datasources' schema priming, name = ANY and status
+        = 'active', hinted on YugabyteDB to the status index, D8 2026-11-15); or if a set binding only part of a
+        unique key, or a set of a column no unique key holds, is served by it."""
+        served = serving_index(_NAMED, {"name": AnyOf(["a", "b"]), "status": "active"}, [])
+        assert served is not None and served.name == "d7_ds_name" and served.unique, served
+        single = serving_index(_NAMED, {"name": "a", "status": "active"}, [])
+        assert single is not None and single.name == "d7_ds_name", single
+        other = serving_index(_NAMED, {"id": AnyOf([1]), "status": "active"}, [])
+        assert other is not None and other.name == "d7_ds_status", other
