@@ -1046,7 +1046,8 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
                 where="alias IS NOT NULL",
                 purpose=(
                     "packages/agent/memory/src/threetears/agent/memory/collections.py::MemoriesCollection.find_by_alias; "
-                    "packages/agent/memory/src/threetears/agent/memory/merge.py::_delete_alias_collisions"
+                    "packages/agent/memory/src/threetears/agent/memory/merge.py::_lock_colliding; "
+                    "packages/agent/memory/src/threetears/agent/memory/merge.py::_delete_locked"
                 ),
                 plan_test="packages/agent/memory/tests/integration/test_index_plans.py::test_memories_user_alias",
                 reason="memories carries six indexes: a memory by its name, unique per agent and user",

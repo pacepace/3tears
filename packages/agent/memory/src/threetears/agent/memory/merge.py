@@ -42,7 +42,7 @@ from typing import Any
 from uuid import UUID
 
 from threetears.core.collections import repoint_user_rows
-from threetears.core.keyed import KeyBatch, Lock, read_keyed
+from threetears.core.keyed import Fragment, KeyBatch, Lock, delete_keyed, read_by, read_keyed
 from threetears.observe import get_logger
 
 __all__ = ["MemoryRepointResult", "repoint_user"]
@@ -107,45 +107,78 @@ class MemoryRepointResult:
         return merged
 
 
-# the collision predicate: a source memory of the schema's agent whose alias a master memory under that agent
-# already holds. ``$1`` is the source user, ``$2`` the master, ``$3`` the agent: the source's memories are read
-# through ``ix_memories_user_alias`` (agent_id, user_id, alias), the master's alias by the same index.
-_COLLISION_PREDICATE = (
-    "m.agent_id = $3 AND m.user_id = $1 AND m.alias IS NOT NULL "
-    "AND EXISTS ("
-    "    SELECT 1 FROM memories m2 "
-    "    WHERE m2.user_id = $2 "
-    "      AND m2.agent_id = m.agent_id "
-    "      AND m2.alias = m.alias"
-    ")"
-)
+async def _lock_colliding(conn: Any, *, from_user_id: UUID, to_user_id: UUID, agent_id: UUID) -> list[Any]:
+    """lock the source's memories whose alias the master already holds under the agent, ``FOR UPDATE``.
 
-# a set of composite keys bound as two parallel uuid arrays.
-_KEY_SET = "(SELECT * FROM unnest({agents}::uuid[], {ids}::uuid[]))"
-
-
-def _key_set(agents: str, ids: str) -> str:
-    """render a composite-key set bound as two parallel uuid-array parameters.
-
-    :param agents: the placeholder carrying the ``agent_id`` array (``$1``)
-    :ptype agents: str
-    :param ids: the placeholder carrying the matching id array (``$2``)
-    :ptype ids: str
-    :return: a subquery yielding the ``(agent_id, id)`` pairs
-    :rtype: str
+    :param conn: asyncpg transaction connection bound to the agent schema
+    :ptype conn: Any
+    :param from_user_id: source user whose colliding memories are locked
+    :ptype from_user_id: UUID
+    :param to_user_id: master user whose memories win the alias
+    :ptype to_user_id: UUID
+    :param agent_id: the agent the schema holds
+    :ptype agent_id: UUID
+    :return: the locked memories' ``agent_id`` and ``memory_id``
+    :rtype: list[Any]
     """
-    return _KEY_SET.format(agents=agents, ids=ids)
+    # the collision guard: a source memory whose alias a master memory under the same agent already holds. Beside
+    # the pins (the schema's agent and the source user) and ``alias IS NOT NULL`` (the partial index's predicate), a
+    # correlated EXISTS bound to the master user and matched on the outer row's agent and alias: the source's named
+    # memories are read through ix_memories_user_alias (agent_id, user_id, alias) WHERE alias IS NOT NULL, the
+    # master's alias by a point of the same index (test_index_plans::test_memories_user_alias)
+    return await read_by(
+        conn,
+        "memories",
+        by={"agent_id": agent_id, "user_id": from_user_id},
+        columns=["agent_id", "memory_id"],
+        lock=Lock.UPDATE,
+        where=[
+            Fragment("t.alias IS NOT NULL"),
+            Fragment(
+                "EXISTS (SELECT 1 FROM memories m2 WHERE m2.user_id = $1"
+                " AND m2.agent_id = t.agent_id AND m2.alias = t.alias)",
+                (to_user_id,),
+            ),
+        ],
+    )
 
 
-def _columns(keys: list[tuple[Any, ...]]) -> tuple[list[Any], list[Any]]:
-    """split ``(agent_id, id)`` keys into the two parallel arrays :func:`_key_set` binds.
+async def _delete_locked(
+    conn: Any, *, from_user_id: UUID, to_user_id: UUID, agent_id: UUID, memory_ids: list[Any]
+) -> list[dict[str, Any]]:
+    """delete exactly the locked memories, the collision guard re-checked as the hand-written DELETE re-checked it.
 
-    :param keys: composite keys
-    :ptype keys: list[tuple[Any, ...]]
-    :return: the agent ids and the ids, index-aligned
-    :rtype: tuple[list[Any], list[Any]]
+    :param conn: asyncpg transaction connection bound to the agent schema
+    :ptype conn: Any
+    :param from_user_id: source user whose colliding memories are deleted
+    :ptype from_user_id: UUID
+    :param to_user_id: master user whose memories win the alias
+    :ptype to_user_id: UUID
+    :param agent_id: the agent the schema holds
+    :ptype agent_id: UUID
+    :param memory_ids: the memories :func:`_lock_colliding` locked
+    :ptype memory_ids: list[Any]
+    :return: the deleted memories' ``agent_id`` and ``memory_id``
+    :rtype: list[dict[str, Any]]
     """
-    return [key[0] for key in keys], [key[1] for key in keys]
+    # by the primary key's (agent_id, memory_id) under the source user, the guard as the lock wrote it: the hand-written
+    # DELETE named the locked keys as an ``(agent_id, memory_id) IN unnest(...)`` tuple set beside the predicate
+    deleted = await delete_keyed(
+        conn,
+        "memories",
+        by={"agent_id": agent_id, "user_id": from_user_id},
+        keys=KeyBatch(("memory_id",), [(memory_id,) for memory_id in memory_ids], casts=("uuid",)),
+        where=[
+            Fragment("memories.alias IS NOT NULL"),
+            Fragment(
+                "EXISTS (SELECT 1 FROM memories m2 WHERE m2.user_id = $1"
+                " AND m2.agent_id = memories.agent_id AND m2.alias = memories.alias)",
+                (to_user_id,),
+            ),
+        ],
+        returning=["agent_id", "memory_id"],
+    )
+    return deleted.rows
 
 
 async def _delete_alias_collisions(
@@ -186,19 +219,13 @@ async def _delete_alias_collisions(
     """
     result = MemoryRepointResult()
     removed = result.removed
-    locked = await conn.fetch(
-        f"SELECT m.agent_id, m.memory_id FROM memories m WHERE {_COLLISION_PREDICATE} FOR UPDATE OF m",
-        from_user_id,
-        to_user_id,
-        agent_id,
-    )
+    locked = await _lock_colliding(conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id)
     if not locked:
         return result
-    memory_agents, memory_ids = _columns([(row["agent_id"], row["memory_id"]) for row in locked])
     # every child read by key: the colliding memories (or their media) are all the schema's agent's, so each read pins
     # the agent and names the parents, through the index each table's cascade follows
     pinned = {"agent_id": agent_id}
-    named = [(memory_id,) for memory_id in memory_ids]
+    named = [(row["memory_id"],) for row in locked]
 
     media_rows = await read_keyed(
         conn,
@@ -251,15 +278,8 @@ async def _delete_alias_collisions(
     }
     removed["memory_consolidations"] = list(edges)
 
-    deleted = await conn.fetch(
-        f"DELETE FROM memories m WHERE {_COLLISION_PREDICATE} "
-        f"AND (m.agent_id, m.memory_id) IN {_key_set('$4', '$5')} "
-        "RETURNING agent_id, memory_id",
-        from_user_id,
-        to_user_id,
-        agent_id,
-        memory_agents,
-        memory_ids,
+    deleted = await _delete_locked(
+        conn, from_user_id=from_user_id, to_user_id=to_user_id, agent_id=agent_id, memory_ids=[key for (key,) in named]
     )
     removed["memories"] = [(row["agent_id"], row["memory_id"]) for row in deleted]
     return result

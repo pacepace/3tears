@@ -451,8 +451,8 @@ async def test_memories_user_alias(world: _World) -> None:
     # then deleted by both users' entries in the index
     planned = await _collision_plans(world)
     missed = [
-        *_collision_misses(planned, "SELECT m.agent_id, m.memory_id FROM memories m", "ix_memories_user_alias"),
-        *_collision_misses(planned, "DELETE FROM memories m", "ix_memories_user_alias"),
+        *_collision_misses(planned, 'FROM "memories" AS t', "ix_memories_user_alias"),
+        *_collision_misses(planned, 'DELETE FROM "memories"', "ix_memories_user_alias"),
     ]
     assert not missed, "\n\n".join(missed)
 

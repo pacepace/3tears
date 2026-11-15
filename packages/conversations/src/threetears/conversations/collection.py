@@ -26,6 +26,7 @@ from threetears.conversations.entity import Conversation
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.keyed import Count, Fragment, Sort, aggregate_keyed, read_by
+from threetears.interfaces.keyed import prefix_conditions
 
 if TYPE_CHECKING:
     from threetears.conversations.buffer import ConversationWriteBuffer
@@ -264,6 +265,19 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 "ConversationsCollection.find_by_ref",
                 plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_ref_created",
                 reason="conversations carries twelve indexes: one ref's conversations on a channel, newest first",
+            ),
+            # v015: the refs starting with a prefix on a channel, a code-point range (each read the agent's channel)
+            SchemaIndex(
+                "idx_conv_agent_ref_c",
+                "agent_id",
+                "channel_type",
+                "conversation_ref",
+                asc=("conversation_ref",),
+                collate=(("conversation_ref", "C"),),
+                purpose="packages/conversations/src/threetears/conversations/collection.py::"
+                "ConversationsCollection.find_by_ref_prefix",
+                plan_test="packages/conversations/tests/integration/test_index_plans.py::test_conv_agent_ref_c",
+                reason="conversations carries thirteen indexes: a family of refs on a channel, by their prefix",
             ),
         ),
     )
@@ -751,7 +765,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         single object), this matches a whole family of refs sharing a prefix -- e.g. a scriob story
         keys every object's ref as ``"{story}:{type}:{object}"``, so ``ref_prefix="{story}:"`` lists
         EVERY chat in the story across all objects (a chat-manager / inbox query), including refs
-        whose object no longer exists. ``left(...) = $3`` is an exact, escaping-free prefix match (no
+        whose object no longer exists. the match is an exact, escaping-free prefix range in code-point order (no
         LIKE wildcards to sanitise). partition (``agent_id``) + ``channel_type`` scope it as in
         :meth:`find_by_ref`; results come from L3, are not promoted into L2, newest-first.
 
@@ -764,14 +778,26 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
         :return: conversations whose ref starts with ``ref_prefix``, newest-first
         :rtype: list[Conversation]
         """
-        rows = await self.required_l3_pool.fetch(
-            "SELECT * FROM conversations "
-            "WHERE agent_id = $1 AND channel_type = $2 AND left(conversation_ref, char_length($3)) = $3 "
-            "ORDER BY date_created DESC",
-            agent_id,
-            channel_type,
-            ref_prefix,
+        # the refs starting with the prefix as one code-point range (``COLLATE "C"``: every text starting with it, and no
+        # other, sits between it and its successor) read through idx_conv_agent_ref_c (agent_id, channel_type,
+        # conversation_ref COLLATE "C"); ``left(conversation_ref, char_length($3)) = $3`` was a filter on every
+        # conversation of the agent's channel. An empty prefix starts every ref (a NULL ref none, as ``left`` answered).
+        # The read is unordered and sorted here, newest first: ordered by date_created, YugabyteDB's index hint names the
+        # agent's date-ordered index instead (threetears.interfaces.keyed.keys.serving_index), every conversation of the
+        # agent read in date order and filtered; unordered it names the index binding the most pins, this one
+        if ref_prefix:
+            ranged, bounds = prefix_conditions({"conversation_ref": ref_prefix}, alias="t")
+            within = Fragment(" AND ".join(ranged), tuple(bounds))
+        else:
+            within = Fragment('t."conversation_ref" IS NOT NULL')
+        found = await read_by(
+            self.required_l3_pool,
+            "conversations",
+            by={"agent_id": agent_id, "channel_type": channel_type},
+            where=[within],
+            records=True,
         )
+        rows = sorted(found, key=lambda row: row["date_created"], reverse=True)
         entities: list[Conversation] = []
         for row in rows:
             data = self._coerce_row(dict(row))
