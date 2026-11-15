@@ -39,9 +39,9 @@ from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.bundle.evidence import (
     EvidenceManifest,
+    ResultsDigest,
+    evidence_manifest,
     manifest_fingerprint,
-    result_evidence,
-    run_evidence,
 )
 from threetears.evals.analysis.bundle.schema import (
     FINGERPRINT_PREFIX,
@@ -50,7 +50,7 @@ from threetears.evals.analysis.bundle.schema import (
     evidence_digest,
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.aspects import AspectDeclaration
+from threetears.evals.analysis.aspects import AspectDeclaration, aspect_view
 from threetears.evals.kernel.campaign import EvalCampaign, EvalInsight
 from threetears.evals.kernel.declaration import BarOverride
 from threetears.evals.kernel.host import EvalHost
@@ -120,6 +120,33 @@ def _moved(before: AnalysisContextBundle, after: AnalysisContextBundle) -> set[s
     """Which components of the manifest differ between two assemblies."""
     was, now = _manifest(before), _manifest(after)
     return {name for name in COMPONENTS if getattr(was, name) != getattr(now, name)}
+
+
+def result_evidence(result: Any) -> str:
+    """One result's evidence, as the assembly digests it: the digest of the results it read, were this the only one."""
+    read = ResultsDigest()
+    read.add(result)
+    return read.digest()
+
+
+def run_evidence(run: EvalRun) -> str:
+    """One member run's evidence, as the assembly digests it: the manifest's ``runs`` over this run alone."""
+    campaign, _ = toyhost_campaign()
+    return evidence_manifest(
+        aspect_view(campaign),
+        profile=toyhost_profile(),
+        host_declarations="",
+        catalog={},
+        runs=[run],
+        archived_run_ids=[],
+        unresolved_run_ids=[],
+        results=ResultsDigest(),
+        cases=[],
+        ratings=[],
+        tiers=[],
+        insights=[],
+        retracted_insights={},
+    ).runs
 
 
 def _first_result(host: EvalHost, campaign: EvalCampaign) -> EvalResult:
@@ -407,11 +434,14 @@ def test_a_result_and_its_reading_are_the_same_evidence(name: str) -> None:
     assert results
 
     for result in results:
-        assert input_json(result_evidence(result)) == input_json(result_evidence(ResultReading.of(result))), result.id
+        assert result_evidence(result) == result_evidence(ResultReading.of(result)), result.id
     if name == "enriched":
         lists = ("judge_rescores", "judge_repeats", "judge_seconds", "async_deliveries", "precondition_outcomes")
         assert all(any(getattr(result, attribute) for result in results) for attribute in lists)
-        assert all(any(attribute in result_evidence(result) for result in results) for attribute in lists)
+        for attribute in lists:
+            filled = next(result for result in results if getattr(result, attribute))
+            emptied = filled.model_copy(update={attribute: None if attribute == "async_deliveries" else []})
+            assert result_evidence(emptied) != result_evidence(filled), f"{attribute} is evidence"
 
 
 # =============================================================================
@@ -490,17 +520,16 @@ def test_an_unset_field_of_a_record_and_one_never_written_are_one_and_a_null_in_
     host, campaign = _corpus_host()
     run = host.storage.load_eval_run(sorted(campaign.run_ids)[0], campaign.scope_id)
     assert run is not None and run.cassette_corpus_id is None and run.case_set is None
-    evidence = run_evidence(run)
-
-    assert "cassette_corpus_id" not in evidence and "case_set" not in evidence
     stored = run.to_dict()
-    written = {**stored, "cassette_corpus_id": None}
-    never = {key: value for key, value in stored.items() if key != "cassette_corpus_id"}
-    assert run_evidence(EvalRun.from_dict(written)) == run_evidence(EvalRun.from_dict(never))
+    written = {**stored, "cassette_corpus_id": None, "case_set": None}
+    never = {key: value for key, value in stored.items() if key not in ("cassette_corpus_id", "case_set")}
+
+    assert run_evidence(EvalRun.from_dict(written)) == run_evidence(EvalRun.from_dict(never)) == run_evidence(run)
     with_null = run_evidence(run.model_copy(update={"overlays": {"greeting": None}}))
     without = run_evidence(run.model_copy(update={"overlays": {}}))
-    assert with_null["overlays"] == {"greeting": None}
-    assert input_json(with_null) != input_json(without)
+    assert with_null != without
+    no_overlays = {key: value for key, value in stored.items() if key != "overlays"}
+    assert without == run_evidence(EvalRun.from_dict(no_overlays)), "an empty map is unset"
 
 
 @pytest.mark.parametrize(
@@ -1169,17 +1198,23 @@ def _attested(run: EvalRun, digest: str, *, note: str | None = None) -> EvalRun:
 
 def test_a_run_that_recorded_no_measure_definitions_hashes_as_it_did_before_they_existed() -> None:
     """A run launched before definitions were recorded carries none of the three fields, and its evidence names none:
-    it is the evidence of a run that recorded them, less those fields and nothing else."""
+    the document as it was stored then, the three keys absent, and the run as this build holds it (the definitions
+    null, the re-measures an empty list) are one evidence."""
     host, campaign = _corpus_host()
     recorded = host.storage.load_eval_run(sorted(campaign.run_ids)[0], campaign.scope_id)
     assert recorded is not None and recorded.measure_definitions
     assert recorded.measure_attestation is None and not recorded.measure_remeasures
     unrecorded = recorded.model_copy(update={"measure_definitions": None})
 
-    evidence = run_evidence(unrecorded)
+    as_stored_then = {
+        key: value
+        for key, value in unrecorded.to_dict().items()
+        if key not in ("measure_definitions", "measure_attestation", "measure_remeasures")
+    }
+    assert EvalRun.from_dict(as_stored_then).measure_remeasures == []
 
-    assert not {"measure_definitions", "measure_attestation", "measure_remeasures"} & set(evidence)
-    assert evidence == {key: value for key, value in run_evidence(recorded).items() if key != "measure_definitions"}
+    assert run_evidence(EvalRun.from_dict(as_stored_then)) == run_evidence(unrecorded)
+    assert run_evidence(unrecorded) != run_evidence(recorded)
 
 
 def test_a_run_attested_or_re_measured_under_another_definition_is_other_evidence() -> None:
@@ -1203,7 +1238,7 @@ def test_a_run_attested_or_re_measured_under_another_definition_is_other_evidenc
         }
     )
 
-    digests = [input_digest(run_evidence(each)) for each in (run, one, other, remeasured)]
+    digests = [run_evidence(each) for each in (run, one, other, remeasured)]
 
     assert len(set(digests)) == 4
     assert run_evidence(_attested(run, "a" * 64, note="said another way")) == run_evidence(one), "a note is prose"

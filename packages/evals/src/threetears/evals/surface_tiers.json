@@ -1129,6 +1129,7 @@
 "threetears.evals.analysis.DriftVerdict": "provisional",
 "threetears.evals.analysis.EQUIVALENCE_TEST_NAME": "provisional",
 "threetears.evals.analysis.EvalSummary": "host-contract",
+"threetears.evals.analysis.EvidenceManifest": "provisional",
 "threetears.evals.analysis.ExampleCard": "provisional",
 "threetears.evals.analysis.ExampleField": "provisional",
 "threetears.evals.analysis.ExampleMetaArm": "provisional",

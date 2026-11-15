@@ -297,6 +297,10 @@ def test_a_disclosure_moves_nothing_in_the_bundle_but_the_run_summaries_that_car
     assert all("machine" not in confound.dimension for confound in disclosed.apparatus_confounds)
     left, right = disclosed.to_dict(), plain.to_dict()
     left.pop("run_summaries"), right.pop("run_summaries")
+    # A run's disclosure is stored on the run and printed, so it is evidence: it moves the manifest's runs, and no
+    # other component.
+    told, untold = left.pop("evidence"), right.pop("evidence")
+    assert {name for name in told if told[name] != untold[name]} == {"runs"}
     assert left == right, "no cell, confound, coverage row or reading reads a disclosure"
 
 

@@ -90,6 +90,7 @@ from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propos
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.divergence import component_carrier, measure_movement
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.analysis.bundle.evidence import EvidenceManifest
 from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
@@ -867,5 +868,6 @@ __all__ = [
     "update_campaign",
     "variant_key_of_run",
     "Depth",
+    "EvidenceManifest",
     "ModelPassHatK",
 ]

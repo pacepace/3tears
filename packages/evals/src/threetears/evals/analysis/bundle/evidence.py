@@ -47,11 +47,13 @@ or a host writes about a value (a description, a rationale, a rater's reason). T
 
 **Records are built from named fields, never taken whole** (:func:`_take`). A record's shape names each field that
 is evidence, at every depth, so a field added to a stored record later is in no fingerprint until it is named, and
-adding one, whatever its default, moves no stored fingerprint. A named field that is unset (null) is left out, so
-naming a new optional field moves nothing either while it is unset: the engine reads a stored null and a field
-never written as one value (both hydrate to ``None``), so they are one here. A free-form map a host or a kind writes
-(an overlay, a kind's spec, a world seed, a host measure) is taken as stored, a null in it kept: there a key's
-presence can carry meaning, and no package change adds a key to it. The declaration is the one record taken as its
+adding one, whatever its default, moves no stored fingerprint. A named field that is unset (null, or an empty list
+or map) is left out, so naming a new field whose default is one of those moves nothing either while it is unset: the
+engine reads a stored null and a field never written as one value (both hydrate to ``None``), so they are one here.
+A field whose default is anything else (``False``, ``0``, a word) is named only together with the stored-shape step
+that says what earlier documents hold. Inside a free-form map a host or a kind writes (an overlay, a kind's spec, a
+world seed, a host measure) every key is taken as stored, a null kept: there whether a key was written can carry
+meaning, and no package change adds a key to it. The declaration is the one record taken as its
 stored document: it is rendered without any field that holds its declared default, which is the same guarantee by
 another route (:func:`declaration_evidence`).
 
@@ -131,15 +133,12 @@ if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalResult
 
 __all__ = [
-    "CAMPAIGN_EVIDENCE_PREFIX",
     "EVIDENCE_FINGERPRINT_PREFIX",
     "EvidenceManifest",
     "ResultsDigest",
     "campaign_fingerprint",
     "evidence_manifest",
     "manifest_fingerprint",
-    "result_evidence",
-    "run_evidence",
     "unnamed_axes",
     "unnamed_levels",
     "unpresented",
@@ -152,7 +151,7 @@ EVIDENCE_FINGERPRINT_PREFIX: Final[str] = "v3:"
 
 #: What a campaign bundle's fingerprint over inputs starts with: version 4 of its own numbering, whose version 3
 #: hashed the campaign's computed readings (:func:`campaign_fingerprint`).
-CAMPAIGN_EVIDENCE_PREFIX: Final[str] = "v4:"
+_CAMPAIGN_EVIDENCE_PREFIX: Final[str] = "v4:"
 
 
 # ----------------------------------------------------------------------------- shapes: which fields are evidence
@@ -724,8 +723,8 @@ def _stored_value(value: Any) -> Any:
 
 
 def _take(value: Any, shape: Any) -> Any:
-    """``value`` as its ``shape`` reads it: a record as its named fields that are set, a list or map of records each
-    so, anything else as stored. A record is read by attribute or, where it is a stored document, by key."""
+    """``value`` as its ``shape`` reads it: a record as its named fields that are set (not null, and not an empty list
+    or map), a list or map of records each so, anything else as stored. A record is read by attribute or, where it is a stored document, by key."""
     if value is None:
         return None
     if shape is _AS_STORED:
@@ -736,7 +735,9 @@ def _take(value: Any, shape: Any) -> Any:
         return {str(key): _take(held, shape.of) for key, held in value.items()}
     read = value.get if isinstance(value, Mapping) else lambda name: getattr(value, name)
     taken = {name: _take(read(name), nested) for name, nested in shape.items()}
-    return {name: held for name, held in taken.items() if held is not None}
+    # Unset is null, or an empty list or map: a record written before a field existed and one that holds it empty
+    # are one, so naming a field later moves nothing for a record that never set it.
+    return {name: held for name, held in taken.items() if held is not None and held != [] and held != {}}
 
 
 # ----------------------------------------------------------------------------- the manifest
@@ -783,7 +784,7 @@ def manifest_fingerprint(manifest: Mapping[str, Any]) -> str:
 
 
 def campaign_fingerprint(declaration: Mapping[str, Any], aspects: Sequence[tuple[str, str]]) -> str:
-    """A campaign bundle's fingerprint over its evidence: :data:`CAMPAIGN_EVIDENCE_PREFIX` and the digest of what the
+    """A campaign bundle's fingerprint over its evidence: :data:`_CAMPAIGN_EVIDENCE_PREFIX` and the digest of what the
     campaign declares and each aspect's bundle fingerprint, which is over that aspect's evidence.
 
     Nothing the campaign computes is read: no reading across aspects, no verdict, no reason text. It means for the
@@ -796,7 +797,7 @@ def campaign_fingerprint(declaration: Mapping[str, Any], aspects: Sequence[tuple
     :return: ``v4:`` and a 64-character lowercase hex digest.
     :rtype: str
     """
-    return CAMPAIGN_EVIDENCE_PREFIX + input_digest(
+    return _CAMPAIGN_EVIDENCE_PREFIX + input_digest(
         {"campaign": dict(declaration), "aspects": [list(aspect) for aspect in aspects]}
     )
 
@@ -868,7 +869,7 @@ def unnamed_axes(design: Mapping[str, Any]) -> dict[str, Any]:
 # ----------------------------------------------------------------------------- each component
 
 
-def result_evidence(result: ResultView) -> dict[str, Any]:
+def _result_evidence(result: ResultView) -> dict[str, Any]:
     """One result's evidence: the fields :data:`_RESULT` names, of its reading.
 
     A store hands the assembly each result as its reading. A view that is the stored result itself is read as its
@@ -879,7 +880,8 @@ def result_evidence(result: ResultView) -> dict[str, Any]:
     :return: The evidence, as plain JSON.
     :rtype: dict[str, Any]
     """
-    held = result if isinstance(result, ResultReading) else cast("EvalResult", result).model_dump(mode="json")
+    # A stored result is a model; its reading is read by attribute.
+    held = cast("EvalResult", result).model_dump(mode="json") if isinstance(result, BaseModel) else result
     evidence: dict[str, Any] = _take(held, _RESULT)
     # The dimensions the judge could not tell, without its notes: held as a mapping's keys, whose order a store does
     # not keep.
@@ -890,7 +892,7 @@ def result_evidence(result: ResultView) -> dict[str, Any]:
 class ResultsDigest:
     """The digest of the results an assembly reads, taken as each is read, whatever order the store hands them in.
 
-    Each result's evidence is rendered and hashed on its own (:func:`result_evidence`), and :meth:`digest` hashes
+    Each result's evidence is rendered and hashed on its own (:func:`_result_evidence`), and :meth:`digest` hashes
     those digests in id order, so the read's order is not read and no result's evidence is held after it is hashed.
     """
 
@@ -905,7 +907,7 @@ class ResultsDigest:
         :param result: The result.
         :ptype result: ResultView
         """
-        rendered = input_json(result_evidence(result)).encode("utf-8")
+        rendered = input_json(_result_evidence(result)).encode("utf-8")
         self._digests[result.id] = hashlib.sha256(rendered).hexdigest()
 
     def __len__(self) -> int:
@@ -925,7 +927,7 @@ def _stored(document: Mapping[str, Any], fields: Iterable[str]) -> dict[str, Any
     return {name: document[name] for name in fields if name in document}
 
 
-def run_evidence(run: EvalRun) -> dict[str, Any]:
+def _run_evidence(run: EvalRun) -> dict[str, Any]:
     """One member run's evidence: the fields :data:`_RUN` names, as stored, each level by its content hash.
 
     :param run: The stored run.
@@ -1063,7 +1065,7 @@ def evidence_manifest(
         host_declarations=host_declarations,
         runs=input_digest(
             {
-                "read": sorted((run_evidence(run) for run in runs), key=lambda run: run["id"]),
+                "read": sorted((_run_evidence(run) for run in runs), key=lambda run: run["id"]),
                 "archived": sorted(archived_run_ids),
                 "unresolved": sorted(unresolved_run_ids),
             }

@@ -170,8 +170,8 @@ def input_json(payload: Any) -> str:
 
     - **Key order is not read.** Every mapping's keys are sorted, at every depth, so a store that reorders keys (a
       ``jsonb`` column does) moves nothing. A list keeps its order, as every JSON store keeps it.
-    - **A null is a value.** ``{"a": null}`` and ``{}`` render differently: in a map a host writes, a key's presence
-      can carry meaning. A caller for whom an unset field and an absent one are one value (a typed record, where both
+    - **A null is a value.** ``{"a": null}`` and ``{}`` render differently: in a map a host writes, whether a key
+      was written can carry meaning. A caller for whom an unset field and an absent one are one value (a typed record, where both
       hydrate to ``None``) leaves the unset field out before it renders.
     - **Numbers.** A bool is ``true`` or ``false``, never a number. An integer is written in decimal, at any size.
       A float holding a whole number is written as the integer it equals, at any magnitude: ``1.0`` is ``1``,
