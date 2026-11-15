@@ -25,7 +25,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.fixtures.report_inputs.build_inputs import REFERENCES, build_inputs
-from packages.evals.tests.report_input_schema_support import MODEL_DEFINED, MODEL_WORDED, model_worded
+from packages.evals.tests.report_input_schema_support import looks_description_drift
 from packages.evals.tests.report_kit_support import KIT
 from threetears.evals.analysis.report_input import ReportInput
 
@@ -97,18 +97,9 @@ def test_the_docs_schema_and_the_model_agree() -> None:
 
 
 def test_the_looks_parts_of_the_kit_schema_are_the_model_s_own_words() -> None:
-    """What a writer reads of looks and of the reference rate is the model's, field by field: the ``FalseSeparation``
-    and ``Looks`` definitions, and the fields that carry them. Regenerate with ``report_input_schema_support``."""
-    text = SCHEMA.read_text(encoding="utf-8")
-    assert model_worded(text) == text, "regenerate: write_model_worded() in report_input_schema_support"
-    docs = json.loads(text)["$defs"]
-    model = ReportInput.model_json_schema(by_alias=True)["$defs"]
-    for name, field in MODEL_WORDED:
-        assert docs[name]["properties"][field]["description"] == model[name]["properties"][field]["description"]
-    for name in MODEL_DEFINED:
-        assert set(docs[name]["properties"]) == set(model[name]["properties"]), name
-        for field, shape in model[name]["properties"].items():
-            assert docs[name]["properties"][field]["description"] == shape["description"], (name, field)
+    """What a writer reads of looks and of the reference rate is the model's, field by field: every field of
+    ``FalseSeparation`` and ``Looks``, and the fields that carry them."""
+    assert looks_description_drift() == []
 
 
 def test_the_parity_check_sees_a_field_the_docs_schema_lacks() -> None:
