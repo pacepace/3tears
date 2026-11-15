@@ -36,7 +36,8 @@ of lever levels whose runs were not read under one recorded definition (counted 
 
 **Changed:** an arm split on either coordinate is read per cell, never as an arm. `Cell.split_on` (new, left out
 when empty) names the coordinates a cell's arm is split on, and every arm-level reader (the campaign's rows, floors
-and pairs, a measurement's rates, the report input's figures, a one-arm campaign) withholds such an arm. Two arms
+and pairs, a measurement's rates, the report input's figures, the figures across aspects, a one-arm campaign)
+withholds such an arm. Two arms
 that share no setup, because their runs were read under different definitions or under none recorded, get no floor
 and no row. `AnswerSplit.coordinate` (new; left out when `served_model`) says which coordinate, and the page and the
 report input word it. On an aspect's page, the verdict line gives such an arm no pass count and never says it passed
@@ -44,7 +45,8 @@ more or less often than the control, or that the evidence cannot tell them apart
 and why; its scoreboard row keeps what ran and was lost, its passes and failures are withheld (flagged "read per
 model" or "read per definition"), its cost too where the answering model splits it, and it has no outcome bar. The
 report input's scoreboard row for a split arm carries no `passed` and no `failed`, and no `reply_cost_usd` where the
-answering model splits it.
+answering model splits it, and a written page's `scoreboard.<arm>.failed` key is refused for it. Across aspects
+(`CampaignAggregate`, the scorecard's equal-weight row), such an arm's pass rate is withheld, naming the aspect.
 
 **Changed:** one action, `runs_attest` (`write`; `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`,
 `attestation_note?`), states a coordinate of stored runs that they did not record, and answers in one shape whichever
@@ -119,6 +121,13 @@ definitions stays unrecorded, and says so as it is taken up (a WARNING).
 - No host apparatus dimension may be named `measure_definitions`. `ApparatusClass.alone_to` (new, optional, left out
   when unset) names the run a class is alone to. A host that called `runs_attest_definitions` on an unreleased build
   calls `runs_attest` with `coordinate: "measure_definition"`.
+
+**Not yet:** two readers still pool across definitions of a host measure, and each says so where it is read. The
+frontier's dominance and cheapest-pick tests read contestants' headline cells whatever definition read each: the
+frontier's cell sentence (`PASS_HAT_K_CELL_READING`, printed with every frontier and on an aspect page's method)
+ends saying so. A launch estimate's `detectable_effect` plans from variance pooled over every earlier run of the
+template: where those runs were not all read under one definition, or some recorded none, its `assumptions` end
+saying so.
 
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 

@@ -397,7 +397,8 @@ class PassHatKCellReading(EvalBaseModel):
 #: the report page's run disclosures): the frontier's pass^k, its interval, its bar and its verdict leave a kept-out
 #: run out, its composite, cost and latency leave it out where it is apart on the served model or a host measure's
 #: definition, and a campaign's cells keep apart what they split on (the served model, and the rig, which holds each
-#: host measure's definition).
+#: host measure's definition). Its last sentence says what is not kept apart yet: the dominance and cost-tie tests read
+#: contestants' headline cells whatever definitions read them.
 PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
     "measurement context, template revision, definition of each host measure, apparatus provenance and served model, "
@@ -408,7 +409,8 @@ PASS_HAT_K_CELL_READING = (
     "and the tables and contrasts read from them, each hold one served model and one definition of each host "
     "measure: there a run answered by another model, or by one no response named, is read in a cell of its own, and "
     "a run read under another definition, or under none recorded, is under a test setup of its own and is compared "
-    "with nothing."
+    "with nothing. Dominance and the cheapest pick are still tested between contestants' headline cells whatever "
+    "definition of a host measure each was read under."
 )
 
 #: Each reason a pass^k cell stands apart, as a reader is told it.

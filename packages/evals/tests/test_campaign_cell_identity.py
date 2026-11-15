@@ -426,6 +426,15 @@ def test_the_frontiers_cell_sentence_no_longer_says_a_campaigns_cells_pool_every
     assert "is compared with nothing" in PASS_HAT_K_CELL_READING
 
 
+def test_the_frontiers_cell_sentence_says_dominance_and_the_cheapest_pick_still_pool_definitions() -> None:
+    """The frontier's dominance and cost-tie tests read contestants' headline cells whatever definitions read them:
+    until they keep them apart, every frontier's text says so."""
+    assert PASS_HAT_K_CELL_READING.endswith(
+        "Dominance and the cheapest pick are still tested between contestants' headline cells whatever definition of "
+        "a host measure each was read under."
+    )
+
+
 # =============================================================================
 # Evidence: a statement moves the fingerprint, the cell model's version does not
 # =============================================================================
