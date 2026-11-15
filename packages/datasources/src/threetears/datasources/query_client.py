@@ -76,6 +76,7 @@ from threetears.core.security.door_request import (
     datasource_query_op,
     omit_absent_proof,
 )
+from threetears.core.declared import whole_read
 from threetears.core.keyed import Fragment, Selected, renumbered, selected_column
 from threetears.core.sql_fragments import FilterValue, as_written, filter_conditions
 from threetears.core.wire import TolerantWireModel
@@ -2275,11 +2276,22 @@ async def _pages(
                 conditions, values = filters.conditions()
                 same = " AND ".join(f"{column} = ${len(values) + index}" for index, column in enumerate(key, 1))
                 where_sql = f"({conditions}) AND {same}" if conditions else same
-                counted = await client.query(
-                    datasource_name,
-                    f"SELECT count(*) AS n FROM {relation} WHERE {where_sql}",  # noqa: S608 - trusted identifiers
-                    params=[*values, *cut_key],
-                    **asserted,
+                # a bounded count of the cut key's rows: one row past the reply's at most, in the key's order, so the
+                # warehouse stops one row past the answer (a count of the whole group read every row of a wide group
+                # only to say "more"). The relation is the datasource's, named at run time, so the gate reads its key
+                # nowhere and the read is declared as a warehouse relation's
+                counted = await whole_read(
+                    client.query(
+                        datasource_name,
+                        f"SELECT count(*) AS n FROM (SELECT 1 AS one FROM {relation} WHERE {where_sql}"  # noqa: S608 - trusted identifiers
+                        f" ORDER BY {ordering} LIMIT {len(page.rows) + 1}) AS held",
+                        params=[*values, *cut_key],
+                        **asserted,
+                    ),
+                    kind="unbounded_by_warehouse",
+                    reason="whether a reply the hub cut inside one key value holds that value's every row: a count of the datasource relation's rows of that key under the read's filters, bounded one row past the reply",
+                    ruling="Pace 2026-11-12: unbounded_by_warehouse; coordinator 2026-11-15 (D8 brief): a read over a client warehouse relation may declare it, with the why at the code",
+                    proof="packages/datasources/tests/unit/test_pagers_under_a_byte_cap.py::test_a_reply_cut_inside_one_key_reads_on_when_a_bounded_count_finds_the_key_whole",
                 )
                 if not counted.rows or int(counted.rows[0]["n"]) != len(page.rows):
                     raise IncompleteReadError(

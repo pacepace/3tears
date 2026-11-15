@@ -34,6 +34,11 @@ class _StubPool:
         self._responses = list(responses)
         self.calls = 0
 
+    async def answers_from_yugabyte(self) -> bool:
+        """a PostgreSQL pool, said without a scripted response: the keyed read asks which engine it reads (an index
+        hint on YugabyteDB) whenever a declared index other than the key serves its pins (idx_datasources_status)."""
+        return False
+
     async def fetch(self, query: str, *args: Any) -> Any:
         self.calls += 1
         response = self._responses.pop(0)

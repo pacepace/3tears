@@ -3,33 +3,45 @@
 from __future__ import annotations
 
 import asyncio
+import ast
+import re
+from pathlib import Path
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid7
 
 import pytest
 
-from threetears.backup.selective import RowSelection, SelectiveRestore
+from threetears.backup.selective import RowSelection, SelectionTooLargeError, SelectiveRestore
 
 
 # parity-exempt: the asyncpg connection surface plan() reads through -- fetch and close only
 class _SnapshotConnection:
     """a snapshot connection with a table of primary key ``pk``, recording the row selection it is sent.
 
-    The catalog reads are told apart by what they select: ``attname`` is the primary-key read,
-    ``column_name`` the column list. The selection is the one statement starting ``SELECT *``.
+    The catalog reads are told apart by what they select: ``attname`` is the primary-key read (each column's type
+    beside it), ``column_name`` the column list. The selection is each keyed page the restore reads, ``SELECT t.*``;
+    ``rows`` is how many rows the selection matches, answered a page at a time as its ``LIMIT`` asks.
     """
 
-    def __init__(self, pk: tuple[str, ...]) -> None:
+    def __init__(self, pk: tuple[str, ...], rows: int = 0) -> None:
         self.pk = pk
+        self.rows = rows
+        self.answered = 0
         self.selections: list[tuple[str, tuple[object, ...]]] = []
 
     async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
-        if query.startswith("SELECT * FROM"):
+        if query.startswith("SELECT t.* FROM"):
             self.selections.append((query, args))
-            return []
+            limit = int(re.search(r"LIMIT (\d+)$", query).group(1))  # type: ignore[union-attr]
+            page = [
+                {column: f"{column}-{self.answered + index:06d}" for column in self.pk}
+                for index in range(min(limit, self.rows - self.answered))
+            ]
+            self.answered += len(page)
+            return page
         if "attname" in query:
-            return [{"attname": column} for column in self.pk]
+            return [{"attname": column, "sql_type": "text"} for column in self.pk]
         return [{"column_name": column} for column in self.pk]
 
     async def close(self) -> None:
@@ -56,7 +68,8 @@ def _predicate(selection: RowSelection, pk: tuple[str, ...] = ("id",)) -> tuple[
 
     asyncio.run(SelectiveRestore(connect=_connect, scratch_dsn="scratch", live_dsn="live").plan(selection))  # type: ignore[arg-type]
     [(query, params)] = connection.selections
-    return query.split(" WHERE ", 1)[1], list(params)
+    # the keyed page writes the selection's predicate in its own parentheses, before the key's order
+    return query.split(" WHERE (", 1)[1].rsplit(") ORDER BY ", 1)[0], list(params)
 
 
 class TestRowSelection:
@@ -121,3 +134,51 @@ class TestRawWhere:
     def test_a_blank_where_is_refused(self) -> None:
         with pytest.raises(ValueError, match="must not be blank"):
             RowSelection(table="t", where="   ")
+
+
+_REPO = Path(__file__).resolve().parents[4]
+
+
+def test_plan_is_reached_only_from_an_operators_request() -> None:
+    """``SelectiveRestore.plan`` (``@operator_command``) is an operator's request: nothing in 3tears builds a
+    ``SelectiveRestore`` but its own module, so plan is reached only from a caller outside the packages (the hub's
+    admin endpoint an operator calls)."""
+    built: set[str] = set()
+    for path in sorted(_REPO.glob("packages/*/src/**/*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", getattr(node.func, "attr", "")) == "SelectiveRestore"
+            ):
+                built.add(path.relative_to(_REPO).as_posix())
+    assert built == set()
+
+
+class TestBoundedRead:
+    def test_a_selection_past_the_bound_is_refused_having_read_one_row_past_it(self) -> None:
+        """Flips if the scratch read takes the whole selection before refusing it, or reads it in one statement."""
+        connection = _SnapshotConnection(("id",), rows=5000)
+
+        async def _connect(_dsn: str) -> _SnapshotConnection:
+            return connection
+
+        restore = SelectiveRestore(connect=_connect, scratch_dsn="scratch", live_dsn="live", max_rows=1200)  # type: ignore[arg-type]
+        with pytest.raises(SelectionTooLargeError):
+            asyncio.run(restore.plan(RowSelection(table="t", all_rows=True)))
+        # each statement asks one row past the ones it keeps (the sign more follow): 1,201 kept, one more a statement
+        assert len(connection.selections) == 3
+        assert connection.answered == 1201 + len(connection.selections)
+
+    def test_pages_past_the_first_start_after_the_last_key_read(self) -> None:
+        """Flips if a page after the first rereads from the start (its cursor dropped) rather than after its last key."""
+        connection = _SnapshotConnection(("id",), rows=700)
+
+        async def _connect(_dsn: str) -> _SnapshotConnection:
+            return connection
+
+        restore = SelectiveRestore(connect=_connect, scratch_dsn="scratch", live_dsn="live", max_rows=600)  # type: ignore[arg-type]
+        with pytest.raises(SelectionTooLargeError):
+            asyncio.run(restore.plan(RowSelection(table="t", all_rows=True)))
+        [first, second] = connection.selections
+        assert "ORDER BY" in first[0] and first[1] == ()
+        assert second[1][-1] == "id-000499", second
