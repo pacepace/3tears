@@ -70,12 +70,13 @@ _OLD_COUNT = f"SELECT count(*) FROM scheduled_jobs {_FILTERS}"  # noqa: S608 - t
 
 
 def _job(seed: Seeded) -> Mapping[str, Any]:
-    """one schedule: the kind by tenant (so a kind filter crosses the boundary), its name the sort's tie (NULL when
-    ``seed.null``), each in its own partition as real seeders write them."""
+    """one schedule: the kind by tenant, the first tenant's rows the later kind (so a kind filter crosses the boundary,
+    and the order by kind disagrees with the order by name), its name the sort's tie (NULL when ``seed.null``), each in
+    its own partition as real seeders write them."""
     return {
         "partition_key": uuid.uuid5(_NS, f"partition-{seed.index}"),
         "job_id": uuid.uuid5(_NS, f"job-{seed.case}-{seed.index}"),
-        "kind": f"kind_{seed.tenant}",
+        "kind": f"kind_{1 - seed.tenant}",
         "payload": json.dumps({"n": seed.index}),
         "schedule_type": "interval",
         "schedule_config": json.dumps({"seconds": 60 + seed.index}),
@@ -167,6 +168,9 @@ _SITES: dict[str, _Site] = {
         _OLD_PAGE, (["kind_1", "kind_0"], ["paused"], _PAGE, 0), _first_page(["kind_1", "kind_0"], ["paused"])
     ),
     "every page by cursor, unfiltered": _Site(_OLD_WHOLE, (None, None), _every_page(None, None)),
+    "every page by cursor, by both kinds": _Site(
+        _OLD_WHOLE, (["kind_0", "kind_1"], None), _every_page(["kind_0", "kind_1"], None)
+    ),
     "every page by cursor, by kind and status": _Site(
         _OLD_WHOLE,
         (
