@@ -204,6 +204,14 @@ async def test_a_scripted_brain_fills_in_the_build_and_says_done_past_its_transc
     assert run.stopped == "done" and run.spent() == 0.0
 
 
+#: The cheap tier's catalogue row, as OpenRouter lists it: what bounds each turn before it is sent.
+_CHEAP_ROW: dict[str, Any] = {  # Any: JSON
+    "id": "deepseek/deepseek-v4-flash",
+    "pricing": {"prompt": "0.0000001", "completion": "0.0000004"},
+    "supported_parameters": ["max_tokens", "reasoning", "response_format", "structured_outputs"],
+}
+
+
 def _act_reply(content: str) -> dict[str, Any]:  # Any: OpenRouter's reply shape
     return {
         "model": "deepseek/deepseek-v4-flash",
@@ -217,12 +225,7 @@ async def test_the_live_brain_is_priced_by_the_package_and_held_to_its_cap(tmp_p
 
     def respond(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
-            row = {
-                "id": "deepseek/deepseek-v4-flash",
-                "pricing": {"prompt": "0.0000001", "completion": "0.0000004"},
-                "supported_parameters": ["max_tokens", "reasoning", "response_format", "structured_outputs"],
-            }
-            return httpx.Response(200, json={"data": [row]})
+            return httpx.Response(200, json={"data": [_CHEAP_ROW]})
         sent.append(json.loads(request.content))
         act = {"tool": "run", "path": "", "start": 1, "text": "", "command": "ls"}
         return httpx.Response(200, json=_act_reply(json.dumps(act)))
@@ -343,7 +346,7 @@ async def test_a_recorded_agent_run_replays_offline_turn_for_turn_in_another_san
 
     def respond(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
-            return httpx.Response(200, json={"data": []})
+            return httpx.Response(200, json={"data": [_CHEAP_ROW]})
         user = next(m["content"] for m in json.loads(request.content)["messages"] if m["role"] == "user")
         act = {"path": "", "start": 1, "text": "", "command": "", **acts[user.count("[turn ")]}
         return httpx.Response(200, json=_act_reply(json.dumps(act)))
