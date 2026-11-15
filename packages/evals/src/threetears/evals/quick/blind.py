@@ -180,10 +180,10 @@ def read_labels(path: Path, read: BlindRead, results: Sequence[EvalResult]) -> L
     scales = {dim.name: dim.scale for dim in read.criteria}
     items = {item.item: item for item in read.items}
     by_key: dict[tuple[str, str, str], EvalResult] = {}
-    for result in results:
-        for score in result.judge_scores():
-            if score.output_fingerprint is not None and score.criterion_fingerprint is not None:
-                by_key.setdefault((score.dim, score.output_fingerprint, score.criterion_fingerprint), result)
+    for judged in results:
+        for stored in judged.judge_scores():
+            if stored.output_fingerprint is not None and stored.criterion_fingerprint is not None:
+                by_key.setdefault((stored.dim, stored.output_fingerprint, stored.criterion_fingerprint), judged)
     answers: dict[tuple[str, str, str], dict[str, Any]] = {}
     loose: list[CalibrationRating] = []
     unread: list[str] = []
@@ -240,9 +240,9 @@ def read_labels(path: Path, read: BlindRead, results: Sequence[EvalResult]) -> L
             scale_words = "pass or fail" if scale == "pass_fail" else "1 to 5"
             raise ValueError(f"{path} line {number} labels {dimension!r} {label!r}; its scale is {scale_words}")
         reason = (row.get("reason") or "").strip()
-        if on_draw and item is not None:
+        if on_draw and item is not None and output is not None:
             answers[(item.item, rater, kind)]["verdicts"].append(
-                BlindVerdict(slot=slot, dim=dimension, score=score, reason=reason)
+                BlindVerdict(slot=output.slot, dim=dimension, score=score, reason=reason)
             )
             continue
         criterion = (row.get("criterion_fingerprint") or "").strip()

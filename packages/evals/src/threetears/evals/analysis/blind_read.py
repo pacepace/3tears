@@ -86,6 +86,7 @@ from threetears.evals.schema.models import (
     CalibrationRating,
     EvalResult,
     JudgeEvidence,
+    RaterKind,
     RubricDim,
     utc_now_iso,
 )
@@ -479,7 +480,7 @@ def exact_sign_test_p(successes: int, trials: int) -> float | None:
     if trials == 0:
         return None
     tail = sum(math.comb(trials, count) for count in range(min(successes, trials - successes) + 1))
-    return min(1.0, 2 * tail / 2**trials)
+    return min(1.0, float(2 * tail / 2**trials))
 
 
 def _ratings_of(read: BlindRead) -> list[tuple[CalibrationRating, BlindAnswer]]:
@@ -576,7 +577,7 @@ def _agreements(
     """One anchor's agreement with each judge on each criterion, with the tier it bears on that anchor."""
     if not ratings:
         return []
-    rated_by = "person" if anchor == "person" else "agent"
+    rated_by: RaterKind = "person" if anchor == "person" else "agent"
     agreement = judge_agreement(ratings, results, rated_by=rated_by)
     judged = {key for result in results for score in result.judge_scores() if (key := judge_key(result, score.dim))}
     tiers = {
@@ -632,7 +633,7 @@ def _agreements(
 
 
 def _preference(
-    read: BlindRead, answers: Sequence[BlindAnswer], samples: Mapping[tuple[str, str], BlindSample]
+    read: BlindRead, answers: Sequence[BlindAnswer], samples: Mapping[tuple[str, BlindRaterKind], BlindSample]
 ) -> BlindPreference:
     """One kind of rater's preference over the planned items, per case, with its test; withheld until a rater has
     answered every planned item."""
