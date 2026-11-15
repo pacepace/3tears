@@ -240,16 +240,17 @@ def _signature_as_called(called: Any) -> inspect.Signature | None:
 
 def _declare_as(called: Any, handed: str, written: str) -> tuple[str, str]:
     """What a runner is called in a refusal, and the declaration that would take ``handed``."""
+    kind: type = type(called)
     if isinstance(called, partial):
         name = f"partial({getattr(called.func, '__name__', type(called.func).__name__)}, ...)"
         return name, f"declare its function so that what the partial leaves free is exactly ({handed})"
     if not inspect.isroutine(called) and not isinstance(called, type):
         return (
-            type(called).__name__,
+            kind.__name__,
             f"declare its __call__ to take exactly that: {written} __call__(self, {handed}): ...",
         )
     named = getattr(called, "__name__", None)
-    name = named if isinstance(named, str) else type(called).__name__
+    name = named if isinstance(named, str) else kind.__name__
     return name, f"declare it to take exactly that: {written} {name}({handed}): ..."
 
 
