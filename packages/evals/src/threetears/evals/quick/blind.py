@@ -38,7 +38,7 @@ from threetears.evals.analysis.blind_read import (
     blind_sheet,
     exact_sign_test_p,
 )
-from threetears.evals.analysis.checks import Check
+from threetears.evals.analysis.checks import Check, speaking_check
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel import CALIBRATION_MIN_AGREEMENT, CALIBRATION_MIN_RESULTS
@@ -1104,8 +1104,15 @@ def judge_lines(
         own = [check for check in against_a_model if check.against_id == reviewer]
         measured = [check for check in checks if check.kind == "reviewer" and check.instrument == reviewer]
         against = "" if measured else ", not yet against people"
+        # "Beside it" where people's check speaks for the judge on every criterion the model read, and the model's
+        # stands beside it; otherwise the model's is what the judge was checked against.
+        beside = by_person and all(
+            (spoken := speaking_check(checks, check.instrument, check.criterion or "")) is not None
+            and spoken.against == "people"
+            for check in own
+        )
         lines += under(
-            f"{'beside it, ' if by_person else ''}checked against {_who('reference', reviewer)}{against}:", "  "
+            f"{'beside it, ' if beside else ''}checked against {_who('reference', reviewer)}{against}:", "  "
         )
         lines += [
             f"    {(check.criterion or '').ljust(width)}  {_check_clause(check, _table_of(read, check))}"

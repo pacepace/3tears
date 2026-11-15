@@ -66,21 +66,7 @@ if TYPE_CHECKING:
     from threetears.evals.kernel.result_reading import ResultView
     from threetears.evals.schema.models import CalibrationRating, RaterKind
 
-__all__ = [
-    "REVIEWER_LEAN_MIN_PAIR_ITEMS",
-    "REVIEWER_MET_MIN_PAIR_ITEMS",
-    "Check",
-    "CheckKind",
-    "Corrected",
-    "Looks",
-    "Rescore",
-    "blind_read_checks",
-    "judge_checks",
-    "lean_interval",
-    "reviewer_check",
-    "speaking_check",
-    "tier_checks",
-]
+__all__ = ["Check", "Corrected", "Looks", "Rescore", "blind_read_checks", "judge_checks", "speaking_check"]
 
 #: What a check checks: a judge, a model that answered a blind read (a reviewer), or the rig.
 CheckKind = Literal["judge", "reviewer", "rig"]
@@ -248,6 +234,7 @@ def _criterion_check(
         reason=_criterion_reason(criterion),
         kappa=criterion.agreement,
         kappa_interval=criterion.interval,
+        reads=criterion.n,
     )
 
 
@@ -302,7 +289,7 @@ def judge_checks(tiers: Iterable[JudgeEvidenceTier], judges: Iterable[JudgeKey])
 # --- a reviewer checked against people ------------------------------------------------------------------------------
 
 
-def lean_interval(leans: Sequence[float]) -> tuple[float | None, tuple[float, float] | None]:
+def _lean_interval(leans: Sequence[float]) -> tuple[float | None, tuple[float, float] | None]:
     """The mean lean over pair items and its two-sided interval at the house level, on t with ``n - 1`` degrees.
 
     :param leans: Per pair item, the model's difference between the arms less the person's.
@@ -395,7 +382,7 @@ def reviewer_check(
     delta = margin if margin is not None and margin > 0 else _LEAN_SHARE_OF_WIDTH * (high - low)
     agreement = instrument_agreement(scale, kappa_pairs)
     kappa = calibration_criterion(agreement.n, agreement.results, agreement.agreement, agreement.interval)
-    lean, interval = lean_interval(leans)
+    lean, interval = _lean_interval(leans)
     result, reason = _reviewer_result(kappa, len(leans), interval, delta)
     return Check(
         kind="reviewer",

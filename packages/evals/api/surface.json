@@ -3598,7 +3598,7 @@
     },
     "threetears.evals.kernel.host.EvalHost": {
       "kind": "dataclass",
-      "signature": "EvalHost(profile: HostProfile, storage: EvalStorage, failure_describer: ProviderFailureDescriber, trace_sink: TraceSink | None, blocking_executor: Executor | None, cell_timeout: CellTimeoutFactory, clients: CompletionClients | None = None, template_checks: TemplateChecks | None = None, attests_person: AttestsPerson | None = None)",
+      "signature": "EvalHost(profile: HostProfile, storage: EvalStorage, failure_describer: ProviderFailureDescriber, trace_sink: TraceSink | None, blocking_executor: Executor | None, cell_timeout: CellTimeoutFactory, clients: CompletionClients | None = None, template_checks: TemplateChecks | None = None, attests_person: AttestsPerson | None = None, model_family: Callable[[str], str | None] | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.kernel.host.Evidence": {
@@ -7453,7 +7453,7 @@
     },
     "threetears.evals.quick.JudgeCalibration": {
       "kind": "dataclass",
-      "signature": "JudgeCalibration(dimension: str, labels: int, kappa: float | None, lower: float | None, upper: float | None, calibration: str, tier: str)",
+      "signature": "JudgeCalibration(dimension: str, labels: int, kappa: float | None, lower: float | None, upper: float | None, calibration: str)",
       "tier": "stable"
     },
     "threetears.evals.quick.JudgeExamples": {

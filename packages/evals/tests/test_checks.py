@@ -149,7 +149,9 @@ def _leans(items: int, *, toward: int = 0, away: int = 0) -> list[float]:
 def test_a_model_s_own_check_reads_each_of_the_four_states_by_its_pair_items(
     items: int, leans: list[float], expected: tuple[str, str | None]
 ) -> None:
-    check = reviewer_check(REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(2 * max(items, 20)), leans=leans)
+    check = reviewer_check(
+        REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(2 * max(items, 20)), leans=leans
+    )
     assert (check.result, check.reason) == expected
     assert (check.kind, check.instrument, check.against, check.pair_items) == ("reviewer", REVIEWER, "people", items)
     if items:
@@ -383,14 +385,16 @@ def test_a_judge_s_own_model_checks_it_against_itself_and_an_unrecorded_one_chec
 
 
 def test_a_model_check_moves_no_stored_tier_and_the_tier_is_its_people_and_itself_checks() -> None:
-    read, results = _both_read(30, 0)
+    read, results = _both_read(30, 30)
     closed = close_blind_read(read, results)
     judged = {key for result in results if (key := judge_key(result, GROUNDED.name)) is not None}
     people = [rating for rating in closed.ratings if rating.rater_kind == "person"]
     (tier,) = judge_evidence_tiers(judge_agreement(people, results), judge_self_agreement(results), judged)
-    # A judge with no model check: the stored tier, byte for byte, as the tier code wrote it before checks existed.
+    # The stored tier, byte for byte, as the tier code wrote it before checks existed: the pin was computed from this
+    # very fixture by the tree at f9ab6f74d (origin/evals/main before this change), and a model check moves none of it.
     stored = json.dumps(tier.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
-    assert hashlib.sha256(stored.encode()).hexdigest()[:16] == "e9c1a2f1d0b3c7a4", stored
+    assert tier.tier == "calibrated"
+    assert hashlib.sha256(stored.encode()).hexdigest()[:16] == "e24ea1f9fc4f8e6e", stored
     # The model answered every case and agrees with the judge: the tier does not move.
     assert any(check.against == "model" and check.result == "met" for check in blind_read_checks(closed, results))
     (again,) = judge_evidence_tiers(judge_agreement(people, results), judge_self_agreement(results), judged)

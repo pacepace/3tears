@@ -497,7 +497,9 @@ def test_a_judge_that_passes_everything_is_shown_by_the_table_where_kappa_says_n
     assert reading.tier != "calibrated"
     table = reading.table
     assert table is not None and (table.rater_fail_judge_pass, table.both_fail, table.detection) == (3, 0, 0.0)
-    lines = _lines(close_blind_read(_with(read, answers), results), results, labels_name="labels.csv", labels_there=True)
+    lines = _lines(
+        close_blind_read(_with(read, answers), results), results, labels_name="labels.csv", labels_there=True
+    )
     assert lines[0] == "judge: 30 of 30 cases read blind, in the drawn order (a random sample)"
     assert "30 results from 30 cases" in lines[1] and lines[1].endswith(
         "the judge failed 0 of the 3 answers you failed"
@@ -737,7 +739,8 @@ def test_a_person_s_reading_decides_once_it_is_decided_and_the_anchor_is_measure
     (check,) = few.read.report.reviewer_checks
     assert (check.reviewer, check.dim, check.outputs, check.exact_agreement) == (reviewer, GROUNDED.name, 6, 1.0)
     lines = _lines(few, results, labels_name="labels.csv", labels_there=True)
-    assert f"  beside it, checked against a model ({reviewer}):" in lines
+    # Three person labels decide nothing, so the model's check is what the judge was checked against.
+    assert f"  checked against a model ({reviewer}):" in lines
     assert any(line.startswith(f"    {reviewer} against people on answer.grounded: 6 outputs") for line in lines)
     # A whole person read decides it, whatever the reference says.
     full = close_blind_read(
@@ -746,6 +749,9 @@ def test_a_person_s_reading_decides_once_it_is_decided_and_the_anchor_is_measure
     assert full.read.report is not None
     decided = {reading.anchor: reading.decides for reading in full.read.report.agreement}
     assert decided == {"person": True, "reference": False}
+    assert f"  beside it, checked against a model ({reviewer}):" in _lines(
+        full, results, labels_name="labels.csv", labels_there=True
+    ), "people's check speaks, and the model's stands beside it"
     assert {p.anchor for p in full.read.report.preferences} == {"person", "reference"}
 
 

@@ -1491,7 +1491,6 @@ __all__ = [
     "InterJudgeDimension",
     "InterJudgeTally",
     "JudgeAgreement",
-    "InstrumentAgreement",
     "JudgeKey",
     "JudgeSelfAgreement",
     "SelfAgreementDimension",

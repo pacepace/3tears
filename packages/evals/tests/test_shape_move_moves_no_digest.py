@@ -163,7 +163,10 @@ def test_a_built_input_and_bundle_hold_no_key_the_move_added(name: str) -> None:
         held = _keys(aspect.to_dict())
         assert not held & BUNDLE_KEYS, sorted(held & BUNDLE_KEYS)
         assert "checks" not in aspect.to_dict()
-        assert not any("checks" in judged for judged in aspect.to_dict()["judged_measures"])
+        # A judged dimension's checks are filled (judges R1): its judges' checks against people and against itself,
+        # read off the tier each was decided by. No bundle holds a blind read yet, so none is against a model.
+        for judged in aspect.to_dict()["judged_measures"]:
+            assert {check["against"] for check in judged.get("checks", [])} <= {"people", "itself"}
 
 
 def test_no_built_comparison_holds_a_state_or_a_family() -> None:

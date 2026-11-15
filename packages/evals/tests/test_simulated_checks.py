@@ -9,10 +9,10 @@ the reviewer through the agreement computation every judge's check is.
 | Row | Truth | Read over | What it holds |
 |---|---|---|---|
 | Kappa cannot see a shared lean | ``s`` 0.15 and 0.30 | 40 and 100 pair items | The reviewer agrees with people at kappa 0.91 and 0.83 (the review's 0.91 to 0.92 and 0.83 to 0.84, within 0.03); the judge's check against the reviewer is ``met`` in at least 95% of reads; the reviewer's kappa is never shown below the bar (at most 1%) |
-| The lean is caught | lean 0.16 (``s`` 0.30) | 30 and 60 pair items | ``not_met``, ``instrument_leans``, in 75% and 99% of reads (the review's figures), within four standard errors |
+| The lean is caught | lean 0.16 (``s`` 0.30) | 30 and 60 pair items | ``not_met``, ``instrument_leans``, in 75% and 99% of reads (the review's figures), within four standard errors; ``met`` at most 2.5% (plus four standard errors), the lean being past the bound |
 | | lean 0.08 (``s`` 0.15) | 30, 60, 100 | 23%, 74%, 97% |
 | No false lean | no lean; the reviewer errs both ways at 5% and 10% | 30, 60, 100 | Shown to lean at most 5%, plus four standard errors |
-| ``met`` is an equivalence reading | the lean exactly at ``δ`` (0.10) | 260 pair items | ``met`` at most 2.5%, plus four standard errors: the interval's one side at the bound |
+| ``met`` is an equivalence reading | the lean exactly at ``δ`` (0.10) | 60, 105, 260 pair items | ``met`` at most 2.5%, plus four standard errors: the interval's one side at the bound |
 | What ``met`` costs | no lean; reviewer errs both ways at 5% (pair difference sd about 0.32) | 40, 105, 260 | ``met`` in about 80% at 105 (the statistician's arithmetic), at least 70%; rare at 40 (at most 20%) |
 
 A wrong interval fails a row: a normal multiplier on few items, or a standard error not divided by ``sqrt(n)``, moves
@@ -59,15 +59,11 @@ def _read(
             reviewer_vs_person.append((model, person, "owner", output))
             judge_vs_reviewer.append((judge, model, "reviewer", output))
             given[arm] = (model, person)
-        leans.append(
-            (given["candidate"][0] - given["control"][0]) - (given["candidate"][1] - given["control"][1])
-        )
+        leans.append((given["candidate"][0] - given["control"][0]) - (given["candidate"][1] - given["control"][1]))
     return reviewer_vs_person, leans, judge_vs_reviewer
 
 
-def _rates(
-    seed: str, items: int, *, lean_share: float, noise: float = 0.0, judge: bool = False
-) -> dict[str, float]:
+def _rates(seed: str, items: int, *, lean_share: float, noise: float = 0.0, judge: bool = False) -> dict[str, float]:
     rng = random.Random(seed)
     counts = {"leans": 0, "below_bar": 0, "met": 0, "judge_met": 0}
     kappas: list[float] = []
@@ -107,7 +103,9 @@ def test_kappa_cannot_see_a_lean_the_judge_and_the_model_share(lean_share: float
 def test_the_lean_is_caught_at_the_review_s_rates(lean_share: float, items: int, caught: float) -> None:
     rates = _rates(f"caught-{lean_share}-{items}", items, lean_share=lean_share)
     assert within(rates["leans"], caught, REPLICATES), rates
-    assert rates["met"] == 0.0, "a model shown to lean is never read as met"
+    if FAIL_RATE * lean_share > 0.10:
+        # A lean past the bound is read as none at most at the equivalence reading's one-sided level.
+        assert rates["met"] <= at_most(0.025, REPLICATES), rates
 
 
 @pytest.mark.parametrize("noise", [0.05, 0.10])
@@ -117,9 +115,11 @@ def test_a_model_that_does_not_lean_is_shown_to_lean_at_most_at_the_level(noise:
     assert rates["leans"] <= at_most(0.05, REPLICATES), rates
 
 
-def test_met_at_the_bound_is_claimed_at_most_at_the_one_sided_level() -> None:
-    # A lean of exactly 0.10, the bound: 0.53 s = 0.10.
-    rates = _rates("bound", 260, lean_share=0.10 / FAIL_RATE)
+@pytest.mark.parametrize("items", [60, 105, 260])
+def test_met_at_the_bound_is_claimed_at_most_at_the_one_sided_level(items: int) -> None:
+    # A lean of exactly 0.10, the bound (0.53 s = 0.10). Where the interval is about as wide as the bound (60 and 105
+    # items) a rule reading the point estimate inside the bound would claim met in a large share of reads.
+    rates = _rates(f"bound-{items}", items, lean_share=0.10 / FAIL_RATE)
     assert rates["met"] <= at_most(0.025, REPLICATES), rates
 
 
