@@ -50,6 +50,8 @@ from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy.sql import operators
+from sqlalchemy.sql.elements import TextClause, UnaryExpression
 
 from threetears.interfaces.keyed.keys import (
     DeclaredIndex,
@@ -105,6 +107,7 @@ from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter
 
 __all__ = [
+    "register_sa_table_indexes",
     "sql_cast",
     "BIGINT_TYPE",
     "MAX_INDEX_COLUMNS",
@@ -918,6 +921,111 @@ def l2_order_columns() -> list[Column]:
     ]
 
 
+def _servable_index(
+    name: str, columns: Sequence[tuple[str, bool]], *, plain: bool, where: str | None
+) -> DeclaredIndex | None:
+    """a declared index as a keyed read's pins and order can be served by it, or None when none can be: one with an
+    operator class, collation or other access method (``plain`` False: it orders by something else), or a predicate of
+    anything but ``column = 'text'`` conjuncts (serving only a read that pins each column to that text,
+    :func:`~threetears.interfaces.keyed.keys.stated_predicate`; a read cannot be judged to state any other). One rule
+    for a :class:`TableSchema`'s indexes and a SQLAlchemy ``Table``'s (:func:`register_sa_table_indexes`).
+
+    :param name: the index's name
+    :ptype name: str
+    :param columns: its columns in order, each with whether it sorts descending
+    :ptype columns: Sequence[tuple[str, bool]]
+    :param plain: whether it is a B-tree with no operator class or collation
+    :ptype plain: bool
+    :param where: its predicate, or None for a whole index
+    :ptype where: str | None
+    :return: the index, or None
+    :rtype: DeclaredIndex | None
+    """
+    if not plain:
+        return None
+    stated = frozenset() if where is None else stated_predicate(where)
+    if stated is None:
+        return None
+    return DeclaredIndex(
+        name,
+        tuple(column for column, _ in columns),
+        frozenset(column for column, descending in columns if descending),
+        stated=stated,
+    )
+
+
+#: an index element a SQLAlchemy ``Table`` names as text: a plain column, optionally ``ASC`` or ``DESC``
+_SA_TEXT_COLUMN: Final[re.Pattern[str]] = re.compile(r"\s*\"?(\w+)\"?(?:\s+(ASC|DESC))?\s*", re.IGNORECASE)
+
+
+def _sa_index_columns(index: sa.Index) -> list[tuple[str, bool]] | None:
+    """a SQLAlchemy index's elements as ``(column, descending)``, or None when any is other than a plain column
+    (an expression, ``NULLS FIRST``, a collation)."""
+    columns: list[tuple[str, bool]] = []
+    for element in index.expressions:
+        if isinstance(element, sa.Column):
+            columns.append((element.name, False))
+            continue
+        if isinstance(element, TextClause):
+            found = _SA_TEXT_COLUMN.fullmatch(element.text)
+            if found is None:
+                return None
+            columns.append((found.group(1), (found.group(2) or "").upper() == "DESC"))
+            continue
+        if isinstance(element, UnaryExpression) and isinstance(element.element, sa.Column):
+            if element.modifier is operators.desc_op:
+                columns.append((element.element.name, True))
+                continue
+            if element.modifier is operators.asc_op:
+                columns.append((element.element.name, False))
+                continue
+        return None
+    return columns
+
+
+def register_sa_table_indexes(table: sa.Table) -> None:
+    """register the indexes of an L3 table a package declares as a SQLAlchemy ``Table`` (not a :class:`TableSchema`),
+    as a :class:`TableSchema` registers its own: its primary key and each index :func:`_servable_index` admits, for the
+    hint a keyed read names to YugabyteDB (:func:`~threetears.interfaces.keyed.keys.serving_index`), and its partial
+    predicates' ``column = 'text'`` conjuncts, which a keyed read pinning them writes as literals
+    (:func:`~threetears.interfaces.keyed.keys.register_partial_predicates`).
+
+    WHY (3tears #100): agent-wake, agent-skills and scheduled-jobs declare their tables in SQLAlchemy, so none of their
+    indexes was registered and YugabyteDB was never told of one: it counted a conversation's 10 active schedules
+    through the primary key, reading its 400 rows, on 6 of 6 fresh ANALYZEs.
+
+    :param table: the table, as declared (its schema, if any, names the relation)
+    :ptype table: sa.Table
+    :return: nothing
+    :rtype: None
+    """
+    name = table.name if table.schema is None else f"{table.schema}.{table.name}"
+    pk_cols = tuple(column.name for column in table.primary_key.columns)
+    indexes = [DeclaredIndex("primary_key", pk_cols, primary=True)] if pk_cols else []
+    predicates: list[str] = []
+    for index in sorted(table.indexes, key=lambda one: str(one.name)):
+        options = index.dialect_options["postgresql"]
+        where = options["where"]
+        predicate = None if where is None else str(where.text if isinstance(where, TextClause) else where)
+        if predicate is not None:
+            predicates.append(predicate)
+        columns = _sa_index_columns(index)
+        if columns is None or index.name is None:
+            continue
+        # SQLAlchemy reads an unset access method as False: the default B-tree
+        using = options["using"]
+        served = _servable_index(
+            str(index.name),
+            columns,
+            plain=(not using or str(using).lower() == "btree") and not options["ops"],
+            where=predicate,
+        )
+        if served is not None:
+            indexes.append(served)
+    register_table_indexes(name, indexes)
+    register_partial_predicates(name, predicates)
+
+
 @dataclass(frozen=True)
 class TableSchema:
     """table descriptor for :class:`SchemaBackedCollection`.
@@ -1174,10 +1282,7 @@ class TableSchema:
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index
-        with no operator class, collation or other access method (a collated or other index orders by something else),
-        and no predicate or one of nothing but ``column = 'text'`` conjuncts (serving only a read that pins each column
-        to that text, :func:`~threetears.interfaces.keyed.keys.stated_predicate`; a read cannot be judged to state any
-        other).
+        :func:`_servable_index` admits.
 
         :param pk_cols: the primary key's columns
         :ptype pk_cols: tuple[str, ...]
@@ -1186,12 +1291,14 @@ class TableSchema:
         """
         indexes = [DeclaredIndex("primary_key", pk_cols, primary=True)] if pk_cols else []
         for index in self.indexes:
-            if index.using is not None or index.ops or index.collate:
-                continue
-            stated = frozenset() if index.where is None else stated_predicate(index.where)
-            if stated is None:
-                continue
-            indexes.append(DeclaredIndex(index.name, tuple(index.columns), frozenset(index.desc), stated=stated))
+            served = _servable_index(
+                index.name,
+                tuple((column, column in index.desc) for column in index.columns),
+                plain=index.using is None and not index.ops and not index.collate,
+                where=index.where,
+            )
+            if served is not None:
+                indexes.append(served)
         return indexes
 
     def _declared_keys(self, pk_cols: tuple[str, ...], partition_column: str | None) -> list[TableKey]:

@@ -13,12 +13,21 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import sqlalchemy as sa
 
 from threetears.core.testing.captured import CapturedL3
-from threetears.core.collections.schema_backed import STRING_TYPE, UUID_TYPE, Column, Index, TableSchema
+from threetears.core.collections.schema_backed import (
+    STRING_TYPE,
+    UUID_TYPE,
+    Column,
+    Index,
+    TableSchema,
+    register_sa_table_indexes,
+)
 from threetears.core.keyed import (
     AnyOf,
     DeclaredIndex,
+    counts_by,
     Sort,
     index_hint,
     keyset_cursor,
@@ -27,6 +36,7 @@ from threetears.core.keyed import (
     read_by,
     serving_index,
 )
+from threetears.interfaces.keyed.keys import stated_literals
 
 #: a table named for this module alone, so no other declaration's indexes stand beside its own
 _CONV = "o88_hint_conversations"
@@ -49,6 +59,22 @@ TableSchema(
         Index("o88_conv_open_named", "agent_id", "name", "conversation_id", where="status = 'open'"),
         Index("o88_conv_kept", "agent_id", "user_id", "name", where="status = 'open' AND name IS NOT NULL"),
     ),
+)
+
+#: a conversation's schedules, as agent-wake declares them: the primary key (conversation_id, schedule_id) and a
+#: partial index of the conversation's active ones (idx_wake_schedules_conv_active), which binds no more leading
+#: columns than the primary key; only its predicate's column says it holds fewer rows
+_SCHED = "a100_hint_schedules"
+
+TableSchema(
+    name=_SCHED,
+    primary_key=("conversation_id", "schedule_id"),
+    columns=[
+        Column("conversation_id", UUID_TYPE),
+        Column("schedule_id", UUID_TYPE),
+        Column("status", STRING_TYPE),
+    ],
+    indexes=(Index("a100_sched_conv_active", "conversation_id", where="status = 'active'"),),
 )
 
 _BY_STATUS = [Sort("status", descending=True), Sort("conversation_id", cast="uuid", descending=True)]
@@ -139,12 +165,79 @@ class TestServingIndex:
         unordered = serving_index(_CONV, {"agent_id": 1, "user_id": 2, "status": "open", "name": "n"}, [])
         assert unordered is not None and unordered.name == "o88_conv_agent_user_status", unordered
 
+    def test_a_partial_index_s_stated_column_counts_as_bound_for_an_unordered_read(self) -> None:
+        """Flips if an unordered read pinning a conversation and its partial index's exact text (status = 'active') is
+        not served by that index, which binds the conversation as the primary key does and the status besides
+        (coordinator ruling, 3tears #100: YugabyteDB counted a conversation's 10 active schedules of 400 through the
+        primary key, 6 of 6 fresh ANALYZEs)."""
+        for order in ([], [Sort("status")]):
+            served = serving_index(_SCHED, {"conversation_id": 1, "status": "active"}, order)
+            assert served is not None and served.name == "a100_sched_conv_active", (order, served)
+
+    def test_a_partial_index_is_never_named_for_a_read_not_pinning_its_exact_text(self) -> None:
+        """Flips if the partial index is named for a read pinning another status, a set of statuses (even the one
+        text), or no status: it holds only the active rows, so the read would miss every other."""
+        for by in (
+            {"conversation_id": 1, "status": "paused"},
+            {"conversation_id": 1, "status": AnyOf(["active"])},
+            {"conversation_id": 1, "status": None},
+            {"conversation_id": 1},
+        ):
+            served = serving_index(_SCHED, by, [])
+            assert served is not None and served.primary, (by, served)
+
     def test_a_declared_index_names_plain_identifiers(self) -> None:
         """Flips if an index a hint could not name unquoted, or one sorting a column it lacks, is accepted."""
         with pytest.raises(ValueError, match="plain identifiers"):
             DeclaredIndex('idx "x"', ("a",))
         with pytest.raises(ValueError, match="descending"):
             DeclaredIndex("idx", ("a",), frozenset({"b"}))
+
+
+class TestASqlalchemyTableRegistersItsIndexes:
+    def test_its_plain_b_tree_indexes_register_as_a_table_schema_s_do(self) -> None:
+        """Flips if a SQLAlchemy ``Table``'s primary key, a plain index (columns, ``DESC`` written as text or as
+        ``.desc()``) or a partial index whose predicate is ``column = 'text'`` is not registered as served, or one with
+        another access method, an operator class, an expression or another predicate is (3tears #100: wake, skills and
+        scheduled-jobs declare their tables so, and none of their indexes was ever named to YugabyteDB)."""
+        table = sa.Table(
+            "a100_sa_schedules",
+            sa.MetaData(),
+            sa.Column("conversation_id", sa.Uuid, primary_key=True),
+            sa.Column("schedule_id", sa.Uuid, primary_key=True),
+            sa.Column("status", sa.Text),
+            sa.Column("name", sa.Text),
+            sa.Column("date_created", sa.DateTime),
+        )
+        sa.Index("a100_sa_active", table.c.conversation_id, postgresql_where=sa.text("status = 'active'"))
+        sa.Index("a100_sa_created", table.c.conversation_id, sa.text("date_created DESC"), table.c.schedule_id.desc())
+        # each of these would serve one conversation's rows by name, were it admitted
+        named = (table.c.conversation_id, table.c.name)
+        sa.Index("a100_sa_named", *named, postgresql_where=sa.text("name IS NOT NULL"))
+        sa.Index("a100_sa_gin", *named, postgresql_using="gin")
+        sa.Index("a100_sa_ops", *named, postgresql_ops={"name": "text_pattern_ops"})
+        sa.Index("a100_sa_lower", table.c.conversation_id, sa.func.lower(table.c.name))
+        assert len(table.indexes) == 6
+        register_sa_table_indexes(table)
+        active = serving_index("a100_sa_schedules", {"conversation_id": 1, "status": "active"}, [])
+        assert active is not None and active.name == "a100_sa_active", active
+        assert active.stated == frozenset({("status", "active")})
+        created = serving_index(
+            "a100_sa_schedules",
+            {"conversation_id": 1},
+            [Sort("date_created", descending=True), Sort("schedule_id", descending=True)],
+        )
+        assert created is not None and created.name == "a100_sa_created", created
+        assert created.descending == frozenset({"date_created", "schedule_id"})
+        point = serving_index("a100_sa_schedules", {"conversation_id": 1, "schedule_id": 2}, [])
+        assert point is not None and point.primary, point
+        for by, order in (
+            ({"conversation_id": 1, "status": "paused"}, []),
+            ({"conversation_id": 1}, [Sort("name")]),
+        ):
+            served = serving_index("a100_sa_schedules", by, order)
+            assert served is None or served.primary, (by, served)
+        assert ("status", "active") in stated_literals("a100_sa_schedules")
 
 
 class TestTheHintOnYugabyteOnly:
@@ -212,6 +305,32 @@ class TestTheHintOnYugabyteOnly:
             (read,) = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
             assert read.startswith("/*+ IndexOnlyScan(t o88_conv_agent_status) */ ") is hinted, read
             assert ("/*+" in read) is hinted, read
+
+
+class TestACountNamesItsIndexOnYugabyte:
+    async def test_a_count_by_value_stating_a_partial_index_names_it_on_yugabyte_only(self) -> None:
+        """Flips if a count of one conversation's active schedules (the counted column bound to each value named) does
+        not start with the hint naming the partial index on YugabyteDB, or carries any hint on PostgreSQL, or a count
+        of another status is hinted to it."""
+        for reader, hinted in ((_yugabyte(), True), (_postgres(), False)):
+            await counts_by(
+                reader, _SCHED, column="conversation_id", values=AnyOf([1], "uuid"), by={"status": "active"}
+            )
+            await counts_by(
+                reader, _SCHED, column="conversation_id", values=AnyOf([1], "uuid"), by={"status": "paused"}
+            )
+            active, paused = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
+            assert active.startswith("/*+ IndexOnlyScan(r a100_sched_conv_active) */ ") is hinted, active
+            assert ("/*+" in active) is hinted, active
+            assert "/*+" not in paused, paused
+
+    async def test_a_paged_count_of_every_value_names_the_index_holding_its_order_on_yugabyte(self) -> None:
+        """Flips if a count of every status within an agent (paged in the status's order) does not name
+        (agent_id, status, conversation_id) on YugabyteDB."""
+        reader = _yugabyte()
+        await counts_by(reader, _CONV, column="status", by={"agent_id": 1}, nullable=False)
+        (paged,) = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
+        assert paged.startswith("/*+ IndexOnlyScan(r o88_conv_agent_status) */ "), paged
 
 
 class TestARecorderAnswersForItsConnection:
