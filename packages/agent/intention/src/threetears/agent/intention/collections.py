@@ -205,12 +205,22 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
             ),
             # a person's every want, whatever its status (v003): find_by_user, find_similar_for_dedup
             SchemaIndex("ix_intentions_agent_user", "agent_id", "user_id"),
-            # HNSW over the embedding for the log-time dedup lookup.
+            # HNSW over the embedding for the log-time dedup lookup (839e06ae4). KEEP (coordinator, 2026-11-14, on
+            # that history reason): an owner with many open wants is read through it, a small one is sorted exactly
+            # off idx_intentions_open_ranked; a platform pool's iterative scan keeps the small owner's k rows.
             SchemaIndex(
                 "ix_intentions_embedding_hnsw",
                 "embedding",
                 using="hnsw",
                 ops={"embedding": "vector_cosine_ops"},
+                purpose=(
+                    "packages/agent/intention/src/threetears/agent/intention/collections.py"
+                    "::IntentionsCollection.find_similar_for_dedup"
+                ),
+                plan_test=(
+                    "packages/agent/intention/tests/integration/test_index_plans.py"
+                    "::test_ix_intentions_embedding_hnsw_serves_a_heavy_owners_dedup_read"
+                ),
             ),
         ),
     )
