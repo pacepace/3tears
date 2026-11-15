@@ -2717,6 +2717,11 @@
      "description": "The looks taken.",
      "minimum": 1,
      "type": "integer"
+    },
+    "plannable": {
+     "default": true,
+     "description": "Whether the campaign was created once looks were counted, so its design could have declared them. False for an earlier campaign: its stored verdicts do not move, and its looks qualify the method only.",
+     "type": "boolean"
     }
    },
    "required": [

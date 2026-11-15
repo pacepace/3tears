@@ -246,8 +246,9 @@ class EvalCampaign(DurableDocumentModel):
     )
     archived: bool = Field(default=False)
     # Written only when stamped, so a campaign created before looks were counted is stored as it was.
-    looks_rule: Literal[1] | None = Field(
+    looks_rule: int | None = Field(
         default=None,
+        ge=1,
         exclude_if=lambda value: value is None,
         description=(
             "Internal, never printed: 1 when the campaign was created once each contrast's looks were counted, so its "
