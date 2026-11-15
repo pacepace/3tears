@@ -46,7 +46,7 @@ from threetears.evals.analysis.bundle.schema import (
     FailCause,
 )
 from threetears.evals.analysis.quantities import is_money
-from threetears.evals.analysis.run_ending import RunEnding, StoppedShort, stopped_short
+from threetears.evals.analysis.run_ending import unfinished_opening
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import cannot_tell_apart, measure_name
 from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
@@ -236,59 +236,10 @@ def arm_run_statuses(bundle: AnalysisContextBundle) -> dict[str, frozenset[str]]
     }
 
 
-def bundle_stopped_short(bundle: AnalysisContextBundle) -> StoppedShort | None:
-    """Whether a reading over ``bundle`` may open with a verdict, as every page asks it: None when it may, else the
-    member runs that did not finish (:func:`~threetears.evals.analysis.run_ending.stopped_short`), each with why its
-    record says it ended (``RunSummary.ended_because``; none on a bundle assembled before that was carried).
-
-    :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
-    :return: None when every member run completed; else the unfinished runs, in the bundle's order.
-    :rtype: StoppedShort | None
-    """
-    reasons = {summary.run_id: summary.ended_because for summary in bundle.run_summaries}
-    return stopped_short(
-        RunEnding(run_id=run_id, status=status, reason=reasons.get(run_id))
-        for run_id, status in bundle.incomplete_runs.items()
-    )
-
-
-def _unfinished_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> list[str]:
-    """What stopped each unfinished run of ``bundle``, a sentence each with its closing stop, as a page opens with
-    them in place of a verdict; empty when every run completed (:func:`bundle_stopped_short`).
-
-    A run is named by its arm (``v2's run``), by its id too where the arm has several runs, and as ``The run`` where
-    the bundle reads one arm; a run the realized design places in no arm by its id.
-
-    :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
-    :param arm: Names an arm by its variant key, as every table of the report does.
-    :ptype arm: Callable[[str], str]
-    :return: The sentences.
-    :rtype: list[str]
-    """
-    short = bundle_stopped_short(bundle)
-    if short is None:
-        return []
-    design = bundle.design
-    placed = [*([design.control_arm] if design.control_arm is not None else []), *design.contrasts]
-    arm_of = {run_id: each for each in placed for run_id in each.run_ids}
-
-    def who(ending: RunEnding) -> str:
-        of = arm_of.get(ending.run_id)
-        if of is None:
-            return f"Run {ending.run_id}"
-        if len(placed) == 1 and len(of.run_ids) == 1:
-            return "The run"
-        return f"{arm(of.variant_key)}'s run{'' if len(of.run_ids) == 1 else f' {ending.run_id}'}"
-
-    return [f"{sentence.rstrip('.')}." for sentence in short.sentences(who)]
-
-
 def unfinished_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> VerdictLine | None:
     """The line a page opens with in place of a verdict where a run of ``bundle`` did not finish, or None when every
-    run completed: what stopped each run (:func:`_unfinished_sentences`), then that the readings below still count
-    its partial results, and the remedy (:meth:`~threetears.evals.analysis.run_ending.StoppedShort.pooled`). Nothing in it is a decision, so nothing is set in bold.
+    run completed (:func:`~threetears.evals.analysis.run_ending.unfinished_opening`). Nothing in it is a decision, so
+    nothing is set in bold.
 
     :param bundle: The campaign's evidence.
     :ptype bundle: AnalysisContextBundle
@@ -297,11 +248,11 @@ def unfinished_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) ->
     :return: The line, its rule ``unfinished``, or None.
     :rtype: VerdictLine | None
     """
-    short = bundle_stopped_short(bundle)
-    if short is None:
+    opening = unfinished_opening(bundle, arm)
+    if opening is None:
         return None
-    stopped = " ".join(_unfinished_sentences(bundle, arm))
-    return VerdictLine(rule="unfinished", text=f"{stopped} {short.pooled()}.", lead=stopped)
+    stopped, text = opening
+    return VerdictLine(rule="unfinished", text=text, lead=stopped)
 
 
 def measured_nothing(exclusions: Iterable[ArmExclusions], run_statuses: Iterable[str]) -> bool:
@@ -958,7 +909,6 @@ __all__ = [
     "VerdictRule",
     "arm_exclusions",
     "arm_run_statuses",
-    "bundle_stopped_short",
     "cap_words",
     "cause_short",
     "fail_words",

@@ -4,7 +4,7 @@ The owner's ruling (2026-10-28): "people might think Fanout 1 is different from 
 is capitalised where the name is made, never in prose rendering, and prose, the arms key, the options table and a
 chart's labels print the one name. Two pipelines make names, both downstream of ``arm_names``: the code-only page's
 (``_arm_names`` in ``analysis/report/aspect/common.py`` and ``_short_names`` in
-``analysis/report/aspect/scoreboard.py``) and the report input's ``Arm.name`` (``report.input_build``), which the
+``analysis/report/aspect/scoreboard.py``) and the report input's ``Arm.name`` (``report_input_build``), which the
 document's page prints through ``printed_arm_name``. Both call
 :func:`~threetears.evals.analysis.style.arm_display_name`.
 
@@ -53,7 +53,6 @@ from threetears.evals.analysis.report.build import contrast_rows
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.figure_keys import printed_arm_name, render
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
-from threetears.evals.analysis.report.words import printed_arm_labels
 from threetears.evals.analysis.report.model import Report
 from threetears.evals.analysis.report.call import every_caveat
 from threetears.evals.analysis.report.doc_page.checks import check_report_doc
@@ -69,6 +68,7 @@ from packages.evals.tests.analyst_support import fixture_inputs
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.report_doc import ReportDoc
+from threetears.evals.analysis.style import printed_arm_labels
 
 #: Each run's chunk size and retriever depth: the control first, then a candidate moving the chunk size, then one
 #: moving both.

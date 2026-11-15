@@ -82,10 +82,11 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
     TrialDetail,
 )
-from threetears.evals.analysis.report.verdict import bundle_stopped_short, unfinished_line, verdict_line
+from threetears.evals.analysis.report.verdict import unfinished_line, verdict_line
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arm_labels
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.campaign import EvalAnalysis
+from threetears.evals.analysis.run_ending import bundle_stopped_short
 
 
 def analysis_writer(analysis: EvalAnalysis) -> str:
@@ -142,7 +143,7 @@ def build_code_only_report(
         campaign's passes the campaign's tags.
     :ptype arm_tags: Mapping[str, str] | None
     :param arm_short_names: The short names the campaign's arms declare, by variant key
-        (:func:`~threetears.evals.analysis.report.words.declared_arm_names`), which a chart prints for those arms in
+        (:func:`~threetears.evals.analysis.style.declared_arm_names`), which a chart prints for those arms in
         its tight places ahead of any it would compute; None computes every arm's.
     :ptype arm_short_names: Mapping[str, str] | None
     :param writer: Who wrote the analysis of the campaign page this page is a fold of, as the methods name a writer
@@ -273,7 +274,7 @@ class AnalysisLead(NamedTuple):
     :ivar verdict: The verdict alone; over evidence with a run that did not finish, what stopped it, with no verdict
         on the aspect it stopped.
     :ivar stopped: Whether a run of the evidence did not finish
-        (:func:`~threetears.evals.analysis.report.verdict.bundle_stopped_short`), so :attr:`verdict` opens on what
+        (:func:`~threetears.evals.analysis.run_ending.bundle_stopped_short`), so :attr:`verdict` opens on what
         stopped it and the line leads with it.
     """
 

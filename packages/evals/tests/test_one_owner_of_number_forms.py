@@ -356,7 +356,7 @@ _PERMANENT: dict[tuple[str, str, str], tuple[int, str]] = {
     ("threetears/evals/analysis/report/html_parts.py", "_id_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_key_rem", "round()"): (1, _CSS_WIDTH),
     ("threetears/evals/analysis/report/html_parts.py", "_lines_rem", "round()"): (1, _CSS_WIDTH),
-    ("threetears/evals/analysis/report/input_build.py", "_level", "format_number()"): (1, _SNAPSHOT),
+    ("threetears/evals/analysis/report_input_build.py", "_level", "format_number()"): (1, _SNAPSHOT),
     ("threetears/evals/analysis/report/keys/prices.py", "_unanswered_figure", "group_thousands()"): (
         1,
         _UNANSWERED_COUNT,

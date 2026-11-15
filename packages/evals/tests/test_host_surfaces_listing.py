@@ -54,18 +54,18 @@ from threetears.evals.analysis.report.figure_keys import render, written_arm
 from threetears.evals.analysis.report.words import (
     campaign_arm_tags,
     input_arm_tags,
-    printed_arm_labels,
     reader_arm_labels,
     reader_arm_name,
     told_apart,
 )
 from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.doc_page.store import read_report_doc
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.ops import CampaignDefinition, CampaignLine, campaign_create, campaigns_list, report_read
 from threetears.evals.ops.analysis import analyses_list
+from threetears.evals.analysis.style import printed_arm_labels
 
 #: The stored campaign whose report ``analysis_generate`` wrote: the hot path oracle's ``toyhost_doc`` capture.
 _CAPTURE = Path(__file__).parent / "fixtures" / "hot_path_oracle" / "inputs" / "toyhost_doc.json"

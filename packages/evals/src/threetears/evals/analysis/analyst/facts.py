@@ -83,7 +83,7 @@ from threetears.evals.analysis.report_input import (
     RunRig,
     Stat,
 )
-from threetears.evals.analysis.report.input_build import EXAMPLE_EXCERPT_CHARS
+from threetears.evals.analysis.report_input_build import EXAMPLE_EXCERPT_CHARS
 from threetears.evals.analysis.report_margins import criterion_aspect, lead_aspect, on_aspect
 from threetears.evals.kernel.errors import RefusedInput
 

@@ -65,9 +65,9 @@ from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.doc_page.markdown import doc_page_markdown
 from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.model import DisclosureBlock
-from threetears.evals.analysis.report.verdict import bundle_stopped_short, verdict_line
+from threetears.evals.analysis.report.verdict import verdict_line
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.run_ending import RunEnding, stopped_short
 from threetears.evals.kernel.campaign import EvalCampaign
@@ -78,6 +78,7 @@ from threetears.evals.providers.failures import error_from_response
 from threetears.evals.quick import EXIT_OK, run_cli
 from threetears.evals.kernel.report_doc import ReportDoc
 from threetears.evals.schema.models import RUN_STATUSES
+from threetears.evals.analysis.run_ending import bundle_stopped_short
 
 #: Every way a run ends short, with how each reads after the run's name: every status but ``completed``. A run
 #: interrupted and never taken up again is still ``running`` when it is read.

@@ -74,7 +74,7 @@ from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
-from threetears.evals.analysis.report.verdict import unfinished_line
+from threetears.evals.analysis.run_ending import unfinished_opening
 from threetears.evals.analysis.report_input import (
     SHARE_UNIT,
     ANALYST_ASPECT_FIELDS,
@@ -113,10 +113,16 @@ from threetears.evals.analysis.report_input import (
     Stratum,
     Unanswered,
 )
-from threetears.evals.analysis.report.words import declared_arm_names, printed_arm_labels, trial_dimension
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
-from threetears.evals.analysis.report.campaign.names import measure_name_of
-from threetears.evals.analysis.style import check_held, declared_check_name, measure_name
+from threetears.evals.analysis.style import (
+    check_held,
+    declared_arm_names,
+    declared_check_name,
+    measure_name,
+    measure_name_of,
+    printed_arm_labels,
+    trial_dimension,
+)
 from threetears.evals.kernel.campaign import VariantIndexEntry
 from threetears.evals.kernel.host.bars import PassCriterion, pass_threshold_label
 from threetears.evals.kernel.host.sweepables import CANDIDATE_MODEL_LEVER
@@ -1070,9 +1076,9 @@ class _Builder:
         # where the campaign reads several.
         several = len(self.ordered) > 1
         unfinished = [
-            f"On {aspect.aspect}: {line.text}" if several else line.text
+            f"On {aspect.aspect}: {opening[1]}" if several else opening[1]
             for aspect in self.ordered
-            if (line := unfinished_line(aspect, self.arm)) is not None
+            if (opening := unfinished_opening(aspect, self.arm)) is not None
         ]
         return Caveats(
             late_criteria=[

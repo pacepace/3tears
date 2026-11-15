@@ -137,7 +137,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/remainder.py": {},
     "analysis/revisions.py": {},
     "analysis/report/__init__.py": {},
-    "analysis/report/input_build.py": {},
+    "analysis/report_input_build.py": {},
     "analysis/report/call.py": {},
     "analysis/report/gates.py": {},
     "analysis/report/rows.py": {},

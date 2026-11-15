@@ -97,7 +97,6 @@ from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.analysis.report.aspect.contrasts import aspect_verdict, contrast_rows, report_cell_labels
 from threetears.evals.analysis.report.build import build_code_only_report_in_forms
-from threetears.evals.analysis.report.campaign.names import measure_name_of
 from threetears.evals.analysis.report.verdict import VerdictLine
 from threetears.evals.analysis.style import arm_display_name, arm_name
 from threetears.evals.analysis.report.words import campaign_arm_tags, judged_heading, stratum_names
@@ -105,6 +104,7 @@ from threetears.evals.quick.graders import UNUSABLE_ANSWER, expected_label, pred
 from threetears.evals.quick.judged import Judge, JudgeExamples
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
 from threetears.evals.run import get_result_trace, list_results
+from threetears.evals.analysis.style import measure_name_of
 
 #: Who an eval's campaign and its control are recorded as created by, unless the caller says.
 CREATED_BY = "eval"
@@ -714,7 +714,7 @@ class Result:
         return _aspect_forms(self.page, self.report.bundle)
 
     def _printed_name(self, measure: str) -> str:
-        """A measure as the page names it (:func:`~threetears.evals.analysis.report.campaign.names.measure_name_of`):
+        """A measure as the page names it (:func:`~threetears.evals.analysis.style.measure_name_of`):
         ``Accuracy``, ``Number score``. The classifier's ``match`` is its accuracy, which the page leads on, so it is
         named as the page names that."""
         key = ACCURACY_MEASURE if measure == MATCH_MEASURE and self._classifier is not None else measure

@@ -11,7 +11,7 @@ campaign bundle ──adapter──▶ report input ──analyst──▶ repor
   (pipeline)                 schema/report-input       schema/report-doc          kit/ + references/
 ```
 
-- **Adapter** (code). Copies statistics through and never recomputes one the pipeline produced. The package's port is `report.input_build.report_input`; `adapters/bundle_to_report.py` is the kit's working example.
+- **Adapter** (code). Copies statistics through and never recomputes one the pipeline produced. The package's port is `report_input_build.report_input`; `adapters/bundle_to_report.py` is the kit's working example.
 - **Analyst** (a model with tools, ANALYST.md). Investigates a frozen snapshot of the report input and writes the report document: the call, the confidence, the decision slots, the claims and their blocks, and every sentence of prose. Prose names figures by key, never by typed number (§6.2). The editor reviews the rendered page before it is stored.
 - **Renderer** (code). Draws the document with the kit. It owns layout, typography, chart geometry, color, responsiveness and accessibility. The analyst never writes markup.
 
