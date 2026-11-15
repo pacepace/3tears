@@ -232,6 +232,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     "schema/subject.py",
     "schema/external_spend.py",
     "schema/traces.py",
+    "schema/call_inputs.py",
     # Which stored documents are kept and how an old one is upgraded: the engine's own version policy.
     "schema/versioning.py",
     "analysis/bundle/assemble.py",

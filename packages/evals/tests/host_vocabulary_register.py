@@ -302,6 +302,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "kernel/host/sweepables.py": {},
     "kernel/host/timeouts.py": {},
     "schema/traces.py": {},
+    "schema/call_inputs.py": {},
     "schema/values.py": {},
     "kernel/host/world.py": {},
     "kernel/host/world_conformance.py": {},

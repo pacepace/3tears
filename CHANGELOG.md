@@ -108,6 +108,61 @@ definitions stays unrecorded, and says so as it is taken up (a WARNING).
   when unset) names the run a class is alone to. A host that called `runs_attest_definitions` on an unreleased build
   calls `runs_attest` with `coordinate: "measure_definition"`.
 
+### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
+
+**Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer
+moves any recorded judge call. A judge call over evidence that names its inputs is keyed by them in place of its
+prompt (recording format 4): the page's stored document digest, the snapshot it was written over and its open
+findings' digest, for a pair both pages in the order shown, beside the criterion asked (its system prompt's digest),
+the template's intent, the case's variation, the goal outcomes shown, the reply format, model, temperature and
+settings. The components and why each moves only when what is asked moves are a table in
+`testing/recorded_completions.py`. A replay of such a call checks the plumbing and the arithmetic; judging today's
+page is the paid lane's job.
+
+**Changed:** a replay miss of such a call names its inputs and each one that differs from the nearest recorded call,
+by its path (`the inputs differ at evidence.pair[0].document (asked sha256:..., recorded sha256:...)`), and the run
+fails at the miss, as since #1162.
+
+**Changed:** rung 5's `judge.jsonl` is re-keyed in place, for $0 and with no call made again
+(`packages/evals/scripts/rekey_judge_recording.py`): 112 lines before and after, each changing only its `key`, its
+`recorder_version` (3 to 4) and the `inputs` and `prompt_key` (its old key) it gains. Every replayed response, share
+and score is as it was.
+
+**Added:** a format-4 line keyed by its inputs keeps `prompt_key`, the key its prompt had. A replay serves such a call
+whatever its prompt says now, and counts each one served over a prompt that has changed since
+(`RecordedCompletions.served_over_changed_prompts`, `Model.served_over_changed_prompts`). A writer eval says the count
+among its disclosures: `judge: N call(s) replayed over a page rendered otherwise since it was recorded`.
+
+**For hosts:** nothing to do. A recording made before format 4 still replays: a call naming its inputs that no line
+holds under them is served by its prompt, as before. Your own kinds' evidence names no inputs unless you set
+`JudgeEvidence.inputs` (new, optional, core v15.20 and durable v17.1, left out of the stored document while unset), and their calls are
+keyed by their prompts as they were. Setting it adds no fingerprint input: `fingerprint_judged_output` hashes the
+evidence's three strings alone. Recording keys are over inputs (what was asked) and label keys over what was read, so
+a label does not carry across a re-render. Set `inputs` so that, with the package's rendering code, they determine all
+three strings; anything else that can change them belongs in `inputs`.
+
+### evals: every declared name has a kind, each kind its ceiling, and the surface page and an agent's first read are generated
+
+**Added:** the tier map the wheel ships (`threetears/evals/surface_tiers.json`) gains `kinds`: each of the 503 declared
+names is exactly one of `typed` (a newcomer writes it in an eval file, 14: the 11 the ladder's rungs import, and
+`Answer`, `Log` and `quick.measure`, which no rung teaches), `bound` (a host implements it or hands it to the engine,
+107), `invoked` (an operation called by name, 117, of which 37 are helpers an owner may demote), `received` (a value
+someone is handed and reads, 249) or `tests` (a host's test kit, 16). `surface_tier` and `declared_names` read the
+map as before.
+
+**Changed:** the one ceiling on the declared surface is replaced by a ceiling per kind, each its budget or today's
+count where that is over it, and held there: `typed` 25 (2 names for a first eval against a budget of 8, 5 through
+rung 3 against 12), `bound` 107 (budget 100), `invoked` 117 (budget 110), `tests` 16, and no total for `received`,
+whose every shape must be reached from a name a reader meets first.
+
+**Changed:** `docs/surface.md` is generated (`scripts/generate_surface.py`): the names a first eval needs and what
+each rung adds, then the host's contract, the operations, the action catalogue, a host's test kits, the shapes by
+concept, the reading states with each reason's remedy, the findings, and last the counts.
+
+**Added:** `llms.txt`, at the package's root and in the wheel as `threetears/evals/llms.txt`: what an AI agent adopting
+the package reads first (what it is, the first example whole, how to fetch and run the examples, that they replay for
+free and how to record live, how to read what comes back, where a later task's names are, the actions), generated from
+the same kinds.
 
 ### evals: one closed set of reading states, one caveat entry and one first-screen value, all unset
 

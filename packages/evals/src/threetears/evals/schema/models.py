@@ -1030,14 +1030,18 @@ def fingerprint_judged_output(evidence: JudgeEvidence) -> str:
     nothing is normalised), which is what "byte-identical judged output" means here. The scenario's intent,
     variation and goal-state outcomes, which the engine places beside the evidence in a judge prompt, are the
     case's context rather than the output and are not part of it; nor is the judge's prompt, which is the
-    judge's, not the output's.
+    judge's, not the output's. Nor is the evidence's ``inputs``, which names what the strings were rendered from
+    for a replay's key and is not what was read, so a fingerprint is what it was before the field existed.
+    Recording keys are over the inputs (what was asked) and label keys over what was read, so a label does not
+    carry across a re-render: a page reworded is another judged output, and a label pairs with exactly what its
+    labeller read.
 
     :param evidence: What the judge reads, as stored on the cell's trace (or frozen on a judge case).
     :ptype evidence: JudgeEvidence
     :return: A 64-character sha256 hex digest, domain-separated from every other digest the package takes.
     :rtype: str
     """
-    return canonical_digest({"judged_output": evidence.model_dump(mode="json")})
+    return canonical_digest({"judged_output": evidence.model_dump(mode="json", exclude={"inputs"})})
 
 
 def fingerprint_criterion(dim: RubricDim | str) -> str:
@@ -5892,6 +5896,19 @@ class JudgeEvidence(CoreShapeModel):
     artifact: str = Field(min_length=1)
     """The candidate's output as the judge should read it: a document, or a conversation's
     transcript in whatever form the kind renders turns, tool calls and their results."""
+
+    inputs: VerbatimJsonObject | None = Field(default=None, exclude_if=lambda value: value is None)
+    """What the three strings were rendered from, as structured values, where the kind renders them from inputs it
+    can name: the report writer's page names its stored document's digest, the content-derived snapshot id it was
+    written over and its open findings' digest. ``None`` (left out of the document) where the strings are the
+    input themselves, as a conversation's transcript is.
+
+    A recorded judge call over evidence that names its inputs is keyed by them instead of by its prompt
+    (:class:`~threetears.evals.testing.RecordedCompletions`), so a word the package prints differently on the page
+    moves no recording. These inputs, together with the package's own rendering code, must determine all three
+    strings: anything else that can change them belongs in ``inputs``, or a changed question replays a stale answer.
+    It is in no fingerprint: :func:`fingerprint_judged_output` hashes the three strings alone. Recording keys are over
+    the inputs (what was asked) and label keys over what was read, so a label does not carry across a re-render."""
 
 
 def eval_trace_doc_id(result_id: str) -> str:
