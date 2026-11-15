@@ -2230,12 +2230,73 @@ def _call_of(module: _Module, use: ast.expr, methods: frozenset[str] = frozenset
         read = _status_reading(module, awaited)
         if isinstance(read, str):
             return read
-    if call.keywords:
-        return "keyword arguments to the call (timeout=, ...)"
+    unsent = _unsent_options(module, call)
+    if unsent is not None:
+        return unsent
     spread = _call_arguments(module, call)
     if isinstance(spread, str):
         return spread
     return call
+
+
+#: the keyword arguments a statement call may carry that route or bound the statement, not what its rows are: a
+#: proxy's ``namespace=`` / ``customer_scope=``, a driver's ``timeout=``. The helper reads through
+#: ``with_options(conn, ...)`` (:func:`threetears.core.keyed.with_options`), so every statement it sends carries them
+#: as the hand-written one did. Any other keyword (``record_class=``, which changes the rows) is refused.
+_OPTION_KEYWORDS: Final[frozenset[str]] = frozenset({"namespace", "customer_scope", "timeout"})
+
+
+def _unsent_options(module: _Module, call: ast.Call) -> str | None:
+    """why ``call``'s keyword arguments cannot ride ``with_options``, or None when they can (or there are none): each
+    is an option (:data:`_OPTION_KEYWORDS`), or a ``**name`` spread whose every binding in the function is a dict
+    literal (or a conditional between dict literals) of option keys alone."""
+    for option in call.keywords:
+        if option.arg is not None:
+            if option.arg not in _OPTION_KEYWORDS:
+                return f"keyword arguments to the call ({option.arg}=): not an option every statement can carry"
+            continue
+        scope = module.scope(call)
+        if not (isinstance(option.value, ast.Name) and isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef)):
+            return "keyword arguments to the call (** of an expression)"
+        name = option.value.id
+        bindings = [
+            node
+            for node in ast.walk(scope)
+            if isinstance(node, ast.Assign | ast.AnnAssign)
+            and any(isinstance(target, ast.Name) and target.id == name for target in _targets(node))
+        ]
+        parameters = {arg.arg for arg in (*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs)}
+        if not bindings or name in parameters:
+            return f"keyword arguments to the call (**{name}): its options are not written in the function"
+        for binding in bindings:
+            values: list[ast.expr] = []
+            pending = [binding.value] if binding.value is not None else []
+            while pending:
+                value = pending.pop()
+                if isinstance(value, ast.IfExp):
+                    pending += [value.body, value.orelse]
+                else:
+                    values.append(value)
+            for value in values:
+                if not isinstance(value, ast.Dict) or not all(
+                    isinstance(key, ast.Constant) and key.value in _OPTION_KEYWORDS for key in value.keys
+                ):
+                    return f"keyword arguments to the call (**{name}): bound to other than a dict of options"
+    return None
+
+
+def _targets(node: ast.Assign | ast.AnnAssign) -> list[ast.expr]:
+    return list(node.targets) if isinstance(node, ast.Assign) else [node.target]
+
+
+def _receiver(module: _Module, call: ast.Call) -> str:
+    """the connection a helper reads through in ``call``'s place: the call's receiver, wrapped in
+    ``with_options(...)`` with the call's keyword arguments (checked by :func:`_unsent_options`) when it has any."""
+    receiver = module.segment(call.func.value) if isinstance(call.func, ast.Attribute) else ""
+    if not call.keywords:
+        return receiver
+    options = ", ".join(module.segment(option) for option in call.keywords)
+    return f"with_options({receiver}, {options})"
 
 
 def _call_arguments(module: _Module, call: ast.Call) -> list[ast.expr] | str:
@@ -3831,7 +3892,7 @@ def _plan_dict(
     for call in calls:
         assert isinstance(call.func, ast.Attribute) and call.end_lineno is not None and call.end_col_offset is not None
         rest = "".join(f", {module.segment(argument)}" for argument in call.args[1:])
-        text = f"{module.segment(call.args[0])}({module.segment(call.func.value)}{rest})"
+        text = f"{module.segment(call.args[0])}({_receiver(module, call)}{rest})"
         if shape.shape != "write":
             first.edits.append((call.lineno, call.col_offset, call.end_lineno, call.end_col_offset, text))
             continue
@@ -4051,7 +4112,7 @@ def _plan_choice(
             sets=[asdict(pin) for pin in getattr(one, "sets", ())],
             order=list(getattr(one, "order", ())),
         )
-        receiver = module.segment(call.func.value)
+        receiver = _receiver(module, call)
         rewrite.new_call = _render(rewrite, receiver) if shape.shape != "write" else _render_write(rewrite, receiver)
         if constant is not None:
             edits.append(_constant_edit(module, constant))
@@ -4649,7 +4710,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
             spliced: ast.expr = call
             if parsed.chain is not None and "to" in parsed.chain:
                 rewrite.helper = "read_reached"
-                rewrite.new_call = _render_reached(rewrite, module.segment(call.func.value))
+                rewrite.new_call = _render_reached(rewrite, _receiver(module, call))
             elif parsed.nearest is not None:
                 if method != "fetch":
                     refuse(f"a nearest-rows read sent by {method} (read_nearest answers its rows: a fetch only)")
@@ -4657,17 +4718,17 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                     break
                 rewrite.helper = "read_nearest"
                 rewrite.key_from = None
-                rewrite.new_call = _render_nearest(rewrite, module.segment(call.func.value))
+                rewrite.new_call = _render_nearest(rewrite, _receiver(module, call))
             elif parsed.chain is not None:
                 rewrite.helper = "read_link_chain"
                 rewrite.new_call = (
-                    f"read_link_chain({module.segment(call.func.value)}, {parsed.table!r}, key={parsed.chain['key']!r}, "
+                    f"read_link_chain({_receiver(module, call)}, {parsed.table!r}, key={parsed.chain['key']!r}, "
                     f"link={parsed.chain['link']!r}, start={rewrite.args[0]}, most={rewrite.args[1]}, "
                     f"columns={_columns_text(parsed.columns or ())})"
                 )
             elif parsed.joins:
                 rewrite.helper = "read_by_joined"
-                rewrite.new_call = _render_joined(rewrite, module.segment(call.func.value))
+                rewrite.new_call = _render_joined(rewrite, _receiver(module, call))
                 if method == "fetchrow":
                     awaited = module.parent(call)
                     if not isinstance(awaited, ast.Await):
@@ -4678,7 +4739,7 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                     spliced = awaited
             elif parsed.aggregate == "aggregate":
                 rewrite.parts = [dict(part) for part in parsed.parts]
-                rewrite.new_call, used = _render_aggregate(rewrite, module.segment(call.func.value))
+                rewrite.new_call, used = _render_aggregate(rewrite, _receiver(module, call))
                 rewrite.helper = next(name for name in _AGGREGATE_HELPERS if name in used)
                 rewrite.imports = {_HELPER_MODULE: used}
                 awaited = module.parent(call)
@@ -4686,15 +4747,15 @@ def _plan_reads(config: NoWholeReadsConfig, shape: _Shape) -> tuple[list[Rewrite
                 spliced = awaited
             elif parsed.aggregate:
                 rewrite.helper = "holds_any" if parsed.aggregate == "exists" else "aggregate_keyed"
-                rewrite.new_call = _render_count(rewrite, module.segment(call.func.value))
+                rewrite.new_call = _render_count(rewrite, _receiver(module, call))
                 awaited = module.parent(call)
                 assert isinstance(awaited, ast.Await)
                 spliced = awaited
             elif parsed.limit is None:
-                rewrite.new_call = _render(rewrite, module.segment(call.func.value))
+                rewrite.new_call = _render(rewrite, _receiver(module, call))
             else:
                 rewrite.helper = "keyset_page"
-                rewrite.new_call = _render_first(rewrite, module.segment(call.func.value))
+                rewrite.new_call = _render_first(rewrite, _receiver(module, call))
                 awaited = module.parent(call)
                 assert isinstance(awaited, ast.Await)
                 spliced = awaited
@@ -4843,7 +4904,7 @@ def plan_write_rewrites(config: NoWholeReadsConfig) -> tuple[list[Rewrite], list
                 returning=returning,
                 where=[asdict(guard) for guard in parsed.guards],
             )
-            rewrite.new_call = _render_write(rewrite, module.segment(call.func.value))
+            rewrite.new_call = _render_write(rewrite, _receiver(module, call))
             # a RETURNING write replaces the awaited call (the helper's answer is read through .rows/.row/.value)
             awaited = module.parent(call)
             assert isinstance(awaited, ast.Await)
@@ -4988,6 +5049,8 @@ def apply_rewrites(repo_root: Path, rewrites: list[Rewrite], *, ruff: str | None
                 pin["kind"] in {"any", "anylit"} for rewrite in mine for join in rewrite.joins for pin in join["pins"]
             ):
                 names.add("AnyOf")
+        if any("with_options(" in rewrite.new_call for rewrite in mine):
+            names.add("with_options")
         source = _with_import(source, names)
         for rewrite in mine:
             for imported, wanted in rewrite.imports.items():

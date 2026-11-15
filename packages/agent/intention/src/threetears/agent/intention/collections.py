@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import ClassVar, Any, cast
+from typing import Any, ClassVar, Final, cast
 from uuid import UUID
 
 from sqlalchemy import MetaData, Table
@@ -37,7 +37,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
-from threetears.core.keyed import AnyOf, Fragment, Nearest, read_nearest, update_keyed
+from threetears.core.keyed import AnyOf, Fragment, Nearest, Selected, Sort, read_by, read_nearest, update_keyed
 from threetears.observe import get_logger
 
 from threetears.agent.intention.entities import IntentionEntity
@@ -62,11 +62,22 @@ _INTENTION_VECTOR_DIM = DEFAULT_EMBEDDING_DIM
 # Explicit column list for multi-row reads: the pgvector ``embedding``
 # column is cast ``::text`` so asyncpg returns it without a registered
 # vector codec (dedup/semantic paths, added in B2, decode it explicitly).
-_INTENTIONS_SELECT_COLUMNS = (
-    "intention_id, agent_id, customer_id, user_id, status, content, "
-    "embedding::text AS embedding, salience, last_decayed_at, "
-    "last_surfaced_at, source_memory_id, source_conversation_id, "
-    "date_created, date_updated"
+#: the columns each read of whole wants selects, the embedding as its text
+_INTENTION_COLUMNS: Final = (
+    "intention_id",
+    "agent_id",
+    "customer_id",
+    "user_id",
+    "status",
+    "content",
+    Selected("t.embedding::text", "embedding"),
+    "salience",
+    "last_decayed_at",
+    "last_surfaced_at",
+    "source_memory_id",
+    "source_conversation_id",
+    "date_created",
+    "date_updated",
 )
 
 
@@ -192,6 +203,8 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
                 where="status = 'open'",
                 desc="salience",
             ),
+            # a person's every want, whatever its status (v003): find_by_user, find_similar_for_dedup
+            SchemaIndex("ix_intentions_agent_user", "agent_id", "user_id"),
             # HNSW over the embedding for the log-time dedup lookup.
             SchemaIndex(
                 "ix_intentions_embedding_hnsw",
@@ -269,12 +282,15 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         # cache-bypass: the multi-row scan by (agent_id, user_id) is not
         # primary-key addressable, so the L1 row cache would not serve it;
         # keeping it on the Collection preserves the single entry point.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_INTENTIONS_SELECT_COLUMNS} FROM intentions "
-            "WHERE agent_id = $1 AND user_id = $2 "
-            f"ORDER BY {self._salience_rank()} DESC, date_created DESC",
-            agent_id,
-            user_id,
+        # the person's rows by ix_intentions_agent_user (agent_id, user_id); no index holds the rank (see
+        # find_open_for_deliberation), so the sort is of that one person's wants
+        rows = await read_by(
+            self.l3_pool,
+            "intentions",
+            by={"agent_id": agent_id, "user_id": user_id},
+            columns=_INTENTION_COLUMNS,
+            order=self._ranked_order(),
+            records=True,
         )
         entities: list[IntentionEntity] = []
         for row in rows:
@@ -328,16 +344,15 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         # is one user's open wants, which idx_intentions_open_ranked's
         # (agent_id, user_id) prefix under status = 'open' bounds, so the sort
         # is of that small set alone.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_INTENTIONS_SELECT_COLUMNS} FROM intentions "
-            "WHERE agent_id = $1 AND user_id = $2 "
-            # the partial index's predicate as its literal ('open', IntentionStatus.OPEN), so the read states it
-            "AND status = 'open' "
-            "AND (last_surfaced_at IS NULL OR last_surfaced_at < $3) "
-            f"ORDER BY {self._salience_rank()} DESC, date_created DESC",
-            agent_id,
-            user_id,
-            cooldown_cutoff,
+        rows = await read_by(
+            self.l3_pool,
+            "intentions",
+            # the partial index's predicate (status = 'open'), pinned, so the read states it
+            by={"agent_id": agent_id, "user_id": user_id, "status": IntentionStatus.OPEN.value},
+            columns=_INTENTION_COLUMNS,
+            where=[Fragment("(t.last_surfaced_at IS NULL OR t.last_surfaced_at < $1)", (cooldown_cutoff,))],
+            order=self._ranked_order(),
+            records=True,
         )
         entities: list[IntentionEntity] = []
         for row in rows:
@@ -448,6 +463,17 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
                 by={"agent_id": agent_id, "intention_id": AnyOf(intention_ids, cast="uuid")},
             )
         return None
+
+    def _ranked_order(self) -> list[Sort]:
+        """the ranked reads' order: the salience rank (:meth:`_salience_rank`) descending, then the newest first.
+
+        :return: the sort
+        :rtype: list[Sort]
+        """
+        return [
+            Sort("salience_rank", expression=self._salience_rank(), descending=True),
+            Sort("date_created", descending=True),
+        ]
 
     def _salience_rank(self) -> str:
         """what the ranked reads order by: the stored salience, or with decay on read its rank expression.

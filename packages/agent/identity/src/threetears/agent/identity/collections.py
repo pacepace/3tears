@@ -43,7 +43,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.collections.schema_backed import (
     Index as SchemaIndex,
 )
-from threetears.core.keyed import Sort, read_by
+from threetears.core.keyed import Sort, keyset_page, read_by
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
 
@@ -58,10 +58,22 @@ log = get_logger(__name__)
 # Explicit column list for multi-row reads (single entry point + parity
 # with the migration DDL). No embedding column -- identity blocks are not
 # semantically searched.
-_IDENTITY_SELECT_COLUMNS = (
-    "version_id, agent_id, customer_id, user_id, block_key, variant, content, "
-    "rationale, content_hash, parent_version_id, status, proposer_agent_id, "
-    "consenter_user_id, date_created, date_updated"
+_IDENTITY_COLUMNS = (
+    "version_id",
+    "agent_id",
+    "customer_id",
+    "user_id",
+    "block_key",
+    "variant",
+    "content",
+    "rationale",
+    "content_hash",
+    "parent_version_id",
+    "status",
+    "proposer_agent_id",
+    "consenter_user_id",
+    "date_created",
+    "date_updated",
 )
 
 
@@ -249,20 +261,26 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
         # (single entry point). ORDER BY date_created DESC makes the read
         # deterministic even in the NULL-grain edge where the partial unique
         # index cannot enforce single-active.
-        row = await self.l3_pool.fetchrow(
-            f"SELECT {_IDENTITY_SELECT_COLUMNS} FROM identity_versions "
-            "WHERE agent_id = $1 "
-            "AND customer_id IS NOT DISTINCT FROM $2 "
-            "AND user_id IS NOT DISTINCT FROM $3 "
-            f"AND block_key = $4 AND variant = $5 AND status = '{IdentityVersionStatus.ACTIVE.value}' "
-            "ORDER BY date_created DESC",
-            agent_id,
-            customer_id,
-            user_id,
-            block_key,
-            variant,
+        # the newest active row of the block variant: the first row of a page by uq_identity_active_per_variant's
+        # pins (a None grain pinned IS NULL, as IS NOT DISTINCT FROM matched it), newest first, the key breaking a
+        # tie the hand-written ORDER BY left to the engine
+        page = await keyset_page(
+            self.l3_pool,
+            "identity_versions",
+            columns=_IDENTITY_COLUMNS,
+            by={
+                "agent_id": agent_id,
+                "customer_id": customer_id,
+                "user_id": user_id,
+                "block_key": block_key,
+                "variant": variant,
+                "status": IdentityVersionStatus.ACTIVE.value,
+            },
+            order=[Sort("date_created", descending=True), Sort("version_id", "uuid", descending=True)],
+            limit=1,
+            records=True,
         )
-        return self._row_to_entity(row) if row is not None else None
+        return self._row_to_entity(page.rows[0]) if page.rows else None
 
     async def find_versions_for_block(
         self,

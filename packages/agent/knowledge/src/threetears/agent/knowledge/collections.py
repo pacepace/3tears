@@ -21,15 +21,13 @@ are cross-table JOINs the by-pk Collection abstraction cannot express.
 
 from __future__ import annotations
 
-from threetears.core.collections.generation import WRITE_GENERATION
-
 import json
 from typing import Any
 from uuid import UUID
 
 from threetears.agent.acl import ACCESS_TABLES, three_scope_visibility_clause
+from threetears.core.collections.generation import WRITE_GENERATION
 from threetears.core.collections.scan_cache import ScanCacheKey
-from threetears.core.keyed import KeyBatch, Selected, read_keyed, with_options
 from threetears.core.collections.schema_backed import (
     BOOL_TYPE,
     DATETIMETZ_TYPE,
@@ -42,13 +40,13 @@ from threetears.core.collections.schema_backed import (
     SchemaBackedCollection,
     TableSchema,
 )
+from threetears.core.keyed import KeyBatch, Selected, Sort, read_by, read_keyed, with_options
 from threetears.knowledge import (
     ConceptSnapshot,
     EntrySnapshot,
     build_table_ref,
     derive_scope,
 )
-
 
 #: Every table the concept visibility scan reads, and every table the access decision that narrows
 #: it reads. The access tables are not optional: the visibility clause JOINs role_assignments,
@@ -485,14 +483,14 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
         """
         result: list[DraftView] = []
         if self.l3_pool is not None:
-            sql = (
-                "SELECT pe.id, pe.title, pe.body, pe.datasource_id, "
-                "pe.conversation_id, pe.turn_count "
-                "FROM playbook_entries pe "
-                "WHERE pe.user_id = $1 AND pe.status = 'draft' "
-                "ORDER BY pe.date_created ASC"
+            rows = await read_by(
+                with_options(self.l3_pool, customer_scope=customer_scope),
+                "playbook_entries",
+                by={"user_id": user_id, "status": "draft"},
+                columns=("id", "title", "body", "datasource_id", "conversation_id", "turn_count"),
+                records=True,
+                order=[Sort("date_created")],
             )
-            rows = await self.l3_pool.fetch(sql, user_id, customer_scope=customer_scope)
             for row in rows:
                 data = dict(row)
                 result.append(
@@ -742,14 +740,14 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
         """
         result: list[DraftView] = []
         if self.l3_pool is not None:
-            sql = (
-                "SELECT co.id, co.name, co.definition, co.datasource_id, "
-                "co.conversation_id, co.turn_count "
-                "FROM concepts co "
-                "WHERE co.user_id = $1 AND co.status = 'draft' "
-                "ORDER BY co.date_created ASC"
+            rows = await read_by(
+                with_options(self.l3_pool, customer_scope=customer_scope),
+                "concepts",
+                by={"user_id": user_id, "status": "draft"},
+                columns=("id", "name", "definition", "datasource_id", "conversation_id", "turn_count"),
+                records=True,
+                order=[Sort("date_created")],
             )
-            rows = await self.l3_pool.fetch(sql, user_id, customer_scope=customer_scope)
             for row in rows:
                 data = dict(row)
                 result.append(

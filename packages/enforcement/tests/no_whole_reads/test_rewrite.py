@@ -390,6 +390,52 @@ def test_a_listing_s_source_check_holds_its_order(tmp_path: Path) -> None:
         assert_source_says(tmp_path, entry)
 
 
+_OPTIONED = """
+    async def routed(conn, agent_id, name):
+        return await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id, namespace=name)
+
+
+    async def maybe_routed(conn, state, name):
+        kwargs = {} if name is None else {"namespace": name}
+        return await conn.fetch("SELECT geo_id FROM geos WHERE state = $1 ORDER BY geo_id", state, **kwargs)
+
+
+    async def typed(conn, agent_id):
+        return await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id, record_class=dict)
+
+
+    async def spread_unknown(conn, agent_id, options):
+        return await conn.fetchrow("SELECT * FROM agents WHERE id = $1", agent_id, **options)
+"""
+
+
+def test_a_statement_s_routing_keywords_ride_with_options(tmp_path: Path) -> None:
+    """Flips if a read sent with a connection's per-statement options (``namespace=``, ``timeout=``,
+    ``customer_scope=``, written out or spread from a local bound only to dicts of them) is not rewritten onto its
+    helper reading through ``with_options(conn, ...)`` (so each statement the helper sends carries them), or a keyword
+    that changes what the rows are (``record_class=``) or a spread of a dict of unknown keys is rewritten."""
+    config = _config(tmp_path)
+    (tmp_path / "src/pkg/reads.py").write_text(textwrap.dedent(_OPTIONED), encoding="utf-8")
+    points, point_refusals = plan_point_rewrites(config)
+    listings, _ = plan_list_rewrites(config)
+    assert sorted(rewrite.function for rewrite in points) == ["routed"]
+    assert sorted(rewrite.function for rewrite in listings) == ["maybe_routed"]
+    refused = {refusal.function: refusal.reason for refusal in point_refusals}
+    assert "record_class" in refused["typed"], refused
+    assert "options" in refused["spread_unknown"], refused
+    apply_rewrites(tmp_path, [*points, *listings], ruff=None)
+    source = " ".join((tmp_path / "src/pkg/reads.py").read_text(encoding="utf-8").split())
+    assert "with_options" in source.split("async def", 1)[0]
+    assert "read_row(with_options(conn, namespace=name), 'agents', by={'id': agent_id}, records=True)" in source
+    assert "read_by(with_options(conn, **kwargs), 'geos', by={'state': state}" in source
+    manifest = tmp_path / "manifest.json"
+    write_manifest(manifest, [*points, *listings])
+    for entry in json.loads(manifest.read_text(encoding="utf-8")):
+        assert_source_says(tmp_path, entry)
+    left = [f for f in use_the_helper_findings(config) if " in routed:" in f or " in maybe_routed:" in f]
+    assert not left, left
+
+
 _CLASS_CONSTANTS = """
     class Agents:
         #: an agent by its key

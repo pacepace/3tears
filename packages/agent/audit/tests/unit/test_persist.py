@@ -328,9 +328,11 @@ class _ErasureDb:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self._batches = [rows, []]
         self.updates: list[tuple[Any, ...]] = []
+        self.statements: list[str] = []
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.updates.append(args)
+        self.statements.append(sql)
         return "UPDATE 1"
 
     async def fetch(self, sql: str, *args: Any) -> list[Any]:
@@ -358,9 +360,13 @@ async def test_erasure_applies_the_platform_rule_with_nothing_injected() -> None
     result = await anonymize_audit_rows(db, actor_user_ids=[uuid.uuid4()])
 
     assert result == AuditAnonymization(rows_matched=1, rows_changed=1)
-    [(details, address, updated_id)] = db.updates
-    assert updated_id == row_id
-    assert address is None, "an address is removed"
+    # the keyed update: the anonymized details first, the row by its id, an address removed (set NULL), and the
+    # same values again in the guard that skips a row already holding them
+    [sent] = db.updates
+    [sql] = db.statements
+    details = sent[0]
+    assert row_id in sent
+    assert '"ip_address" = NULL' in sql and "203.0.113.9" not in sent, "an address is removed"
     stored = json.loads(details)
     assert stored == {"user_id": user_id, "email": ANONYMIZED_MARKER}
 

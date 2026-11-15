@@ -255,7 +255,7 @@ class TestPlaybookEntryCollectionSql:
         assert len(drafts) == 1
         assert drafts[0].target == "entry"
         assert drafts[0].turn_count == 3
-        assert "status = 'draft'" in coll.l3_pool.sql
+        assert "\"status\" = 'draft'" in coll.l3_pool.sql
 
 
 class TestConceptCollectionSql:

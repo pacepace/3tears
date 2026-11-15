@@ -172,7 +172,8 @@ class FakePool:
     async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
         sql_lower = sql.strip().lower()
 
-        if "select * from context_items" in sql_lower and "where conversation_id" in sql_lower:
+        # find_by_conversation, through read_by: (conversation_id, agent or None)
+        if sql_lower.startswith('select t.* from "context_items"') and 'order by t."date_created"' in sql_lower:
             cid = str(args[0])
             agent_id = args[1] if len(args) > 1 else None
             rows = [
@@ -183,19 +184,33 @@ class FakePool:
             rows.sort(key=lambda r: _naive(r.get("date_created", datetime.min)))
             return rows
 
-        if "select context_id from context_items" in sql_lower and "order by date_accessed asc" in sql_lower:
-            cid = str(args[0])
-            limit = int(args[1])
+        # count_results, through aggregate_keyed: (conversation_id, context_type, agent or None)
+        if sql_lower.startswith('select count(*) as "n" from "context_items"'):
+            cid, context_type = str(args[0]), args[1]
             agent_id = args[2] if len(args) > 2 else None
+            cnt = sum(
+                1
+                for r in self.rows.values()
+                if str(r["conversation_id"]) == cid
+                and r["context_type"] == context_type
+                and (agent_id is None or r.get("agent_id") == agent_id)
+            )
+            return [{"n": cnt}]
+
+        # evict_lru's pick, through keyset_page: (conversation_id, context_type, agent or None), LIMIT written in
+        if 'from "context_items"' in sql_lower and 'order by t."date_accessed" asc' in sql_lower:
+            cid, context_type = str(args[0]), args[1]
+            agent_id = args[2] if len(args) > 2 else None
+            limit = int(sql_lower.rsplit("limit", 1)[1])
             tool_results = [
                 r
                 for r in self.rows.values()
                 if str(r["conversation_id"]) == cid
-                and r["context_type"] == "tool_result"
+                and r["context_type"] == context_type
                 and (agent_id is None or r.get("agent_id") == agent_id)
             ]
-            tool_results.sort(key=lambda r: _naive(r.get("date_accessed", datetime.min)))
-            return [{"context_id": r["context_id"]} for r in tool_results[:limit]]
+            tool_results.sort(key=lambda r: (_naive(r.get("date_accessed", datetime.min)), str(r["context_id"])))
+            return [{"context_id": r["context_id"], "date_accessed": r["date_accessed"]} for r in tool_results[:limit]]
 
         return []
 
