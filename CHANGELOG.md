@@ -46,7 +46,9 @@ and why; its scoreboard row keeps what ran and was lost, its passes and failures
 model" or "read per definition"), its cost too where the answering model splits it, and it has no outcome bar. The
 report input's scoreboard row for a split arm carries no `passed` and no `failed`, and no `reply_cost_usd` where the
 answering model splits it, and a written page's `scoreboard.<arm>.failed` key is refused for it. Across aspects
-(`CampaignAggregate`, the scorecard's equal-weight row), such an arm's pass rate is withheld, naming the aspect.
+(`CampaignAggregate`, the scorecard's equal-weight row), such an arm's pass rate is withheld, naming the aspect, and
+`cheaper_on` and `dearer_on` never name an aspect where either arm was answered by more than one model. A contrast's
+figures sentence gives a split arm's side no pass count, only its mean.
 
 **Changed:** one action, `runs_attest` (`write`; `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`,
 `attestation_note?`), states a coordinate of stored runs that they did not record, and answers in one shape whichever

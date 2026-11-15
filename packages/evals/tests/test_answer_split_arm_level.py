@@ -429,3 +429,12 @@ def test_the_equal_weight_figures_withhold_the_pass_rate_of_a_control_answered_b
     held = {figures.arm_label: figures for figures in aggregate.arms}
     assert (held[_CONTROL].pass_rate.value, held[_CONTROL].pass_rate.missing) == (None, [ASPECT])
     assert held[_ALIAS].pass_rate.value is not None and held[_ALIAS].pass_rate.missing == []
+
+
+def test_the_figures_across_aspects_never_call_an_arm_answered_by_two_models_dearer_on_that_aspect() -> None:
+    """Its cost per reply there pools both models': no aspect is named where it is cheaper or dearer than the control."""
+    aggregate = _across_two_aspects(_Read([_MARCH, _JUNE], alias_costs=[0.004, 0.008])).aggregate
+
+    assert aggregate is not None
+    held = {figures.arm_label: figures for figures in aggregate.arms}
+    assert (held[_ALIAS].cheaper_on, held[_ALIAS].dearer_on) == ([], [])

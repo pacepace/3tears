@@ -1995,9 +1995,14 @@ def _cost_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float] | N
 def _cost_sides(
     bundles: Mapping[str, AnalysisContextBundle], key: str, control: str | None, *, below: bool
 ) -> list[str]:
-    """The aspects where a candidate's cost per reply is below (or above) the control's, both priced there."""
+    """The aspects where a candidate's cost per reply is below (or above) the control's, both priced there; none where
+    either was answered by more than one model there, so its cost per reply pools theirs
+    (:func:`~threetears.evals.analysis.cells.split_arms`)."""
     sides = []
     for label, bundle in bundles.items():
+        split = split_arms(bundle.cells)
+        if any("served_model" in split.get(arm, {}) for arm in (key, control or "")):
+            continue
         ours, theirs = _board(bundle, control or ""), _board(bundle, key)
         if ours is None or theirs is None or ours.reply_cost_usd is None or theirs.reply_cost_usd is None:
             continue
