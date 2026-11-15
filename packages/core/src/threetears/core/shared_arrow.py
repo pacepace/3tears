@@ -71,6 +71,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import enum
 import fcntl
 import functools
 import hashlib
@@ -82,6 +83,7 @@ import os
 import pickle
 import resource
 import threading
+import time
 import uuid
 import weakref
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
@@ -92,6 +94,23 @@ from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import Any, Final
 
+from threetears.core.eviction import (
+    BUDGET_BYTES,
+    EVICTED_AGE_SECONDS,
+    EVICTED_BYTES,
+    EVICTIONS,
+    HELD_BYTES,
+    HELD_ENTRIES,
+    HITS,
+    MISSES,
+    REFUSALS,
+    SIZING_FAILURES,
+    Declared,
+    Policy,
+    Tier,
+    declare,
+    policy_of,
+)
 from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger, remove_tree
 from threetears.observe.metrics import counter, gauge
@@ -140,6 +159,7 @@ __all__ = [
     "VersionFile",
     "column_print",
     "epochs_version",
+    "fell_back_to_serving",
     "file_tokens",
     "merge_parts",
     "merged_rows",
@@ -185,8 +205,69 @@ _HANDOFF_COLUMN_BYTES: Final = 512
 #: writer holds an exclusive one on
 _LOCK_FILE: Final = ".lock"
 
+#: the file in each version's directory a reader that keeps the version mapped only for its next read (an idle
+#: worker, :class:`_KeptVersions`) holds a shared ``flock`` on in place of :data:`_LOCK_FILE`: what tells a sweep the
+#: version is held only as a cache, which the store may let go when it is short of room. Its modification time is the
+#: version's last use (each lease and each kept mapping stamps it), the order eviction takes them in
+_CACHED_FILE: Final = ".cached"
+
+#: the file in each version's directory the store holds an exclusive ``flock`` on while the version may stay cached;
+#: each reader keeping it mapped runs a thread waiting for a shared lock on it, and lets the mapping go when it gets
+#: one: the store's eviction is closing its lock (:meth:`SharedArrowStore._evict_one`)
+_REVOKE_FILE: Final = ".revoke"
+
 #: the file in the versions directory naming the current version
 _CURRENT_FILE: Final = "CURRENT"
+
+
+class _Entry(enum.StrEnum):
+    """each kind of entry a store holds, by what it is doing: what its eviction policy is declared for
+    (:data:`_EVICTION`)."""
+
+    CURRENT_VERSION = "current_version"
+    VERSION_BEING_PUBLISHED = "version_being_published"
+    VERSION_IN_USE = "version_in_use"
+    VERSION_CACHED = "version_cached"
+    VERSION_UNHELD = "version_unheld"
+    PART_FILE = "part_file"
+    OPEN_SLOT = "open_slot"
+    CLAIMED_RESULT = "claimed_result"
+    UNCLAIMED_RESULT = "unclaimed_result"
+    HANDOFF = "handoff"
+    STAGING = "staging"
+
+
+#: every kind of entry's eviction policy, in the one vocabulary of the cache tiers (``threetears.core.eviction``;
+#: Pace, 2026-11-15: eviction depends on what an entry is doing, and there is no default, as with the L1). Declared as
+#: the module is imported (:func:`~threetears.core.eviction.declare`): a kind with no policy here fails the import,
+#: never taken as KEEP; ``test_shared_arrow_eviction`` lists every kind and its policy (``declared(Tier.SHARED)``).
+#: The store evicts only kinds declared EVICTABLE.
+_EVICTION: Final[Mapping[_Entry, Declared]] = MappingProxyType(
+    {
+        _Entry.CURRENT_VERSION: Declared(
+            Policy.KEEP, "readers resolve CURRENT to it; every new lease and job reads it"
+        ),
+        _Entry.VERSION_BEING_PUBLISHED: Declared(Policy.KEEP, "its writer is mid-publish; it becomes current next"),
+        _Entry.VERSION_IN_USE: Declared(Policy.KEEP, "a lease or a read holds it, and reads it as complete"),
+        _Entry.VERSION_CACHED: Declared(
+            Policy.EVICTABLE, "superseded, held only by idle workers to save remapping their next read: a miss refills"
+        ),
+        _Entry.VERSION_UNHELD: Declared(
+            Policy.EVICTABLE, "superseded and nobody holds it: retired at once by the sweep"
+        ),
+        _Entry.PART_FILE: Declared(Policy.KEEP, "it goes with the last version naming it, never on its own"),
+        _Entry.OPEN_SLOT: Declared(Policy.KEEP, "a worker is writing a result into it, and its owner will claim it"),
+        _Entry.CLAIMED_RESULT: Declared(
+            Policy.KEEP, "its owner maps it, and tables taken from it are read as complete"
+        ),
+        _Entry.UNCLAIMED_RESULT: Declared(
+            Policy.KEEP, "a slot owns it until claimed or discarded; a discard removes it"
+        ),
+        _Entry.HANDOFF: Declared(Policy.KEEP, "a worker maps it as its job's complete input until it is released"),
+        _Entry.STAGING: Declared(Policy.KEEP, "a writer is writing it; a dead writer's is swept, never evicted"),
+    }
+)
+declare(Tier.SHARED, _Entry, _EVICTION)
 
 #: the prefix of a version or a result being written, and of a directory being removed
 _STAGING_PREFIX: Final = ".staging-"
@@ -305,19 +386,31 @@ class SharedArrowFullError(RuntimeError):
     kept."""
 
 
-def _locked(path: Path, operation: int) -> int | None:
+def _locked(path: Path, operation: int, lock_file: str = _LOCK_FILE, *, verify: bool = True) -> int | None:
     """an open descriptor on ``path``'s lock file holding ``operation`` (``LOCK_SH`` or ``LOCK_EX``, never waiting),
     or None when another holder's lock refuses it or the directory is gone.
+
+    A lock taken on a file whose directory was renamed out of its name meanwhile is let go and None returned: a
+    retirement takes the exclusive lock, renames the directory and lets go, so a reader that opened the file before
+    the rename and locks it after holds a lock on a directory being removed. Checked by the file's identity under its
+    name, after the lock, so a reader racing a retirement or an eviction from another process gets the directory
+    whole or a clean miss, never a part of it. A caller that cannot race one (it holds another lock on the directory,
+    or takes this under the store's ``_state``, which every retirement takes) skips the check (``verify=False``): two
+    syscalls, about 6 us of a lease's 60 on macOS (2026-11-15).
 
     :param path: the directory
     :ptype path: Path
     :param operation: ``fcntl.LOCK_SH`` or ``fcntl.LOCK_EX``
     :ptype operation: int
+    :param lock_file: the lock file's name in the directory
+    :ptype lock_file: str
+    :param verify: check the locked file still has its name (a shared lock that may race a retirement)
+    :ptype verify: bool
     :return: the descriptor, or None
     :rtype: int | None
     """
     try:
-        descriptor = os.open(path / _LOCK_FILE, os.O_RDONLY)
+        descriptor = os.open(path / lock_file, os.O_RDONLY)
     except FileNotFoundError:
         # NOSILENT: the directory is gone (retired, or never written whole): the caller says what that means
         return None
@@ -325,6 +418,18 @@ def _locked(path: Path, operation: int) -> int | None:
         fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
     except BlockingIOError:
         # NOSILENT: another holder's lock refuses it, which is the answer the caller asked for
+        os.close(descriptor)
+        return None
+    if not verify or operation == fcntl.LOCK_EX:
+        # an exclusive lock is taken only by this process's store, which alone renames its directories
+        return descriptor
+    try:
+        named = os.stat(path / lock_file)
+    except FileNotFoundError:
+        # NOSILENT: renamed out of its name between the open and the lock: a miss, as if it were gone
+        named = None
+    held = os.fstat(descriptor)
+    if named is None or (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino):
         os.close(descriptor)
         return None
     return descriptor
@@ -364,26 +469,39 @@ def _retire(path: Path, gone: list[tuple[Path, Path]]) -> None:
         gone.append((path, renamed))
 
 
-def _retire_unless_held(entry: Path, gone: list[tuple[Path, Path]]) -> bool:
+def _retire_unless_held(entry: Path, gone: list[tuple[Path, Path]]) -> str | None:
     """retire a directory (into ``gone``) unless a reader holds its shared lock: a version a lease or a worker reads,
-    a hand-off a worker maps. A directory with no lock file is no reader's and goes.
+    a hand-off a worker maps; or, for a version, a reader keeps it mapped for its next read (:data:`_CACHED_FILE`). A
+    directory with no lock file is no reader's and goes.
+
+    The two locks are taken in the order a reader moves between them the other way (a kept mapping takes the cached
+    lock before it lets the read lock go, and the read lock before it lets the cached one go), so a reader moving
+    between them is always seen holding one.
 
     :param entry: the directory
     :ptype entry: Path
     :param gone: what to remove (:func:`_retire`)
     :ptype gone: list[tuple[Path, Path]]
-    :return: whether it was retired
-    :rtype: bool
+    :return: None when it was retired; ``"read"`` when a reader holds it, ``"cached"`` when it is held only by
+        readers keeping it for their next read
+    :rtype: str | None
     """
     descriptor = _locked(entry, fcntl.LOCK_EX)
     if descriptor is None and (entry / _LOCK_FILE).is_file():
-        return False  # a reader holds it
+        return "read"
     try:
-        _retire(entry, gone)
+        cached = _locked(entry, fcntl.LOCK_EX, _CACHED_FILE)
+        if cached is None and (entry / _CACHED_FILE).is_file():
+            return "cached"
+        try:
+            _retire(entry, gone)
+        finally:
+            if cached is not None:
+                os.close(cached)
     finally:
         if descriptor is not None:
             os.close(descriptor)
-    return True
+    return None
 
 
 def _directory_files(path: Path) -> dict[tuple[int, int], int]:
@@ -456,6 +574,8 @@ class _HeldFiles:
         self._listed: set[Path] = set()
         self._bytes = 0
         self.view: tuple[int, tuple[str, ...], int] = (0, (), 0)
+        #: told the bytes held at each change (the store's held-bytes gauge); None for nobody
+        self.on_view: Callable[[int], object] | None = None
 
     @property
     def bytes(self) -> int:
@@ -600,6 +720,8 @@ class _HeldFiles:
         versions = tuple(sorted(path.name for path in self._listed if path.parent == self._versions))
         handoffs = sum(1 for path in self._listed if path.parent == self._handoffs)
         self.view = (self._bytes, versions, handoffs)
+        if self.on_view is not None:
+            self.on_view(self._bytes)
 
 
 def _table_of(file_name: str) -> str | None:
@@ -658,7 +780,7 @@ def _write_file(
     room: Callable[[], int],
     *,
     what: str,
-    reclaim: Callable[[], object] | None = None,
+    reclaim: Callable[[Callable[[], bool]], object] | None = None,
     full: Callable[[Path, int, str], Path] | None = None,
 ) -> os.stat_result:
     """write one uncompressed Arrow IPC file, refusing a batch that would pass ``room`` (asked before each batch: a
@@ -674,9 +796,10 @@ def _write_file(
     :ptype room: Callable[[], int]
     :param what: what it holds, for an error
     :ptype what: str
-    :param reclaim: called once when a batch would pass ``room``, before the batch is refused (a sweep: what a publish
-        left to the store's thread may not have gone yet); None to refuse at once
-    :ptype reclaim: Callable[[], object] | None
+    :param reclaim: called once when a batch would pass ``room``, before the batch is refused, with what says whether
+        the batch fits now (a sweep: what a publish left to the store's thread may not have gone yet; then what the
+        store holds only cached, let go until it fits); None to refuse at once
+    :ptype reclaim: Callable[[Callable[[], bool]], object] | None
     :param full: called when a batch would still pass ``room``, with the file's path, the bytes it would then hold
         and ``what``: it moves the open file where it has more room (a slot's next piece) and returns its new path,
         or raises; None to refuse at once
@@ -693,7 +816,7 @@ def _write_file(
                 raise ValueError(f"{what}: a batch's columns are not the table's ({batch.schema} vs {schema})")
             if sink.tell() + batch.nbytes > room():
                 if reclaim is not None:
-                    reclaim()
+                    reclaim(lambda: sink.tell() + batch.nbytes <= room())
                 while sink.tell() + batch.nbytes > room():
                     if full is None:
                         raise SharedArrowFullError(f"{what} would pass the bytes it may take")
@@ -1248,7 +1371,7 @@ def _write_parts(
     tables: Mapping[str, Any],
     base: _Manifest | None,
     room: Callable[[], int],
-    reclaim: Callable[[], object],
+    reclaim: Callable[[Callable[[], bool]], object],
 ) -> tuple[_Manifest, dict[str, os.stat_result], int]:
     """write a version's new files into ``part_dir`` (made only when a file is written) and make its manifest: the
     files ``tables`` names, and every file of ``base`` they do not replace, named as the base names it.
@@ -1267,7 +1390,7 @@ def _write_parts(
     :param room: the bytes every new file together may take, now (asked before each batch)
     :ptype room: Callable[[], int]
     :param reclaim: called before a batch past ``room`` is refused (:func:`_write_file`)
-    :ptype reclaim: Callable[[], object]
+    :ptype reclaim: Callable[[Callable[[], bool]], object]
     :return: the manifest, each file written or linked into ``part_dir`` by name, and the bytes written
     :rtype: tuple[_Manifest, dict[str, os.stat_result], int]
     :raises SharedArrowFullError: when they would take more than ``room``
@@ -1484,7 +1607,11 @@ class MappedTables:
         pin: bool = False,
     ) -> None:
         self.name = name
+        self._path = path
         self._descriptor: int | None = None
+        #: the cached lock a kept mapping holds in place of the read lock while it waits for its next read
+        #: (:meth:`MappedVersion.park`)
+        self._parked: int | None = None
         if lock:
             self._descriptor = _locked(path, fcntl.LOCK_SH)
             if self._descriptor is None:
@@ -1565,9 +1692,10 @@ class MappedTables:
         for mapped in self._maps:
             mapped.close()
         self._maps = []
-        descriptor, self._descriptor = self._descriptor, None
-        if descriptor is not None:
-            os.close(descriptor)
+        for descriptor in (self._descriptor, self._parked):
+            if descriptor is not None:
+                os.close(descriptor)
+        self._descriptor = self._parked = None
 
     def _unmap(self) -> None:
         """:meth:`MappedTables.close`, for a constructor that failed part way.
@@ -1603,13 +1731,84 @@ class MappedVersion(MappedTables):
         name = _valid_name(version, "version")
         super().__init__(name, Path(root) / _VERSIONS_DIR / name, lock=True, reuse=reuse)
 
+    def park(self) -> bool:
+        """hold the version as a cache between reads: its cached lock taken, then its read lock let go. A sweep then
+        sees a version held only for a next read, which the store may evict. Its last use is not stamped here: a
+        version is parked only while current, and the store stamps it as it stops being current (:func:`_stamp_used`).
+
+        :return: whether it was parked; False when it holds no read lock, or the version has no cached lock file (one
+            written before eviction), and then it keeps its read lock as it is
+        :rtype: bool
+        """
+        if self._descriptor is None or self._parked is not None:
+            return False
+        # it holds the read lock, so the version cannot be retired between: no identity check
+        cached = _locked(self._path, fcntl.LOCK_SH, _CACHED_FILE, verify=False)
+        if cached is None:
+            return False
+        os.close(self._descriptor)
+        self._descriptor, self._parked = None, cached
+        return True
+
+    def unpark(self) -> bool:
+        """read the parked version again: its read lock taken, then its cached lock let go.
+
+        :return: whether it holds its read lock now; False when it could not be taken (the version is being retired),
+            and then it is still parked, for the caller to close
+        :rtype: bool
+        """
+        if self._parked is None:
+            return self._descriptor is not None
+        # it holds the cached lock, so the version cannot be retired between: no identity check
+        reading = _locked(self._path, fcntl.LOCK_SH, verify=False)
+        if reading is None:
+            return False
+        os.close(self._parked)
+        self._descriptor, self._parked = reading, None
+        return True
+
+
+def _stamp_used(path: Path) -> None:
+    """stamp a version's last use, the order eviction takes cached versions in (least recently used first): its
+    cached lock file's modification time, one ``utime`` (no lock, no write of the version), read only when the store
+    is short of room. Stamped as the version stops being current (every job reads the current version, so that is its
+    last use as such) and at each lease of it after, never per read: no lock and no syscall on a job's hot path.
+
+    :param path: the version's directory
+    :ptype path: Path
+    :return: nothing
+    :rtype: None
+    """
+    with contextlib.suppress(FileNotFoundError):  # NOSILENT: a version written before eviction, or retired: no order
+        os.utime(path / _CACHED_FILE)
+
 
 class _KeptVersions:
-    """a worker process's mapped version per store directory: the one it read last, kept between reads."""
+    """a worker process's mapped version per store directory: the one it read last, kept between reads as a cache the
+    store may take back.
+
+    Kept, a mapping holds its version's cached lock, not its read lock (:meth:`MappedVersion.park`), and a thread of
+    this process waits for the store to revoke it (:data:`_REVOKE_FILE`): when the store is short of room it lets the
+    least recently used cached version go, and each process keeping it closes its mapping as its thread wakes. A
+    mapping taken back for a read holds its read lock again first, so a version a job reads is never evicted.
+
+    What it costs, measured on macOS 2026-11-15 (``scratchpad/au1/bench.py``, a 50-table version, best of 7 x 2000):
+    a lease and a kept read 80 us before, 106 us now -- the six syscalls of moving between the two locks (5 us each on
+    macOS, about 1 on Linux) -- against a pool job's 325 us round trip; a lease alone 62 us before and now. The
+    alternative, telling idle from busy holders by the serving process's own leases, costs nothing per job but blocks
+    an eviction behind any reader that holds no lease, for as long as it reads.
+
+    :ivar hits: reads that found their version kept
+    :ivar misses: reads that mapped it (another version, or none, was kept)
+    """
 
     def __init__(self) -> None:
         self._kept: dict[str, MappedVersion] = {}
         self._lock = threading.Lock()
+        #: the kept mappings a thread waits to revoke, each once however often it is kept again
+        self._watched: weakref.WeakSet[MappedVersion] = weakref.WeakSet()
+        self.hits = 0
+        self.misses = 0
 
     def take(self, root: str, version: str) -> MappedVersion:
         """the kept mapping of ``version``, or a fresh one (any other kept mapping let go first).
@@ -1624,13 +1823,20 @@ class _KeptVersions:
         """
         with self._lock:
             kept = self._kept.pop(root, None)
+            if kept is not None and kept.name == version and kept.unpark():
+                self.hits += 1
+                return kept
+            self.misses += 1
         if kept is not None and kept.name != version:
             # the new version's files that are the kept one's are taken from it, never mapped again
             try:
                 return MappedVersion(root, version, reuse=kept.by_inode)
             finally:
                 kept.close()
-        return kept if kept is not None else MappedVersion(root, version)
+        if kept is not None:
+            # the same version, but its read lock could not be taken again (it is being retired)
+            kept.close()
+        return MappedVersion(root, version)
 
     def give_back(self, root: str, mapped: MappedVersion) -> None:
         """keep ``mapped`` for the next read while it is the current version; let it go otherwise.
@@ -1649,9 +1855,88 @@ class _KeptVersions:
             current = None
         with self._lock:
             keep = current == mapped.name and root not in self._kept
+            # parked and watched under the lock the revoking thread takes, so it never sees a mapping half kept;
+            # a version with no cached lock file (written before eviction) is kept holding its read lock, as before
+            if keep and mapped.park() and not self._watch(root, mapped):
+                keep = False
             if keep:
                 self._kept[root] = mapped
         if not keep:
+            mapped.close()
+
+    def counts(self) -> tuple[int, int]:
+        """the hits and misses so far.
+
+        :return: (hits, misses)
+        :rtype: tuple[int, int]
+        """
+        with self._lock:
+            return self.hits, self.misses
+
+    def _watch(self, root: str, mapped: MappedVersion) -> bool:
+        """start the thread that lets ``mapped`` go when the store revokes its version, once per mapping. Called under
+        ``_lock``.
+
+        :param root: the store's directory
+        :ptype root: str
+        :param mapped: the parked mapping
+        :ptype mapped: MappedVersion
+        :return: whether a thread watches it; False when its version has no revoke file or no thread could start, and
+            then it must not be kept (nothing would let it go)
+        :rtype: bool
+        """
+        if mapped in self._watched:
+            return True
+        try:
+            descriptor = os.open(Path(root) / _VERSIONS_DIR / mapped.name / _REVOKE_FILE, os.O_RDONLY)
+        except FileNotFoundError:
+            # NOSILENT: retired meanwhile, or written before eviction: not kept
+            return False
+        waiter = threading.Thread(
+            target=self._revoked,
+            args=(descriptor, root, weakref.ref(mapped)),
+            name="shared-arrow-kept-revoke",
+            daemon=True,
+        )
+        try:
+            waiter.start()
+        except RuntimeError as exc:
+            # NOSILENT: no thread to be had (the interpreter shutting down): the mapping is let go, not kept
+            os.close(descriptor)
+            contain(exc, log=log, what="a kept shared Arrow version's revoking thread could not start; let go")
+            return False
+        self._watched.add(mapped)
+        return True
+
+    def _revoked(self, descriptor: int, root: str, ref: weakref.ref[MappedVersion]) -> None:
+        """wait until the store revokes a kept version (lets go of its exclusive lock on the revoke file: an eviction,
+        or the version's retirement), then let its mapping go if it is still kept. The kept mapping's thread.
+
+        :param descriptor: the open revoke file
+        :ptype descriptor: int
+        :param root: the store's directory
+        :ptype root: str
+        :param ref: the mapping
+        :ptype ref: weakref.ref[MappedVersion]
+        :return: nothing
+        :rtype: None
+        """
+        try:
+            # blocks until the store lets go: the store's process dying lets go too, and every kept mapping then goes
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+        except OSError as exc:
+            contain(exc, log=log, what="a kept shared Arrow version's revoke wait failed; its mapping is let go")
+        finally:
+            os.close(descriptor)
+        mapped = ref()
+        if mapped is None:
+            return
+        with self._lock:
+            kept = self._kept.get(root) is mapped
+            if kept:
+                del self._kept[root]
+            self._watched.discard(mapped)
+        if kept:
             mapped.close()
 
 
@@ -2436,6 +2721,46 @@ class _PieceServer:
         return self._thread.is_alive()
 
 
+#: the store's tier in the cache metric family (``threetears.core.eviction``), one ``name`` per store: its budget,
+#: what it holds by policy (kept and evictable), its evictions and refusals, and its workers' hits and misses. The
+#: autosize gauges (``threetears.core.shm_autosize``) are the same family and tier: together they say whether a pod's
+#: shared memory is short of room (refusals, or evictions of what is still in use) and by how much.
+_TIER: Final = Tier.SHARED.value
+
+#: work a consumer ran in its serving process because its shared Arrow workers could not take it, by what it was
+_SERVING_FALLBACKS = counter(
+    "threetears_cache_serving_fallbacks",
+    description="work a consumer ran in its serving process because its shared-memory workers could not take it",
+    label_names=("tier", "name"),
+)
+
+
+def fell_back_to_serving(what: str) -> None:
+    """count work run in the serving process because its shared Arrow workers could not take it (no room, a dead
+    worker, the version gone): the consumer's side of the shared-memory metrics, beside the store's own refusals.
+
+    :param what: the work, a short fixed name (``"report_compute"``); never a value per request
+    :ptype what: str
+    :return: nothing
+    :rtype: None
+    """
+    _SERVING_FALLBACKS.labels(tier=_TIER, name=what).inc()
+
+
+def _close_all(descriptors: dict[str, int]) -> None:
+    """close a store's revoke locks as it is collected, so the threads waiting on them let their kept mappings go.
+
+    :param descriptors: version -> its open revoke file
+    :ptype descriptors: dict[str, int]
+    :return: nothing
+    :rtype: None
+    """
+    for descriptor in descriptors.values():
+        with contextlib.suppress(OSError):  # NOSILENT: closed already
+            os.close(descriptor)
+    descriptors.clear()
+
+
 class SharedArrowStore:
     """the serving process's shared-memory Arrow: the versions it publishes for workers to read, and the results
     workers hand back. One store per directory, in one process.
@@ -2447,13 +2772,21 @@ class SharedArrowStore:
     :ptype root: Path | str
     :param max_bytes: the most the directory may hold, every version and result together
     :ptype max_bytes: int
+    :param name: the store's name in its metrics (``store``); None for the directory's name
+    :ptype name: str | None
     """
 
-    def __init__(self, root: Path | str, *, max_bytes: int) -> None:
+    def __init__(self, root: Path | str, *, max_bytes: int, name: str | None = None) -> None:
         _require_arrow()
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
         self._root = Path(root)
+        self._name = name or self._root.name
+        self._kept_gauge = HELD_BYTES.labels(tier=_TIER, name=self._name, policy=Policy.KEEP.value)
+        self._evictable_gauge = HELD_BYTES.labels(tier=_TIER, name=self._name, policy=Policy.EVICTABLE.value)
+        self._kept_entries = HELD_ENTRIES.labels(tier=_TIER, name=self._name, policy=Policy.KEEP.value)
+        self._evictable_entries = HELD_ENTRIES.labels(tier=_TIER, name=self._name, policy=Policy.EVICTABLE.value)
+        BUDGET_BYTES.labels(tier=_TIER, name=self._name).set(max_bytes)
         self._versions = self._root / _VERSIONS_DIR
         self._parts = self._root / _PARTS_DIR
         self._segments = self._root / _SEGMENTS_DIR
@@ -2499,6 +2832,16 @@ class SharedArrowStore:
         self._refused = 0
         #: what the directories' files hold, kept by every write and removal so :meth:`status` never walks them
         self._held = _HeldFiles(self._versions, self._handoffs)
+        self._held.on_view = self._held_changed
+        #: each version's revoke lock, held exclusive while it may stay cached (:data:`_REVOKE_FILE`): closed to evict
+        #: it, and as it is retired
+        self._revokers: dict[str, int] = {}
+        weakref.finalize(self, _close_all, self._revokers)
+        #: the versions held only cached (EVICTABLE: :data:`_Entry.VERSION_CACHED`) as of the last sweep, with the bytes
+        #: each would free
+        self._evictable: dict[str, int] = {}
+        self._evictions = 0
+        self._evicted_bytes = 0
         #: the manifest of every version the directory holds under its name, by name: what a publish on it starts
         #: from, and what a sweep compares a retired version's with to find the part files no version names any more
         self._manifests: dict[str, _Manifest] = {}
@@ -2517,6 +2860,15 @@ class SharedArrowStore:
         self.sweep()
         self._sweep_parts_on_disk()
         self._adopt()
+        held = self._held.bytes
+        if held > max_bytes:
+            # what a container before this one left mapped by its still-live workers (KEEP: nothing evicts a held
+            # version) passes this store's budget: a budget set below what the pod already holds, never an eviction
+            SIZING_FAILURES.labels(tier=_TIER, name=self._name).inc()
+            log.error(
+                "shared Arrow store starts holding more than its budget: what it must keep alone passes max_bytes",
+                extra={"extra_data": {"held_bytes": held, "max_bytes": max_bytes, "store": self._name}},
+            )
 
     @property
     def published(self) -> int:
@@ -2544,6 +2896,15 @@ class SharedArrowStore:
         :rtype: int
         """
         return self._refused
+
+    @property
+    def name(self) -> str:
+        """the store's name in its metrics (``store``).
+
+        :return: the name
+        :rtype: str
+        """
+        return self._name
 
     @property
     def root(self) -> Path:
@@ -2632,6 +2993,7 @@ class SharedArrowStore:
         """
         current = self._current
         held_bytes, versions, held_handoffs = self._held.view
+        evictable = min(held_bytes, sum(self._evictable.values()))
         return {
             "current": None if current is None else current.name,
             "versions": list(versions),
@@ -2644,7 +3006,12 @@ class SharedArrowStore:
             "handoffs_held": held_handoffs,
             "handoffs_made": self._handoffs_made,
             "held_bytes": held_bytes,
+            # of held_bytes, what superseded versions held only by idle workers hold (EVICTABLE), and the rest (KEEP)
+            "evictable_bytes": evictable,
+            "kept_bytes": held_bytes - evictable,
             "max_bytes": self._max_bytes,
+            "evictions": self._evictions,
+            "evicted_bytes": self._evicted_bytes,
             "published": self._published,
             "retired": self._retired,
             "refused": self._refused,
@@ -2699,6 +3066,9 @@ class SharedArrowStore:
                 with self._state:
                     published = self._described(target)
                     self._write_current(name)
+                    if self._current is not None and self._current.name != name:
+                        # its last use as current is now: the recency an idle worker keeping it is evicted by
+                        _stamp_used(self._current.path)
                     self._current = published
                     self._published += 1
             finally:
@@ -2771,9 +3141,14 @@ class SharedArrowStore:
                 else:
                     raise LookupError(f"shared Arrow version {version!r} is not held")
             # under the state lock, which every retirement takes: the version cannot go between the check and this
-            descriptor = _locked(held.path, fcntl.LOCK_SH)
+            descriptor = _locked(held.path, fcntl.LOCK_SH, verify=False)
+            superseded = held is not self._current
         if descriptor is None:
             raise LookupError(f"shared Arrow version {held.name!r} is being retired")
+        if superseded:
+            # a lease of a superseded version is a use: one leased since another cached one's last use is evicted
+            # after it. The current version is stamped as it stops being current, never per lease (one utime each)
+            _stamp_used(held.path)
         return SharedLease(held, descriptor, on_release)
 
     def reader(
@@ -2835,14 +3210,17 @@ class SharedArrowStore:
         if max_bytes <= 0:
             raise ValueError("a slot's max_bytes must be positive")
         self.sweep()
-        slot_id: str | None = None
-        with self._state:
+
+        def reserved() -> str | None:
             if self._committed_bytes() + max_bytes > self._max_bytes:
-                self._refused += 1
-            else:
-                slot_id = f"s-{uuid.uuid7().hex}"
-                self._slots[slot_id] = max_bytes
+                return None
+            made = f"s-{uuid.uuid7().hex}"
+            self._slots[made] = max_bytes
+            return made
+
+        slot_id = self._with_room(reserved)
         if slot_id is None:
+            self._refuse()
             log.warning(
                 "shared Arrow result slot refused: it would pass the store's bytes",
                 extra={"extra_data": {"slot_bytes": max_bytes, "max_bytes": self._max_bytes}},
@@ -2875,13 +3253,18 @@ class SharedArrowStore:
         server = self._served()
         self.sweep()
         slot_id = f"s-{uuid.uuid7().hex}"
-        with self._state:
-            first = self._piece_room(piece_bytes, least)
-            if first is not None:
+
+        def reserved() -> int | None:
+            room = self._piece_room(piece_bytes, least)
+            if room is not None:
                 piece = _piece_name(slot_id, 0)
-                self._slots[piece] = first
+                self._slots[piece] = room
                 self._pieces[slot_id] = _OpenPieces(piece_bytes=piece_bytes, minimum=least, names=[piece])
+            return room
+
+        first = self._with_room(reserved)
         if first is None:
+            self._refuse()
             log.warning(
                 "shared Arrow result slot refused: no room for its first piece",
                 extra={"extra_data": {"minimum_bytes": least, "max_bytes": self._max_bytes}},
@@ -2897,8 +3280,8 @@ class SharedArrowStore:
         )
 
     def _piece_room(self, piece_bytes: int, least: int) -> int | None:
-        """the bytes a slot's next piece is reserved at: ``piece_bytes``, or the room there is when less; None, and
-        a refusal counted, when the room is under ``least``. Called under ``_state``.
+        """the bytes a slot's next piece is reserved at: ``piece_bytes``, or the room there is when less; None when the
+        room is under ``least`` (the caller evicts, then counts the refusal). Called under ``_state``.
 
         :param piece_bytes: the most a piece may take
         :ptype piece_bytes: int
@@ -2909,7 +3292,6 @@ class SharedArrowStore:
         """
         room = self._max_bytes - self._committed_bytes()
         if room < least:
-            self._refused += 1
             return None
         return min(piece_bytes, room)
 
@@ -2950,15 +3332,27 @@ class SharedArrowStore:
                 held = sum(entry.stat().st_size for entry in listing if entry.is_file() and entry.name != carried)
             self._slots[full] = held
             least = pieces.minimum
+
+        def reserved() -> int | None:
+            if self._pieces.get(slot_id) is not pieces or pieces.names[-1] != full:
+                return -1  # discarded meanwhile
             room = self._piece_room(pieces.piece_bytes, least)
-            if room is None:
-                answer: dict[str, Any] = {"refused": f"no room for a {least}-byte piece in {self._max_bytes} bytes"}
-            else:
+            if room is not None:
                 following = _piece_name(slot_id, index + 1)
                 self._slots[following] = room
                 pieces.names.append(following)
-                answer = {"piece": room}
+            return room
+
+        room = self._with_room(reserved)
+        if room == -1:
+            return {"refused": f"slot {slot_id} piece {index} is not open"}
+        answer: dict[str, Any] = (
+            {"refused": f"no room for a {least}-byte piece in {self._max_bytes} bytes"}
+            if room is None
+            else {"piece": room}
+        )
         if room is None:
+            self._refuse()
             log.warning(
                 "shared Arrow result piece refused: no room for the next piece",
                 extra={"extra_data": {"minimum_bytes": least, "max_bytes": self._max_bytes, "pieces": index + 1}},
@@ -3080,13 +3474,15 @@ class SharedArrowStore:
             raise ValueError("a hand-off's max_bytes must be positive")
         self.sweep()
         handoff_id = f"h-{uuid.uuid7().hex}"
-        with self._state:
-            room = self._committed_bytes() + bound <= self._max_bytes
-            if room:
-                self._handing[handoff_id] = bound
-            else:
-                self._refused += 1
-        if not room:
+
+        def reserved() -> bool | None:
+            if self._committed_bytes() + bound > self._max_bytes:
+                return None
+            self._handing[handoff_id] = bound
+            return True
+
+        if self._with_room(reserved) is None:
+            self._refuse()
             log.warning(
                 "shared Arrow hand-off refused: it would pass the store's bytes",
                 extra={"extra_data": {"handoff_bytes": bound, "max_bytes": self._max_bytes}},
@@ -3189,9 +3585,17 @@ class SharedArrowStore:
         """
         gone: list[tuple[Path, Path]] = []
         with self._state:
-            retired = self._sweep_versions(gone)
+            retired, cached = self._sweep_versions(gone)
+            for name in retired:
+                revoker = self._revokers.pop(name, None)
+                if revoker is not None:
+                    os.close(revoker)
             # a version's manifest leaves with the version: the files it alone named go with it
             dying = self._freed([self._manifests.pop(name) for name in retired if name in self._manifests])
+            if cached or self._evictable:
+                # nothing cached before or now (the usual sweep) changes no gauge: no work on a lease's release
+                self._evictable = {name: self._only_named(name) for name in cached}
+                self._held_changed(self._held.bytes)
             dying.extend(self._unremoved)
             self._unremoved = []
             self._sweep_segments(gone)
@@ -3412,6 +3816,10 @@ class SharedArrowStore:
             text = _manifest_text(entry)
             if text is not None:
                 self._manifests[entry.name] = _parsed_manifest(text)
+            # a version kept from an earlier process: revocable as any, once nothing of that process waits on it
+            revoker = _locked(entry, fcntl.LOCK_EX, _REVOKE_FILE)
+            if revoker is not None:
+                self._revokers[entry.name] = revoker
 
     def _sweep_parts_on_disk(self) -> None:
         """at the start, after the first sweep: remove every part file no version kept names (a publish that died
@@ -3505,16 +3913,162 @@ class SharedArrowStore:
         """
         return sum(self._slots.values()) + sum(self._handing.values())
 
-    def _sweep_versions(self, gone: list[tuple[Path, Path]]) -> list[str]:
+    def _held_changed(self, held: int) -> None:
+        """set the held gauges, kept and evictable, from what the store holds and what of it is cached. Called under
+        ``_state``.
+
+        :param held: the bytes held
+        :ptype held: int
+        :return: nothing
+        :rtype: None
+        """
+        evictable = min(held, sum(self._evictable.values()))
+        self._evictable_gauge.set(evictable)
+        self._kept_gauge.set(held - evictable)
+        # entries: each version, claimed result and hand-off the store holds, and each open slot
+        _, versions, handoffs = self._held.view
+        cached = len(self._evictable)
+        self._evictable_entries.set(cached)
+        self._kept_entries.set(max(0, len(versions) - cached) + handoffs + len(self._claimed) + len(self._slots))
+
+    def _refuse(self) -> None:
+        """count a refusal: a publish, a slot, a piece or a hand-off that did not fit with nothing cached left to let
+        go.
+
+        :return: nothing
+        :rtype: None
+        """
+        with self._state:
+            self._refused += 1
+        REFUSALS.labels(tier=_TIER, name=self._name).inc()
+
+    def _with_room[T](self, reserved: Callable[[], T | None]) -> T | None:
+        """``reserved()`` under ``_state`` -- a room check and what it reserves, in one hold -- and while it finds no
+        room, the least recently used cached version evicted and it asked again: a write is refused only when what is
+        in use alone does not fit.
+
+        :param reserved: checks the room and reserves; None when there is none
+        :ptype reserved: Callable[[], T | None]
+        :return: what it reserved; None when there was no room with nothing cached left to evict
+        :rtype: T | None
+        """
+        while True:
+            with self._state:
+                made = reserved()
+            if made is not None or not self._evict_one():
+                return made
+
+    def _evict_one(self) -> bool:
+        """let go of the cached version used longest ago: its revoke lock closed, so each idle worker keeping it maps
+        lets it go (:class:`_KeptVersions`), then, once none holds it, swept away like any version nobody holds.
+
+        Safe across processes by the locks alone: a version a lease or a read holds is never a candidate, and one a
+        lease takes after it was picked is not retired by the sweep (its read lock refuses the sweep's), so a job is
+        given a version whole; a reader of another process that races it gets it whole or a clean miss
+        (:func:`_locked`). Blocking: it waits for the keeping workers' threads to let go, each a few syscalls.
+
+        Why evict this way: a superseded version an idle worker keeps saves that worker mapping the next version's
+        files afresh (most are the kept one's, :class:`MappedVersion`'s ``reuse``) -- worth keeping while there is
+        room, worth nothing against a change refused for room (cobalt prod, 2026-11-04: every change refused from
+        14:16Z). The alternative, letting every superseded version go at once, would remap each worker's version after
+        every publish whether room was short or not.
+
+        :return: whether a cached version was let go (or tried); False when nothing is cached
+        :rtype: bool
+        """
+        with self._state:
+            picked = self._least_recent()
+            if picked is None:
+                return False
+            name, used_ns, nbytes = picked
+            revoker = self._revokers.pop(name)
+        os.close(revoker)
+        path = self._versions / name
+        try:
+            waiting = os.open(path / _CACHED_FILE, os.O_RDONLY)
+        except FileNotFoundError:
+            # NOSILENT: retired meanwhile, which is what was wanted
+            waiting = None
+        if waiting is not None:
+            try:
+                # every keeping worker's thread closes its mapping as the revoke lock goes; this waits for the last
+                fcntl.flock(waiting, fcntl.LOCK_EX)
+            finally:
+                os.close(waiting)
+        if name in self.sweep():
+            age = max(0.0, (time.time_ns() - used_ns) / 1e9)
+            with self._state:
+                self._evictions += 1
+                self._evicted_bytes += nbytes
+            EVICTIONS.labels(tier=_TIER, name=self._name).inc()
+            EVICTED_BYTES.labels(tier=_TIER, name=self._name).inc(nbytes)
+            EVICTED_AGE_SECONDS.labels(tier=_TIER, name=self._name).set(age)
+            log.info(
+                "shared Arrow cached version evicted for room",
+                extra={"extra_data": {"version": name, "bytes": nbytes, "unused_seconds": round(age, 3)}},
+            )
+        return True
+
+    def _least_recent(self) -> tuple[str, int, int] | None:
+        """the cached version used longest ago that the store may revoke: held only by idle workers as of the last
+        sweep, neither current nor being published. Its last use is its cached lock file's time
+        (:func:`_stamp_used`), read here only, when room is short. Called under ``_state``.
+
+        :return: (its name, its last use in ns, the bytes it alone holds), or None
+        :rtype: tuple[str, int, int] | None
+        """
+        if not policy_of(Tier.SHARED, _Entry.VERSION_CACHED.value).evictable:
+            return None
+        current = None if self._current is None else self._current.name
+        best: tuple[str, int, int] | None = None
+        for name, nbytes in self._evictable.items():
+            if name in (current, self._pending) or name not in self._revokers:
+                continue
+            try:
+                used = os.stat(self._versions / name / _CACHED_FILE).st_mtime_ns
+            except FileNotFoundError:
+                # NOSILENT: retired since the sweep: not a candidate
+                continue
+            if best is None or used < best[1]:
+                best = (name, used, nbytes)
+        return best
+
+    def _only_named(self, name: str) -> int:
+        """the bytes a version's eviction would free: its own directory's and the part files no other version names.
+        A table another version holds as this one does (the same mapping, untouched by the publishes between) costs
+        nothing to compare. Called under ``_state``.
+
+        :param name: the version
+        :ptype name: str
+        :return: bytes
+        :rtype: int
+        """
+        manifest = self._manifests.get(name)
+        if manifest is None:
+            return 0
+        others = [each for other, each in self._manifests.items() if other != name]
+        lines: set[str] = set()
+        for table, held in manifest.lines.items():
+            alike = [each.lines[table] for each in others if table in each.lines]
+            if any(other is held for other in alike):
+                continue
+            alone = set(held.values())
+            for other in alike:
+                alone.difference_update(other.values())
+            lines |= alone
+        return sum(_line_fields(line)[2] for line in lines) + manifest.file_bytes
+
+    def _sweep_versions(self, gone: list[tuple[Path, Path]]) -> tuple[list[str], list[str]]:
         """retire every version neither current nor held, and every leftover staging directory: each renamed out of
         its name into ``gone``, for the caller to remove once it lets go of ``_state``. Called under ``_state``.
 
         :param gone: what to remove (:func:`_retire`)
         :ptype gone: list[tuple[Path, Path]]
-        :return: the versions retired
-        :rtype: list[str]
+        :return: the versions retired, and those kept held only as a cache (by idle workers, for their next read)
+        :rtype: tuple[list[str], list[str]]
         """
         retired: list[str] = []
+        cached: list[str] = []
         current = None if self._current is None else self._current.name
         for entry in list(self._versions.iterdir()):
             name = entry.name
@@ -3529,11 +4083,14 @@ class SharedArrowStore:
             if name.startswith(_RETIRING_PREFIX):
                 gone.append((entry, entry))
                 continue
-            if not _retire_unless_held(entry, gone):
+            held = _retire_unless_held(entry, gone)
+            if held == "cached":
+                cached.append(name)
+            if held is not None:
                 continue
             if not name.startswith(_STAGING_PREFIX):
                 retired.append(name)
-        return retired
+        return retired, cached
 
     def _sweep_segments(self, gone: list[tuple[Path, Path]]) -> None:
         """retire every result no open slot or claim owns, and every staging directory whose writer is gone, into
@@ -3612,6 +4169,7 @@ class SharedArrowStore:
         staging = self._versions / staging_name
         part_dir = self._parts / uuid.uuid7().hex
         imported: Path | None = None
+        revoker: int | None = None
         with self._state:
             self._staging = staging_name
         #: what the directory holds but for open slots and hand-offs being written, as this write starts (its own
@@ -3636,11 +4194,14 @@ class SharedArrowStore:
                 handed = sum(size for each, size in self._handed_bytes.items() if each not in handed_before)
                 return int(self._max_bytes - files - claimed - handed - self._reserved_bytes())
 
-        def reclaim() -> None:
-            # what a publish left to the store's thread may not have gone yet: swept now, then counted again
+        def reclaim(fits: Callable[[], bool]) -> None:
+            # what a publish left to the store's thread may not have gone yet: swept now, then counted again; then
+            # what is only cached, least recently used first, until the write fits or nothing cached is left
             self._tell_readers()
             self.sweep()
             counted()
+            while not fits() and self._evict_one():
+                counted()
 
         counted()
         done = False
@@ -3656,15 +4217,22 @@ class SharedArrowStore:
             manifest, made, written = _write_parts(part_dir, tables, from_base, room, reclaim)
             text = manifest.joined()
             if len(text) > room() - written:
-                reclaim()
+                reclaim(lambda: len(text) <= room() - written)
                 if len(text) > room() - written:
                     raise SharedArrowFullError(f"version {name!r}'s manifest would pass the bytes it may take")
             (staging / _MANIFEST_FILE).write_text(text)
             (staging / _LOCK_FILE).touch()
+            (staging / _CACHED_FILE).touch()
+            (staging / _REVOKE_FILE).touch()
+            # held from before the version has its name: no reader can keep it mapped before the store can revoke it
+            revoker = _locked(staging, fcntl.LOCK_EX, _REVOKE_FILE)
             staged = _directory_files(staging)
             kept = {} if imported is None else self._kept_imported(manifest, imported)
             os.rename(staging, self._versions / name)
             with self._state:
+                if revoker is not None:
+                    self._revokers[name] = revoker
+                    revoker = None
                 # the publish's _pending until it is current, so no sweep retires it before it is recorded
                 self._manifests[name] = replace(manifest, file_bytes=len(text))
                 self._recorded_parts(part_dir, made)
@@ -3673,14 +4241,15 @@ class SharedArrowStore:
                 self._held.add(self._versions / name, staged)
             done = True
         except SharedArrowFullError:
-            with self._state:
-                self._refused += 1
+            self._refuse()
             log.warning(
                 "shared Arrow version refused: it would pass the store's bytes",
                 extra={"extra_data": {"version": name, "max_bytes": self._max_bytes}},
             )
             raise
         finally:
+            if revoker is not None:
+                os.close(revoker)
             # renamed into place on success, so only a failed write's staging is still here to remove
             remove_tree(staging, log=log, what="a failed version's staging directory")
             if not done:
@@ -4243,7 +4812,7 @@ def _run_job(
     job: Callable[..., Any],
     args: tuple[Any, ...],
     handed: HandedTables | None = None,
-) -> tuple[Any, BaseException | None, int, int]:
+) -> tuple[Any, BaseException | None, int, int, tuple[int, int]]:
     """a worker's job: ``job(context, *args)``, over the version leased for it, the tables handed to it, and with the
     slot reserved for it.
 
@@ -4259,11 +4828,13 @@ def _run_job(
     :ptype args: tuple[Any, ...]
     :param handed: the tables the serving process handed it; None for none
     :ptype handed: HandedTables | None
-    :return: its value; what it raised (None for nothing); this worker's private bytes after; its process id
-    :rtype: tuple[Any, BaseException | None, int, int]
+    :return: its value; what it raised (None for nothing); this worker's private bytes after; its process id; and
+        whether its version was found kept, as (hits, misses) this job added (the serving process counts them)
+    :rtype: tuple[Any, BaseException | None, int, int, tuple[int, int]]
     """
     value: Any = None
     error: BaseException | None = None
+    hits, misses = _KEPT_VERSIONS.counts()
     try:
         with contextlib.ExitStack() as held:
             tables = None if handed is None else held.enter_context(handed.mapped())
@@ -4272,7 +4843,8 @@ def _run_job(
     except Exception as exc:  # prawduct:allow prawduct/broad-except -- sent back and raised in the serving process, which handles it as the job's own failure
         contain(exc, log=log, what="a shared Arrow job failed; raised in the serving process", level="warning")
         error = _sendable(exc)
-    return value, error, private_bytes(), os.getpid()
+    after_hits, after_misses = _KEPT_VERSIONS.counts()
+    return value, error, private_bytes(), os.getpid(), (after_hits - hits, after_misses - misses)
 
 
 def _spawned() -> int:
@@ -4557,8 +5129,12 @@ class SharedArrowPool:
         try:
             # a dead worker's BrokenProcessPool is said, and its pool marked for replacing, by the future's own
             # callback (:meth:`_reap_if_broken`), before this await hears it
-            value, error, private, worker = await asyncio.wrap_future(future)
+            value, error, private, worker, (hits, misses) = await asyncio.wrap_future(future)
             self._jobs += 1
+            if hits:
+                HITS.labels(tier=_TIER, name=self._store.name).inc(hits)
+            if misses:
+                MISSES.labels(tier=_TIER, name=self._store.name).inc(misses)
             if private > self._private_bytes:
                 log.info(
                     "shared Arrow worker past its private memory; its pool is replaced",
@@ -4592,7 +5168,7 @@ class SharedArrowPool:
         tables: Mapping[str, Any] | None = None,
         tables_bytes: int | None = None,
         pieces: tuple[int, int | None] | None = None,
-    ) -> tuple[_Run, Future[tuple[Any, BaseException | None, int, int]]]:
+    ) -> tuple[_Run, Future[tuple[Any, BaseException | None, int, int, tuple[int, int]]]]:
         """lease the version, hand the tables over, reserve the slot and submit the job to the current pool, or a
         fresh one; on a thread.
 
@@ -4612,7 +5188,7 @@ class SharedArrowPool:
         :ptype pieces: tuple[int, int | None] | None
         :return: the run (its lease, hand-off and slot) and the job's future (the lease and the handed tables are released when it is
             done)
-        :rtype: tuple[_Run, Future[tuple[Any, BaseException | None, int, int]]]
+        :rtype: tuple[_Run, Future[tuple[Any, BaseException | None, int, int, tuple[int, int]]]]
         """
         lease = None if read is False else self._store.lease(None if read is True else read)
         run = _Run(self._store, lease)
