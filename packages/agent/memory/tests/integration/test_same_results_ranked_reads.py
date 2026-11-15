@@ -40,6 +40,7 @@ from .memory_same_results import (
     CUSTOMER,
     DIM,
     MEMORIES,
+    OTHER_CUSTOMER,
     PAGE,
     T0,
     USER,
@@ -73,11 +74,15 @@ def _text(kind: str, seed: Seeded) -> str:
 
 def _memory(seed: Seeded) -> Mapping[str, Any]:
     """a memory (:func:`memory_row`), also: retracted every sixth, tagged ``t1`` every third, replaced by the memory
-    before it every fourth (a live gist) or by one that is gone every eighth, dormant every fifth."""
+    before it every fourth (a live gist) or by one that is gone every eighth, dormant every fifth; and another
+    customer's at the third row, an older one near the top of every ranking (the history read checks the customer
+    beside its pins)."""
     index = seed.index
     superseded = ident("memory", 9999) if index % 8 == 7 else ident("memory", index - 1) if index % 4 == 3 else None
+    row = memory_row(seed)
     return {
-        **memory_row(seed),
+        **row,
+        "customer_id": OTHER_CUSTOMER if index == 2 else row["customer_id"],
         "content": _text("memory", seed),
         "summary": None if seed.null else f"summary {index}",
         "salience": 0.2 if index % 5 == 1 else 0.9,
