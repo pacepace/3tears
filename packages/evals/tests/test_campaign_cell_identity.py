@@ -430,8 +430,8 @@ def test_the_frontiers_cell_sentence_says_dominance_and_the_cheapest_pick_still_
     """The frontier's dominance and cost-tie tests read contestants' headline cells whatever definitions read them:
     until they keep them apart, every frontier's text says so."""
     assert PASS_HAT_K_CELL_READING.endswith(
-        "Dominance and the cheapest pick are still tested between contestants' headline cells whatever definition of "
-        "a host measure each was read under."
+        "Dominance and the cheapest pick are still tested between contestants' headline cells whichever definitions "
+        "of the host's measures read them."
     )
 
 

@@ -409,8 +409,8 @@ PASS_HAT_K_CELL_READING = (
     "and the tables and contrasts read from them, each hold one served model and one definition of each host "
     "measure: there a run answered by another model, or by one no response named, is read in a cell of its own, and "
     "a run read under another definition, or under none recorded, is under a test setup of its own and is compared "
-    "with nothing. Dominance and the cheapest pick are still tested between contestants' headline cells whatever "
-    "definition of a host measure each was read under."
+    "with nothing. Dominance and the cheapest pick are still tested between contestants' headline cells whichever "
+    "definitions of the host's measures read them."
 )
 
 #: Each reason a pass^k cell stands apart, as a reader is told it.
