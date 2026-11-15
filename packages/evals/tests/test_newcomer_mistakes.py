@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import functools
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,7 +19,10 @@ from typing import Any
 import pytest
 
 from threetears.evals import Eval, Model, World
-from threetears.evals.quick import EXIT_OK, EXIT_REFUSED
+from threetears.evals.kernel import ACCURACY_MEASURE
+from threetears.evals.ops import scope_frontier, scope_history
+from threetears.evals.quick import EXIT_OK, EXIT_REFUSED, as_host
+from threetears.evals.run import list_runs
 from threetears.evals.quick.files import main
 
 CASES = [
@@ -138,12 +141,51 @@ def test_a_field_no_answer_carries_exits_2_at_the_door_naming_the_fields_they_ca
     assert "Accuracy" not in captured.out, "no reading is printed for an eval refused as miswired"
 
 
-async def test_answers_that_are_all_none_say_to_return_the_answer() -> None:
+def test_a_runner_that_returns_nothing_is_refused_before_anything_runs() -> None:
+    """A runner whose code has no return of a value answers None on every case, whatever the product does: wiring."""
+
     def forgets_to_return(case: Mapping[str, Any]) -> None:
         case.get("text")
 
-    with pytest.raises(ValueError, match="every answer was None: return the answer from the runner"):
-        await Eval(CASES, forgets_to_return, ["label"], k=1).run(store=":memory:")
+    with pytest.raises(ValueError) as refused:
+        Eval(CASES, forgets_to_return, ["label"], k=1)
+    said = str(refused.value)
+    assert said.startswith("the runner forgets_to_return returns nothing (it has no return of a value)")
+    assert "its grader could read 'label' off none of them: return the answer from it" in said
+    with pytest.raises(ValueError, match=r"^the arm 'v2' forgets_to_return returns nothing"):
+        Eval(CASES, {"v1": _right, "v2": forgets_to_return}, ["label"], name="pair")
+
+
+def test_a_runner_that_returns_nothing_is_run_where_no_field_is_read_off_its_answer() -> None:
+    """A function grader may grade what the runner did rather than what it returned, and a field every case expects
+    absent is answered by None: neither is refused."""
+
+    def acts(case: Mapping[str, Any]) -> None:
+        case.get("text")
+
+    def did(case: Mapping[str, Any], out: Any) -> bool:
+        return out is None
+
+    Eval(CASES, acts, [did], k=1)
+    Eval([{**case, "refund": None} for case in CASES], acts, ["refund"], k=1)
+
+
+async def test_a_runner_whose_answers_are_all_none_is_scored_as_answering_nothing() -> None:
+    """A runner that returns None where the model's output never parsed is a product that answered nothing, not a
+    mis-wired eval: scored (0%), each case's answer stored as None, which is how the result says every answer was
+    absent."""
+
+    def unparsed(case: Mapping[str, Any]) -> dict[str, str] | None:
+        text = str(case["text"])
+        if text.startswith("{"):
+            return {"label": text}
+        return None
+
+    result = await Eval(CASES, unparsed, ["label"], k=1).run(store=":memory:")
+    results = result.results()
+    assert len(results) == 3
+    assert all(r.answer is None and r.outcome == "scored" and r.state == "failed" for r in results)
+    assert {m.name: m.mean for m in result.summary.measures}[ACCURACY_MEASURE] == 0.0
 
 
 async def test_answers_with_no_fields_name_the_shapes_that_have_them() -> None:
@@ -183,7 +225,8 @@ async def test_a_dataclass_answer_is_read_by_its_field_and_one_without_it_is_ref
 
 async def test_what_is_the_product_s_failure_is_still_scored() -> None:
     """An arm lacking a field the other arm's answers carry is the product failing; a field every case expects absent
-    is answered right by its absence; a field present but blank is an answer with no label. None is refused."""
+    is answered right by its absence; a field present but blank is an answer with no label, scored 0%. None is
+    refused."""
 
     def carries(case: Mapping[str, Any]) -> dict[str, str]:
         return {"label": _right(case)}
@@ -206,7 +249,75 @@ async def test_what_is_the_product_s_failure_is_still_scored() -> None:
     def blank(case: Mapping[str, Any]) -> dict[str, str]:
         return {"label": " "}
 
-    await Eval(CASES, blank, ["label"], k=1).run(store=":memory:")
+    blanks = await Eval(CASES, blank, ["label"], k=1).run(store=":memory:")
+    assert blanks.summary.n_scored == 3
+    assert all(cell.predicted != cell.expected for cell in blanks.summary.confusion)
+    assert {m.name: m.mean for m in blanks.summary.measures}[ACCURACY_MEASURE] == 0.0
+
+
+def _accuracy(result: Any) -> float:
+    return float({m.name: m.mean for m in result.summary.measures}[ACCURACY_MEASURE])
+
+
+async def test_one_arm_whose_answers_carry_the_field_and_are_all_wrong_scores_0_percent() -> None:
+    """The product's failure is scored as before: a single arm, every answer carrying the field and every one wrong,
+    reads 0%; so does a runner answering free text as a plain string, its own label."""
+
+    def wrong(case: Mapping[str, Any]) -> dict[str, str]:
+        return {"label": "nonsense"}
+
+    def chatty(case: Mapping[str, Any]) -> str:
+        return "I think this message is a greeting of some kind."
+
+    for runner in (wrong, chatty):
+        result = await Eval(CASES, runner, ["label"], k=1).run(store=":memory:")
+        assert result.summary.n_scored == 3
+        assert _accuracy(result) == 0.0
+
+
+@pytest.mark.parametrize(
+    "answer", ['{"label": "nonsense"}', '"I think this message is a greeting of some kind."'], ids=["field", "text"]
+)
+def test_one_arm_all_wrong_exits_0_at_the_door(answer: str, in_tmp: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    body = f'def classify(case):\n    return {answer}\n\nwrong = Eval("cases.jsonl", classify, ["label"], k=1)\n'
+    assert main([_eval_file(in_tmp, body)]) == EXIT_OK
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "Accuracy: 0%, 0 of 3 trials" in captured.out
+
+
+# --- a refused run is kept out of every reading ----------------------------------------------------------------------
+
+
+async def test_a_refused_run_is_archived_so_no_listing_history_or_frontier_reads_it(tmp_path: Path) -> None:
+    """The runs a refusal after the arms ran leaves behind are archived: kept and restorable, but ls, the history and
+    the frontier read none of them, and the first fixed run is a baseline, not a step up from 0%."""
+    store = tmp_path / "evals.sqlite"
+
+    def classify(case: Mapping[str, Any]) -> dict[str, str]:
+        return {"category": _right(case)}
+
+    refused = Eval(CASES, classify, ["label"], k=1, name="triage")
+    with pytest.raises(ValueError, match="no answer has a field 'label'"):
+        await refused.run(store=store)
+    host = as_host([refused], store=store)
+    assert list_runs(host, "triage") == []
+    (kept,) = list_runs(host, "triage", include_archived=True)
+    assert kept.archived
+    history = scope_history(host, "triage", metric=ACCURACY_MEASURE)
+    assert history.series == [] and history.exclusions.results_from_archived_runs == 3
+    frontier = scope_frontier(host, "triage")
+    assert frontier.subjects == [] and frontier.exclusions.results_from_archived_runs == 3
+
+    def classify_fixed(case: Mapping[str, Any]) -> dict[str, str]:
+        return {"label": _right(case)}
+
+    classify_fixed.__name__ = "classify"
+    fixed = await Eval(CASES, classify_fixed, ["label"], k=1, name="triage").run(store=store)
+    assert _accuracy(fixed) == 1.0
+    (series,) = scope_history(host, "triage", metric=ACCURACY_MEASURE).series
+    (point,) = series.points
+    assert point.is_baseline and point.run_id == fixed.summary.run_id
 
 
 async def test_a_world_runner_s_answer_is_read_inside_its_outcome() -> None:
@@ -276,25 +387,184 @@ def test_an_arm_and_a_world_agent_are_refused_in_their_own_names() -> None:
         Eval(CASES, World(tools=[look])(alone), ["label"])
 
 
-def test_runners_that_can_take_a_case_are_accepted() -> None:
-    def defaulted(case: Mapping[str, Any], effort: str = "low") -> str:
-        return effort
+def _with_client(function: Callable[..., Any]) -> Callable[..., Any]:
+    """A decorator that hands the function a client: what is called takes the case alone."""
 
-    def anything(*args: Any, **kwargs: Any) -> str:
+    @functools.wraps(function)
+    def run(case: Mapping[str, Any]) -> Any:
+        return function("client", case)
+
+    return run
+
+
+def _passing_through(function: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(function)
+    def run(*args: Any, **kwargs: Any) -> Any:
+        return function(*args, **kwargs)
+
+    return run
+
+
+def _unwrapped(function: Callable[..., Any]) -> Callable[..., Any]:
+    def run(*args: Any, **kwargs: Any) -> Any:
+        return function(*args, **kwargs)
+
+    return run
+
+
+def _no_arguments(function: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(function)
+    def run() -> Any:
+        return function("case")
+
+    return run
+
+
+class _Classifier:
+    def __call__(self, case: Mapping[str, Any]) -> str:
+        return _right(case)
+
+    def classify(self, case: Mapping[str, Any]) -> str:
+        return _right(case)
+
+    @staticmethod
+    def static(case: Mapping[str, Any]) -> str:
+        return _right(case)
+
+
+class _Bare:
+    def __call__(self) -> str:
         return "greet"
 
-    class Classifier:
-        def __call__(self, case: Mapping[str, Any]) -> str:
-            return "greet"
 
-        def classify(self, case: Mapping[str, Any]) -> str:
-            return "greet"
+def _plain(case: Mapping[str, Any]) -> str:
+    return _right(case)
 
-    def two(case: Mapping[str, Any], extra: str) -> str:
-        return extra
 
-    for runner in (defaulted, anything, Classifier(), Classifier().classify, functools.partial(two, extra="x")):
-        Eval(CASES, runner, ["label"], name="accepted")
+async def _async(case: Mapping[str, Any]) -> str:
+    return _right(case)
+
+
+def _two(case: Mapping[str, Any], extra: str) -> str:
+    return _right(case)
+
+
+def _keyworded(case: Mapping[str, Any], **settings: Any) -> str:
+    return _right(case)
+
+
+def _star(*args: Any) -> str:
+    return _right(args[0])
+
+
+@_with_client
+def _injected(client: str, case: Mapping[str, Any]) -> str:
+    return _right(case)
+
+
+@_passing_through
+def _wrapped(case: Mapping[str, Any]) -> str:
+    return _right(case)
+
+
+@_unwrapped
+def _decorated(case: Mapping[str, Any]) -> str:
+    return _right(case)
+
+
+@functools.cache
+def _cached(case: str) -> str:
+    return case
+
+
+@_no_arguments
+def _taken_away(case: Mapping[str, Any]) -> str:
+    return "greet"
+
+
+#: Every shape of callable an author can pass as a runner, and whether it can take a case.
+ACCEPTED_RUNNERS: dict[str, Any] = {
+    "plain function": _plain,
+    "async function": _async,
+    "bound method": _Classifier().classify,
+    "static method": _Classifier.static,
+    "callable object": _Classifier(),
+    "functools.partial": functools.partial(_two, extra="x"),
+    "lambda with defaults": lambda case, effort="low": _right(case),
+    "(case, **kw)": _keyworded,
+    "(*args)": _star,
+    "decorated with wraps, injecting an argument": _injected,
+    "decorated with wraps, passing through": _wrapped,
+    "decorated without wraps": _decorated,
+}
+
+
+@pytest.mark.parametrize("runner", ACCEPTED_RUNNERS.values(), ids=ACCEPTED_RUNNERS.keys())
+async def test_every_shape_of_runner_that_can_take_a_case_is_accepted_and_runs(runner: Any) -> None:
+    result = await Eval(CASES, runner, ["label"], k=1, name="accepted").run(store=":memory:")
+    assert _accuracy(result) == 1.0
+
+
+def test_a_runner_whose_signature_cannot_be_read_is_not_refused() -> None:
+    """A C wrapper (``functools.cache``) shows no signature of its own: the check cannot tell, so it does not refuse."""
+    Eval(CASES, _cached, ["label"], name="cached")
+
+
+@pytest.mark.parametrize(
+    ("runner", "said"),
+    [
+        (_two, r"^the runner _two\(case, extra\) cannot be called as _two\(case\)"),
+        (lambda: "greet", r"^the runner <lambda>\(\) cannot be called as <lambda>\(case\)"),
+        (
+            _Bare(),
+            r"^the runner _Bare\(\) cannot be called as _Bare\(case\), .*declare its __call__ to take exactly that: "
+            r"def __call__\(self, case\): \.\.\.$",
+        ),
+        (
+            functools.partial(_two, {}, "x"),
+            r"^the runner partial\(_two, \.\.\.\)\(\) cannot be called as partial\(_two, \.\.\.\)\(case\), .*"
+            r"declare its function so that what the partial leaves free is exactly \(case\)$",
+        ),
+        (_taken_away, r"^the runner _taken_away\(\) cannot be called as _taken_away\(case\)"),
+    ],
+    ids=["two parameters", "lambda of none", "callable object of none", "partial leaving none", "wrapper of none"],
+)
+def test_every_shape_of_runner_that_cannot_take_a_case_is_refused_in_its_own_terms(runner: Any, said: str) -> None:
+    with pytest.raises(ValueError, match=said):
+        Eval(CASES, runner, ["label"], name="refused")
+
+
+def test_a_runner_and_grader_annotated_with_names_imported_for_type_checking_alone_run(
+    in_tmp: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Annotations evaluated lazily (PEP 649) name what a module imports under ``if TYPE_CHECKING:`` alone; reading the
+    signature never evaluates them, so such an eval runs as any other."""
+    body = (
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n    from tickets import Ticket, Verdict\n\n\n"
+        "def classify(case: Ticket) -> Verdict:\n"
+        '    return {"label": "leave" if case["text"] == "bye" else "greet"}\n\n\n'
+        "def right(case: Ticket, out: Verdict) -> bool:\n"
+        '    return out["label"] == case["label"]\n\n\n'
+        'annotated = Eval("cases.jsonl", classify, ["label", right], k=1)\n'
+    )
+    assert main([_eval_file(in_tmp, body)]) == EXIT_OK
+    assert capsys.readouterr().err == ""
+
+
+def test_a_decorated_grader_is_read_by_what_is_called() -> None:
+    def judge_with(function: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(function)
+        def grade(case: Mapping[str, Any], out: Any) -> bool:
+            return bool(function("client", case, out))
+
+        return grade
+
+    @judge_with
+    def right(client: str, case: Mapping[str, Any], out: Any) -> bool:
+        return bool(out == case["label"])
+
+    Eval(CASES, _right, [right])
 
 
 def test_a_grader_that_cannot_take_case_and_answer_is_refused() -> None:

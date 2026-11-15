@@ -24,11 +24,14 @@ vocabulary: ``Eval(...).run(host=as_host([...], store=...), scope=...)``.
 
 from __future__ import annotations
 
+import annotationlib
+import ast
 import csv
 import inspect
 import json
 import math
 import os
+import textwrap
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -71,6 +74,7 @@ from threetears.evals.quick.result import (
 )
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
+from threetears.evals.run import set_run_archived
 from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
 
 #: Where an eval keeps its runs when it is told nothing, under the working directory.
@@ -208,18 +212,99 @@ def _refuse_an_unusable_runner(runner: Any, arm: str | None) -> None:
     called, handed, written = (
         (runner.agent, "case, tools", "async def") if isinstance(runner, WorldRunner) else (runner, "case", "def")
     )
-    try:
-        signature = inspect.signature(called)
-    except TypeError, ValueError:
-        return  # no signature to read (a builtin): it is called as it is
+    signature = _signature_as_called(called)
+    if signature is None:
+        return  # no signature to read (a builtin, a C wrapper): it cannot be told, so it is called as it is
     try:
         signature.bind(*handed.split(", "))
     except TypeError:
-        name = getattr(called, "__name__", None) or type(called).__name__
+        name, fix = _declare_as(called, handed, written)
         raise ValueError(
             f"{said} {name}{_bare(signature)} cannot be called as {name}({handed}), which is how each case is handed to it; "
-            f"declare it to take exactly that: {written} {name}({handed}): ..."
+            f"{fix}"
         ) from None
+
+
+def _signature_as_called(called: Any) -> inspect.Signature | None:
+    """The signature ``called`` is called through, or ``None`` when it has none to read.
+
+    The outermost one: a decorator's wrapper is what is called, even one that copies the function's name with
+    ``functools.wraps`` and takes other arguments than it. Annotations are read as forward references, never
+    evaluated, so a name imported only for type checking is no error.
+    """
+    try:
+        return inspect.signature(called, follow_wrapped=False, annotation_format=annotationlib.Format.FORWARDREF)
+    except TypeError, ValueError:
+        return None
+
+
+def _declare_as(called: Any, handed: str, written: str) -> tuple[str, str]:
+    """What a runner is called in a refusal, and the declaration that would take ``handed``."""
+    if isinstance(called, partial):
+        name = f"partial({getattr(called.func, '__name__', type(called.func).__name__)}, ...)"
+        return name, f"declare its function so that what the partial leaves free is exactly ({handed})"
+    if not inspect.isroutine(called) and not isinstance(called, type):
+        name = type(called).__name__
+        return name, f"declare its __call__ to take exactly that: {written} __call__(self, {handed}): ..."
+    name = getattr(called, "__name__", None) or type(called).__name__
+    return name, f"declare it to take exactly that: {written} {name}({handed}): ..."
+
+
+def _a_field_some_case_expects(plan: GraderPlan, cases: Sequence[Mapping[str, Any]]) -> str | None:
+    """A field the graders read off an answer that some case expects a value in, or ``None`` when there is none."""
+    return next((name for name in plan.fields if any(case.get(name) is not None for case in cases)), None)
+
+
+def _refuse_a_runner_that_returns_nothing(runner: Any, arm: str | None, field_name: str) -> None:
+    """Refuse a runner whose own code returns no value anywhere: every answer would be ``None``, so a field graded off
+    it reads none, and the run would score 0% for the author's wiring.
+
+    Read from its source, and only where that settles it: a function, a method, a partial of one or an object's
+    ``__call__``, not wrapped by a decorator (whose wrapper may return something the function does not), whose source
+    can be read. A runner that has a ``return`` and returns ``None`` on every case is the product answering nothing,
+    and is scored.
+
+    :raises ValueError: Its code holds no ``return`` of a value and no ``yield``, naming it and what to return.
+    """
+    if isinstance(runner, Log | WorldRunner):
+        return
+    target = runner.func if isinstance(runner, partial) else runner
+    if not inspect.isroutine(target) and not isinstance(target, type):
+        target = type(target).__call__
+    target = getattr(target, "__func__", target)
+    if not inspect.isfunction(target) or target.__name__ == "<lambda>" or hasattr(target, "__wrapped__"):
+        return  # cannot be read, or its value is its expression's: it cannot be told, so it is run
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(target)))
+    except OSError, TypeError, SyntaxError:
+        return  # no source to read: it cannot be told, so it is run
+    defined = tree.body[0] if tree.body else None
+    if not isinstance(defined, ast.FunctionDef | ast.AsyncFunctionDef) or defined.name != target.__name__:
+        return
+    if _returns_a_value(defined.body):
+        return
+    said = "the runner" if arm is None else f"the arm {arm!r}"
+    raise ValueError(
+        f"{said} {target.__name__} returns nothing (it has no return of a value), so every answer would be None and "
+        f"its grader could read {field_name!r} off none of them: return the answer from it"
+    )
+
+
+def _returns_a_value(body: Sequence[ast.stmt]) -> bool:
+    """Whether a function body returns or yields a value anywhere, outside the functions and classes it defines."""
+    pending: list[ast.AST] = list(body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Yield | ast.YieldFrom):
+            return True
+        if isinstance(node, ast.Return) and not (
+            node.value is None or (isinstance(node.value, ast.Constant) and node.value.value is None)
+        ):
+            return True
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return False
 
 
 class Eval:
@@ -297,8 +382,9 @@ class Eval:
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
             known form, an expression grader with no world with state to read, several arms with no name and no
             cases file to name the eval by, a runner that cannot be called with a case (a world's agent with a case
-            and its tools), a function grader that cannot take ``(case, out)``, or a case a field grader other than
-            the classifier cannot read a label from.
+            and its tools), a runner whose code returns no value while a field grader reads its answer, a function
+            grader that cannot take ``(case, out)``, or a case a field grader other than the classifier cannot read a
+            label from.
         """
         if question is not None and not question.strip():
             raise ValueError("an eval's question is filed on its campaign, and this one is blank")
@@ -325,6 +411,9 @@ class Eval:
         self.world: World | None = next(iter(worlds.values()), None)
         self.plan: GraderPlan = plan_graders(grader)
         _refuse_a_case_a_field_grader_cannot_read(self.plan, self.cases)
+        if self.world is None and (read := _a_field_some_case_expects(self.plan, self.cases)) is not None:
+            for arm, given in arms.items():
+                _refuse_a_runner_that_returns_nothing(given, arm, read)
         if self.plan.goal_checks and (self.world is None or not self.world.stateful):
             raise ValueError(
                 f"the expression graders {', '.join(map(repr, self.plan.goal_checks))} read a world's state, and the "
@@ -465,7 +554,8 @@ class Eval:
         :rtype: Result
         :raises ValueError: ``store`` beside ``host``; a host that does not declare what the eval's graders read; or
             anything the cases, the runner or the graders refuse, before anything runs. Once the arms have run, a field
-            grader whose field no answer of any arm carried (its runs stay stored; no campaign is filed).
+            grader whose field no answer of any arm carried (its runs are kept archived, out of every listing and
+            reading; no campaign is filed).
         :raises ValidationFailedError: The launch refused, or the host refuses the campaign's declaration.
         """
         # Its arms, its judge and every task they start read as this one run, so a replay serving one of its calls
@@ -524,7 +614,13 @@ class Eval:
             margins=self.plan.run_margins,
             measure_latency=self.measure_latency,
         )
-        _refuse_a_field_no_answer_carries(self.plan, self.cases, summaries, world=self.world is not None)
+        if (
+            refused := _a_field_no_answer_carries(self.plan, self.cases, summaries, world=self.world is not None)
+        ) is not None:
+            # The runs measured the author's wiring, not the product: archived, as an operator retires a contaminated
+            # run, so no listing, history or frontier reads them, and no campaign is filed.
+            await run_blocking(host.blocking_executor, _archive_runs, host, summaries, scope_id)
+            raise ValueError(refused)
         examples = None
         if judge is not None and judge.examples and summaries[0].template_id is not None:
             # Graded once for the eval, after its arms, through the judge every arm's answers were graded by, each
@@ -653,16 +749,23 @@ def _refuse_a_case_a_field_grader_cannot_read(plan: GraderPlan, cases: Sequence[
                 raise ValueError(f"case {case.get('id', index)}: {unreadable}{fix}") from None
 
 
-def _refuse_a_field_no_answer_carries(
+def _archive_runs(host: EvalHost, summaries: Sequence[EvalSummary], scope_id: str) -> None:
+    """Archive the runs of a refused eval: kept, and restorable, but out of every listing and reading."""
+    for summary in summaries:
+        set_run_archived(host.storage, summary.run_id, scope_id, archived=True, profile=host.profile)
+
+
+def _a_field_no_answer_carries(
     plan: GraderPlan, cases: Sequence[Mapping[str, Any]], summaries: Sequence[EvalSummary], *, world: bool
-) -> None:
-    """Refuse a field grader no answer of any arm carried its field for: the author's wiring, not the product's failing.
+) -> str | None:
+    """The refusal of a field grader no answer of any arm carried its field for: the author's wiring, not the
+    product's failing; ``None`` when every graded field was carried somewhere, or cannot be told to be wiring.
 
     Every case would score 0 on it and the run exit 0: a measured 0% that reads as the app failing. Only answers the
     runner returned count, and only where some case expects a value in the field (a case's ``null`` expects it
-    absent). An arm whose answers lack a field another arm's carry is the product's, scored as it is.
-
-    :raises ValueError: A field no answer carried, naming what the answers do carry.
+    absent). An arm whose answers lack a field another arm's carry is the product's, scored as it is. So are answers
+    that are all ``None`` from a runner that returns a value somewhere (one with no return is refused before it runs):
+    a runner returning ``None`` where the model's output never parsed is the product answering nothing.
     """
     answered = [
         result
@@ -686,7 +789,7 @@ def _refuse_a_field_no_answer_carries(
             shown = ", ".join(carried[:8]) + (f" and {len(carried) - 8} more" if len(carried) > 8 else "")
             fix = f"the answers carry {shown}: grade the field they carry, or have the runner return {name!r}"
         elif all(answer is None for answer in answers):
-            fix = "every answer was None: return the answer from the runner"
+            continue  # the product answered nothing: scored, each case's answer stored as None
         else:
             first = next(answer for answer in answers if answer is not None)
             shown = (
@@ -695,7 +798,8 @@ def _refuse_a_field_no_answer_carries(
                 else f"{type(first).__name__}s, which hold no fields"
             )
             fix = f"the answers are {shown}: return a dict, a pydantic model or a dataclass with {name!r}"
-        raise ValueError(f"no answer has a field {name!r}, so its grader could score none of them; {fix}")
+        return f"no answer has a field {name!r}, so its grader could score none of them; {fix}"
+    return None
 
 
 def _carries(answer: Any, result: CaseResult, name: str, *, classifier: bool) -> bool:

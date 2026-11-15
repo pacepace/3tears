@@ -23,6 +23,7 @@ a numeric grade lies in (``range=``). Every grade is higher-is-better, so a guar
 
 from __future__ import annotations
 
+import annotationlib
 import inspect
 import json
 import math
@@ -299,9 +300,11 @@ def _refuse_a_grader_that_cannot_take_its_arguments(target: Callable[..., Any], 
     :raises ValueError: Its signature cannot bind two positional arguments.
     """
     try:
-        signature = inspect.signature(target)
+        # The outermost signature, what is called (a decorator's wrapper, not the function it wraps), its annotations
+        # read as forward references and never evaluated: a name imported only for type checking is no error.
+        signature = inspect.signature(target, follow_wrapped=False, annotation_format=annotationlib.Format.FORWARDREF)
     except TypeError, ValueError:
-        return  # no signature to read (a builtin): it is called as it is
+        return  # no signature to read (a builtin, a C wrapper): it cannot be told, so it is called as it is
     try:
         signature.bind("case", "out")
     except TypeError:

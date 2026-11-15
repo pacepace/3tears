@@ -38,6 +38,7 @@ comparable in a campaign — while a different case list is a different template
 
 from __future__ import annotations
 
+import annotationlib
 import asyncio
 import inspect
 import json
@@ -383,9 +384,13 @@ def _as_range(bounds: tuple[float, float] | None) -> tuple[float, float] | None:
 
 
 def _returns_bool(scorer: Scorer) -> bool:
-    """Whether ``scorer``'s return is annotated ``bool``, under postponed annotations or not."""
+    """Whether ``scorer``'s return is annotated ``bool``, under postponed annotations or not.
+
+    Annotations are read as forward references, never evaluated, so a name imported only for type checking is no
+    error. A decorated scorer's is its function's, which ``functools.wraps`` copies onto the wrapper anyway.
+    """
     try:
-        returned = inspect.signature(scorer).return_annotation
+        returned = inspect.signature(scorer, annotation_format=annotationlib.Format.FORWARDREF).return_annotation
     except TypeError, ValueError:
         return False
     return returned is bool or returned == "bool"
