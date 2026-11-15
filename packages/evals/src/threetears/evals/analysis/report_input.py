@@ -61,7 +61,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from threetears.evals.analysis.checks import Check, Corrected, Looks
+from threetears.evals.analysis.checks import Check, Corrected, Looks, RigCheck
 from threetears.evals.schema.reading_states import (
     ArmIdentity,
     CaveatClass,
@@ -673,10 +673,10 @@ class Contrast(_Part):
         exclude_if=lambda value: value is None,
         description="The contrast as what its judge was checked against would read it: a check's result, never a second verdict.",
     )
-    aa: Check | None = Field(
+    aa: RigCheck | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="The A/A check covering the contrast: identical arms read on the same reading.",
+        description="The A/A check covering the contrast: the rig's check, identical arms read on the same reading.",
     )
 
 

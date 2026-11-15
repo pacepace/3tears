@@ -6721,6 +6721,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.RigCheck": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.RoleSpend": {
       "kind": "model",
       "signature": "",
