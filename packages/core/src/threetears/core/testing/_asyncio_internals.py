@@ -39,7 +39,7 @@ def timed_handles(record: Callable[[float, str], None]) -> Iterator[None]:
         finally:
             record(time.thread_time() - began, repr(handle)[:120])
 
-    asyncio.events.Handle._run = timed  # type: ignore[method-assign]
+    asyncio.events.Handle._run = timed  # type: ignore[method-assign,assignment]
     try:
         yield
     finally:
