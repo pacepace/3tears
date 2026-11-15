@@ -108,7 +108,6 @@ from threetears.observe.metrics import counter
 
 __all__ = [
     "register_sa_table_indexes",
-    "servable_index",
     "sql_cast",
     "BIGINT_TYPE",
     "MAX_INDEX_COLUMNS",
@@ -922,7 +921,7 @@ def l2_order_columns() -> list[Column]:
     ]
 
 
-def servable_index(
+def _servable_index(
     name: str, columns: Sequence[tuple[str, bool]], *, plain: bool, where: str | None
 ) -> DeclaredIndex | None:
     """a declared index as a keyed read's pins and order can be served by it, or None when none can be: one with an
@@ -986,7 +985,7 @@ def _sa_index_columns(index: sa.Index) -> list[tuple[str, bool]] | None:
 
 def register_sa_table_indexes(table: sa.Table) -> None:
     """register the indexes of an L3 table a package declares as a SQLAlchemy ``Table`` (not a :class:`TableSchema`),
-    as a :class:`TableSchema` registers its own: its primary key and each index :func:`servable_index` admits, for the
+    as a :class:`TableSchema` registers its own: its primary key and each index :func:`_servable_index` admits, for the
     hint a keyed read names to YugabyteDB (:func:`~threetears.interfaces.keyed.keys.serving_index`), and its partial
     predicates' ``column = 'text'`` conjuncts, which a keyed read pinning them writes as literals
     (:func:`~threetears.interfaces.keyed.keys.register_partial_predicates`).
@@ -1015,7 +1014,7 @@ def register_sa_table_indexes(table: sa.Table) -> None:
             continue
         # SQLAlchemy reads an unset access method as False: the default B-tree
         using = options["using"]
-        served = servable_index(
+        served = _servable_index(
             str(index.name),
             columns,
             plain=(not using or str(using).lower() == "btree") and not options["ops"],
@@ -1283,7 +1282,7 @@ class TableSchema:
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index
-        :func:`servable_index` admits.
+        :func:`_servable_index` admits.
 
         :param pk_cols: the primary key's columns
         :ptype pk_cols: tuple[str, ...]
@@ -1292,7 +1291,7 @@ class TableSchema:
         """
         indexes = [DeclaredIndex("primary_key", pk_cols, primary=True)] if pk_cols else []
         for index in self.indexes:
-            served = servable_index(
+            served = _servable_index(
                 index.name,
                 tuple((column, column in index.desc) for column in index.columns),
                 plain=index.using is None and not index.ops and not index.collate,
