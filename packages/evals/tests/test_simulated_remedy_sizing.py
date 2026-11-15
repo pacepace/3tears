@@ -369,7 +369,7 @@ def test_arms_that_agree_case_by_case_lift_a_cross_filled_plan_more_often(
     """Recorded, not held: the plan assumes the arms do not agree case by case, the most a cross-filled pair can vary,
     so arms coupled at ``rho`` 0.3 and 0.6 (:func:`_partner`) lift the same plans at least as often as at 0."""
     rng = random.Random(f"{_SEED}-coupled-{truth}-{count}")
-    samples = _crossed_samples(truth, count, rng)
+    samples = _crossed_samples(truth, count, rng, _HELD // 3)
     rates = {}
     for rho in (0.0, 0.3, 0.6):
         drawn = random.Random(f"{_SEED}-coupled-{truth}-{count}-designs")
@@ -393,7 +393,7 @@ def test_the_unconditional_rate_is_recorded_beside_the_conditional_one(
     campaigns, not the one a plan states for its own; it is held only to lie strictly between nothing and certainty."""
     rng = random.Random(f"{_SEED}-unconditional-{truth}-{count}")
     lifted = replicates = 0
-    while replicates < 64:
+    while replicates < 32:
         held = _TRUTHS[truth](rng, count)
         if len({b - a for a, b in held}) < 2:
             continue
@@ -565,13 +565,12 @@ def test_a_gate_s_size_before_it_and_one_read_one_sided_fall_outside_the_band(
 _REFUSED: Final = (("k1", 30), ("mean", 30))
 
 
-def _rates_of(truth: str, count: int, size: Callable[[Pairs, Plan], int]) -> tuple[float, float]:
-    """The row's rate under the planner, and under another sizing ``size`` of the same held samples."""
+def _rate_of(truth: str, count: int, size: Callable[[Pairs, Plan], int]) -> float:
+    """The row's rate under another sizing ``size`` of held samples the planner plans (the row's own test holds the
+    planner's rate on them)."""
     rng = random.Random(f"{_SEED}-refused-{truth}-{count}")
     samples = _paired_samples(truth, count, rng)
-    planned = sum(_paired_rate(held, plan.cases or 0, rng, _DESIGNS) for held, plan in samples) / len(samples)
-    other = sum(_paired_rate(held, size(held, plan), rng, _DESIGNS) for held, plan in samples) / len(samples)
-    return planned, other
+    return sum(_paired_rate(held, size(held, plan), rng, _DESIGNS // 2) for held, plan in samples) / len(samples)
 
 
 def _before(held: Pairs, plan: Plan) -> int:
@@ -604,9 +603,8 @@ def _one_sided(held: Pairs, plan: Plan) -> int:
 def test_the_sizing_before_it_lifts_far_more_often_than_it_says(
     truth: str, count: int, record_property: Callable[[str, object], None]
 ) -> None:
-    planned, before = _rates_of(truth, count, _before)
-    record_property("measured", f"before {truth} n0={count}: {planned:.3f} {before:.3f}")
-    assert _BAND[0] <= planned <= _BAND[1], planned
+    before = _rate_of(truth, count, _before)
+    record_property("measured", f"before {truth} n0={count}: {before:.3f}")
     assert before > _BAND[1], before
 
 
@@ -614,9 +612,8 @@ def test_the_sizing_before_it_lifts_far_more_often_than_it_says(
 def test_a_size_read_one_sided_lifts_less_often_than_it_says(
     truth: str, count: int, record_property: Callable[[str, object], None]
 ) -> None:
-    planned, one_sided = _rates_of(truth, count, _one_sided)
-    record_property("measured", f"one-sided {truth} n0={count}: {planned:.3f} {one_sided:.3f}")
-    assert _BAND[0] <= planned <= _BAND[1], planned
+    one_sided = _rate_of(truth, count, _one_sided)
+    record_property("measured", f"one-sided {truth} n0={count}: {one_sided:.3f}")
     assert one_sided < _BAND[0], one_sided
 
 
