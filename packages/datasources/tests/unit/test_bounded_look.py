@@ -13,7 +13,9 @@ from threetears.datasources.bounded_look import (
     SAMPLE_LIMIT_MAX,
     BoundedCount,
     count_matching_at_most,
+    count_matching_statement,
     sample_matching,
+    sample_matching_statement,
 )
 
 from .helpers.fake_driver import FakeDriver
@@ -70,3 +72,16 @@ async def test_a_cap_that_is_no_positive_integer_is_refused(driver: _DuckDriver,
     with pytest.raises(ValueError, match="positive integer"):
         await sample_matching(driver, "wh", "Geo", None, limit=bad)
     assert driver.sent == []
+
+
+async def test_the_statements_a_caller_checks_are_the_ones_each_look_sends(driver: _DuckDriver) -> None:
+    """Flips if a statement builder drifts from what its look sends: a caller (the hub's binding check) validates the
+    built statement before the look runs, so the two must be one text."""
+    await count_matching_at_most(driver, "wh", "Geo", "odd = 1", at_most=7)
+    await sample_matching(driver, "wh", "Geo", "odd = 1", limit=3)
+    assert driver.sent == [
+        count_matching_statement("wh", "Geo", "odd = 1", at_most=7),
+        sample_matching_statement("wh", "Geo", "odd = 1", limit=3),
+    ]
+    with pytest.raises(ValueError, match="limit"):
+        sample_matching_statement("wh", "Geo", None, limit=SAMPLE_LIMIT_MAX + 1)

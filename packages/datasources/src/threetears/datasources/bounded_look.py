@@ -16,7 +16,14 @@ from typing import Any, Final
 from threetears.core.sql_fragments import quote_identifier
 from threetears.datasources.drivers.base import Driver
 
-__all__ = ["SAMPLE_LIMIT_MAX", "BoundedCount", "count_matching_at_most", "sample_matching"]
+__all__ = [
+    "SAMPLE_LIMIT_MAX",
+    "BoundedCount",
+    "count_matching_at_most",
+    "count_matching_statement",
+    "sample_matching",
+    "sample_matching_statement",
+]
 
 #: the most rows a sample may ask for: a look, never a read
 SAMPLE_LIMIT_MAX: Final[int] = 100
@@ -56,6 +63,52 @@ def _bound(value: int, name: str, most: int | None = None) -> int:
     return value
 
 
+def count_matching_statement(schema: str, table: str, predicate: str | None, *, at_most: int) -> str:
+    """the statement :func:`count_matching_at_most` sends, for a caller that checks it before it runs (the hub's
+    ``validate_read_sql`` of the author's predicate in place).
+
+    ``SELECT COUNT(*) FROM (SELECT 1 FROM <schema.table> [WHERE <predicate>] LIMIT <at_most>) AS capped``
+
+    :param schema: the table's schema, TRUSTED as a name (quoted here)
+    :ptype schema: str
+    :param table: the table, TRUSTED as a name (quoted here)
+    :ptype table: str
+    :param predicate: the author's predicate; None or blank for every row
+    :ptype predicate: str | None
+    :param at_most: the cap
+    :ptype at_most: int
+    :return: the statement
+    :rtype: str
+    :raises ValueError: when ``at_most`` is not a positive integer
+    """
+    cap = _bound(at_most, "at_most")
+    return (
+        "SELECT COUNT(*) AS match_count FROM "
+        f"(SELECT 1 AS matched FROM {_relation(schema, table)}{_matching(predicate)} LIMIT {cap}) AS capped"
+    )
+
+
+def sample_matching_statement(schema: str, table: str, predicate: str | None, *, limit: int) -> str:
+    """the statement :func:`sample_matching` sends, for a caller that checks it before it runs.
+
+    ``SELECT * FROM <schema.table> [WHERE <predicate>] LIMIT <limit>``
+
+    :param schema: the table's schema, TRUSTED as a name (quoted here)
+    :ptype schema: str
+    :param table: the table, TRUSTED as a name (quoted here)
+    :ptype table: str
+    :param predicate: the author's predicate; None or blank for any row
+    :ptype predicate: str | None
+    :param limit: the rows wanted, at most :data:`SAMPLE_LIMIT_MAX`
+    :ptype limit: int
+    :return: the statement
+    :rtype: str
+    :raises ValueError: when ``limit`` is not a positive integer or is over :data:`SAMPLE_LIMIT_MAX`
+    """
+    wanted = _bound(limit, "limit", SAMPLE_LIMIT_MAX)
+    return f"SELECT * FROM {_relation(schema, table)}{_matching(predicate)} LIMIT {wanted}"  # noqa: S608 - quoted names, a checked predicate
+
+
 async def count_matching_at_most(
     driver: Driver, schema: str, table: str, predicate: str | None, *, at_most: int
 ) -> BoundedCount:
@@ -78,11 +131,7 @@ async def count_matching_at_most(
     :raises ValueError: when ``at_most`` is not a positive integer
     """
     cap = _bound(at_most, "at_most")
-    sql = (
-        "SELECT COUNT(*) AS match_count FROM "
-        f"(SELECT 1 AS matched FROM {_relation(schema, table)}{_matching(predicate)} LIMIT {cap}) AS capped"
-    )
-    rows = await driver.fetch(sql)
+    rows = await driver.fetch(count_matching_statement(schema, table, predicate, at_most=cap))
     count = int(next(iter(rows[0].values()))) if rows else 0
     return BoundedCount(count=count, more=count >= cap)
 
@@ -109,5 +158,6 @@ async def sample_matching(
     :raises ValueError: when ``limit`` is not a positive integer or is over :data:`SAMPLE_LIMIT_MAX`
     """
     wanted = _bound(limit, "limit", SAMPLE_LIMIT_MAX)
-    sql = f"SELECT * FROM {_relation(schema, table)}{_matching(predicate)} LIMIT {wanted}"  # noqa: S608 - quoted names, a checked predicate
-    return list(await driver.fetch_at_most(sql, max_rows=wanted))
+    return list(
+        await driver.fetch_at_most(sample_matching_statement(schema, table, predicate, limit=wanted), max_rows=wanted)
+    )
