@@ -37,6 +37,7 @@ _LOADERS: Final = frozenset({"iter_result_readings", "query_eval_results_by_runs
 _LISTED: Final[dict[str, str]] = {
     "analysis/bundle/assemble.py::assemble_context_bundle": "builds the cells, where a split is decided; reads no count",
     "analysis/campaign_readings.py::_cost_on": "takes exactly one cell's cost error, so an arm of two cells has none",
+    "analysis/costs.py::cost_source": "reads the report input's rows, which withhold a split arm's cost",
     "analysis/reads.py::_readings_of": "the read pivot, frontier, history and comparison sets fold; each asks the "
     "check, save frontier dominance and the cheapest pick, which say they pool definitions: issue draft 6",
     "analysis/report/aspect/common.py::_cost_ruler": "chooses the scale every cost prints on; prints no arm's figure",
@@ -45,7 +46,6 @@ _LISTED: Final[dict[str, str]] = {
     "analysis/report/campaign/scorecard.py::_choice_matrix": "prints a split arm's pooled rate: issue draft 8 (S5a-2)",
     "analysis/report/keys/reads.py::_passing": "reads the report input's rows, which withhold a split arm's passes",
     "analysis/report/keys/reads.py::_counts_passes": "reads the report input's rows, which withhold a split arm's passes",
-    "analysis/report/keys/reads.py::_cost_source": "reads the report input's rows, which withhold a split arm's cost",
     "ops/lenses.py::detectable_effects": "pools variance and says so where definitions differ: issue draft 7",
     "ops/regressions.py::_judged_results": "judge agreement for a history step; history marks a split as a boundary",
 }

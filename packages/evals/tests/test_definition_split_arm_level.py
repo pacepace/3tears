@@ -310,7 +310,9 @@ def _split_caveats(built: ReportInput, *, stored: bool) -> list[tuple[object, ..
     """The withheld-by-split caveats of a built input as the builder raised them with its bundle, or, ``stored``, of
     the same input written out without its list and read back, which raises them from its own parts alone."""
     if stored:
-        written = built.model_copy(update={"caveat_list": None, "first_screen": None}).model_dump(mode="json")
+        written = built.model_copy(update={"caveat_list": None, "first_screen": None}).model_dump(
+            mode="json", by_alias=True
+        )
         entries = caveat_list(ReportInput.model_validate(written))
     else:
         assert built.caveat_list is not None
