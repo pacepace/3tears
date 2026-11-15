@@ -2464,23 +2464,26 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # tags and salience change together, so this raw pass is the writer and
         # the row is evicted for a later get() to read fresh.
         async with self.bypassing_write((agent_id, memory_id)) as write:
-            changed = await self.l3_pool.fetchval(
-                f"""
-                UPDATE memories SET
-                    tags = COALESCE(tags, '[]'::jsonb) || jsonb_build_array(
-                        'retracted', $3::text, '{_RETRACTED_SALIENCE}' || salience::text),
-                    salience = CASE WHEN evergreen THEN salience ELSE 0.0 END,
-                    date_updated = now()
-                WHERE agent_id = $1 AND memory_id = $2
-                  AND {_NOT_RETRACTED}
-                  AND ($4::boolean OR NOT evergreen)
-                RETURNING memory_id
-                """,
-                agent_id,
-                memory_id,
-                f"{_RETRACTED_BECAUSE}{reason[:200]}",
-                allow_permanent,
+            written = await update_keyed(
+                self.l3_pool,
+                "memories",
+                values={
+                    "tags": Fragment(
+                        "COALESCE(tags, '[]'::jsonb) || jsonb_build_array("
+                        f"'retracted', $1::text, '{_RETRACTED_SALIENCE}' || salience::text)",
+                        (f"{_RETRACTED_BECAUSE}{reason[:200]}",),
+                    ),
+                    "salience": Fragment("CASE WHEN evergreen THEN salience ELSE 0.0 END", ()),
+                    "date_updated": Fragment("now()", ()),
+                },
+                by={"agent_id": agent_id, "memory_id": memory_id},
+                where=[
+                    Fragment(_NOT_RETRACTED, ()),
+                    Fragment("($1::boolean OR NOT evergreen)", (allow_permanent,)),
+                ],
+                returning=("memory_id",),
             )
+            changed = written.rows[0]["memory_id"] if written.rows else None
             if changed is None:
                 write.unchanged()
         return changed is not None
@@ -2510,28 +2513,31 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         if self.l3_pool is None:
             return False
         async with self.bypassing_write((agent_id, memory_id)) as write:
-            changed = await self.l3_pool.fetchval(
-                f"""
-                UPDATE memories SET
-                    salience = CASE WHEN evergreen THEN salience ELSE GREATEST(0.0, LEAST(1.0, COALESCE(
-                        (SELECT substring(t FROM {len(_RETRACTED_SALIENCE) + 1})::numeric
-                         FROM jsonb_array_elements_text(tags) AS t
-                         WHERE starts_with(t, '{_RETRACTED_SALIENCE}') LIMIT 1),
-                        $3))) END,
-                    tags = (SELECT COALESCE(jsonb_agg(t), '[]'::jsonb)
-                            FROM jsonb_array_elements_text(tags) AS t
-                            WHERE t <> 'retracted'
-                              AND NOT starts_with(t, '{_RETRACTED_BECAUSE}')
-                              AND NOT starts_with(t, '{_RETRACTED_SALIENCE}')),
-                    date_updated = now()
-                WHERE agent_id = $1 AND memory_id = $2
-                  AND NOT ({_NOT_RETRACTED})
-                RETURNING memory_id
-                """,
-                agent_id,
-                memory_id,
-                default_salience,
+            written = await update_keyed(
+                self.l3_pool,
+                "memories",
+                values={
+                    "salience": Fragment(
+                        "CASE WHEN evergreen THEN salience ELSE GREATEST(0.0, LEAST(1.0, COALESCE("
+                        f"(SELECT substring(t FROM {len(_RETRACTED_SALIENCE) + 1})::numeric "
+                        "FROM jsonb_array_elements_text(tags) AS t "
+                        f"WHERE starts_with(t, '{_RETRACTED_SALIENCE}') LIMIT 1), "
+                        "$1))) END",
+                        (default_salience,),
+                    ),
+                    "tags": Fragment(
+                        "(SELECT COALESCE(jsonb_agg(t), '[]'::jsonb) FROM jsonb_array_elements_text(tags) AS t "
+                        f"WHERE t <> 'retracted' AND NOT starts_with(t, '{_RETRACTED_BECAUSE}') "
+                        f"AND NOT starts_with(t, '{_RETRACTED_SALIENCE}'))",
+                        (),
+                    ),
+                    "date_updated": Fragment("now()", ()),
+                },
+                by={"agent_id": agent_id, "memory_id": memory_id},
+                where=[Fragment(f"NOT ({_NOT_RETRACTED})", ())],
+                returning=("memory_id",),
             )
+            changed = written.rows[0]["memory_id"] if written.rows else None
             if changed is None:
                 write.unchanged()
         return changed is not None
@@ -2688,17 +2694,19 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         decay = type(self).salience_decay
         return "salience" if decay is None else decay.effective_sql()
 
-    def _reinforced(self, bump: str) -> str:
-        """a reinforcement's ``SET`` of salience: the stored salience plus the bump, or with decay on read the
-        effective salience plus the bump, stamped now.
+    def _reinforced(self, bump: float) -> dict[str, Fragment]:
+        """a reinforcement's values: the stored salience plus the bump, or with decay on read the effective
+        salience plus the bump, stamped now (:meth:`SalienceDecay.reinforced_values`).
 
-        :param bump: the increment's bind
-        :ptype bump: str
-        :return: the assignments
-        :rtype: str
+        :param bump: the increment
+        :ptype bump: float
+        :return: column -> its new value
+        :rtype: dict[str, Fragment]
         """
         decay = type(self).salience_decay
-        return f"salience = LEAST(1.0, salience + {bump})" if decay is None else decay.reinforced_sql(bump)
+        if decay is None:
+            return {"salience": Fragment("LEAST(1.0, salience + $1)", (bump,))}
+        return decay.reinforced_values(bump)
 
     async def bump_salience(
         self,
@@ -2737,13 +2745,11 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # subsequent get() re-reads the fresh salience from L3 (a bounded set --
         # the ids surfaced this retrieval).
         async with self.bypassing_write(*[(agent_id, memory_id) for memory_id in memory_ids]):
-            await self.l3_pool.execute(
-                f"UPDATE memories SET {self._reinforced('$1')}, "
-                "last_accessed = now() "
-                "WHERE agent_id = $2 AND memory_id = ANY($3::uuid[]) AND NOT evergreen",
-                access_bump,
-                agent_id,
-                memory_ids,
+            await update_keyed(
+                self.l3_pool,
+                "memories",
+                values={**self._reinforced(access_bump), "last_accessed": Fragment("now()", ())},
+                by={"agent_id": agent_id, "memory_id": AnyOf(memory_ids, cast="uuid"), "evergreen": False},
             )
         return None
 

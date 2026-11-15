@@ -37,7 +37,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, schema_with_embedding_dim
-from threetears.core.keyed import Fragment, Nearest, read_nearest
+from threetears.core.keyed import AnyOf, Fragment, Nearest, read_nearest, update_keyed
 from threetears.observe import get_logger
 
 from threetears.agent.intention.entities import IntentionEntity
@@ -441,12 +441,11 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         if self.l3_pool is None or not intention_ids:
             return None
         async with self.bypassing_write(*[(agent_id, intention_id) for intention_id in intention_ids]):
-            await self.l3_pool.execute(
-                f"UPDATE intentions SET {self._reinforced('$1')} "
-                "WHERE agent_id = $2 AND intention_id = ANY($3::uuid[])",
-                access_bump,
-                agent_id,
-                intention_ids,
+            await update_keyed(
+                self.l3_pool,
+                "intentions",
+                values=self._reinforced(access_bump),
+                by={"agent_id": agent_id, "intention_id": AnyOf(intention_ids, cast="uuid")},
             )
         return None
 
@@ -459,14 +458,16 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
         decay = type(self).salience_decay
         return "salience" if decay is None else decay.rank_sql()
 
-    def _reinforced(self, bump: str) -> str:
-        """a reinforcement's ``SET``: the stored salience plus the bump, or with decay on read the effective
-        salience plus the bump, stamped now.
+    def _reinforced(self, bump: float) -> dict[str, Fragment]:
+        """a reinforcement's values: the stored salience plus the bump, or with decay on read the effective
+        salience plus the bump, stamped now (:meth:`SalienceDecay.reinforced_values`).
 
-        :param bump: the increment's bind
-        :ptype bump: str
-        :return: the assignments
-        :rtype: str
+        :param bump: the increment
+        :ptype bump: float
+        :return: column -> its new value
+        :rtype: dict[str, Fragment]
         """
         decay = type(self).salience_decay
-        return f"salience = LEAST(1.0, salience + {bump})" if decay is None else decay.reinforced_sql(bump)
+        if decay is None:
+            return {"salience": Fragment("LEAST(1.0, salience + $1)", (bump,))}
+        return decay.reinforced_values(bump)

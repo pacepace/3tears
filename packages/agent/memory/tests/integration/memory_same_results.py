@@ -139,6 +139,10 @@ class Serial:
         async with self.lock:
             return await self.conn.fetchval(sql, *args)
 
+    async def execute(self, sql: str, *args: Any) -> Any:
+        async with self.lock:
+            return await self.conn.execute(sql, *args)
+
 
 def collection(kind: type[Any], pool: Any) -> Any:
     registry = CollectionRegistry()
