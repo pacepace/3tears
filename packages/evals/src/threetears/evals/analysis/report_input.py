@@ -1131,10 +1131,8 @@ UnsizedReason = Literal["no_interval", "no_spread", "on_the_line", "no_count", "
 #: Why no catalogue action takes a step: ``unclassed_kind``, an analyst's own kind, outside the package's classes;
 #: ``method_only``, a kind that only ever lands in the method section and qualifies no answer;
 #: ``no_interval_to_gain``, a figure the engine states no interval for at any size (a percentile, or a mean read from
-#: enough cases that still states none), so no added case gives it one; ``new_campaign_needed``, nothing added to this
-#: campaign closes it (its criterion was set, or its pick made, on these results), and the confirmation that answers it
-#: (unseen cases, in a new campaign declared before its results) takes several actions no one catalogue action joins.
-NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain", "new_campaign_needed"]
+#: enough cases that still states none), so no added case gives it one.
+NoActionReason = Literal["unclassed_kind", "method_only", "no_interval_to_gain"]
 
 #: A value one argument of a catalogue action's call takes.
 StepArgument = str | bool | int | list[str]
@@ -1147,11 +1145,15 @@ class RemedyStep(_Part):
     Where an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the
     step makes, every argument named and typed as the action's own parameters (a step that adds cases passes its
     planned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the
-    caveat holds, which the taker supplies to every call. Where the step is more evidence, ``planned_cases`` is its
-    size, read from the figure it would settle and stated before it runs, never "until it separates"; where no size
-    can be read, ``unsized`` says why and the step makes no call, so it is never taken open-ended. Where no one action
-    takes it, ``no_action`` says why. A step that spends names the action that prices it first; code never takes a
-    step.
+    caveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the
+    reading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched.
+    Where one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same
+    shape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a
+    confirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.
+    Where the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated
+    before it runs, never "until it separates"; where no size can be read, ``unsized`` says why and the step makes no
+    call, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names
+    the action that prices it first; code never takes a step.
     """
 
     remedy: Remedy = Field(description="What would close it.")
@@ -1168,15 +1170,35 @@ class RemedyStep(_Part):
         default_factory=list,
         description="The action's parameters no call fills, by its own names, which the taker supplies to every call.",
     )
+    as_launched: list[str] = Field(
+        default_factory=list,
+        description="For a launch: the parameters that set an arm up which the reading holds no value for, by the "
+        "action's own names; the taker sets each as the runs of the arms it launches were launched, never to its "
+        "default, or the new runs are not more of those arms.",
+    )
+    after: dict[str, Literal["launched_runs", "launched_control_run", "created_campaign"]] = Field(
+        default_factory=dict,
+        description="For a call that follows another of the step: each parameter only an earlier call's result holds, "
+        "and which: launched_runs, the run ids job_poll names on the step's launch job (run_ids); "
+        "launched_control_run, the one of them the control arm's model ran; created_campaign, the id the step's "
+        "campaign_create returned.",
+    )
+    then: list[RemedyStep] = Field(
+        default_factory=list,
+        description="The calls that finish the act after this step's own, in order, each of one action and of this "
+        "shape: the runs a launch makes joined to the campaign (campaign_runs_add), the runs a re-run replaces taken "
+        "out (campaign_runs_remove), the control named in a new campaign (campaign_update). Empty on a call that "
+        "follows another.",
+    )
     arms: list[str] = Field(default_factory=list, description="The arms it is about, by id; empty for all.")
     runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
     planned_cases: int | None = Field(
         default=None,
         ge=1,
         description="For more evidence: the new cases to add per arm named (on fresh cases, the cases to run), read "
-        "from the figure it would settle, planned before it runs, so that a design of that size clears the line the "
-        "caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's "
-        "estimate.",
+        "from the figure it would settle, planned before it runs, so that once the runs it launches are in the "
+        "campaign that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is "
+        "lifted by, at least four times in five if the truth is today's estimate.",
     )
     unsized: UnsizedReason | None = Field(
         default=None, description="For more evidence no size can be read for: why. Such a step makes no call."
@@ -1191,7 +1213,7 @@ class RemedyStep(_Part):
         default=False,
         description="Whether taking it reads the same readings again with the cases it adds: one more look at them, "
         "stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it "
-        "were the first, so adding cases and reading again more than once errs more often than that level says.",
+        "were the first, so adding cases and reading again even once errs more often than that level says.",
     )
     results_needed: int | None = Field(
         default=None, ge=1, description="For a check: how many more results it needs before it can decide."
@@ -1227,6 +1249,13 @@ class RemedyStep(_Part):
             raise ValueError("a step an action takes has no reason no action takes it")
         if (self.action is None) != (not self.calls):
             raise ValueError("a step an action takes makes at least one call of it, and a step none takes makes none")
+        if self.action is None and (self.then or self.after or self.as_launched):
+            raise ValueError("a step no action takes makes no call, and none follows it")
+        named = [*self.needs, *self.as_launched, *self.after]
+        if len(set(named)) != len(named) or any(set(call) & set(named) for call in self.calls):
+            raise ValueError("each parameter is filled by a call, left to the taker, or read off an earlier call: once")
+        if any(step.then for step in self.then):
+            raise ValueError("a call that follows another holds no calls of its own to follow it")
         return self
 
 

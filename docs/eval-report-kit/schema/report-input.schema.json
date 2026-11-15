@@ -2772,7 +2772,7 @@
   },
   "RemedyStep": {
    "additionalProperties": false,
-   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters (a step that adds cases passes its\nplanned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the\ncaveat holds, which the taker supplies to every call. Where the step is more evidence, ``planned_cases`` is its\nsize, read from the figure it would settle and stated before it runs, never \"until it separates\"; where no size\ncan be read, ``unsized`` says why and the step makes no call, so it is never taken open-ended. Where no one action\ntakes it, ``no_action`` says why. A step that spends names the action that prices it first; code never takes a\nstep.",
+   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters (a step that adds cases passes its\nplanned size as the count of new cases), and ``needs`` names the parameters the step cannot fill from what the\ncaveat holds, which the taker supplies to every call. A launch repeats the set-up of the arms it runs: what the\nreading holds of it is filled, and ``as_launched`` names the rest, each set as the arms' runs were launched.\nWhere one action's calls do not finish the act, ``then`` holds the calls that do, in order, each of the same\nshape: a launch's runs joined to the campaign it reads, the runs a re-run replaces taken out of it, and for a\nconfirmation the campaign created first; ``after`` names each argument that only an earlier call's result holds.\nWhere the step is more evidence, ``planned_cases`` is its size, read from the figure it would settle and stated\nbefore it runs, never \"until it separates\"; where no size can be read, ``unsized`` says why and the step makes no\ncall, so it is never taken open-ended. Where no action takes it, ``no_action`` says why. A step that spends names\nthe action that prices it first; code never takes a step.",
    "properties": {
     "remedy": {
      "description": "What would close it.",
@@ -2861,6 +2861,35 @@
      "title": "Needs",
      "type": "array"
     },
+    "as_launched": {
+     "description": "For a launch: the parameters that set an arm up which the reading holds no value for, by the action's own names; the taker sets each as the runs of the arms it launches were launched, never to its default, or the new runs are not more of those arms.",
+     "items": {
+      "type": "string"
+     },
+     "title": "As Launched",
+     "type": "array"
+    },
+    "after": {
+     "additionalProperties": {
+      "enum": [
+       "launched_runs",
+       "launched_control_run",
+       "created_campaign"
+      ],
+      "type": "string"
+     },
+     "description": "For a call that follows another of the step: each parameter only an earlier call's result holds, and which: launched_runs, the run ids job_poll names on the step's launch job (run_ids); launched_control_run, the one of them the control arm's model ran; created_campaign, the id the step's campaign_create returned.",
+     "title": "After",
+     "type": "object"
+    },
+    "then": {
+     "description": "The calls that finish the act after this step's own, in order, each of one action and of this shape: the runs a launch makes joined to the campaign (campaign_runs_add), the runs a re-run replaces taken out (campaign_runs_remove), the control named in a new campaign (campaign_update). Empty on a call that follows another.",
+     "items": {
+      "$ref": "#/$defs/RemedyStep"
+     },
+     "title": "Then",
+     "type": "array"
+    },
     "arms": {
      "description": "The arms it is about, by id; empty for all.",
      "items": {
@@ -2888,7 +2917,7 @@
       }
      ],
      "default": null,
-     "description": "For more evidence: the new cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs, so that a design of that size clears the line the caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's estimate.",
+     "description": "For more evidence: the new cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs, so that once the runs it launches are in the campaign that reads it, a design of that size clears the line the caveat is lifted by, on the interval it is lifted by, at least four times in five if the truth is today's estimate.",
      "title": "Planned Cases"
     },
     "unsized": {
@@ -2927,7 +2956,7 @@
     },
     "declared_look": {
      "default": false,
-     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it were the first, so adding cases and reading again more than once errs more often than that level says.",
+     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it were the first, so adding cases and reading again even once errs more often than that level says.",
      "title": "Declared Look",
      "type": "boolean"
     },
@@ -2978,8 +3007,7 @@
        "enum": [
         "unclassed_kind",
         "method_only",
-        "no_interval_to_gain",
-        "new_campaign_needed"
+        "no_interval_to_gain"
        ],
        "type": "string"
       },

@@ -138,6 +138,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "analysis/report_input.py:NoActionReason",
         "analysis/report_input.py:Remedy",
         "analysis/report_input.py:UnsizedReason",
+        "RemedyStep.after",
     ),
     _CHECK: (
         "kernel/evidence_tiers.py:CriterionState",

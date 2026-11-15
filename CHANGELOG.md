@@ -24,15 +24,21 @@ report input built from a bundle now carries `caveat_list` and `first_screen`.
   caveat (the new cases a design needs for that two-sided interval to clear its line at least four times in five at
   today's estimate, or, below the floor where an interval is stated, the cases that reach it), launched as exactly
   that many new cases (`n_variations`); a step with no size states why (`unsized`) and makes no call; and the action
-  that prices a step that spends. A step that adds cases says it is one more look at its readings (`declared_look`);
-  nothing counts looks yet, so a reading taken after it is read at its full level, and adding cases and reading
-  again more than once errs more often than that level says. Every one of the sixteen reasons, and every kind the
-  first screen can show, has the act that addresses it (a judge below its bar is replaced, raters who disagree
+  that prices a step that spends. A step that launches runs is the whole act, in order (`then`): the launch, its runs
+  joined to the campaign that reads them (`campaign_runs_add`, since a launched run joins none), and for a re-run the
+  runs it replaces taken out (`campaign_runs_remove`); what only an earlier call returns is named, not filled
+  (`after`: the launch's run ids, the created campaign). The launch repeats the arms' set-up: the template, subject,
+  models and repeats their runs were launched with are filled from the bundle, and every other setting that defines
+  an arm is named to be set as those runs were launched (`as_launched`). A late criterion or a pick among many is
+  confirmed on unseen cases in a new campaign, as a sequence: `campaign_create` first, declared before any result,
+  then the launch of that many new cases, its runs joined to it and its control named from them (the size is stated,
+  and a pick's marked too small, `size_bias`). A step that adds cases says it is one more look at its readings
+  (`declared_look`); nothing counts looks yet, so a reading taken after it is read at its full level, and adding cases
+  and reading again even once errs more often than that level says. Every one of the sixteen reasons, and every kind
+  the first screen can show, has the act that addresses it (a judge below its bar is replaced, raters who disagree
   sharpen the criterion, every case reading alike takes more cases, with no size it can promise); where no act the
   engine takes can close a caveat, the step says why (`no_action`): a percentile's point estimate gains no interval
-  from more cases, and a late criterion or a pick among many is confirmed only on unseen cases in a new campaign,
-  which no one catalogue action takes (its size is stated, and a pick's is marked too small, `size_bias`); an
-  analyst's own kind or a method-only kind takes `no_action`, saying which.
+  from more cases; an analyst's own kind or a method-only kind takes `no_action`, saying which.
 - Caveat ids are unique by construction: a typed caveat adds its reason, then its coordinate, where its reading holds
   another in the same state; one stated id on several parts (a late floor under one key on two aspects, a short run
   on two arms) is one caveat naming every part, where the second part was dropped before; and two raisers that raise

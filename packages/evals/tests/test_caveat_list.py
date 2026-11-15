@@ -33,6 +33,7 @@ import ast
 import json
 import math
 import random
+import statistics
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, get_args
@@ -47,7 +48,9 @@ from threetears.evals.analysis.caveats import (
     CLASS_OF_KIND,
     REMEDY_OF_REASON,
     STEP_OF_REMEDY,
+    ArmRuns,
     Plan,
+    Setup,
     call_read,
     caveat_list,
     caveat_step,
@@ -318,7 +321,8 @@ def test_the_messy_campaign_s_unfinished_run_gates_it_and_counts_three_waiting()
 
 
 def test_the_messy_campaign_resumed_shows_exactly_three_reasons_in_class_order_with_their_steps() -> None:
-    built = report_input(_messy(unfinished=False))
+    bundle = _messy(unfinished=False)
+    built = report_input(bundle)
     value = built.first_screen
     by_id = {entry.id: entry for entry in built.caveat_list or []}
 
@@ -329,8 +333,14 @@ def test_the_messy_campaign_resumed_shows_exactly_three_reasons_in_class_order_w
     assert by_id[value.reasons[1]].against == "model"
     assert value.remainder == 0 and value.open_report_caveats == 3
     assert [step.remedy for step in value.steps] == ["rerun_on_one_cell", "check_against_people", "declare_looks"]
-    assert value.steps[0].arms == [_SPLIT] and value.steps[0].calls == [{}]
-    assert value.steps[0].needs == ["template_id", "subject_id", "models"]
+    rerun = value.steps[0]
+    (lead,) = bundle.aspects
+    split_runs = next(arm.run_ids for arm in lead.design.contrasts if bundle.label_of(arm.variant_key) == _SPLIT)
+    assert rerun.arms == [_SPLIT] and rerun.action == "run_launch" and rerun.needs == []
+    assert [(part.action, part.calls, part.needs, part.after) for part in rerun.then] == [
+        ("campaign_runs_add", [{"aspect": lead.aspect}], ["campaign_id"], {"run_ids": "launched_runs"}),
+        ("campaign_runs_remove", [{"run_ids": split_runs}], ["campaign_id"], {}),
+    ], "the re-run's runs join the campaign whose reading raised it, and the split runs it replaces leave"
 
 
 def test_the_list_and_the_first_screen_are_outside_the_input_s_digest() -> None:
@@ -436,43 +446,146 @@ def test_every_reason_a_first_screen_shows_has_its_step_in_its_order(name: str) 
             assert step.action is None and step.calls == [], "a step no action takes makes no call"
 
 
+#: What a launch can fill from a reading that holds its bundle: the subject, the aspect's template, and two arms'
+#: runs, the control's among them, launched at five repeats per case where a launch's default is three.
+_HELD = Setup(
+    subject_id="subject-1",
+    templates={"accuracy": "tmpl-1"},
+    arms={
+        "accuracy": {
+            "a": ArmRuns(("run-a",), "model-a", 5, False),
+            "c": ArmRuns(("run-c1", "run-c2"), "model-c", 5, False),
+        }
+    },
+    control="c",
+    aspects=("accuracy",),
+)
+
+#: Every launch parameter that sets an arm up beyond its template, subject and model: each is filled or named.
+_ARM_SETUP = {"k_runs", "judge_model", "simulator_model", "overlays", "apparatus_settings", "cell_timeout_s"}
+
+
 def _steps_of(remedied: Remedy) -> Iterator[RemedyStep]:
-    for runs in ((), ("run-1", "run-2")):
-        for coordinate in (None, "served_model", "measure_definition"):
-            yield next_step(remedied, arms=["a"], runs=runs, coordinate=coordinate, plan=Plan(3))
+    for setup, arms in ((Setup(), ["a"]), (_HELD, ["a", "c"]), (_HELD, [])):
+        for runs in ((), ("run-1", "run-2")):
+            for coordinate in (None, "served_model", "measure_definition"):
+                yield next_step(
+                    remedied,
+                    arms=arms,
+                    runs=runs,
+                    readings=["accuracy/passed"],
+                    coordinate=coordinate,
+                    plan=Plan(3),
+                    setup=setup,
+                )
+
+
+def _parts(step: RemedyStep) -> Iterator[RemedyStep]:
+    """The step's own call and every one that follows it, in order."""
+    yield step
+    yield from step.then
 
 
 @pytest.mark.parametrize("remedied", get_args(Remedy))
 def test_every_call_a_step_makes_is_one_its_catalogue_action_accepts(remedied: Remedy) -> None:
-    """Each call names only the action's own parameters, typed as it takes them; with what the step leaves to the
-    taker filled from the catalogue's own example, the action's parameters accept it. A step that spends is priced by
-    an action that spends nothing, and one that takes the launch's own arguments accepts the call as well."""
+    """Each call, the step's own and every one that follows it, names only its action's own parameters, typed as it
+    takes them; with what the step leaves to the taker, to the arms' launch or to an earlier call filled from the
+    catalogue's own example, the action's parameters accept it. A step that launches runs repeats the arms' set-up,
+    filling or naming every setting that defines an arm, and joins its runs to a campaign, since a launched run joins
+    none: a re-run then takes out what it replaces, and a confirmation creates its campaign before it launches and
+    joins the runs to that one. A step that spends is priced by an action that spends nothing, which accepts each
+    launch's calls where it takes the launch's own arguments."""
     for step in _steps_of(remedied):
         if step.action is None:
-            assert step.calls == [] and step.needs == []
+            assert step.calls == [] and step.needs == [] and step.then == []
             continue
-        action = _CATALOGUE[step.action]
-        fields = action.params.model_fields
-        required = {name for name, field in fields.items() if field.is_required()}
-        assert step.calls and set(step.needs) <= set(fields), sorted(set(step.needs) - set(fields))
-        filled = {name: action.example[name] for name in step.needs if name in action.example}
-        assert {name for name in step.needs if name not in filled} <= set(fields) - required
-        for call in step.calls:
-            assert set(call) <= set(fields), sorted(set(call) - set(fields))
-            assert not set(call) & set(step.needs)
-            assert required <= set(call) | set(step.needs), sorted(required - set(call) - set(step.needs))
-            action.params.model_validate({**filled, **call})
-        if STEP_OF_REMEDY[remedied].adds_evidence:
+        for part in _parts(step):
+            action = _CATALOGUE[part.action or ""]
+            fields = action.params.model_fields
+            required = {name for name, field in fields.items() if field.is_required()}
+            left = [*part.needs, *part.as_launched, *part.after]
+            assert part.calls and set(left) <= set(fields), sorted(set(left) - set(fields))
+            filled = {name: action.example[name] for name in left if name in action.example}
+            assert {name for name in left if name not in filled} <= set(fields) - required
+            for call in part.calls:
+                assert set(call) <= set(fields), sorted(set(call) - set(fields))
+                assert not set(call) & set(left)
+                assert required <= set(call) | set(left), sorted(required - set(call) - set(left))
+                action.params.model_validate({**filled, **call})
+        actions = [part.action for part in _parts(step)]
+        rule = STEP_OF_REMEDY[remedied]
+        if "run_launch" in actions:
+            launch = next(part for part in _parts(step) if part.action == "run_launch")
+            for call in launch.calls:
+                assert _ARM_SETUP <= set(call) | set(launch.as_launched), "a launch left at a default is another arm"
+            after = actions[actions.index("run_launch") + 1 :]
+            assert "campaign_runs_add" in after, "a launched run joins no campaign until a call joins it"
+            join = next(part for part in step.then if part.action == "campaign_runs_add")
+            assert join.after["run_ids"] == "launched_runs"
+            if rule.new_campaign:
+                assert actions[0] == "campaign_create" and join.after["campaign_id"] == "created_campaign"
+            else:
+                assert "campaign_id" in join.needs, "the report holds its campaign by name"
+            if rule.replaces:
+                leaves = after[after.index("campaign_runs_add") :]
+                assert "campaign_runs_remove" in leaves, "a re-run's replaced runs leave the campaign"
+        else:
+            assert not rule.launches, "a step that launches names its launch"
+        if rule.adds_evidence:
             assert step.planned_cases is not None and step.planned_cases > 0
-            for call in step.calls:
+            launches = [call for part in _parts(step) if part.action == "run_launch" for call in part.calls]
+            assert launches
+            for call in launches:
                 assert call["n_variations"] == step.planned_cases, "the planned size is the count of new cases"
         if step.spends:
             assert step.priced_by is not None
             pricer = _CATALOGUE[step.priced_by]
             assert pricer.permission == "read"
-            if issubclass(pricer.params, action.params):
-                for call in step.calls:
-                    pricer.params.model_validate({**filled, **call})
+            for part in _parts(step):
+                action = _CATALOGUE[part.action or ""]
+                if issubclass(pricer.params, action.params):
+                    left = [*part.needs, *part.as_launched]
+                    filled = {name: action.example[name] for name in left if name in action.example}
+                    for call in part.calls:
+                        pricer.params.model_validate({**filled, **call})
+
+
+def test_a_launch_repeats_the_arms_set_up_as_their_runs_were_launched() -> None:
+    """New cases are more evidence for an arm only when run as that arm. The scaled campaign's arms ran at two repeats
+    per case, where a launch left to its default runs three: the confirmation's launch fills the template, subject,
+    models and repeats the arms' runs were launched with, read off the runs themselves, and names every other setting
+    that defines an arm, to be set as they were. An arm that moved a lever beyond its model takes a launch of its own,
+    so no other arm runs at its settings."""
+    from packages.evals.tests.test_hot_path_oracle import subject
+    from threetears.evals.analysis.service import assemble_campaign_bundle
+
+    read = subject("scaled")
+    bundle = assemble_campaign_bundle(read.host, read.campaign_id, read.scope_id)
+    built = report_input(bundle)
+    assert built.first_screen is not None
+    step = next(step for step in built.first_screen.steps if step.closes == "best_of_n")
+    launch = next(part for part in step.then if part.action == "run_launch")
+    (lead,) = bundle.aspects
+    summaries = {summary.run_id: summary for summary in lead.run_summaries}
+    design = [arm for arm in (lead.design.control_arm, *lead.design.contrasts) if arm is not None]
+    ran = {bundle.label_of(arm.variant_key): [summaries[run] for run in arm.run_ids] for arm in design}
+    (call,) = launch.calls
+    assert (call["template_id"], call["subject_id"]) == (lead.template_id, bundle.subject_id)
+    assert call["models"] == [ran[arm][0].candidate_model for arm in step.arms]
+    assert {summary.k_runs for arm in step.arms for summary in ran[arm]} == {call["k_runs"]}
+    assert call["k_runs"] != _CATALOGUE["run_launch"].params.model_fields["k_runs"].default, "set up off the default"
+    assert launch.needs == []
+    assert launch.as_launched == ["judge_model", "simulator_model", "overlays", "apparatus_settings", "cell_timeout_s"]
+
+    moved = {**_HELD.arms["accuracy"], "b": ArmRuns(("run-b",), "model-a", 5, True)}
+    apart = next_step(
+        "add_cases",
+        arms=["a", "b", "c"],
+        readings=["accuracy/passed"],
+        plan=Plan(4),
+        setup=_HELD._replace(arms={"accuracy": moved}),
+    )
+    assert [(call["models"], call["k_runs"]) for call in apart.calls] == [(["model-a", "model-c"], 5), (["model-a"], 5)]
 
 
 def test_a_resume_is_one_call_per_run_and_a_remeasure_stores_each_run_read_again() -> None:
@@ -508,6 +621,9 @@ def test_no_step_reads_until_it_separates_and_none_is_taken_by_code() -> None:
         "spends",
         "priced_by",
         "no_action",
+        "as_launched",
+        "after",
+        "then",
     }
     with pytest.raises(ValueError, match="planned size"):
         RemedyStep(remedy="add_cases", declared_look=True)
@@ -520,7 +636,24 @@ def test_no_step_reads_until_it_separates_and_none_is_taken_by_code() -> None:
     with pytest.raises(ValueError, match="open-ended"):
         RemedyStep(remedy="add_cases", action="run_launch", calls=[{}], unsized="no_count")
     with pytest.raises(ValueError, match="no reason no action"):
-        RemedyStep(remedy="confirm_on_fresh_cases", action="run_launch", calls=[{}], no_action="new_campaign_needed")
+        RemedyStep(remedy="add_cases", action="run_launch", calls=[{}], no_action="no_interval_to_gain")
+    joined = RemedyStep(remedy="add_cases", action="campaign_runs_add", calls=[{}], needs=["campaign_id"])
+    with pytest.raises(ValueError, match="none follows it"):
+        RemedyStep(remedy="add_cases", then=[joined])
+    with pytest.raises(ValueError, match="once"):
+        RemedyStep(remedy="add_cases", action="run_launch", calls=[{"k_runs": 2}], as_launched=["k_runs"])
+    with pytest.raises(ValueError, match="once"):
+        RemedyStep(
+            remedy="add_cases",
+            action="campaign_runs_add",
+            calls=[{}],
+            needs=["run_ids"],
+            after={"run_ids": "launched_runs"},
+        )
+    with pytest.raises(ValueError, match="no calls of its own"):
+        RemedyStep(
+            remedy="add_cases", action="run_launch", calls=[{}], then=[joined.model_copy(update={"then": [joined]})]
+        )
     source = Path(caveats.__file__).resolve().parents[1]
     readers = sorted(
         str(path.relative_to(source))
@@ -552,22 +685,65 @@ def test_a_step_that_adds_cases_launches_its_planned_size_as_new_cases_or_says_w
     assert (planned.declared_look, planned.planned_cases, planned.unsized) == (True, 7, None)
     assert planned.calls == [{"n_variations": 7}]
     assert planned.spends and planned.priced_by == "launch_estimate"
+    assert [(part.action, part.needs, part.after) for part in planned.then] == [
+        ("campaign_runs_add", ["campaign_id"], {"run_ids": "launched_runs"})
+    ], "the new runs join the campaign that reads them, and nothing it holds leaves"
     unsized = next_step("add_cases", arms=["a"])
     assert (unsized.declared_look, unsized.planned_cases, unsized.unsized) == (False, None, "nothing_to_settle")
     assert (unsized.action, unsized.calls, unsized.spends) == (None, [], False)
 
 
-def test_a_confirmation_on_fresh_cases_states_its_size_and_why_no_one_action_takes_it() -> None:
-    planned = next_step("confirm_on_fresh_cases", arms=["a"], plan=Plan(7))
-    assert (planned.planned_cases, planned.action, planned.calls, planned.no_action) == (
+def test_a_confirmation_creates_its_campaign_before_any_result_then_launches_its_size_and_joins_the_runs_to_it() -> (
+    None
+):
+    """Cases a criterion or a pick never saw, in a campaign declared before their results: ``campaign_create`` takes a
+    design with no run, the launch generates the planned count of new cases, the runs join the created campaign and
+    its control is named from them. ``sweep_launch`` cannot: it declares no criteria, generates no new cases and joins
+    each run as it is created, so no declaration precedes its results; its parameters say so."""
+    planned = next_step("confirm_on_fresh_cases", arms=["a", "c"], plan=Plan(7), setup=_HELD)
+    assert (planned.planned_cases, planned.action, planned.no_action, planned.declared_look) == (
         7,
+        "campaign_create",
         None,
-        [],
-        "new_campaign_needed",
+        False,
     )
-    assert not planned.declared_look and planned.spends and planned.priced_by == "launch_estimate"
+    assert planned.calls == [{"subject_id": "subject-1"}] and planned.needs == [
+        "name",
+        "behavior",
+        "question",
+        "aspects",
+    ]
+    launch, join, control = planned.then
+    assert (launch.action, launch.calls) == (
+        "run_launch",
+        [
+            {
+                "template_id": "tmpl-1",
+                "subject_id": "subject-1",
+                "n_variations": 7,
+                "models": ["model-a", "model-c"],
+                "k_runs": 5,
+            }
+        ],
+    )
+    assert (join.action, join.after) == (
+        "campaign_runs_add",
+        {"campaign_id": "created_campaign", "run_ids": "launched_runs"},
+    )
+    assert (control.action, control.after) == (
+        "campaign_update",
+        {"campaign_id": "created_campaign", "control_from_run_id": "launched_control_run"},
+    )
+    assert planned.spends and planned.priced_by == "launch_estimate"
+    sweep = _CATALOGUE["sweep_launch"].params.model_fields
+    assert "n_variations" not in sweep and not {"question", "aspects"} & set(sweep)
     unsized = next_step("confirm_on_fresh_cases", arms=["a"])
-    assert (unsized.unsized, unsized.no_action, unsized.spends) == ("nothing_to_settle", "new_campaign_needed", False)
+    assert (unsized.unsized, unsized.no_action, unsized.action, unsized.spends) == (
+        "nothing_to_settle",
+        None,
+        None,
+        False,
+    )
 
 
 def test_too_few_cases_gate_is_lifted_by_a_declared_look_sized_to_the_floor_from_the_fewest_an_arm_holds() -> None:
@@ -599,7 +775,11 @@ def test_a_campaign_too_small_to_read_is_gated_with_the_fewest_cases_an_arm_hold
     assert (value.gate.rule, value.gate.fewest_cases) == ("too_small", 3)
     (step,) = value.steps
     assert (step.remedy, step.declared_look, step.planned_cases) == ("add_cases", True, 2)
-    assert step.calls == [{"n_variations": 2}]
+    assert step.calls and all(
+        (call["n_variations"], call["template_id"], call["subject_id"]) == (2, aspect.template_id, small.subject_id)
+        for call in step.calls
+    ), "every arm the aspect holds runs the floor's new cases on its own template"
+    assert [part.action for part in step.then] == ["campaign_runs_add"], "the new runs join it, and none leaves"
 
 
 @pytest.mark.parametrize("remedied", get_args(Remedy))
@@ -802,10 +982,14 @@ def test_an_unsettled_reading_s_planned_cases_lift_it_at_least_four_times_in_fiv
     function, :func:`~threetears.evals.analysis.answer.unsettled_arms` (what raises the caveat) no longer raises it in
     94.4% of designs, and a fresh design of the whole planned size in 89.9% (each held at least 77.5%). The size reads
     its spread off today's bounded interval, which is wider than its cases' own spread at a small count, so it lifts
-    more often than four in five: a size, never a shortfall. (For the same reason the one-sided size this replaced
-    reached 80.6% and 82.0% here; the borderline simulation above, on a t interval, is the one that refuses it.) The
-    plan is read from the nominal interval at its own level, never the gain interval at a corrected one, so a corrected
-    gain level changes nothing; the step names the control, whose new cases pair with the candidates'."""
+    more often than four in five: a size, never a shortfall. The excess is bounded by the method: a spread read ``k``
+    times too wide asks for about ``k**2`` times the cases, which a closing interval as many times wider clears in
+    about ``Phi(z * k)`` of designs (``z`` the quantile of four in five). Today's interval is ``k = 1.40`` times the
+    normal one at the cases' own spread, so the fresh rate is held at most ``Phi(0.84 * 1.40) = 88.1%`` plus 2.5 points:
+    a size a third too large passes, a doubled one (about 99%) does not. (The one-sided size this replaced reached
+    80.6% and 82.0% here; the borderline simulation above, on a t interval, is the one that refuses it.) The plan is
+    read from the nominal interval at its own level, never the gain interval at a corrected one, so a corrected gain
+    level changes nothing; the step names the control, whose new cases pair with the candidates'."""
     today = [pair for pair, weight in _PAIRS for _ in range(weight)]
     held = _paired_input(today)
     caveat = next(entry for entry in raise_caveats(held) if entry.id == f"unsettled:{_UNSETTLED}")
@@ -843,6 +1027,17 @@ def test_an_unsettled_reading_s_planned_cases_lift_it_at_least_four_times_in_fiv
     fresh = sum(lifted(_draw_pairs(rng, len(today) + plan.cases)) for _ in range(designs))
     assert pooled / designs >= 0.80 - _TOLERANCE, pooled / designs
     assert fresh / designs >= 0.80 - _TOLERANCE, fresh / designs
+    # The method's upper bound: today's interval against a normal one at the truth's own per-case spread.
+    weights = sum(weight for _pair, weight in _PAIRS)
+    drift = sum((second - first) * weight for (first, second), weight in _PAIRS) / weights
+    spread = math.sqrt(sum(((second - first) - drift) ** 2 * weight for (first, second), weight in _PAIRS) / weights)
+    reading = next(reading for aspect in held.aspects if aspect.id == _UNSETTLED for reading in aspect.readings)
+    assert reading.within_interval is not None
+    width = (reading.within_interval[1] - reading.within_interval[0]) / 2 / 100
+    normal = statistics.NormalDist()
+    wide = width / (normal.inv_cdf(0.5 + stats.INTERVAL_LEVEL / 2) * spread / math.sqrt(len(today)))
+    assert 1.3 < wide < 1.5, wide
+    assert fresh / designs <= normal.cdf(normal.inv_cdf(0.80) * wide) + _TOLERANCE, fresh / designs
 
 
 def test_a_gate_cleared_on_a_point_estimate_is_sized_to_the_floor_or_says_no_case_gives_it_an_interval() -> None:
@@ -920,13 +1115,11 @@ def test_a_pick_among_many_is_confirmed_in_a_new_campaign_at_a_size_that_says_it
     plan = plan_of(held, caveat)
     step = caveat_step(caveat, plan=plan)
 
-    assert (step.remedy, step.action, step.calls, step.no_action) == (
-        "confirm_on_fresh_cases",
-        None,
-        [],
-        "new_campaign_needed",
-    )
-    assert plan is not None and step.planned_cases == plan.cases is not None
+    assert (step.remedy, step.action, step.no_action) == ("confirm_on_fresh_cases", "campaign_create", None)
+    assert plan is not None and plan.cases is not None and step.planned_cases == plan.cases
+    launch, join, *_control = step.then
+    assert (launch.action, launch.calls) == ("run_launch", [{"n_variations": plan.cases}]), "new cases, never its own"
+    assert (join.action, join.after["campaign_id"]) == ("campaign_runs_add", "created_campaign")
     assert step.size_bias == "picked_best_of_n" and not step.declared_look
     assert step.spends and step.priced_by == "launch_estimate"
     control = answer.control_arm(held)
@@ -956,8 +1149,14 @@ def test_a_late_criterion_is_confirmed_in_a_new_campaign_never_by_re_running_its
             if caveat.kind != "late":
                 continue
             step = caveat_step(caveat, plan=plan_of(held, caveat))
-            assert (step.remedy, step.action, step.calls) == ("confirm_on_fresh_cases", None, []), (name, caveat.id)
-            assert step.no_action == "new_campaign_needed" and not step.declared_look, (name, caveat.id)
+            assert step.remedy == "confirm_on_fresh_cases" and not step.declared_look, (name, caveat.id)
+            if step.planned_cases is None:
+                assert (step.action, step.calls) == (None, []), (name, caveat.id)
+                continue
+            assert step.action == "campaign_create", (name, caveat.id)
+            launch, join, *_control = step.then
+            assert launch.calls == [{"n_variations": step.planned_cases}], (name, caveat.id)
+            assert join.after["campaign_id"] == "created_campaign", (name, caveat.id)
 
 
 # --- ids are unique by construction ----------------------------------------------------------------------------------

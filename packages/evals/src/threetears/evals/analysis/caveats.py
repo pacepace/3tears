@@ -38,6 +38,11 @@ reason's remedy (:data:`REMEDY_OF_REASON`), else its kind's, chosen by what addr
 same evidence again; a caveat nothing closes takes ``no_action`` with why. The step that takes it
 (:func:`next_step`) is read off :data:`STEP_OF_REMEDY`: never stored in a digest, so a change to a remedy re-keys
 nothing. Its calls are named and typed as the catalogue action's own parameters, and what it cannot fill it names.
+A step that launches runs is the whole act the catalogue's actions take, in order: a launch repeating the set-up of
+the arms it runs (what the bundle holds of it filled, every other setting that defines an arm named, to be set as the
+arms' runs were launched), then its runs joined to the campaign that reads them, since a launched run joins none, and
+for a re-run the runs it replaces taken out; a confirmation on unseen cases creates its campaign first, declared
+before any result, and joins the runs to that.
 
 **A step that is more evidence is planned** (:func:`plan_of`) against the rule that lifts its caveat, on the
 interval that rule reads: a gate's borderline is lifted when the figure's two-sided interval, at its table's stated
@@ -48,11 +53,14 @@ interval, centred on today's estimate, to clear that line four times in five
 (:func:`~threetears.evals.analysis.separation.cases_to_separate`, ``sided=2``, at
 :data:`~threetears.evals.analysis.separation.POWER`), less the cases it rests on; on fresh cases, the whole design. A
 rate's nominal interval is the bounded one, wider than its cases' own spread at a small count, so a size read off it
-clears more often than four in five (the seeded simulation in ``test_caveat_list.py`` states the rate). A figure that
-reads too few cases for an interval is sized to the floor where one is first stated. A step that adds cases passes
-its size as the count of new cases its launch generates. Where no size can be read, the step says why and makes no
-call, so it is never taken open-ended; where no added case can close the caveat (a percentile's point estimate, a
-criterion set or a pick made on these results), the step says that instead of offering an act that cannot work.
+clears more often than four in five: a spread read ``k`` times too wide asks for about ``k**2`` times the cases, and
+clears about the normal share below ``z * k`` of designs (``z`` the quantile of ``POWER``) rather than ``POWER``; the
+seeded simulation in ``test_caveat_list.py`` holds both bounds. A figure that reads too few cases for an interval is
+sized to the floor where one is first stated. A step that adds cases passes its size as the count of new cases its
+launch generates. Where no size can be read, the step says why and makes no
+call, so it is never taken open-ended; where no added case can close the caveat (a percentile's point estimate),
+the step says that instead of offering an act that cannot work. A criterion set or a pick made on these results is
+closed by no case added to this campaign, so its step is the confirmation in a new one.
 Taking a step that adds cases is one more look at the readings it names, and says so; nothing counts looks yet, so a
 reading after it is read at its full level as if it were the first.
 
@@ -119,6 +127,7 @@ from threetears.evals.analysis.separation import (
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.kernel.declaration import CampaignCall
+from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.schema.reading_states import CaveatClass, CaveatReach, Coordinate, ReadingState, Reason
 
 #: Nothing is declared yet: the list's readers are the report input's builder and the page's thin reads of it.
@@ -218,17 +227,21 @@ _REMEDY_OF_KIND: Final[Mapping[str, Remedy]] = MappingProxyType(
 class StepRule(NamedTuple):
     """How a remedy is taken, as data.
 
-    :ivar action: The catalogue action that takes it; None where a host or a person acts outside the engine.
+    :ivar action: The catalogue action that takes it first; None where a host or a person acts outside the engine.
     :ivar adds_evidence: Whether it is more evidence: it then states a planned size (or why it has none) before it
         runs.
     :ivar spends: Whether taking it costs money; it then names the action that prices it.
     :ivar priced_by: The catalogue action that prices it, for one that spends.
-    :ivar needs: The action's parameters the step leaves to the taker, by the action's own names.
-    :ivar fixed: The arguments the remedy itself sets on every call.
+    :ivar needs: The first action's parameters the step leaves to the taker, by the action's own names.
+    :ivar fixed: The arguments the remedy itself sets on every call of its launch, or of its one action.
     :ivar per_run: The parameter one call per named run fills, and how the run's id is spelled into it.
-    :ivar sized_by: The parameter its planned size fills on every call: the count of new cases the action runs.
+    :ivar sized_by: The parameter its planned size fills on every call of its launch: the count of new cases it runs.
     :ivar looks_again: Whether taking it reads the same readings again with what it adds: one more look at them.
-    :ivar unavailable: Why no one catalogue action takes it, where an act closes it but the engine has no single door.
+    :ivar launches: Whether it launches runs: the launch repeats the set-up of the arms it runs, and its runs join the
+        campaign that reads them, since a run joins none by being launched.
+    :ivar replaces: Whether the runs it launches stand in for runs the campaign holds, which then leave it.
+    :ivar new_campaign: Whether its runs join a campaign it creates first, declared before their results, rather than
+        the one the report reads.
     """
 
     action: str | None
@@ -240,24 +253,45 @@ class StepRule(NamedTuple):
     per_run: tuple[str, str] | None = None
     sized_by: str | None = None
     looks_again: bool = False
-    unavailable: NoActionReason | None = None
+    launches: bool = False
+    replaces: bool = False
+    new_campaign: bool = False
 
 
-#: What a re-run leaves to its taker: the template and subject to launch, and the models the arms it names ran.
+#: What a launch leaves to its taker where the reading holds none of it: the template and subject, and the models the
+#: arms it names ran.
 _LAUNCH_NEEDS: Final = ("template_id", "subject_id", "models")
 
-#: A step that launches runs, priced by the estimate that takes the launch's own arguments.
-_LAUNCH: Final = StepRule("run_launch", spends=True, priced_by="launch_estimate", needs=_LAUNCH_NEEDS)
+#: What sets an arm up beyond its template, subject and model: the launch parameters a campaign reads as part of the
+#: arm (its repeats, judge and simulated user, the knobs turned on its kind, its rig and its deadline). A new run left
+#: at a default the arm's runs did not run at is not more of that arm, so each is set as the arm's runs were launched.
+_ARM_SETUP: Final = ("k_runs", "judge_model", "simulator_model", "overlays", "apparatus_settings", "cell_timeout_s")
+
+#: A step that re-runs what the caveat names: a launch, priced by the estimate that takes the launch's own arguments,
+#: whose runs join the campaign in place of the ones they replace.
+_LAUNCH: Final = StepRule(
+    "run_launch", spends=True, priced_by="launch_estimate", needs=_LAUNCH_NEEDS, launches=True, replaces=True
+)
 
 #: A step that launches runs on new cases as more evidence: its planned size is the count of new cases the template
-#: generates (``n_variations``; 0 would re-run the stored cases, which adds none), pooled with the ones it rests on.
-_MORE: Final = _LAUNCH._replace(adds_evidence=True, sized_by="n_variations", looks_again=True)
+#: generates (``n_variations``; 0 would re-run the stored cases, which adds none), joined to the campaign beside the
+#: ones it rests on.
+_MORE: Final = _LAUNCH._replace(adds_evidence=True, sized_by="n_variations", looks_again=True, replaces=False)
 
-#: A confirmation on cases the criterion or the pick never saw, in a new campaign declared before its results: a
-#: campaign created with the criteria, a launch of new cases, the runs joined to it. No one catalogue action does all
-#: three, so the step names the size and why no action takes it, and is priced as the launch it holds.
+#: A confirmation on cases the criterion or the pick never saw, in a new campaign declared before its results: the
+#: campaign created first with the criteria (``campaign_create``, which takes a design before any run), then the
+#: launch of that many new cases, its runs joined to that campaign, and its control named from them. Priced as the
+#: launch it holds. ``sweep_launch`` creates a campaign and joins its runs, but declares no criteria, generates no new
+#: cases and joins each run as it is created, so nothing it does is declared before its results.
 _CONFIRM: Final = StepRule(
-    None, adds_evidence=True, spends=True, priced_by="launch_estimate", unavailable="new_campaign_needed"
+    "campaign_create",
+    adds_evidence=True,
+    spends=True,
+    priced_by="launch_estimate",
+    needs=("name", "subject_id", "behavior", "question", "aspects"),
+    sized_by="n_variations",
+    launches=True,
+    new_campaign=True,
 )
 
 #: How each remedy is taken. A remedy whose action depends on the coordinate it is about takes it from
@@ -1234,8 +1268,159 @@ def plan_of(report_input: ReportInput, caveat: CaveatEntry) -> Plan | None:
         bias: Literal["picked_best_of_n"] | None = "picked_best_of_n" if plan.cases is not None else None
         return plan._replace(size_bias=bias, arms=_with_control(report_input, picks))
     if caveat.kind == "late":
-        return _late_plan(report_input, caveat)
+        # The confirmation runs every surviving option, and the control its readings are read against.
+        return _late_plan(report_input, caveat)._replace(
+            arms=_with_control(report_input, surviving_options(report_input))
+        )
     return _NOTHING_TO_SETTLE
+
+
+class ArmRuns(NamedTuple):
+    """What an arm's runs on one aspect were launched with, where the bundle says.
+
+    :ivar runs: The arm's runs there, by id.
+    :ivar model: The candidate model every one of them was launched with; None where they differ.
+    :ivar k_runs: The repeats per case every one of them was launched with; None where they differ.
+    :ivar beyond_model: Whether the arm's levers differ from the control's in more than the model: one launch runs
+        arms that differ only in their model, so such an arm is launched in a call of its own.
+    """
+
+    runs: tuple[str, ...]
+    model: str | None
+    k_runs: int | None
+    beyond_model: bool
+
+
+class Setup(NamedTuple):
+    """What a step that launches can fill from the reading: the campaign's subject, each aspect's template and each
+    arm's runs on it, the control and the aspects.
+
+    :ivar subject_id: The subject the campaign measures; None where the reading does not hold it.
+    :ivar templates: Each aspect's template, by the aspect's id.
+    :ivar arms: Each aspect's arms' runs, by the aspect's id and then the arm's.
+    :ivar control: The control arm, by id; None where the campaign names none.
+    :ivar aspects: The input's aspects, by id.
+    """
+
+    subject_id: str | None = None
+    templates: Mapping[str, str] = MappingProxyType({})
+    arms: Mapping[str, Mapping[str, ArmRuns]] = MappingProxyType({})
+    control: str | None = None
+    aspects: tuple[str, ...] = ()
+
+
+def _aspect_of(readings: Sequence[str], setup: Setup) -> str | None:
+    """The one aspect a step's runs are of: the one the caveat's readings are on, else the campaign's only one."""
+    named = {reading.partition("/")[0] for reading in readings} & set(setup.aspects)
+    if len(named) == 1:
+        return next(iter(named))
+    return setup.aspects[0] if not named and len(setup.aspects) == 1 else None
+
+
+def _launch_calls(
+    base: Mapping[str, StepArgument], arms: Sequence[str], held: Mapping[str, ArmRuns]
+) -> tuple[list[dict[str, StepArgument]], set[str]]:
+    """The launch calls that run ``arms`` as their runs ran, and what every one of them fills of the arms' set-up.
+
+    Arms whose levers differ from the control's only in the model share one call, so the new cases it generates are
+    every one of theirs; an arm that differs in more takes a call of its own. Where an arm's runs are not held, or
+    disagree on their model, one call names no model and the taker supplies them.
+    """
+    found = [held.get(arm) for arm in arms]
+    runs = [arm_runs for arm_runs in found if arm_runs is not None and arm_runs.model is not None]
+    if not arms or len(runs) != len(arms):
+        return [dict(base)], set()
+    every_k = all(arm_runs.k_runs is not None for arm_runs in runs)
+    groups: dict[tuple[str | None, int | None], list[str]] = {}
+    for arm, arm_runs in zip(arms, runs, strict=True):
+        key = (arm if arm_runs.beyond_model else None, arm_runs.k_runs if every_k else None)
+        models = groups.setdefault(key, [])
+        if arm_runs.model is not None and arm_runs.model not in models:
+            models.append(arm_runs.model)
+    calls: list[dict[str, StepArgument]] = []
+    for (_alone, k_runs), models in groups.items():
+        call: dict[str, StepArgument] = {**base, "models": models}
+        if k_runs is not None:
+            call["k_runs"] = k_runs
+        calls.append(call)
+    return calls, {"models", "k_runs"} if every_k else {"models"}
+
+
+def _follow(
+    remedied: Remedy, closes: str | None, action: str, call: dict[str, StepArgument], **fields: Any
+) -> RemedyStep:
+    """One call that follows a step's first, of the step's remedy and the caveat it closes."""
+    return RemedyStep(remedy=remedied, closes=closes, action=action, calls=[call], **fields)
+
+
+def _launching(
+    remedied: Remedy,
+    rule: StepRule,
+    *,
+    closes: str | None,
+    arms: Sequence[str],
+    runs: Sequence[str],
+    readings: Sequence[str],
+    cases: int | None,
+    setup: Setup,
+) -> tuple[RemedyStep, list[RemedyStep]]:
+    """A launch that repeats the arms' set-up, and the calls that finish it: its runs joined to the campaign it is
+    read in, the runs it replaces taken out, or, for a confirmation, the campaign created before it and its control
+    named after. A caveat that names no arm is on every arm the aspect holds."""
+    aspect = _aspect_of(readings, setup)
+    held = setup.arms.get(aspect, {}) if aspect is not None else {}
+    arms = list(arms) or list(held)
+    base: dict[str, StepArgument] = dict(rule.fixed)
+    template = setup.templates.get(aspect) if aspect is not None else None
+    if template is not None:
+        base["template_id"] = template
+    if setup.subject_id is not None:
+        base["subject_id"] = setup.subject_id
+    if rule.sized_by is not None and cases is not None:
+        base[rule.sized_by] = cases
+    calls, filled = _launch_calls(base, arms, held)
+    launch = RemedyStep(
+        remedy=remedied,
+        closes=closes,
+        action="run_launch",
+        calls=calls,
+        needs=[name for name in _LAUNCH_NEEDS if name not in base and name not in filled],
+        as_launched=[name for name in _ARM_SETUP if name not in base and name not in filled],
+        spends=True,
+        priced_by="launch_estimate",
+    )
+    if rule.new_campaign:
+        # The new campaign's aspect is the one its taker declares: each run joins the aspect on the template it ran.
+        created: dict[str, Any] = {"campaign_id": "created_campaign"}
+        then = [
+            launch,
+            _follow(remedied, closes, "campaign_runs_add", {}, after={**created, "run_ids": "launched_runs"}),
+        ]
+        if setup.control is not None and setup.control in arms:
+            control = {**created, "control_from_run_id": "launched_control_run"}
+            then.append(_follow(remedied, closes, "campaign_update", {}, after=control))
+        first: dict[str, StepArgument] = {"subject_id": setup.subject_id} if setup.subject_id is not None else {}
+        create = RemedyStep(
+            remedy=remedied,
+            closes=closes,
+            action="campaign_create",
+            calls=[first],
+            needs=[name for name in rule.needs if name not in first],
+        )
+        return create, then
+    joined: dict[str, StepArgument] = {"aspect": aspect} if aspect is not None else {}
+    then = [
+        _follow(
+            remedied, closes, "campaign_runs_add", joined, needs=["campaign_id"], after={"run_ids": "launched_runs"}
+        )
+    ]
+    if rule.replaces:
+        replaced = list(runs) or [run for arm in arms if arm in held for run in held[arm].runs]
+        if runs or (arms and all(arm in held for arm in arms) and replaced):
+            then.append(_follow(remedied, closes, "campaign_runs_remove", {"run_ids": replaced}, needs=["campaign_id"]))
+        else:
+            then.append(_follow(remedied, closes, "campaign_runs_remove", {}, needs=["campaign_id", "run_ids"]))
+    return launch, then
 
 
 def next_step(
@@ -1244,15 +1429,23 @@ def next_step(
     closes: str | None = None,
     arms: Sequence[str] = (),
     runs: Sequence[str] = (),
+    readings: Sequence[str] = (),
     coordinate: Coordinate | None = None,
     plan: Plan | None = None,
     results_needed: int | None = None,
     recording: Sequence[NextExperiment] = (),
     no_action: NoActionReason | None = None,
+    setup: Setup = Setup(),
 ) -> RemedyStep:
     """The step that takes one remedy, filled from what the caveat (or the gate) names (:data:`STEP_OF_REMEDY`): one
     call of its action per run it names where the action takes one run, else one call, each with the arguments the
     remedy sets, and the parameters the caveat cannot fill named for the taker.
+
+    A step that launches runs is the whole act the existing actions take, in order: the launch, repeating the set-up
+    of the arms it runs (what ``setup`` holds of it filled, the rest named in ``as_launched``), its runs joined to the
+    campaign that reads them, and, for a re-run, the runs it replaces taken out; a confirmation creates its campaign
+    first, joins the runs to it and names its control from them. Each call that follows names what only an earlier
+    call's result holds (``after``).
 
     :param remedied: The remedy.
     :ptype remedied: Remedy
@@ -1262,6 +1455,8 @@ def next_step(
     :ptype arms: Sequence[str]
     :param runs: The runs it names.
     :ptype runs: Sequence[str]
+    :param readings: The readings it names, whose aspect a launch's runs are of.
+    :ptype readings: Sequence[str]
     :param coordinate: The coordinate it is about.
     :ptype coordinate: Coordinate | None
     :param plan: For more evidence, its size or why it has none (:func:`plan_of`); None reads nothing to settle. A
@@ -1273,6 +1468,8 @@ def next_step(
     :ptype recording: Sequence[NextExperiment]
     :param no_action: For ``no_action``: why nothing closes it.
     :ptype no_action: NoActionReason | None
+    :param setup: What a launch can fill from the reading; none for a step read off nothing but the caveat.
+    :ptype setup: Setup
     :return: The step.
     :rtype: RemedyStep
     """
@@ -1282,10 +1479,16 @@ def next_step(
     sized = (plan or _NOTHING_TO_SETTLE) if rule.adds_evidence else Plan()
     if rule.adds_evidence and sized.cases is None:
         # No size, no call: a step that adds cases with no planned count would run open-ended, or not at all.
-        rule = StepRule(None, unavailable=rule.unavailable)
-    calls: list[dict[str, StepArgument]] = []
-    needs = list(rule.needs)
-    if rule.action is not None:
+        rule = StepRule(None)
+    head: dict[str, Any] = {}
+    then: list[RemedyStep] = []
+    if rule.launches:
+        first, then = _launching(
+            remedied, rule, closes=closes, arms=arms, runs=runs, readings=readings, cases=sized.cases, setup=setup
+        )
+        head = {"action": first.action, "calls": first.calls, "needs": first.needs, "as_launched": first.as_launched}
+    elif rule.action is not None:
+        needs = list(rule.needs)
         if rule.per_run is not None and runs:
             parameter, prefix = rule.per_run
             calls = [{**rule.fixed, parameter: f"{prefix}{run}"} for run in runs]
@@ -1293,14 +1496,12 @@ def next_step(
             calls = [dict(rule.fixed)]
             if rule.per_run is not None:
                 needs.append(rule.per_run[0])
-        if rule.sized_by is not None and sized.cases is not None:
-            calls = [{**call, rule.sized_by: sized.cases} for call in calls]
+        head = {"action": rule.action, "calls": calls, "needs": needs}
     return RemedyStep(
         remedy=remedied,
         closes=closes,
-        action=rule.action,
-        calls=calls,
-        needs=needs,
+        **head,
+        then=then,
         arms=list(arms),
         runs=list(runs),
         planned_cases=sized.cases,
@@ -1311,7 +1512,7 @@ def next_step(
         recording=list(recording),
         spends=rule.spends,
         priced_by=rule.priced_by,
-        no_action=(no_action or "unclassed_kind") if remedied == "no_action" else rule.unavailable,
+        no_action=(no_action or "unclassed_kind") if remedied == "no_action" else None,
     )
 
 
@@ -1321,6 +1522,7 @@ def caveat_step(
     plan: Plan | None = None,
     results_needed: int | None = None,
     recording: Sequence[NextExperiment] = (),
+    setup: Setup = Setup(),
 ) -> RemedyStep:
     """The step that would close one caveat; ``no_action``, with why, where nothing does, or where its plan reads that
     no added case closes it on this input.
@@ -1333,6 +1535,8 @@ def caveat_step(
     :ptype results_needed: int | None
     :param recording: What recording its coordinate would pool, where the bundle says.
     :ptype recording: Sequence[NextExperiment]
+    :param setup: What a launch can fill from the reading.
+    :ptype setup: Setup
     :return: The step.
     :rtype: RemedyStep
     """
@@ -1344,45 +1548,62 @@ def caveat_step(
         closes=caveat.id,
         arms=list(plan.arms) if plan is not None and plan.arms is not None else caveat.arms,
         runs=caveat.runs,
+        readings=caveat.readings,
         coordinate=caveat.coordinate,
         plan=plan,
         results_needed=results_needed,
         recording=recording if caveat.reason == "identity_unrecorded" else (),
         no_action=_no_action(caveat) if remedied == "no_action" else None,
+        setup=setup,
     )
 
 
-def gate_step(gate: Gate) -> RemedyStep:
+def gate_step(gate: Gate, setup: Setup = Setup()) -> RemedyStep:
     """The step that would lift a gate: its rule's reason's remedy, on the runs it names; too few cases, sized to the
     floor where an interval is first stated from the fewest an arm holds.
 
     :param gate: The gate.
     :ptype gate: Gate
+    :param setup: What a launch can fill from the reading.
+    :ptype setup: Setup
     :return: The step.
     :rtype: RemedyStep
     """
     reason = REASON_OF_GATE[gate.rule]
     plan = _to_the_floor(gate.fewest_cases) if reason == "too_few" else None
-    return next_step(REMEDY_OF_REASON[reason], runs=[run.run for run in gate.runs], plan=plan)
+    return next_step(REMEDY_OF_REASON[reason], runs=[run.run for run in gate.runs], plan=plan, setup=setup)
 
 
 class Evidence(NamedTuple):
-    """What the bundle says about how far a step would go, where the builder holds the bundle.
+    """What the bundle says about how far a step would go, and what a launch repeats, where the builder holds it.
 
     :ivar results_needed: The most results any judge's check against people needs before it decides.
     :ivar recording: What recording an unrecorded coordinate would pool, by arm.
+    :ivar subject_id: The subject the campaign measures.
+    :ivar templates: Each aspect's template, by the aspect's id.
+    :ivar arms: Each aspect's arms' runs and what they were launched with, by the aspect's id and then the arm's.
     """
 
     results_needed: int | None = None
     recording: Mapping[str, tuple[NextExperiment, ...]] = MappingProxyType({})
+    subject_id: str | None = None
+    templates: Mapping[str, str] = MappingProxyType({})
+    arms: Mapping[str, Mapping[str, ArmRuns]] = MappingProxyType({})
+
+
+def _one(values: Iterable[Any]) -> Any:
+    """The one value every item holds, else None."""
+    held = set(values)
+    return next(iter(held)) if len(held) == 1 else None
 
 
 def evidence_of(bundle: CampaignBundle) -> Evidence:
-    """What a campaign's bundle says about how far each step would go.
+    """What a campaign's bundle says about how far each step would go, and what each arm's runs were launched with.
 
     :param bundle: The campaign's bundle.
     :ptype bundle: CampaignBundle
-    :return: The results its judges' checks need, and what recording would pool, by arm.
+    :return: The results its judges' checks need, what recording would pool, by arm, and the subject, each aspect's
+        template and each arm's runs there.
     :rtype: Evidence
     """
     needed = [
@@ -1395,7 +1616,25 @@ def evidence_of(bundle: CampaignBundle) -> Evidence:
     for aspect in bundle.aspects:
         for experiment in aspect.next_experiments:
             recording.setdefault(bundle.label_of(experiment.variant_key), []).append(experiment)
-    return Evidence(max(needed) if needed else None, {arm: tuple(held) for arm, held in recording.items()})
+    arms: dict[str, dict[str, ArmRuns]] = {}
+    for aspect in bundle.aspects:
+        summaries = {summary.run_id: summary for summary in aspect.run_summaries}
+        control = [aspect.design.control_arm] if aspect.design.control_arm is not None else []
+        for arm in [*control, *aspect.design.contrasts]:
+            ran = [summaries[run] for run in arm.run_ids if run in summaries]
+            arms.setdefault(aspect.aspect, {})[bundle.label_of(arm.variant_key)] = ArmRuns(
+                runs=tuple(arm.run_ids),
+                model=_one(summary.candidate_model for summary in ran),
+                k_runs=_one(summary.k_runs for summary in ran),
+                beyond_model=bool(set(arm.moved) - {CANDIDATE_MODEL_LEVER}),
+            )
+    return Evidence(
+        max(needed) if needed else None,
+        {arm: tuple(held) for arm, held in recording.items()},
+        bundle.subject_id,
+        {aspect.aspect: aspect.template_id for aspect in bundle.aspects if aspect.template_id},
+        arms,
+    )
 
 
 def screen(
@@ -1418,19 +1657,29 @@ def screen(
     :ptype gate: Gate | None
     :param call: The call, where one was made.
     :ptype call: CallRead | None
-    :param evidence: What the bundle says about how far a step would go; none for a stored input.
+    :param evidence: What the bundle says about how far a step would go and what a launch repeats; none for a stored
+        input.
     :ptype evidence: Evidence
     :return: The first screen's value.
     :rtype: FirstScreen
     """
     value = first_screen(caveats, gate=gate, called_arms=decision_at(report_input).dominant, call=call)
+    setup = Setup(
+        subject_id=evidence.subject_id,
+        templates=evidence.templates,
+        arms=evidence.arms,
+        control=control_arm(report_input),
+        aspects=tuple(aspect.id for aspect in report_input.aspects),
+    )
     if value.gate is not None:
-        return value.model_copy(update={"steps": [gate_step(value.gate)]})
+        return value.model_copy(update={"steps": [gate_step(value.gate, setup)]})
     by_id = {caveat.id: caveat for caveat in caveats}
     steps = []
     for reason in value.reasons:
         caveat = by_id[reason]
         recording = [held for arm in caveat.arms for held in evidence.recording.get(arm, ())]
         plan = plan_of(report_input, caveat)
-        steps.append(caveat_step(caveat, plan=plan, results_needed=evidence.results_needed, recording=recording))
+        steps.append(
+            caveat_step(caveat, plan=plan, results_needed=evidence.results_needed, recording=recording, setup=setup)
+        )
     return value.model_copy(update={"steps": steps})
