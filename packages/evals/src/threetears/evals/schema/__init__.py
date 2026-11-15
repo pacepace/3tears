@@ -33,7 +33,6 @@ from threetears.evals.schema.reading_states import (
     Reason,
     SampleKind,
     StateOf,
-    Maker,
 )
 from threetears.evals.schema.blind_read import (
     BlindAgreement,
@@ -462,7 +461,6 @@ __all__ = [
     "AsyncExternalSpend",
     "AsyncStoreClock",
     "BlindAgreement",
-    "Maker",
     "BlindAnswer",
     "BlindArm",
     "BlindAsk",

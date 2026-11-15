@@ -184,7 +184,6 @@ the document, so extending one is a major. Each, and why:
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
   cause it does not name (``truncated``), kept apart from a call that failed (``error``).
-- ``Maker`` — whether a person or a model made a judgment (a call); a model's read is never a person's.
 - On a blind read: ``BlindSlot``, ``BlindAsk``, ``BlindPreferenceAnswer`` — what an item showed and asked, and
   what an answer gave, which its ratings are read from; ``BlindRaterKind`` — a person's answer is read as people's
   and a reference reviewer's apart, never pooled; ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which

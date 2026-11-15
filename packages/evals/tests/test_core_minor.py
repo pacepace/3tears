@@ -703,7 +703,6 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "StopReason": values(StopReason),
         "rate_drop": frozenset({"rate_drop"}),
         "cost_lower": frozenset({"cost_lower"}),
-        "Maker": values(reading_states.Maker),
         "BlindSlot": values(blind_read.BlindSlot),
         "BlindAsk": values(blind_read.BlindAsk),
         "BlindPreferenceAnswer": values(blind_read.BlindPreferenceAnswer),
