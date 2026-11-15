@@ -731,7 +731,7 @@ The host bridge: an eval's host, the command line, and a measure declared on the
 
 - **`Grader`** · dataclass · A function or a field with what its reading declares: a margin, a guardrail, or a range.
 - **`HostCommand`** · dataclass · A subcommand a host adds beside the engine's own, mounted by `run_cli` under the same program.
-- **`JudgeCalibration`** · dataclass · How a judge's scores on one dimension agree with a person's labels, and the evidence tier that bears.
+- **`JudgeCalibration`** · dataclass · How a judge's scores on one dimension agree with a person's labels: its check against people.
 - **`Measure`** · class · A function that computes a measure, carrying the measure's declaration.
 - **`WorldOutcome`** · model · What a world runner's graders see: the agent's answer, the state it left, and the calls it made.
 - **`WorldRunner`** · dataclass · A runner that hosts an agent on a world: `World(...)(agent)`.
