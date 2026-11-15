@@ -576,9 +576,9 @@ def _design_disclosures(
     # Why runs read under another definition of a host measure, or under none recorded, share no cell and no contrast,
     # and what their host does about it: said wherever the campaign's cells keep such runs apart.
     unrecorded = any(MEASURE_DEFINITIONS_DIMENSION in cell.unknown_dimensions for cell in bundle.cells)
-    for group in bundle.comparison.comparison_sets:
-        if group.measure_definition_disclosure and (unrecorded or "measure_definitions_differ" in group.badges):
-            say("apparatus", group.measure_definition_disclosure)
+    for compared in bundle.comparison.comparison_sets:
+        if compared.measure_definition_disclosure and (unrecorded or "measure_definitions_differ" in compared.badges):
+            say("apparatus", compared.measure_definition_disclosure)
     for merge in bundle.refused_merges:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(

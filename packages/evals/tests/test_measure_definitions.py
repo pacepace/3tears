@@ -463,7 +463,9 @@ async def test_a_host_reaches_both_doors_through_the_action_catalogue() -> None:
     (tool, *_) = eval_catalogue().mount_all(standard_tools())
     caller = Caller(scope_id=TOYHOST_SCOPE, identity="agent:backfill")
 
-    stated = await tool.call({"action": "runs_attest", "coordinate": "measure_definition", "run_ids": [since.id]}, host=host, caller=caller)
+    stated = await tool.call(
+        {"action": "runs_attest", "coordinate": "measure_definition", "run_ids": [since.id]}, host=host, caller=caller
+    )
     reported = await tool.call({"action": "run_remeasure", "run_id": old.id}, host=host, caller=caller)
     applied = await tool.call({"action": "run_remeasure", "run_id": old.id, "store": True}, host=host, caller=caller)
 

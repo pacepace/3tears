@@ -66,7 +66,13 @@ def _passing(right: int) -> Callable[[Mapping[str, Any]], Coroutine[Any, Any, An
     async def run(case: Mapping[str, Any]) -> Answer:
         index = int(case["text"].rsplit(" ", 1)[1])
         return Answer(
-            case["label"] if index < right else "skipped", model="m", input_tokens=100, output_tokens=10, cost_usd=0.002
+            case["label"] if index < right else "skipped",
+            model="m",
+            # A scripted stand-in knows what answers: itself. Named, so its runs pool as one model's (#1187).
+            served_model="m",
+            input_tokens=100,
+            output_tokens=10,
+            cost_usd=0.002,
         )
 
     return run

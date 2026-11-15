@@ -262,6 +262,7 @@ async def test_the_hosts_statement_of_the_definitions_brings_the_runs_back_into_
     )
 
     assert stated.run_ids == [batch.id for batch, _ in batches], "one call takes every run"
+    assert (stated.coordinate, stated.stated) == ("measure_definition", _NOW)
     bundle = _bundle(storage)
     (control,), (candidate,) = _arm(bundle, control=True), _arm(bundle, control=False)
     assert candidate.n_observations == 2 * control.n_observations
@@ -367,7 +368,12 @@ async def test_a_statement_never_replaces_a_model_a_response_named() -> None:
     (tool, *_) = eval_catalogue().mount_all(standard_tools())
 
     refused = await tool.call(
-        {"action": "runs_attest", "coordinate": "served_model", "run_ids": [named[0].id], "served_model": "vendor/another"},
+        {
+            "action": "runs_attest",
+            "coordinate": "served_model",
+            "run_ids": [named[0].id],
+            "served_model": "vendor/another",
+        },
         host=OpsHost(launch=launch),
         caller=Caller(scope_id=TOYHOST_SCOPE, identity="agent:backfill"),
     )
@@ -433,7 +439,11 @@ async def test_stating_a_runs_measure_definitions_moves_the_fingerprint_too() ->
     before = _bundle(storage)
 
     await attest_measure_definitions(
-        toyhost_host(storage=storage), [batch.id for batch, _ in batches], TOYHOST_SCOPE, _NOW, attested_by="person:host"
+        toyhost_host(storage=storage),
+        [batch.id for batch, _ in batches],
+        TOYHOST_SCOPE,
+        _NOW,
+        attested_by="person:host",
     )
 
     assert _bundle(storage).fingerprint() != before.fingerprint()

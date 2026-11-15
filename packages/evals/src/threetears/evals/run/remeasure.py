@@ -57,6 +57,7 @@ from threetears.evals.run.run_document import update_eval_run
 from threetears.evals.run.runner import refuse_misfit_host_measures
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.reading_states import Coordinate
 from threetears.evals.schema.models import (
     NON_TERMINAL_RUN_STATUSES,
     MeasureAttestation,
@@ -341,15 +342,18 @@ def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> Non
 
 
 class Attested(EvalBaseModel):
-    """What a host's attestation of stored runs' measure definitions wrote."""
+    """What a host's statement of one coordinate of stored runs wrote: one shape, whichever coordinate."""
 
+    coordinate: Coordinate = Field(description="The coordinate stated: measure_definition or served_model.")
     run_ids: list[str] = Field(description="The runs stamped by this call, in the order given.")
     already_attested: list[str] = Field(
         default_factory=list,
-        description="The runs an earlier attestation had stamped with these same definitions: left as they were.",
+        description="The runs an earlier statement had stamped with the same value, whole: left as they were.",
     )
-    definitions: dict[str, str] = Field(description="The definitions stated for each, measure key -> digest.")
-    attested_by: str
+    stated: dict[str, str] = Field(
+        description="What was stated of each run: measure key -> definition digest, or served_model -> the model."
+    )
+    attested_by: str = Field(description="Who stated it.")
 
 
 async def attest_measure_definitions(
@@ -459,21 +463,12 @@ async def attest_measure_definitions(
     already = await run_blocking(host.blocking_executor, write)
     stamped = [run_id for run_id in run_ids if run_id not in already]
     log.info("eval.attest_measure_definitions runs=%d already=%d by=%s", len(stamped), len(already), attested_by)
-    return Attested(run_ids=stamped, already_attested=already, definitions=stated, attested_by=attested_by)
-
-
-class ServedModelAttested(EvalBaseModel):
-    """What a host's attestation of stored runs' served candidate model wrote."""
-
-    run_ids: list[str] = Field(description="The runs stamped by this call, in the order given.")
-    already_attested: list[str] = Field(
-        default_factory=list,
-        description="The runs an earlier attestation had stamped with this same model, whole: left as they were.",
-    )
-    served_model: str = Field(description="The model stated as having answered their candidate calls.")
-    attested_by: str
-    rows_named: int = Field(
-        default=0, ge=0, description="How many candidate usage rows that named no served model now name the stated one."
+    return Attested(
+        coordinate="measure_definition",
+        run_ids=stamped,
+        already_attested=already,
+        stated=stated,
+        attested_by=attested_by,
     )
 
 
@@ -490,7 +485,7 @@ async def attest_served_model(
     *,
     attested_by: str,
     note: str | None = None,
-) -> ServedModelAttested:
+) -> Attested:
     """Stamp stored runs whose candidate responses named no model with the model their host says answered them.
 
     The host's statement, never the engine's guess: the id a run asked for is not evidence of what answered it, and
@@ -518,7 +513,7 @@ async def attest_served_model(
     :param note: Why the host knows, in its own words.
     :ptype note: str | None
     :return: What was written.
-    :rtype: ServedModelAttested
+    :rtype: Attested
     :raises NotFoundError: A run is not in the scope.
     :raises ValidationFailedError: ``served_model`` or ``attested_by`` is blank; a run is still pending or running; a
         run was attested with another model; or none of a run's candidate rows is silent. Raised before anything is
@@ -618,8 +613,12 @@ async def attest_served_model(
     already, rows = await run_blocking(host.blocking_executor, write)
     stamped = [run_id for run_id in run_ids if run_id not in already]
     log.info("eval.attest_served_model runs=%d already=%d rows=%d by=%s", len(stamped), len(already), rows, attested_by)
-    return ServedModelAttested(
-        run_ids=stamped, already_attested=already, served_model=stated, attested_by=attested_by, rows_named=rows
+    return Attested(
+        coordinate="served_model",
+        run_ids=stamped,
+        already_attested=already,
+        stated={"served_model": stated},
+        attested_by=attested_by,
     )
 
 
@@ -633,7 +632,6 @@ def _attested_as(run: EvalRun, stated: Mapping[str, str]) -> bool:
 __all__ = [
     "Attested",
     "Remeasure",
-    "ServedModelAttested",
     "attest_measure_definitions",
     "attest_served_model",
     "remeasure_run",

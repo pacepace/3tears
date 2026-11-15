@@ -263,6 +263,7 @@
 "threetears.evals.schema.SecondJudgeScore": "provisional",
 "threetears.evals.schema.SecondJudging": "provisional",
 "threetears.evals.schema.sent_settings_of": "host-contract",
+"threetears.evals.schema.ServedModelAttestation": "provisional",
 "threetears.evals.schema.SIMULATOR_PURPOSES": "provisional",
 "threetears.evals.schema.SimulatorLLM": "provisional",
 "threetears.evals.schema.SimulatorPurpose": "provisional",

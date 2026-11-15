@@ -1311,6 +1311,11 @@
       "signature": "sent_settings_of(completion: object) -> ClientRequestSettings | None",
       "tier": "host-contract"
     },
+    "threetears.evals.schema.ServedModelAttestation": {
+      "kind": "model",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.SIMULATOR_PURPOSES": {
       "kind": "constant (tuple)",
       "signature": "",

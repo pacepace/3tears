@@ -185,6 +185,7 @@ from threetears.evals.schema.models import (
 from threetears.evals.kernel.judge_temperature import DEFAULT_TEMPERATURE_REPEATS, TemperatureSelection
 from threetears.evals.run.remeasure import attest_served_model
 from threetears.evals.run import (
+    Attested,
     JudgeCaseFreezeReport,
     JudgeTemperatureEstimate,
     Regrade,
@@ -1014,21 +1015,6 @@ class RunsAttestParams(EvalBaseModel):
     ] = None
 
 
-class RunsAttested(EvalBaseModel):
-    """What a host's statement of one coordinate of stored runs wrote: one shape, whichever coordinate."""
-
-    coordinate: Coordinate = Field(description="The coordinate stated.")
-    run_ids: list[str] = Field(description="The runs stamped by this call, in the order given.")
-    already_attested: list[str] = Field(
-        default_factory=list,
-        description="The runs an earlier statement had stamped with the same value: left as they were.",
-    )
-    stated: dict[str, str] = Field(
-        description="What was stated of each run: measure key -> definition digest, or served_model -> the model."
-    )
-    attested_by: str = Field(description="Who stated it: the caller.")
-
-
 SecondJudgeModel = Annotated[
     str, Field(min_length=1, description="The model the second judge sends every judged dimension to.")
 ]
@@ -1689,7 +1675,7 @@ async def _run_remeasure(host: OpsHost, caller: Caller, params: RunRemeasurePara
     return await remeasure_run(host.eval_host, params.run_id, caller.scope_id, apply=params.store)
 
 
-async def _runs_attest(host: OpsHost, caller: Caller, params: RunsAttestParams) -> RunsAttested:
+async def _runs_attest(host: OpsHost, caller: Caller, params: RunsAttestParams) -> Attested:
     eval_host = host.eval_host
     stated_for = {"measure_definition": "measure_definitions", "served_model": "served_model"}
     if params.coordinate not in stated_for:
@@ -1708,10 +1694,8 @@ async def _runs_attest(host: OpsHost, caller: Caller, params: RunsAttestParams) 
         )
     if params.coordinate == "served_model":
         if params.served_model is None:
-            raise ValidationFailedError(
-                "a statement of the served model names the model", remedy="pass served_model"
-            )
-        answered = await attest_served_model(
+            raise ValidationFailedError("a statement of the served model names the model", remedy="pass served_model")
+        return await attest_served_model(
             eval_host,
             params.run_ids,
             caller.scope_id,
@@ -1719,32 +1703,18 @@ async def _runs_attest(host: OpsHost, caller: Caller, params: RunsAttestParams) 
             attested_by=caller.identity,
             note=params.attestation_note,
         )
-        return RunsAttested(
-            coordinate="served_model",
-            run_ids=answered.run_ids,
-            already_attested=answered.already_attested,
-            stated={"served_model": answered.served_model},
-            attested_by=answered.attested_by,
-        )
     definitions = (
         params.measure_definitions
         if params.measure_definitions is not None
         else eval_host.profile.measures.definition_digests()
     )
-    defined = await attest_measure_definitions(
+    return await attest_measure_definitions(
         eval_host,
         params.run_ids,
         caller.scope_id,
         definitions,
         attested_by=caller.identity,
         note=params.attestation_note,
-    )
-    return RunsAttested(
-        coordinate="measure_definition",
-        run_ids=defined.run_ids,
-        already_attested=defined.already_attested,
-        stated=defined.definitions,
-        attested_by=defined.attested_by,
     )
 
 
@@ -3306,10 +3276,14 @@ def engine_actions() -> tuple[Action, ...]:
             workflow=CURATE,
             permission="write",
             params=RunsAttestParams,
-            result=RunsAttested,
+            result=Attested,
             handler=_runs_attest,
             render=render.render_model,
-            example={"run_ids": [run_id], "coordinate": "measure_definition", "attestation_note": "made after the last definition change"},
+            example={
+                "run_ids": [run_id],
+                "coordinate": "measure_definition",
+                "attestation_note": "made after the last definition change",
+            },
             detail=(
                 "An upgrade step for runs stored before a coordinate was recorded, never something a run launched "
                 "now needs. A run whose results hold a host measure and that recorded no measure definitions, and a "
