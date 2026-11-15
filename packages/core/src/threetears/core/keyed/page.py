@@ -40,11 +40,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from threetears.core.backends.dialect import known_on_yugabyte
-from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, reads_l3, sent_by
+from threetears.core.keyed._filters import Derived, Fragment, Lock, Selected, reads_l3, sent_by, yugabyte_index_hint
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
-from threetears.interfaces.keyed.keys import index_hint, refuse_non_unique_order, serving_index
+from threetears.interfaces.keyed.keys import refuse_non_unique_order
 from threetears.interfaces.keyed.page import (
     KeyPage,
     Sort,
@@ -146,33 +146,6 @@ async def keyset_page(
     )
     answered = list(await sent_by(conn).fetch(sql, *params))
     return KeyPage.cut(order, answered if records else [dict(row) for row in answered], limit)
-
-
-async def yugabyte_index_hint(conn: Any, table: Any, by: Mapping[str, Any], order: Sequence[Sort]) -> str:
-    """the hint a keyed read of ``table`` pinning ``by`` in ``order`` starts with on YugabyteDB: the declared index
-    that serves it (:func:`~threetears.interfaces.keyed.keys.serving_index`), named to pg_hint_plan
-    (:func:`~threetears.interfaces.keyed.keys.index_hint`). Nothing on any other database, for a read that does not go
-    to L3, or where no declared index but the primary key serves it.
-
-    The one place a keyed helper asks it: YugabyteDB read one agent's conversations of one status through the primary
-    key filtering the status, on every one of 15 fresh worlds, rather than the declared ``(agent_id, status,
-    conversation_id)`` (3tears #87, #88); statistics did not move it.
-
-    :param conn: the reader
-    :ptype conn: Any
-    :param table: the relation read
-    :ptype table: Any
-    :param by: the read's pins
-    :ptype by: Mapping[str, Any]
-    :param order: the read's sort
-    :ptype order: Sequence[Sort]
-    :return: the hint and a space, or the empty string
-    :rtype: str
-    """
-    index = serving_index(table, by, order)
-    if index is None or index.primary or not reads_l3(conn):
-        return ""
-    return index_hint(index) if await known_on_yugabyte(conn) else ""
 
 
 async def _steps_by_row(conn: Any, order: Sequence[Sort]) -> bool:

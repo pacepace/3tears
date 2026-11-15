@@ -7,13 +7,17 @@ is the one question a filter asks of the connection it is sent on: whether it bi
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 import asyncpg
 from asyncpg.pool import PoolConnectionProxy
+from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.threaded import InlineSQLite, ThreadedDuckDB, ThreadedSQLite
 from threetears.interfaces.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
+from threetears.interfaces.keyed.keys import index_hint, serving_index
+from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
     AnyOf,
@@ -55,6 +59,7 @@ __all__ = [
     "one_use_each",
     "renumbered",
     "sent_by",
+    "yugabyte_index_hint",
 ]
 
 
@@ -178,3 +183,34 @@ def reads_l3(conn: Any) -> bool:
     # answers any name it is asked, and is no datasource
     named = getattr(type(conn), SQL_DIALECT_ATTRIBUTE, None)
     return named is None and getattr(conn, "__dict__", {}).get(SQL_DIALECT_ATTRIBUTE) is None
+
+
+async def yugabyte_index_hint(
+    conn: Any, table: Any, by: Mapping[str, Any], order: Sequence[Sort], *, alias: str = "t"
+) -> str:
+    """the hint a keyed read of ``table`` pinning ``by`` in ``order`` starts with on YugabyteDB: the declared index
+    that serves it (:func:`~threetears.interfaces.keyed.keys.serving_index`), named to pg_hint_plan
+    (:func:`~threetears.interfaces.keyed.keys.index_hint`). Nothing on any other database, for a read that does not go
+    to L3, or where no declared index but the primary key serves it.
+
+    The one place a keyed helper asks it: YugabyteDB read one agent's conversations of one status through the primary
+    key filtering the status, on every one of 15 fresh worlds, rather than the declared ``(agent_id, status,
+    conversation_id)`` (3tears #87, #88); statistics did not move it.
+
+    :param conn: the reader
+    :ptype conn: Any
+    :param table: the relation read
+    :ptype table: Any
+    :param by: the read's pins
+    :ptype by: Mapping[str, Any]
+    :param order: the read's sort
+    :ptype order: Sequence[Sort]
+    :param alias: the alias the statement reads the table by (a keyed count reads it as ``r``)
+    :ptype alias: str
+    :return: the hint and a space, or the empty string
+    :rtype: str
+    """
+    index = serving_index(table, by, order)
+    if index is None or index.primary or not reads_l3(conn):
+        return ""
+    return index_hint(index, alias) if await known_on_yugabyte(conn) else ""

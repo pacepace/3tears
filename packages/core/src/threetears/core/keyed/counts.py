@@ -40,6 +40,7 @@ from threetears.core.keyed._filters import (
     relation,
     selected_column,
     sent_by,
+    yugabyte_index_hint,
 )
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.sql_fragments import quote_identifier
@@ -57,6 +58,7 @@ from threetears.interfaces.keyed.counts import (
     rows_affected,
 )
 from threetears.interfaces.keyed.filters import SQL_TYPE
+from threetears.interfaces.keyed.page import Sort
 
 __all__ = [
     "SQL_DIALECT_ATTRIBUTE",
@@ -359,6 +361,17 @@ def _aggregate_statement(
     return (sql, *params)
 
 
+#: the counted column's pin when the index a count is served by is chosen (``yugabyte_index_hint``): each statement
+#: binds it to each value named (``= ANY($n)``, one seek a value on YugabyteDB, which hands the set to storage as one
+#: request), so it binds the index's column as a single value does. Not a text, so it never states a partial
+#: predicate.
+#:
+#: WHY the hint (3tears #100, coordinator): YugabyteDB counted one conversation's 10 active schedules for the wake cap
+#: through the primary key, reading its 400 rows, on 6 of 6 fresh ANALYZEs, rather than the declared
+#: ``idx_wake_schedules_conv_active``; statistics did not move it (S/o99/probe/wakecount-yb.log), as for read_by (#87).
+_COUNTED: Final[object] = object()
+
+
 async def counts_by(
     conn: Any,
     table: str | Derived,
@@ -465,13 +478,15 @@ async def _counts_paged(
     quoted = quote_identifier(column)
     counted: dict[Any, int] = {}
     last: Any = None
+    # the index holding (by, column) in the column's order, named to YugabyteDB (_COUNTED's why)
+    hint = await yugabyte_index_hint(conn, table, by, [Sort(column)], alias="r")
     while True:
         conditions, params = by_conditions(by)
         conditions.append(f"{quoted} IS NOT NULL")
         if last is not None:
             params.append(last)
             conditions.append(f"{quoted} > ${len(params)}{'' if cast is None else f'::{cast}'}")
-        sql = (
+        sql = hint + (
             f"SELECT {quoted} AS counted, count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}"
             f" GROUP BY {quoted} ORDER BY {quoted} LIMIT {batch}"
         )
@@ -485,9 +500,11 @@ async def _counts_paged(
         # a column declared NOT NULL has no NULL group to count
         return counted
     # the NULL group, which no "> last" reaches: one keyed count of its own
-    conditions, params = by_conditions({**by, column: None})
+    nulls = {**by, column: None}
+    conditions, params = by_conditions(nulls)
+    hint = await yugabyte_index_hint(conn, table, nulls, [], alias="r")
     rows = await sent_by(conn).fetch(
-        f"SELECT count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}", *params
+        f"{hint}SELECT count(*) AS held FROM {relation(table, 'r')} WHERE {' AND '.join(conditions)}", *params
     )
     if rows and int(rows[0]["held"]):
         counted[None] = int(rows[0]["held"])
@@ -678,6 +695,12 @@ async def counts_by_relations(
             {column: AnyOf(unique[start : start + size], values.cast, as_list=values.as_list)}
             for start in range(0, len(unique), size)
         ]
+    # one relation's count names its declared index to YugabyteDB, the counted column bound per value (_COUNTED's
+    # why); several relations' UNION ALL reads each by the alias r, which one hint could not tell apart
+    hint = ""
+    if len(labels) == 1:
+        served = {**pinned, **own.get(labels[0], {}), **({} if values is None else {column: _COUNTED})}
+        hint = await yugabyte_index_hint(conn, tables[labels[0]], served, [], alias="r")
     for chunk in chunks:
         conditions, params = by_conditions({**pinned, **chunk})
         for fragment in where:
@@ -689,7 +712,7 @@ async def counts_by_relations(
             f"WHERE {clauses[label]} GROUP BY {quoted}"
             for index, label in enumerate(labels)
         ]
-        for row in await sent_by(conn).fetch(" UNION ALL ".join(parts), *params):
+        for row in await sent_by(conn).fetch(hint + " UNION ALL ".join(parts), *params):
             counted[labels[int(row["relation"])]][row["counted"]] = int(row["held"])
     return counted
 

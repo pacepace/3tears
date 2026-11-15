@@ -31,6 +31,7 @@ from threetears.agent.wake.collections import (
 )
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.keyed import Sort, serving_index
 
 #: the shape of every new-row write: the insert, its placeholders, and the upsert tail.
 _UPSERT = re.compile(
@@ -355,3 +356,31 @@ class TestCollectionClassAttributes:
             "conversation_id",
             "subscription_id",
         )
+
+
+def test_the_sqlalchemy_declared_tables_register_their_indexes_on_import() -> None:
+    """Flips if agent-wake's, agent-skills' or scheduled-jobs' SQLAlchemy-declared tables stop registering their
+    indexes with the keyed helpers on import, so YugabyteDB is never told of them (3tears #100: the wake cap count read
+    a conversation's 400 schedules through the primary key for its 10 active ones); one index each table (scheduled_jobs declares only a partial index whose predicate no read can state)."""
+    newest = [Sort("actual_fired_at", descending=True)]
+    expected = {
+        ("agent_wake_schedules", "idx_wake_schedules_conv_active"): ({"conversation_id": 1, "status": "active"}, []),
+        ("wake_fires", "idx_wake_fires_conv_time"): ({"conversation_id": 1}, newest),
+        ("webhook_subscriptions", "idx_webhook_subs_agent"): ({"agent_id": 1}, []),
+        ("webhook_refusals", "idx_webhook_refusals_sub_time"): (
+            {"subscription_id": 1},
+            [Sort("last_refused_at", descending=True)],
+        ),
+        ("agent_skills", "idx_skills_agent_user_enabled"): ({"agent_id": 1, "user_id": 2, "enabled": True}, []),
+        ("agent_skill_invocations", "idx_skill_invocations_skill_time"): (
+            {"agent_id": 1, "skill_id": 2},
+            [Sort("invoked_at", descending=True)],
+        ),
+        ("job_fires", "idx_job_fires_job_time_key"): (
+            {"job_id": 1},
+            [*newest, Sort("fire_id", cast="uuid", descending=True)],
+        ),
+    }
+    for (table, name), (by, order) in expected.items():
+        served = serving_index(table, by, order)
+        assert served is not None and served.name == name, (table, served)
