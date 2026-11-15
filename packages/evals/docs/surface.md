@@ -3,17 +3,6 @@
 Each line is a name, `threetears.evals.` dropped, and the first sentence of its docstring; the
 [reference](reference.md#public-api) has the rest.
 
-## The kinds
-
-Every name below is exactly one kind: what it asks of the person or agent who meets it.
-
-- `typed`: a newcomer writes it in an eval file.
-- `bound`: a host implements it or hands it to the engine.
-- `action`: the function behind an action of the catalogue, which an agent or operator invokes by name.
-- `invoked`: a function a host's own code calls, to make the engine act or do one step its way.
-- `received`: a value someone is handed and reads.
-- `tests`: a kit, recorder or guard a host runs in its own tests.
-
 ## Writing an eval
 
 ### Your first eval: these 2
@@ -272,6 +261,29 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `negotiation.read_router_refusal`: Whether OpenRouter's answer refuses a request for a setting it carried, which, and in what words.
 - `negotiation.wire_settings_for`: What a client asks for when it is asked for `settings` at `temperature`: the engine's values, as wire ones.
 
+## The functions behind actions: 17
+
+Each is `action`: the function an action of the catalogue (below) runs, under the same name. An agent or an
+operator invokes the action by name; a host's code may also call the function.
+
+- `ops.campaign_create`: Create a campaign over runs already in the scope, declared as it is created when the definition says so.
+- `ops.campaign_export`: Assemble one campaign's closure, read-only: the documents, the profile declaration and the manifest a writer case is minted from.
+- `ops.campaign_record`: Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
+- `ops.campaigns_list`: One page of the scope's campaigns, newest first, and the next page's cursor.
+- `ops.case_set_mint`: Store the next version of a named case set: append-only, so a change is a new version, never an edit.
+- `ops.case_sets_list`: The scope's case sets — every version, or every version of one name.
+- `ops.job_cancel`: Ask a running job to stop — from any process — then report where it stands.
+- `ops.job_poll`: Where a job stands, read from the record its work writes — the same answer in every process.
+- `ops.judge_case_author`: Write one judge case by hand into a judge template: an output, its criterion, and the verdict it must get.
+- `ops.judge_profiles_record`: Record the profile of every judge and criterion a judge campaign's runs measured.
+- `ops.report_read`: The campaign's report, serialized in one form — the same report the command line's `report` prints.
+- `ops.run_get`: One run, summarised from its stored results.
+- `ops.run_label`: Set a run's labels, replacing any it has; an empty list clears them (#648).
+- `ops.run_launch`: Admit a template's launch — one run per model — and start its arms and runs as one job.
+- `ops.runs_list`: One page of the scope's runs, newest first, how many on it this build cannot read, and the next page's cursor.
+- `ops.scope_history`: One measure over time for each contestant in the scope, with its regressions flagged.
+- `ops.templates_list`: The scope's templates, each with its revision: a reset template's older revisions are archived, so the active listing shows each name once, at the revision a launch by name runs.
+
 ## The action catalogue: 87 actions an agent calls
 
 `actions.eval_catalogue()` holds them; `transports.fastmcp.mount_fastmcp` serves them over MCP. An agent or
@@ -390,28 +402,6 @@ an operator invokes each by its name, with no Python, and the action does the wo
 ### Investigate: gaps (1)
 
 - `capability_gap`: Note a capability you needed and no tool gave, or a result that looks wrong, and the workaround you go on with.
-
-### The functions behind actions, importable too (17)
-
-Each is `action`: the function an action of that name runs. A host's code may call it directly.
-
-- `ops.campaign_create`: Create a campaign over runs already in the scope, declared as it is created when the definition says so.
-- `ops.campaign_export`: Assemble one campaign's closure, read-only: the documents, the profile declaration and the manifest a writer case is minted from.
-- `ops.campaign_record`: Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
-- `ops.campaigns_list`: One page of the scope's campaigns, newest first, and the next page's cursor.
-- `ops.case_set_mint`: Store the next version of a named case set: append-only, so a change is a new version, never an edit.
-- `ops.case_sets_list`: The scope's case sets — every version, or every version of one name.
-- `ops.job_cancel`: Ask a running job to stop — from any process — then report where it stands.
-- `ops.job_poll`: Where a job stands, read from the record its work writes — the same answer in every process.
-- `ops.judge_case_author`: Write one judge case by hand into a judge template: an output, its criterion, and the verdict it must get.
-- `ops.judge_profiles_record`: Record the profile of every judge and criterion a judge campaign's runs measured.
-- `ops.report_read`: The campaign's report, serialized in one form — the same report the command line's `report` prints.
-- `ops.run_get`: One run, summarised from its stored results.
-- `ops.run_label`: Set a run's labels, replacing any it has; an empty list clears them (#648).
-- `ops.run_launch`: Admit a template's launch — one run per model — and start its arms and runs as one job.
-- `ops.runs_list`: One page of the scope's runs, newest first, how many on it this build cannot read, and the next page's cursor.
-- `ops.scope_history`: One measure over time for each contestant in the scope, with its regressions flagged.
-- `ops.templates_list`: The scope's templates, each with its revision: a reset template's older revisions are archived, so the active listing shows each name once, at the revision a launch by name runs.
 
 ## A host's own tests: 17 kits, recorders and guards
 

@@ -8,16 +8,16 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
     # Exit 1 when either committed file is stale, without writing:
     uv run python packages/evals/scripts/generate_surface.py --check
 
-Both are read from each declared name's kind (``surface_kinds.py``) and, for a ``typed`` name, the rung that teaches
-it. ``docs/surface.md`` opens with the kinds, one line each, then the names a first eval needs and what each rung adds,
-then the host's contract, the functions a host's code calls, the action catalogue and the functions behind it, a
-host's test kits, the shapes by the concept each belongs to, the reading states with their reasons and remedies, the
-near-duplicate shapes, and last the counts by kind, reported as a trend and never a budget; each line is a name and
-the first sentence of its own docstring. ``llms.txt`` is what an AI agent adopting the package reads first: what it
-is, the first example whole, how to get and run the examples, how to read what comes back, where a later task's names
-are, the actions, and the kinds, one line each. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only
-what an install holds or the repository by URL. ``tests/test_surface_docs.py`` fails while either committed file is
-not what this makes of the package.
+Both are read from each declared name's kind (``surface_kinds.py``) and, for a ``typed`` name, the rung that teaches it.
+``docs/surface.md`` opens with the names a first eval needs and what each rung adds, then the host's contract, the
+functions a host's code calls, the functions behind actions, the action catalogue, a host's test kits, the shapes by the
+concept each belongs to, the reading states with their reasons and remedies, the near-duplicate shapes, and last the
+counts by kind, each kind with its meaning in one line, reported as a trend and never a budget; each line is a name and
+the first sentence of its own docstring. ``llms.txt`` is what an AI agent adopting the package reads first: what it is,
+the first example whole, how to get and run the examples, how to read what comes back, where a later task's names are,
+the actions, and the kinds, one line each. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only what an
+install holds or the repository by URL. ``tests/test_surface_docs.py`` fails while either committed file is not what
+this makes of the package.
 """
 
 from __future__ import annotations
@@ -266,12 +266,6 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     yield "Each line is a name, `threetears.evals.` dropped, and the first sentence of its docstring; the"
     yield "[reference](reference.md#public-api) has the rest."
     yield ""
-    yield "## The kinds"
-    yield ""
-    yield "Every name below is exactly one kind: what it asks of the person or agent who meets it."
-    yield ""
-    yield from (f"- `{kind}`: {KIND_MEANINGS[kind]}." for kind in KINDS)
-    yield ""
     yield "## Writing an eval"
     yield ""
     yield f"### Your first eval: these {len(first)}"
@@ -317,6 +311,14 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
         yield ""
         yield from (surface.line(name) for name in names)
         yield ""
+    behind = surface.of_kind("action")
+    yield f"## The functions behind actions: {len(behind)}"
+    yield ""
+    yield "Each is `action`: the function an action of the catalogue (below) runs, under the same name. An agent or an"
+    yield "operator invokes the action by name; a host's code may also call the function."
+    yield ""
+    yield from (surface.line(name) for name in behind)
+    yield ""
     actions = _actions()
     yield f"## The action catalogue: {sum(len(each) for _, each in actions)} actions an agent calls"
     yield ""
@@ -328,13 +330,6 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
         yield ""
         yield from (f"- `{name}`: {md_text(first_sentence(text))}" for name, text in each)
         yield ""
-    behind = surface.of_kind("action")
-    yield f"### The functions behind actions, importable too ({len(behind)})"
-    yield ""
-    yield "Each is `action`: the function an action of that name runs. A host's code may call it directly."
-    yield ""
-    yield from (surface.line(name) for name in behind)
-    yield ""
     kits = surface.of_kind("tests")
     yield f"## A host's own tests: {len(kits)} kits, recorders and guards"
     yield ""

@@ -500,7 +500,7 @@ declared.
 
 Every verdict here is also a typed value (`report.verdicts`, `Result.verdicts()`, the `outcome` key of
 `Result.contrasts()`): its outcome, a reason code, the margin it read and where that came from
-(`margin_source`: `measure`, `run` or, for a judged guardrail, `campaign`), its materiality, and whether it is a
+(`margin_source`: `"measure"`, `"run"` or, for a judged guardrail, `"campaign"`), its materiality, and whether it is a
 guardrail. The printed verdict is rendered from it, so code branches on the outcome, never on the words. The
 same values drive the CI gate ([`gate`](serving.md#gate)). The typed values are in the measure's own units; the
 rows `Result.contrasts()` and `Result.guardrails()` return are the page's figures on the page's ruler (a share in
