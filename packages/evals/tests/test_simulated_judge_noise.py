@@ -11,22 +11,30 @@ on pass/fail, the answer flipped with chance ``e`` (variance ``e (1 - e)``). Twe
 least ten cases (the floor), are scored again by the same judge. The planted share is the true re-score variance
 over the variance of this replicate's per-case differences: the contrast's own width is what it is, and the share
 says how much of it the judge's noise is. A row passes when the estimate is within the scale's tolerance (C-12) at
-least as often as its bar, and the range covers the planted share at least as often as its bar.
+least as often as its bar, and when each range, the share's and each arm's variance's, covers its planted value at
+least as often as its low bar, no more often than its high bar, and is on average no wider, over that value, than its
+width bar. The ranges are at the 95% level (``INTERVAL_LEVEL``); the low bar 0.93 leaves room for the Wilson and
+Hilferty quantile and the cluster standard error at twenty results.
 
-| Row | Scale, noise | G | k | Repeated results | Within tolerance: bar (measured) | Range covers: bar (measured) |
-|---|---|---|---|---|---|---|
-| 1 | 1-5, p = 0.5 | 20 | 1 | 20 | ±30%: 0.80 (0.877) | 0.93 (1.000) |
-| 2 | 1-5, p = 0.5 | 60 | 3 | 20 | ±30%: 0.80 (0.884) | 0.93 (1.000) |
-| 3 | 1-5, p = 0.5 | 100 | 3 | 200 | ±30%: 0.98 (1.000) | 0.93 (0.998) |
-| 4 | pass/fail, e = 0.05 | 20 | 1 | 20 | ±70%: 0.75 (0.813) | 0.93 (0.962) |
-| 5 | pass/fail, e = 0.05 | 60 | 3 | 20 | ±70%: 0.75 (0.835) | 0.93 (0.979) |
+| Row | Scale, noise | G | k | Repeated results | Within tolerance: bar (measured) | Share's range covers: bars (measured); width: bar (measured) | Arm's range covers: bars (measured); width: bar (measured) |
+|---|---|---|---|---|---|---|---|
+| 1 | 1-5, p = 0.5 | 20 | 1 | 20 | ±30%: 0.80 (0.876) | 0.93-0.99 (0.977); 1.05 (0.93) | 0.93-0.99 (0.969); 1.45 (1.30) |
+| 2 | 1-5, p = 0.5 | 60 | 3 | 20 | ±30%: 0.80 (0.884) | 0.93-0.99 (0.974); 1.05 (0.93) | 0.93-0.99 (0.974); 1.45 (1.30) |
+| 3 | 1-5, p = 0.5 | 100 | 3 | 200 | ±30%: 0.98 (1.000) | 0.93-0.99 (0.982); 0.32 (0.28) | 0.93-0.99 (0.976); 0.45 (0.40) |
+| 4 | pass/fail, e = 0.05 | 20 | 1 | 20 | ±70%: 0.75 (0.813) | 0.93-0.99 (0.960); 2.5 (2.22) | 0.93-0.995 (0.989); 3.7 (3.36) |
+| 5 | pass/fail, e = 0.05 | 60 | 3 | 20 | ±70%: 0.75 (0.835) | 0.93-0.99 (0.969); 2.5 (2.22) | 0.93-0.995 (0.980); 3.7 (3.36) |
 
 The tolerance is about one standard error of one arm's variance at the floor (twenty half squared differences on 1 to
 5; about two flips on pass/fail); a share reads two arms' variances, so it holds more often than one standard error
 would. The bar falls to near zero for a wrong formula: a variance not halved reads twice the truth, and a share without
 ``1/k`` reads three times it at k = 3 (rows 2, 3 and 5). Rows 1 and 4 hold the share at k = 1, where only repeats can
 measure the judge. Checked by mutation (400 replicates): a variance not halved met the 1-5 rows' bar on 0.03 of
-replicates and row 5's on 0.47; a share without ``1/k`` on 0.00 and 0.27. The range is conservative: each end takes both arms' variances at that end.
+replicates and row 5's on 0.47; a share without ``1/k`` on 0.00 and 0.27. The arm's pass/fail high bar is 0.995: on
+about two flips the range is Garwood's on a count, which covers more than its level by construction. Each range's
+bars fail for a wrong range (measured on these seeds): the share taken at each end of the arms' ranges covered
+0.998-1.000 on 1 to 5 and was 1.53, 0.40 and 4.4 times its planted value wide; an arm's variance-form chi-square
+range covered 0.883 and 0.911 on pass/fail and was 1.53 wide at the 1-5 floor; degrees of freedom not held to one per
+result covered 0.903 and 0.917 (rows 1 and 2, the arm); a range of zero to the most a score can vary covered 1.000.
 
 **The ceiling.** ``e`` is planted on a judge that fails a passing answer with chance ``e`` and never passes a failing
 one, so a repeat of a first reading that passed fails with chance exactly ``e``. Its Wilson interval over cases covers
@@ -60,6 +68,15 @@ _PASS_FAIL = (0.0, 1.0)
 
 
 @dataclass(frozen=True)
+class _Bars:
+    """How often a range must cover its planted value, from both sides, and how wide it may be on average."""
+
+    covers_at_least: float
+    covers_at_most: float
+    width_at_most: float
+
+
+@dataclass(frozen=True)
 class _Row:
     """One row of the share's table."""
 
@@ -70,11 +87,23 @@ class _Row:
     repeats: int
     tolerance: float
     within_bar: float
-    covers_bar: float
+    share: _Bars
+    arm: _Bars
 
     @property
     def planted_variance(self) -> float:
         return self.noise if self.scale == "ordinal" else self.noise * (1.0 - self.noise)
+
+
+@dataclass
+class _Measured:
+    """What a row measured: within tolerance, and each range's coverage and mean width over its planted value."""
+
+    within: float = 0.0
+    share_covers: float = 0.0
+    share_width: float = 0.0
+    arm_covers: float = 0.0
+    arm_width: float = 0.0
 
 
 def _score(rng: random.Random, row: _Row, answer: int) -> int:
@@ -120,10 +149,14 @@ def _case_means(trials: list[tuple[str, int, int]]) -> dict[str, float]:
     return {case: sum(values) / len(values) for case, values in sums.items()}
 
 
-def _share_row(row: _Row, seed: str) -> tuple[float, float]:
-    """The share of replicates within tolerance of the planted share, and the share whose range covers it."""
+def _share_row(row: _Row, seed: str) -> _Measured:
+    """Each replicate's share against the planted share, and each arm's variance range against the planted variance.
+
+    A replicate whose per-case differences have no spread (pass/fail at k = 1, rarely) has no share; it is not counted.
+    """
     rng = random.Random(seed)
-    within = covers = 0
+    measured = _Measured()
+    shares = arms = 0
     for _ in range(_REPLICATES):
         if row.scale == "ordinal":
             control = [rng.uniform(2.3, 3.7) for _ in range(row.cases)]
@@ -134,25 +167,51 @@ def _share_row(row: _Row, seed: str) -> tuple[float, float]:
         control_trials, control_side = _arm(rng, row, control)
         candidate_trials, candidate_side = _arm(rng, row, candidate)
         assert control_side is not None and candidate_side is not None
+        for side in (control_side, candidate_side):
+            arms += 1
+            measured.arm_covers += side.variance.low <= row.planted_variance <= side.variance.high
+            measured.arm_width += (side.variance.high - side.variance.low) / row.planted_variance
         before, after = _case_means(control_trials), _case_means(candidate_trials)
         cases = sorted(before)
         differences = [after[case] - before[case] for case in cases]
         share = judge_share(control_side, candidate_side, cases, differences)
-        assert share is not None
+        if share is None:
+            continue
+        shares += 1
         mean = sum(differences) / len(differences)
         spread = sum((value - mean) ** 2 for value in differences) / (len(differences) - 1)
         planted = row.planted_variance * (2.0 / row.k) / spread
-        within += abs(share.point - planted) <= row.tolerance * planted
-        covers += share.low <= planted <= share.high
-    return within / _REPLICATES, covers / _REPLICATES
+        measured.within += abs(share.point - planted) <= row.tolerance * planted
+        measured.share_covers += share.low <= planted <= share.high
+        measured.share_width += (share.high - share.low) / planted
+    assert shares >= 0.99 * _REPLICATES, f"only {shares} replicates had a share"
+    measured.within /= shares
+    measured.share_covers /= shares
+    measured.share_width /= shares
+    measured.arm_covers /= arms
+    measured.arm_width /= arms
+    return measured
 
 
+#: The bars of the table above.
+_ORDINAL_SHARE, _ORDINAL_ARM = _Bars(0.93, 0.99, 1.05), _Bars(0.93, 0.99, 1.45)
+_PASS_FAIL_SHARE, _PASS_FAIL_ARM = _Bars(0.93, 0.99, 2.5), _Bars(0.93, 0.995, 3.7)
 _SHARE_ROWS = {
-    "1-5, G 20, k 1, at the floor": _Row("ordinal", 0.5, 20, 1, RESCORE_MIN_RESULTS, 0.30, 0.80, 0.93),
-    "1-5, G 60, k 3, at the floor": _Row("ordinal", 0.5, 60, 3, RESCORE_MIN_RESULTS, 0.30, 0.80, 0.93),
-    "1-5, G 100, k 3, 200 repeats": _Row("ordinal", 0.5, 100, 3, 200, 0.30, 0.98, 0.93),
-    "pass/fail, G 20, k 1, at the floor": _Row("pass_fail", 0.05, 20, 1, RESCORE_MIN_RESULTS, 0.70, 0.75, 0.93),
-    "pass/fail, G 60, k 3, at the floor": _Row("pass_fail", 0.05, 60, 3, RESCORE_MIN_RESULTS, 0.70, 0.75, 0.93),
+    "1-5, G 20, k 1, at the floor": _Row(
+        "ordinal", 0.5, 20, 1, RESCORE_MIN_RESULTS, 0.30, 0.80, _ORDINAL_SHARE, _ORDINAL_ARM
+    ),
+    "1-5, G 60, k 3, at the floor": _Row(
+        "ordinal", 0.5, 60, 3, RESCORE_MIN_RESULTS, 0.30, 0.80, _ORDINAL_SHARE, _ORDINAL_ARM
+    ),
+    "1-5, G 100, k 3, 200 repeats": _Row(
+        "ordinal", 0.5, 100, 3, 200, 0.30, 0.98, _Bars(0.93, 0.99, 0.32), _Bars(0.93, 0.99, 0.45)
+    ),
+    "pass/fail, G 20, k 1, at the floor": _Row(
+        "pass_fail", 0.05, 20, 1, RESCORE_MIN_RESULTS, 0.70, 0.75, _PASS_FAIL_SHARE, _PASS_FAIL_ARM
+    ),
+    "pass/fail, G 60, k 3, at the floor": _Row(
+        "pass_fail", 0.05, 60, 3, RESCORE_MIN_RESULTS, 0.70, 0.75, _PASS_FAIL_SHARE, _PASS_FAIL_ARM
+    ),
 }
 
 
@@ -160,9 +219,32 @@ class TestTheShareRecoversAPlantedValue:
     @pytest.mark.parametrize("name", list(_SHARE_ROWS))
     def test_within_its_scale_s_tolerance_and_covered_by_its_range(self, name: str) -> None:
         row = _SHARE_ROWS[name]
-        within, covers = _share_row(row, f"judge-noise-share/{name}")
-        assert within >= row.within_bar, f"{name}: within ±{row.tolerance:.0%} on {within:.3f} of replicates"
-        assert covers >= row.covers_bar, f"{name}: the range covered the planted share on {covers:.3f}"
+        measured = _measured(name)
+        assert measured.within >= row.within_bar, f"{name}: within ±{row.tolerance:.0%} on {measured.within:.3f}"
+        _hold(f"{name}: the share's range", row.share, measured.share_covers, measured.share_width)
+
+    @pytest.mark.parametrize("name", list(_SHARE_ROWS))
+    def test_each_arm_s_variance_range_covers_its_planted_variance(self, name: str) -> None:
+        row = _SHARE_ROWS[name]
+        measured = _measured(name)
+        _hold(f"{name}: an arm's variance range", row.arm, measured.arm_covers, measured.arm_width)
+
+
+_MEASURED: dict[str, _Measured] = {}
+
+
+def _measured(name: str) -> _Measured:
+    """A row's measurement, made once per session for both of its tests."""
+    if name not in _MEASURED:
+        _MEASURED[name] = _share_row(_SHARE_ROWS[name], f"judge-noise-share/{name}")
+    return _MEASURED[name]
+
+
+def _hold(what: str, bars: _Bars, covers: float, width: float) -> None:
+    """A range covers its planted value at least and at most as often as its bars, and is no wider on average."""
+    assert covers >= bars.covers_at_least, f"{what} covered on {covers:.3f}, under {bars.covers_at_least}"
+    assert covers <= bars.covers_at_most, f"{what} covered on {covers:.3f}, over {bars.covers_at_most}: too wide"
+    assert width <= bars.width_at_most, f"{what} was {width:.2f} times its planted value wide on average"
 
 
 def _ceiling_row(e: float, k: int, repeats: int, seed: str) -> float:

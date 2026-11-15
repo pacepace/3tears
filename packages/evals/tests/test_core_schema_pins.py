@@ -84,7 +84,7 @@ from threetears.evals.schema.versioning import (
 PINNED_CORE_SCHEMA_VERSION = 15
 
 #: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_CORE_SCHEMA_MINOR = 20
+PINNED_CORE_SCHEMA_MINOR = 21
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
@@ -94,7 +94,7 @@ CORE_SHAPE_DIGESTS: dict[str, str] = {
     "eval_judge_temperature_check": "b506f3da9c1dec5dc926fe39745d1d99bd73a04e8612e5d5c3be3554009cfc6e",
     "eval_launch": "dae759f0cebb00f5143db7d8e6f3b9b7ba92ceb97c75ede39bfd68e76fc9e6a8",
     "eval_out_of_run_spend": "c41477c3013e6d68822be4ebe22175882eee35adc444664e78b3ce83d63da410",
-    "eval_result": "b903b7b4d8f324958ea94e5d5fd739a52c45b4840eac397ee64eec4c67f9f844",
+    "eval_result": "4da409e31c6e984816f609feefbdcd77e39b126cd127dde71315fb98e2e2a974",
     "eval_run": "2b48222969d5a32090cf7127ebaf886fa34934881d9d27ee81e3c0bb8ba2440a",
     "eval_second_judge_pass": "f547f3ccae2abd47d3b6064e0444d4814833aa129f3d37d29b7912ba6f18f99f",
     "eval_sweep": "e8bacc7a8dc74a209bb5750416793d5a95bcfd7d6cf3b818aee7b3f06f0d5f1a",

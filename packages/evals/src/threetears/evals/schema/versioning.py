@@ -457,7 +457,16 @@ CORE_SCHEMA_VERSION: int = 15
 #:   strings alone, so every label key is what it was. An older build reads such evidence without it, and a re-judge
 #:   there keys its calls by their prompts, as it did.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 20
+#: - **v15.21** — a judge repeat records how its result was chosen: ``JudgeRepeat.sample`` (default None), on
+#:   ``EvalResult.judge_repeats``: ``random`` where every result of the run was asked, in an order the engine drew
+#:   (``judge_repeat_work`` with no result named), so the results repeated before any stop are a random draw;
+#:   ``selected`` where results were named by id. An arm's re-score noise reads only a random draw's repeats; an
+#:   arm whose repeats are none of them one reads ``not available`` (``not_drawn_at_random``, or ``not_recorded``
+#:   for a repeat stored before this minor). Left out of the document when unset, so a repeat stored before is stored
+#:   byte for byte as before. Evidence in a bundle's fingerprint only where set. An older build reads such a repeat
+#:   without it, and reads its self-agreement as it did.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 21
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

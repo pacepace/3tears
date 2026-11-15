@@ -7,9 +7,12 @@ What is held here, by fixture (the statistics against a planted truth are ``test
 - the variance is half the mean squared difference between a reading and its repeat, and a judge that never moved
   reads zero with a range above it, never a certainty;
 - ``e`` and the ceiling ``(1 - e)^(k - 1)`` are read on a pass/fail dimension counting toward pass, at the arm's k;
-- the share exists at k = 1 and is ``σ² (1/k_control + 1/k_candidate)`` over the per-case differences' variance;
-- end to end, a repeat by another judge is not read, an arm nobody repeated carries no figure, and the figures are in
-  the judge's table data only: the judged arms and the judged contrasts of the bundle, never the report input.
+- the share exists at k = 1 and is ``σ² (1/k_control + 1/k_candidate)`` over the per-case differences' variance, its
+  range one interval on the sum, inside the share taken at each end of the arms' ranges;
+- where the ceiling is read and no first reading passed, it alone is ``not available``, ``too_few``;
+- end to end, a repeat by another judge is not read, an arm nobody repeated carries no figure, an arm whose repeats
+  were named by id or stored before their draw was recorded is ``not available`` with its reason, and the figures are
+  in the judge's table data only: the judged arms and the judged contrasts of the bundle, never the report input.
 """
 
 from __future__ import annotations
@@ -22,7 +25,6 @@ from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bu
 from threetears.evals.analysis.judge_noise import (
     RESCORE_MIN_CASES,
     RESCORE_MIN_RESULTS,
-    NoiseRange,
     Repeated,
     SideNoise,
     judge_share,
@@ -32,7 +34,7 @@ from threetears.evals.analysis.judge_noise import (
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel import IDENTITY_VERSION, CampaignArm
 from threetears.evals.schema.models import EvalResult, JudgeRepeat, RepeatedScore, RubricScore
-from threetears.evals.schema.reading_states import StateOf
+from threetears.evals.schema.reading_states import SampleKind, StateOf
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
@@ -58,6 +60,7 @@ class TestTheFloor:
         assert rescore.state == _TOO_FEW
         assert (rescore.repeated_results, rescore.repeated_cases) == (results, cases)
         assert rescore.variance is None and rescore.fail_given_pass is None and rescore.ceiling_low is None
+        assert rescore.variance_interval is None and "variance_interval" not in rescore.model_dump()
         assert variance is None
 
     def test_at_it_they_are_read(self) -> None:
@@ -66,6 +69,9 @@ class TestTheFloor:
         )
         assert rescore.state is None and variance is not None
         assert rescore.variance == pytest.approx(5 * 0.5 / RESCORE_MIN_RESULTS)
+        # The variance carries its own range: at twenty results it is wide, and the reader needs it.
+        assert rescore.variance_interval == (variance.low, variance.high)
+        assert variance.low < variance.point < variance.high
 
 
 class TestTheVariance:
@@ -127,38 +133,67 @@ class TestTheCeiling:
         rescore, _ = rescore_of(_repeats(20, 10, moved=4), value_range=_ORDINAL, k=3, passed=None)
         assert rescore.variance is not None
         assert (rescore.fail_given_pass, rescore.ceiling_low, rescore.ceiling_high, rescore.k) == (None,) * 4
+        assert rescore.ceiling_state is None
+
+    def test_a_ceiling_read_for_the_dimension_and_not_readable_is_not_available_too_few(self) -> None:
+        # Every first reading failed: no pass for a repeat to fail, so no e and no ceiling, and it says why.
+        repeated = [Repeated(f"c{index % 10}", 0.0, (1.0 if index < 3 else 0.0,)) for index in range(20)]
+        rescore, _ = rescore_of(repeated, value_range=_PASS_FAIL, k=3, passed=1.0)
+        assert rescore.state is None and rescore.variance is not None
+        assert (rescore.fail_given_pass, rescore.ceiling_low, rescore.ceiling_high, rescore.k) == (None,) * 4
+        assert rescore.ceiling_state == _TOO_FEW
+
+    def test_a_ceiling_read_carries_no_state(self) -> None:
+        assert self._pass_fail(2, 3).ceiling_state is None
 
 
 class TestTheShare:
     @staticmethod
-    def _side(variance: float, depth: int) -> SideNoise:
-        return SideNoise(NoiseRange(variance, variance / 2, variance * 2), {"a": depth, "b": depth, "c": depth})
+    def _side(depth: int) -> SideNoise:
+        """A side whose re-score variance is 0.25: ten of twenty results moved by one step."""
+        variance = rescore_variance(_repeats(20, 10, moved=10), value_range=_ORDINAL)
+        assert variance is not None and variance.point == pytest.approx(0.25)
+        return SideNoise(variance, {"a": depth, "b": depth, "c": depth})
 
     def test_it_exists_at_k_equal_one(self) -> None:
         # Differences -1, 0, 1: variance 1. Each side's re-score variance 0.25 over one score per case: 0.5.
-        share = judge_share(self._side(0.25, 1), self._side(0.25, 1), ["a", "b", "c"], [-1.0, 0.0, 1.0])
+        control, candidate = self._side(1), self._side(1)
+        share = judge_share(control, candidate, ["a", "b", "c"], [-1.0, 0.0, 1.0])
         assert share is not None
-        assert (share.point, share.low, share.high) == pytest.approx((0.5, 0.25, 1.0))
+        assert share.low < share.point == pytest.approx(0.5) < share.high
+
+    def test_its_range_is_one_interval_on_the_sum_not_the_share_at_each_end_of_the_arms_ranges(self) -> None:
+        # Two arms' errors partly cancel: the sum's range sits strictly inside the both-ends bound, and is narrower.
+        control, candidate = self._side(1), self._side(1)
+        share = judge_share(control, candidate, ["a", "b", "c"], [-1.0, 0.0, 1.0])
+        assert share is not None
+        both_low = control.variance.low + candidate.variance.low
+        both_high = control.variance.high + candidate.variance.high
+        assert both_low < share.low and share.high < both_high
+        assert (share.high - share.low) < 0.8 * (both_high - both_low)
 
     def test_each_side_s_variance_is_over_its_own_k(self) -> None:
-        share = judge_share(self._side(0.25, 1), self._side(0.25, 5), ["a", "b", "c"], [-1.0, 0.0, 1.0])
+        share = judge_share(self._side(1), self._side(5), ["a", "b", "c"], [-1.0, 0.0, 1.0])
         assert share is not None and share.point == pytest.approx(0.25 + 0.05)
 
     def test_none_where_the_differences_have_no_spread(self) -> None:
-        assert judge_share(self._side(0.25, 1), self._side(0.25, 1), ["a", "b"], [1.0, 1.0]) is None
+        assert judge_share(self._side(1), self._side(1), ["a", "b"], [1.0, 1.0]) is None
 
 
 # --- end to end, through the bundle --------------------------------------------------------------
 
 
-def _with_repeat(result: EvalResult, *, again: int, served: str | None = None) -> EvalResult:
+def _with_repeat(
+    result: EvalResult, *, again: int, served: str | None = None, sample: SampleKind | None = "random"
+) -> EvalResult:
     """``result`` with one repeat of the toy judged dimension, read ``again``; by ``served`` when it names another
-    judge."""
+    judge; chosen as ``sample`` says."""
     score = result.judge_score(TOYHOST_JUDGED_DIMENSION)
     assert score is not None
     config = result.judge_config_ids.get(TOYHOST_JUDGED_DIMENSION)
     repeat = JudgeRepeat(
         judge_model="toy-judge",
+        sample=sample,
         judge_config_ids={} if config is None else {TOYHOST_JUDGED_DIMENSION: config},
         scores=[
             RepeatedScore(
@@ -191,7 +226,9 @@ def _rescored(result: EvalResult, score: int) -> EvalResult:
     return result.model_copy(update={"rubric_scores": scores})
 
 
-def _bundle(*, repeated: bool = True, served: str | None = None, control: bool = True) -> AnalysisContextBundle:
+def _bundle(
+    *, repeated: bool = True, served: str | None = None, control: bool = True, sample: SampleKind | None = "random"
+) -> AnalysisContextBundle:
     """The toy campaign with its first batch as the control, its scores varied by case on the control's side (so the
     per-case differences have spread), and, when ``repeated``, every result re-read: one in three moved by one step."""
     campaign, toy = toyhost_campaign()
@@ -206,7 +243,7 @@ def _bundle(*, repeated: bool = True, served: str | None = None, control: bool =
                 score = result.judge_score(TOYHOST_JUDGED_DIMENSION)
                 assert score is not None
                 moved = score.score + (1 if score.score < 5 else -1) if index % 3 == 0 else score.score
-                result = _with_repeat(result, again=moved, served=served)
+                result = _with_repeat(result, again=moved, served=served, sample=sample)
             held.append(result)
         results_by_run[run.id] = held
     storage = ToyhostStorage(runs, results_by_run)
@@ -283,4 +320,15 @@ class TestTheBundleFillsTheJudgesTable:
             for arm in measure.arms:
                 assert arm.rescore is not None
                 assert (arm.rescore.state, arm.rescore.repeated_results) == (_TOO_FEW, 0)
+        assert not _paths(bundle.to_dict(), "rescore_share")
+
+    @pytest.mark.parametrize(("sample", "reason"), [("selected", "not_drawn_at_random"), (None, "not_recorded")])
+    def test_repeats_not_drawn_at_random_are_not_read_and_say_why(self, sample: SampleKind | None, reason: str) -> None:
+        # Named by id, or stored before the draw was recorded: they may not stand for the arm, so no figure, no share.
+        bundle = _bundle(sample=sample)
+        for measure in bundle.judged_measures:
+            for arm in measure.arms:
+                assert arm.rescore is not None
+                assert arm.rescore.state == StateOf(state="not_available", reason=reason)
+                assert arm.rescore.repeated_results == arm.n and arm.rescore.variance is None
         assert not _paths(bundle.to_dict(), "rescore_share")
