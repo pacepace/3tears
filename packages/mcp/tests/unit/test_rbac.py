@@ -165,8 +165,10 @@ class TestListGrantsPage:
         after = uuid4()
         await coll.list_grants_page(after=after, limit=50)
         sql, *args = pool.fetch.await_args.args
-        assert "WHERE grant_id > $1 ORDER BY grant_id LIMIT $2" in sql
-        assert args == [after, 50]
+        # keyset_page's first page: after the last key, in key order, bounded (the page and the one row past it that
+        # says whether another page follows)
+        assert 'WHERE (grant_id > $1) ORDER BY t."grant_id" ASC LIMIT 51' in sql, sql
+        assert args == [after]
 
     @pytest.mark.asyncio
     async def test_the_first_page_starts_below_every_key(self) -> None:
@@ -174,7 +176,8 @@ class TestListGrantsPage:
         coll, pool = _make_collection()
         pool.fetch = AsyncMock(return_value=[])
         await coll.list_grants_page()
-        assert pool.fetch.await_args.args[1:] == (UUID(int=0), 100)
+        sql, *args = pool.fetch.await_args.args
+        assert args == [UUID(int=0)] and sql.endswith("LIMIT 101"), sql
 
 
 class TestLoadAllGrants:

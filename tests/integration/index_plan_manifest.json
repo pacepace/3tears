@@ -34,6 +34,26 @@
   "table": "folders"
  },
  {
+  "index": "idx_identity_pending_created",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "user_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "purpose": "packages/agent/identity/src/threetears/agent/identity/collections.py::IdentityVersionsCollection.find_pending",
+  "sql": "SELECT * FROM \"identity_versions\" AS t WHERE t.\"agent_id\" = $1 AND t.\"user_id\" = $2 AND (status = 'proposed') ORDER BY t.\"date_created\" LIMIT 10",
+  "table": "identity_versions"
+ },
+ {
   "index": "idx_identity_variant_history",
   "pins": [
    {
@@ -70,6 +90,26 @@
   "purpose": "packages/agent/identity/src/threetears/agent/identity/collections.py::IdentityVersionsCollection.find_versions_for_block",
   "sql": "SELECT * FROM \"identity_versions\" AS t WHERE t.\"customer_id\" = $1 AND t.\"agent_id\" = $2 AND t.\"user_id\" = $3 AND t.\"block_key\" = $4 AND t.\"variant\" = $5 ORDER BY t.\"date_created\" DESC LIMIT 10",
   "table": "identity_versions"
+ },
+ {
+  "index": "idx_intentions_open_ranked",
+  "pins": [
+   {
+    "column": "agent_id",
+    "kind": "param",
+    "literal": null,
+    "param": 1
+   },
+   {
+    "column": "user_id",
+    "kind": "param",
+    "literal": null,
+    "param": 2
+   }
+  ],
+  "purpose": "packages/agent/intention/src/threetears/agent/intention/collections.py::IntentionsCollection.find_open_for_deliberation",
+  "sql": "SELECT * FROM \"intentions\" AS t WHERE t.\"agent_id\" = $1 AND t.\"user_id\" = $2 AND (status = 'open')",
+  "table": "intentions"
  },
  {
   "index": "idx_workspace_file_versions_history",

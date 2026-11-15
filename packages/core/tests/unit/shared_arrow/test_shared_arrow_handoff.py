@@ -227,7 +227,14 @@ class TestTheHandOffGoesWhenTheWorkerIsDone:
         (signals / "go").touch()
         assert future.result() == 2
         store.sweep()
-        assert store.handoffs() == ()
+        # the release's own waiter (_sweep_when_let_go) wakes holding the hand-off's exclusive lock until it closes it,
+        # and waits for the interpreter lock in between: a sweep in that instant finds the lock refused and leaves the
+        # hand-off to the waiter's sweep just after (seen once on brooks-5950x, 2026-11-14). Gone either way, within
+        # the waiter's turn
+        deadline = time.monotonic() + 30
+        while store.handoffs():
+            assert time.monotonic() < deadline, "the hand-off outlived its last mapping"
+            time.sleep(0.01)
         assert (store.status()["handoffs_open"], store.status()["handoffs_held"]) == (0, 0)
 
     def test_a_released_hand_off_goes_when_its_last_worker_lets_go_with_no_sweep_after(

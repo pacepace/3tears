@@ -95,9 +95,10 @@ def _reference_identity_versions_table(metadata: sa.MetaData) -> sa.Table:
             sa_text("date_created DESC"),
         ),
         sa.Index(
-            "idx_identity_pending",
+            "idx_identity_pending_created",
             "agent_id",
             "user_id",
+            "date_created",
             postgresql_where=sa_text("status = 'proposed'"),
         ),
     )

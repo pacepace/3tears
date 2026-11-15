@@ -208,12 +208,17 @@ def job_fires_table(metadata: MetaData) -> Table:
             "status IN ('dispatching', 'succeeded', 'failed')",
             name="job_fires_status_check",
         ),
+        # v006: one job's fires newest first, completed by the key (covers v001's idx_job_fires_job_time, dropped)
         Index(
-            "idx_job_fires_job_time",
+            "idx_job_fires_job_time_key",
             "job_id",
             sa_text("actual_fired_at DESC"),
+            sa_text("fire_id DESC"),
             info={
-                "purpose": "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.latest_for_jobs",
+                "purpose": (
+                    "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.latest_for_jobs; "
+                    "packages/scheduled-jobs/src/threetears/scheduled_jobs/collections.py::JobFireCollection.list_for_job"
+                ),
                 "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_job_fires_job_time",
             },
         ),

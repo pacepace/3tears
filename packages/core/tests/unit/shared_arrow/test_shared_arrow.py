@@ -822,10 +822,15 @@ class TestAReadBorrowsARegisteredCursor:
             raise RuntimeError("mid-read")
         with reader.read() as read:
             assert read.cursor.execute("SELECT count(*) FROM duckdb_tables() WHERE temporary").fetchone() == (0,)
-        assert counts["cursors"] == 4, counts
-        assert counts["closed"] == 3, "the left-on and failed reads' cursors are closed, not handed on"
+        with reader.read() as read:
+            # the check prepared on the cursor gone: it cannot say the cursor is clean
+            read.cursor.execute("DEALLOCATE threetears_shared_arrow_temporary_objects")
+        with reader.read() as read:
+            assert read.cursor.execute('SELECT sum(a) FROM "t3"').fetchone() == (30,)
+        assert counts["cursors"] == 5, counts
+        assert counts["closed"] == 4, "the left-on, failed and unprovable reads' cursors are closed, not handed on"
         reader.close()
-        assert counts["closed"] == 4, counts
+        assert counts["closed"] == 5, counts
 
     def test_a_superseded_version_closes_its_cursors_when_its_last_read_ends(
         self, store: SharedArrowStore, counts: dict[str, int]
@@ -845,6 +850,10 @@ class TestAReadBorrowsARegisteredCursor:
         reader.close()
         assert counts["closed"] == 2
 
+    # timed: run apart and serially, as the loop_timing suite runs its tests. Beside the unit suite's other batches the
+    # trust rule refused every attempt (a 2-thread spin at 1.55-2.84x the host's fastest, markpace-mbp and brooks-5950x,
+    # 2026-11-14): CouldNotMeasure, never a measurement
+    @pytest.mark.loop_timing
     async def test_a_read_at_real_size_costs_little_past_its_query(self, store: SharedArrowStore) -> None:
         """a serving read of a version of 20 tables (open, query, close) within 2x the same point query on one cursor
         already registered, interleaved; registering every table again on each read (today's 1.5 ms a read beside a

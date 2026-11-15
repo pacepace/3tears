@@ -158,7 +158,7 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
                 "user_id",
                 "block_key",
                 "variant",
-                where=f"status = '{IdentityVersionStatus.ACTIVE.value}'",
+                where="status = 'active'",
                 unique=True,
             ),
             # a block variant's version history, most-recent-first.
@@ -171,12 +171,13 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
                 "date_created",
                 desc="date_created",
             ),
-            # the pending consent / veto queue: proposed versions per user.
+            # the pending consent / veto queue: proposed versions per user, oldest first (v004).
             SchemaIndex(
-                "idx_identity_pending",
+                "idx_identity_pending_created",
                 "agent_id",
                 "user_id",
-                where=f"status = '{IdentityVersionStatus.PROPOSED.value}'",
+                "date_created",
+                where="status = 'proposed'",
             ),
         ),
     )

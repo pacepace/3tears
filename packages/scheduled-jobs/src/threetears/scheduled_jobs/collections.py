@@ -117,10 +117,6 @@ _JOB_FIRES_SCHEMA = TableSchema(
 )
 
 
-#: every ``job_fires`` column, as the reads select them
-_JOB_FIRES_SELECT_COLUMNS = ", ".join(column.name for column in _JOB_FIRES_SCHEMA.columns)
-
-
 # Terminal error text stamped onto a fire row the reaper reclaims. Names
 # the cause so the loss is self-explanatory in fire history.
 REAPED_DISPATCH_ERROR: str = "reaped: dispatch abandoned in 'dispatching' (pod died mid-dispatch)"
@@ -1230,15 +1226,28 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
         if self.l3_pool is None:
             return []
         # cache-bypass: per-job history scan.
-        rows = await self.l3_pool.fetch(
-            f"SELECT {_JOB_FIRES_SELECT_COLUMNS} "  # noqa: S608 - declared column names, no user input
-            "FROM job_fires "
-            "WHERE partition_key = $1 AND job_id = $2 "
-            "ORDER BY actual_fired_at DESC LIMIT $3",
-            partition_key,
-            job_id,
-            limit,
-        )
+        rows = (
+            await keyset_page(
+                self.l3_pool,
+                "job_fires",
+                columns=(
+                    "partition_key",
+                    "fire_id",
+                    "job_id",
+                    "scheduled_fire_at",
+                    "actual_fired_at",
+                    "status",
+                    "output",
+                    "latency_ms",
+                    "error",
+                    "date_created",
+                ),
+                by={"partition_key": partition_key, "job_id": job_id},
+                order=[Sort("actual_fired_at", descending=True), Sort("fire_id", descending=True)],
+                limit=limit,
+                records=True,
+            )
+        ).rows
         return [JobFireEntity(dict(row), is_new=False, collection=self) for row in rows]
 
 

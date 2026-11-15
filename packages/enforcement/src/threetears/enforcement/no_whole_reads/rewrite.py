@@ -37,8 +37,8 @@ every point-read refusal.
 or ``LIMIT $n`` after its ``ORDER BY``, sent by ``fetch`` (the top n), ``fetchrow`` (the first row) or ``fetchval``
 (the first row's first column), becomes the first page of :func:`~threetears.core.keyed.keyset_page` with
 ``records=True``: the statement's own sort, completed by the table's declared key (its columns the pins and the sort
-do not already hold, ascending), so which of the rows tied at the boundary it keeps is the key's choice, not the
-engine's. ``fetch`` reads the page's ``.rows``; ``fetchrow`` its first row or None; ``fetchval`` that row's column or
+do not already hold, running the way its last term does), so which of the rows tied at the boundary it keeps is the
+key's choice, not the engine's. ``fetch`` reads the page's ``.rows``; ``fetchrow`` its first row or None; ``fetchval`` that row's column or
 None. Refused: no ``ORDER BY`` (the rows kept are the engine's choice), an ``OFFSET``, a table with no declared key,
 a key column the statement does not select, the ``LIMIT`` parameter not the last, and every listing refusal.
 
@@ -1516,7 +1516,8 @@ def _probe_walk(parsed: PointSql, declared: Any) -> list[str] | str:
 def _key_completion(parsed: PointSql, declared: Any) -> list[dict[str, Any]] | str:
     """the sort terms that complete a first-of read's order by its table's key: none when the pins and the sort
     already hold a declared key; else, of the declared keys (the primary key first among equals, then each
-    ``UNIQUE``), the columns of the one they hold most of, ascending, when those are selected and an index holds them.
+    ``UNIQUE``), the columns of the one they hold most of, running the way the order's last term does (ascending for
+    no order), when those are selected and an index holds them.
 
     An index holds the completed order when, its leading columns pinned to one value set aside, it goes on with the
     order's columns and then the completion's: only then does the first page read its rows off the index in order.
@@ -1551,7 +1552,12 @@ def _key_completion(parsed: PointSql, declared: Any) -> list[dict[str, Any]] | s
                 f"({', '.join([*ordered, *completing])}, after the pins {sorted(pinned)}): declare that index first"
             )
         else:
-            return [{"column": column, "descending": False, "nulls": None} for column in completing]
+            # the key runs the way the order's last term does: an order all newest first (``actual_fired_at DESC``)
+            # completed ``fire_id DESC`` is one index walked one way (``(job_id, actual_fired_at DESC, fire_id
+            # DESC)``); completed ascending it is walked by no index on YugabyteDB, which has no incremental sort and
+            # reads and sorts every row the pins leave. Which of the tied rows a page keeps is the key's choice either way
+            descending = bool(parsed.order[-1].get("descending")) if parsed.order else False
+            return [{"column": column, "descending": descending, "nulls": None} for column in completing]
     return reasons[0]
 
 

@@ -59,6 +59,7 @@ from threetears.interfaces.keyed.keys import (
     register_partial_predicates,
     register_table_indexes,
     register_table_keys,
+    stated_predicate,
 )
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.protocol import (
@@ -1173,8 +1174,10 @@ class TableSchema:
 
     def _declared_indexes(self, pk_cols: tuple[str, ...]) -> list[DeclaredIndex]:
         """the B-tree indexes a keyed read's pins and order can be served by: the primary key, and each declared index
-        with no predicate, operator class, collation or other access method (a read must state a partial index's
-        predicate, and a collated or other index orders by something else).
+        with no operator class, collation or other access method (a collated or other index orders by something else),
+        and no predicate or one of nothing but ``column = 'text'`` conjuncts (serving only a read that pins each column
+        to that text, :func:`~threetears.interfaces.keyed.keys.stated_predicate`; a read cannot be judged to state any
+        other).
 
         :param pk_cols: the primary key's columns
         :ptype pk_cols: tuple[str, ...]
@@ -1182,11 +1185,13 @@ class TableSchema:
         :rtype: list[DeclaredIndex]
         """
         indexes = [DeclaredIndex("primary_key", pk_cols, primary=True)] if pk_cols else []
-        indexes.extend(
-            DeclaredIndex(index.name, tuple(index.columns), frozenset(index.desc))
-            for index in self.indexes
-            if index.where is None and index.using is None and not index.ops and not index.collate
-        )
+        for index in self.indexes:
+            if index.using is not None or index.ops or index.collate:
+                continue
+            stated = frozenset() if index.where is None else stated_predicate(index.where)
+            if stated is None:
+                continue
+            indexes.append(DeclaredIndex(index.name, tuple(index.columns), frozenset(index.desc), stated=stated))
         return indexes
 
     def _declared_keys(self, pk_cols: tuple[str, ...], partition_column: str | None) -> list[TableKey]:

@@ -46,6 +46,8 @@ TableSchema(
         Index("o88_conv_agent_user_status", "agent_id", "user_id", "status", "conversation_id"),
         Index("o88_conv_open", "agent_id", "conversation_id", where="status = 'open'"),
         Index("o88_conv_name_c", "agent_id", "name", "conversation_id", collate=(("name", "C"),)),
+        Index("o88_conv_open_named", "agent_id", "name", "conversation_id", where="status = 'open'"),
+        Index("o88_conv_kept", "agent_id", "user_id", "name", where="status = 'open' AND name IS NOT NULL"),
     ),
 )
 
@@ -103,6 +105,11 @@ class TestServingIndex:
         assert serving_index("o88_never_declared", {"agent_id": 1}, _BY_STATUS) is None
         assert serving_index(_CONV, {"status": "a"}, _BY_ID) is None
         assert serving_index(_CONV, {"status": "a"}, []) is None
+        # a read not pinning the partial index's text does not state its predicate
+        for by in ({"agent_id": 1}, {"agent_id": 1, "status": "closed"}, {"agent_id": 1, "status": AnyOf(["open"])}):
+            served = serving_index(_CONV, by, [Sort("name"), Sort("conversation_id")])
+            assert served is None or served.name != "o88_conv_open_named", by
+        assert serving_index(_CONV, {"agent_id": 1}, [Sort("name"), Sort("conversation_id")]) is None
         assert serving_index("o88_never_declared", {"agent_id": 1, "status": "a"}, []) is None
 
     def test_an_unordered_read_takes_the_index_binding_more_pins_than_the_primary_key(self) -> None:
@@ -118,6 +125,19 @@ class TestServingIndex:
         for by in ({"agent_id": 1}, {"agent_id": 1, "conversation_id": 2, "status": "a"}):
             index = serving_index(_CONV, by, [])
             assert index is not None and index.primary and index_hint(index) == "", by
+
+    def test_a_partial_index_serves_only_a_read_pinning_its_predicate_s_text(self) -> None:
+        """Flips if a partial index whose predicate is ``column = 'text'`` conjuncts does not serve a read pinning each
+        to that text (ordered or not), or serves one pinning another text, a set, or nothing; or if a partial index
+        with any other predicate (``name IS NOT NULL``) is ever named (3tears #98: identity's pending queue, unhinted on
+        YugabyteDB, read 400 rows and sorted them for a page of 10)."""
+        served = serving_index(_CONV, {"agent_id": 1, "status": "open"}, [Sort("name"), Sort("conversation_id")])
+        assert served is not None and served.name == "o88_conv_open_named", served
+        assert served.stated == frozenset({("status", "open")})
+        for by in ({"agent_id": 1, "status": "closed"}, {"agent_id": 1, "status": AnyOf(["open"])}, {"agent_id": 1}):
+            assert serving_index(_CONV, by, [Sort("name"), Sort("conversation_id")]) is None, by
+        unordered = serving_index(_CONV, {"agent_id": 1, "user_id": 2, "status": "open", "name": "n"}, [])
+        assert unordered is not None and unordered.name == "o88_conv_agent_user_status", unordered
 
     def test_a_declared_index_names_plain_identifiers(self) -> None:
         """Flips if an index a hint could not name unquoted, or one sorting a column it lacks, is accepted."""
@@ -170,6 +190,19 @@ class TestTheHintOnYugabyteOnly:
         await read_by(reader, _CONV, by={"agent_id": 1})
         await read_by(reader, _CONV, by={"agent_id": 1, "conversation_id": 2, "status": "a"})
         assert len(reader.asked) == 3 and not any("/*+" in sql or "version()" in sql for sql in reader.asked)
+
+    async def test_a_read_by_stating_a_partial_index_names_it_on_yugabyte(self) -> None:
+        """Flips if an ordered read_by pinning a partial index's text does not start with the hint naming it on
+        YugabyteDB (its literal written as the predicate's), or one pinning another text names it."""
+        reader = _yugabyte()
+        await read_by(
+            reader, _CONV, by={"agent_id": 1, "status": "open"}, order=[Sort("name"), Sort("conversation_id")]
+        )
+        await read_by(reader, _CONV, by={"agent_id": 1, "status": "x"}, order=[Sort("name"), Sort("conversation_id")])
+        stated, other = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
+        assert stated.startswith("/*+ IndexOnlyScan(t o88_conv_open_named) */ "), stated
+        assert "t.\"status\" = 'open'" in stated, stated
+        assert "/*+" not in other, other
 
     async def test_an_unordered_read_by_names_the_index_on_yugabyte_only(self) -> None:
         """Flips if an unordered read_by pinning the agent and a status does not start with the hint naming
