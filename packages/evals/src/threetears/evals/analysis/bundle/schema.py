@@ -4216,9 +4216,16 @@ _V2_FIELDS: Final[frozenset[str]] = frozenset(
 #: scoreboard row, a cell), which a version 2 pre-image leaves out at every depth. A change that adds such a field
 #: names it here; a name any shape-66 document already uses at any depth cannot be listed.
 _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
-    # #1187: what a cell's arm is split on, what a host stated of a run or an arm after the fact, and what a
-    # comparison set says of the models that answered its runs.
-    {"split_on", "attested_coordinates", "n_attested", "attested_models", "served_model_disclosure"}
+    # #1187: what a cell's arm is split on, what a host stated of a run or an arm after the fact, what a
+    # comparison set says of the models that answered its runs, and that a frontier's contestants' definitions differ.
+    {
+        "split_on",
+        "attested_coordinates",
+        "n_attested",
+        "attested_models",
+        "served_model_disclosure",
+        "definitions_apart",
+    }
 )
 
 

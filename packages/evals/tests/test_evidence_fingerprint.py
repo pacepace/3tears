@@ -651,6 +651,9 @@ def test_a_field_the_bundle_gains_after_version_2_is_no_part_of_a_version_2_fing
 
     assert evidence_digest(grown, like="v2:") == evidence_digest(document, like="v2:")
     assert evidence_digest(_stored_under_v2_document(document)) == evidence_digest(document, like="v2:")
+    # A field added inside a frozen value (#1187: a frontier whose contestants' definitions differ) is left out too.
+    apart = {**document, "frontier": {**document["frontier"], "definitions_apart": True}}
+    assert evidence_digest(apart, like="v2:") == evidence_digest(document, like="v2:")
     assert evidence_digest(grown) == evidence_digest(document)
 
 
