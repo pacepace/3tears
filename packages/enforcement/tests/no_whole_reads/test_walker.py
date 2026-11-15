@@ -7187,3 +7187,70 @@ def test_a_loosening_declaration_nothing_used_is_a_finding(tmp_path: Path) -> No
             )
         )
     assert relations == ["relation_producers gone matches nothing the walk read; delete it"], relations
+
+
+_RUN_TIME_TABLE_BY_ITS_DECLARED_KEY = """
+    from threetears.core.keyed import (
+        AnyOf,
+        Fragment,
+        KeyColumn,
+        KeyColumns,
+        Max,
+        Sort,
+        aggregate_keyed,
+        count_at_most,
+        keyset_page,
+    )
+
+
+    async def page_by_key(conn, table, column, key: KeyColumns, cursor):
+        order = tuple(Sort(name, cast=None) for name in key)
+        return await keyset_page(conn, table, columns=(*key, column), by={}, order=order, limit=500, cursor=cursor)
+
+
+    async def page_by_key_narrowed(conn, table, column, key: KeyColumns, cursor):
+        order = tuple(Sort(name, cast=None) for name in key)
+        return await keyset_page(
+            conn, table, columns=(*key, column), by={}, order=order, limit=500, cursor=cursor,
+            where=(Fragment(f"t.{column} IS NOT NULL"),),
+        )
+
+
+    async def page_by_other(conn, table, column, wanted, cursor):
+        order = tuple(Sort(name, cast=None) for name in wanted)
+        return await keyset_page(conn, table, columns=(column,), by={}, order=order, limit=500, cursor=cursor)
+
+
+    async def counted_by_key(conn, schema, table, key: KeyColumns, cap):
+        return await count_at_most(conn, f"{schema}.{table}", at_most=cap, order=tuple(key))
+
+
+    async def counted_by_other(conn, schema, table, wanted, cap):
+        return await count_at_most(conn, f"{schema}.{table}", at_most=cap, order=tuple(wanted))
+
+
+    async def labels_by_key(conn, table, code: KeyColumn, label, codes):
+        return await aggregate_keyed(
+            conn, table, aggregates={"label": Max(label)}, by={code: AnyOf(codes, as_list=True)}
+        )
+
+
+    async def labels_by_other(conn, table, code, label, codes):
+        return await aggregate_keyed(
+            conn, table, aggregates={"label": Max(label)}, by={code: AnyOf(codes, as_list=True)}
+        )
+"""
+
+
+def test_a_run_time_table_read_by_its_declared_key_is_keyed(tmp_path: Path) -> None:
+    """Flips if a keyset page, a bounded count or a keyed aggregate of a table named at run time is unknown when its
+    order or pins flow from a declared key source (``key: KeyColumns``), or passes when they do not (a parameter
+    named ``wanted``), or a key page narrowed by a column of a table whose schema the walk cannot see (a page could
+    pass any number of rows): judged as the interpolated SQL the caller would write (``FROM {table} ... ORDER BY
+    {pk}``)."""
+    found = _symbols(_config(tmp_path, {"runtime.py": _RUN_TIME_TABLE_BY_ITS_DECLARED_KEY}))
+    functions = {function for function, _ in found}
+    for flagged in ("page_by_other", "page_by_key_narrowed", "counted_by_other", "labels_by_other"):
+        assert flagged in functions, (flagged, found)
+    for keyed in ("page_by_key", "counted_by_key", "labels_by_key"):
+        assert keyed not in functions, (keyed, found)

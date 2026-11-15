@@ -442,7 +442,10 @@ def _key_batch_columns(node: ast.expr | None) -> list[str]:
 
 
 def _sort_columns(node: ast.expr | None) -> list[str]:
-    """each sort's term as the page's statement orders by it: the column, quoted, or the sort's expression."""
+    """each sort's term as the page's statement orders by it: the column, quoted, or the sort's expression; a sort
+    named at run time from a declared key source (the walk hands it as ``pk``) is the key, ``{pk}``."""
+    if isinstance(node, ast.Name) and node.id == "pk":
+        return ["{pk}"]
     if not isinstance(node, ast.Tuple | ast.List) or not node.elts:
         raise _Unseen("order")
     columns = []
@@ -651,8 +654,8 @@ def _filters(call: ast.Call, first: int) -> tuple[list[str], int]:
 
 
 def _keyset_page(call: ast.Call) -> list[str]:
-    table, own = _relation(_argument(call, "table", 1), "table")
     order = _sort_columns(_argument(call, "order", None))
+    table, own = _keyed_relation(_argument(call, "table", 1), "table", by_key=order == ["{pk}"])
     pinned, place = _conditions(
         _by(_argument(call, "by", None)) + [(column, "any") for column in _visible_columns(call)]
     )
@@ -819,6 +822,16 @@ def _relation(node: ast.expr | None, argument: str) -> tuple[str, list[str]]:
     raise _Unseen(argument)
 
 
+def _keyed_relation(node: ast.expr | None, argument: str, *, by_key: bool) -> tuple[str, list[str]]:
+    """:func:`_relation`, and a table named at run time (``keyset_page(conn, table, ...)``) read by its declared key
+    (``by_key``: its order or pins are ``{pk}``, columns from a declared key source): the interpolation it would be in
+    SQL the caller wrote (``FROM {table}``), judged as that SQL is, keyed only by that key. One read by anything else
+    stays unseen, as a batch of literal columns over an interpolated table is (:func:`_read_keyed`)."""
+    if by_key and isinstance(node, ast.Name | ast.Attribute):
+        return _named(node, argument), []
+    return _relation(node, argument)
+
+
 def _count_of(relation: str, column: str, call: ast.Call, *, values: bool, own: ast.expr | None = None) -> str:
     """a grouped count's statement; ``column`` as the statement spells it (quoted, or a run-time interpolation);
     ``own``: the relation's own pins (``counts_by_relations``' ``pins=`` for its label), ANDed after the rest."""
@@ -941,8 +954,11 @@ def _ranges(node: ast.expr | None) -> list[str]:
 def _aggregate_keyed(call: ast.Call) -> list[str]:
     """a keyed aggregate (``aggregate_keyed``): the rows its ``by`` pins (an ``AnyOf`` as ``= ANY``), its ranges of
     the next column bound and its ``where`` narrows, counted. Its group (a column or a time bucket) is no predicate."""
-    relation, own = _relation(_argument(call, "table", 1), "table")
-    pinned, place = _conditions(_by(_argument(call, "by", None)))
+    by = _by(_argument(call, "by", None))
+    relation, own = _keyed_relation(
+        _argument(call, "table", 1), "table", by_key=bool(by) and by[0][0] == "{pk}"
+    )
+    pinned, place = _conditions(by)
     ranged = []
     for condition in _ranges(_argument(call, "ranges", None)):
         ranged.append(condition.replace("$0", f"${place}"))
@@ -952,13 +968,17 @@ def _aggregate_keyed(call: ast.Call) -> list[str]:
 
 
 def _probe(call: ast.Call) -> list[str]:
-    relation, own = _relation(_argument(call, "table", 1), "table")
+    walked = _argument(call, "order", None)
+    walks_key = isinstance(walked, ast.Name) and walked.id == "pk"
+    relation, own = _keyed_relation(_argument(call, "table", 1), "table", by_key=walks_key)
     pinned, place = _conditions(_by(_argument(call, "by", None)))
     # holds_any reads one row; count_at_most at most its bound, bound as a parameter (a probe of a table's first rows
     # when it names no key)
     limit = "1" if _name(call) == "holds_any" else f"${place}"
     # the probe walks the key it names (order=): with no order it is a scan stopped at the LIMIT, never keyed
-    order = ", ".join(f"r.{column}" for column in _texts(_argument(call, "order", None), "order"))
+    # a key named at run time from a declared key source (the walk hands it as ``pk``): the key, ``{pk}``
+    columns = ["{pk}"] if walks_key else _texts(walked, "order")
+    order = ", ".join(f"r.{column}" for column in columns)
     return [f"SELECT 1 FROM {relation} AS r{_where(pinned)} ORDER BY {order} LIMIT {limit}", *own]
 
 
