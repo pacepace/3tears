@@ -2,7 +2,8 @@
 
 Seeded, 2,000 replicates per row, through the functions the bundle's filler calls
 (:mod:`threetears.evals.analysis.judge_noise`: :func:`rescore_of` for an arm's figures, :func:`judge_share` for a
-contrast's). Bars fixed before the run.
+contrast's). The within-tolerance bars were fixed before the first run; the range bars were set from a measured run of
+the interval below and checked to fail for each wrong range named after the table.
 
 **The share.** Each replicate draws ``G`` cases and ``k`` trials per case per arm. A trial's answer is an integer
 whose distribution differs by case and arm; the judge scores it with noise of a known variance: on 1 to 5, the answer
@@ -38,8 +39,8 @@ result covered 0.903 and 0.917 (rows 1 and 2, the arm); a range of zero to the m
 
 **The ceiling.** ``e`` is planted on a judge that fails a passing answer with chance ``e`` and never passes a failing
 one, so a repeat of a first reading that passed fails with chance exactly ``e``. Its Wilson interval over cases covers
-``e``, and so the ceiling range covers ``(1 - e)^(k - 1)``, at least 0.93 at k = 3 over 100 cases, at the floor and at
-200 repeated results (measured 0.958, 0.964 and 0.971 at the floor for e = 0.05, 0.10 and 0.20; 0.972, 0.968 and 0.962
+``e``, and so the ceiling range covers ``(1 - e)^(k - 1)``, at least 0.93 and at most 0.99 at k = 3 over 100 cases, at
+the floor and at 200 repeated results (measured 0.958, 0.964 and 0.971 at the floor for e = 0.05, 0.10 and 0.20; 0.972, 0.968 and 0.962
 at 200). The review's table (B-3) is held exactly.
 """
 
@@ -290,4 +291,4 @@ class TestTheCeilingOnPassK:
     @pytest.mark.parametrize("e", [0.05, 0.10, 0.20])
     def test_the_range_covers_the_planted_ceiling(self, e: float, repeats: int) -> None:
         covered = _ceiling_row(e, 3, repeats, f"judge-noise-ceiling/{e}/{repeats}")
-        assert covered >= 0.93, f"e {e}, {repeats} repeats: the ceiling range covered {covered:.3f}"
+        assert 0.93 <= covered <= 0.99, f"e {e}, {repeats} repeats: the ceiling range covered {covered:.3f}"
