@@ -28,7 +28,7 @@ be stated the field's state is ``not_available`` with one reason of the shared s
 
 ``tests/test_simulated_people_corrected.py`` holds the estimator's coverage and the decision floor
 (:data:`PPI_DECISION_MIN_LABELLED_CASES`, the smallest number of labelled cases that met every bar, and at least 40:
-60).
+80).
 
 This module computes numbers and prints nothing.
 """
@@ -36,7 +36,7 @@ This module computes numbers and prints nothing.
 from __future__ import annotations
 
 import math
-from collections.abc import Collection, Hashable, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Final, Literal, NamedTuple
 
 from threetears.evals.analysis.blind_read import sample_standing
@@ -71,9 +71,9 @@ PPI_REPORT_MIN_LABELLED_CASES: Final = 20
 #: the result is ``insufficient``, ``too_few``, its figures shown and moving nothing. A lean concentrated in a few cases
 #: or answers breaks fewer: a sample that met no leaning case has a rectifier near zero with little spread, and the
 #: corrected interval collapses toward the judge's own. The smallest number of labelled cases at which every bar of
-#: ``tests/test_simulated_people_corrected.py`` was met, and at least 40: at 40 a judge giving a 5 to one candidate
-#: answer in twenty on a 1-to-5 scale was confirmed against people more often than the bar allows.
-PPI_DECISION_MIN_LABELLED_CASES: Final = 60
+#: ``tests/test_simulated_people_corrected.py`` was met, and at least 40: at 40 and at 60 a judge giving a 5 to one
+#: candidate answer in twenty on a 1-to-5 scale was confirmed against people more often than the bar allows.
+PPI_DECISION_MIN_LABELLED_CASES: Final = 80
 
 #: The largest share of a sample's answered items a reader may skip, on the criterion read, before the sample stops
 #: standing for the cases: a skip follows content (the hard item is the one passed over), so past it the field is
@@ -113,10 +113,10 @@ class PeopleCorrectedDifference(NamedTuple):
 
 
 def prediction_powered_difference(
-    judge_differences: Mapping[Hashable, float],
-    labelled: Mapping[Hashable, tuple[float, float]],
+    judge_differences: Mapping[str, float],
+    labelled: Mapping[str, tuple[float, float]],
     *,
-    identical: Collection[Hashable] = (),
+    identical: Collection[str] = (),
     confidence: float,
 ) -> PeopleCorrectedDifference | None:
     """The prediction-powered estimate of the difference between two arms, with the judge's lean.
@@ -129,12 +129,12 @@ def prediction_powered_difference(
 
     :param judge_differences: ``F_i``, the judge's candidate-minus-control difference of case means, for every case of
         the population, identical cases included.
-    :ptype judge_differences: Mapping[Hashable, float]
+    :ptype judge_differences: Mapping[str, float]
     :param labelled: For each labelled case, ``(Y_i, F^L_i)``: the reader's and the judge's candidate-minus-control
         difference on the two drawn outputs.
-    :ptype labelled: Mapping[Hashable, tuple[float, float]]
+    :ptype labelled: Mapping[str, tuple[float, float]]
     :param identical: The population's cases whose two drawn outputs were byte-identical.
-    :ptype identical: Collection[Hashable]
+    :ptype identical: Collection[str]
     :param confidence: The intervals' two-sided level.
     :ptype confidence: float
     :return: The estimate; None with no labelled case.
@@ -389,18 +389,18 @@ def corrected_reading(
         ),
     )
     level = f"{format_number(100 * confidence)}%"
-    common = {
-        "against": reader.against,
-        "against_id": reader.against_id,
-        "labelled_cases": len(reader.pairs),
-        "identical_cases": len(reader.identical),
-        "read_id": reader.read_id,
-    }
+    named = Corrected(
+        against=reader.against,
+        against_id=reader.against_id,
+        labelled_cases=len(reader.pairs),
+        identical_cases=len(reader.identical),
+        read_id=reader.read_id,
+    )
     if contrast_state is not None and contrast_state.reason == "identity_unrecorded":
         unrecorded = StateOf(state="not_available", reason="identity_unrecorded", coordinate=contrast_state.coordinate)
-        return Corrected(state=unrecorded, **common)
+        return named.model_copy(update={"state": unrecorded})
     if (reason := _unavailable(reader)) is not None:
-        return Corrected(state=StateOf(state="not_available", reason=reason), **common)
+        return named.model_copy(update={"state": StateOf(state="not_available", reason=reason)})
     figures = prediction_powered_difference(
         {case: case_differences[case] for case in reader.population},
         reader.pairs,
@@ -409,15 +409,16 @@ def corrected_reading(
     )
     assert figures is not None and figures.interval is not None and figures.lean_interval is not None  # n >= 20
     result, why = _result(figures, direction)
-    return Corrected(
-        result=result,
-        reason=why,
-        estimate=figures.estimate,
-        interval=figures.interval,
-        level=level,
-        lean=figures.lean,
-        lean_interval=figures.lean_interval,
-        **common,
+    return named.model_copy(
+        update={
+            "result": result,
+            "reason": why,
+            "estimate": figures.estimate,
+            "interval": figures.interval,
+            "level": level,
+            "lean": figures.lean,
+            "lean_interval": figures.lean_interval,
+        }
     )
 
 

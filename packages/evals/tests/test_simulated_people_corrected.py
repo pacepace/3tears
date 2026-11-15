@@ -10,8 +10,8 @@ were fixed before the run.
 |---|---|---|---|---|
 | Level | Unbiased and noisy; biased equally in both arms; leaning to the candidate by about 0.15 | 0 | The corrected interval excludes 0 at most 6.5% | Every row of the grid |
 | Coverage | Passes everything (a 5 on everything on 1 to 5) | 0.2 | Covers at least 93.5% | Every row of the grid |
-| A rare one-sided lean | Passes every failed candidate answer on 3%, 6%, 10% of cases near the ceiling; a 5 on 5% of candidate answers on 1 to 5; G = 100, k = 3 | 0 | Covers at least 93.5% from the decision floor | n = 60 to 100; at n = 20 coverage falls to about 92% (recorded) |
-| Confirmation | Every row above and the rare lean: the judge's own test reads improved and ``corrected`` is ``met`` | 0 | At most 3.5% at the decision floor | At n = 60. At n = 40 the 1-to-5 rare lean confirms about 4.6%, so 40 did not pass |
+| A rare one-sided lean | Passes every failed candidate answer on 3%, 6%, 10% of cases near the ceiling; a 5 on 5% of candidate answers on 1 to 5; G = 100, k = 3 | 0 | Covers at least 93.5% from the decision floor | n = 80 and 100 (93.9% to 96% at 40 and 60); at n = 20 the 10% lean on pass/fail covers 91.9% (recorded) |
+| Confirmation | Every row above and the rare lean: the judge's own test reads improved and the corrected interval lies above zero (``met`` from the floor) | 0 | At most 3.5% at the decision floor | At n = 80 (the 1-to-5 rare lean: 3.2%). At 40 and 60 that row confirms 4.3% or more, so neither passed |
 | Identical outputs on 20% of G | Unbiased | 0 and 0.2 | Covers at least 93.5% with the stratum rule | Both, both scales |
 | Content-following skips | Leaning; the reader skips items where it and the judge disagree | 0 | 5%: coverage recorded; 20%: ``not_available``, ``skipped_past_limit`` | Every replicate at 20% |
 | Lean test over five dimensions | Unbiased | no lean | Chance of any spurious lean recorded, at most ``1 - 0.95^5`` plus four standard errors | about 23% |
@@ -19,9 +19,11 @@ were fixed before the run.
 | A wrong variance | Unbiased; the rectifier's spread divided by G rather than n | 0 | Fails the coverage bar the shipped variance meets | about 75% against 95% |
 
 **The decision floor** (:data:`~threetears.evals.analysis.people_corrected.PPI_DECISION_MIN_LABELLED_CASES`) is the
-smallest number of labelled cases at which every row met its bar: 60. At 40 the rare lean on 1 to 5 (a 5 on one
-candidate answer in twenty) confirmed a difference people do not see more often than the bar allows; at 20 the rare lean
-on pass/fail broke coverage, since a sample that met no leaning case corrects nothing.
+smallest number of labelled cases at which every row met its bar: 80. At 40 and 60 the rare lean on 1 to 5 (a 5 on one
+candidate answer in twenty) confirmed a difference people do not see more often than the bar allows; at 20 the rare
+lean on pass/fail broke coverage, since a sample that met no leaning case corrects nothing. The 1-to-5 row sits close
+to its bar at 80 too: a lean concentrated in rare answers skews the rectifier, and its upper error falls only slowly
+with n.
 """
 
 from __future__ import annotations
@@ -225,7 +227,12 @@ def _row(seed: str, truth: float, **kwargs: object) -> _Rates:
         rates.covered += low <= truth <= high
         rates.excluded += low > 0 or high < 0
         rates.judge_improved += improved
-        rates.confirmed += improved and corrected.result == "met"
+        # Confirmed: the judge reads improved and the corrected interval lies above zero, which is what ``met`` reads
+        # from the decision floor; counted below it too, so a floor can be read off the rates.
+        confirms = low > 0
+        if corrected.labelled_cases is not None and corrected.labelled_cases >= PPI_DECISION_MIN_LABELLED_CASES:
+            assert confirms == (corrected.result == "met"), corrected
+        rates.confirmed += improved and confirms
     return rates
 
 
@@ -286,7 +293,7 @@ _RARE = [("pass_fail", 0.03), ("pass_fail", 0.06), ("pass_fail", 0.10), ("ordina
 
 
 @pytest.mark.parametrize(("scale", "rare"), _RARE)
-@pytest.mark.parametrize("n", [60, 80, 100])
+@pytest.mark.parametrize("n", [80, 100])
 def test_a_rare_one_sided_lean_is_covered_and_never_confirmed_from_the_decision_floor(
     scale: Scale, rare: float, n: int
 ) -> None:
@@ -297,13 +304,21 @@ def test_a_rare_one_sided_lean_is_covered_and_never_confirmed_from_the_decision_
 
 
 def test_the_decision_floor_is_the_smallest_n_that_passed_and_at_least_forty() -> None:
-    """At 20 the rare lean on pass/fail breaks coverage; at 40 the rare lean on 1 to 5 confirms too often; from 60
-    every row above holds. So the floor is 60."""
-    at_twenty = _row("floor|20", 0.0, scale="pass_fail", judge="rare", population=100, k=3, n=20, d=0.0, rare=0.10)
+    """Each n below the floor fails a bar on the rare-lean rows, read with the seeds the rows above use: at 20 the
+    lean on pass/fail breaks coverage, at 40 and at 60 the lean on 1 to 5 is confirmed too often. From 80 every row
+    holds, so the floor is 80."""
+
+    def rare(scale: Scale, share: float, n: int) -> _Rates:
+        return _row(
+            f"rare|{scale}|{share}|{n}", 0.0, scale=scale, judge="rare", population=100, k=3, n=n, d=0.0, rare=share
+        )
+
+    at_twenty = rare("pass_fail", 0.10, 20)
     assert at_twenty.rate(at_twenty.covered) < COVERS_AT_LEAST, at_twenty.rate(at_twenty.covered)
-    at_forty = _row("floor|40", 0.0, scale="ordinal", judge="rare", population=100, k=3, n=40, d=0.0, rare=0.05)
-    assert at_forty.rate(at_forty.confirmed) > CONFIRMS_AT_MOST, at_forty.rate(at_forty.confirmed)
-    assert PPI_DECISION_MIN_LABELLED_CASES == max(40, 60)
+    for n in (40, 60):
+        below = rare("ordinal", 0.05, n)
+        assert below.rate(below.confirmed) > CONFIRMS_AT_MOST, (n, below.rate(below.confirmed))
+    assert PPI_DECISION_MIN_LABELLED_CASES == max(40, 80)
 
 
 # --- identical outputs, skips, five dimensions, a selection rule and a wrong variance ------------------------------

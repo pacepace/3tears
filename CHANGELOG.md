@@ -13,8 +13,8 @@ packages (bumped in lock-step).
 difference over the read's cases plus the mean of reader minus judge over the labelled pair items
 (`analysis/people_corrected.py`), read at the level the contrast's own Holm step used. Its result is `met`
 (confirms), `not_met` with `people_disagree` (contradicts) or `instrument_leans` (the judge leans toward the arm the
-verdict favours), `undecided`, or `insufficient` with `too_few` from 20 labelled cases; it decides from 60, the
-smallest count at which every bar of `tests/test_simulated_people_corrected.py` held. With fewer than 20, a sample not
+verdict favours), `undecided`, or `insufficient` with `too_few` from 20 labelled cases; it decides from 80, the
+smallest count at which every bar of `tests/test_simulated_people_corrected.py` held (at 40 and 60 a rare lean on 1 to 5 was confirmed too often). With fewer than 20, a sample not
 drawn at random, more than a tenth skipped, or an unrecorded coordinate, its state is `not_available` with that
 reason. `Corrected` gains an optional `reason` from the shared set.
 
