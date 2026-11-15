@@ -88,7 +88,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from threetears.evals.kernel.host.bars import BarRegistry
 from threetears.evals.kernel.host.kinds import KindContract
-from threetears.evals.kernel.host.measures import MeasureRegistry
+from threetears.evals.kernel.host.measures import MeasureRegistry, MeasureRereader
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER, CANDIDATE_MODEL_LEVER, SweepableRegistry
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.host.world import WorldRegistry
@@ -275,6 +275,15 @@ class HostProfile:
     naming one that does not exist evaluates False on every trial
     (:func:`~threetears.evals.kernel.dsl.undefined_call_references`). A wired reader answers a tool
     the host does not have with an empty set, never None, so a misspelled TOOL is refused too.
+    """
+
+    measure_rereader: MeasureRereader | None = None
+    """How this host reads a stored result's measures again under its current definitions.
+    See :data:`~threetears.evals.kernel.host.measures.MeasureRereader`.
+
+    ``None`` for a host that cannot: a re-measure (``threetears.evals.run.remeasure_run``) then refuses any run one
+    of whose results holds a value of a measure whose definition moved, and such a run stays in the cell of the
+    definitions it was read under. A run none of whose results holds such a value needs no reader.
     """
 
     kinds: tuple[KindContract, ...] = ()

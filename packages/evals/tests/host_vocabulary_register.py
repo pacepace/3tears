@@ -375,6 +375,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "run/reads.py": {},
     "run/rejudge.py": {},
     "run/regrade.py": {},
+    "run/remeasure.py": {},
     "run/resume.py": {},
     "run/judge_repeat.py": {},
     "run/run_document.py": {},

@@ -52,6 +52,7 @@ from threetears.evals.kernel.result_condition import (
 )
 from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier, JudgeEvidenceTier
 from threetears.evals.kernel.identity import IDENTITY_VERSION, resolve_context_identity
+from threetears.evals.kernel.metrics import holds_host_measure
 from threetears.evals.kernel.scoring import (
     CompositeBasis,
     capability_scores,
@@ -393,7 +394,8 @@ class PassHatKCellReading(EvalBaseModel):
 #: verdict leave a kept-out run out; every other figure of the arm still counts it.
 PASS_HAT_K_CELL_READING = (
     "An arm's frontier pass^k, with its interval, bar and verdict, reads its headline pass^k cell alone: one "
-    "measurement context, template revision, apparatus provenance and served model, whatever cases each run covered "
+    "measurement context, template revision, definition of each host measure, apparatus provenance and served model, "
+    "whatever cases each run covered "
     "and whenever it ran. A run of another such cell is named below with why and its own pass^k, and is kept out of "
     "that headline only: the arm's tables, cells, composite, cost and latency still count it, pooling every run of the "
     "variant under one rig."
@@ -404,6 +406,8 @@ _REASON_WORDS: dict[str, str] = {
     "changed_context": "another measurement context",
     "no_recorded_template": "no recorded template revision",
     "other_template": "another template or template revision",
+    "no_recorded_measure_definitions": "no recorded measure definitions",
+    "other_measure_definition": "another definition of a host measure",
     "no_recorded_served_model": "no recorded served model",
     "other_served_model": "another served model",
     "no_recorded_context": "no recorded measurement context",
@@ -1205,8 +1209,8 @@ def _pass_hat_k_cells(
     """Group one contestant's runs into pass^k cells, choose the headline, and say why each other cell stands apart.
 
     Each run's cell is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell` over the models that answered it for
-    this contestant; a run that froze no template digest, or made a candidate call whose response named no model, is
-    a cell of its own. The headline is chosen in the order :class:`PassHatKCellReading` states. Each other cell's
+    this contestant; a run that froze no template digest, recorded no measure definitions while its results hold a
+    host measure, or made a candidate call whose response named no model, is a cell of its own. The headline is chosen in the order :class:`PassHatKCellReading` states. Each other cell's
     reason is :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_reason` against the headline, so the grouping
     and the reason are one reading; a headline of one run carries why it pools with nothing.
 
@@ -1223,9 +1227,14 @@ def _pass_hat_k_cells(
     weight: dict[str, int] = {}
     for result in results:
         weight[result.eval_run_id] = weight.get(result.eval_run_id, 0) + 1
+    holding = {result.eval_run_id for result in results if holds_host_measure(result.host_measures)}
     of_run = {
         run_id: pass_hat_k_cell(
-            runs[run_id], profile, served=served[run_id].served, served_unrecorded=served[run_id].unrecorded
+            runs[run_id],
+            profile,
+            served=served[run_id].served,
+            served_unrecorded=served[run_id].unrecorded,
+            holds_host_measures=run_id in holding,
         )
         for run_id in weight
     }
@@ -1311,6 +1320,26 @@ def _other_template_digest(pair: _CellPair) -> str:
     )
 
 
+def _other_measure_definitions(pair: _CellPair) -> str:
+    """A cell of one run that recorded no measure definitions, or a cell whose host defined a measure otherwise."""
+    if pair.cell.definitions_unrecorded:
+        return (
+            "its results hold a host measure and it recorded no definition of its host's measures, so nothing says "
+            "which definition its values were read under; its host states the definitions it ran under "
+            "(attest_measure_definitions), or a re-measure reads it again under the current ones"
+        )
+    own, headline = pair.run.measure_definitions or {}, pair.reference.measure_definitions or {}
+    if not own or not headline:
+        recorded, silent = ("it", "the headline's runs") if own else ("the headline's runs", "it")
+        return f"{recorded} recorded its host's measure definitions and {silent} recorded none"
+    moved = sorted(name for name in {*own, *headline} if own.get(name) != headline.get(name))
+    return (
+        f"its host defined {', '.join(moved)} otherwise than when the headline's runs were read (another definition "
+        "digest), so its values are not the headline's quantity; a re-measure reads it again under the current "
+        "definitions"
+    )
+
+
 def _other_context(pair: _CellPair) -> str:
     """A cell whose context key differs, naming the components that moved where they can be read."""
     moved = _moved_components(pair.run, pair.reference, pair.profile)
@@ -1361,6 +1390,7 @@ _WORDING_OF_CELL_FIELD: dict[str, Callable[[_CellPair], str]] = {
     "unresolved": _unresolved,
     "template_id": _other_template,
     "template_digest": _other_template_digest,
+    "measure_definitions": _other_measure_definitions,
     "context_key": _other_context,
     "identity_version": _other_identity_version,
     "apparatus_provenance": _other_apparatus,
@@ -1369,7 +1399,7 @@ _WORDING_OF_CELL_FIELD: dict[str, Callable[[_CellPair], str]] = {
 
 #: The fields of :class:`PassHatKCell` no reason is read from: they mark a cell of one run, whose reason
 #: :func:`~threetears.evals.kernel.scoring.pass_hat_k_cell_alone` reads off another field.
-_UNWORDED_CELL_FIELDS: frozenset[str] = frozenset({"run_id", "served_unrecorded"})
+_UNWORDED_CELL_FIELDS: frozenset[str] = frozenset({"run_id", "served_unrecorded", "definitions_unrecorded"})
 
 
 def _checked_cell_wordings() -> dict[str, Callable[[_CellPair], str]]:

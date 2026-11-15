@@ -67,7 +67,12 @@ from threetears.evals.kernel.host.kinds import (
     ResolvesInto,
     freeze,
 )
-from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
+from threetears.evals.kernel.host.measures import (
+    MeasureRegistrationError,
+    MeasureRegistry,
+    MeasureRereader,
+    MeasureRereadRequest,
+)
 from threetears.evals.kernel.host.profile import (
     Coverage,
     HostProfile,
@@ -159,6 +164,8 @@ __all__ = [
     "KindContractError",
     "MeasureRegistrationError",
     "MeasureRegistry",
+    "MeasureRereadRequest",
+    "MeasureRereader",
     "MemberActsOn",
     "Ordinal",
     "Outcome",

@@ -11,7 +11,10 @@ digest recorded here under the version recorded here.
 
 - **A key moved and the version did not.** If the derivation changed, that is the silent regrouping
   the version exists to prevent: bump ``IDENTITY_VERSION``, record why in the ledger above it in
-  ``identity.py``, and re-pin here under the new version. A change to a fixture host's own
+  ``identity.py``, and re-pin here under the new version. The one derivation change that moves no
+  version is an ADDITIVE component (the ledger names each): composed only where a run recorded it,
+  so every key computed without it holds. The fixture hosts' runs record their measure definitions
+  as a launch does (#1160), which is why their keys were re-pinned under version 25. A change to a fixture host's own
   registrations moves that host's keys too, exactly as a real host growing a coordinate does;
   re-pin, and say which in the commit.
 - **The version moved and the pins did not.** Re-derive and re-pin every golden under the new
@@ -57,9 +60,17 @@ _TOY_CONTEXT = {
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
     "world": "35efc88198267d603fa880ed25f36644d541fd4a5884a401dfb08b60867e7742",
     "apparatus_settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "measure_definitions": {
+        "cost_per_document_usd": "1bf37ef0c65e248169e18d5b5628e9142e2c71d833586fc657753c443dc1cbc4",
+        "field_accuracy": "aa9a75a3d06b77f444272c05b6ee9e83b145597582044d3fb87466243a4374eb",
+        "field_count_error": "a53489c63d7c0e0a10023182fb1a5b1e811ac219143add86731dc3c02ad29750",
+        "fields_stripped": "94f1c1bb8d951a8d25b49c685fee690dded087a2d9cf90f95adf34ac41a57604",
+        "manual_review_rate": "0bed00e7a28b1dee46d56f734cac1d7dee97ca96b4a4e0418ba8a53d0a270609",
+        "p95_extract_ms": "3e4593730a7dee39939180a056f90946fc965f466188790d8048b664149dd7f9",
+    },
     "scope": "toyhost-scope",
 }
-_TOY_CONTEXT_KEY = "32938755aefdf646ca72c579d5824eb76ff8e92994989fb8d5248f770f8c62de"
+_TOY_CONTEXT_KEY = "b474129a82de8c582a2a57e4551ad15327c79159a6f8a5a01144882a9acd12f3"
 
 _COURIER_CONTEXT = {
     "subject_state": {},
@@ -70,9 +81,14 @@ _COURIER_CONTEXT = {
     "tool_permissions": "baf5287548d904d9d942c97182d06b2bbc9ba2c35129e6cc9f1302922224e915",
     "world": "0868b4f01fb7c86e57c3a9270c1115d89d309d6e72418e664a57f4dc79679b54",
     "apparatus_settings": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "measure_definitions": {
+        "detour_km": "7adcd8b8307364e8897d436d7233c5dfa52bca1df4614c4a459880e715e2c0ed",
+        "field_accuracy": "86dcbd94c7baf14a6da2f285861b5ac55d343dc90d9f4efabf9470946ef0b457",
+        "on_time_rate": "90b00ba7af926766fd34ae087b230324fa596ae25a5f1870c9a42d9f9c6a7690",
+    },
     "scope": "courier-depot-north",
 }
-_COURIER_CONTEXT_KEY = "a8824d8721bb5058e2a79b668448f5eb6e2ef15b9d28be5497ecdc1597ff1338"
+_COURIER_CONTEXT_KEY = "ceeef4661f685d88c7ebb95867b5801e5077aac51f655ce526699710ef83bf55"
 
 
 @dataclass(frozen=True)

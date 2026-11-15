@@ -387,6 +387,7 @@ _SHARED_CONTRACT_MODULES: tuple[str, ...] = (
     # function, and asks its failed judged dims again through the re-judge. It reads no kind's trace shape, so a host
     # noun here would be one kind's replay written back into the engine.
     "run/regrade.py",
+    "run/remeasure.py",
     "schema/store_port.py",
     # The curation family, the variation generator and the job manager moved off
     # _HOST_COUPLED_MODULES when the runtime tier's host-named partition became `scope_id`: that

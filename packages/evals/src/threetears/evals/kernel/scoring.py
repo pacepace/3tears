@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from threetears.evals.schema.base import EvalBaseModel
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.models import (
     AsyncDelivery,
     CellTermination,
@@ -761,11 +762,16 @@ def compute_pass_hat_k(
 #: template it ran. ``other_template``: it ran another template, or the same template edited in what it measures
 #: (another ``template_digest``). ``no_recorded_served_model``: a response to one of its candidate calls named no
 #: model, so nothing says which model answered. ``other_served_model``: the provider's responses named another model
-#: as having answered its candidate calls.
+#: as having answered its candidate calls. ``no_recorded_measure_definitions``: its results hold a host measure and
+#: it recorded no definition digest of its host's measures (stored before runs recorded them, or assembled without a
+#: launch), so nothing says which definition its values were read under. ``other_measure_definition``: its host defined one of its measures otherwise
+#: when its values were read (another ``measure_definitions``).
 UnpooledReason = Literal[
     "changed_context",
     "no_recorded_template",
     "other_template",
+    "no_recorded_measure_definitions",
+    "other_measure_definition",
     "no_recorded_served_model",
     "other_served_model",
     "no_recorded_context",
@@ -776,14 +782,15 @@ UnpooledReason = Literal[
 class PassHatKCell:
     """The configuration a run's attempts at a case are repeats of, for pooling pass^k across runs.
 
-    A cell is a variant under one measurement context, one template revision, one apparatus provenance and one set of
-    models that answered. Neither ``k_runs`` nor the case set is part of it: how many repeats were taken, and over
+    A cell is a variant under one measurement context, one template revision, one definition of each host measure,
+    one apparatus provenance and one set of models that answered. Neither ``k_runs`` nor the case set is part of it: how many repeats were taken, and over
     which cases, is how much was sampled under one condition, so two runs of one cell are more samples of it whatever
     cases each covered and whenever each ran, and their attempts at a case pool. Built by :func:`pass_hat_k_cell`;
     two runs whose records are equal pool.
 
-    A run that leaves part of its cell unrecorded (no context, no template digest, a candidate call whose response
-    named no model) or whose context cannot be re-derived is a cell of its own, keyed by its run id: a silence is never
+    A run that leaves part of its cell unrecorded (no context, no template digest, no measure definitions for the host
+    measures its results hold, a candidate call whose response named no model), or whose re-measure began and did not
+    finish, or whose context cannot be re-derived is a cell of its own, keyed by its run id: a silence is never
     evidence of a match. A run whose candidate made no model call recorded that, and pools on its other fields.
 
     :ivar recorded: Whether the run recorded a measurement context. ``False`` is a cell of that one run.
@@ -793,12 +800,21 @@ class PassHatKCell:
     :ivar template_id: The run's template, ``None`` for an ad-hoc run.
     :ivar template_digest: What the template measured when the run launched (``EvalRun.template_digest``). ``None``
         where the run froze none, on a cell of that one run.
+    :ivar measure_definitions: The digest of the run's recorded measure definitions (``EvalRun.measure_definitions``:
+        each host measure's definition when the run's values were read, a re-measure's or a host's attestation
+        included). ``None`` where the run recorded none or an empty map, as the context key leaves both out. Its own
+        field beside the context key, which composes the same
+        map: read without a host, a re-measured run's stamped key is the one its launch wrote, and this is what then
+        keeps it out of the cell of the definitions it was launched under.
     :ivar context_key: The run's context key, resolved at this build's identity version where a host was given.
     :ivar identity_version: The version ``context_key`` is read at.
     :ivar apparatus_provenance: ``commissioned`` or ``witnessed``.
     :ivar served: The models the provider's responses named for the run's candidate calls, sorted. Empty where its
         candidate made no model call.
     :ivar served_unrecorded: A response to one of its candidate calls named no model, on a cell of that one run.
+    :ivar definitions_unrecorded: The run's results hold a host measure and the run recorded no measure definitions,
+        on a cell of that one run. A run that recorded none and whose results hold no host measure has no value a
+        definition could have moved: it pools as it always did.
     """
 
     recorded: bool
@@ -806,17 +822,20 @@ class PassHatKCell:
     run_id: str | None = None
     template_id: str | None = None
     template_digest: str | None = None
+    measure_definitions: str | None = None
     context_key: str | None = None
     identity_version: int | None = None
     apparatus_provenance: str | None = None
     served: tuple[str, ...] = ()
     served_unrecorded: bool = False
+    definitions_unrecorded: bool = False
 
 
 #: The reason two cells that each pool are two, by the field of :class:`PassHatKCell` they differ in first.
 _REASON_OF_CELL_FIELD: dict[str, UnpooledReason] = {
     "template_id": "other_template",
     "template_digest": "other_template",
+    "measure_definitions": "other_measure_definition",
     "context_key": "changed_context",
     "identity_version": "changed_context",
     "apparatus_provenance": "changed_context",
@@ -825,7 +844,9 @@ _REASON_OF_CELL_FIELD: dict[str, UnpooledReason] = {
 
 #: The fields of :class:`PassHatKCell` that mark a cell of one run, which :func:`pass_hat_k_cell_alone` reads: never
 #: compared between two cells that each pool.
-_ALONE_CELL_FIELDS: frozenset[str] = frozenset({"recorded", "unresolved", "run_id", "served_unrecorded"})
+_ALONE_CELL_FIELDS: frozenset[str] = frozenset(
+    {"recorded", "unresolved", "run_id", "served_unrecorded", "definitions_unrecorded"}
+)
 
 
 def _cell_field_reasons() -> tuple[tuple[str, UnpooledReason], ...]:
@@ -857,7 +878,12 @@ _CELL_FIELD_REASONS: tuple[tuple[str, UnpooledReason], ...] = _cell_field_reason
 
 
 def pass_hat_k_cell(
-    run: EvalRun, profile: HostProfile | None, *, served: Collection[str] = (), served_unrecorded: bool = False
+    run: EvalRun,
+    profile: HostProfile | None,
+    *,
+    served: Collection[str] = (),
+    served_unrecorded: bool = False,
+    holds_host_measures: bool = False,
 ) -> PassHatKCell:
     """The cell a run's attempts pool in, for one contestant.
 
@@ -868,8 +894,9 @@ def pass_hat_k_cell(
     its own. A run whose context cannot be re-derived (its subject state names an input its host no longer declares)
     is a cell of its own, and says why, rather than failing the read of every other run.
 
-    A run that carries no ``context_key`` (its host assembled it without the launch), froze no ``template_digest``, or
-    made a candidate call whose response named no model is its own cell, keyed by its run id: nothing recorded says
+    A run that carries no ``context_key`` (its host assembled it without the launch), froze no ``template_digest``,
+    recorded no ``measure_definitions`` while its results hold a host measure, or made a candidate call whose
+    response named no model is its own cell, keyed by its run id: nothing recorded says
     what it held fixed there, and pooling it would be a merge nothing downstream can undo. A run whose candidate made
     no model call (``served`` empty, ``served_unrecorded`` false) recorded that, and pools on its other fields.
 
@@ -883,6 +910,11 @@ def pass_hat_k_cell(
     :ptype served: Collection[str]
     :param served_unrecorded: Whether a response to one of those calls named no model.
     :ptype served_unrecorded: bool
+    :param holds_host_measures: Whether any of the run's results holds a host measure
+        (:func:`~threetears.evals.kernel.metrics.holds_host_measure` over each ``EvalResult.host_measures``). Read
+        from what the run stored, never assumed: a run that recorded no definitions stands alone only where it is
+        true.
+    :ptype holds_host_measures: bool
     :return: The cell.
     :rtype: PassHatKCell
     """
@@ -891,11 +923,27 @@ def pass_hat_k_cell(
     shared: dict[str, Any] = {
         "template_id": run.template_id,
         "template_digest": run.template_digest,
+        # One digest of the recorded map, in any key order (a jsonb store hands the keys back in its own).
+        "measure_definitions": canonical_digest(run.measure_definitions) if run.measure_definitions else None,
         "apparatus_provenance": run.apparatus_provenance,
         "served": tuple(sorted(set(served))),
         "served_unrecorded": served_unrecorded,
     }
-    alone = run.id if run.template_digest is None or served_unrecorded else None
+    definitions_unrecorded = run.measure_definitions is None and holds_host_measures
+    shared["definitions_unrecorded"] = definitions_unrecorded
+    alone = run.id if run.template_digest is None or definitions_unrecorded or served_unrecorded else None
+    if run.measure_remeasures and run.measure_remeasures[-1].completed_at is None:
+        # Results are rewritten before the run's record is: until the pass completes, some of its values are read
+        # under one definition and some under another, and the run is no cell's.
+        return PassHatKCell(
+            recorded=True,
+            run_id=run.id,
+            unresolved=(
+                "a re-measure of it began and did not finish, so its results hold values read under two definitions; "
+                "re-measure it again to finish"
+            ),
+            **shared,
+        )
     if profile is None:
         return PassHatKCell(
             recorded=True, run_id=alone, context_key=run.context_key, identity_version=run.identity_version, **shared
@@ -919,7 +967,7 @@ def pass_hat_k_cell_alone(cell: PassHatKCell) -> tuple[UnpooledReason, str] | No
     :param cell: A cell.
     :ptype cell: PassHatKCell
     :return: ``(reason, field)``, the field being what the run did not record (``recorded``, ``template_digest``,
-        ``served``) or ``unresolved``; ``None`` for a cell that pools.
+        ``measure_definitions``, ``served``) or ``unresolved``; ``None`` for a cell that pools.
     :rtype: tuple[UnpooledReason, str] | None
     """
     if cell.run_id is None:
@@ -930,7 +978,9 @@ def pass_hat_k_cell_alone(cell: PassHatKCell) -> tuple[UnpooledReason, str] | No
         return "changed_context", "unresolved"
     if cell.template_digest is None:
         return "no_recorded_template", "template_digest"
-    return "no_recorded_served_model", "served"
+    if cell.served_unrecorded:
+        return "no_recorded_served_model", "served"
+    return "no_recorded_measure_definitions", "measure_definitions"
 
 
 def pass_hat_k_cell_reason(cell: PassHatKCell, other: PassHatKCell) -> tuple[UnpooledReason, str] | None:
