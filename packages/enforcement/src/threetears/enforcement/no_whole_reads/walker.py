@@ -457,9 +457,12 @@ DECLARATION_CALL: Final[str] = "whole_read"
 #: each kind a read may be declared whole in (Pace, 2026-11-12) onto the hit kinds it lets through inside the wrapped
 #: expression; anything else there is still reported. A new kind is a rule change Pace approves.
 DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
-    # the one fill of an empty copy: its whole select or pager, and a call into a function declared the same
+    # the one fill of an empty copy: its whole select or pager, and a call into a function declared the same; and
+    # (coordinator 2026-11-14) the emptying of the in-process copy's table its complete rows then replace
+    # (DuckDBBackend.apply_staged under the kind that staged the change), as schema_change and rolling_upgrade
     "cold_start": frozenset(
         {
+            "whole-delete",
             "whole-select",
             "unkeyed-pager",
             "unkeyed-sort",
@@ -513,6 +516,7 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     # unknown), and a call into a function declared the same (a rebuild's call into its duplicate check)
     "schema_change": frozenset(
         {
+            "whole-delete",
             "whole-select",
             "whole-aggregate",
             "whole-maintenance",
@@ -551,6 +555,7 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
     # once the package reaches that release (Pace 2026-11-12: rolling_upgrade until 0.96.0)
     "rolling_upgrade": frozenset(
         {
+            "whole-delete",
             "whole-select",
             "unkeyed-pager",
             "unkeyed-sort",

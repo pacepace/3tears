@@ -540,6 +540,15 @@ _ALLOWLIST = (
         ),
     ),
     DictStateAllowlistEntry(
+        file="packages/core/src/threetears/core/cache/duckdb.py",
+        class_name="DuckDBBackend",
+        attr_name="_primary_keys",
+        rationale=(
+            "schema metadata: each table's primary key columns in key order, read from its declaration when the "
+            "table is created, as _not_null is; scope_key reads its lead; every pod derives the same map"
+        ),
+    ),
+    DictStateAllowlistEntry(
         file="packages/agent/tools/src/threetears/agent/tools/server.py",
         class_name="ToolServer",
         attr_name="_tools",

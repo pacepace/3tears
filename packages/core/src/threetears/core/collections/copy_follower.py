@@ -50,7 +50,7 @@ from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumns
 from threetears.observe import contain, get_logger
 from threetears.observe.metrics import counter, gauge
 
-from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange
+from threetears.core.cache.duckdb import STAGE_PREFIX, StagedChange, WholeKind
 from threetears.core.collections.complete_copy import DEFAULT_PAGE_SIZE, Unsettled, rail_arrow_types
 from threetears.core.collections.registry import CacheInvalidationMessage
 from threetears.core.collections.scope_epochs import ScopeEpochs
@@ -1363,7 +1363,9 @@ class CopyFollower:
                 self._partitions[name] = []
                 why = whole[name]
                 # the reason is known here: each is read by its own function, and declared as that situation
+                kind: WholeKind
                 if why == "schema_change":
+                    kind = "schema_change"
                     scopes = await whole_read(
                         self._stage_schema_change(table, rows_stage, held),
                         kind="schema_change",
@@ -1373,6 +1375,7 @@ class CopyFollower:
                         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
                     )
                 elif why == "legacy_whole_record":
+                    kind = "rolling_upgrade"
                     scopes = await whole_read(
                         self._stage_legacy_whole_record(table, rows_stage, held),
                         kind="rolling_upgrade",
@@ -1383,6 +1386,7 @@ class CopyFollower:
                         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
                     )
                 else:
+                    kind = "cold_start"
                     scopes = await whole_read(
                         self._stage_cold_start(table, rows_stage, why, held),
                         kind="cold_start",
@@ -1391,7 +1395,10 @@ class CopyFollower:
                         proof="packages/core/tests/unit/collections/test_copy_follower.py::test_stage_whole_is_reached_only_at_a_cold_start_a_reset_a_schema_change_or_a_legacy_whole_record",
                         speed="packages/core/tests/integration/test_copy_follower_whole_reads_live.py::test_stage_whole_speed_at_real_size",
                     )
-                self._staged[name] = StagedChange(table=name, key=table.key, rows=rows_stage, whole=True)
+                # the apply empties the copy's table under the same declared kind as this read (apply_staged)
+                self._staged[name] = StagedChange(
+                    table=name, key=table.key, rows=rows_stage, whole=True, whole_kind=kind
+                )
                 self._staged_whole[name] = why
                 self._staged_scopes[name] = scopes
                 del whole[name]
@@ -1406,7 +1413,12 @@ class CopyFollower:
             if staged:
                 was = self._staged.get(name)
                 self._staged[name] = StagedChange(
-                    table=name, key=table.key, keys=keys_stage, rows=rows_stage, whole=was is not None and was.whole
+                    table=name,
+                    key=table.key,
+                    keys=keys_stage,
+                    rows=rows_stage,
+                    whole=was is not None and was.whole,
+                    whole_kind=None if was is None else was.whole_kind,
                 )
                 self._staged_keys.setdefault(name, set()).update(staged)
                 if table.scope is None:
@@ -1695,7 +1707,12 @@ class CopyFollower:
             self._partitions_staged.setdefault(name, []).extend(dict(p) for p in parts if dict(p) not in waiting)
             was = self._staged.get(name)
             self._staged[name] = StagedChange(
-                table=name, key=table.key, keys=keys_stage, rows=rows_stage, whole=was is not None and was.whole
+                table=name,
+                key=table.key,
+                keys=keys_stage,
+                rows=rows_stage,
+                whole=was is not None and was.whole,
+                whole_kind=None if was is None else was.whole_kind,
             )
             del partitions[name]
             self._reading = None
