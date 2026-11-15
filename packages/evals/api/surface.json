@@ -6461,6 +6461,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.NoActionReason": {
+      "kind": "literal",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.OpenAxisFamily": {
       "kind": "model",
       "signature": "",
@@ -6946,6 +6951,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.analysis.StepArgument": {
+      "kind": "type alias",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.analysis.stopped_short": {
       "kind": "function",
       "signature": "",
@@ -7133,6 +7143,11 @@
     },
     "threetears.evals.analysis.UnresolvableReference": {
       "kind": "exception",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.analysis.UnsizedReason": {
+      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },

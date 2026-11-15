@@ -371,6 +371,10 @@ def from_legacy(report_input: ReportInput) -> list[CaveatEntry]:
     """The caveats the input's ``caveats`` part states, each once, by the id a report document names it by, with its
     kind's class and where it may land (this module's Reach).
 
+    Where the part states one id more than once (a late floor under one key on two aspects, a short run on two arms),
+    the id is one caveat holding every part: each reading, arm and run it names, its reach the widest, and immaterial
+    only where every part is. Nothing a part names is dropped.
+
     What a stored input with no list is given on read, and the first part of every list: nothing is written back.
 
     :param report_input: The report input.
@@ -385,11 +389,24 @@ def from_legacy(report_input: ReportInput) -> list[CaveatEntry]:
     def add(entry: CaveatEntry) -> None:
         _keep_once(found, entry)
 
+    lates: dict[str, list[LateCriterion]] = {}
     for late in caveats.late_criteria:
-        aspect, measure = late_subject(report_input, late)
-        readings = [f"{aspect}/{measure}"] if aspect is not None and measure is not None else []
-        immaterial = True if late_immaterial(report_input, late) else None
-        add(_entry(report_input, late_id(late), "late", "report", readings=readings, immaterial=immaterial))
+        lates.setdefault(late_id(late), []).append(late)
+    for caveat_id, held_lates in lates.items():
+        subjects = [late_subject(report_input, late) for late in held_lates]
+        readings = [f"{aspect}/{measure}" for aspect, measure in subjects if aspect is not None and measure is not None]
+        whole = len(readings) < len(subjects)
+        immaterial = True if all(late_immaterial(report_input, late) for late in held_lates) else None
+        add(
+            _entry(
+                report_input,
+                caveat_id,
+                "late",
+                "report",
+                readings=[] if whole else list(dict.fromkeys(readings)),
+                immaterial=immaterial,
+            )
+        )
     if _judge_uncalibrated(report_input):
         add(_entry(report_input, "judge_uncalibrated", "judge_uncalibrated", "report"))
     apparatus = [confound.dimension for confound in caveats.apparatus_confounds]
@@ -402,17 +419,20 @@ def from_legacy(report_input: ReportInput) -> list[CaveatEntry]:
         arms = _confound_arms(report_input, dimension)
         reach = "report" if _touches_every_comparison(report_input, arms) else "method"
         add(_entry(report_input, f"apparatus:{dimension}", "apparatus", reach, arms=sorted(arms)))
+    short: dict[str, list[str | None]] = {}
     for run in caveats.short_runs:
-        wide = _touches_every_comparison(report_input, None if run.arm is None else {run.arm})
-        arms_of = [] if run.arm is None else [run.arm]
+        short.setdefault(run.run, []).append(run.arm)
+    for run_id, run_arms in short.items():
+        named = None if None in run_arms else [arm for arm in dict.fromkeys(run_arms) if arm is not None]
+        wide = _touches_every_comparison(report_input, None if named is None else set(named))
         add(
             _entry(
                 report_input,
-                f"short_run:{run.run}",
+                f"short_run:{run_id}",
                 "short_run",
                 "report" if wide else "scoped",
-                arms=arms_of,
-                runs=[run.run],
+                arms=named or [],
+                runs=[run_id],
             )
         )
     unsettled = unsettled_arms(report_input)

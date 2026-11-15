@@ -728,7 +728,9 @@ def test_three_coordinates_split_on_one_reading_raise_three_caveats_under_three_
     assert len({entry.id for entry in split}) == 3
 
 
-def test_two_different_caveats_under_one_id_are_refused_never_one_kept() -> None:
+def test_one_id_stated_on_two_aspects_is_one_caveat_holding_both_never_one_dropped() -> None:
+    """Two late floors under one key, each on its own aspect, are one caveat (the id a report document names it by)
+    that names both readings; and no fixture's list holds an id twice."""
     stored = _inputs()["stored:report_inputs/r4/input.json"]
     aspect = stored.aspects[0].id
     floors = [
@@ -739,8 +741,11 @@ def test_two_different_caveats_under_one_id_are_refused_never_one_kept() -> None
         update={"caveats": stored.caveats.model_copy(update={"late_criteria": floors}), "caveat_list": None}
     )
 
-    with pytest.raises(ValueError, match="late:floor:twice"):
-        raise_caveats(held)
+    (late,) = [entry for entry in raise_caveats(held) if entry.kind == "late"]
+    assert (late.id, late.readings) == ("late:floor:twice", [f"{aspect}/passed", f"{aspect}/cost"])
+    for name, value in _inputs().items():
+        ids = [entry.id for entry in raise_caveats(value.model_copy(update={"caveat_list": None}))]
+        assert len(ids) == len(set(ids)), name
 
 
 # --- the numbers side imports nothing from the page -------------------------------------------------------------------
