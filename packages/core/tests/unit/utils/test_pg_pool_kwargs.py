@@ -34,7 +34,6 @@ from threetears.core.config import DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS, DEFAULT
 from threetears.core.utils.pg_pool_kwargs import (
     DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS,
     ENV_MAX_INACTIVE_LIFETIME,
-    PLATFORM_SERVER_SETTINGS,
     PoolStartupTimeoutError,
     create_pool_with_startup_timeout,
     get_pg_pool_kwargs,
@@ -1076,6 +1075,9 @@ class _Stop(Exception):
 class TestPlatformServerSettings:
     """every platform pool starts its sessions with the platform's settings under the caller's own."""
 
+    #: the platform's startup settings: the HNSW iterative scan the nearest read's recall rests on
+    platform = {"hnsw.iterative_scan": "relaxed_order"}
+
     async def _settings_sent(self, **kwargs: object) -> object:
         """the ``server_settings`` the first connect of a pool started with ``kwargs`` received."""
         sent: list[object] = []
@@ -1090,21 +1092,17 @@ class TestPlatformServerSettings:
             )
         return sent[0]
 
-    def test_the_platform_settings_are_the_hnsw_iterative_scan(self) -> None:
-        """Flips if the setting the nearest read's recall rests on leaves the platform's startup settings."""
-        assert PLATFORM_SERVER_SETTINGS == {"hnsw.iterative_scan": "relaxed_order"}
-
     async def test_a_pool_with_no_settings_of_its_own_starts_with_the_platforms(self) -> None:
         """Flips if a platform pool's sessions start without the HNSW iterative scan (a small owner beside a heavy one
         then gets fewer nearest rows than it asked for)."""
-        assert await self._settings_sent() == PLATFORM_SERVER_SETTINGS
+        assert await self._settings_sent() == self.platform
 
     async def test_the_callers_settings_are_kept_and_win(self) -> None:
         """Flips if the caller's search_path is dropped, or the platform's value overrides one the caller names."""
         sent = await self._settings_sent(server_settings={"search_path": "s1", "hnsw.iterative_scan": "strict_order"})
         assert sent == {"hnsw.iterative_scan": "strict_order", "search_path": "s1"}
         assert await self._settings_sent(server_settings={"search_path": "s2"}) == {
-            **PLATFORM_SERVER_SETTINGS,
+            **self.platform,
             "search_path": "s2",
         }
 

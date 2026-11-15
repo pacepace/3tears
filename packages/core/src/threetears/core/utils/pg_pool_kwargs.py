@@ -154,7 +154,7 @@ DEFAULT_MAX_INACTIVE_LIFETIME_SECONDS: float = 300.0
 #:
 #: A pool on a database the platform does not own (a datasource's, behind a pooler that may refuse an unknown startup
 #: parameter) passes ``platform_settings=False``.
-PLATFORM_SERVER_SETTINGS: dict[str, str] = {"hnsw.iterative_scan": "relaxed_order"}
+_PLATFORM_SERVER_SETTINGS: dict[str, str] = {"hnsw.iterative_scan": "relaxed_order"}
 
 #: env var operators use to tune ``max_inactive_connection_lifetime``
 #: without a code change. verbose on purpose -- it is an operator tuning
@@ -843,8 +843,9 @@ async def create_pool_with_startup_timeout(
     :param connect: the caller's own connect hook, run inside the wrapper's; ``None`` for
         ``asyncpg.connect``
     :ptype connect: Callable[..., Awaitable[asyncpg.Connection]] | None
-    :param platform_settings: whether the pool's sessions start with :data:`PLATFORM_SERVER_SETTINGS` under the
-        caller's ``server_settings`` (the caller's keys win); False for a database the platform does not own
+    :param platform_settings: whether the pool's sessions start with the platform's startup settings
+        (``hnsw.iterative_scan = relaxed_order``) under the caller's ``server_settings`` (the caller's keys win);
+        False for a database the platform does not own
     :ptype platform_settings: bool
     :param create_pool_kwargs: everything else ``asyncpg.create_pool`` takes (``min_size``,
         ``max_size``, ``server_settings``, ``init``, ``connection_class``, the
@@ -869,7 +870,7 @@ async def create_pool_with_startup_timeout(
     per_connect = resolve_pool_connect_timeout(startup_timeout, connect_timeout)
     if platform_settings:
         create_pool_kwargs["server_settings"] = {
-            **PLATFORM_SERVER_SETTINGS,
+            **_PLATFORM_SERVER_SETTINGS,
             **(create_pool_kwargs.get("server_settings") or {}),
         }
     opener: Callable[..., Awaitable[asyncpg.Connection]] = connect if connect is not None else asyncpg.connect
@@ -1043,7 +1044,6 @@ __all__ = [
     "DEFAULT_POOL_CONNECT_TIMEOUT_SECONDS",
     "DEFAULT_POOL_STARTUP_TIMEOUT_SECONDS",
     "ENV_MAX_INACTIVE_LIFETIME",
-    "PLATFORM_SERVER_SETTINGS",
     "PoolStartupTimeoutError",
     "create_pool_with_startup_timeout",
     "get_pg_pool_kwargs",

@@ -298,7 +298,7 @@ def read_nearest_statement(
     # filters it to the owner; pgvector's HNSW scan stops at ``hnsw.ef_search`` (40) candidates, so a small owner among a
     # heavy table got FEWER than ``limit`` rows (PG 16 + pgvector 0.8.7, a 20,000-row owner beside a 50-row one, k=10:
     # 0 of 10 by default). Every platform pool therefore starts with ``hnsw.iterative_scan = relaxed_order``
-    # (``threetears.core.utils.pg_pool_kwargs.PLATFORM_SERVER_SETTINGS``; 10 of 10 in 13 ms with it), which keeps
+    # (``threetears.core.utils.pg_pool_kwargs._PLATFORM_SERVER_SETTINGS``; 10 of 10 in 13 ms with it), which keeps
     # scanning until ``limit`` rows pass the filter but may hand them back slightly out of distance order; pgvector's
     # advice for relaxed order is to materialize the ``limit`` rows, then sort them by distance. pgvector writes that as
     # ``WITH ... AS MATERIALIZED``; a subquery under its own LIMIT is the same fence (the planner never pulls a LIMIT
@@ -320,7 +320,9 @@ def read_nearest_statement(
         outer = [f"n.{quote_identifier(c.alias if isinstance(c, Selected) else c)}" for c in columns]
     if nearest.similarity is not None:
         outer.append(f"n.{quote_identifier(nearest.similarity)}")
-    sql, params = _sql(table, by, inner, limit=False, where=where, also=", ".join([*similarity, f"{distance} AS {hidden}"]))
+    sql, params = _sql(
+        table, by, inner, limit=False, where=where, also=", ".join([*similarity, f"{distance} AS {hidden}"])
+    )
     return (
         f"SELECT {', '.join(outer)} FROM ({sql} ORDER BY {distance} LIMIT ${place + 1}) AS n ORDER BY n.{hidden}",
         [*params, nearest.vector, limit],

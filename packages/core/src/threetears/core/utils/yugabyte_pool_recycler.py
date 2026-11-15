@@ -47,7 +47,7 @@ usage::
     recycler.bind(pool)
 
 the pool starts through :func:`~threetears.core.utils.pg_pool_kwargs.create_pool_with_startup_timeout`, so its
-sessions carry the platform's startup settings (``PLATFORM_SERVER_SETTINGS``: the HNSW iterative scan, which
+sessions carry the platform's startup settings (``_PLATFORM_SERVER_SETTINGS``: the HNSW iterative scan, which
 YugabyteDB accepts only at startup, never as a ``SET``).
 
 a consumer composing its own ``init`` calls :func:`~threetears.core.collections.init_connection` and
