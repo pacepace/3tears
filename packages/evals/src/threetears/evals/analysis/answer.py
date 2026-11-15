@@ -103,11 +103,11 @@ from threetears.evals.analysis.report_input import (
 )
 from threetears.evals.analysis.report_margins import flip_margin
 
+#: ``report_kind`` is this module's own step, and ``DecisionAxis`` and ``ReportKind`` the closed words its reads
+#: return: nothing outside it names them.
 __all__ = [
     "AskedStanding",
     "DecisionAt",
-    "DecisionAxis",
-    "ReportKind",
     "StandingWord",
     "asked_aspects",
     "asked_standing",
@@ -119,7 +119,6 @@ __all__ = [
     "judge_described",
     "judged_dimensions",
     "late_immaterial",
-    "report_kind",
     "separating_contrasts",
     "shown_better",
     "stated_uncalibrated",

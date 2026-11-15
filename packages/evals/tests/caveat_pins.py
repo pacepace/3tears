@@ -34,7 +34,7 @@ STORED = (
 )
 
 
-def _read(path: Path) -> Any:
+def read_fixture(path: Path) -> Any:
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rt", encoding="utf-8") as handle:
         return json.load(handle)
@@ -57,11 +57,11 @@ def stored_inputs() -> Iterator[tuple[str, ReportInput]]:
     """Each stored report input a fixture holds, by a name the pins key it by."""
     for directory in CASE_DIRS:
         for path in sorted(directory.glob("*.json.gz")):
-            held = _input_of(_read(path))
+            held = _input_of(read_fixture(path))
             if held is not None:
                 yield f"case:{path.name.removesuffix('.json.gz')}", ReportInput.model_validate(held)
     for path in STORED:
-        held = _input_of(_read(path))
+        held = _input_of(read_fixture(path))
         if held is not None:
             yield f"stored:{path.relative_to(FIXTURES)}", ReportInput.model_validate(held)
 

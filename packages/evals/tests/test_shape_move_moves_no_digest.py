@@ -7,8 +7,8 @@ caveat list, the first-screen value, the shapes of a check), all unset. Contract
   every platform, the report input built from it (as a page reads it, and as an analyst's snapshot counts it) is the
   document it was before the fields existed, by the digest of the whole document with its floats rounded as a
   fingerprint rounds them (``fixtures/shape_move/input_digests.json``, written from the tree before the move), once
-  the two keys the builder now fills are set apart: the caveat list (which moves the input's own digest, once) and
-  the first-screen value (outside it). What the list holds is held by ``test_caveat_list.py``. The bundles' own
+  the two keys the builder now fills are set apart: the caveat list and the first-screen value, both derived and
+  outside the input's own digest. What the list holds is held by ``test_caveat_list.py``. The bundles' own
   fingerprints and every page are held by the hot-path oracle.
 - **A document with no new field set holds no new key.** No built input, but for those two keys, and no assembled
   bundle, on any hot-path campaign, dumps a key the move added, at any depth.

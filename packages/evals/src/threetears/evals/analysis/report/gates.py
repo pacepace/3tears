@@ -59,7 +59,7 @@ from threetears.evals.analysis.report.keys.reads import criterion_ruler
 from threetears.evals.analysis.report.keys.resolve import format_figure, held_kind, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.per_input import kept_for
-from threetears.evals.analysis.criteria import GateStatus, criterion_reads
+from threetears.evals.analysis.criteria import CriterionRead, CriterionStatus, GateStatus, criterion_reads
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import CriterionFigure
 
@@ -159,11 +159,15 @@ def _spread(line: Figure, figure: CriterionFigure, forms: PageForms) -> str:
     return "±" + format_figure(width, ("pts", "abs") if line.scale in _RATE_SCALES else (), forms=forms)
 
 
+#: A figure's status as its finding words it, for a figure that holds a value and does not pass.
+_FOUND: dict[CriterionStatus, Literal["fail", "borderline"]] = {"fail": "fail", "borderline": "borderline"}
+
+
 def _reason(
     report_input: ReportInput,
     criterion: Criterion,
     figure: CriterionFigure,
-    status: GateStatus,
+    status: Literal["fail", "borderline"],
     line: Figure,
     forms: PageForms,
 ) -> str:
@@ -232,7 +236,7 @@ def gate_findings(
     :raises ValueError: Both a task and a cell were named, a task, cell or gating criterion the input does not hold,
         or forms built from another input.
     """
-    reads = criterion_reads(report_input, arm, task=task, cell=cell, criterion=criterion)
+    reads: tuple[CriterionRead, ...] = criterion_reads(report_input, arm, task=task, cell=cell, criterion=criterion)
     if forms is not None:
         forms.checked(report_input)
     held_forms: list[PageForms] = [forms] if forms is not None else []
@@ -257,12 +261,12 @@ def gate_findings(
             reason = _placed(report_input, no_figure, read.task, read.cell, narrowed)
             found.append(GateFinding(held.id, "unknown", read.task, read.cell, None, reason))
             continue
-        assert read.status != "unknown"
+        status = _FOUND[read.status]
         if held.id not in lines:
             lines[held.id] = resolve(f"criteria.{held.id}.threshold", report_input)
-        reason = _reason(report_input, held, read.figure, read.status, lines[held.id], forms_of())
+        reason = _reason(report_input, held, read.figure, status, lines[held.id], forms_of())
         placed = _placed(report_input, reason, read.task, read.cell, narrowed)
-        found.append(GateFinding(held.id, read.status, read.task, read.cell, read.figure, placed))
+        found.append(GateFinding(held.id, status, read.task, read.cell, read.figure, placed))
     return tuple(found)
 
 

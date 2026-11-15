@@ -29,12 +29,13 @@ from threetears.evals.analysis.per_input import kept_for
 from threetears.evals.analysis.report_input import Criterion, ReportInput
 from threetears.evals.analysis.report_margins import (
     CriterionFigure,
+    CriterionPlace,
     criterion_figures,
     criterion_place,
     criterion_places,
 )
 
-__all__ = ["GATING", "CriterionRead", "CriterionStatus", "GateStatus", "criterion_reads", "gate_status"]
+__all__ = ["CriterionRead", "CriterionStatus", "GateStatus", "criterion_reads", "gate_status"]
 
 #: One figure against its criterion's line.
 CriterionStatus = Literal["pass", "borderline", "fail", "unknown"]
@@ -43,7 +44,7 @@ CriterionStatus = Literal["pass", "borderline", "fail", "unknown"]
 GateStatus = Literal["pass", "borderline", "fail"]
 
 #: The criterion kinds that gate an option.
-GATING = frozenset({"gate", "guardrail"})
+_GATING = frozenset({"gate", "guardrail"})
 
 
 @dataclass(frozen=True)
@@ -67,9 +68,9 @@ class CriterionRead:
 def _applies(criterion: Criterion, task: str | None, cell: str | None, only: str | None) -> bool:
     """Whether a read narrowed to ``task`` or ``cell`` (neither: unnarrowed), and to the criterion ``only`` (None: to
     none), reads ``criterion``."""
-    if criterion.kind not in GATING or only not in (None, criterion.id):
+    if criterion.kind not in _GATING or only not in (None, criterion.id):
         return False
-    place = criterion_place(criterion)
+    place: CriterionPlace = criterion_place(criterion)
     if task is not None:
         return place == "task" and criterion.task in (None, task)
     if cell is not None:
@@ -129,7 +130,7 @@ def criterion_reads(
         raise ValueError(f"the input holds no task {task!r}")
     if cell is not None and cell not in report_input.cells:
         raise ValueError(f"the input holds no cell {cell!r}")
-    if criterion is not None and criterion not in {held.id for held in report_input.criteria if held.kind in GATING}:
+    if criterion is not None and criterion not in {held.id for held in report_input.criteria if held.kind in _GATING}:
         raise ValueError(f"the input holds no gate or guardrail {criterion!r}")
     found: list[CriterionRead] = []
     for held in report_input.criteria:

@@ -1246,7 +1246,8 @@ class ReportInput(_Part):
     caveat_list: list[CaveatEntry] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="Every qualification of the answer, each once, typed; none on an input built before the list.",
+        description="Every qualification of the answer, each once, typed; none on an input built before the list. "
+        "Derived, so never part of the input's digest.",
     )
     first_screen: FirstScreen | None = Field(
         default=None,
@@ -1255,8 +1256,10 @@ class ReportInput(_Part):
     )
 
 
-#: The one key of the document no digest reads: a function of the rest of the input and of a call made later.
-_OUTSIDE_THE_DIGEST = "first_screen"
+#: The keys of the document no digest reads: each a function of the rest of the input, of the bundle the input was
+#: built from (whose own fingerprint a snapshot holds) and of a call made later. Identity is over inputs only, so a
+#: change to how caveats are raised or ranked re-keys no snapshot and moves no recording.
+_OUTSIDE_THE_DIGEST = frozenset({"caveat_list", "first_screen"})
 
 
 def report_input_digest(report_input: ReportInput) -> str:
@@ -1281,6 +1284,6 @@ def report_input_document_digest(document: Mapping[str, Any]) -> str:
     :return: A 64-character lowercase hex digest.
     :rtype: str
     """
-    document = {key: value for key, value in document.items() if key != _OUTSIDE_THE_DIGEST}
+    document = {key: value for key, value in document.items() if key not in _OUTSIDE_THE_DIGEST}
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return bytes_digest(canonical.encode("utf-8"))

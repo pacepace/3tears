@@ -30,12 +30,14 @@ from typing import Any, get_args
 
 import pytest
 
-from packages.evals.tests.caveat_pins import CASE_DIRS, PINS, _read, built_inputs, caveat_reads, stored_inputs
+from packages.evals.tests.caveat_pins import CASE_DIRS, PINS, read_fixture, built_inputs, caveat_reads, stored_inputs
 from threetears.evals.actions.engine import eval_catalogue
 from threetears.evals.analysis import answer, caveats, costs, criteria, per_input
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.caveats import (
     CLASS_OF_KIND,
+    IMPLIED_KINDS,
+    STATED_KINDS,
     PRICED_BY,
     REMEDY_OF_REASON,
     STEP_OF_REMEDY,
@@ -47,7 +49,7 @@ from threetears.evals.analysis.caveats import (
 )
 from threetears.evals.analysis.checks import Check, Looks
 from threetears.evals.analysis.report.call import caveat_materiality, implied_caveats, report_caveats
-from threetears.evals.analysis.report_input import CaveatEntry, RemedyStep, Remedy, ReportInput
+from threetears.evals.analysis.report_input import CaveatEntry, Remedy, RemedyStep, ReportInput, report_input_digest
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.schema.reading_states import REASONS_OF, ArmIdentity, StateOf
@@ -67,7 +69,7 @@ def _inputs() -> dict[str, ReportInput]:
 
 def _case_bundle(name: str) -> CampaignBundle:
     """A real campaign's bundle, frozen in its writer case."""
-    return CampaignBundle.from_dict(_read(CASE_DIRS[1] / f"{name}.json.gz")["snapshot"]["bundle"])
+    return CampaignBundle.from_dict(read_fixture(CASE_DIRS[1] / f"{name}.json.gz")["snapshot"]["bundle"])
 
 
 # --- the list returns what the reads returned -------------------------------------------------------------------------
@@ -90,15 +92,18 @@ def test_the_list_returns_exactly_what_the_page_s_reads_returned_before_it(name:
         assert listed[: len(before["stated"])] == [caveat_id for caveat_id, _kind, _reach in before["stated"]]
 
 
-def test_the_thin_reads_read_the_list_an_input_carries() -> None:
-    """A built input carries its list, and the page's reads are reads of it: change an entry's reach and they say it."""
+def test_the_thin_reads_are_the_list_s_stated_and_implied_entries_read_off_the_input_as_it_stands() -> None:
+    """A built input carries its list, and the page's reads say the list's stated and implied entries; a copy of the
+    input with a part changed reads its own, never the list the original was built with."""
     held = _inputs()["built:toyhost"]
     assert held.caveat_list is not None
-    moved = [entry.model_copy(update={"reach": "scoped"}) for entry in held.caveat_list]
-    reread = held.model_copy(update={"caveat_list": moved})
+    listed = [(entry.id, entry.reach) for entry in held.caveat_list if entry.kind in STATED_KINDS | IMPLIED_KINDS]
 
-    assert {caveat.reach for caveat in [*report_caveats(reread), *implied_caveats(reread)]} == {"scoped"}
-    assert set(caveat_materiality(reread)) == {caveat.id for caveat in report_caveats(held)}
+    assert [(caveat.id, caveat.reach) for caveat in [*report_caveats(held), *implied_caveats(held)]] == listed
+    unjudged = held.model_copy(update={"judged": {}, "caveats": held.caveats.model_copy(update={"judge_tiers": {}})})
+    assert "judge_uncalibrated" in {caveat.id for caveat in report_caveats(held)}
+    assert "judge_uncalibrated" not in {caveat.id for caveat in report_caveats(unjudged)}
+    assert set(caveat_materiality(held)) == {caveat.id for caveat in report_caveats(held)}
 
 
 # --- each reason raises one caveat ------------------------------------------------------------------------------------
@@ -302,6 +307,15 @@ def test_the_messy_campaign_resumed_shows_exactly_three_reasons_in_class_order_w
     assert value.steps[0].arguments == {"arms": [_SPLIT], "coordinate": "served_model"}
 
 
+def test_the_list_and_the_first_screen_are_outside_the_input_s_digest() -> None:
+    """Both are derived from the input and its bundle, so how caveats are raised or ranked re-keys no snapshot."""
+    held = _inputs()["built:toyhost"]
+    bare = held.model_copy(update={"caveat_list": None, "first_screen": None})
+
+    assert held.caveat_list and held.first_screen is not None
+    assert report_input_digest(held) == report_input_digest(bare)
+
+
 def test_the_campaign_bundle_holds_the_list_and_the_first_screen_its_input_computes() -> None:
     """The code page reads the bundle and the written page the input: both hold one value."""
     from packages.evals.tests.test_hot_path_oracle import subject
@@ -375,7 +389,7 @@ def test_no_step_reads_until_it_separates_and_none_is_taken_by_code() -> None:
         for path in source.rglob("*.py")
         if "RemedyStep" in path.read_text(encoding="utf-8")
     )
-    assert readers == ["analysis/caveats.py", "analysis/report_input.py"]
+    assert readers == ["analysis/__init__.py", "analysis/caveats.py", "analysis/report_input.py"]
 
 
 def test_a_caveat_with_no_reason_takes_its_kind_s_remedy() -> None:

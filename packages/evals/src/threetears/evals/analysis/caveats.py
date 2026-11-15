@@ -54,7 +54,8 @@ from threetears.evals.analysis.answer import (
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import NextExperiment, answer_split_variants
-from threetears.evals.analysis.completeness import gate_rule
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.completeness import GateRule, gate_rule
 from threetears.evals.analysis.criteria import criterion_reads
 from threetears.evals.analysis.first_screen import first_screen
 from threetears.evals.analysis.report_input import (
@@ -356,15 +357,15 @@ def from_legacy(report_input: ReportInput) -> list[CaveatEntry]:
     unsettled = unsettled_arms(report_input)
     if unsettled:
         called = set(decision_at(report_input).dominant)
-        for caveat_id, arms in unsettled.items():
+        for caveat_id, left in unsettled.items():
             aspect_id = caveat_id.partition(":")[2]
             add(
                 _entry(
                     report_input,
                     caveat_id,
                     "unsettled",
-                    "report" if called & set(arms) else "scoped",
-                    arms=list(arms),
+                    "report" if called & set(left) else "scoped",
+                    arms=list(left),
                     readings=[f"{aspect_id}/passed"],
                 )
             )
@@ -574,8 +575,8 @@ def _input_facts(report_input: ReportInput) -> Iterator[_Fact]:
                 if stat.state is not None and stat.state.state != "counted":
                     held = stat.state
                     yield _Fact(held.state, held.reason, held.coordinate, f"{aspect_id}/{key}", arm, stat.n_cases)
-    for arm in report_input.arms:
-        identity = arm.identity
+    for held_arm in report_input.arms:
+        identity = held_arm.identity
         if identity is None:
             continue
         coordinates: list[tuple[Coordinate, str | None, str]] = [
@@ -585,14 +586,14 @@ def _input_facts(report_input: ReportInput) -> Iterator[_Fact]:
             *(
                 ("measure_definition", held, f"{aspect_id}/{key}")
                 for key, held in identity.measure_definition.items()
-                for aspect_id in _measured_on(report_input, key, arm.id, lead)
+                for aspect_id in _measured_on(report_input, key, held_arm.id, lead)
             ),
         ]
-        for coordinate, state, reading in coordinates:
+        for coordinate, state, address in coordinates:
             if state == "split":
-                yield _Fact("withheld", "split", coordinate, reading, arm.id)
+                yield _Fact("withheld", "split", coordinate, address, held_arm.id)
             elif state == "unrecorded":
-                yield _Fact("withheld", "identity_unrecorded", coordinate, reading, arm.id)
+                yield _Fact("withheld", "identity_unrecorded", coordinate, address, held_arm.id)
 
 
 def _measured_on(report_input: ReportInput, key: str, arm: str, lead: str) -> list[str]:
@@ -640,9 +641,8 @@ def _from_facts(report_input: ReportInput, facts: Iterable[_Fact]) -> list[Cavea
 
 
 def _checks(report_input: ReportInput) -> Iterator[CaveatEntry]:
-    """A caveat per check of a judge that does not speak for it: one against a model, or one whose result is not
-    met. A check against people that is met is said one step down, where it can still silence a check against a
-    model on its criterion."""
+    """A caveat per check of a judge against people or a model. A check against people that is met qualifies
+    nothing, so it is said one step down, where it still silences a check against a model on its criterion."""
     for dimension, judged in report_input.judged.items():
         for check in judged.checks:
             if check.against not in ("people", "model"):
@@ -777,10 +777,14 @@ def gate_of(bundle: CampaignBundle) -> Gate | None:
     :rtype: Gate | None
     """
     asked = [aspect for aspect in bundle.aspects if aspect.question_declared] or list(bundle.aspects)
-    rules = [(aspect, rule) for aspect in asked if (rule := gate_rule(aspect)) is not None]
+    rules: list[tuple[AnalysisContextBundle, GateRule]] = []
+    for aspect in asked:
+        found = gate_rule(aspect)
+        if found is not None:
+            rules.append((aspect, found))
     if not rules:
         return None
-    order = list(REASON_OF_GATE)
+    order: list[str] = list(REASON_OF_GATE)
     rule = min((held for _aspect, held in rules), key=order.index)
     runs: dict[str, GateRun] = {}
     if rule == "unfinished":

@@ -24,12 +24,9 @@ __all__ = [
     "PER_THOUSAND_FACTORS",
     "REPLIES",
     "SCOREBOARD_COST",
-    "UNIT_COUNTS",
-    "blended_cost",
     "cost_measures",
     "cost_source",
     "costs_per_thousand",
-    "overall_cost",
     "per_noun",
     "with_reply_costs",
 ]
@@ -41,7 +38,7 @@ PER_THOUSAND_FACTORS: Final[Mapping[str, float]] = {"usd": 1000.0, "usd_per_1k":
 REPLIES = "replies"
 
 #: Each money unit's count, the one a figure in it is stated per.
-UNIT_COUNTS: Final[Mapping[str, int]] = {"usd_per_1k": 1_000, "usd_per_1m": 1_000_000}
+_UNIT_COUNTS: Final[Mapping[str, int]] = {"usd_per_1k": 1_000, "usd_per_1m": 1_000_000}
 
 #: How a label may write each count: as digits (with any thousands separator, or a ``k``/``m`` suffix) or as a word.
 COUNT_SPELLINGS: Final[Mapping[int, str]] = {
@@ -63,7 +60,7 @@ def per_noun(measure: Measure) -> str:
     """
     if measure.unit == "usd":
         return REPLIES
-    count = UNIT_COUNTS.get(measure.unit or "")
+    count = _UNIT_COUNTS.get(measure.unit or "")
     if count is None or not measure.label:
         return ""
     found = re.search(rf"(?<!\w)(?:{COUNT_SPELLINGS[count]})\s+(?P<noun>[^\d()\[\],;:]+)", measure.label, re.I)
@@ -96,13 +93,13 @@ def cost_measures(report_input: ReportInput) -> tuple[list[str], list[str]]:
     return first, lower
 
 
-def overall_cost(report_input: ReportInput, key: str) -> dict[str, float]:
+def _overall_cost(report_input: ReportInput, key: str) -> dict[str, float]:
     measure = report_input.measures[key]
     factor = PER_THOUSAND_FACTORS[measure.unit or ""]
     return {arm: stat.mean * factor for arm, stat in measure.per_arm.items() if stat.mean is not None}
 
 
-def blended_cost(report_input: ReportInput, key: str) -> dict[str, float]:
+def _blended_cost(report_input: ReportInput, key: str) -> dict[str, float]:
     """Each arm's cost on one measure blended over the tasks: its task figures weighted by each task's traffic share.
 
     An arm is blended over the tasks that carry traffic and hold its figure, each weighted by its share of their
@@ -131,7 +128,7 @@ def cost_source(report_input: ReportInput) -> tuple[str, dict[str, float]]:
     """The first cost source that holds a figure, by name (a measure's key, or :data:`SCOREBOARD_COST`), and each
     arm's cost per 1,000 on it; ``("", {})`` where none does (:func:`costs_per_thousand`'s order)."""
     first, lower = cost_measures(report_input)
-    sources = [(key, overall_cost(report_input, key)) for key in first]
+    sources = [(key, _overall_cost(report_input, key)) for key in first]
     sources.append(
         (
             SCOREBOARD_COST,
@@ -142,8 +139,8 @@ def cost_source(report_input: ReportInput) -> tuple[str, dict[str, float]]:
             },
         )
     )
-    sources += [(key, overall_cost(report_input, key)) for key in lower]
-    sources += [(key, blended_cost(report_input, key)) for key in dict.fromkeys([*first, *lower])]
+    sources += [(key, _overall_cost(report_input, key)) for key in lower]
+    sources += [(key, _blended_cost(report_input, key)) for key in dict.fromkeys([*first, *lower])]
     return next(((name, source) for name, source in sources if source), ("", {}))
 
 
@@ -154,7 +151,7 @@ def costs_per_thousand(report_input: ReportInput) -> dict[str, float]:
     The arms' overall figures on a measure stated per 1,000; else on one stated per 1,000,000, divided by 1,000; else
     on the one dollar measure on the cost merit axis, times 1,000; else the scoreboard's cost per reply, times 1,000;
     else the one dollar measure where lower is better. Where none of those states a figure, each measure in the same
-    order blended over the tasks by traffic share (:func:`blended_cost`). What the count counts is
+    order blended over the tasks by traffic share (:func:`_blended_cost`). What the count counts is
     :func:`~threetears.evals.analysis.report.keys.reads.cost_basis`'s.
     """
     source, costs = cost_source(report_input)

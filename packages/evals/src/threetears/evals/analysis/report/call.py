@@ -1,5 +1,5 @@
 """The caveats code assigns on a report input, as the page reads them: thin reads of the one caveat list
-(:mod:`~threetears.evals.analysis.caveats`), each with the words the page says it in.
+(:mod:`~threetears.evals.analysis.caveats`), each read off the input as it stands with the words the page says it in.
 
 What code decides (the options that survive, which one dominates, the modes a report may take) is the numbers side's
 (:mod:`~threetears.evals.analysis.answer`), and every name of it is read here from there for the pages that import it
@@ -71,15 +71,12 @@ from dataclasses import dataclass
 from threetears.evals.analysis.answer import (
     AskedStanding,
     DecisionAt,
-    DecisionAxis,
-    ReportKind,
     StandingWord,
     asked_standing,
     control_arm,
     decision_at,
     dominant_options,
     floors_not_held,
-    report_kind,
     separating_contrasts,
     shown_better,
     surviving_options,
@@ -87,10 +84,9 @@ from threetears.evals.analysis.answer import (
     weighed_axes,
 )
 from threetears.evals.analysis.caveats import (
-    IMPLIED_KINDS,
-    STATED_KINDS,
-    caveat_list,
     cleared_borderline,
+    from_legacy,
+    implied,
     cleared_on_point_estimate,
     late_id,
     late_subject,
@@ -105,10 +101,8 @@ __all__ = [
     "Caveat",
     "CaveatReach",
     "DecisionAt",
-    "DecisionAxis",
     "ImpliedCaveat",
     "Materiality",
-    "ReportKind",
     "StandingWord",
     "asked_standing",
     "caveat_materiality",
@@ -120,7 +114,6 @@ __all__ = [
     "implied_caveats",
     "late_subject",
     "report_caveats",
-    "report_kind",
     "separating_contrasts",
     "shown_better",
     "surviving_options",
@@ -222,7 +215,9 @@ class ImpliedCaveat:
 
 
 def report_caveats(report_input: ReportInput) -> list[Caveat]:
-    """Every caveat the report input states, each once, by id, with where it may land: the list's stated entries.
+    """Every caveat the report input states, each once, by id, with where it may land: the list's stated
+    raiser (:func:`~threetears.evals.analysis.caveats.from_legacy`), read off the input as it stands, so a copy of an
+    input with a part changed reads its own.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -230,9 +225,7 @@ def report_caveats(report_input: ReportInput) -> list[Caveat]:
         unreported observations, each in the input's order.
     :rtype: list[Caveat]
     """
-    return [
-        Caveat(entry.id, entry.kind, entry.reach) for entry in caveat_list(report_input) if entry.kind in STATED_KINDS
-    ]
+    return [Caveat(entry.id, entry.kind, entry.reach) for entry in from_legacy(report_input)]
 
 
 def _implied(report_input: ReportInput, entry: CaveatEntry) -> ImpliedCaveat:
@@ -255,7 +248,8 @@ def _implied(report_input: ReportInput, entry: CaveatEntry) -> ImpliedCaveat:
 
 
 def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
-    """The caveats what the report input holds implies, beyond the ones it states: the list's implied entries.
+    """The caveats what the report input holds implies, beyond the ones it states: the list's
+    implied raiser (:func:`~threetears.evals.analysis.caveats.implied`), read off the input as it stands.
 
     :param report_input: The report input.
     :ptype report_input: ReportInput
@@ -263,7 +257,7 @@ def implied_caveats(report_input: ReportInput) -> list[ImpliedCaveat]:
         on a borderline figure, then a pick among many; each once, in that order.
     :rtype: list[ImpliedCaveat]
     """
-    return [_implied(report_input, entry) for entry in caveat_list(report_input) if entry.kind in IMPLIED_KINDS]
+    return [_implied(report_input, entry) for entry in implied(report_input, from_legacy(report_input))]
 
 
 def every_caveat(report_input: ReportInput) -> list[Caveat | ImpliedCaveat]:
@@ -296,9 +290,7 @@ def caveat_materiality(report_input: ReportInput) -> dict[str, Materiality]:
     """
     kinds = dict(_lates(report_input))
     found: dict[str, Materiality] = {}
-    for entry in caveat_list(report_input):
-        if entry.kind not in STATED_KINDS:
-            continue
+    for entry in from_legacy(report_input):
         if entry.immaterial is True and entry.id in kinds:
             found[entry.id] = Materiality(entry.id, True, _CHECKED[kinds[entry.id]])
         else:
