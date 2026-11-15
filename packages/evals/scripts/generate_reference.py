@@ -49,6 +49,7 @@ from public_surface import (
     factory_name,
     field_rows,
     first_sentence,
+    md_text,
     one_line,
     own_doc,
     paragraphs,
@@ -77,26 +78,6 @@ GAPS: list[tuple[str, str]] = []
 
 
 # --- text --------------------------------------------------------------------------------------------------------
-
-_ROLE = re.compile(r":[a-z]+(?::[a-z]+)?:`(?:[^`<]*<)?~?([^`>]+)>?`")
-_DOUBLE_TICK = re.compile(r"``(.+?)``")
-
-
-def _role_target(match: re.Match[str]) -> str:
-    """A Sphinx cross-reference as a code span: the last dotted part when it was ``~``-shortened."""
-    whole = match.group(0)
-    target = match.group(1)
-    if "`~" in whole:
-        target = target.rsplit(".", 1)[-1]
-    return f"`{target}`"
-
-
-def md_text(text: str) -> str:
-    """Docstring reStructuredText as Markdown: roles and double backticks become code spans, ``<`` is escaped."""
-    text = _ROLE.sub(_role_target, text)
-    text = _DOUBLE_TICK.sub(lambda m: f"`{m.group(1)}`", text)
-    parts = re.split(r"(`[^`]*`)", text)
-    return "".join(p if p.startswith("`") else p.replace("<", "&lt;") for p in parts)
 
 
 def cell(text: str) -> str:

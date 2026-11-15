@@ -86,7 +86,7 @@ pip install, fetch the examples from the repository first
 
 > **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves with a
 > deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. The declared
-> names are [mapped by rung](docs/surface.md); the rest a root exports are provisional
+> names are [mapped by role and rung](docs/surface.md); the rest a root exports are provisional
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 
 ## What is different
@@ -131,7 +131,8 @@ this README is the package's description, they do not resolve, so read the docs 
 
 - [Design](docs/design.md): the principles the engine keeps, why each concept is shaped as it is, and the prior art.
 - [Open problems](docs/open-problems.md): known gaps.
-- [The surface](docs/surface.md): the declared names on one page, by rung.
+- [The surface](docs/surface.md): the declared names on one page, by role and rung, generated.
+- [`llms.txt`](llms.txt): what an AI agent adopting the package reads first, generated from the same names.
 - [Reference](docs/reference.md): every declared name, setting, report field, goal-check builtin and action, generated
   from the code.
 

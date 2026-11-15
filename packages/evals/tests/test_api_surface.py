@@ -161,7 +161,11 @@ def test_the_generator_refuses_to_write_while_a_removal_is_unrecorded(tmp_path: 
     installed = {f"{A}.y": Entry("function", "y()", "stable")}
     assert generator.write_snapshot(installed, [surface.Finding("y is new", True)], path, tiers) is True
     assert surface.load_snapshot(path) == installed
-    assert json.loads(tiers.read_text(encoding="utf-8")) == {"format": 1, "tiers": {f"{A}.y": "stable"}}
+    assert json.loads(tiers.read_text(encoding="utf-8")) == {
+        "format": 1,
+        "tiers": {f"{A}.y": "stable"},
+        "kinds": {f"{A}.y": "invoked"},
+    }
 
 
 def test_a_snapshot_of_another_format_is_refused(tmp_path: Path) -> None:

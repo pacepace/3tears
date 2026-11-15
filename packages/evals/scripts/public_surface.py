@@ -32,7 +32,7 @@ import tomllib
 import types
 import typing
 import warnings
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from functools import cache
 from pathlib import Path
 from typing import Any, Literal
@@ -73,6 +73,28 @@ def one_line(doc: str | None) -> str:
         return ""
     first = paras[0]
     return first if len(first) <= ONE_LINE_LIMIT else first_sentence(first)
+
+
+#: A Sphinx cross-reference in a docstring: ``:class:`~threetears.evals.Eval```.
+_ROLE = re.compile(r":[a-z]+(?::[a-z]+)?:`(?:[^`<]*<)?~?([^`>]+)>?`")
+_DOUBLE_TICK = re.compile(r"``(.+?)``")
+
+
+def _role_target(match: re.Match[str]) -> str:
+    """A Sphinx cross-reference as a code span: the last dotted part when it was ``~``-shortened."""
+    whole = match.group(0)
+    target = match.group(1)
+    if "`~" in whole:
+        target = target.rsplit(".", 1)[-1]
+    return f"`{target}`"
+
+
+def md_text(text: str) -> str:
+    """Docstring reStructuredText as Markdown: roles and double backticks become code spans, ``<`` is escaped."""
+    text = _ROLE.sub(_role_target, text)
+    text = _DOUBLE_TICK.sub(lambda m: f"`{m.group(1)}`", text)
+    parts = re.split(r"(`[^`]*`)", text)
+    return "".join(p if p.startswith("`") else p.replace("<", "&lt;") for p in parts)
 
 
 def stable_repr(value: Any) -> str:
@@ -906,7 +928,8 @@ HOST_CONTRACT: frozenset[str] = frozenset(
 
 #: The rest of the declared surface: every public name beyond :data:`HOST_CONTRACT` that a reader is told about, by
 #: ``root.name``. Each moves only with a ``MIGRATIONS.toml`` record, never shimmed. With the host contract it is what
-#: ``docs/reference.md`` documents and ``docs/surface.md`` maps by rung, and it is held under :data:`DECLARED_CEILING`.
+#: ``docs/reference.md`` documents and ``docs/surface.md`` maps by kind and rung, and each kind is held under its ceiling
+#: (``surface_kinds.KIND_CEILINGS``).
 #:
 #: The ruling is what someone is shown or already binds: every name a topic guide, the README, an example or the
 #: courier host (``tests/fixtures/courierhost/``) imports (``tests/test_api_tiers.py`` holds it) or a shipped page
@@ -1217,10 +1240,6 @@ STABLE: frozenset[str] = frozenset(
     }
 )
 
-#: The most names the declared surface (:data:`HOST_CONTRACT` and :data:`STABLE`) may hold: what a reader takes in in
-#: one sitting. A name promoted past it means another leaves first; ``tests/test_api_tiers.py`` holds it.
-DECLARED_CEILING = 503  # the paging and pricing names a host binds (owner rule, 2026-11-14: the ceiling gives way for a genuinely necessary host name; 499 -> 503: check_after joins the host contract from threetears.evals.schema, since the host guide tells a store declaring by_doc_type's after to call it; UnpricedCall joins the host contract from threetears.evals.run, since the host-contract LaunchableKind.price_subject_call_floor and price_largest_call return it; LIST_PAGE_SIZE and LIST_PAGE_MAX join stable from threetears.evals.ops, since a host's REST listing routes state their limit from them, #1145). Before: a host's replay fails the run on a miss (owner ruling, 2026-11-14: 498 -> 499, ReplayMiss joins the host contract from threetears.evals.kernel.host, since a host's own replay must raise it for a recording that cannot serve the run to fail the run naming the call, #1162, rather than exclude one cell). Before: a host's kind routes a failed model call through the engine (owner ruling, 2026-11-13: 497 -> 498, failed_call_output joins the host contract from threetears.evals.kernel, so a host's own candidate kind routes a model call that raised by the owner its describer read, which is what makes an account's refusal stop a run and a model not served skip the judge and stop its arm). Before: the engine owns campaign export (owner ruling, 2026-11-08: 495 -> 497, campaign_export and CampaignExport join the host contract from threetears.evals.ops, so every host exports a campaign for the mint through the package rather than its own closure). Before: the host's check-name canary (owner-approved, 2026-11-07: the host's check-name canary runs the namer over its seeded checks; 491 -> 495: check_names, GOAL_CHECK and DECLARED_NAME_CHARS join the host contract from threetears.evals.analysis, and update_template, provisional until now, the one seam that gives a stored template its presentation fields). Before: the mint door's host asks (owner-approved 488 -> 491, 2026-11-07: host_declarations_digest, judge_config_of and is_builtin_judge_config_id join the host contract, so a host reads the digest and the judge-config readers without reproducing them). Before: the names only Discodon's tests import demoted (R5, 514 -> 488, 2026-11-06: the 24 discodon-tests-only names of the hold-back ledger and CampaignBundle and testing.ReaderSample, which only their signatures reached, go provisional; Discodon confirmed on 2026-11-06 that a provisional name its tests import may move). Before: the shims removed (R4, 535 -> 514, 2026-11-06: KnownReasoningEffort goes provisional, since only the removed analysis_gen_request_settings_for's signature reached it; the twenty declared names the retired generations and the in-cell cost cap left leave the package; five are host-contract names live in v0.90.0 and v0.91.x, removed with no released deprecation as an exception the owner approved on 2026-11-03, and Discodon, the only production host, confirmed on 2026-11-06 that it drops every import before it re-pins). Before: the declared surface demoted (P4-11, 553 -> 535, 2026-11-04: 18 names nothing outside the package imports, no shipped page teaches and no declared signature reaches go provisional). Before: the memo page retired (P4-8, 553 -> 553, 2026-11-04: every name that leaves is provisional; StyleProfile stays declared as a one-minor shim). Before: the memo writer retired (P4-7, 555 -> 553, 2026-11-04: first_request and prompt_content_version leave with it; generate_analysis, EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: the report planner's generation path retired (P4-4, 556 -> 555, 2026-11-04: EVAL_REPORT_PLAN_DEFAULT, never in a final release, leaves __all__ and is served by name for one minor; EVAL_ANALYSIS_GEN_DEFAULT and analysis_gen_request_settings_for stay declared as one-minor shims). Before: reporter kind retired (P4-3, 558 -> 556, 2026-11-04: AS_RECORDED_MODEL and ReporterLabel leave with the kind's module; REPORTER_KIND, ReporterKind, AsRecordedReporterKind and reporter_cell_timeout_s stay declared as one-minor shims). Before: reporter cases retired (P4-2, 560 -> 558, 2026-11-04: freeze_reporter_case and reporter_case_archive leave with the reporter case bank; the eleven reporter contract and launch names stay declared as one-minor shims). Before: rung 5 (owner-approved 557 -> 560, 2026-11-03: AnalystSkill, Writer and WriterEval, the harness names examples/5-writer/writer.py imports, join the host contract). Before: the report writer's port (owner-approved 541 -> 557, 2026-10-29: Discodon's W4 adoption exempted sixteen provisional names it must bind to: the writer's pricer, budget, limits, analyst tool, turn client and turn types, and RunDisclosure). Before: EVAL_REPORT_PLAN_DEFAULT (owner-approved 540 -> 541, 2026-10-25; promised to the host, whose registry seeds eval_report_plan from it; EVAL_ANALYSIS_GEN_DEFAULT is retired and leaves the declared surface in a future minor release). Before: Discodon's rescan (owner-approved 531 -> 540): the eight provisional names its tests and fixtures bind to on purpose (CampaignBundle, assemble_campaign_bundle, kernel.Aspect, UNSEATED_LEVEL, quote_launch and the three reader-conformance names) and FailureOwner, which its ProviderFailure describers type against after #849. Before: lease numbers (owner-approved 529 -> 531): DEFAULT_JOB_LEASE_S, JOB_LEASE_RENEWAL_FRACTION and LEASE_POOL_WORKERS join the host contract on schema, which a host sizing its database pool reads without loading the kernel, and kernel.LEASE_POOL_WORKERS leaves the surface with no shim (evals keeps no back-compat; the one host re-pins). Before: campaign rewrite (owner-approved 525 -> 529): the campaign of aspects drops CampaignDesign, Question and DecisionRule and declares AspectDesign, Floor, CampaignCall, OverriddenBar and campaign_record, which a host declares and records a call with, and CampaignReport and CampaignReadings, which it serves. Before: the host's imports set it: .33 adds the case rename and drops the six ceiling names; its rescan, refuse_ignored_template_fields. Since: current_cell_identity (#809), the one accessor a host log filter reads; TemplateCaseFields (#807), the argument of the template-case check; admit_template (#817), so a host tests its own template checks beside the engine's; LEASE_POOL_WORKERS, which a host sizing its database pool reads; field_in_values (#820), the checks a host's store runs on by_doc_type's field_in.; ANALYSIS_PREPARATION_BUDGET_S, which a host cites for a generation's wall time; bind_cell_identity (#824), so a host binds the identity the engine reads across its own task boundary.
-
 
 def tier_of(qualified: str) -> Tier:
     """A public name's tier, by ``root.name``: ``host-contract`` when :data:`HOST_CONTRACT` lists it, ``stable`` when
@@ -1288,8 +1307,8 @@ def home_root(root: str, name: str) -> str:
 SNAPSHOT_PATH = PACKAGE_ROOT / "api" / "surface.json"
 
 #: The tier map the wheel ships (``threetears.evals.surface_tier`` reads it): every public name and its tier, the
-#: snapshot's tiers alone. Generated beside the snapshot, since ``api/`` is not installed and a host gates its imports
-#: against the build it runs.
+#: snapshot's tiers, and every declared name's kind (``surface_kinds.py``). Generated beside the snapshot, since
+#: ``api/`` is not installed and a host gates its imports against the build it runs.
 TIER_MAP_PATH = PACKAGE_ROOT / "src" / "threetears" / "evals" / "surface_tiers.json"
 
 #: The hand-written record of every name that left a public root: per release, its new home or ``removed``, and why.
@@ -1496,10 +1515,12 @@ def render_snapshot(surface: dict[str, SurfaceEntry]) -> str:
     return json.dumps({"format": SNAPSHOT_FORMAT, "names": names}, indent=2, ensure_ascii=False) + "\n"
 
 
-def render_tier_map(surface: dict[str, SurfaceEntry]) -> str:
-    """The shipped tier map: each ``root.name`` and its tier, in the snapshot's order, one name a line."""
+def render_tier_map(surface: dict[str, SurfaceEntry], kinds: Mapping[str, str]) -> str:
+    """The shipped tier map: each ``root.name`` and its tier, in the snapshot's order, one name a line; then each
+    declared name's kind (``surface_kinds.Kind``), in the same order."""
     tiers = {name: entry.tier for name, entry in surface.items()}
-    return json.dumps({"format": 1, "tiers": tiers}, indent=0, ensure_ascii=False) + "\n"
+    kind_of = {name: kinds[name] for name in surface if name in kinds}
+    return json.dumps({"format": 1, "tiers": tiers, "kinds": kind_of}, indent=0, ensure_ascii=False) + "\n"
 
 
 # --- findings ----------------------------------------------------------------------------------------------------
