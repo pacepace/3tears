@@ -37,7 +37,8 @@ from threetears.evals.kernel.storage import LeaseClock
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.remedies import FIND_ANALYSIS, FIND_CAMPAIGN, FIND_INSIGHT, FIND_RUN, UNREADABLE_LEASE
 from threetears.evals.kernel.campaign import EvalAnalysis
-from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES
+from threetears.evals.kernel.declaration import MembershipChange, membership_changed
+from threetears.evals.schema.models import NON_TERMINAL_RUN_STATUSES, utc_now_iso
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.storage import EvalStorage, RefusedRow
@@ -865,14 +866,28 @@ def _detach_run_from_all_campaigns(
         already been destroyed and what has already been detached.
     """
     touched: list[str] = []
+    left_at = utc_now_iso()
     for campaign in storage.list_campaigns(scope_id):
         if run_id not in campaign.run_ids:
             continue
-        # Detached from the one aspect holding it: a run belongs to one aspect of a campaign.
+        # Detached from the one aspect holding it: a run belongs to one aspect of a campaign. Its departure is
+        # recorded, so the look it made is not erased with it; its results are gone, so it records no first result
+        # and the aspect's looks read as a lower bound.
         campaign = campaign.model_copy(
             update={
                 "aspects": [
-                    aspect.model_copy(update={"run_ids": [rid for rid in aspect.run_ids if rid != run_id]})
+                    aspect.model_copy(
+                        update={
+                            "run_ids": [rid for rid in aspect.run_ids if rid != run_id],
+                            "membership": membership_changed(
+                                aspect.membership,
+                                left=[MembershipChange(run_id=run_id, change="left", at=left_at)],
+                                at=left_at,
+                            ),
+                        }
+                    )
+                    if run_id in aspect.run_ids
+                    else aspect
                     for aspect in campaign.aspects
                 ]
             }

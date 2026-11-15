@@ -133,7 +133,7 @@ class ResultSpend:
         return cls(
             eval_run_id=read.eval_run_id,
             cost_usd=read.cost_usd,
-            judge_rescores=tuple(RescoreReading(cost_usd=rescore.cost_usd) for rescore in read.judge_rescores),
+            judge_rescores=tuple(RescoreReading.of(rescore) for rescore in read.judge_rescores),
             cost_roles=tuple(read.cost_roles),
         )
 

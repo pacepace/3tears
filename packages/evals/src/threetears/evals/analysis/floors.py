@@ -1410,8 +1410,10 @@ def project_rate(
     they differ as observed, from the bounded interval computed again at each count.
 
     The rate's own per-case values (``RateReading.samples``, the ones its bounded interval read) are repeated to each
-    count and the bounded interval read again at the rate's own level (``RateReading.confidence``)
-    (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`), so the count keeps the run's spread and the
+    count and the bounded interval read again at the level its ``held`` is read at: the rate's own
+    (``RateReading.confidence``), or under a plan of looks the tighter one
+    (:func:`~threetears.evals.analysis.significance.looks_confidence`), so the cases it names lift the claim at the
+    level it is actually read at (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`), and the count keeps the run's spread and the
     interval's small-sample excess. With no true difference the interval may reach the whole margin below its
     estimate; as observed, the margin less the drop the per-case values show. Where the interval already keeps the
     drop within the margin as observed and the floor is met, only the lost trials kept it open (``lost``).
@@ -1433,6 +1435,7 @@ def project_rate(
     if len(control) < 2 or len(contrast) < 2:
         return None
     paired = rate.paired
+    level = looks_confidence(rate.confidence, rate.looks)
     # An unpaired rate's interval is read over each arm's cases apart, at a cost in proportion to them: its search
     # stops sooner and coarser (UNPAIRED_PROJECTION_CAP, or four times the cases observed where that is more, so it
     # always reads past what the run held), so a page of unclear rows is laid out in seconds.
@@ -1446,7 +1449,7 @@ def project_rate(
             contrast,
             paired=paired,
             value_range=(0.0, 1.0),
-            confidence=rate.confidence or 0.0,
+            confidence=level,
             room=room,
             cap=cap,
             resolution=resolution,

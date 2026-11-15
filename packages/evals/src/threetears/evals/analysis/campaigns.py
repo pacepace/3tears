@@ -55,7 +55,9 @@ from threetears.evals.kernel.declaration import (
     DecisionClause,
     Floor,
     Margin,
+    MembershipChange,
     aware_instant,
+    membership_changed,
     resolve_control_arm,
 )
 from threetears.evals.kernel.identity import compute_variant_key
@@ -435,6 +437,13 @@ def create_campaign(
     _refuse_collisions(sources, own)
     # Every write stores each declared axis named: an adopted aspect stored before its host named a lever is named here.
     aspects = _named_axes([*adopted, *own], profile)
+    # Every run joins now, the write's own time and never a time the caller states: an adopted aspect's runs join this
+    # campaign here, whatever they did in the campaign they came from, so its record starts with this write.
+    joined_at = utc_now_iso()
+    aspects = [
+        aspect.model_copy(update={"membership": membership_changed((), joined=aspect.run_ids, at=joined_at)})
+        for aspect in aspects
+    ]
     declared = any(aspect.design is not None for aspect in aspects)
     _refuse_an_unsaid_kind(declared=declared, exploratory=exploratory)
     if not declared and (authored.question or authored.arms or authored.floors or authored.margins):
@@ -1513,12 +1522,18 @@ def add_runs_to_campaign(
         if target is not None
         else _route_by_template(storage, campaign, fresh)
     )
-    aspects = [
-        held.model_copy(
-            update={"run_ids": [*held.run_ids, *(run_id for run_id in fresh if routed[run_id] == held.label)]}
+    # Each join is recorded with the write's time: a run whose results were scored before it joined is a look when it
+    # joins, not when it was scored.
+    joined_at = utc_now_iso()
+    aspects = []
+    for held in campaign.aspects:
+        joining = [run_id for run_id in fresh if routed[run_id] == held.label]
+        aspects.append(
+            held.model_copy(
+                update={"run_ids": [*held.run_ids, *joining]}
+                | ({"membership": membership_changed(held.membership, joined=joining, at=joined_at)} if joining else {})
+            )
         )
-        for held in campaign.aspects
-    ]
     for joined in aspects:
         if any(routed.get(run_id) == joined.label for run_id in fresh):
             _refuse_pooled_revisions(
@@ -1605,6 +1620,39 @@ def _route_by_template(storage: CampaignStore, campaign: EvalCampaign, run_ids: 
     return routed
 
 
+def _departure(storage: CampaignStore, run_id: str, scope_id: str, *, at: str) -> MembershipChange:
+    """A run leaving an aspect at ``at``, holding what its look is counted by once it is gone: when its first result was
+    scored, and the launch group it was launched in (one read of its result keys, one of the run).
+
+    :param storage: The campaign store.
+    :ptype storage: CampaignStore
+    :param run_id: The run leaving.
+    :ptype run_id: str
+    :param scope_id: The scope it lives in.
+    :ptype scope_id: str
+    :param at: When it leaves.
+    :ptype at: str
+    :return: The departure.
+    :rtype: MembershipChange
+    """
+    run = storage.load_eval_run(run_id, scope_id)
+    scored: list[tuple[datetime, str]] = []
+    for key in storage.query_eval_result_keys_by_run(run_id, scope_id) if run is not None else ():
+        try:
+            scored.append((aware_instant(key.scored_at, "a result's scored_at"), key.scored_at))
+        except ValueError:
+            # A time that cannot be ordered dates no look; the departure then records none, and the count reads as
+            # the lower bound it is.
+            continue
+    return MembershipChange(
+        run_id=run_id,
+        change="left",
+        at=at,
+        first_result_at=min(scored)[1] if scored else None,
+        launch=run.launch_group_id if run is not None else None,
+    )
+
+
 @serialized_campaign_write
 def remove_runs_from_campaign(
     storage: CampaignStore, campaign_id: str, scope_id: str, run_ids: list[str], *, aspect: str | None = None
@@ -1651,10 +1699,27 @@ def remove_runs_from_campaign(
             remedy=f"detach only runs it holds: {', '.join(sorted(held)) or 'it holds none'}",
         )
     removing = set(run_ids)
+    # Each departure is recorded with what its look is counted by once the run is gone: its look happened.
+    left_at = utc_now_iso()
     campaign = campaign.model_copy(
         update={
             "aspects": [
-                kept.model_copy(update={"run_ids": [run_id for run_id in kept.run_ids if run_id not in removing]})
+                kept.model_copy(
+                    update={
+                        "run_ids": [run_id for run_id in kept.run_ids if run_id not in removing],
+                        "membership": membership_changed(
+                            kept.membership,
+                            left=[
+                                _departure(storage, run_id, scope_id, at=left_at)
+                                for run_id in kept.run_ids
+                                if run_id in removing
+                            ],
+                            at=left_at,
+                        ),
+                    }
+                )
+                if removing & set(kept.run_ids)
+                else kept
                 for kept in campaign.aspects
             ]
         }

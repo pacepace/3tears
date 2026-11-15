@@ -8,7 +8,7 @@ family by Holm's method (:func:`_corrected_family`) and decides every guardrail 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from datetime import datetime
 from itertools import batched
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -22,7 +22,9 @@ from threetears.evals.analysis.reporting import (
     project_score_records,
 )
 from threetears.evals.analysis.stats import (
+    INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
+    GuardrailVerdict,
     bounded_difference_interval,
     composite_significance,
     contrast_cases,
@@ -33,6 +35,7 @@ from threetears.evals.analysis.stats import (
     GUARDRAIL_HELD_NEEDS_RANGE,
     guardrail_decision,
     holm_adjust,
+    interval_clears,
     interval_permits_separation,
     no_spread_p,
     paired_equivalence,
@@ -42,11 +45,12 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel.campaign import ReadingKind
 from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.analysis.checks import Looks
-from threetears.evals.analysis.significance import looks_alpha, looks_taken
+from threetears.evals.analysis.significance import looks_alpha, looks_confidence, looks_taken
 from threetears.evals.schema.campaign_upgrade import aware_instant
 from threetears.evals.kernel.declaration import (
     JUDGED_MERIT_AXIS,
     AspectDesign,
+    MembershipChange,
     axis_in_question_scope,
 )
 from threetears.evals.kernel.host.profile import HostProfile
@@ -623,9 +627,16 @@ def _margin_of(
 
 
 def _family_disclosure(
-    family_size: int, n_untested: int, alpha: float, *, n_equivalence: int = 0, campaign_wide: bool = False
+    family_size: int,
+    n_untested: int,
+    alpha: float,
+    *,
+    n_equivalence: int = 0,
+    campaign_wide: bool = False,
+    looks: int | None = None,
 ) -> str:
-    """The sentence a writer quotes about one family, composed from what the family holds."""
+    """The sentence a writer quotes about one family, composed from what the family holds: under a plan of ``looks``
+    looks, ``alpha`` is the level each look reads at, and what the intervals hold together is stated over the plan."""
     asked = "the campaign holds" if campaign_wide else "this question asks about"
     if family_size == 0:
         sentence = f"No comparison {asked} carried a p, so it supports no separation between arms."
@@ -641,7 +652,11 @@ def _family_disclosure(
             f"α={format_number(alpha)}; a separation stands only where the adjusted p is below it and the interval "
             f"excludes zero. Each interval "
             f"is at {format_number(100 * (1 - alpha / family_size))}%, so the family's intervals hold together at "
-            f"{format_number(100 * (1 - alpha))}%."
+            + (
+                f"{format_number(100 * (1 - alpha))}%."
+                if looks is None
+                else f"{format_number(100 * (1 - alpha * looks))}% over the {looks} looks its design plans."
+            )
         )
     if n_untested:
         sentence += f" {n_untested} more could not be tested; each says why."
@@ -661,7 +676,7 @@ def _interval_withholds(interval: tuple[float, float] | None, *, rate: bool) -> 
 
 
 def _corrected_family(
-    aspect: str | None, axes: list[MeritAxis], tested: list[_Tested], *, alpha: float = SIGNIFICANCE_ALPHA
+    aspect: str | None, axes: list[MeritAxis], tested: list[_Tested], *, looks: int | None = None
 ) -> ComparisonFamily:
     """Correct one family's tests together, and read each comparison's verdict and interval off the result.
 
@@ -698,13 +713,15 @@ def _corrected_family(
     :ptype axes: list[MeritAxis]
     :param tested: The family's comparisons, tested and uncorrected.
     :ptype tested: list[_Tested]
-    :param alpha: The level each verdict is read at: the engine's α, or α/L where the aspect's design plans ``L``
-        looks (:func:`~threetears.evals.analysis.significance.looks_alpha`), so the family's error holds over every
-        look the plan allows.
-    :ptype alpha: float
+    :param looks: The looks the plan in force allows: each verdict is then read at α/L
+        (:func:`~threetears.evals.analysis.significance.looks_alpha`, the family's ``look_alpha``), so the error the
+        family states (``alpha``) holds over every look the plan allows. None reads at α.
+    :ptype looks: int | None
     :return: The corrected family.
     :rtype: ComparisonFamily
     """
+    planned = looks if looks is not None and looks > 1 else None
+    alpha = looks_alpha(planned)
     family_size = sum(1 for one in tested if one.p_raw is not None)
     n_equivalence = sum(1 for one in tested if one.equivalence_p_raw is not None)
     raw = [p for one in tested for p in (one.p_raw, one.equivalence_p_raw) if p is not None]
@@ -772,14 +789,16 @@ def _corrected_family(
     return ComparisonFamily(
         aspect=aspect,
         merit_axes=axes,
-        alpha=alpha,
+        # What a reader is told the verdicts hold: α, over every look a plan allows; each look reads at `look_alpha`.
+        alpha=SIGNIFICANCE_ALPHA,
+        look_alpha=alpha if planned is not None else None,
         family_size=family_size,
         n_equivalence_tests=n_equivalence,
         interval_level=interval_level,
         n_untested=n_untested,
         comparisons=comparisons,
         disclosure=_family_disclosure(
-            family_size, n_untested, alpha, n_equivalence=n_equivalence, campaign_wide=aspect is None
+            family_size, n_untested, alpha, n_equivalence=n_equivalence, campaign_wide=aspect is None, looks=planned
         ),
     )
 
@@ -800,6 +819,7 @@ def multiple_comparisons(
     contended: Collection[CellKey] = frozenset(),
     rigs: Mapping[str, str] | None = None,
     rubric_threshold: int,
+    planned_looks: int | None = None,
 ) -> tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]:
     """Test each contrast against the control in the aspect's one family, decide every guardrail, and carry what the
     floors read.
@@ -860,6 +880,10 @@ def multiple_comparisons(
     :param rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
         rate's per-case shares read (:func:`_trial_pass_counts`), as the scoreboard does.
     :ptype rubric_threshold: int
+    :param planned_looks: The looks the plan in force allows (:func:`aspect_looks`' ``planned``): each verdict is then
+        read at α/L (:func:`~threetears.evals.analysis.significance.looks_alpha`) and a guardrail's ``held`` on the
+        interval at :func:`~threetears.evals.analysis.significance.looks_confidence`. None reads every look at α.
+    :ptype planned_looks: int | None
     :return: The aspect's question's family; the exploratory family over every reading when no question is
         asked; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
         against the control, and the floors' per-case values; with no control, each pair of arms' pass rate per case
@@ -878,8 +902,6 @@ def multiple_comparisons(
             _choice_contrasts(results_by_cell, rubric_threshold=rubric_threshold, catalog=catalog, rigs=rigs or {}),
         )
     axes_asked = question_axes(declared)
-    # Each look the aspect's design plans is read at α/L, so its family's error holds over all of them.
-    alpha = looks_alpha(declared.design.planned_looks if declared is not None else None)
     # An aspect that asked nothing is not thereby licensed to report chance differences: its family is every
     # comparison it holds, on every reading, corrected as one.
     scopes: list[tuple[str | None, list[MeritAxis]]] = [(aspect, axes_asked) if axes_asked is not None else (None, [])]
@@ -971,7 +993,7 @@ def multiple_comparisons(
                         rate=_is_rate(reading, catalog, judged_ranges),
                     )
                 )
-        families.append(_corrected_family(family_aspect, axes, tested, alpha=alpha))
+        families.append(_corrected_family(family_aspect, axes, tested, looks=planned_looks))
     checks = [
         _guardrail_check(
             reading,
@@ -979,6 +1001,7 @@ def multiple_comparisons(
             (control_key, values[control_key].get(reading, {})),
             (contrast_key, values[contrast_key].get(reading, {})),
             contended=_contended_sides(reading, (control_key, contrast_key), catalog, contended),
+            looks=planned_looks,
         )
         for reading in sorted(guardrail_readings)
         for control_key, contrast_key in sorted(pairs, key=lambda pair: (pair[0][1], pair[1][0]))
@@ -1133,20 +1156,36 @@ def aspect_looks(
     *,
     control: str | None,
     planned: int | None,
+    declared_at: str | None,
+    membership: Sequence[MembershipChange],
     plannable: bool,
+    unread: bool = False,
 ) -> Looks | None:
     """How often the aspect's test was looked at, against how often its design planned: the most looks any one of its
-    contrasts has had (:func:`~threetears.evals.analysis.significance.looks_taken`), an upper bound.
+    contrasts has had (:func:`~threetears.evals.analysis.significance.looks_taken`), and the plan in force.
 
-    A contrast is the control's arm against another arm, or, with no control, any two arms. Each arm's launches are its
-    runs' launch groups (a run launched alone is a launch of its own), each timed by its first result's ``scored_at``,
-    or by its run's creation where that cannot be ordered; its changes are each re-measure of its runs, timed by when
-    it finished (or began, where it has not). Its passes are, run by run, the most re-judges any one result holds plus
-    the most judge repeats any one result holds: a pass over a run re-asks each result it touches once, and what is
-    stored of one does not say when the pass began. A step that adds cases and reads again launches runs, and is
-    counted as their launch.
+    A contrast is the control's arm against another arm, or, with no control, any two arms. Every fact is read from
+    what is stored, so removing a run never erases a look it made:
 
-    :param runs: The aspect's member runs.
+    - **Each result** reaches the contrast when it was scored, or, for a run that joined the aspect after it was
+      scored, when the run joined (:attr:`~threetears.evals.kernel.declaration.Aspect.membership`). Its occasion is its
+      run's launch (its launch group, or the run where it was launched alone), or the membership write it joined in.
+    - **Each run that left** is counted by what its departure recorded: its arrival (its first result, or its later
+      joining), under its launch, and its leaving, under the write that removed it.
+    - **Each re-measure** of a member run is one occasion, at when it finished (or began, where it has not); **each
+      re-judge** is read per result (``rejudged_at``).
+
+    **The count is a lower bound** (``lower_bound``) where a fact it needs is not stored: a member whose joining was
+    never recorded (an aspect stored before the record, whose old runs may have joined after their results), a run that
+    left with no first result recorded (a deleted run), an archived or unresolved member (``unread``), a result with no
+    ordered time, or any re-judge after the first look.
+
+    **A plan declared after the first look is no plan** (``planned`` None, ``late_plan`` the looks it named): the
+    looks it would count were taken before it, perhaps read at α. The first look here is timed by when both arms first
+    held a scored result, whichever campaign the runs were in then, and the plan by the aspect's ``declared_at``; a
+    plan with no recorded time cannot be shown to precede it, and is read as late.
+
+    :param runs: The aspect's resolved member runs.
     :ptype runs: Iterable[EvalRun]
     :param results_by_cell: Each cell's results.
     :ptype results_by_cell: Mapping[CellKey, Iterable[ResultView]]
@@ -1154,52 +1193,119 @@ def aspect_looks(
     :ptype control: str | None
     :param planned: The looks the aspect's design plans (``AspectDesign.planned_looks``); None where none is.
     :ptype planned: int | None
+    :param declared_at: When the aspect's design, and so its plan, was declared; None where no time is recorded.
+    :ptype declared_at: str | None
+    :param membership: The aspect's membership record.
+    :ptype membership: Sequence[MembershipChange]
     :param plannable: Whether the campaign was created once looks were counted (``EvalCampaign.looks_rule``).
     :ptype plannable: bool
+    :param unread: Whether a member run is archived or did not resolve, so its evidence is not read here.
+    :ptype unread: bool
     :return: The looks; None where no two arms hold a result, so there is no contrast.
     :rtype: Looks | None
     """
     by_id = {run.id: run for run in runs}
-    launches: dict[str, dict[str, datetime]] = {}
+    joined: dict[str, str] = {}
+    for change in membership:
+        if change.change == "joined":
+            joined[change.run_id] = change.at
+    lower = unread or any(run_id not in joined for run_id in by_id)
+    deliveries: dict[str, list[tuple[datetime, str, str, Hashable]]] = {}
+    scored_first: dict[str, datetime] = {}
+    rejudges: dict[str, list[list[datetime]]] = {}
     arm_runs: dict[str, set[str]] = {}
-    passes: dict[str, tuple[int, int]] = {}
     for (variant, _), members in results_by_cell.items():
         for result in members:
             run = by_id.get(result.eval_run_id)
             if run is None:
                 continue
-            at = _orderable(result.scored_at) or _orderable(run.created_at)
-            if at is None:
+            scored = _orderable(result.scored_at) or _orderable(run.created_at)
+            if scored is None:
+                lower = True
                 continue
-            launch = run.launch_group_id or run.id
-            held = launches.setdefault(variant, {})
-            held[launch] = min(at, held.get(launch, at))
+            scored_first[variant] = min(scored, scored_first.get(variant, scored))
+            joined_at = _orderable(joined[run.id]) if run.id in joined else None
+            if joined_at is not None and scored < joined_at:
+                delivery = (joined_at, variant, result.test_case_id, ("membership", joined_at))
+            else:
+                delivery = (scored, variant, result.test_case_id, ("launch", run.launch_group_id or run.id))
+            deliveries.setdefault(variant, []).append(delivery)
             arm_runs.setdefault(variant, set()).add(run.id)
-            rejudged, repeated = passes.get(run.id, (0, 0))
-            passes[run.id] = (max(rejudged, len(result.judge_rescores)), max(repeated, len(result.judge_repeats)))
-    arms = sorted(launches)
+            rejudges.setdefault(variant, []).append(
+                [at for rescore in result.judge_rescores if (at := _orderable(rescore.rejudged_at)) is not None]
+            )
+    departed: list[tuple[datetime, Hashable]] = []
+    changes: list[tuple[datetime, Hashable]] = []
+    for index, change in enumerate(membership):
+        if change.change != "left" or (left := _orderable(change.at)) is None:
+            continue
+        changes.append((left, ("membership", left)))
+        arrived = _orderable(change.first_result_at) if change.first_result_at is not None else None
+        if arrived is None:
+            lower = True
+            continue
+        rejoined = [
+            at
+            for earlier in membership[:index]
+            if earlier.change == "joined" and earlier.run_id == change.run_id and (at := _orderable(earlier.at))
+        ]
+        if rejoined and rejoined[-1] > arrived:
+            departed.append((rejoined[-1], ("membership", rejoined[-1])))
+        else:
+            departed.append((arrived, ("launch", change.launch or change.run_id)))
+    arms = sorted(deliveries)
     pairs = (
         [(control, arm) for arm in arms if arm != control]
-        if control in launches
+        if control in deliveries
         else [(first, second) for index, first in enumerate(arms) for second in arms[index + 1 :]]
     )
-    taken = [
-        looks_taken(
-            {arm: launches[arm] for arm in pair},
+    counts: list[tuple[int, bool]] = []
+    for pair in pairs:
+        pair_runs = sorted(arm_runs[pair[0]] | arm_runs[pair[1]])
+        counted = looks_taken(
+            [*deliveries[pair[0]], *deliveries[pair[1]]],
+            arms=pair,
             changes=[
-                at
-                for run_id in sorted(arm_runs[pair[0]] | arm_runs[pair[1]])
-                for remeasure in by_id[run_id].measure_remeasures
-                if (at := _orderable(remeasure.completed_at or remeasure.remeasured_at)) is not None
+                *changes,
+                *(
+                    (at, ("remeasure", run_id, index))
+                    for run_id in pair_runs
+                    for index, remeasure in enumerate(by_id[run_id].measure_remeasures)
+                    if (at := _orderable(remeasure.completed_at or remeasure.remeasured_at)) is not None
+                ),
             ],
-            passes=sum(sum(passes[run_id]) for run_id in arm_runs[pair[0]] | arm_runs[pair[1]]),
+            departed=departed,
+            rejudges=[*rejudges[pair[0]], *rejudges[pair[1]]],
         )
-        for pair in pairs
-    ]
-    counted = [count for count in taken if count is not None]
-    if not counted:
+        if counted is not None:
+            counts.append(counted)
+    if not counts:
         return None
-    return Looks(planned=planned, taken=max(counted), plannable=plannable)
+    taken = max(count for count, _ in counts)
+    # When the evidence could first be compared, whichever campaign held the runs then: both arms of some contrast
+    # holding a scored result, or a departed run's first result, whose arm is not stored.
+    first_compared = min(
+        [
+            *(max(scored_first[pair[0]], scored_first[pair[1]]) for pair in pairs),
+            *(arrived for change in membership if (arrived := _first_result(change)) is not None),
+        ]
+    )
+    declared = _orderable(declared_at) if declared_at is not None else None
+    in_force = planned is not None and declared is not None and declared <= first_compared
+    return Looks(
+        planned=planned if in_force else None,
+        taken=taken,
+        plannable=plannable,
+        lower_bound=lower or any(lowered for _, lowered in counts),
+        late_plan=planned if planned is not None and not in_force else None,
+    )
+
+
+def _first_result(change: MembershipChange) -> datetime | None:
+    """When a departed run's first result was scored; None for a join, or a departure that recorded none."""
+    if change.change != "left" or change.first_result_at is None:
+        return None
+    return _orderable(change.first_result_at)
 
 
 def _orderable(stamp: str) -> datetime | None:
@@ -1275,8 +1381,14 @@ def _guardrail_check(
     contrast: tuple[CellKey, dict[str, float]],
     *,
     contended: tuple[str, ...] = (),
+    looks: int | None = None,
 ) -> GuardrailCheck:
     """Decide one guardrail for one arm against the control under one rig (:func:`~threetears.evals.analysis.stats.guardrail_decision`).
+
+    ``held`` is a claim of safety made at every look, so under a plan of ``looks`` looks it is read on the bounded
+    interval at :func:`~threetears.evals.analysis.significance.looks_confidence`, which holds its tail over all of them;
+    a held the tighter interval does not clear is undecided, and the check carries that interval. A breach still warns
+    at the nominal level at every look.
 
     The samples are the ones a comparison on the same reading would read (:func:`_test_samples`), so a
     guardrail and a comparison never disagree about which cases were compared. An undecided check says
@@ -1294,6 +1406,20 @@ def _guardrail_check(
         higher_is_better=guardrail.higher_is_better,
         value_range=guardrail.value_range,
     )
+    if verdict.decision == "held" and looks is not None and looks > 1 and guardrail.value_range is not None:
+        tighter = bounded_difference_interval(
+            a,
+            b,
+            paired=paired,
+            value_range=guardrail.value_range,
+            confidence=looks_confidence(INTERVAL_LEVEL, looks),
+        )
+        cleared = (
+            None
+            if tighter is None
+            else interval_clears(tighter, 0.0, margin=guardrail.margin, higher_is_better=guardrail.higher_is_better)
+        )
+        verdict = GuardrailVerdict("held" if cleared else "undecided", tighter, verdict.basis)
     mean_a = sum(a) / len(a) if a else None
     mean_b = sum(b) / len(b) if b else None
     margin = guardrail.margin or 0.0

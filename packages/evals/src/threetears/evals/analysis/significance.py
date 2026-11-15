@@ -4,25 +4,32 @@
 spells the read with its effect size, and :func:`significance_disclosure` / :func:`cross_subject_disclosure`
 say what the test did and did not cover.
 
-**Looks.** A look is one more reading of a contrast after the data behind its verdict changed: one more chance for a
-test with no true difference behind it to separate, the same thing a family's size counts. Reading a test at α after
-every batch of new cases, and stopping at the first separation, errs far more often than α
-(``tests/test_simulated_looks.py`` measures how much), so a design may declare how many looks it plans
-(``AspectDesign.planned_looks``): each of its ``L`` looks is then read at α/L (:func:`looks_alpha`, a union bound), and a
-claim that a drop stays within a margin at ``1 − (1 − level)/L`` (:func:`looks_confidence`), so the error the
-readings state holds over all ``L`` of them. Past ``L`` it does not, and nothing here pretends it does.
+**Looks.** A look is an occasion on which a contrast's test could have been read again on more or different
+evidence: one more chance for a test with no true difference behind it to separate, the same thing a family's size
+counts. Reading a test at α after every batch of new cases, and stopping at the first separation, errs far more often
+than α (``tests/test_simulated_looks.py`` measures how much), so a design may declare how many looks it plans
+(``AspectDesign.planned_looks``), before the first: each of its ``L`` looks is then read at α/L (:func:`looks_alpha`),
+and a claim that a drop stays within a margin at ``1 − (1 − level)/L`` (:func:`looks_confidence`).
 
-:func:`looks_taken` counts the looks one contrast has had, from stored records at read time: the first, once both arms
-held a result, and one more for each launch (a launch group, or a run launched alone) whose first result there came
-after that, each completed re-measure or blind-read close after it, and each re-judge or judge repeat pass. A step that
-adds cases and reads the campaign again is a launch, and so a look. It is an upper bound: most readings are unstored
-reads by people and agents, so a count of stored readings would be a lower bound presented as a count, and a launch
-nobody read between counts here as a look.
+**What that guarantees, and on what condition.** α/L at each look is a union bound: the chance any of ``L`` readings
+errs is at most the sum of their chances, whatever the dependence among them, PROVIDED each reading errs at most α/L.
+For looks at sizes fixed before the data, each reading is a fixed-size test and does. Where the next batch is sized
+from the readings so far (a step that adds the cases an unclear reading would need), the reading at the data-chosen
+size is no fixed-size test, and nothing in the bound says it still errs at most α/L: what holds there is what the
+simulation of that procedure measures (``PLANNER_EXTEND_FALSE_SEPARATION`` in ``test_simulated_looks.py``), and an
+extend is one of the ``L`` looks only because it is counted as one. Past ``L`` looks the bound says nothing. The union
+bound is conservative (for three looks, about a third more cases at the last than Pocock's boundaries, and more than
+O'Brien–Fleming's); it is chosen because looks here are irregular and their sizes not fixed in advance, which group
+sequential boundaries need. A stage-wise betting product, its stakes fixed before each stage, would hold α under any
+sizing of the next stage (Ville's inequality), and is the principled exit for data-sized extends.
+
+:func:`looks_taken` counts the looks one contrast has had, from stored facts at read time; what it counts and what it
+does not is said there.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Hashable, Iterable
 from datetime import datetime
 
 from threetears.evals.analysis.stats import PAIRED_TEST_NAME, SIGNIFICANCE_ALPHA, UNPAIRED_TEST_NAME
@@ -225,10 +232,11 @@ def cross_subject_disclosure(subject_a: str | None, subject_b: str | None) -> st
 def looks_alpha(planned: int | None, alpha: float = SIGNIFICANCE_ALPHA) -> float:
     """The level each look of a test is read at: α/L under a plan of ``L`` looks, α with none.
 
-    A union bound: if each of ``L`` readings errs at most α/L, the chance that any of them does is at most α, however
-    the readings depend on one another (they share every case the earlier ones read). With no plan the first look is
-    read at α, as every test always was; how many more were taken is counted (:func:`looks_taken`) and qualifies the
-    reading rather than tightening it after the fact.
+    A union bound: if each of ``L`` readings errs at most α/L, the chance any of them does is at most α, whatever the
+    dependence among them. Each does for looks at sizes fixed before the data; for a look at a size chosen from the
+    readings before it, what holds is what the simulation of that procedure measures (see the module). With no plan
+    the first look is read at α, as every test always was; how many more were taken is counted
+    (:func:`looks_taken`) and qualifies the reading rather than tightening it after the fact.
 
     :param planned: The looks the aspect's design declares (``AspectDesign.planned_looks``); None where none is.
     :ptype planned: int | None
@@ -259,38 +267,72 @@ def looks_confidence(confidence: float, planned: int | None) -> float:
 
 
 def looks_taken(
-    batches: Mapping[str, Mapping[str, datetime]],
+    deliveries: Iterable[tuple[datetime, str, str, Hashable]],
     *,
-    changes: Iterable[datetime] = (),
-    passes: int = 0,
-) -> int | None:
-    """How many looks one contrast has had, counted from what is stored: an upper bound.
+    arms: tuple[str, str],
+    changes: Iterable[tuple[datetime, Hashable]] = (),
+    departed: Iterable[tuple[datetime, Hashable]] = (),
+    rejudges: Iterable[Iterable[datetime]] = (),
+) -> tuple[int, bool] | None:
+    """How many looks one contrast has had, counted from what is stored, and whether re-judges made it a lower bound.
 
-    The first look is the moment both arms held a result. Each launch whose first result on either arm came after
-    that moment is one more, and so is each change to the data behind the verdict made after it (a completed
-    re-measure, a blind read closed); each re-judge or judge repeat pass is one more whenever it was made, since what
-    is stored of one does not say when its pass began.
+    **A look is an occasion on which the contrast's test could have been read again on more or different evidence**:
+    one more chance for a test with no true difference behind it to separate. Each occasion is the act that changed the
+    evidence, counted once however many results it brought: a launch (its launch group, or a run launched alone), a
+    membership write (runs joining after their results were scored, runs leaving), a re-measure, a re-judge pass.
 
-    :param batches: Each arm's launches, by arm then by launch (its launch group, or the run where it was launched
-        alone), each as when its first result on that arm was scored. A launch that ran both arms is one launch.
-    :ptype batches: Mapping[str, Mapping[str, datetime]]
-    :param changes: When each change to the data was made.
-    :ptype changes: Iterable[datetime]
-    :param passes: The re-judge and judge repeat passes over the contrast's runs.
-    :ptype passes: int
-    :return: The looks taken; None where fewer than two arms hold a result, so there is no contrast to look at.
-    :rtype: int | None
+    - **The first look** is the first moment both arms held a result. Where a run that has since left held results
+      earlier, the first look is dated by it, since which arm it read is not stored.
+    - **A result changes what the test reads** where it is on a case the other arm also holds, once the arms share
+      two cases (the test then pairs over the shared cases, :func:`~threetears.evals.analysis.stats.contrast_samples`),
+      and wherever it lands while they share fewer (the test then reads every case unpaired). So more cases run on one
+      arm and then the other are one look, at the launch that paired them: the first changed nothing the test reads.
+    - **Each occasion after the first look is one more**, dated by the first change it made; ``changes`` (a run
+      leaving, a re-measure) and ``departed`` (a departed run's own arrival) are occasions that change every contrast.
+    - **Re-judges** are stored per result, with no pass they belong to: the most any one result had after the first
+      look is the fewest passes that could have made them, so the count is then a lower bound.
+
+    What is not counted, and why: a judge repeat and a second judge's pass measure the judge and change no value the
+    test reads, so they give it no new chance to separate; a measure attestation states the definitions a run was
+    launched under and touches no result. A reading by a person or an agent that changed nothing is no new chance
+    either: the same evidence read twice separates or not alike.
+
+    :param deliveries: Each result of the two arms, as when its evidence reached the contrast (scored, or joined where
+        it joined later), its arm, its case, and the occasion that brought it.
+    :ptype deliveries: Iterable[tuple[datetime, str, str, Hashable]]
+    :param arms: The contrast's two arms.
+    :ptype arms: tuple[str, str]
+    :param changes: Occasions that changed the evidence of every contrast, each with when it was made.
+    :ptype changes: Iterable[tuple[datetime, Hashable]]
+    :param departed: The arrivals of runs that have since left, each with the occasion that brought it.
+    :ptype departed: Iterable[tuple[datetime, Hashable]]
+    :param rejudges: Each result's re-judges, as when each was made.
+    :ptype rejudges: Iterable[Iterable[datetime]]
+    :return: ``(looks, lower_bound)``; None where the two arms never both held a result, so there is no contrast.
+    :rtype: tuple[int, bool] | None
     """
-    held = [min(launches.values()) for launches in batches.values() if launches]
-    if len(held) < 2:
+    held: dict[str, set[str]] = {arm: set() for arm in arms}
+    first: datetime | None = None
+    occasions: dict[Hashable, datetime] = {}
+    for at, arm, case, occasion in sorted(deliveries, key=lambda delivery: delivery[0]):
+        held[arm].add(case)
+        if not all(held.values()):
+            continue
+        shared = held[arms[0]] & held[arms[1]]
+        if len(shared) >= 2 and case not in shared:
+            continue
+        if first is None:
+            first = at
+        occasions.setdefault(occasion, at)
+    if first is None:
         return None
-    both = max(held)
-    first: dict[str, datetime] = {}
-    for launches in batches.values():
-        for launch, at in launches.items():
-            first[launch] = min(at, first.get(launch, at))
-    later = sum(1 for at in first.values() if at > both)
-    return 1 + later + sum(1 for at in changes if at > both) + passes
+    arrivals = list(departed)
+    first = min([first, *(at for at, _ in arrivals)])
+    for at, occasion in [*arrivals, *changes]:
+        occasions[occasion] = min(at, occasions.get(occasion, at))
+    later = sum(1 for at in occasions.values() if at > first)
+    passes = max((sum(1 for at in each if at > first) for each in rejudges), default=0)
+    return 1 + later + passes, passes > 0
 
 
 __all__ = [

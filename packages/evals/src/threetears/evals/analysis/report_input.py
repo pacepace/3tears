@@ -431,7 +431,11 @@ class Aspect(_Part):
     looks: Looks | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="How often the aspect's test was looked at, against how often it planned to be.",
+        description=(
+            "How often the aspect's test was looked at, against how often it planned to be. Derived from stored facts "
+            "about the campaign (its launches, membership, re-judges), never an input the author gave, so never part "
+            "of the input's digest; the plan it is read against (`AspectDesign.planned_looks`) is."
+        ),
     )
 
 
@@ -1428,6 +1432,10 @@ class ReportInput(_Part):
 #: change to how caveats are raised or ranked re-keys no snapshot and moves no recording.
 _OUTSIDE_THE_DIGEST = frozenset({"caveat_list", "first_screen"})
 
+#: The keys of each aspect no digest reads, for the same reason: its looks are counted from stored facts about the
+#: campaign at read time (a run joining, a re-judge), which move no input the author gave.
+_ASPECT_OUTSIDE_THE_DIGEST = frozenset({"looks"})
+
 
 def report_input_digest(report_input: ReportInput) -> str:
     """The digest of a report input: sha256 of its canonical JSON (keys sorted, by alias).
@@ -1452,5 +1460,12 @@ def report_input_document_digest(document: Mapping[str, Any]) -> str:
     :rtype: str
     """
     document = {key: value for key, value in document.items() if key not in _OUTSIDE_THE_DIGEST}
+    if isinstance(aspects := document.get("aspects"), list):
+        document["aspects"] = [
+            {key: value for key, value in aspect.items() if key not in _ASPECT_OUTSIDE_THE_DIGEST}
+            if isinstance(aspect, Mapping)
+            else aspect
+            for aspect in aspects
+        ]
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return bytes_digest(canonical.encode("utf-8"))

@@ -2066,7 +2066,23 @@ class ComparisonFamily(EvalDocumentModel):
     correction: Literal["holm"] = Field(
         default=MULTIPLE_COMPARISON_CORRECTION, description="The family-wise correction applied."
     )
-    alpha: float = Field(default=SIGNIFICANCE_ALPHA, description="The family-wise error rate the verdicts hold.")
+    alpha: float = Field(
+        default=SIGNIFICANCE_ALPHA,
+        description=(
+            "The family-wise error rate the verdicts hold, over every look the aspect's plan allows: what a reader is "
+            "told. Under a plan each look is read at `look_alpha`."
+        ),
+    )
+    # Left out with no plan, so a family read at alpha dumps as it did.
+    look_alpha: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The level each look's verdicts are read at under a plan of L looks (`AspectDesign.planned_looks`): "
+            "alpha / L, so the family holds `alpha` over all L. Its intervals are at 1 − look_alpha / family_size. "
+            "None with no plan in force, where each look reads at `alpha`."
+        ),
+    )
     family_size: int = Field(
         ge=0,
         description=(
@@ -2087,7 +2103,8 @@ class ComparisonFamily(EvalDocumentModel):
         default=None,
         description=(
             "The level of each comparison's `interval`: 1 − alpha / family_size, Bonferroni's, so the family's "
-            "intervals hold together at 1 − alpha. None when no comparison carried a p."
+            "intervals hold together at 1 − alpha (under a plan of looks, 1 − look_alpha / family_size, so they hold "
+            "together at 1 − alpha over its looks). None when no comparison carried a p."
         ),
     )
     n_untested: int = Field(ge=0, description="Comparisons in the family that could run no test, so carry no p.")
@@ -4188,8 +4205,9 @@ _V2_FIELDS: Final[frozenset[str]] = frozenset(
 #: scoreboard row, a cell), which a version 2 pre-image leaves out at every depth. A change that adds such a field
 #: names it here; a name any shape-66 document already uses at any depth cannot be listed.
 _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
-    # How often an aspect's test was looked at (`reading_scope.looks`), filled since judges D1.
-    {"looks"}
+    # How often an aspect's test was looked at (`reading_scope.looks`), and the level each look of a family is read
+    # at under a plan (`ComparisonFamily.look_alpha`), both since judges D1.
+    {"looks", "look_alpha"}
 )
 
 

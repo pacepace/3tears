@@ -107,12 +107,22 @@ class Rescore(_Shape):
 class Looks(_Shape):
     """How often a reading's test was looked at, against how often it planned to be.
 
-    ``taken`` is an upper bound (:func:`~threetears.evals.analysis.significance.looks_taken`): the most looks any one
-    contrast of the aspect has had, counted from stored launches, re-judges, repeat passes, re-measures and blind-read
-    closes.
+    A look is an occasion on which the contrast's test could have been read again on more or different evidence
+    (:func:`~threetears.evals.analysis.significance.looks_taken`): the first, once both arms held a result; then each
+    launch whose results changed what the test reads, each run that joined or left, each re-measure and each re-judge
+    made after it. ``taken`` is the most any one contrast of the aspect has had. It is exact where every such fact is
+    stored, and a lower bound (``lower_bound``) where one is not: a member whose joining was never recorded, a run that
+    left with no result recorded, an archived or unresolved member, a result with no ordered time, or re-judges, which
+    are stored per result, so passes over different results cannot be told apart.
     """
 
-    planned: int | None = Field(default=None, description="The looks declared; none where none were.")
+    planned: int | None = Field(
+        default=None,
+        description=(
+            "The looks the design plans, where the plan was declared before the first look; None where none was, or "
+            "where it was declared after (``late_plan``)."
+        ),
+    )
     taken: int = Field(ge=1, description="The looks taken.")
     # Left out where true, so the looks of a campaign created once looks were counted read {planned, taken} alone.
     plannable: bool = Field(
@@ -121,5 +131,21 @@ class Looks(_Shape):
         description=(
             "Whether the campaign was created once looks were counted, so its design could have declared them. False "
             "for an earlier campaign: its stored verdicts do not move, and its looks qualify the method only."
+        ),
+    )
+    # Left out where false, so an exact count reads {planned, taken} alone.
+    lower_bound: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Whether ``taken`` is a lower bound: a fact a look is counted by is not stored, so more were taken.",
+    )
+    # Left out where none: a plan declared after the first look is no plan, and is disclosed here.
+    late_plan: int | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The looks a plan declared after the first look named (or over runs that held results before it was "
+            "declared): read as no plan, since the looks it would count were already taken. None where no plan was "
+            "declared late."
         ),
     )
