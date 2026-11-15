@@ -1,0 +1,6 @@
+"""A former-root binding re-exported by name."""
+
+from threetears.evals import ops
+
+__all__ = ["ops", "OpsHost"]
+OpsHost = ops.OpsHost

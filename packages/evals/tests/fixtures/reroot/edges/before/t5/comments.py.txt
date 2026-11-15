@@ -1,0 +1,9 @@
+"""Comments on and inside import statements that name an old spelling."""
+
+from threetears.evals.ops import OpsHost  # was threetears.evals.ops.OpsHost
+from threetears.evals.kernel import (
+    EvalServiceError,  # also threetears.evals.kernel.EvalServiceError upstream
+    ValidationFailedError,
+)
+
+print(OpsHost, EvalServiceError, ValidationFailedError)

@@ -1,0 +1,8 @@
+"""A merge left the old import first and the rewritten one after a use of it."""
+
+from threetears.evals.host import OpsHost as Host
+
+print(Host)
+from threetears.evals.host import OpsHost as Host  # noqa: E402
+
+print(Host)

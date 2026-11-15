@@ -1,0 +1,5 @@
+"""A renamed name a merge already imports under its new name: the same binding, not a collision."""
+
+from threetears.evals import EXTRAS
+
+print(EXTRAS, EXTRAS)

@@ -1,0 +1,14 @@
+"""String annotations naming a former-root binding that only TYPE_CHECKING imports."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from threetears.evals import host as evals_host
+    from threetears.evals import shapes as evals_shapes
+
+
+def listed(host: "evals_host.OpsHost", runs: "list[evals_shapes.LaunchArguments] | None" = None) -> "evals_host.OpsHost":
+    held: "evals_host.OpsHost | None" = None
+    return cast("evals_host.OpsHost", held or host)

@@ -1,0 +1,6 @@
+"""A renamed name whose new name is already bound in the file."""
+
+from threetears.evals import RootExtra, ROOT_EXTRAS
+
+EXTRAS = {"local": 1}
+print(ROOT_EXTRAS, EXTRAS, RootExtra)

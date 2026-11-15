@@ -1,0 +1,8 @@
+"""Former roots read through an alias of the package."""
+
+import threetears.evals as te
+from threetears import evals
+
+
+def classes() -> tuple[object, ...]:
+    return te.ops.OpsHost, evals.kernel.EvalServiceError, te.host.OpsHost

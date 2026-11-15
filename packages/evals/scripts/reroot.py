@@ -5,10 +5,15 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
 it needs only Python 3.14 and its standard library, and it never imports ``threetears``. So a host runs it at the
 commit it pins, before it upgrades the package, with nothing installed::
 
-    git -C <3tears clone> show <SHA>:packages/evals/scripts/reroot.py > reroot.py
-    git -C <3tears clone> show <SHA>:packages/evals/api/reroot-map.txt > reroot-map.txt
-    python3.14 reroot.py --map reroot-map.txt --to <pinned SHA> --dry-run .
-    python3.14 reroot.py --map reroot-map.txt --to <pinned SHA> .
+    git -C <3tears clone> show <pin>:packages/evals/scripts/reroot.py > reroot.py
+    git -C <3tears clone> show <pin>:packages/evals/api/reroot-map.txt > reroot-map.txt
+    python3.14 reroot.py --map reroot-map.txt --dry-run .
+    python3.14 reroot.py --map reroot-map.txt .
+
+``<pin>`` is the 3tears commit the host pins. The map fetched there holds exactly the epochs at or before that commit,
+so a run with no ``--to`` applies every epoch that governs the pin. ``--to`` takes only an epoch SHA from the map's
+header (or a unique prefix of one, at least 4 characters): a release commit is not an epoch unless the header lists
+it, and the map cannot say which epoch an arbitrary commit falls under.
 
 Python 3.14 is required because the package and its hosts use 3.14 syntax, and this parses with the running
 interpreter. Python files are parsed with ``ast`` and rewritten at the exact source positions it reports.
@@ -41,21 +46,31 @@ SHA of an epoch in the header; the line takes effect at that commit. The records
 
 On load the script refuses a map whose digest does not match, and a map where a new value equals, or has as a dotted
 prefix, an old value of a line at or before its epoch (a ``root`` line's old value is matched only whole, so it is
-not part of that rule). That is what makes a re-run a no-op. ``--to <SHA>`` applies the epochs up to and including
-that one, in order; the default is all.
+not part of that rule). That is what makes a re-run a no-op. ``--to <epoch SHA>`` applies the header's epochs up to
+and including that one, in order; the default is all.
 
-**What it leaves to a person** is listed on every run, and the run exits 2: a use of a removed name (``file:line
-old -> replacement``), a former root it cannot resolve (a bare ``import`` with no attribute read, ``import *``,
-``getattr`` or ``__import__`` on one, an unpaired root string, a root in prose that went to several roots), a string
-holding code, a generated file naming an old spelling (regenerate it instead), and a spelling that names both a
-public name and a module. None of these is changed, so a re-run repeats the same list and redoes nothing.
+**What it leaves to a person** is listed on every run, with ``file:line``, what was found and what to write, and the
+run exits 2: a use of a removed name (``file:line old -> replacement``); a former root it cannot resolve (a bare
+``import`` with no attribute read, ``import *``, a former-root binding used other than as ``binding.attr`` --
+``getattr``, ``monkeypatch.setattr``, ``patch.object``, an argument, ``__all__`` -- ``__import__``, a read through an
+alias of the package such as ``import threetears.evals as te`` then ``te.ops.X``, an unpaired root string, a root in
+prose that went to several roots); a string holding code; a generated file naming an old spelling (regenerate it
+instead); a spelling that names both a public name and a module; a renamed name whose new name is already bound in
+the file; a symbolic link (never written through) or a file that is not text in its declared encoding, either of
+which names the package. None of these is changed, so a re-run repeats the same list and redoes nothing. While one
+remains, the run never exits 0 or 3.
 
 **Never touched**: dot directories, ``site-packages``, ``node_modules``, ``CHANGELOG*``, ``MIGRATIONS.toml``, the map,
 this script, ``tests/fixtures/reroot/``, ``--exclude`` paths, and any line carrying ``reroot: keep`` (in Python, a
 ``# reroot: keep`` comment). It does not format: run your formatter over the changed files afterwards.
 
+**Writing.** Each file is written whole and atomically (a temporary file beside it, then a rename), keeping its line
+endings, its encoding and a UTF-8 byte-order mark. If a write fails, the report says which files were written and
+which were not, and the run exits 1; every written file is complete, so running it again finishes the job.
+
 **Exit codes**: 0, nothing to do; 3, rewrote and nothing is left; 2, a person must edit what it lists; 1, refused
-(a bad map, a file that fails to parse before or after rewriting): nothing is written.
+(a bad map, a file that fails to parse before or after rewriting: nothing is written), or a write failed (the report
+lists what was and was not written).
 """
 
 from __future__ import annotations
@@ -63,12 +78,15 @@ from __future__ import annotations
 import argparse
 import ast
 import bisect
+import contextlib
 import hashlib
 import io
 import json
 import os
 import re
+import stat
 import sys
+import tempfile
 import tokenize
 from collections import Counter
 from collections.abc import Iterator, Sequence
@@ -89,7 +107,17 @@ EXIT_HAND_EDITS = 2
 EXIT_REWROTE = 3
 
 #: Kinds of site a person must act on; any of them makes the exit code 2.
-HAND_EDIT_KINDS = ("removed", "unresolved", "ambiguous", "code-string", "generated", "renamed")
+HAND_EDIT_KINDS = (
+    "removed",
+    "unresolved",
+    "ambiguous",
+    "code-string",
+    "generated",
+    "renamed",
+    "collision",
+    "linked",
+    "undecodable",
+)
 
 #: Text files rewritten in token mode, besides Python and Markdown.
 TEXT_SUFFIXES = frozenset({".toml", ".yaml", ".yml", ".json", ".cfg", ".ini", ".ts", ".rst", ".txt"})
@@ -145,7 +173,13 @@ class RerootMap:
             return self.epochs
         found = [i for i, epoch in enumerate(self.epochs) if epoch.sha.startswith(to)] if len(to) >= 4 else []
         if len(found) != 1:
-            raise Refused(f"--to {to}: names {'no' if not found else 'more than one'} epoch of the map")
+            accepted = "; ".join(f"{epoch.sha} {epoch.title}".strip() for epoch in self.epochs)
+            raise Refused(
+                f"--to {to}: names {'no' if not found else 'more than one'} epoch of the map. --to takes an epoch SHA "
+                f"from the map's header, or a unique prefix of one of at least 4 characters: {accepted}. A commit "
+                "that is not an epoch (a release pin) is not accepted: fetch the map at your pin and run without "
+                "--to, which applies every epoch at or before it"
+            )
         return self.epochs[: found[0] + 1]
 
 
@@ -582,7 +616,7 @@ class PythonPass:
         self.binders: dict[Scope, dict[str, list[Binder]]] = {}
         self._index()
         self.plans: dict[ast.AST, Plan] = {}
-        self.handled_strings: set[ast.AST] = set()
+        self.expression_strings = self._expression_strings()
 
     # -- indexing ----------------------------------------------------------------------------------------------------
 
@@ -591,6 +625,45 @@ class PythonPass:
         for token in tokenize.generate_tokens(io.StringIO(self.text).readline):
             if token.type == tokenize.COMMENT:
                 found[token.start[0]] = (self.lines.starts[token.start[0] - 1] + token.start[1], token.string)
+        return found
+
+    def _expression_strings(self) -> dict[ast.Constant, str]:
+        """String constants that are code naming a local: ``"type"`` for a string annotation or ``cast``'s first
+        argument (an expression the type checker reads), ``"all"`` for an entry of ``__all__``."""
+        found: dict[ast.Constant, str] = {}
+
+        def mark(root: ast.AST | None, kind: str) -> None:
+            for inner in ast.walk(root) if root is not None else ():
+                if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+                    found.setdefault(inner, kind)
+
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.arg):
+                mark(node.annotation, "type")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                mark(node.returns, "type")
+            elif isinstance(node, ast.AnnAssign):
+                mark(node.annotation, "type")
+            if isinstance(node, ast.Call):
+                func = node.func
+                called = func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+                if called == "cast" and node.args:
+                    mark(node.args[0], "type")
+                if (
+                    called in ("append", "extend")
+                    and isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "__all__"
+                ):
+                    for argument in node.args:
+                        mark(argument, "all")
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+                targets = [node.target]
+            if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+                mark(node.value, "all")  # type: ignore[attr-defined]
         return found
 
     def _index(self) -> None:
@@ -620,13 +693,13 @@ class PythonPass:
                     module = "." * node.level + (node.module or "")
                     add(scope, alias.asname or alias.name, Binder("from", module, alias.name, node=node))
         elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
-            add(scope, node.id, Binder("other"))
+            add(scope, node.id, Binder("other", node=node))
         elif isinstance(node, ast.arg):
-            add(scope, node.arg, Binder("other"))
+            add(scope, node.arg, Binder("other", node=node))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            add(scope, node.name, Binder("other"))
+            add(scope, node.name, Binder("other", node=node))
         elif isinstance(node, ast.ExceptHandler) and node.name:
-            add(scope, node.name, Binder("other"))
+            add(scope, node.name, Binder("other", node=node))
 
     def governing(self, node: ast.AST, name: str) -> Scope | None:
         """The scope whose binding of ``name`` a read at ``node`` sees."""
@@ -670,6 +743,7 @@ class PythonPass:
                 self._plan_import(node)
         self._module_bindings()
         self._chains()
+        self._package_aliases()
         self._strings()
         self._comment_tokens()
         self._emit(imports)
@@ -710,6 +784,18 @@ class PythonPass:
                 continue
             target, _, name = resolved.new.rpartition(".")
             asname = alias.asname
+            if asname is None and name != alias.name:
+                clash = self._clash(name, target)
+                if clash is not None:
+                    self.site(
+                        node,
+                        "collision",
+                        f"{qualified} is renamed to {resolved.new} ({resolved.why.partition(': ')[2]}), but {name} is "
+                        f"already bound at line {clash}: write `from {target} import {name} as {alias.name}`, or "
+                        f"rename the other {name}, then re-run",
+                    )
+                    plan.entries.append(Entry(residual, alias.name, alias.asname))
+                    continue
             if resolved.record == "renamed":
                 self.site(node, "renamed", resolved.why)
             if asname is None and name != alias.name:
@@ -732,6 +818,16 @@ class PythonPass:
             plan.changed |= name != alias.name
             plan.entries.append(Entry("", name, alias.asname))
         self.plans[node] = plan
+
+    def _clash(self, name: str, module: str) -> int | None:
+        """The line of a binding of ``name`` anywhere in the file other than an import of ``name`` from ``module``
+        (an earlier run's, or a merge's), or ``None``."""
+        for bound in self.binders.values():
+            for binder in bound.get(name, []):
+                if binder.how == "from" and binder.module == module and binder.name == name:
+                    continue
+                return binder.node.lineno if binder.node is not None else 1  # type: ignore[attr-defined]
+        return None
 
     def _rename_uses(self, statement: ast.ImportFrom, old: str, new: str) -> None:
         scope = self.scope_of[statement]
@@ -778,52 +874,150 @@ class PythonPass:
             parent = self.parent.get(node)
             if not (isinstance(parent, ast.Attribute) and parent.value is node):
                 remaining += 1
-                if (
-                    isinstance(parent, ast.Call)
-                    and isinstance(parent.func, ast.Name)
-                    and parent.func.id
-                    in (
-                        "getattr",
-                        "hasattr",
-                    )
-                ):
-                    self.site(node, "unresolved", f"{parent.func.id}({local}, ...) reads former root {old_root}")
+                self.site(node, "unresolved", self._object_use(node, parent, local, old_root))
                 continue
             if self.kept(parent):
                 self.site(parent, "kept", f"{local}.{parent.attr}")
                 remaining += 1
                 continue
-            qualified = f"{old_root}.{parent.attr}"
-            resolved = (
-                resolve(self.table, qualified, context="attr", code=True) if qualified in self.table.names else NONE
-            )
-            if resolved.action != "rewrite":
-                if resolved.action != "none":
-                    self.site(parent, resolved.action, resolved.why)
+            target = self._read_target(node, parent, local, old_root, anchor)
+            if target is None:
                 remaining += 1
                 continue
-            target, _, name = resolved.new.rpartition(".")
-            alias = alias_for(target)
-            seen = self.visible(self.scope_of[node], alias)
-            if seen is not None and not all(self._binds_module(b, target) for b in seen):
-                self.site(
-                    parent, "unresolved", f"{alias} is already bound to something else; rewrite {local}.{parent.attr}"
-                )
-                remaining += 1
-                continue
-            if seen is None:
-                statement = binding_statement(target)
-                if statement not in self.plans[anchor].added:
-                    self.plans[anchor].added.append(statement)
-            if resolved.record == "renamed":
-                self.site(parent, "renamed", resolved.why)
             start, end = self.lines.span(parent)
-            self.out.edits.append(Edit(start, end, f"{alias}.{name}", "code_names_rewritten"))
+            self.out.edits.append(Edit(start, end, target, "code_names_rewritten"))
             rewritten += 1
+        for constant, kind in self.expression_strings.items():
+            if self.governing(constant, local) is not scope:
+                continue
+            done, left = self._expression_string(constant, kind, local, old_root, anchor)
+            rewritten += done
+            remaining += left
         if rewritten and not remaining:
             for statement in statements:
                 if statement in self.plans:
                     self.plans[statement].removed.add(local)
+
+    def _read_target(
+        self, at: ast.AST, report_at: ast.AST, local: str, old_root: str, anchor: ast.AST, attr: str | None = None
+    ) -> str | None:
+        """What ``local.attr`` (a read of former root ``old_root``) becomes, adding the binding it needs; ``None``
+        when it cannot be rewritten (the site is then listed, or the name is not the map's)."""
+        attr = attr if attr is not None else report_at.attr  # type: ignore[attr-defined]
+        qualified = f"{old_root}.{attr}"
+        resolved = resolve(self.table, qualified, context="attr", code=True) if qualified in self.table.names else NONE
+        if resolved.action != "rewrite":
+            if resolved.action != "none":
+                self.site(report_at, resolved.action, resolved.why)
+            return None
+        target, _, name = resolved.new.rpartition(".")
+        alias = alias_for(target)
+        seen = self.visible(self.scope_of[at], alias)
+        if seen is not None and not all(self._binds_module(b, target) for b in seen):
+            self.site(
+                report_at,
+                "unresolved",
+                f"{alias} is already bound to something else; rewrite {local}.{attr} as {name} from {target}",
+            )
+            return None
+        if seen is None:
+            statement = binding_statement(target)
+            if statement not in self.plans[anchor].added:
+                self.plans[anchor].added.append(statement)
+        if resolved.record == "renamed":
+            self.site(report_at, "renamed", resolved.why)
+        return f"{alias}.{name}"
+
+    def _object_use(self, node: ast.Name, parent: ast.AST | None, local: str, old_root: str) -> str:
+        """What to say about a former-root binding used as an object, not read as ``local.attr``."""
+        went = self.table.roots[old_root].new.replace(",", ", ")
+        if isinstance(parent, ast.keyword):
+            parent = self.parent.get(parent)
+        if isinstance(parent, ast.Call):
+            func = parent.func
+            called = ast.unparse(func)
+            named = [
+                a.value
+                for a in [*parent.args, *(k.value for k in parent.keywords)]
+                if isinstance(a, ast.Constant) and isinstance(a.value, str) and IDENTIFIER.fullmatch(a.value)
+            ]
+            where = []
+            for attr in named:
+                line = self.table.names.get(f"{old_root}.{attr}")
+                if line is not None and line.record not in REMOVED_RECORDS:
+                    where.append(f"{attr} went to {line.new.rpartition('.')[0]}")
+                elif line is not None:
+                    where.append(f"{attr} was removed: {line.note}")
+            detail = "; ".join(where) or f"its names went to {went}"
+            return (
+                f"{called}({local}, ...) passes former root {old_root} as an object; {detail}: pass the module the "
+                "code reads it from instead"
+            )
+        return (
+            f"{local} (former root {old_root}) is used as an object, not read as {local}.<name>; its names went to "
+            f"{went}: name the module or the names this use needs"
+        )
+
+    def _expression_string(
+        self, constant: ast.Constant, kind: str, local: str, old_root: str, anchor: ast.AST
+    ) -> tuple[int, int]:
+        """A string annotation or ``cast`` type naming ``local``, or an ``__all__`` entry exporting it: rewrite a
+        type string's ``local.attr`` reads, list everything else. Returns (rewritten, left)."""
+        value = constant.value
+        if kind == "all":
+            if value != local:
+                return 0, 0
+            self.site(
+                constant,
+                "unresolved",
+                f"__all__ exports {local}, bound to former root {old_root}; export the names it is read for "
+                f"(they went to {self.table.roots[old_root].new.replace(',', ', ')}) instead",
+            )
+            return 0, 1
+        try:
+            parsed = ast.parse(value.strip(), mode="eval")
+        except SyntaxError:
+            return 0, 0
+        reads = [n for n in ast.walk(parsed) if isinstance(n, ast.Name) and n.id == local]
+        if not reads:
+            return 0, 0
+        if self.kept(constant):
+            self.site(constant, "kept", value)
+            return 0, len(reads)
+        start, end = self.lines.span(constant)
+        source = self.text[start:end]
+        lead = len(source) - len(source.lstrip("rRuUbBfF"))
+        quote = 3 if source[lead : lead + 3] in ('"""', "'''") else 1
+        body = source[lead + quote : len(source) - quote]
+        indent = len(value) - len(value.lstrip())
+        parent_of = {child: n for n in ast.walk(parsed) for child in ast.iter_child_nodes(n)}
+        if body != value or "\n" in value:
+            self.site(
+                constant, "unresolved", f"{value!r} names former root {old_root} through {local}; rewrite it by hand"
+            )
+            return 0, len(reads)
+        edits: list[Edit] = []
+        left = 0
+        for read in reads:
+            attribute = parent_of.get(read)
+            if not (isinstance(attribute, ast.Attribute) and attribute.value is read):
+                self.site(
+                    constant,
+                    "unresolved",
+                    f"{value!r} uses {local} (former root {old_root}) as an object; name the module it needs",
+                )
+                left += 1
+                continue
+            target = self._read_target(constant, constant, local, old_root, anchor, attr=attribute.attr)
+            if target is None:
+                left += 1
+                continue
+            first = Lines(value.strip())
+            at = start + lead + quote + indent + first.offset(1, attribute.col_offset)
+            stop = start + lead + quote + indent + first.offset(1, attribute.end_col_offset)  # type: ignore[arg-type]
+            edits.append(Edit(at, stop, target, "strings_rewritten"))
+        self.out.edits += edits
+        return len(edits), left
 
     @staticmethod
     def _binds_module(binder: Binder, module: str) -> bool:
@@ -835,26 +1029,62 @@ class PythonPass:
     # -- chains: ``import threetears.evals.kernel`` then ``threetears.evals.kernel.X`` ------------------------------
 
     def _chains(self) -> None:
-        tops = self.binders.get(self.tree, {}).get("threetears", [])
-        if not tops or any(b.how != "import-top" for b in tops):
-            return
+        """Chains read through ``threetears``, grouped by the scope whose binding of it they see: a module's, or a
+        function's own ``import threetears.evals.kernel``."""
+        groups: dict[Scope | None, list[ast.Name]] = {}
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Name) and node.id == "threetears" and isinstance(node.ctx, ast.Load):
+                groups.setdefault(self.governing(node, "threetears"), []).append(node)
+        for plan in self.plans.values():
+            if isinstance(plan.node, ast.Import):
+                groups.setdefault(self.scope_of[plan.node], [])
+        for scope, heads in groups.items():
+            self._chains_in(scope, sorted(heads, key=lambda n: (n.lineno, n.col_offset)))
+
+    def _chain(self, node: ast.AST) -> tuple[list[ast.AST], list[str]]:
+        """The attribute chain read off ``node`` (a name), and its segments."""
+        chain: list[ast.AST] = [node]
+        segments = [node.id]  # type: ignore[attr-defined]
+        while isinstance(self.parent.get(chain[-1]), ast.Attribute) and self.parent[chain[-1]].value is chain[-1]:  # type: ignore[attr-defined]
+            chain.append(self.parent[chain[-1]])
+            segments.append(chain[-1].attr)  # type: ignore[attr-defined]
+        return chain, segments
+
+    def _names_old(self, dotted: str) -> str | None:
+        """Why ``dotted`` (a spelling under the package read in code) is the map's business, or ``None``."""
+        resolved = resolve(self.table, dotted, context="attr", code=True)
+        if resolved.action == "rewrite":
+            target, _, name = resolved.new.rpartition(".")
+            return f"{dotted} is now {resolved.new}: write `from {target} import {name}` and use {name}"
+        if resolved.action != "none":
+            return resolved.why
+        roots = [root for root in self.table.roots if dotted == root or dotted.startswith(root + ".")]
+        if roots:
+            root = max(roots, key=len)
+            return f"{dotted} reads former root {root}; its names went to {self.table.roots[root].new}"
+        return None
+
+    def _chains_in(self, scope: Scope | None, heads: list[ast.Name]) -> None:
+        binders = self.binders.get(scope, {}).get("threetears", []) if scope is not None else []
+        bare = [
+            plan
+            for plan in self.plans.values()
+            if isinstance(plan.node, ast.Import) and self.scope_of[plan.node] is scope
+        ]
+        imported = bool(binders) and all(b.how == "import-top" for b in binders) and bool(bare)
         through: Counter[str] = Counter()
         left_through: Counter[str] = Counter()
         needed: list[str] = []
-        heads = sorted(
-            (n for n in ast.walk(self.tree) if isinstance(n, ast.Name) and n.id == "threetears"),
-            key=lambda n: (n.lineno, n.col_offset),
-        )
         for node in heads:
-            if not isinstance(node.ctx, ast.Load):
-                continue
-            chain: list[ast.AST] = [node]
-            segments = ["threetears"]
-            while isinstance(self.parent.get(chain[-1]), ast.Attribute) and self.parent[chain[-1]].value is chain[-1]:  # type: ignore[attr-defined]
-                chain.append(self.parent[chain[-1]])
-                segments.append(chain[-1].attr)  # type: ignore[attr-defined]
+            chain, segments = self._chain(node)
             dotted = ".".join(segments)
             if not dotted.startswith(PACKAGE + "."):
+                continue
+            if not imported:
+                why = self._names_old(dotted)
+                if why is not None:
+                    bound = "rebound here" if binders else "not bound by an import here"
+                    self.site(node, "unresolved", f"{why} (threetears is {bound}, so the chain is left)")
                 continue
             roots = [root for root in self.table.roots if dotted == root or dotted.startswith(root + ".")]
             for root in roots:
@@ -884,7 +1114,41 @@ class PythonPass:
             module = new_prefix if resolved.record == "module" else new_prefix.rpartition(".")[0]
             if module not in needed:
                 needed.append(module)
-        self._settle_bare_imports(through, left_through, needed)
+        if imported:
+            self._settle_bare_imports(bare, through, left_through, needed)
+
+    # -- reads through an alias of the package: ``import threetears.evals as te`` then ``te.ops.X`` ----------------
+
+    def _package_aliases(self) -> None:
+        for scope, bound in self.binders.items():
+            for local, binders in bound.items():
+                paths = {self._alias_path(b) for b in binders} - {None}
+                if not paths:
+                    continue
+                (path, *_) = sorted(paths)  # type: ignore[type-var]
+                for node in ast.walk(self.tree):
+                    if not (isinstance(node, ast.Name) and node.id == local and isinstance(node.ctx, ast.Load)):
+                        continue
+                    if self.governing(node, local) is not scope:
+                        continue
+                    _, segments = self._chain(node)
+                    dotted = ".".join([path, *segments[1:]])  # type: ignore[list-item]
+                    if not dotted.startswith(PACKAGE + "."):
+                        continue
+                    why = self._names_old(dotted)
+                    if why is not None:
+                        self.site(node, "unresolved", f"{'.'.join(segments)} reads through an alias of {path}: {why}")
+
+    @staticmethod
+    def _alias_path(binder: Binder) -> str | None:
+        """The package, or an ancestor of it, that an ``import ... as`` or ``from ... import`` binds a local to."""
+        if binder.how == "import-as":
+            path = binder.module
+        elif binder.how == "from" and not binder.module.startswith("."):
+            path = f"{binder.module}.{binder.name}"
+        else:
+            return None
+        return path if path == PACKAGE or PACKAGE.startswith(path + ".") else None
 
     def _prefix_length(self, dotted: str, resolved: Resolved) -> int:
         """How many segments of ``dotted`` the resolution replaced."""
@@ -895,14 +1159,10 @@ class PythonPass:
                 return k
         return len(segments)
 
-    def _settle_bare_imports(self, through: Counter[str], left_through: Counter[str], needed: list[str]) -> None:
-        bare = [
-            (plan, entry)
-            for plan in self.plans.values()
-            if isinstance(plan.node, ast.Import)
-            for entry in plan.entries
-            if entry.asname is None
-        ]
+    def _settle_bare_imports(
+        self, plans: list[Plan], through: Counter[str], left_through: Counter[str], needed: list[str]
+    ) -> None:
+        bare = [(plan, entry) for plan in plans for entry in plan.entries if entry.asname is None]
         present = {entry.name for _, entry in bare}
         for plan, entry in bare:
             if entry.name in self.table.roots:
@@ -910,10 +1170,7 @@ class PythonPass:
                     self.site(plan.node, "unresolved", f"import {entry.name} reads nothing from it; name what it needs")
                 elif not left_through[entry.name]:
                     plan.removed.add(entry.name)
-        anchors = [plan for plan, _ in bare if self.scope_of[plan.node] is self.tree] or [plan for plan, _ in bare]
-        if not anchors:
-            return
-        anchor = min(anchors, key=lambda p: (p.node.lineno, p.node.col_offset))
+        anchor = min(plans, key=lambda p: (p.node.lineno, p.node.col_offset))
         for module in needed:
             if module not in present:
                 anchor.added.append(f"import {module}")
@@ -1088,16 +1345,17 @@ class PythonPass:
     # -- writing the import statements -------------------------------------------------------------------------------
 
     def _emit(self, imports: list[ast.Import | ast.ImportFrom]) -> None:
+        # A rewritten entry is dropped only when the same binding comes BEFORE it in its block (a merge left both):
+        # the first binding in source order is the one every later use depends on, so it is always kept.
         present: dict[tuple[int, str], set[tuple[str, str, str | None]]] = {}
-        for plan in self.plans.values():
-            if not self._touched(plan):
-                for entry in plan.entries:
-                    present.setdefault(self._block(plan.node), set()).add(self._key(plan, entry))
         for node in imports:
             plan = self.plans.get(node)
-            if plan is None or not self._touched(plan):
+            if plan is None:
                 continue
             seen = present.setdefault(self._block(node), set())
+            if not self._touched(plan):
+                seen.update(self._key(plan, entry) for entry in plan.entries)
+                continue
             kept: list[Entry] = []
             for entry in plan.entries:
                 local = entry.asname or (entry.name.split(".")[0] if isinstance(node, ast.Import) else entry.name)
@@ -1147,7 +1405,7 @@ class PythonPass:
         tail = last[tail_start:]
         inline |= bool(tail.strip()) and not tail.strip().startswith("#")
         comments = [
-            (row, text)
+            (row, self._carry(text))
             for row, (_, text) in sorted(self.comments.items())
             if node.lineno <= row <= node.end_lineno  # type: ignore[operator]
         ]
@@ -1181,6 +1439,15 @@ class PythonPass:
         rows = [c for c in interior] + [row for s in statements for row in s]
         replacement = (self.newline + indent).join(rows)
         self.out.edits.append(Edit(start, end, replacement, "statements_rewritten"))
+
+    def _carry(self, comment: str) -> str:
+        """A comment carried onto a rewritten import, its spellings rewritten as any other comment's are (the
+        comment's own edit sits inside the statement's, so it would be dropped)."""
+        if not self.table.prose or PRAGMA in comment:
+            return comment
+        out = Outcome()
+        rewrite_tokens(self.table, comment, 0, Lines(comment), set(), out, count="prose_tokens_rewritten")
+        return apply_edits(comment, out.edits)[0]
 
     def _siblings(self, node: ast.AST) -> list[ast.AST]:
         parent = self.parent[node]
@@ -1238,9 +1505,11 @@ class Report:
     skipped: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
+    written: list[str] = field(default_factory=list)
+    not_written: list[str] = field(default_factory=list)
 
     def exit_code(self) -> int:
-        if self.refused:
+        if self.refused or self.not_written:
             return EXIT_REFUSED
         if any(site.kind in HAND_EDIT_KINDS for site in self.sites):
             return EXIT_HAND_EDITS
@@ -1260,16 +1529,72 @@ def excluded(relative: Path, options: Options, protected: set[Path], absolute: P
     return any(posix == e or posix.startswith(e.rstrip("/") + "/") for e in options.exclude)
 
 
+CANDIDATE_SUFFIXES = PYTHON_SUFFIXES | MARKDOWN_SUFFIXES | TEXT_SUFFIXES
+
+
 def walk(options: Options) -> Iterator[Path]:
-    if options.root.is_file():
+    """Every candidate file under the root, and every linked directory (yielded, never descended)."""
+    if not options.root.is_dir():
         yield options.root
         return
     for directory, dirs, files in os.walk(options.root):
         dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in PRUNED_DIRS)
+        for name in list(dirs):
+            if (Path(directory) / name).is_symlink():
+                dirs.remove(name)
+                yield Path(directory) / name
         for name in sorted(files):
             path = Path(directory) / name
-            if path.suffix in PYTHON_SUFFIXES | MARKDOWN_SUFFIXES | TEXT_SUFFIXES:
+            if path.suffix in CANDIDATE_SUFFIXES:
                 yield path
+
+
+def names_package(data: bytes) -> bool:
+    """Whether bytes that are not text in their encoding still spell the package (ASCII-compatible or UTF-16)."""
+    return any(PACKAGE.encode(codec) in data for codec in ("ascii", "utf-16-le", "utf-16-be"))
+
+
+def linked_files_naming_package(path: Path) -> list[Path]:
+    """The candidate files a link (to a file or a directory) reaches that name the package, resolved; read through
+    the link, never written."""
+    if path.is_dir():
+        found = []
+        for directory, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in PRUNED_DIRS]
+            for name in files:
+                inner = Path(directory) / name
+                if inner.suffix in CANDIDATE_SUFFIXES and inner.is_file() and names_package(inner.read_bytes()):
+                    found.append(inner.resolve())
+        return found
+    return [path.resolve()] if path.is_file() and names_package(path.read_bytes()) else []
+
+
+def encoding_of(path: Path, data: bytes) -> str:
+    """The codec a file is read and written back in: a Python file's declared one (PEP 263), else UTF-8; a
+    byte-order mark gives ``utf-8-sig``, which drops it on reading and writes it back."""
+    if path.suffix in PYTHON_SUFFIXES:
+        return tokenize.detect_encoding(io.BytesIO(data).readline)[0]
+    return "utf-8-sig" if data.startswith(b"\xef\xbb\xbf") else "utf-8"
+
+
+def write_atomically(path: Path, data: bytes) -> None:
+    """Replace ``path`` whole: a temporary file in its directory, then a rename, keeping its mode. A file the user
+    cannot write is refused, never replaced."""
+    if not os.access(path, os.W_OK):
+        raise PermissionError(f"{path.name} is not writable")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".reroot-tmp")
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
 
 
 def generated_header(text: str) -> str | None:
@@ -1288,26 +1613,66 @@ def one_pass(table: Table, text: str, path: Path) -> Outcome:
     return rewrite_text(table, text)
 
 
-def process(rmap: RerootMap, options: Options) -> tuple[Report, dict[Path, str]]:
+def process(rmap: RerootMap, options: Options) -> tuple[Report, dict[Path, tuple[str, str]]]:
     report = Report(epochs=rmap.upto(options.to))
     targets = {"home": options.home, "home_for_left": options.home_for_left, "prose": options.prose}
     tables = [Table.of(rmap.lines, epoch.sha, **targets) for epoch in report.epochs]
     protected = {options.map_path.resolve(), Path(__file__).resolve()}
+    inside = options.root.resolve() if options.root.is_dir() else options.root.parent.resolve()
     texts: dict[Path, str] = {}
-    for path in walk(options):
+    encodings: dict[Path, str] = {}
+    paths = list(walk(options))
+    # A link to a file this run reaches at its own path is covered there; any other link is listed, never followed.
+    covered = {path.resolve() for path in paths if not path.is_symlink() and path.resolve().is_relative_to(inside)}
+    for path in paths:
         relative = path.relative_to(options.root) if path != options.root else Path(path.name)
-        try:
-            with path.open(encoding="utf-8", newline="") as handle:
-                text = handle.read()
-        except UnicodeDecodeError:
-            continue
-        if "threetears" not in text:
-            continue
         if excluded(relative, options, protected, path):
-            if PACKAGE in text:
+            if path.is_file() and not path.is_symlink() and names_package(path.read_bytes()):
                 report.skipped.append(f"{relative.as_posix()}: excluded")
                 report.counts["files_skipped"] += 1
             continue
+        if path.is_symlink() or not path.resolve().is_relative_to(inside):
+            try:
+                holds = bool(set(linked_files_naming_package(path)) - covered)
+            except OSError as error:
+                holds, why = True, f"; it cannot be read ({error.strerror or error})"
+            else:
+                why = ""
+            if holds:
+                target = os.readlink(path) if path.is_symlink() else str(path.resolve())
+                report.sites.append(
+                    Site(
+                        relative.as_posix(),
+                        1,
+                        "linked",
+                        f"a link to {target} that names {PACKAGE}{why}; the script never writes through a link or "
+                        "outside its root: run it on the tree the link points into, or edit the target by hand",
+                    )
+                )
+                report.counts["files_skipped"] += 1
+            continue
+        data = path.read_bytes()
+        if b"threetears" not in data and not names_package(data):
+            continue
+        try:
+            encoding = encoding_of(path, data)
+            text = data.decode(encoding)
+        except (SyntaxError, LookupError, UnicodeDecodeError) as error:
+            if names_package(data):
+                report.sites.append(
+                    Site(
+                        relative.as_posix(),
+                        1,
+                        "undecodable",
+                        f"names {PACKAGE} but is not text in its declared encoding ({error}); the script reads "
+                        "UTF-8 (a Python file: its PEP 263 coding line): convert it, or edit its spellings by hand",
+                    )
+                )
+                report.counts["files_skipped"] += 1
+            continue
+        if "threetears" not in text:
+            continue
+        encodings[path] = encoding
         if path.suffix in PYTHON_SUFFIXES:
             try:
                 ast.parse(text, filename=str(relative))
@@ -1319,7 +1684,7 @@ def process(rmap: RerootMap, options: Options) -> tuple[Report, dict[Path, str]]
         texts[path] = text
     if report.refused:
         return report, {}
-    written: dict[Path, str] = {}
+    written: dict[Path, tuple[str, str]] = {}
     for path, text in texts.items():
         relative = (path.relative_to(options.root) if path != options.root else Path(path.name)).as_posix()
         report.counts["files_scanned"] += 1
@@ -1373,9 +1738,9 @@ def process(rmap: RerootMap, options: Options) -> tuple[Report, dict[Path, str]]
         report.kept += [site for i, site in enumerate(kept) if site not in kept[:i]]
         if current != text:
             report.changed.append(relative)
-            written[path] = current
+            written[path] = (current, encodings[path])
     report.counts["files_changed"] = len(report.changed)
-    for kind in ("removed", "unresolved", "ambiguous", "code-string", "renamed"):
+    for kind in ("removed", "unresolved", "ambiguous", "code-string", "renamed", "collision", "linked", "undecodable"):
         report.counts[kind.replace("-", "_") + ("_name_uses" if kind == "removed" else "")] = sum(
             1 for site in report.sites if site.kind == kind
         )
@@ -1401,6 +1766,9 @@ COUNT_ORDER = (
     ("code_strings", "strings holding code"),
     ("generated_files", "generated files to regenerate"),
     ("renamed", "renamed names to check"),
+    ("collision", "renamed names colliding with a binding"),
+    ("linked", "links naming the package (never followed)"),
+    ("undecodable", "files not text in their encoding"),
     ("kept_lines", "pragma-kept sites"),
 )
 
@@ -1425,6 +1793,8 @@ def render(report: Report, options: Options) -> str:
                 "skipped": report.skipped,
                 "changed": report.changed,
                 "refused": report.refused,
+                "written": report.written,
+                "not_written": report.not_written,
             },
             indent=2,
         )
@@ -1443,7 +1813,13 @@ def render(report: Report, options: Options) -> str:
         out += ["changed:", *(f"  {path}" for path in report.changed)]
         out += ["skipped:", *(f"  {line}" for line in report.skipped)]
         out += ["kept by pragma:", *(f"  {s.path}:{s.line}: {s.text}" for s in report.kept)]
-    if options.dry_run:
+    if report.not_written:
+        out.append(
+            "a write failed; each file is written whole or not at all. Fix the cause and run it again to finish:"
+        )
+        out += [f"  written: {path}" for path in report.written]
+        out += [f"  not written: {line}" for line in report.not_written]
+    elif options.dry_run:
         out.append("dry run: nothing was written")
     elif report.changed:
         out.append("run your formatter over the changed files; this script emits canonical import lines only")
@@ -1456,15 +1832,22 @@ def parse_args(argv: Sequence[str]) -> Options:
         description=__doc__.split("\n\n")[0] if __doc__ else None,
         epilog=(
             "Needs only Python 3.14 and its standard library; it never imports threetears, so run it before "
-            "upgrading the package: fetch this file and the map at the pinned commit with `git show "
-            "<SHA>:packages/evals/scripts/reroot.py` and `git show <SHA>:packages/evals/api/reroot-map.txt`, then "
-            "`python3.14 reroot.py --map reroot-map.txt --to <SHA> --dry-run .`. Exit codes: 0 nothing to do, "
-            "3 rewrote, 2 edit by hand what it lists, 1 refused (nothing written)."
+            "upgrading the package: fetch this file and the map at the commit you pin with `git show "
+            "<pin>:packages/evals/scripts/reroot.py` and `git show <pin>:packages/evals/api/reroot-map.txt`, then "
+            "`python3.14 reroot.py --map reroot-map.txt --dry-run .` and the same without --dry-run. The map "
+            "fetched at your pin holds exactly the epochs at or before it, so no --to is needed. Exit codes: 0 "
+            "nothing to do, 3 rewrote, 2 edit by hand what it lists, 1 refused (nothing written) or a write failed "
+            "(the report lists what was and was not written; run it again to finish)."
         ),
     )
     parser.add_argument("root", type=Path, help="the tree (or one file) to rewrite")
     parser.add_argument("--map", dest="map_path", type=Path, required=True, help="reroot-map.txt")
-    parser.add_argument("--to", help="apply epochs up to and including this SHA (a prefix will do); default all")
+    parser.add_argument(
+        "--to",
+        metavar="EPOCH_SHA",
+        help="apply the map's epochs up to and including this one: an epoch SHA from the map's header, or a unique "
+        "prefix of at least 4 characters; not a release pin. Default: every epoch in the map",
+    )
     parser.add_argument("--dry-run", action="store_true", help="count and list; write nothing")
     parser.add_argument("--verbose", action="store_true", help="also list changed, skipped and pragma-kept files")
     parser.add_argument("--json", dest="as_json", action="store_true", help="print the report as JSON")
@@ -1501,9 +1884,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"reroot: refused: {refusal}", file=sys.stderr)
         return EXIT_REFUSED
     if not options.dry_run:
-        for path, text in written.items():
-            with path.open("w", encoding="utf-8", newline="") as handle:
-                handle.write(text)
+        for path, (text, encoding) in written.items():
+            relative = (path.relative_to(options.root) if path != options.root else Path(path.name)).as_posix()
+            try:
+                write_atomically(path, text.encode(encoding))
+            except (OSError, UnicodeEncodeError) as error:
+                report.not_written.append(f"{relative}: {error}")
+            else:
+                report.written.append(relative)
     print(render(report, options))
     return report.exit_code()
 

@@ -1,0 +1,16 @@
+"""A bare import inside a function, read through its chains."""
+
+
+def host_class() -> type:
+    import threetears.evals.host
+
+    return threetears.evals.host.EvalServiceError
+
+
+def nested() -> object:
+    import threetears.evals.host
+
+    def inner() -> object:
+        return threetears.evals.host.OpsHost
+
+    return inner

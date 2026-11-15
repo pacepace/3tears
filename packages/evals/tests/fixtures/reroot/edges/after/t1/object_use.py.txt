@@ -1,0 +1,13 @@
+"""A former-root binding used other than as ``binding.attr``: patched, passed, read with vars()."""
+
+from unittest import mock
+
+from threetears.evals import kernel, providers
+from threetears.evals import host as evals_host
+
+
+def test_patched(monkeypatch) -> None:
+    monkeypatch.setattr(providers, "PriceRefresh", object)
+    with mock.patch.object(kernel, "EvalServiceError", RuntimeError):
+        assert evals_host.ValidationFailedError
+    print(vars(kernel))
