@@ -81,7 +81,6 @@ __all__ = [
     "Looks",
     "Rescore",
     "ReviewerCheck",
-    "RigCheck",
     "blind_read_checks",
     "judge_checks",
     "speaking_check",
@@ -284,7 +283,10 @@ class ReviewerCheck(_CheckBase):
 
 
 class RigCheck(_CheckBase):
-    """The rig checked against identical arms: the A/A check on one reading."""
+    """The rig checked against identical arms: the A/A check on one reading.
+
+    Not exported until the A/A check (C1) builds one: a public name is admitted with its production caller.
+    """
 
     kind: Literal["rig"] = Field(description="The rig's check.")
     against: Literal["identical_arms"] = Field(

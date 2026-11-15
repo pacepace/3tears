@@ -25,8 +25,8 @@ one about 40% of the time at 105 and 98% at 260. Shown to lean over 10 cases or 
 how many cases like these would decide it (`pair_items_needed`, or `pair_items_needed_above` past the search).
 `analysis.checks.speaking_check` says which check speaks for a judge: people's once decided, else a decided check
 against a model not shown below the bar against people, else none. A check is one of three kinds
-(`analysis.JudgeCheck`, `ReviewerCheck`, `RigCheck`; `analysis.Check` is their union), each holding only its own
-fields, and names its `kind`.
+(`analysis.JudgeCheck`, `ReviewerCheck`, and the rig's `RigCheck`, which the A/A check will build; `analysis.Check`
+is their union), each holding only its own fields, and names its `kind`.
 
 **Changed:** whether an improvement on a judged dimension is set aside is read from its judge's checks: set aside
 where the judge's check against people is too thin to decide and none of its checks is met. A report input that holds
