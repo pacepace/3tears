@@ -119,6 +119,9 @@ version history:
   ``idx_conv_mem_refs_conversation_agent_key`` (conversation_id, agent_id,
   date_created DESC, item_id DESC): the ledger's page in its order completed
   by the key (v034's held the date alone).
+- v038 adds ``ix_memories_message_source`` (message_id_source, agent_id,
+  user_id): a writer's same-event lookup reads its source messages' memories
+  by key, not the whole owner.
 
 the three embedding columns (v001 ``memories``, v006 ``media_content``,
 v007 ``memory_chunks``) are created at the width :func:`register` is given
@@ -236,6 +239,7 @@ from threetears.agent.memory.migrations.v034_memory_refs_agent_index import add_
 from threetears.agent.memory.migrations.v035_drop_unread_indexes import drop_unread_indexes
 from threetears.agent.memory.migrations.v036_agent_led_indexes import agent_led_indexes
 from threetears.agent.memory.migrations.v037_memory_refs_key_index import add_memory_refs_key_index
+from threetears.agent.memory.migrations.v038_memories_message_source_index import add_memories_message_source_index
 from threetears.core.data.embedding_width import DEFAULT_EMBEDDING_DIM, check_embedding_dim
 from threetears.core.data.migrations import (
     MigrationFunc,
@@ -362,6 +366,7 @@ def register(runner: MigrationRunner, *, embedding_dim: int = DEFAULT_EMBEDDING_
     pkg.version(35)(drop_unread_indexes)
     pkg.version(36)(agent_led_indexes)
     pkg.version(37)(add_memory_refs_key_index)
+    pkg.version(38)(add_memories_message_source_index)
     runner.register(pkg)
     return pkg
 
