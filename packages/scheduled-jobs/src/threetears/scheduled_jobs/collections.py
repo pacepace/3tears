@@ -25,6 +25,7 @@ predicate cannot apply to it by construction.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any, ClassVar, get_args
@@ -1078,11 +1079,11 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
         self,
         job_ids: Sequence[UUID],
     ) -> dict[UUID, JobFireEntity]:
-        """Return the newest fire for each of ``job_ids``, in ONE query.
+        """Return the newest fire for each of ``job_ids``: one keyed page of one row a job, the pages run together.
 
-        An admin listing shows N jobs each with its last verdict, and
-        calling :meth:`list_for_job` per row makes that N+1 round trips
-        against a table that grows with every tick of every schedule.
+        An admin listing shows N jobs each with its last verdict, against a
+        table that grows with every tick of every schedule: each job's read
+        is its newest fire through its own index, never its history.
 
         A job that has never fired is ABSENT from the result rather than
         mapped to ``None``: absence is already the caller's signal, and a
@@ -1095,24 +1096,46 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
             that have never fired
         :rtype: dict[UUID, JobFireEntity]
         """
-        result: dict[UUID, JobFireEntity] = {}
-        if self.l3_pool is not None and job_ids:
-            # __SPANS_PARTITIONS__: the jobs an admin view lists may each
-            # hold their own partition, so the partition predicate cannot
-            # apply; the query is bounded by an explicit job-id list
-            # instead. The column list is written out literally so the
-            # partition-column enforcement walker sees ``partition_key``
-            # as a static literal.
-            rows = await self.l3_pool.fetch(
-                "SELECT DISTINCT ON (job_id) "
-                "partition_key, fire_id, job_id, scheduled_fire_at, "
-                "actual_fired_at, status, output, latency_ms, error, date_created "
-                "FROM job_fires WHERE job_id = ANY($1) "
-                "ORDER BY job_id, actual_fired_at DESC",
-                list(job_ids),
+        if self.l3_pool is None or not job_ids:
+            return {}
+        # __SPANS_PARTITIONS__: the jobs an admin view lists may each hold their own partition, so the partition
+        # predicate cannot apply; each read is bounded by its job instead. ``partition_key`` is among the columns
+        # read, so the partition-column enforcement walker sees it as a static literal.
+        # One keyed page of one row a job, through idx_job_fires_job_time_key (job_id, actual_fired_at DESC, fire_id
+        # DESC): each reads the job's newest fire and the one after it, however long the job's history. The one
+        # statement this replaced (DISTINCT ON over job_id = ANY) read every fire of every listed job to keep one
+        # each, a cost that grows with every tick of every schedule. The pages run together, one round trip's wait.
+        # cache-bypass: the newest fire, read at the moment the listing is drawn.
+        pages = await asyncio.gather(
+            *(
+                keyset_page(
+                    self.l3_pool,
+                    "job_fires",
+                    columns=(
+                        "partition_key",
+                        "fire_id",
+                        "job_id",
+                        "scheduled_fire_at",
+                        "actual_fired_at",
+                        "status",
+                        "output",
+                        "latency_ms",
+                        "error",
+                        "date_created",
+                    ),
+                    by={"job_id": job_id},
+                    order=[Sort("actual_fired_at", descending=True), Sort("fire_id", descending=True)],
+                    limit=1,
+                    records=True,
+                )
+                for job_id in dict.fromkeys(job_ids)
             )
-            result = {row["job_id"]: JobFireEntity(dict(row), is_new=False, collection=self) for row in rows}
-        return result
+        )
+        return {
+            page.rows[0]["job_id"]: JobFireEntity(dict(page.rows[0]), is_new=False, collection=self)
+            for page in pages
+            if page.rows
+        }
 
     async def reap_stale_dispatching(
         self,
@@ -1154,21 +1177,32 @@ class JobFireCollection(DeclaredTableCollection[JobFireEntity]):
         # __SPANS_PARTITIONS__: reclaiming abandoned in-flight fires is a
         # global sweep across every partition; the partition predicate
         # cannot apply by construction. ``partition_key`` is named in the
-        # RETURNING clause so the partition-column enforcement walker sees
+        # returned columns so the partition-column enforcement walker sees
         # it as a static literal (same technique as list_due_for_tick).
+        # The rows are the fires in flight (idx_job_fires_dispatching, WHERE
+        # status = 'dispatching', ``status`` written as its literal), older
+        # than the cutoff, whose job is of one of the caller's kinds: a keyed
+        # EXISTS on the job's own UNIQUE job_id.
         # cache-bypass: bulk terminal-state UPDATE across partitions; the rows it reaped are
         # named by its RETURNING and evicted from every tier once it lands.
         async with self.bypassing_write() as write:
-            rows = await self.l3_pool.fetch(
-                "UPDATE job_fires SET status = 'failed', error = $1 "
-                "WHERE status = 'dispatching' AND actual_fired_at < $2 "
-                # each in-flight fire's job, by the job's own UNIQUE job_id
-                "AND EXISTS (SELECT 1 FROM scheduled_jobs j WHERE j.job_id = job_fires.job_id AND j.kind = ANY($3)) "
-                "RETURNING partition_key, fire_id",
-                REAPED_DISPATCH_ERROR,
-                cutoff,
-                list(kinds),
-            )
+            rows = (
+                await update_keyed(
+                    self.l3_pool,
+                    "job_fires",
+                    values={"status": "failed", "error": REAPED_DISPATCH_ERROR},
+                    by={"status": "dispatching"},
+                    where=[
+                        Fragment('"actual_fired_at" < $1', (cutoff,)),
+                        Fragment(
+                            "EXISTS (SELECT 1 FROM scheduled_jobs j"
+                            ' WHERE j.job_id = "job_fires"."job_id" AND j.kind = ANY($1::text[]))',
+                            (list(kinds),),
+                        ),
+                    ],
+                    returning=("partition_key", "fire_id"),
+                )
+            ).rows
             write.touches(*((row["partition_key"], row["fire_id"]) for row in rows))
         return len(rows)
 

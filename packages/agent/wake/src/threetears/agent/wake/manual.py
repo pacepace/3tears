@@ -11,12 +11,13 @@ dispatch callback, a terminal status -- with three differences:
 - **It has a limit of its own.** A wake is run by hand at most once per
   ``min_gap``, and never while a fire of it is still dispatching.
 
-The limit is taken by **one statement** (:data:`_CLAIM_SQL`): an ``UPDATE`` of
-``agent_wake_schedules.last_manual_fire_at`` whose ``WHERE`` is the limit, with
-the fire row inserted from what it returns. Two callers at once contend on the
-wake's row lock; the second re-reads the row the first committed, finds the
-stamp inside the gap, updates nothing and inserts nothing. A count of fire
-rows followed by an insert would let both through.
+The limit is taken by **one transaction** (:func:`_claim`): a keyed ``UPDATE`` of
+``agent_wake_schedules.last_manual_fire_at`` whose guards are the limit, then,
+only when it wrote the row, the insert of the fire row. Two callers at once
+contend on the wake's row lock, held to the end of the first's transaction;
+the second re-reads the row the first committed, finds the stamp inside the
+gap, updates nothing and inserts nothing. A count of fire rows followed by an
+insert would let both through.
 
 Two steps, so a caller can answer at once and run the fire in the background:
 
@@ -41,6 +42,7 @@ from uuid_utils import uuid7
 from threetears.agent.wake.collections import WakeFireCollection
 from threetears.agent.wake.entities import WakeScheduleEntity
 from threetears.agent.wake.types import WakeDispatchResult, WakeTrigger
+from threetears.core.keyed import Fragment, read_row, update_keyed
 
 __all__ = [
     "MANUAL_FIRE_SOURCE",
@@ -59,46 +61,117 @@ MANUAL_FIRE_SOURCE = "manual"
 #: Why a manual fire was not claimed.
 ManualRefusal = Literal["too_soon", "dispatching", "gone"]
 
-# The limit and the fire row, in one statement. The UPDATE's WHERE is the whole limit: the
-# stamp is outside the gap, and no fire of this wake is in flight. ``date_updated`` is left
-# alone on purpose: saves of the wake are fenced on it, and nothing a cached row holds changes.
-_CLAIM_SQL = """
-WITH claim AS (
-    UPDATE agent_wake_schedules s
-       SET last_manual_fire_at = $3::timestamptz
-     WHERE s.conversation_id = $1
-       AND s.schedule_id = $2
-       AND (
-           s.last_manual_fire_at IS NULL
-           OR s.last_manual_fire_at <= $3::timestamptz - make_interval(secs => $4::double precision)
-       )
-       AND NOT EXISTS (
-           SELECT 1 FROM wake_fires f
-            WHERE f.conversation_id = s.conversation_id AND f.schedule_id = s.schedule_id
-              AND f.status = 'dispatching'
-       )
-    RETURNING s.conversation_id, s.schedule_id
+# A fire of the wake in flight: the limit's second guard, and the refusal's wording. Read through the small partial
+# index of the fires in flight (idx_wake_fires_dispatching, WHERE status = 'dispatching'), the wake as a filter: a
+# bounded read of the fires dispatching now, never a walk of the wake's whole fire history (coordinator ruling,
+# 2026-11-15). ``status`` is written as the index's own literal so a generic plan can prove the predicate. Proven at a
+# busy wake's size (its 2,000 fires against the 500 in flight) by test_index_plans.py::test_wake_fires_dispatching.
+_IN_FLIGHT = (
+    "EXISTS (SELECT 1 FROM wake_fires f"
+    " WHERE f.status = 'dispatching' AND f.conversation_id = $1 AND f.schedule_id = $2)"
 )
-INSERT INTO wake_fires (
-    conversation_id, fire_id, schedule_id, webhook_subscription_id,
-    scheduled_fire_at, actual_fired_at, status, display_suppressed, fire_source, requested_by
-)
-SELECT c.conversation_id, $5::uuid, c.schedule_id, NULL, NULL, $3::timestamptz, 'dispatching', false, 'manual', $6::text
-  FROM claim c
-RETURNING fire_id
-"""
 
-# Read only to word a refusal; the decision was the statement above.
-_WHY_NOT_SQL = """
-SELECT s.last_manual_fire_at,
-       EXISTS (
-           SELECT 1 FROM wake_fires f
-            WHERE f.conversation_id = s.conversation_id AND f.schedule_id = s.schedule_id
-              AND f.status = 'dispatching'
-       ) AS dispatching
-  FROM agent_wake_schedules s
- WHERE s.conversation_id = $1 AND s.schedule_id = $2
-"""
+
+async def _claim(
+    conn: Any,
+    conversation_id: UUID,
+    schedule_id: UUID,
+    *,
+    at: datetime,
+    min_gap: timedelta,
+    fire_id: UUID,
+    requested_by: str,
+) -> bool:
+    """Take the limit and insert the in-flight fire row, in the caller's transaction on ``conn``.
+
+    The ``UPDATE``'s guards are the whole limit: the stamp is outside the gap, and no fire of this wake is in flight.
+    It takes the wake's row lock, held to the end of the transaction, so the insert that follows is the only one any
+    caller makes inside the gap: a second caller waits on the lock, re-reads the row the first committed and writes
+    nothing. Was one statement (an ``UPDATE ... RETURNING`` feeding the ``INSERT``); a keyed write and a keyed insert
+    in one transaction are as atomic, and the concurrency test proves it (test_manual_fire_and_grid). ``date_updated``
+    is left alone on purpose: saves of the wake are fenced on it, and nothing a cached row holds changes.
+
+    :param conn: the transaction's connection
+    :ptype conn: Any
+    :param conversation_id: the wake's conversation
+    :ptype conversation_id: UUID
+    :param schedule_id: the wake
+    :ptype schedule_id: UUID
+    :param at: the instant of the claim, the stamp and the fire's ``actual_fired_at``
+    :ptype at: datetime
+    :param min_gap: the shortest time between two manual fires of the wake
+    :ptype min_gap: timedelta
+    :param fire_id: the new fire's id
+    :ptype fire_id: UUID
+    :param requested_by: who asked
+    :ptype requested_by: str
+    :return: whether the limit was taken and the row inserted
+    :rtype: bool
+    """
+    stamped = await update_keyed(
+        conn,
+        "agent_wake_schedules",
+        values={"last_manual_fire_at": at},
+        by={"conversation_id": conversation_id, "schedule_id": schedule_id},
+        where=[
+            Fragment('("last_manual_fire_at" IS NULL OR "last_manual_fire_at" <= $1)', (at - min_gap,)),
+            Fragment(f"NOT {_IN_FLIGHT}", (conversation_id, schedule_id)),
+        ],
+    )
+    if stamped.count == 0:
+        return False
+    await conn.execute(
+        "INSERT INTO wake_fires ("
+        "conversation_id, fire_id, schedule_id, webhook_subscription_id, "
+        "scheduled_fire_at, actual_fired_at, status, display_suppressed, fire_source, requested_by"
+        ") VALUES ($1, $2, $3, NULL, NULL, $4, 'dispatching', false, 'manual', $5)",
+        conversation_id,
+        fire_id,
+        schedule_id,
+        at,
+        requested_by,
+    )
+    return True
+
+
+async def _why_refused(pool: Any, conversation_id: UUID, schedule_id: UUID, min_gap: timedelta) -> ManualFireRefused:
+    """Word a refusal: read only to say why, after the claim decided.
+
+    :param pool: asyncpg-compatible pool
+    :ptype pool: Any
+    :param conversation_id: the wake's conversation
+    :ptype conversation_id: UUID
+    :param schedule_id: the wake
+    :ptype schedule_id: UUID
+    :param min_gap: the gap, for ``retry_at``
+    :ptype min_gap: timedelta
+    :return: the refusal to raise
+    :rtype: ManualFireRefused
+    """
+    # cache-bypass: a read of committed state, to word the refusal; the stamp is a column no cached row carries.
+    row = await read_row(
+        pool,
+        "agent_wake_schedules",
+        by={"conversation_id": conversation_id, "schedule_id": schedule_id},
+        columns=("last_manual_fire_at",),
+    )
+    if row is None:
+        return ManualFireRefused("gone")
+    last = row["last_manual_fire_at"]
+    in_flight = await read_row(
+        pool,
+        "wake_fires",
+        by={"status": "dispatching", "conversation_id": conversation_id, "schedule_id": schedule_id},
+        columns=("fire_id",),
+    )
+    if in_flight is not None:
+        return ManualFireRefused("dispatching", last_manual_fire_at=last)
+    return ManualFireRefused(
+        "too_soon",
+        retry_at=(last + min_gap) if last is not None else None,
+        last_manual_fire_at=last,
+    )
+
 
 #: The consumer's per-fire dispatcher, as the tick calls it.
 ManualDispatch = Callable[[WakeTrigger, UUID, Any], Awaitable[WakeDispatchResult]]
@@ -151,7 +224,7 @@ async def claim_manual_fire(
 ) -> ManualFireClaim:
     """Take the manual-fire limit for a wake and insert its in-flight fire row.
 
-    One statement decides: of any number of callers at once, exactly one gets
+    One transaction decides: of any number of callers at once, exactly one gets
     a claim. The wake's ``next_fire_at`` and ``last_fired_at`` are not touched.
 
     :param pool: asyncpg-compatible pool
@@ -183,28 +256,18 @@ async def claim_manual_fire(
     schedule_id = schedule.schedule_id
     # cache-bypass: the limit must be decided by the row as committed, on its row lock; no cached
     # row can answer it, and the stamp is a column no cached row carries.
-    claimed = await pool.fetchval(
-        _CLAIM_SQL,
-        conversation_id,
-        schedule_id,
-        at,
-        min_gap.total_seconds(),
-        fire_id,
-        requested_by,
-    )
-    if claimed is None:
-        # cache-bypass: a read of committed state, to word the refusal.
-        row = await pool.fetchrow(_WHY_NOT_SQL, conversation_id, schedule_id)
-        if row is None:
-            raise ManualFireRefused("gone")
-        last = row["last_manual_fire_at"]
-        if row["dispatching"]:
-            raise ManualFireRefused("dispatching", last_manual_fire_at=last)
-        raise ManualFireRefused(
-            "too_soon",
-            retry_at=(last + min_gap) if last is not None else None,
-            last_manual_fire_at=last,
+    async with pool.acquire() as conn, conn.transaction():
+        claimed = await _claim(
+            conn,
+            conversation_id,
+            schedule_id,
+            at=at,
+            min_gap=min_gap,
+            fire_id=fire_id,
+            requested_by=requested_by,
         )
+    if not claimed:
+        raise await _why_refused(pool, conversation_id, schedule_id, min_gap)
     trigger = WakeTrigger(
         schedule_id=schedule_id,
         user_id=schedule.user_id,
