@@ -42,7 +42,13 @@ spelling prints each name as it was frozen. A name spelled from several levers w
 **Added:** `tests/test_both_pages_state_one_figure.py`, the parity guard: every figure a campaign's code page issues,
 by measure, kind, role and the scale its unit prints at, resolves from the report input built from the same bundle,
 and every figure a stored written page issues resolves from the input it was written from. The allowance names each
-figure by its value, with a reason the written page's renderer closes from fields the input holds.
+figure by its value, with a reason the written page's renderer closes from fields the input holds. The guard does not
+yet match on arm, aspect, stratum, contrast or interval role, and skips a figure that names no measure; its docstring
+says so, and each page's count of skipped figures is pinned, so a new one fails until someone decides.
+
+**Changed:** a report input factor's `ordered` is `true`, `false` or unset: unset (the default, left out of the
+document) means not stated, `false` that the levels are kinds and no line is drawn across them. It was a bare `false`
+for both. No stored input carries the key, so nothing reads differently.
 
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 

@@ -985,11 +985,15 @@ class Factor(_Part):
     id: str = Field(description="The factor's id, as configs and settings key it.")
     name: str | None = Field(default=None, description="What a reader calls it.")
     levels: list[Level] = Field(min_length=1, description="Its levels, in order.")
-    # Left out of the document while False, so an input built before the field existed digests as it did.
-    ordered: bool = Field(
-        default=False,
-        exclude_if=lambda value: not value,
-        description="Whether the levels are points on one scale, so a line may be drawn across them.",
+    # Left out of the document while unset, so an input built before the field existed digests as it did. Unset is
+    # its own state: a reader takes None as "not stated", never as "unordered".
+    ordered: bool | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Whether the levels are points on one scale, so a line may be drawn across them; False: they are kinds, "
+            "no line. None = not stated."
+        ),
     )
 
 

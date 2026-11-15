@@ -773,8 +773,8 @@
      "minItems": 1
     },
     "ordered": {
-     "description": "Whether the levels are points on one scale, so a line may be drawn across them.",
-     "type": "boolean"
+     "description": "Whether the levels are points on one scale, so a line may be drawn across them; False: they are kinds, no line. None = not stated.",
+     "type": ["boolean", "null"]
     }
    },
    "additionalProperties": false,

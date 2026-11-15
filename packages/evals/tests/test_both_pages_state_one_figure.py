@@ -1,4 +1,5 @@
-"""The parity guard: every figure the code page states, the written page's input holds.
+"""The parity guard: every figure of a measure the code page states, the written page's input holds (by value and role
+only: what it does not match on, and what it skips, are stated below).
 
 The class of defect this closes is "the code page can state it, the written page cannot" (#1125, #1129, #1067): a
 fact computed for one page and never carried to the other. It is closed by construction rather than instance by
@@ -18,9 +19,28 @@ figure the code page issued for a measure must resolve from that input:
 - **a value the input holds as it is**: nothing is derived here but a scoreboard row's passes over its usable trials,
   the pass rate the input states as two counts.
 
-Values and roles are compared, never text. A ledger entry names no arm (``_Issued`` holds the measure, kind, role and
-value), so a figure resolves when one of its measure's figures of that role is the same value: what the written page
-can state, not yet where. Recording the arm on the ledger is the page forms' rework, chunk S5c.
+Values and roles are compared, never text. A ledger entry names no arm, aspect, stratum or contrast (``_Issued``
+holds the measure, kind, role and value), so a figure resolves when ANY of its measure's figures of that role bucket,
+anywhere in the input, is the same value at any scale its unit is printed at: what the written page can state, not
+where. The guard does NOT match on:
+
+- **the arm**: two arms' figures swapped pass, and so does the control's baseline printed as a candidate's level;
+- **the aspect**: aspect X's figure printed under aspect Y passes, since every aspect's readings, scoreboards, floors
+  and across-aspects figures pool into one held set per measure and kind;
+- **the stratum**: a stratum's figure printed as the aspect's passes, since strata are filed with their measure;
+- **the contrast**: one contrast's delta printed under another contrast of the same measure passes;
+- **the interval's role**: a level's interval printed where a change's belongs passes, since :data:`INTERVAL_FIELDS`
+  pools ``ci``, ``within_interval`` and ``gain_interval``;
+- **the scale**: a unit with two printed scales (``trial``: 100 and 0.01) resolves at either.
+
+So an arm swap or a cross-aspect swap passes today. Recording arm, aspect and contrast on the ledger, and matching on
+them here, is the page forms' rework, chunk S5c.
+
+**Only figures of a measure are checked.** A ledger entry with no measure (a count of trials, a p-value, an effect
+size, a confidence, a multiple, a money total, a preference figure, a lone rate's or a scale span's interval) is
+skipped, and coverage is only of the figure kinds the fixtures' pages print. A skip is never silent: the guard counts
+the figures it skipped for lacking a measure, and :data:`UNMEASURED` pins that count per page, so a new unmeasured
+figure fails the test until someone decides whether it needs a measure (or the guard a rule for it).
 
 **The allowance** lists each figure the code page states that the input does not hold, by campaign, measure, kind,
 role and the value issued, with what holds it apart (:data:`ALLOWANCE`): a new figure missing from the input fails
@@ -334,19 +354,31 @@ def _read(name: str, constructors: tuple[str, ...]) -> dict[str, list[Any]]:
     return built
 
 
-def _issued(forms: Iterable[PageForms]) -> tuple[Issued, ...]:
-    """Every figure of a measure ``forms`` handed out."""
-    return tuple(
-        Issued(entry.measure, entry.kind or "measure", entry.role, entry.value)
-        for one in forms
-        for entry in one.ledger
-        if entry.measure and entry.value is not None
+@dataclass(frozen=True)
+class Stated:
+    """What one page's forms handed out: every figure of a measure, and how many figures the guard skipped because
+    they name no measure (never checked, so counted)."""
+
+    issued: tuple[Issued, ...]
+    unmeasured: int
+
+
+def _issued(forms: Iterable[PageForms]) -> Stated:
+    """Every figure of a measure ``forms`` handed out, and how many figures they handed out with no measure."""
+    entries = [entry for one in forms for entry in one.ledger if entry.value is not None]
+    return Stated(
+        issued=tuple(
+            Issued(entry.measure, entry.kind or "measure", entry.role, entry.value)
+            for entry in entries
+            if entry.measure
+        ),
+        unmeasured=sum(1 for entry in entries if not entry.measure),
     )
 
 
 @functools.cache
-def code_page(name: str) -> tuple[Issued, ...]:
-    """Every figure of a measure campaign ``name``'s code page stated, read as a host reads the page."""
+def code_page(name: str) -> Stated:
+    """Every figure campaign ``name``'s code page stated, read as a host reads the page."""
     built = _read(name, ("of_campaign", "of_aspects", "of_bundle"))
     assert built["of_campaign"], f"{name}: the code page was assembled in no campaign forms, so nothing is checked"
     return _issued(
@@ -358,11 +390,21 @@ def code_page(name: str) -> tuple[Issued, ...]:
 #: its input: what it resolves today.
 WRITTEN: dict[str, int] = {"toyhost_doc": 30}
 
+#: How many figures each page states that name no measure, so the guard skips them: exactly what it skips today. A
+#: page stating one more (or one fewer) fails until someone decides whether that figure needs a measure.
+UNMEASURED: dict[str, int] = {
+    "scaled": 307,
+    "scaled_two_aspects": 565,
+    "toyhost": 47,
+    "courierhost": 28,
+    "toyhost_doc": 6,
+}
+
 
 @functools.cache
-def written_page(name: str) -> tuple[tuple[Issued, ...], ReportInput]:
-    """Every figure of a measure campaign ``name``'s written page stated, read as a host reads the page, and the one
-    input its forms were built from."""
+def written_page(name: str) -> tuple[Stated, ReportInput]:
+    """Every figure campaign ``name``'s written page stated, read as a host reads the page, and the one input its forms
+    were built from."""
     (made,) = _read(name, ("of",)).values()
     assert made, f"{name}: the written page was assembled in no written forms, so nothing is checked"
     inputs = {id(one.report_input): one.report_input for one in made}
@@ -381,7 +423,7 @@ def built_input(name: str) -> ReportInput:
 def gaps_of(name: str, plant: Callable[[ReportInput], ReportInput] = lambda built: built) -> tuple[set[Gap], int]:
     """Every figure campaign ``name``'s code page states that its report input (as ``plant`` leaves it) does not hold,
     and how many it does."""
-    return _gaps(name, code_page(name), plant(built_input(name)))
+    return _gaps(name, code_page(name).issued, plant(built_input(name)))
 
 
 def _gaps(name: str, issued: Iterable[Issued], built: ReportInput) -> tuple[set[Gap], int]:
@@ -429,8 +471,21 @@ def test_every_figure_the_written_page_states_its_input_holds(name: str) -> None
 def written_gaps(name: str, plant: Callable[[ReportInput], ReportInput] = lambda built: built) -> tuple[set[Gap], int]:
     """Every figure campaign ``name``'s written page states that its input (as ``plant`` leaves it) does not hold, and
     how many it does."""
-    issued, page_input = written_page(name)
-    return _gaps(name, issued, plant(page_input))
+    stated, page_input = written_page(name)
+    return _gaps(name, stated.issued, plant(page_input))
+
+
+def test_every_page_is_held_to_the_count_of_figures_it_skips() -> None:
+    assert set(UNMEASURED) == set(WITH_BUNDLES) | set(WRITTEN)
+
+
+@pytest.mark.parametrize("name", sorted(UNMEASURED))
+def test_the_figures_the_guard_skips_for_naming_no_measure_are_the_ones_it_skips_today(name: str) -> None:
+    """A figure with no measure is not checked (the module docstring names which), and never skipped silently: each
+    page skips exactly the figures it skips today, so a new one fails here until someone decides."""
+    stated = written_page(name)[0] if name in WRITTEN else code_page(name)
+
+    assert stated.unmeasured == UNMEASURED[name], f"{name} states {stated.unmeasured} figures that name no measure"
 
 
 def _without_pass_k(built: ReportInput) -> ReportInput:

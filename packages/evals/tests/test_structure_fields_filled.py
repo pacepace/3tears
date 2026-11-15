@@ -39,6 +39,7 @@ import pytest
 
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import fixture_variant_key, make_campaign, make_eval_result, make_eval_run
+from packages.evals.tests.report_support import toy_campaign_host
 from packages.evals.tests.test_hot_path_oracle import WITH_BUNDLES, Goldens, subject
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.analysis.bundle.comparisons import contrast_margin
@@ -47,7 +48,7 @@ from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.report_input import Reading, ReportInput, report_input_document_digest
+from threetears.evals.analysis.report_input import Factor, Level, Reading, ReportInput, report_input_document_digest
 from threetears.evals.analysis.report_input_build import arm_spellings, family_id, report_input
 from threetears.evals.analysis.report_margins import flip_margin, margin_informative
 from threetears.evals.analysis.service import assemble_campaign_bundle
@@ -125,12 +126,19 @@ def _stated(built: ReportInput, kind: str | None, measure: str, aspect: str | No
     return None if stat is None or stat.mean is None else float(stat.mean)
 
 
+#: How many contrasts of each campaign hold a delta beside a side that states no figure (so no note), a delta that is
+#: not the difference of the two stated figures (noted), and one that is (no note): exactly what each holds today, so
+#: the test says which branch each fixture exercises. Every delta in both fixtures is noted: neither holds a side that
+#: states no figure, nor a delta equal to the stated difference, so those two branches are pinned at 0 here, not held.
+DELTA_BRANCHES: dict[str, tuple[int, int, int]] = {"scaled": (0, 42, 0), "scaled_two_aspects": (0, 84, 0)}
+
+
 @pytest.mark.parametrize("name", CONTRASTED)
 def test_a_delta_carries_a_note_exactly_where_both_arms_state_a_figure_and_it_is_not_their_difference(
     name: str,
 ) -> None:
     _, built = _built(name)
-    unstated = 0
+    unstated = noted = alike_count = 0
     for contrast in built.contrasts:
         if contrast.delta is None:
             assert contrast.delta_note is None
@@ -147,6 +155,9 @@ def test_a_delta_carries_a_note_exactly_where_both_arms_state_a_figure_and_it_is
         alike = all(math.isclose(stated, mean, rel_tol=1e-9, abs_tol=1e-12) for stated, mean in sides)  # type: ignore[arg-type]
         assert (contrast.delta_note is None) == alike, (contrast.arm, contrast.measure, sides, contrast.delta_note)
         assert contrast.delta_note in (None, "paired_cases")
+        noted += not alike
+        alike_count += alike
+    assert (unstated, noted, alike_count) == DELTA_BRANCHES[name]
 
 
 # --- a figure's spread, its common value, and the state of an interval it lacks ------------------------------------
@@ -315,9 +326,42 @@ def test_a_judged_mean_carries_the_interval_every_page_reads_it_with(name: str) 
         assert checked, f"{name} judges, and no judged figure was checked"
 
 
+#: Per campaign, how many arms state a pass^k at the common depth and how many cells are kept out of an arm's pass^k,
+#: over every aspect: exactly what each holds today, so neither check passes for having checked nothing.
+PASS_K_HELD: dict[str, tuple[int, int]] = {
+    "scaled": (4, 41),
+    "scaled_two_aspects": (4, 41),
+    "toyhost": (2, 0),
+    "courierhost": (0, 0),
+}
+
+#: The scaled campaign's pass^k (k = 2) at its common depth (1, over the 38 cases every arm ran), by arm, as stated.
+SCALED_AT_COMMON_DEPTH: dict[str, float] = {
+    "candidate-a": 16 / 76,
+    "candidate-b": 15 / 76,
+    "candidate-c": 17 / 76,
+    "control": 15 / 76,
+}
+
+
+def test_the_scaled_campaign_s_pass_k_at_the_common_depth_is_the_stated_figure() -> None:
+    _, built = _built("scaled")
+    (pass_k,) = [held for aspect in built.aspects for held in aspect.pass_k or []]
+
+    assert (pass_k.k, pass_k.common_depth) == (2, 1)
+    assert pass_k.at_common_depth is not None
+    assert {arm: stat.mean for arm, stat in pass_k.at_common_depth.items()} == pytest.approx(SCALED_AT_COMMON_DEPTH)
+    assert {stat.n_cases for stat in pass_k.at_common_depth.values()} == {38}
+    # The bundle's pooling reason (no_recorded_context) in the shared reading states.
+    assert {(cell.state.state, cell.state.reason) for cell in pass_k.cells or []} == {
+        ("withheld", "identity_unrecorded")
+    }
+
+
 @pytest.mark.parametrize("name", WITH_BUNDLES)
 def test_each_arm_s_pass_k_and_its_figures_across_the_aspects_are_the_bundle_s(name: str) -> None:
     bundle, built = _built(name)
+    common_held = cells_held = 0
     for aspect, held in zip(bundle.aspects, built.aspects, strict=True):
         subjects = [subject for subject in aspect.frontier.subjects if subject.points]
         for pass_k in held.pass_k or []:
@@ -327,8 +371,16 @@ def test_each_arm_s_pass_k_and_its_figures_across_the_aspects_are_the_bundle_s(n
                 stat = pass_k.per_arm[bundle.label_of(point.variant_key)]
                 assert (stat.mean, stat.n_cases) == (point.pass_hat_k, point.n_pass_cases)
                 assert (stat.state is None) == (point.pass_hat_k is not None)
+                common = (pass_k.at_common_depth or {}).get(bundle.label_of(point.variant_key))
+                if point.common_pass_hat_k is None:
+                    assert common is None
+                    continue
+                assert common is not None
+                assert (common.mean, common.n_cases) == (point.common_pass_hat_k, point.n_common_cases)
+                common_held += 1
             kept = [cell for point in subject.points for cell in point.pass_hat_k_cells if cell.reason is not None]
             assert len(pass_k.cells or []) == len(kept)
+            cells_held += len(kept)
             for cell, carried in zip(kept, pass_k.cells or [], strict=True):
                 assert (carried.runs, carried.headline, carried.pass_k.mean) == (
                     cell.run_ids,
@@ -336,6 +388,7 @@ def test_each_arm_s_pass_k_and_its_figures_across_the_aspects_are_the_bundle_s(n
                     cell.pass_hat_k,
                 )
                 assert carried.state.state == "withheld"
+    assert (common_held, cells_held) == PASS_K_HELD[name]
     aggregate = bundle.readings.aggregate
     if aggregate is None:
         assert built.across_aspects is None
@@ -348,6 +401,21 @@ def test_each_arm_s_pass_k_and_its_figures_across_the_aspects_are_the_bundle_s(n
         assert (carried.reply_cost_usd.value, carried.reply_cost_usd.missing) == (arm.cost.value, arm.cost.missing)
         assert (carried.change is None) == (arm.change is None)
     assert built.meta.volume_per_month == bundle.declaration.volume_per_month
+
+
+def test_a_campaign_that_declares_its_monthly_volume_hands_it_to_the_input_and_one_that_declares_none_does_not() -> (
+    None
+):
+    """The volume a campaign declares is what the analyst prices a month at and what turns the written page's cost
+    unit to dollars, so the input carries exactly the declared figure, and none where none is declared."""
+    host, campaign = toy_campaign_host()
+    undeclared = report_input(assemble_campaign_bundle(host, campaign.id, campaign.scope_id))
+    host.storage.save_campaign(campaign.model_copy(update={"volume_per_month": 250_000.0}))
+    declared = report_input(assemble_campaign_bundle(host, campaign.id, campaign.scope_id))
+
+    assert campaign.volume_per_month is None
+    assert undeclared.meta.volume_per_month is None
+    assert declared.meta.volume_per_month == 250_000.0
 
 
 # --- a reading's flip margin and an aspect's margin ----------------------------------------------------------------
@@ -456,3 +524,20 @@ def test_every_frozen_input_among_the_fixtures_still_verifies_its_digest() -> No
             assert report_input_document_digest(frozen["report_input"]) == frozen["report_input_digest"], path
             ReportInput.model_validate(frozen["report_input"])
     assert held, "no fixture holds a frozen input, so this checks nothing"
+
+
+# --- a factor's order: stated or not ------------------------------------------------------------------------------
+
+
+def test_a_factor_whose_order_is_not_stated_reads_not_stated_never_unordered() -> None:
+    """Unset is its own state: a factor stating nothing about its order reads None and keeps no key (so a stored
+    input digests as it did), and one stated unordered keeps ``False``, which a reader can tell apart from None."""
+    levels = [Level(id="low"), Level(id="high")]
+    unstated = Factor(id="budget", levels=levels)
+    kinds = Factor(id="budget", levels=levels, ordered=False)
+    scale = Factor(id="budget", levels=levels, ordered=True)
+
+    assert (unstated.ordered, kinds.ordered, scale.ordered) == (None, False, True)
+    assert "ordered" not in unstated.model_dump()
+    assert (kinds.model_dump()["ordered"], scale.model_dump()["ordered"]) == (False, True)
+    assert Factor.model_validate({"id": "budget", "levels": [{"id": "low"}]}).ordered is None
