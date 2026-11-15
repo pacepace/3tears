@@ -364,3 +364,33 @@ def write_parts(context: JobContext, table: str, parts: int, rows: int) -> int:
             {table: Parts(schema=schema, parts={f"p{value + 1}": part_rows(value + 1, rows) for value in range(parts)})}
         )
     return parts
+
+
+def hammer_version(root: str, version: str, table: str, column: str, signals: str) -> dict[str, Any]:
+    """map ``version`` with no lease, again and again until ``signals``/``stop`` exists, and judge each try: a whole
+    read (every row's ``column`` summed as the version holds it), a clean miss (``LookupError``), or anything else (a
+    torn read). It touches ``signals``/``started`` after its first try and ``signals``/``missed`` at its first miss.
+
+    Run in a process of its own while the serving process evicts the version: what an eviction must never give a
+    reader that races it is a part of the version, or an error that is not a miss.
+
+    :return: ``whole`` and ``missed`` counts, the ``sums`` seen, and ``torn``: each other error's text
+    :rtype: dict[str, Any]
+    """
+    whole = 0
+    missed = 0
+    sums: set[int] = set()
+    torn: list[str] = []
+    here = Path(signals)
+    while not (here / "stop").exists():
+        try:
+            with MappedVersion(root, version) as mapped:
+                sums.add(int(pc.sum(mapped.tables[table].column(column)).as_py()))
+                whole += 1
+        except LookupError:
+            missed += 1
+            (here / "missed").touch()
+        except Exception as exc:  # noqa: BLE001 -- the test's verdict: any error but a miss is a torn read
+            torn.append(f"{type(exc).__name__}: {exc}")
+        (here / "started").touch()
+    return {"whole": whole, "missed": missed, "sums": sorted(sums), "torn": torn[:5]}

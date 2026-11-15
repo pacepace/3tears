@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: shared memory evicts what is only cached before it refuses; one eviction vocabulary; shared-memory autosize
+
+**Added:** `threetears.core.eviction`, the one vocabulary of the cache tiers (L1, shared memory, L2): `Policy`
+(`EVICTABLE` / `KEEP`), `Declared(policy, why)` (a reason, never empty), `declare(tier, kinds, policies)` (a kind with
+no policy fails the import: no default), `declared(tier)`, `policy_of(tier, kind)`, `Tier`, and the metric family
+`threetears_cache_*{tier,name}`: `budget_bytes`, `held_bytes{policy}`, `held_entries{policy}`, `hits_total`, `misses_total`, `evictions_total`, `evicted_bytes_total`,
+`evicted_age_seconds`, `refusals_total`, `sizing_failures_total`.
+**Changed:** a `SharedArrowStore` short of room for a publish, a slot, a piece or a hand-off first evicts, least
+recently used first, the superseded versions held only by idle workers for their next read; it refuses
+(`SharedArrowFullError`) only when what it must keep alone does not fit. Every kind of entry declares its policy
+(`declared(Tier.SHARED)`). A reader of another process racing an eviction gets the version
+whole or a clean miss. `SharedArrowStore(..., name=)` names the store in its metrics (tier `shared`); `status()` adds
+`evictable_bytes`, `kept_bytes`, `evictions` and `evicted_bytes`. `MappedVersion.park()` / `unpark()` move a kept
+mapping between its read lock and its cached lock. `fell_back_to_serving(what)` counts a consumer's serving-process
+fallbacks (`threetears_cache_serving_fallbacks_total`).
+**Added:** `threetears.core.shm_autosize`, off by default: `ShmAutosize(AutosizeSettings(enabled=, threshold=0.75,
+limit_bytes=16 GiB, product=), actuator)` samples the pod's shared-memory volume, its memory and its stores' kept bytes
+on a thread, exports `threetears_cache_volume_used_bytes`, `volume_size_bytes`, `rss_bytes`, `memory_limit_bytes`,
+`requested_bytes` and `autosize_limit_bytes`, and at the threshold hands a `SizeRequest` (the volume doubled per step,
+one id per need) to the consumer's `Actuator`; enabled with no actuator it refuses at startup. 3tears ships no actuator.
+
 ### scheduled-jobs: the operator's listing pages by key; its count is bounded
 
 **Changed:** `ScheduledJobCollection.list_jobs(..., cursor=None)` returns a `JobPage` (its `jobs` and `next_cursor`),
