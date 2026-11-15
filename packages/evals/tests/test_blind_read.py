@@ -696,11 +696,17 @@ def test_a_model_whose_served_model_is_not_recorded_on_every_answer_is_not_a_che
     assert closed.report.not_checked == {
         "other/reviewer-9": [core.REFUSED_UNRECORDED.format(side="the reviewer's answers")]
     }
+    # The print reads the checks: the 23 answers with a served model are a reviewer of their own, checked; the one
+    # without is left out of every figure, and says why.
     lines = _lines(partly_closed, results, labels_name=None, labels_there=False)
+    assert any(
+        line.startswith("  checked against a model (other/reviewer-9, served as other/reviewer-9-0613)")
+        for line in lines
+    )
     assert (
-        "  not checked against a model (other/reviewer-9): which model served the reviewer's answers was not "
-        "recorded, so the reviewer cannot be shown to be another model than the judge, and its answers are not read "
-        "as a check of it"
+        "  not checked against a model (other/reviewer-9, on the answers that name no served model): which model "
+        "served the reviewer's answers was not recorded, so the reviewer cannot be shown to be another model than the "
+        "judge, and its answers are not read as a check of it"
     ) in lines
     # The judge's own served model unrecorded: the same, from the other side.
     unnamed = [

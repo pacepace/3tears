@@ -99,6 +99,7 @@ from threetears.evals.analysis.answer import (
     surviving_options,
     unsettled_arms,
 )
+from threetears.evals.analysis.checks import JudgeCheck
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import NextExperiment, answer_split_variants
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
@@ -867,7 +868,7 @@ def _checks(report_input: ReportInput) -> Iterator[CaveatEntry]:
     repeats: dict[str, int] = {}
     for dimension, judged in report_input.judged.items():
         for check in judged.checks:
-            if check.against not in ("people", "model"):
+            if not isinstance(check, JudgeCheck) or check.against not in ("people", "model"):
                 continue
             check_id = f"check:{dimension}:{check.criterion or check.instrument}:{check.against}"
             repeats[check_id] = repeats.get(check_id, 0) + 1

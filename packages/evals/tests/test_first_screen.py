@@ -29,7 +29,7 @@ from pydantic import ValidationError
 from threetears.evals.analysis import first_screen as first_screen_module
 from threetears.evals.schema import reading_states
 from threetears.evals.analysis.caveats import CLASS_OF_KIND, caveat_list, from_legacy, remedy, screen
-from threetears.evals.analysis.checks import Check
+from threetears.evals.analysis.checks import JudgeCheck, ReviewerCheck, RigCheck
 from threetears.evals.analysis.first_screen import RANKS, REASONS_SHOWN, first_screen, subsumed
 from threetears.evals.analysis.report_input import CallRead, CaveatEntry, FirstScreen, Gate, GateRun, ReportInput
 
@@ -602,7 +602,11 @@ def _closed_words() -> set[str]:
         }
 
     words = set().union(*(strings(getattr(reading_states, name)) for name in reading_states.__all__))
-    return words | strings(Check.model_fields["against"].annotation) | strings(Check.model_fields["result"].annotation)
+    # What a check of each kind is checked against, and its result.
+    kinds = (JudgeCheck, ReviewerCheck, RigCheck)
+    return words.union(
+        *(strings(kind.model_fields[name].annotation) for kind in kinds for name in ("against", "result"))
+    )
 
 
 def test_the_function_s_module_imports_only_the_closed_sets_and_the_input_s_shapes() -> None:

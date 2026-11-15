@@ -1131,8 +1131,8 @@ def judge_lines(
     def reviewer_name(model: str, served: str | None, effort: str | None) -> str:
         if model not in several:
             return _who("reference", model)
-        asked = f", served as {served or 'an unrecorded model'}" + (f" at {effort} effort" if effort else "")
-        return f"a model ({model}{asked})"
+        asked = f", served as {served}" if served is not None else ", on the answers that name no served model"
+        return f"a model ({model}{asked}{f' at {effort} effort' if effort else ''})"
 
     against_a_model = [check for check in judged if check.against == "model" and check.coordinate is None]
     for model, served, effort in dict.fromkeys(
@@ -1174,8 +1174,8 @@ def judge_lines(
                 f"{model} and {names.get(arm, arm)}'s model are of one family: a lean toward it would not show here",
                 "    ",
             )
-        for reviewer_check in measured:
-            lines += under(_reviewer_clause(reviewer_check, names, candidate, control), "    ")
+        for own_check in measured:
+            lines += under(_reviewer_clause(own_check, names, candidate, control), "    ")
     refused: dict[str, str] = {}
     for check in judged:
         if check.against_id is None:

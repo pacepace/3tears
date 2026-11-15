@@ -184,7 +184,7 @@ def test_met_is_an_equivalence_reading_held_to_the_package_s_bar() -> None:
     assert met.result == "met" and met.lean_bar == pytest.approx(0.10)
     assert paired_equivalence(quiet, 0.10, value_range=(-1.0, 1.0))[0] is True
     # The bar is the package's, a tenth of the scale's width: on 1-5 it is 0.4 points, and no caller passes another.
-    on_five = reviewer_check(REVIEWER, GROUNDED.name, "1-5", kappa_pairs=[], leans=[0.0, 1.0])
+    on_five = reviewer_check(REVIEWER, GROUNDED.name, "ordinal", kappa_pairs=[], leans=[0.0, 1.0])
     assert on_five.lean_bar == pytest.approx(0.4)
     with pytest.raises(TypeError):
         reviewer_check(  # type: ignore[call-arg]
@@ -215,14 +215,15 @@ def test_an_undecided_check_carries_the_bound_the_test_reached_and_the_items_it_
     # The bound is where the bounded test turns: shown inside it, not shown a little inside it.
     assert paired_equivalence(leans, check.lean_bound, value_range=(-1.0, 1.0))[0] is True
     assert paired_equivalence(leans, check.lean_bound - 0.002, value_range=(-1.0, 1.0))[0] is False
-    # Items like these, repeated to the count it names, are shown inside the bar; a twentieth fewer are not.
+    # Items like these, repeated to the count it names, are shown inside the bar, and those in hand are not. (The
+    # bounded test bets in an order fixed by the count, so near the count it turns more than once: a plan's size.)
     needed = check.pair_items_needed
     assert needed is not None and needed > 100 and check.pair_items_needed_above is None
 
     def shown(count: int) -> bool | None:
         return paired_equivalence([leans[i % 100] for i in range(count)], 0.10, value_range=(-1.0, 1.0))[0]
 
-    assert shown(needed) is True and shown(int(needed * 0.95) - 1) is False
+    assert shown(needed) is True and shown(100) is False
     # A lean at the bar or past it is never shown inside it: more than the search reads would be needed.
     at_bar = reviewer_check(
         REVIEWER, GROUNDED.name, "pass_fail", kappa_pairs=_agreeing_pairs(400), leans=_leans(30, toward=3)
@@ -507,7 +508,7 @@ def test_one_model_id_served_by_two_models_is_two_reviewers_and_an_unrecorded_on
     assert spoken is not None and spoken.against_served_model == f"{REVIEWER}-0613"
     printed = "\n".join(judge_lines(closed.read, labels_name="labels.csv", labels_there=True, checks=checks))
     assert f"a model ({REVIEWER}, served as {REVIEWER}-0901)" in printed
-    assert f"not checked against a model ({REVIEWER}, served as an unrecorded model)" in printed
+    assert f"not checked against a model ({REVIEWER}, on the answers that name no served model)" in printed
 
 
 # --- the decision reads checks --------------------------------------------------------------------------------------
