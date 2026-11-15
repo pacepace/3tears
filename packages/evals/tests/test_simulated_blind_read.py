@@ -4,6 +4,7 @@
 |---|---|---|
 | The exact sign test holds its level | No true preference; tie rate 0, 0.2, 0.5; 6 to 60 items; 4,000 reads a row | Falsely separated at most 5% (plus four Monte Carlo standard errors) |
 | A rater who stops when it looks good gains nothing | No true preference; the rater closes the read after every item and stops at the first separation; 40 pair items, planned length 30; 1,000 reads | Falsely separated at most 5% (plus four standard errors), since the preference is read once, at the planned length |
+| A rater who closes the read early when it looks good gains nothing | No true preference; the rater closes the read after each item from 6 to 29 of 30 planned and stops at the first separation the close reports; 1,000 reads | Falsely separated at most 5% (plus four standard errors) under the anytime test the close reads by; the exact sign test under the same rule is recorded beside it, wrong more than 10% |
 | The rule that was refused | The sign test re-read after every item from 6 to 60 and stopped at the first separation; 4,000 reads | Falsely separated more than 10% (measured about 18%): recorded here, never shipped |
 | A prefix is a random sample | 120 cases valued by their position in the store; prefixes of 10 to 40 over 600 seeds | The prefix mean is within four standard errors of the population's; every case is in the first 10 at the rate 10/120 within 4.5 standard errors. The first rows in store order miss the mean by 40 or more |
 | A skip that follows content biases what is read | The same population; a rater who skips the upper half of the values | The answered prefix's mean misses the population's by more than 25: which is why a standing carries its skips |
@@ -26,7 +27,7 @@ from threetears.evals.analysis.blind_read import (
     close_blind_read,
     draw_blind_read,
     exact_sign_test_p,
-    sample_standing,
+    read_sample,
 )
 from threetears.evals.schema import (
     EvalResult,
@@ -143,6 +144,40 @@ def test_a_rater_who_stops_as_soon_as_the_read_separates_is_wrong_at_most_five_p
     assert fooled / replicates <= at_most(ALPHA, replicates), fooled / replicates
 
 
+def test_a_rater_who_closes_the_read_early_when_it_looks_good_is_wrong_at_most_five_percent_of_the_time() -> None:
+    """The rater has no preference and may close the read after any item short of the planned 30, the moment the close
+    says one arm is better. An early close reads the preference once, by the anytime test, whose p holds at any stop;
+    the sign test read at the same stops is the wrong formula, and is wrong far more often."""
+    read, results = _draw(40, arms=2, seed=11, ask=("preference",))
+    planned = read.draw.planned_items
+    assert planned == 30
+    rng = random.Random("blind-read-early-close")
+    replicates = 1_000
+    fooled = fooled_by_sign = 0
+    for _ in range(replicates):
+        answers: list[BlindAnswer] = []
+        caught = caught_by_sign = False
+        for item in read.items[: planned - 1]:
+            answers.append(BlindAnswer(item=item.item, rater="rater", answered_at="t1", prefer=rng.choice(["A", "B"])))
+            if len(answers) < PREFERENCE_MIN_ITEMS:
+                continue
+            closed = close_blind_read(
+                read.model_copy(update={"answers": answers}), results, [], closed_by="rater", closed_at="t2"
+            ).read
+            assert closed.closed_early and closed.report is not None
+            (preference,) = closed.report.preferences
+            assert preference.test == "anytime"
+            caught = caught or preference.verdict in ("improved", "regressed")
+            sign = exact_sign_test_p(preference.prefer_candidate, preference.prefer_candidate + preference.prefer_control)
+            caught_by_sign = caught_by_sign or (sign is not None and sign < ALPHA)
+            if caught and caught_by_sign:
+                break
+        fooled += caught
+        fooled_by_sign += caught_by_sign
+    assert fooled / replicates <= at_most(ALPHA, replicates), fooled / replicates
+    assert fooled_by_sign / replicates > 0.10, fooled_by_sign / replicates
+
+
 def test_the_refused_rule_a_sign_test_re_read_after_every_item_is_wrong_far_more_than_five_percent() -> None:
     """Recorded, not shipped: why the preference is read once."""
     rng = random.Random("blind-read-naive-looks")
@@ -198,7 +233,7 @@ def test_a_skip_that_follows_content_biases_the_answered_prefix_which_the_standi
                 BlindAnswer(item=read.items[position].item, rater="rater", skipped=_value(read, position) >= cases // 2)
                 for position in range(30)
             ]
-            standing = sample_standing(read.model_copy(update={"answers": answers}), "rater")
+            standing = read_sample(read.model_copy(update={"answers": answers}), "rater")
             assert standing.sample == "random" and standing.skipped == len(prefix) - len(answered) > 0
     assert (cases - 1) / 2 - total / seeds > 25
 

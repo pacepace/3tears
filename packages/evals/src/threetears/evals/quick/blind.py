@@ -26,8 +26,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-import math
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple
 
@@ -35,16 +34,16 @@ from threetears.evals.analysis.blind_read import PREFERENCE_MIN_ITEMS, blind_she
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel import CALIBRATION_MIN_AGREEMENT, CALIBRATION_MIN_RESULTS
-from threetears.evals.kernel.authored import strict_response_format
-from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
-from threetears.evals.schema.completion import CompletionProtocolDefect, PricedCompletion
-from threetears.evals.schema.logs import contain, get_logger
+from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget
+from threetears.evals.run.blind_review import answer_score
+from threetears.evals.run.blind_review import answer_sheet as read_sheet
+from threetears.evals.schema.completion import PricedCompletion
+from threetears.evals.schema.logs import get_logger
 from threetears.evals.kernel.text_block import under
 from threetears.evals.schema import (
     SCALES,
     CalibrationRating,
     EvalResult,
-    RubricScale,
 )
 from threetears.evals.schema.blind_read import (
     BlindAgreement,
@@ -86,9 +85,6 @@ SHEET_COLUMNS: tuple[str, ...] = (
 
 #: The columns a labels file must carry: which answer a row is of, and the label.
 _REQUIRED: tuple[str, ...] = ("dimension", "label")
-
-#: What a label is read as, on a pass/fail dimension.
-_PASS_FAIL = {"pass": 1, "fail": 0, "1": 1, "0": 0, "true": 1, "false": 0}
 
 #: What a row's label says when the rater passed on its item.
 _SKIP = "skip"
@@ -140,12 +136,6 @@ def blind_read_csv(read: BlindRead) -> str:
                     }
                 )
     return written.getvalue()
-
-
-def _score(label: str, scale: RubricScale) -> int | None:
-    if scale == "pass_fail":
-        return _PASS_FAIL.get(label)
-    return int(label) if label.isdigit() and 1 <= int(label) <= 5 else None
 
 
 def read_labels(path: Path, read: BlindRead, results: Sequence[EvalResult]) -> LabelsRead:
@@ -235,7 +225,7 @@ def read_labels(path: Path, read: BlindRead, results: Sequence[EvalResult]) -> L
         scale = scales.get(dimension)
         if scale is None:
             raise ValueError(f"{path} line {number} labels {dimension!r}, which the judge does not score")
-        score = _score(label, scale)
+        score = answer_score(label, scale)
         if score is None:
             scale_words = "pass or fail" if scale == "pass_fail" else "1 to 5"
             raise ValueError(f"{path} line {number} labels {dimension!r} {label!r}; its scale is {scale_words}")
@@ -540,130 +530,6 @@ def write_blind_read(out_dir: Path, read: BlindRead) -> dict[str, Path]:
 
 # --- a model as the reader ---------------------------------------------------------------------------------------
 
-_REVIEW_SYSTEM: Final = (
-    "You are reviewing outputs against stated criteria. You are shown what each output answers, then one output or "
-    "two outputs labelled A and B in a random order. Judge each output on each criterion from what is shown and "
-    "nothing else. Reply with one JSON object and no other text: "
-    '{"verdicts": {"<slot>": {"<criterion>": <answer>}}, "prefer": "A" | "B" | "tie" | null, "reason": "<one '
-    'sentence>"}. Give every slot and criterion shown. Set "prefer" only where two outputs are shown and you are '
-    "asked which is better; otherwise null."
-)
-
-
-def _review_prompt(sheet: BlindSheet, index: int) -> str:
-    item = sheet.items[index]
-    asked = [criterion for criterion in sheet.criteria if criterion.dim in item.ask.verdicts]
-    lines = ["# Criteria"]
-    for criterion in asked:
-        answers = " or ".join(
-            f'"{level.value}"' + (f" ({level.meaning})" if level.meaning else "") for level in criterion.levels
-        )
-        lines += under(f"{criterion.dim}: {criterion.question} Answer {answers}.", "  ", first="- ")
-    lines += ["", "# What the output answers", item.case_material]
-    for output in item.outputs:
-        lines += ["", f"# Output {output.slot}", output.text]
-    if item.ask.preference:
-        lines += ["", "Then say which output is better: A, B, or tie."]
-    return "\n".join(lines)
-
-
-def _reply_format(sheet: BlindSheet, index: int) -> dict[str, Any]:
-    """The strict reply shape one item asks for: a verdict per criterion per output, the preference, and a reason.
-    Every answer is a string enum, the one form every provider's strict mode enforces."""
-    item = sheet.items[index]
-    levels = {criterion.dim: [level.value for level in criterion.levels] for criterion in sheet.criteria}
-    per_output = {
-        "type": "object",
-        "properties": {dim: {"type": "string", "enum": levels[dim]} for dim in item.ask.verdicts},
-        "required": list(item.ask.verdicts),
-        "additionalProperties": False,
-    }
-    slots = [output.slot for output in item.outputs]
-    schema = {
-        "type": "object",
-        "properties": {
-            "verdicts": {
-                "type": "object",
-                "properties": dict.fromkeys(slots, per_output),
-                "required": slots,
-                "additionalProperties": False,
-            },
-            "prefer": {"type": "string", "enum": ["A", "B", "tie"] if item.ask.preference else ["none"]},
-            "reason": {"type": "string"},
-        },
-        "required": ["verdicts", "prefer", "reason"],
-        "additionalProperties": False,
-    }
-    return strict_response_format("blind_review", schema)
-
-
-class _ReplyUnusable(ValueError):
-    """A reviewer's reply that is not the answer its item asked for."""
-
-
-def _answer_of(sheet: BlindSheet, index: int, content: str) -> tuple[list[BlindVerdict], BlindPreferenceAnswer | None]:
-    """The verdicts and preference one reply gives for the item at ``index``.
-
-    :raises _ReplyUnusable: The reply is not the JSON object asked for, misses a slot or criterion, or gives an
-        answer off its scale.
-    """
-    item = sheet.items[index]
-    scales = {criterion.dim: criterion.scale for criterion in sheet.criteria}
-    text = content.strip()
-    if text.startswith("```"):
-        text = text.strip("`").removeprefix("json").strip()
-    try:
-        reply = json.loads(text)
-    except json.JSONDecodeError as unparsed:
-        raise _ReplyUnusable(f"its reply is not JSON ({unparsed.msg})") from unparsed
-    given = reply.get("verdicts") if isinstance(reply, dict) else None
-    if not isinstance(given, dict):
-        raise _ReplyUnusable('its reply carries no "verdicts" object')
-    reason = str(reply.get("reason") or "")
-    verdicts: list[BlindVerdict] = []
-    for output in item.outputs:
-        of_slot = given.get(output.slot)
-        for dim in item.ask.verdicts:
-            raw = of_slot.get(dim) if isinstance(of_slot, dict) else None
-            score = None if raw is None else _score(str(raw).strip().lower(), scales[dim])
-            if score is None:
-                levels = " or ".join(SCALES[scales[dim]].levels)
-                raise _ReplyUnusable(f"it gave {raw!r} for output {output.slot} on {dim}, whose answer is {levels}")
-            verdicts.append(BlindVerdict(slot=output.slot, dim=dim, score=score, reason=reason))
-    if not item.ask.preference:
-        return verdicts, None
-    choices: dict[str, BlindPreferenceAnswer] = {"A": "A", "B": "B", "tie": "tie"}
-    prefer = choices.get(str(reply.get("prefer")))
-    if prefer is None:
-        raise _ReplyUnusable(f"it preferred {reply.get('prefer')!r}, and a preference is A, B or tie")
-    return verdicts, prefer
-
-
-#: The ledger purpose a model reviewer's calls are written under: measurement spend, on its own line.
-REVIEWER_PURPOSE: Final = "reviewer"
-
-
-def plan_review(sheet: BlindSheet, items: Collection[str] | None = None) -> dict[str, PlannedCall]:
-    """The calls a model's reading of ``sheet`` makes: one per item, by item, in the drawn order.
-
-    The planner half: its caller admits these under its budget before any is made, and :func:`answer_sheet` makes
-    only what was admitted.
-
-    :param sheet: The blinded view of a read.
-    :ptype sheet: BlindSheet
-    :param items: The items to plan; None for every item.
-    :ptype items: Collection[str] | None
-    :return: Each item's call: the prompt pair and the strict reply shape it asks for.
-    :rtype: dict[str, PlannedCall]
-    """
-    return {
-        item.item: PlannedCall(
-            system=_REVIEW_SYSTEM, user=_review_prompt(sheet, index), response_format=_reply_format(sheet, index)
-        )
-        for index, item in enumerate(sheet.items)
-        if items is None or item.item in items
-    }
-
 
 async def answer_sheet(
     sheet: BlindSheet,
@@ -675,111 +541,44 @@ async def answer_sheet(
     max_cost_usd: float | None = None,
     landed_usd: float | None = 0.0,
 ) -> tuple[list[BlindAnswer], BlindReview]:
-    """Have a model answer ``sheet``, one call per item, each with nothing of any other item in it.
-
-    The model is shown exactly what a person is: the sheet's criteria, the case material and the outputs in their
-    drawn slots. Each answer is a model's, named by the client's model, and carries the model that served it.
-
-    **Spend.** Every call was admitted through ``budget`` by this function's caller (:func:`plan_review` plans them)
-    and is written to the out-of-run ledger as it is made, under the purpose ``reviewer``: what it cost to check the judge, never a candidate's cost. Under a cost
-    cap the calls are held to what the eval has left, by the rule the judge's examples are: before each call what has
-    landed is read against the cap, and once it is over, or any of it went unpriced, no further call is made and the
-    reading says why.
-
-    **A reply that cannot be used** (not the JSON asked for, a verdict missing or off its scale) leaves its item not
-    answered, as a skip, with the reason on the reading; the rest are asked. A completion that breaks the protocol
-    stops the reading, said the same way. Either way what was answered is returned.
+    """Have a model answer ``sheet`` (:func:`~threetears.evals.run.blind_review.answer_sheet`), held to the eval's
+    cost cap: before each call what has landed is read against the cap, and once it is over, or any of it went
+    unpriced, no further call is made and the reading says why, by the rule the judge's examples are held to.
 
     :param sheet: The blinded view of a read.
     :ptype sheet: BlindSheet
-    :param client: The reviewer's client, which names its model and prices its calls where it can.
+    :param client: The reviewer's client.
     :ptype client: PricedCompletion
-    :param budget: The ledger the calls are admitted against and written to.
+    :param budget: The ledger the calls were admitted against and are written to.
     :ptype budget: OutOfRunBudget
-    :param admitted: Each item's admitted call, by item: an item with none is not asked. An item answered before is
-        left out by the caller.
+    :param admitted: Each item's admitted call, by item.
     :ptype admitted: Mapping[str, AdmittedCall]
-    :param reused: How many items the caller read from answers recorded earlier, for the reading to state.
+    :param reused: How many items were read from answers recorded earlier.
     :ptype reused: int
     :param max_cost_usd: The eval's cost cap, over everything it spends; None for none.
     :ptype max_cost_usd: float | None
     :param landed_usd: What the eval has landed before these calls; None where any of it went unpriced.
     :ptype landed_usd: float | None
-    :return: An answer per item asked, in order (a skip where the reply could not be used), and the reading.
+    :return: An answer per item asked, in order, and the reading.
     :rtype: tuple[list[BlindAnswer], BlindReview]
     """
-    model = client.model_name
     forms = PageForms.off_page()
-    answers: list[BlindAnswer] = []
-    unanswered: list[str] = []
-    served: set[str] = set()
-    priced: list[float] = []
-    calls = unpriced = 0
-    stopped: str | None = None
-    for index, item in enumerate(sheet.items):
-        call = admitted.get(item.item)
-        if call is None:
-            continue
-        if max_cost_usd is not None:
-            if landed_usd is None:
-                stopped = "the eval spent what nobody priced, which its cost cap cannot bound"
-            elif unpriced:
-                stopped = "the reviewer's calls spent what nobody priced, which the eval's cost cap cannot bound"
-            elif (landed := landed_usd + math.fsum(priced)) > max_cost_usd:
-                stopped = (
-                    f"the eval's cost cap stopped it, the eval having landed {forms.money_total(landed).text}, over "
-                    f"its {forms.money_total(max_cost_usd).text} cap"
-                )
-            if stopped is not None:
-                break
-        try:
-            recorded = await budget.generate(client, call)
-        except CompletionProtocolDefect as broken:
-            # The call was made and its row written; the reading says what stopped it, and what was answered stands.
-            contain(
-                broken, log=log, what=f"a model reviewer's reading of a blind read stopped: {broken}", level="error"
+
+    def stop(spent: float, unpriced: int) -> str | None:
+        if max_cost_usd is None:
+            return None
+        if landed_usd is None:
+            return "the eval spent what nobody priced, which its cost cap cannot bound"
+        if unpriced:
+            return "the reviewer's calls spent what nobody priced, which the eval's cost cap cannot bound"
+        if (landed := landed_usd + spent) > max_cost_usd:
+            return (
+                f"the eval's cost cap stopped it, the eval having landed {forms.money_total(landed).text}, over "
+                f"its {forms.money_total(max_cost_usd).text} cap"
             )
-            stopped = f"the reviewer's completion broke the protocol ({broken})"
-            calls += 1
-            unpriced += 1
-            break
-        calls += 1
-        if recorded.spend.cost_usd is None:
-            unpriced += 1
-        else:
-            priced.append(recorded.spend.cost_usd)
-        which = getattr(recorded.result, "served_model", None)
-        which = which if isinstance(which, str) and which.strip() else None
-        if which is not None:
-            served.add(which)
-        try:
-            verdicts, prefer = _answer_of(sheet, index, str(getattr(recorded.result, "content", "")))
-        except _ReplyUnusable as unusable:
-            unanswered.append(f"case {index + 1}: {unusable}")
-            answers.append(BlindAnswer(item=item.item, rater=model, rater_kind="reference", skipped=True))
-            continue
-        answers.append(
-            BlindAnswer(
-                item=item.item,
-                rater=model,
-                rater_kind="reference",
-                reviewer_served_model=which,
-                verdicts=verdicts,
-                prefer=prefer,
-            )
-        )
-    review = BlindReview(
-        reviewer=model,
-        served_models=sorted(served),
-        asked=calls,
-        reused=reused,
-        calls=calls,
-        cost_usd=math.fsum(priced) if priced else None,
-        unpriced_calls=unpriced,
-        unanswered=unanswered,
-        stopped=stopped,
-    )
-    return answers, review
+        return None
+
+    return await read_sheet(sheet, client, budget, admitted, reused=reused, stop=stop)
 
 
 #: The columns a reviewer's kept answers are written in: a labels file, which :func:`read_labels` reads back.
@@ -1065,10 +864,8 @@ def judge_lines(
 
 #: What the quick result calls.
 __all__ = [
-    "REVIEWER_PURPOSE",
     "answer_sheet",
     "judge_lines",
     "keep_reviewed",
-    "plan_review",
     "read_labels",
 ]

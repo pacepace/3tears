@@ -891,7 +891,16 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   alone, so every stored rating still proves. An older build (v17.0) reading a rating that holds it keeps it
 #:   opaquely and writes it back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 1
+#: - **v17.2** — a new durable type, the blind read: ``blind_read`` (``BlindRead``), a seeded random order of a
+#:   campaign's judged outputs, the answers given to it (a person's, relayed by a caller the host attests for them, or
+#:   the declared reviewer model's, taken only from its own review job), and its close. Stored by the host door's
+#:   actions (``blind_read_create`` and its siblings); the quick path still recomputes its read and stores none. Its
+#:   optional fields ``reviewer``, ``review_job_id`` and ``closed_early`` are written only when set. No other durable
+#:   shape moves, so every document v17.1 stored is stored byte for byte as before. An older build never reads the
+#:   type (every read selects by ``doc_type``); its operator wipe of durable documents leaves these in place, and its
+#:   deletes never reach them (a new doc type's two disclosed costs, above).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 2
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

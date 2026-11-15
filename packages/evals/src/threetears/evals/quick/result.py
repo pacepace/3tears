@@ -100,15 +100,14 @@ from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.quick.blind import (
     BLIND_READ_CSV,
     BLIND_READ_HTML,
-    REVIEWER_PURPOSE,
     answer_sheet,
     blind_read_csv,
     blind_read_html,
     judge_lines,
     keep_reviewed,
-    plan_review,
     read_labels,
 )
+from threetears.evals.run.blind_review import REVIEWER_PURPOSE, plan_review
 from threetears.evals.quick.judged import BorrowedJudgeClient, Judge, JudgeExamples, judge_client
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
 from threetears.evals.run import get_result_trace, list_results

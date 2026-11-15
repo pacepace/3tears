@@ -113,6 +113,8 @@ DOC_TYPE_FACTS: Final[Mapping[str, DocTypeFacts]] = MappingProxyType(
         "eval_result": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_trace": DocTypeFacts(origin="record", lifecycle="kept"),
         "calibration_rating": DocTypeFacts(origin="record", lifecycle="durable"),
+        # A blind read: the drawn order and what people (and a declared model) answered of it. Authored, like a rating.
+        "blind_read": DocTypeFacts(origin="record", lifecycle="durable"),
         "eval_out_of_run_spend": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_sweep": DocTypeFacts(origin="record", lifecycle="kept"),
         "eval_analysis_attempt": DocTypeFacts(origin="record", lifecycle="kept"),

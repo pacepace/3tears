@@ -35,7 +35,7 @@ from threetears.evals.analysis.blind_read import (
     close_blind_read,
     draw_blind_read,
     exact_sign_test_p,
-    sample_standing,
+    read_sample,
 )
 from threetears.evals.quick import blind as files
 from threetears.evals.quick.blind import (
@@ -44,10 +44,10 @@ from threetears.evals.quick.blind import (
     blind_read_csv,
     blind_read_html,
     judge_lines,
-    plan_review,
     read_labels,
     write_blind_read,
 )
+from threetears.evals.run.blind_review import plan_review
 from threetears.evals.schema import (
     EvalResult,
     JudgeEvidence,
@@ -395,7 +395,7 @@ def test_the_page_opened_from_disk_saves_labels_that_read_back_as_answers_from_t
     assert [answer.item for answer in answers] == [item.item for item in read.items[:3]]
     assert {answer.rater for answer in answers} == {"B. Reader"}
     assert all(len(answer.verdicts) == 2 and answer.prefer == "A" for answer in answers)
-    assert sample_standing(_with(read, answers), "B. Reader").sample == "random"
+    assert read_sample(_with(read, answers), "B. Reader").sample == "random"
 
 
 # --- the standing ---------------------------------------------------------------------------------------------------
@@ -405,16 +405,16 @@ def test_answers_from_the_top_are_a_random_sample_and_any_other_set_is_not_drawn
     results, evidence = _campaign(10)
     read = _draw(results, evidence)
     top = _with(read, [_answer(read, n) for n in range(4)])
-    standing = sample_standing(top, "owner")
+    standing = read_sample(top, "owner")
     assert (standing.sample, standing.answered, standing.items, standing.skipped) == ("random", 4, 10, 0)
-    assert sample_standing(_with(read, [_answer(read, n) for n in (0, 1, 3)]), "owner").sample == "selected"
-    assert sample_standing(_with(read, [_answer(read, 5)]), "owner").sample == "selected"
-    assert sample_standing(read, "owner").sample == "none"
+    assert read_sample(_with(read, [_answer(read, n) for n in (0, 1, 3)]), "owner").sample == "selected"
+    assert read_sample(_with(read, [_answer(read, 5)]), "owner").sample == "selected"
+    assert read_sample(read, "owner").sample == "none"
     # A skip is an answer: the prefix stays one, and the standing says how many were skipped.
     skipped = _with(
         read, [_answer(read, 0), BlindAnswer(item=read.items[1].item, rater="owner", skipped=True), _answer(read, 2)]
     )
-    standing = sample_standing(skipped, "owner")
+    standing = read_sample(skipped, "owner")
     assert (standing.sample, standing.answered, standing.skipped) == ("random", 3, 1)
     with pytest.raises(ValidationError, match="skipped"):
         BlindAnswer(item="x", rater="owner", skipped=True, prefer="A")
@@ -820,7 +820,7 @@ async def test_a_model_answers_the_sheet_one_call_per_case_shown_only_what_a_per
     (shape,) = {json.dumps(sent, sort_keys=True) for sent in reviewer.formats}
     schema = json.loads(shape)["json_schema"]
     assert schema["strict"] is True and schema["schema"]["properties"]["prefer"]["enum"] == ["A", "B", "tie"]
-    assert sample_standing(_with(read, answers), "scripted/reviewer", "reference").sample == "random"
+    assert read_sample(_with(read, answers), "scripted/reviewer", "reference").sample == "random"
     # Every call is on the ledger under its own purpose, and the reading states what they cost.
     assert [(row.purpose, row.model, row.outcome) for row in ledger.rows] == [
         ("reviewer", "scripted/reviewer", "completed")
@@ -928,9 +928,9 @@ def test_a_sheet_filled_in_from_the_top_reads_as_a_random_sample_and_out_of_orde
     assert {(a.rater, a.rater_kind, a.collected_by, a.prefer) for a in got.answers} == {
         ("labels.csv", "person", "labels.csv", "B")
     }
-    assert sample_standing(_with(read, got.answers), "labels.csv").sample == "random"
+    assert read_sample(_with(read, got.answers), "labels.csv").sample == "random"
     _fill(read, labels, [0, 2, 7])
-    assert sample_standing(_with(read, read_labels(labels, read, results).answers), "labels.csv").sample == "selected"
+    assert read_sample(_with(read, read_labels(labels, read, results).answers), "labels.csv").sample == "selected"
     # The kind is per row, a person unless it says reference, and a reference names its model.
     _fill(read, labels, [0, 1], rater="other/reviewer-9", rater_kind="reference")
     assert {(a.rater, a.rater_kind, a.collected_by) for a in read_labels(labels, read, results).answers} == {
@@ -1080,7 +1080,7 @@ def test_a_case_answered_in_part_is_counted_and_a_missing_preference_is_said(tmp
     )
     assert any(line.startswith("preference: ") and ", 1 with no preference given, " in line for line in lines)
     # A whole answer is not a partial one, and a skip is its own count.
-    assert sample_standing(_with(read, [_answer(read, 0)]), "owner").partial == 0
+    assert read_sample(_with(read, [_answer(read, 0)]), "owner").partial == 0
 
 
 def test_with_no_labels_the_line_says_the_judge_is_uncalibrated_and_the_one_next_step() -> None:

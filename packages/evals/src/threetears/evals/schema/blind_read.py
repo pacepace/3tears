@@ -25,9 +25,17 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.base import CoreShapeModel, DurableDocumentModel, EvalDocumentModel
 from threetears.evals.schema.reading_states import SampleKind, StateOf
-from threetears.evals.schema.models import DimName, JudgeEvidence, RubricDim, RubricScale, utc_now_iso
+from threetears.evals.schema.versioning import DURABLE_SCHEMA_VERSION
+from threetears.evals.schema.models import (
+    DimName,
+    DurableSchemaVersion,
+    JudgeEvidence,
+    RubricDim,
+    RubricScale,
+    utc_now_iso,
+)
 
 #: The slot an output is shown in. A single is always ``A``; a pair's two outputs are ``A`` and ``B`` as drawn.
 BlindSlot = Literal["A", "B"]
@@ -41,11 +49,13 @@ BlindPreferenceAnswer = Literal["A", "B", "tie"]
 #: What a blind read asks of each item: a verdict per criterion per output, and, of a pair, which output is better.
 BlindAsk = Literal["verdicts", "preference"]
 
-#: The test a preference was read by: the exact sign test (one answer per item), or the bounded test on shares.
-BlindPreferenceTest = Literal["exact_sign", "bounded_share"]
+#: The test a preference was read by: the exact sign test (one answer per item), the bounded test on shares (several
+#: raters), or, for a read closed before its planned length, ``anytime``: the bounded test on shares in the drawn
+#: order with its stakes fixed for the planned length, whose p holds at whatever item the read was stopped.
+BlindPreferenceTest = Literal["exact_sign", "bounded_share", "anytime"]
 
 
-class BlindArm(EvalDocumentModel):
+class BlindArm(EvalDocumentModel, CoreShapeModel):
     """One arm a blind read was drawn over: what names it, its role, and the runs that hold its answers."""
 
     key: str = Field(min_length=1, description="What names the arm where the read was drawn: its variant key.")
@@ -53,7 +63,7 @@ class BlindArm(EvalDocumentModel):
     run_ids: list[str] = Field(min_length=1, description="The runs whose results are this arm's answers.")
 
 
-class BlindDraw(EvalDocumentModel):
+class BlindDraw(EvalDocumentModel, CoreShapeModel):
     """The draw: what the order was drawn from and by which seed. Kept on the read, never on the sheet."""
 
     seed: int = Field(description="The seed the order, the pick among repeats and the slots were drawn by.")
@@ -81,7 +91,7 @@ class BlindDraw(EvalDocumentModel):
     )
 
 
-class BlindOutput(EvalDocumentModel):
+class BlindOutput(EvalDocumentModel, CoreShapeModel):
     """One output of an item: what a rater reads, and (off the sheet) which result it is."""
 
     slot: BlindSlot = Field(description="The slot it is shown in.")
@@ -97,7 +107,7 @@ class BlindOutput(EvalDocumentModel):
     evidence: JudgeEvidence = Field(description="What the judge read, verbatim: the case material and the output.")
 
 
-class BlindItem(EvalDocumentModel):
+class BlindItem(EvalDocumentModel, CoreShapeModel):
     """One case in the drawn order: a single output, or a pair in slots A and B."""
 
     item: str = Field(min_length=1, description="An opaque id: a digest of the seed, the population and the position.")
@@ -105,7 +115,7 @@ class BlindItem(EvalDocumentModel):
     outputs: list[BlindOutput] = Field(min_length=1, max_length=2, description="One for a single; A then B for a pair.")
 
 
-class BlindVerdict(EvalDocumentModel):
+class BlindVerdict(EvalDocumentModel, CoreShapeModel):
     """A rater's verdict on one criterion of one output."""
 
     slot: BlindSlot = Field(description="The output it is of.")
@@ -114,7 +124,7 @@ class BlindVerdict(EvalDocumentModel):
     reason: str = Field(default="", description="The rater's own words, where given.")
 
 
-class BlindAnswer(EvalDocumentModel):
+class BlindAnswer(EvalDocumentModel, CoreShapeModel):
     """One rater's answer to one item: its verdicts, its preference of a pair, or that it was skipped."""
 
     item: str = Field(min_length=1, description="The item answered (BlindItem.item).")
@@ -152,7 +162,7 @@ class BlindAnswer(EvalDocumentModel):
         return self
 
 
-class BlindSample(EvalDocumentModel):
+class BlindSample(EvalDocumentModel, CoreShapeModel):
     """Whether one rater's answered items are a random sample: a structural fact, read off the order."""
 
     rater: str = Field(min_length=1)
@@ -180,7 +190,7 @@ class BlindSample(EvalDocumentModel):
     items: int = Field(ge=0, description="The items in the order.")
 
 
-class BlindVerdictTable(EvalDocumentModel):
+class BlindVerdictTable(EvalDocumentModel, CoreShapeModel):
     """A pass/fail criterion's two-by-two: the rater against the judge, and how many rater-failed answers the judge
     failed too."""
 
@@ -196,7 +206,7 @@ class BlindVerdictTable(EvalDocumentModel):
     )
 
 
-class BlindAgreement(EvalDocumentModel):
+class BlindAgreement(EvalDocumentModel, CoreShapeModel):
     """How one judge's scores on one criterion agree with one anchor's answers, and the tier that bears."""
 
     dim: DimName = Field(description="The criterion.")
@@ -246,7 +256,7 @@ class BlindAgreement(EvalDocumentModel):
     table: BlindVerdictTable | None = Field(default=None, description="The two-by-two, on a pass/fail criterion.")
 
 
-class BlindReviewerCheck(EvalDocumentModel):
+class BlindReviewerCheck(EvalDocumentModel, CoreShapeModel):
     """How a reference reviewer agrees with people on the outputs both answered: the anchor, itself measured."""
 
     dim: DimName
@@ -256,7 +266,7 @@ class BlindReviewerCheck(EvalDocumentModel):
     kappa: float | None = Field(description="Kappa on pass/fail, quadratic-weighted on 1-5; None where undefined.")
 
 
-class BlindPreference(EvalDocumentModel):
+class BlindPreference(EvalDocumentModel, CoreShapeModel):
     """Which of a pair one kind of rater preferred, per case, and whether that separates the arms."""
 
     anchor: Literal["person", "reference"]
@@ -275,7 +285,7 @@ class BlindPreference(EvalDocumentModel):
     prefer_candidate: int = Field(ge=0, description="Items where the candidate's share is above a half.")
     prefer_control: int = Field(ge=0, description="Items where it is below a half.")
     ties: int = Field(ge=0, description="Items at exactly a half: counted, never split.")
-    test: Literal["exact_sign", "bounded_share"]
+    test: BlindPreferenceTest
     p: float | None = Field(description="The two-sided p; None where too few items carry a preference to test.")
     verdict: Literal["improved", "regressed", "not_separated"] | None = Field(
         description=(
@@ -336,7 +346,7 @@ class BlindPreference(EvalDocumentModel):
 _UNREAD = frozenset({("withheld", "unfinished"), ("not_available", "too_few")})
 
 
-class BlindReview(EvalDocumentModel):
+class BlindReview(EvalDocumentModel, CoreShapeModel):
     """One model's reading of a blind read's sheet: the calls made for it, what they cost, and what went unanswered.
 
     The spend is measurement spend: what it cost to check the judge, never part of what a candidate costs.
@@ -361,7 +371,7 @@ class BlindReview(EvalDocumentModel):
     )
 
 
-class BlindReadReport(EvalDocumentModel):
+class BlindReadReport(EvalDocumentModel, CoreShapeModel):
     """What a blind read found, as its close computed it: how much was read and how it was sampled, how the judge
     agrees with whoever read, what was preferred, and what a model's reading cost."""
 
@@ -389,9 +399,17 @@ class BlindReadReport(EvalDocumentModel):
     )
 
 
-class BlindRead(EvalDocumentModel):
-    """A drawn, blinded order of judged outputs, the answers given to it, and its close."""
+class BlindRead(DurableDocumentModel):
+    """A drawn, blinded order of judged outputs, the answers given to it, and its close.
 
+    **Stored, and durable** (durable v17.2): what a person answered is authored, so a read outlives a core baseline
+    reset as the ratings its close writes do; the runs and results it was drawn over are provenance and may dangle.
+    The quick path recomputes its read from the eval's files and never stores one; a host's actions store one per
+    draw (:mod:`threetears.evals.ops.blind_reads`).
+    """
+
+    doc_type: Literal["blind_read"] = "blind_read"
+    schema_version: DurableSchemaVersion = DURABLE_SCHEMA_VERSION
     id: str = Field(min_length=1)
     scope_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
@@ -411,8 +429,34 @@ class BlindRead(EvalDocumentModel):
             "answered. An answer is a model's because a review here made it, never because of how its rater is named."
         ),
     )
+    reviewer: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The model declared, when the read was drawn, to answer it as a reference reviewer, by its id: fixed "
+            "before any answer exists, and one per read. None: no model reads it."
+        ),
+    )
+    review_job_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The job the declared reviewer reads the sheet in, by its record's id: a model's answers are taken into "
+            "the read only from inside that job. None: no review was started."
+        ),
+    )
     closed_at: str | None = None
     closed_by: str | None = None
+    closed_early: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description=(
+            "Closed before any rater had answered every planned item: its preference, where one is asked, is read by "
+            "the anytime test over the items answered in the drawn order, which holds its level at any stop."
+        ),
+    )
     report: BlindReadReport | None = None
 
 
@@ -436,13 +480,14 @@ class SheetOutput(EvalDocumentModel):
     """An output as the rater reads it: its slot and its text, and the fingerprints a label of it is bound to.
 
     The fingerprints are digests of the text shown and of each criterion's wording. They name no arm, run or result,
-    and they are what lets a saved label pair with the same output under another draw.
+    and they are what lets a saved label pair with the same output under another draw. A host's door leaves them out:
+    its answers name an item and a slot, and a judge score carries the same fingerprint.
     """
 
     slot: BlindSlot
     text: str
-    output_fingerprint: str = Field(min_length=1)
-    criterion_fingerprints: dict[str, str] = Field(default_factory=dict)
+    output_fingerprint: str | None = Field(default=None, min_length=1, exclude_if=lambda value: value is None)
+    criterion_fingerprints: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
 
 class SheetAsk(EvalDocumentModel):

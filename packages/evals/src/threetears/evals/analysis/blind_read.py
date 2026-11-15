@@ -7,7 +7,7 @@ actions) calls these four and re-implements none of them:
   same answers under the same criteria and seed draw the same order, whichever order the store lists them in, so a
   door that keeps no document recomputes the draw.
 - :func:`blind_sheet` is the blinded view: content and criteria, no arm, run or result, no judge score.
-- :func:`sample_standing` says whether a rater's answered items are the first ``m`` of the order (a random sample)
+- :func:`read_sample` says whether a rater's answered items are the first ``m`` of the order (a random sample)
   or any other set (``selected``).
 - :func:`close_blind_read` turns the answers into ratings and reads them: agreement per criterion with its tier, a
   pass/fail criterion's two-by-two, the preference with its test, and each rater's standing.
@@ -27,9 +27,11 @@ which treats the raters as fixed.
 first that-many items of the order and no others, and only from a rater who has answered all of them. Before that it
 is ``withheld``: no direction, count or p. A sign test re-read after every item and stopped when it separates is
 falsely separated about 18% of the time at a 5% level, and a running count tells the rater which arm is ahead.
-Answers past the planned length never enter it, so reading on is not a second look.
-``tests/test_simulated_blind_read.py`` holds the sign test's level, a rater who stops when it looks good, the
-prefix's lack of bias and the slot balance.
+Answers past the planned length never enter it, so reading on is not a second look. **A read closed early** (before
+any rater answered every planned item) is the one exception, and it is read once, at the close: by the anytime test,
+the bounded test on shares in the drawn order with its stakes fixed for the planned pair items, whose p holds at any
+stop. ``tests/test_simulated_blind_read.py`` holds the sign test's level, a rater who stops when it looks good (and one
+who closes early when it looks good), the prefix's lack of bias and the slot balance.
 
 This module computes numbers and prints nothing. It imports the stored shapes, the tier rules and the agreement and
 statistics code, and no page, form or quick-path module.
@@ -357,13 +359,18 @@ def _pick(
     )
 
 
-def blind_sheet(read: BlindRead, *, rater: str | None = None) -> BlindSheet:
+def blind_sheet(read: BlindRead, *, rater: str | None = None, label_keys: bool = True) -> BlindSheet:
     """The blinded view of ``read``: what a rater is shown, and nothing else.
 
     :param read: The read.
     :ptype read: BlindRead
     :param rater: Whose progress to report (``answered`` and ``next``); None reports none.
     :ptype rater: str | None
+    :param label_keys: Whether each output carries its label key (its fingerprint and each criterion's), which a
+        labels file needs to pair a label with its output away from the read. A host's door answers by item and slot
+        and leaves them out: a fingerprint is also what a judge score carries, so a rater who can read the scores
+        could pair it with its arm.
+    :ptype label_keys: bool
     :return: The sheet: no arm, run, result or case id, and no judge score.
     :rtype: BlindSheet
     """
@@ -393,8 +400,8 @@ def blind_sheet(read: BlindRead, *, rater: str | None = None) -> BlindSheet:
                     SheetOutput(
                         slot=output.slot,
                         text=output.evidence.artifact,
-                        output_fingerprint=output.output_fingerprint,
-                        criterion_fingerprints=output.criterion_fingerprints,
+                        output_fingerprint=output.output_fingerprint if label_keys else None,
+                        criterion_fingerprints=output.criterion_fingerprints if label_keys else {},
                     )
                     for output in item.outputs
                 ],
@@ -417,7 +424,7 @@ def _answered_in_full(read: BlindRead, item: BlindItem, answer: BlindAnswer) -> 
     return not ("preference" in read.ask and len(item.outputs) == 2 and answer.prefer is None)
 
 
-def sample_standing(read: BlindRead, rater: str, kind: BlindRaterKind = "person") -> BlindSample:
+def read_sample(read: BlindRead, rater: str, kind: BlindRaterKind = "person") -> BlindSample:
     """Whether ``rater``'s answered items are a random sample: the first ``m`` of the order, or not.
 
     A skip is an answer, so a skipped item keeps a prefix a prefix; so is an item answered in part. Both follow
@@ -480,6 +487,45 @@ def exact_sign_test_p(successes: int, trials: int) -> float | None:
     return min(1.0, float(2 * tail / 2**trials))
 
 
+def check_answer(read: BlindRead, answer: BlindAnswer) -> None:
+    """Refuse an answer ``read`` does not ask: to no item of it, a verdict on a slot the item does not show or on no
+    criterion of the read, a score its criterion's scale cannot hold, or a preference of an item that asks none.
+
+    Every door checks an answer here before it keeps one, so a close never meets an answer it cannot read.
+
+    :param read: The read.
+    :ptype read: BlindRead
+    :param answer: The answer offered.
+    :ptype answer: BlindAnswer
+    :raises ValueError: Naming what the read does not ask.
+    """
+    item = next((each for each in read.items if each.item == answer.item), None)
+    if item is None:
+        raise ValueError(f"an answer names item {answer.item!r}, which is no item of blind read {read.id!r}")
+    _refuse_unasked_verdicts(read, item, answer)
+    if answer.prefer is not None and not ("preference" in read.ask and len(item.outputs) == 2):
+        raise ValueError(f"item {answer.item!r} asks no preference, and the answer gives one")
+
+
+def _refuse_unasked_verdicts(read: BlindRead, item: BlindItem, answer: BlindAnswer) -> None:
+    """Refuse a verdict on a slot ``item`` does not show or on no criterion of ``read``, or off its scale.
+
+    :raises ValueError: Naming the verdict.
+    """
+    slots = {output.slot for output in item.outputs}
+    scales = {dim.name: dim.scale for dim in read.criteria}
+    for verdict in answer.verdicts:
+        scale = scales.get(verdict.dim)
+        if verdict.slot not in slots or scale is None:
+            raise ValueError(
+                f"the answer to item {answer.item!r} gives a verdict on slot {verdict.slot} and {verdict.dim!r}, "
+                "which the item does not ask"
+            )
+        low, high = SCALES[scale].scores
+        if not low <= verdict.score <= high:
+            raise ValueError(f"{verdict.score!r} is not on the {scale} scale of {verdict.dim!r}")
+
+
 def _ratings_of(read: BlindRead) -> list[tuple[CalibrationRating, BlindAnswer]]:
     """The read's answers as ratings, each bound to the output and criterion it was given on, beside the answer it
     came from: who gave a rating is read off that answer, never off the rating's rater name.
@@ -496,17 +542,10 @@ def _ratings_of(read: BlindRead) -> list[tuple[CalibrationRating, BlindAnswer]]:
             raise ValueError(f"an answer names item {answer.item!r}, which is no item of blind read {read.id!r}")
         outputs = {output.slot: output for output in item.outputs}
         person = answer.rater_kind == "person"
+        _refuse_unasked_verdicts(read, item, answer)
         for verdict in answer.verdicts:
-            output = outputs.get(verdict.slot)
-            scale = scales.get(verdict.dim)
-            if output is None or scale is None:
-                raise ValueError(
-                    f"the answer to item {answer.item!r} gives a verdict on slot {verdict.slot} and {verdict.dim!r}, "
-                    "which the item does not ask"
-                )
-            low, high = SCALES[scale].scores
-            if not low <= verdict.score <= high:
-                raise ValueError(f"{verdict.score!r} is not on the {scale} scale of {verdict.dim!r}")
+            output = outputs[verdict.slot]
+            scale = scales[verdict.dim]
             rating = CalibrationRating(
                 scope_id=read.scope_id,
                 run_id=output.run_id,
@@ -630,10 +669,15 @@ def _agreements(
 
 
 def _preference(
-    read: BlindRead, answers: Sequence[BlindAnswer], samples: Mapping[tuple[str, BlindRaterKind], BlindSample]
+    read: BlindRead,
+    answers: Sequence[BlindAnswer],
+    samples: Mapping[tuple[str, BlindRaterKind], BlindSample],
+    *,
+    closing: bool = False,
 ) -> BlindPreference:
     """One kind of rater's preference over the planned items, per case, with its test; withheld until a rater has
-    answered every planned item."""
+    answered every planned item, unless the read is being closed (``closing``), when an unfinished one is read by the
+    anytime test (:func:`_anytime_preference`)."""
     control = next(arm.key for arm in read.arms if arm.role == "control")
     candidate = next(arm.key for arm in read.arms if arm.role == "candidate")
     planned = read.items[: read.draw.planned_items]
@@ -645,6 +689,8 @@ def _preference(
             by_rater.setdefault(answer.rater, []).append(answer)
     done = sorted(rater for rater, own in by_rater.items() if {answer.item for answer in own} == planned_ids)
     kind = answers[0].rater_kind
+    if not done and planned and closing:
+        return _anytime_preference(read, answers, samples, by_rater)
     if not done or not planned:
         return BlindPreference(
             anchor=kind,
@@ -719,6 +765,79 @@ def _preference(
         prefer_control=for_control,
         ties=len(means) - decided,
         test=test,
+        p=p,
+        verdict=verdict,
+        state=state,
+        slot_a_share=slot_a / slot_choices if slot_choices else None,
+        slot_a=slot_a,
+        slot_choices=slot_choices,
+    )
+
+
+def _anytime_preference(
+    read: BlindRead,
+    answers: Sequence[BlindAnswer],
+    samples: Mapping[tuple[str, BlindRaterKind], BlindSample],
+    by_rater: Mapping[str, Sequence[BlindAnswer]],
+) -> BlindPreference:
+    """The preference of a read closed before any rater answered every planned item: read once, at the close, by the
+    bounded test on shares in the drawn order with its stakes fixed for the planned pair items before the first
+    answer (:func:`~threetears.evals.analysis.stats.bounded_separation_p` with ``planned_n``). Its p holds its level
+    at whatever item the read was stopped, so a rater who closes the read when it looks good gains nothing
+    (``tests/test_simulated_blind_read.py``). Items with no preference given are left out and counted."""
+    control = next(arm.key for arm in read.arms if arm.role == "control")
+    candidate = next(arm.key for arm in read.arms if arm.role == "candidate")
+    kind = answers[0].rater_kind
+    planned = read.items[: read.draw.planned_items]
+    pairs = [item for item in planned if len(item.outputs) == 2]
+    shares: dict[str, list[float]] = {}
+    slot_a = slot_choices = missing = 0
+    for item in pairs:
+        for answer in (answer for own in by_rater.values() for answer in own if answer.item == item.item):
+            if answer.prefer is None:
+                missing += 1
+                continue
+            if answer.prefer == "tie":
+                share = 0.5
+            else:
+                preferred = next(output for output in item.outputs if output.slot == answer.prefer)
+                share = 1.0 if preferred.arm == candidate else 0.0
+                slot_choices += 1
+                slot_a += answer.prefer == "A"
+            shares.setdefault(item.item, []).append(share)
+    # In the drawn order: the order the stakes were fixed for.
+    means = [sum(shares[item.item]) / len(shares[item.item]) for item in pairs if item.item in shares]
+    for_candidate = sum(1 for mean in means if mean > 0.5)
+    for_control = sum(1 for mean in means if mean < 0.5)
+    decided = for_candidate + for_control
+    verdict: Literal["improved", "regressed", "not_separated"] | None = None
+    state: StateOf | None = None
+    p: float | None = None
+    if decided < PREFERENCE_MIN_ITEMS:
+        state = StateOf(state="not_available", reason="too_few")
+    else:
+        p = bounded_separation_p(
+            [0.5] * len(means), means, paired=True, value_range=(0.0, 1.0), planned_n=len(pairs)
+        )
+        if p is None or p >= SIGNIFICANCE_ALPHA or for_candidate == for_control:
+            verdict = "not_separated"
+        else:
+            verdict = "improved" if for_candidate > for_control else "regressed"
+    raters = sorted(by_rater)
+    return BlindPreference(
+        anchor=kind,
+        anchor_names=raters or sorted({answer.rater for answer in answers}),
+        random=bool(raters) and all(samples[(rater, kind)].sample == "random" for rater in raters),
+        control=control,
+        candidate=candidate,
+        planned=len(planned),
+        answered=max((len({answer.item for answer in own}) for own in by_rater.values()), default=0),
+        missing=missing,
+        items=len(means),
+        prefer_candidate=for_candidate,
+        prefer_control=for_control,
+        ties=len(means) - decided,
+        test="anytime",
         p=p,
         verdict=verdict,
         state=state,
@@ -813,7 +932,9 @@ def close_blind_read(
     :param judge_models: The ids the judge was asked as, beside the served model each score records: a reviewer
         named or served as any of them is the judge's own model.
     :ptype judge_models: Collection[str]
-    :param closed_by: Who closed it; None leaves the read open, its report computed.
+    :param closed_by: Who closed it; None leaves the read open, its report computed. A read closed before any rater
+        answered every planned item is closed early (``BlindRead.closed_early``): an unfinished preference is then
+        read once, by the anytime test, where an open read withholds it.
     :ptype closed_by: str | None
     :param closed_at: When; None for now, where ``closed_by`` is given.
     :ptype closed_at: str | None
@@ -825,7 +946,7 @@ def close_blind_read(
     given = _ratings_of(read)
     ratings = [rating for rating, _ in given]
     keys = list(dict.fromkeys((answer.rater, answer.rater_kind) for answer in read.answers))
-    samples = {key: sample_standing(read, *key) for key in keys}
+    samples = {key: read_sample(read, *key) for key in keys}
     own = frozenset(rating.id for rating in ratings)
     random_ids = frozenset(
         rating.id for rating, answer in given if samples[(answer.rater, answer.rater_kind)].sample == "random"
@@ -887,12 +1008,18 @@ def close_blind_read(
                 continue
             agreement.append(reading)
     agreement = _with_the_deciding_anchor(agreement)
+    closing = closed_by is not None
+    planned_ids = {item.item for item in read.items[: read.draw.planned_items]}
+    finished = any(
+        planned_ids <= {answer.item for answer in read.answers if (answer.rater, answer.rater_kind) == key}
+        for key in keys
+    )
     preferences: list[BlindPreference] = []
     if "preference" in read.ask:
         for kind in ("person", "reference"):
             for group in _preference_groups(read, kind):
                 if group:
-                    preferences.append(_preference(read, group, samples))
+                    preferences.append(_preference(read, group, samples, closing=closing))
     report = BlindReadReport(
         cases=len(read.items),
         reviews=list(read.reviews),
@@ -909,6 +1036,7 @@ def close_blind_read(
             "report": report,
             "closed_by": closed_by,
             "closed_at": (closed_at or utc_now_iso()) if closed_by is not None else None,
+            "closed_early": closing and bool(planned_ids) and not finished,
         }
     )
     return BlindClose(
@@ -948,13 +1076,14 @@ def _preference_groups(read: BlindRead, kind: str) -> list[list[BlindAnswer]]:
     return [[answer for answer in answers if answer.rater == rater] for rater in sorted({a.rater for a in answers})]
 
 
-#: What another module calls today. :func:`sample_standing` is the core's fourth function and joins these when the
-#: host door calls it; until then it is read through a closed read's report.
+#: What another module calls: the quick path's files and the host's door (:mod:`threetears.evals.ops.blind_reads`).
 __all__ = [
     "PREFERENCE_MIN_ITEMS",
     "BlindClose",
     "blind_sheet",
+    "check_answer",
     "close_blind_read",
     "draw_blind_read",
     "exact_sign_test_p",
+    "read_sample",
 ]
