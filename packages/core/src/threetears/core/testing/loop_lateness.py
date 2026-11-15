@@ -53,10 +53,12 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final, TypeVar
 
+from threetears.core.testing._asyncio_internals import timed_handles
 from threetears.observe import BuildOnce
 
 __all__ = [
@@ -71,6 +73,7 @@ __all__ = [
     "quietly",
     "ticks_while",
     "trusted",
+    "turn_holds",
 ]
 
 _Measured = TypeVar("_Measured")
@@ -584,3 +587,21 @@ def _could_not_measure(seen: list[str], attempts: int) -> CouldNotMeasure:
     :rtype: CouldNotMeasure
     """
     return CouldNotMeasure(f"could not measure: {'; '.join(seen)} (each of {attempts} attempts untrusted)")
+
+
+@contextmanager
+def turn_holds() -> Iterator[list[tuple[float, str]]]:
+    """every turn the event loop runs inside the block, timed on the loop thread's own CPU clock, with what it ran.
+
+    For a bound on how long one turn of a serving process's loop may hold it (CPU work belongs in a worker process):
+    each callback the loop runs is one turn, a task's step and a socket's read alike, and its thread's CPU time is
+    counted, never the wall clock, so a host's load cannot stretch a turn past its work (as ``test_arrow_copy`` times
+    its build's stretches). Asyncio's own loop runs every callback through ``Handle._run``, wrapped for the block
+    (:mod:`threetears.core.testing._asyncio_internals`); a loop that runs callbacks elsewhere (uvloop) is not timed.
+
+    :return: the turns, as they ran: ``(CPU seconds, the callback's repr)``
+    :rtype: Iterator[list[tuple[float, str]]]
+    """
+    held: list[tuple[float, str]] = []
+    with timed_handles(lambda seconds, what: held.append((seconds, what))):
+        yield held

@@ -23,6 +23,7 @@ core holds only the format and the two protocols, as it does for the generation 
 from __future__ import annotations
 
 import inspect
+import json
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
@@ -50,6 +51,8 @@ __all__ = [
     "EpochQuiet",
     "EpochWalk",
     "epoch_change_body",
+    "KeyedRecordForm",
+    "keyed_record_form",
     "read_epoch_change_body",
     "read_logged_epoch_change",
     "walk_by_count",
@@ -721,6 +724,63 @@ def epoch_change_body(
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
     return stored if carries_values else _within_bound(stored, table_name)
+
+
+@dataclass(frozen=True, slots=True)
+class KeyedRecordForm:
+    """the stored form of a keyed change (:func:`epoch_change_body` over rows) in its fixed pieces, for a record
+    assembled from rows already in JSON (a restore's, in a worker process: :mod:`threetears.core.change_note_fold`).
+
+    A record is ``head + <table as a JSON string> + middle + <rows, comma-separated> + tail``; a row is
+    ``row_head + <its ids as a JSON array> [+ row_columns + <its columns as a JSON object>] + row_tail``. Taken from
+    :func:`epoch_change_body`'s own output (:func:`keyed_record_form`), so the two never differ in form.
+
+    :ivar head: before the table
+    :ivar middle: between the table and the rows
+    :ivar tail: after the rows
+    :ivar row_head: a row's start, before its ids
+    :ivar row_columns: between a row's ids and its columns, for a row carrying any
+    :ivar row_tail: a row's end
+    :ivar max_bytes: the most one record may take, its overhead kept free under the record bound
+    """
+
+    head: bytes
+    middle: bytes
+    tail: bytes
+    row_head: bytes
+    row_columns: bytes
+    row_tail: bytes
+    max_bytes: int
+
+
+def keyed_record_form() -> KeyedRecordForm:
+    """the stored form of a keyed change in its fixed pieces, cut out of :func:`epoch_change_body`'s output.
+
+    :return: the form
+    :rtype: KeyedRecordForm
+    """
+    table, ids = "T", ["I"]
+    columns: dict[str, str | None] = {"C": "V"}
+    bare = ChangedRow(ids=ids).model_dump_json(exclude_none=True).encode("utf-8")
+    carried = ChangedRow(ids=ids, columns=columns).model_dump_json(exclude_none=True).encode("utf-8")
+    body = epoch_change_body(table, [ChangedRow(ids=ids)])
+    ids_json, table_json = json.dumps(ids, separators=(",", ":")).encode(), json.dumps(table).encode()
+    columns_json = json.dumps(columns, separators=(",", ":")).encode()
+    head, _, rest = body.partition(table_json)
+    middle, _, tail = rest.partition(bare)
+    row_head, _, row_tail = bare.partition(ids_json)
+    row_columns, _, carried_tail = carried.removeprefix(row_head + ids_json).partition(columns_json)
+    if carried_tail != row_tail or head + table_json + middle + bare + tail != body:
+        raise RuntimeError(f"a keyed record's form could not be cut out of {body!r} and {carried!r}")
+    return KeyedRecordForm(
+        head=head,
+        middle=middle,
+        tail=tail,
+        row_head=row_head,
+        row_columns=row_columns,
+        row_tail=row_tail,
+        max_bytes=_EPOCH_CHANGE_MAX_RECORD_BYTES - _RECORD_OVERHEAD_BYTES,
+    )
 
 
 def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChange:
