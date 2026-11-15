@@ -238,6 +238,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cap", type=float, default=None, metavar="DOLLARS", help="the most a live run may spend")
     parser.add_argument("--apps", default="", help="comma-separated; every app when empty")
     parser.add_argument("--workdir", type=Path, default=HERE / "runs")
+    parser.add_argument(
+        "--recordings",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="where each arm's model calls are recorded (<arm>.jsonl); when every arm's is there, they are replayed",
+    )
     parser.add_argument("--dry-run", action="store_true", help="say what would run and what it may cost; run nothing")
     return parser
 
@@ -263,15 +270,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     tier = TIERS[args.tier]
     priced = quote(tier, runs=len(wheels) * cases * args.k, cap_usd=args.cap)
     print("\n".join(priced.lines()))
+    recordings = args.recordings or run_dir / "recordings"
+    # A replay serves only calls it holds and refuses any other by name: it never sends one, so it spends nothing.
+    # RECORD=1 records the files again, live, so it is no replay.
+    replay = os.environ.get("RECORD") != "1" and all((recordings / f"{slug(n)}.jsonl").is_file() for n in wheels)
+    if replay:
+        print(f"replays {recordings}: nothing is sent, and nothing spent")
     if args.dry_run:
         return 0
-    if (refusal := live_refusal(os.environ, args.cap)) is not None:
+    if not replay and (refusal := live_refusal(os.environ, args.cap)) is not None:
         print(f"onramp-agent: {refusal}", file=sys.stderr)
         return 2
     arms: dict[str, Runner] = {}
     for build in _builds(wheels, args.workdir):
         try:
-            brain = ModelBrain(tier.model(run_dir / "recordings" / f"{slug(build.name)}.jsonl"))
+            brain = ModelBrain(tier.model(recordings / f"{slug(build.name)}.jsonl"))
         except ValueError as unbuilt:  # a missing key, named
             print(f"onramp-agent: {unbuilt}", file=sys.stderr)
             return 2

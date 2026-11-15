@@ -330,3 +330,38 @@ def test_doing_nothing_is_counted_failed_on_a_grader_returning_false_not_only_on
     reading = json.loads(done.stdout.splitlines()[-1])
     assert reading["means"] == {"odd": pytest.approx(2 / 3)} and reading["finished"] is True
     assert reading["nothing_unpassed"] == 1.0, "a None answer graded False fails its case, though no check failed"
+
+
+async def test_a_recorded_agent_run_replays_offline_turn_for_turn_in_another_sandbox(tmp_path: Path) -> None:
+    acts = [
+        {"tool": "run", "command": "ls"},
+        {"tool": "read", "path": "README.md"},
+        {"tool": "write", "path": "probe.py", "text": "import pathlib\nprint(pathlib.Path.cwd())\n"},
+        {"tool": "run", "command": "python probe.py"},
+        {"tool": "done", "text": '{"eval_file": "probe.py"}'},
+    ]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": []})
+        user = next(m["content"] for m in json.loads(request.content)["messages"] if m["role"] == "user")
+        act = {"path": "", "start": 1, "text": "", "command": "", **acts[user.count("[turn ")]}
+        return httpx.Response(200, json=_act_reply(json.dumps(act)))
+
+    recording = tmp_path / "agent.jsonl"
+    http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    live = TIERS["cheap"].model(recording, api_key="scripted", http=http, catalogue=Catalogue(http=http))
+    first = Sandbox.create(tmp_path / "first", "glossator", _build(tmp_path))
+    try:
+        recorded = await attempt(first, ModelBrain(live), Caps(cost_usd=1.0, wall_s=600.0))
+    finally:
+        await live.aclose()
+        await http.aclose()
+    assert recorded.stopped == "done" and recording.is_file()
+
+    replaying = TIERS["cheap"].model(recording)  # no key, no client: a replay serves every call
+    second = Sandbox.create(tmp_path / "second", "glossator", _build(tmp_path))
+    replayed = await attempt(second, ModelBrain(replaying), Caps(cost_usd=1.0, wall_s=600.0))
+    assert replayed.stopped == "done" and replayed.report == recorded.report
+    assert [(s.act, s.observation) for s in replayed.steps] == [(s.act, s.observation) for s in recorded.steps]
+    assert replayed.steps[3].observation.text.splitlines()[1] == ".", "the sandbox's path is shown as ."
