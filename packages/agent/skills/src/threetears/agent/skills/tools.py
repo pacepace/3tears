@@ -1403,6 +1403,8 @@ def load_skill_get_tool(
     :ptype skills_collection: AgentSkillCollection
     :param tz: the zone the times are said in; ``None`` says them in UTC
     :ptype tz: tzinfo | str | None
+    :param count_cap: the most uses counted for the total; past it the total is said as "N or more"
+    :ptype count_cap: int
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     :raises ValueError: when ``tz`` is a name that is not a known zone
@@ -2123,6 +2125,7 @@ def load_skill_history_tool(
     skills_collection: AgentSkillCollection,
     invocations_collection: AgentSkillInvocationCollection,
     tz: tzinfo | str | None = None,
+    count_cap: int = _HISTORY_COUNT_CAP,
 ) -> list[BaseTool]:
     """Build a ``skill_history`` tool listing one skill's uses, newest first.
 
@@ -2143,6 +2146,8 @@ def load_skill_history_tool(
     :ptype invocations_collection: AgentSkillInvocationCollection
     :param tz: the zone the times are said in; ``None`` says them in UTC
     :ptype tz: tzinfo | str | None
+    :param count_cap: the most uses counted for the total; past it the total is said as "N or more"
+    :ptype count_cap: int
     :return: list with one LangChain tool
     :rtype: list[BaseTool]
     :raises ValueError: when ``tz`` is a name that is not a known zone
@@ -2168,7 +2173,7 @@ def load_skill_history_tool(
             return _tool_error("skill_history", "that cursor is not one skill_history gave; leave it out to start")
         shown, after = place
         counted = await invocations_collection.count_for_skill_at_most(
-            agent_id, entity.skill_id, at_most=_HISTORY_COUNT_CAP
+            agent_id, entity.skill_id, at_most=count_cap
         )
         tag = f"[skill:{entity.skill_id}] {entity.name}"
         if counted.count == 0:

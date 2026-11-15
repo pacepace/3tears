@@ -20,10 +20,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-import pytest
 from uuid_utils import uuid7
-
-from threetears.agent.skills import tools as skill_tools
 
 from threetears.agent.skills.tools import (
     BODY_MAX_BYTES,
@@ -316,10 +313,9 @@ class TestSkillHistory:
         last = await tool.ainvoke({"skill_id": str(skill_id), "limit": 2, "cursor": cursor})
         assert "Uses 3-3 of 3" in last and "a wake ran it" in last and "cursor=" not in last.splitlines()[-1]
 
-    async def test_a_history_past_the_count_cap_says_or_more(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_a_history_past_the_count_cap_says_or_more(self) -> None:
         """Flips if a history longer than the count's cap is numbered against a total said exactly: the count
         stops past the cap, so the total is said as "N or more", and the next page offered is a whole one."""
-        monkeypatch.setattr(skill_tools, "_HISTORY_COUNT_CAP", 2)
         coll = FakeSkillsCollection()
         inv = FakeInvocationsCollection(coll)
         skill_id = _seed(coll)
@@ -345,6 +341,7 @@ class TestSkillHistory:
             user_id=PERSON,
             skills_collection=coll,  # type: ignore[arg-type]
             invocations_collection=inv,  # type: ignore[arg-type]
+            count_cap=2,
         )
         lines = (await tool.ainvoke({"skill_id": "tide-check", "limit": 1})).splitlines()
         assert "2 or more use(s) in all" in lines[0] and "Uses 1-1 of 2 or more" in lines[0], lines[0]
