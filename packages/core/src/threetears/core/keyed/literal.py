@@ -14,6 +14,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from threetears.core.keyed import _filters
 from threetears.core.keyed._filters import (
     AnyOf,
     Derived,
@@ -23,7 +24,6 @@ from threetears.core.keyed._filters import (
     narrowing,
     selected_column,
 )
-from threetears.core.keyed._filters import relation as _relation_sql
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.filters import PLACEHOLDER
 
@@ -100,7 +100,7 @@ def literal_select(
     text = " AND ".join(conditions)
     written = PLACEHOLDER.sub(lambda match: _sql_literal(values[int(match.group(1)) - 1]), text)
     selected = ", ".join(selected_column(column, alias) for column in columns)
-    return f"SELECT {selected} FROM {_relation_sql(relation, alias)} WHERE {written}"  # noqa: S608 - TRUSTED names; literals
+    return f"SELECT {selected} FROM {_filters.relation(relation, alias)} WHERE {written}"  # noqa: S608 - TRUSTED names; literals
 
 
 def literal_upsert(table: str, row: Mapping[str, Any], *, key: Sequence[str]) -> str:

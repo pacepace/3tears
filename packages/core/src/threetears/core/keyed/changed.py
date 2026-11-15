@@ -38,8 +38,8 @@ from decimal import Decimal
 from typing import Any, Final
 
 from threetears.core.backends.dialect import known_on_yugabyte
+from threetears.core.keyed import _filters
 from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, narrowing, sent_by
-from threetears.core.keyed._filters import relation as _relation
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.held import Held, HeldArrow, HeldMapping
 from threetears.core.keyed.held import hash_bytes as _hash_bytes
@@ -834,7 +834,7 @@ async def _group_hash_rows(
         # fenced, each row is hashed once below the aggregate. Every dialect here accepts it; the answer is the same.
         sql = (
             f"SELECT {outer}, {items} FROM (SELECT {inner}, "
-            f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_relation(relation, 't')}{filtered}"
+            f"{row_hash_sql(hash_columns, dialect, alias='t', encoding=HashEncoding.HEX)} AS h FROM {_filters.relation(relation, 't')}{filtered}"
             f" OFFSET 0) AS s GROUP BY {grouped} ORDER BY {ordered} LIMIT {page}"
         )
         rows = await sent_by(conn).fetch(sql, *params)
