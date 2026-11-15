@@ -23,10 +23,12 @@ know about before comparing their outputs.
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from threetears.observe import BuildOnce, get_logger
 
@@ -40,7 +42,10 @@ __all__ = [
     "parse_python_file",
     "parse_python_path",
     "relative_posix_path",
+    "remembered_walks",
+    "walk_tree",
     "is_private_name",
+    "kept_for",
     "is_logger_call",
     "is_suppress_call",
     "dotted",
@@ -401,6 +406,103 @@ def parse_python_file(path: Path) -> ast.Module | None:
 #: what else :func:`clear_parse_cache` releases: caches built from parses, each registered by the
 #: module that keeps it through :func:`clear_with_parse_cache`.
 _ALSO_CLEARED: list[Callable[[], object]] = []
+
+
+#: the nodes whose walk a :func:`remembered_walks` scope keeps: a module and the classes and functions in it. only a
+#: parsed source tree holds them (the copies a walker makes to substitute into are expressions, which it rewrites in
+#: place, so a kept walk of one could go stale), and they are what the walkers walk again and again: the no-whole-reads
+#: walk walked each module whole about fifteen times and each class or function once per call judged in it
+_REMEMBERED = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+@dataclass(frozen=True)
+class _Walks:
+    """the walks one :func:`remembered_walks` scope keeps, by the walked node's id.
+
+    :ivar nodes: id of the node -> the node (held, so no other node takes its id while the scope lasts) and its walk
+    :ivar results: (what was computed, id of the node) -> the node (held) and what :func:`kept_for` computed of it
+    """
+
+    nodes: dict[int, tuple[ast.AST, tuple[ast.AST, ...]]]
+    results: dict[tuple[Callable[[Any], object], int], tuple[object, object]]
+
+
+#: the scope :func:`walk_tree` keeps its walks in; None outside one. a context variable, never a module-level cache:
+#: each thread and task has its own scope, and the walks go when the scope ends
+_WALKS: ContextVar[_Walks | None] = ContextVar("threetears_enforcement_walks", default=None)
+
+
+@contextmanager
+def remembered_walks() -> Iterator[None]:
+    """keep, until the block ends, each :func:`walk_tree` of a module, class or function, so the next walk of the
+    same node reads the nodes kept instead of walking the tree again. a scope inside another is the outer one.
+
+    the trees walked must not change while the scope lasts (the parse cache's trees never do: read them, never
+    mutate them). why (profiled 2026-11-15; the guard is tests/no_whole_reads/test_walk_cost.py): one ``ast.walk``
+    of every module of 3tears costs 1.2 s and a kept walk 0.08 s, and the no-whole-reads walk walked the same
+    modules about fifteen times and each class or function once per call judged in it. What a scope costs: at the
+    end of 3tears' no-whole-reads walk it holds about 100 MB (own-node tuples 35, module walks 20, local names 19,
+    class and function walks 24), the walk's peak RSS about 5% above the old walk's.
+
+    :return: a context manager
+    :rtype: Iterator[None]
+    """
+    if _WALKS.get() is not None:
+        yield
+        return
+    token = _WALKS.set(_Walks(nodes={}, results={}))
+    try:
+        yield
+    finally:
+        _WALKS.reset(token)
+
+
+def walk_tree(node: ast.AST) -> Iterable[ast.AST]:
+    """every node under ``node``, itself first, in :func:`ast.walk` order: the same nodes as ``ast.walk(node)``, kept
+    inside a :func:`remembered_walks` scope when ``node`` is a module, class or function.
+
+    :param node: the node
+    :ptype node: ast.AST
+    :return: the nodes
+    :rtype: Iterable[ast.AST]
+    """
+    walks = _WALKS.get()
+    if walks is None or not isinstance(node, _REMEMBERED):
+        return ast.walk(node)
+    kept = walks.nodes.get(id(node))
+    if kept is not None and kept[0] is node:
+        return kept[1]
+    nodes = tuple(ast.walk(node))
+    walks.nodes[id(node)] = (node, nodes)
+    return nodes
+
+
+def kept_for[N: ast.AST | list[ast.stmt], R](node: N, compute: Callable[[N], R]) -> R:
+    """``compute(node)``, computed once per module, class, function or statement list (a body) inside a
+    :func:`remembered_walks` scope and handed to every later caller as the same object: read it, never change it.
+    outside a scope, or for any other node, computed each time. a body is a parsed tree's own list or one made of its
+    statements, never one a walker rewrites.
+
+    for what several passes of a walk derive from the same tree alone (the no-whole-reads walk's local names of a module
+    were computed by three passes, one of them once per module per forwarder round).
+
+    :param node: the node, or a body
+    :ptype node: N
+    :param compute: a function of the node alone
+    :ptype compute: Callable[[N], R]
+    :return: what it computes
+    :rtype: R
+    """
+    walks = _WALKS.get()
+    if walks is None or not isinstance(node, (*_REMEMBERED, list)):
+        return compute(node)
+    key = (compute, id(node))
+    kept = walks.results.get(key)
+    if kept is not None and kept[0] is node:
+        return cast(R, kept[1])
+    result = compute(node)
+    walks.results[key] = (node, result)
+    return result
 
 
 def clear_with_parse_cache(clear: Callable[[], object]) -> None:

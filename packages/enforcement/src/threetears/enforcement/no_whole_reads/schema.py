@@ -41,7 +41,14 @@ from pathlib import Path
 from typing import Any, Final
 
 from threetears.core.authored_yaml import safe_load_authored
-from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
+from threetears.enforcement.common import (
+    dotted,
+    iter_python_files,
+    parse_python_path,
+    relative_posix_path,
+    remembered_walks,
+    walk_tree,
+)
 
 __all__ = [
     "COPY_PREFIX",
@@ -1395,7 +1402,7 @@ def _template_names(
     if position is not None and position >= len(arguments) - len(defaults):
         default = values.text(defaults[position - (len(arguments) - len(defaults))])
         found.extend([default] if default is not None else [])
-    for node in ast.walk(tree):
+    for node in walk_tree(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == function.name:
             passed = _keyword(node, parameter) or (
                 node.args[position] if position is not None and position < len(node.args) else None
@@ -1459,7 +1466,7 @@ def _class_tenancy(catalog: SchemaCatalog, tree: ast.Module, values: _Values, re
     :return: nothing
     :rtype: None
     """
-    for node in ast.walk(tree):
+    for node in walk_tree(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         assigned = {
@@ -1608,6 +1615,36 @@ def _collations(node: ast.expr | None, values: _Values) -> dict[str, str]:
     return found
 
 
+def _enclosing_functions(
+    tree: ast.Module,
+    params_of: dict[int, set[str]],
+    enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> None:
+    """for each call inside a function: the parameters of every function around it, and the innermost one.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :param params_of: filled: call's id onto every enclosing function's parameter names
+    :ptype params_of: dict[int, set[str]]
+    :param enclosing: filled: call's id onto the innermost function around it
+    :ptype enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef]
+    :return: nothing
+    :rtype: None
+    """
+    stack: list[tuple[ast.AST, frozenset[str], ast.FunctionDef | ast.AsyncFunctionDef | None]] = [
+        (tree, frozenset(), None)
+    ]
+    while stack:
+        node, names, innermost = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+            names, innermost = names | {argument.arg for argument in arguments}, node
+        if isinstance(node, ast.Call) and innermost is not None:
+            params_of[id(node)] = set(names)
+            enclosing[id(node)] = innermost
+        stack.extend((child, names, innermost) for child in ast.iter_child_nodes(node))
+
+
 def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, local: bool) -> None:
     """apply one module's declarations: its TableSchemas, SQLAlchemy Tables, Index calls and DDL strings.
 
@@ -1622,169 +1659,183 @@ def _apply_python(catalog: SchemaCatalog, tree: ast.Module, relative: str, *, lo
     :return: nothing
     :rtype: None
     """
-    values = _Values(tree)
-    claimed: set[int] = set()
-    #: each call's enclosing function's parameters: a declaration named by one is a factory, not a declaration
-    params_of: dict[int, set[str]] = {}
-    enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef] = {}
-    for function in ast.walk(tree):
-        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            names = {arg.arg for arg in [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]}
-            for inner in ast.walk(function):
-                if isinstance(inner, ast.Call):
-                    params_of.setdefault(id(inner), set()).update(names)
-                    enclosing[id(inner)] = function
-    calls: list[ast.Call] = []
-    strings: list[ast.Constant] = []
-    #: DDL written as an f-string, its placeholders resolved to the module's constants (``{TURN_DEDUP_ROWS_TABLE}``)
-    formatted: list[tuple[ast.JoinedStr, str]] = []
-    pieces: set[int] = set()
-    docstrings: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            calls.append(node)
-        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
-            docstrings.add(id(node.value))
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _DDL_HINT.search(node.value):
-            strings.append(node)
-        elif isinstance(node, ast.JoinedStr):
-            pieces.update(id(part) for part in node.values)
-            written = values.text(node) or ""
-            if _DDL_HINT.search(written):
-                formatted.append((node, written))
-    for call in calls:
-        final = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None)
-        origin = f"{relative}:{call.lineno}"
-        if final in values.table_schema_aliases:
-            name_node = _keyword(call, "name")
-            if isinstance(name_node, ast.Name) and name_node.id in params_of.get(id(call), set()):
-                # a template: its keys and indexes are every table built from it (C6)
-                template = _declare_template(catalog, call, values, relative, local=local)
-                builder = enclosing.get(id(call))
-                for concrete in _template_names(tree, builder, name_node.id, values) if builder is not None else []:
-                    built = bare_table(concrete)
-                    if built is not None:
-                        catalog.mark_threetears(built)
-                    for template_key in template.primary_keys if built is not None else []:
-                        catalog.add_key(built or "", template_key, origin)
-                claimed.update(id(element) for element in values.elements(_keyword(call, "indexes")))
-                continue
-            table_text = values.text(name_node)
-            table = bare_table(table_text) if table_text is not None else None
-            if table is not None:
-                catalog.mark_threetears(table)
-            key = values.texts(_keyword(call, "primary_key"))
-            if table is not None and key:
-                catalog.add_key(table, key, origin)
-            for element in values.elements(_keyword(call, "indexes")):
-                if isinstance(element, ast.Call):
-                    index = _index_from_call(element, values, table or "", f"{relative}:{element.lineno}", local=local)
-                    claimed.add(id(element))
-                    if index is not None:
-                        _add_site(catalog, index)
-            for element in values.elements(_keyword(call, "columns")):
-                if (
-                    table is not None
-                    and isinstance(element, ast.Call)
-                    and element.args
-                    and getattr(_keyword(element, "partition"), "value", False) is True
-                ):
-                    partition = values.text(element.args[0])
-                    if partition is not None:
-                        catalog.add_tenant(table, partition, origin)
-            for element in values.elements(_keyword(call, "unique_constraints")):
-                columns = _unique_columns(element, values, named_first=True)
-                if table is not None and columns:
-                    catalog.add_unique(table, columns, origin)
-            for element in values.elements(_keyword(call, "foreign_keys")):
-                name, columns, referenced = _foreign_key(element, values)
-                if table is not None and columns:
-                    catalog.add_foreign_key(table, name, columns, origin, referenced)
-        elif final == "Table" and call.args and values.text(call.args[0]) is not None:
-            table = bare_table(values.text(call.args[0]) or "")
-            if table is None:
-                continue
-            key = tuple(
-                values.text(column.args[0]) or ""
-                for column in call.args[1:]
-                if isinstance(column, ast.Call)
-                and column.args
-                and any(k.arg == "primary_key" and getattr(k.value, "value", False) is True for k in column.keywords)
+    # the module and its functions are walked again for its templates, bindings and tenancy: each walk is kept for
+    # the module, never longer, since the trees the collection parses past the parse cache's bound are released module
+    # by module
+    with remembered_walks():
+        values = _Values(tree)
+        claimed: set[int] = set()
+        #: each call's enclosing function's parameters: a declaration named by one is a factory, not a declaration
+        params_of: dict[int, set[str]] = {}
+        enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+        # one pass down the tree with the functions around each node, not one walk per function (which walked a nested
+        # function once per function around it): each call gets every enclosing function's parameters and the
+        # innermost one, as those walks gave it (profiled 2026-11-15)
+        _enclosing_functions(tree, params_of, enclosing)
+        calls: list[ast.Call] = []
+        strings: list[ast.Constant] = []
+        #: DDL written as an f-string, its placeholders resolved to the module's constants (``{TURN_DEDUP_ROWS_TABLE}``)
+        formatted: list[tuple[ast.JoinedStr, str]] = []
+        pieces: set[int] = set()
+        docstrings: set[int] = set()
+        for node in walk_tree(tree):
+            if isinstance(node, ast.Call):
+                calls.append(node)
+            elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+                docstrings.add(id(node.value))
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _DDL_HINT.search(node.value):
+                strings.append(node)
+            elif isinstance(node, ast.JoinedStr):
+                pieces.update(id(part) for part in node.values)
+                written = values.text(node) or ""
+                if _DDL_HINT.search(written):
+                    formatted.append((node, written))
+        for call in calls:
+            final = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None)
+            origin = f"{relative}:{call.lineno}"
+            if final in values.table_schema_aliases:
+                name_node = _keyword(call, "name")
+                if isinstance(name_node, ast.Name) and name_node.id in params_of.get(id(call), set()):
+                    # a template: its keys and indexes are every table built from it (C6)
+                    template = _declare_template(catalog, call, values, relative, local=local)
+                    builder = enclosing.get(id(call))
+                    for concrete in _template_names(tree, builder, name_node.id, values) if builder is not None else []:
+                        built = bare_table(concrete)
+                        if built is not None:
+                            catalog.mark_threetears(built)
+                        for template_key in template.primary_keys if built is not None else []:
+                            catalog.add_key(built or "", template_key, origin)
+                    claimed.update(id(element) for element in values.elements(_keyword(call, "indexes")))
+                    continue
+                table_text = values.text(name_node)
+                table = bare_table(table_text) if table_text is not None else None
+                if table is not None:
+                    catalog.mark_threetears(table)
+                key = values.texts(_keyword(call, "primary_key"))
+                if table is not None and key:
+                    catalog.add_key(table, key, origin)
+                for element in values.elements(_keyword(call, "indexes")):
+                    if isinstance(element, ast.Call):
+                        index = _index_from_call(
+                            element, values, table or "", f"{relative}:{element.lineno}", local=local
+                        )
+                        claimed.add(id(element))
+                        if index is not None:
+                            _add_site(catalog, index)
+                for element in values.elements(_keyword(call, "columns")):
+                    if (
+                        table is not None
+                        and isinstance(element, ast.Call)
+                        and element.args
+                        and getattr(_keyword(element, "partition"), "value", False) is True
+                    ):
+                        partition = values.text(element.args[0])
+                        if partition is not None:
+                            catalog.add_tenant(table, partition, origin)
+                for element in values.elements(_keyword(call, "unique_constraints")):
+                    columns = _unique_columns(element, values, named_first=True)
+                    if table is not None and columns:
+                        catalog.add_unique(table, columns, origin)
+                for element in values.elements(_keyword(call, "foreign_keys")):
+                    name, columns, referenced = _foreign_key(element, values)
+                    if table is not None and columns:
+                        catalog.add_foreign_key(table, name, columns, origin, referenced)
+            elif final == "Table" and call.args and values.text(call.args[0]) is not None:
+                table = bare_table(values.text(call.args[0]) or "")
+                if table is None:
+                    continue
+                key = tuple(
+                    values.text(column.args[0]) or ""
+                    for column in call.args[1:]
+                    if isinstance(column, ast.Call)
+                    and column.args
+                    and any(
+                        k.arg == "primary_key" and getattr(k.value, "value", False) is True for k in column.keywords
+                    )
+                )
+                if key:
+                    catalog.add_key(table, key, origin)
+                for element in call.args[1:]:
+                    name, referencing, referenced = _foreign_key(element, values)
+                    if referencing:
+                        catalog.add_foreign_key(table, name, referencing, origin, referenced)
+                    columns = _unique_columns(element, values, named_first=False)
+                    if columns:
+                        catalog.add_unique(table, columns, origin)
+                    elif (
+                        isinstance(element, ast.Call)
+                        and element.args
+                        and any(
+                            k.arg == "unique" and getattr(k.value, "value", False) is True for k in element.keywords
+                        )
+                        and (getattr(element.func, "attr", None) or getattr(element.func, "id", None)) == "Column"
+                    ):
+                        catalog.add_unique(table, (values.text(element.args[0]) or "?",), origin)
+                for element in call.args[1:]:
+                    if (
+                        isinstance(element, ast.Call)
+                        and (getattr(element.func, "attr", None) or getattr(element.func, "id", None)) == "Index"
+                    ):
+                        index = _index_from_call(element, values, table, f"{relative}:{element.lineno}", local=local)
+                        claimed.add(id(element))
+                        if index is not None:
+                            _add_site(catalog, index)
+        # a SQLAlchemy Table bound to a module name: an Index on ``that.c.column`` belongs to it
+        tables_by_name = {
+            name: bare_table(values.text(value.args[0]) or "") or ""
+            for name, value in values.names.items()
+            if isinstance(value, ast.Call)
+            and (getattr(value.func, "attr", None) or getattr(value.func, "id", None)) == "Table"
+            and value.args
+            and values.text(value.args[0]) is not None
+        }
+        _class_tenancy(catalog, tree, values, relative)
+        for call in calls:
+            final = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None)
+            name_node = (
+                (call.args[0] if call.args else _keyword(call, "name")) if final in values.index_aliases else None
             )
-            if key:
-                catalog.add_key(table, key, origin)
-            for element in call.args[1:]:
-                name, referencing, referenced = _foreign_key(element, values)
-                if referencing:
-                    catalog.add_foreign_key(table, name, referencing, origin, referenced)
-                columns = _unique_columns(element, values, named_first=False)
-                if columns:
-                    catalog.add_unique(table, columns, origin)
-                elif (
-                    isinstance(element, ast.Call)
-                    and element.args
-                    and any(k.arg == "unique" and getattr(k.value, "value", False) is True for k in element.keywords)
-                    and (getattr(element.func, "attr", None) or getattr(element.func, "id", None)) == "Column"
-                ):
-                    catalog.add_unique(table, (values.text(element.args[0]) or "?",), origin)
-            for element in call.args[1:]:
-                if (
-                    isinstance(element, ast.Call)
-                    and (getattr(element.func, "attr", None) or getattr(element.func, "id", None)) == "Index"
-                ):
-                    index = _index_from_call(element, values, table, f"{relative}:{element.lineno}", local=local)
-                    claimed.add(id(element))
-                    if index is not None:
-                        _add_site(catalog, index)
-    # a SQLAlchemy Table bound to a module name: an Index on ``that.c.column`` belongs to it
-    tables_by_name = {
-        name: bare_table(values.text(value.args[0]) or "") or ""
-        for name, value in values.names.items()
-        if isinstance(value, ast.Call)
-        and (getattr(value.func, "attr", None) or getattr(value.func, "id", None)) == "Table"
-        and value.args
-        and values.text(value.args[0]) is not None
-    }
-    _class_tenancy(catalog, tree, values, relative)
-    for call in calls:
-        final = call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None)
-        name_node = (call.args[0] if call.args else _keyword(call, "name")) if final in values.index_aliases else None
-        if isinstance(name_node, ast.Name) and name_node.id in params_of.get(id(call), set()):
-            # a factory (``Index(name, ...)`` building whatever its caller names): its call sites declare (C3)
-            continue
-        if final in values.index_aliases and id(call) not in claimed and (call.args or _keyword(call, "name")):
-            owner = (dotted(call.args[1]) or "").split(".") if len(call.args) > 1 else []
-            table = tables_by_name.get(owner[0], "") if len(owner) == 3 and owner[1] == "c" else ""
-            index = _index_from_call(call, values, table, f"{relative}:{call.lineno}", local=local)
-            if index is not None:
-                _add_site(catalog, index)
-    # a docstring's example DDL declares nothing
-    for node in strings:
-        if id(node) not in docstrings and id(node) not in pieces:
-            _apply_ddl(catalog, str(node.value), f"{relative}:{node.lineno}", local=local)
-    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
-    for joined, written in formatted:
-        # an f-string of a loop's or a function's own names, each bound to literals where it is written: one DDL a
-        # binding (``f"... {table}_draft_owner_idx ON {table} ..."`` for each table its callers pass); else its
-        # template, the names unknown (C4)
-        for text in _instances(joined, values, tree, parents) or [written]:
-            _apply_ddl(catalog, text, f"{relative}:{joined.lineno}", local=local)
-    # DDL written as a ``.format(...)`` template: its placeholders filled from the module's constants (C4)
-    for call in calls:
-        layout = (
-            values.text(call.func.value)
-            if isinstance(call.func, ast.Attribute) and call.func.attr == "format"
-            else None
+            if isinstance(name_node, ast.Name) and name_node.id in params_of.get(id(call), set()):
+                # a factory (``Index(name, ...)`` building whatever its caller names): its call sites declare (C3)
+                continue
+            if final in values.index_aliases and id(call) not in claimed and (call.args or _keyword(call, "name")):
+                owner = (dotted(call.args[1]) or "").split(".") if len(call.args) > 1 else []
+                table = tables_by_name.get(owner[0], "") if len(owner) == 3 and owner[1] == "c" else ""
+                index = _index_from_call(call, values, table, f"{relative}:{call.lineno}", local=local)
+                if index is not None:
+                    _add_site(catalog, index)
+        # a docstring's example DDL declares nothing
+        for node in strings:
+            if id(node) not in docstrings and id(node) not in pieces:
+                _apply_ddl(catalog, str(node.value), f"{relative}:{node.lineno}", local=local)
+        # only an f-string DDL reads the parents: most modules have none, and the map cost a pass over every node
+        parents = (
+            {id(child): parent for parent in walk_tree(tree) for child in ast.iter_child_nodes(parent)}
+            if formatted
+            else {}
         )
-        if layout is not None and _DDL_HINT.search(layout):
-            positional = [values.text(argument) or "{}" for argument in call.args]
-            named = {keyword.arg: values.text(keyword.value) or "{}" for keyword in call.keywords if keyword.arg}
-            try:
-                filled = layout.format(*positional, **named)
-            except IndexError, KeyError, ValueError:
-                filled = ""
-            if filled:
-                _apply_ddl(catalog, filled, f"{relative}:{call.lineno}", local=local)
+        for joined, written in formatted:
+            # an f-string of a loop's or a function's own names, each bound to literals where it is written: one DDL a
+            # binding (``f"... {table}_draft_owner_idx ON {table} ..."`` for each table its callers pass); else its
+            # template, the names unknown (C4)
+            for text in _instances(joined, values, tree, parents) or [written]:
+                _apply_ddl(catalog, text, f"{relative}:{joined.lineno}", local=local)
+        # DDL written as a ``.format(...)`` template: its placeholders filled from the module's constants (C4)
+        for call in calls:
+            layout = (
+                values.text(call.func.value)
+                if isinstance(call.func, ast.Attribute) and call.func.attr == "format"
+                else None
+            )
+            if layout is not None and _DDL_HINT.search(layout):
+                positional = [values.text(argument) or "{}" for argument in call.args]
+                named = {keyword.arg: values.text(keyword.value) or "{}" for keyword in call.keywords if keyword.arg}
+                try:
+                    filled = layout.format(*positional, **named)
+                except IndexError, KeyError, ValueError:
+                    filled = ""
+                if filled:
+                    _apply_ddl(catalog, filled, f"{relative}:{call.lineno}", local=local)
 
 
 def _instances(joined: ast.JoinedStr, values: _Values, tree: ast.Module, parents: dict[int, ast.AST]) -> list[str]:
@@ -1881,7 +1932,7 @@ def _bindings(
                 return []
             calls = [
                 call
-                for call in ast.walk(tree)
+                for call in walk_tree(tree)
                 if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == current.name
             ]
             each: list[dict[str, str]] = []
@@ -2220,7 +2271,7 @@ def _test_defect(repo_root: Path, test: str, *, names: tuple[str, ...], calls: s
     tree = ast.parse(path.read_text(encoding="utf-8"))
     tests = [
         node
-        for node in ast.walk(tree)
+        for node in walk_tree(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
     ]
     if not tests:
@@ -2233,7 +2284,7 @@ def _test_defect(repo_root: Path, test: str, *, names: tuple[str, ...], calls: s
     if not any(
         isinstance(node, ast.Call) and (dotted(node.func) or "").rsplit(".", 1)[-1] == calls
         for test in tests
-        for node in ast.walk(test)
+        for node in walk_tree(test)
     ):
         return f"{module}::{name} never calls {calls}: the database, not the test's word, shows the index does its work"
     return None
@@ -2256,7 +2307,7 @@ def _names_a_match(repo_root: Path, test: str, pattern: str) -> bool:
     tree = ast.parse((repo_root / module).read_text(encoding="utf-8"))
     body = "\n".join(
         ast.unparse(statement)
-        for node in ast.walk(tree)
+        for node in walk_tree(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
         for statement in node.body
     )

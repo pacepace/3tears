@@ -47,7 +47,15 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final
 
-from threetears.enforcement.common import dotted, iter_python_files, parse_python_path, relative_posix_path
+from threetears.enforcement.common import (
+    dotted,
+    iter_python_files,
+    kept_for,
+    parse_python_path,
+    relative_posix_path,
+    remembered_walks,
+    walk_tree,
+)
 from threetears.enforcement.no_whole_reads.bounded import BoundBy, Bounded, bounded_relations
 from threetears.enforcement.no_whole_reads.flow import (
     CLEAN,
@@ -1290,7 +1298,7 @@ def _target_binds(target: ast.expr, name: str) -> bool:
     :return: whether it does
     :rtype: bool
     """
-    return any(isinstance(node, ast.Name) and node.id == name for node in ast.walk(target))
+    return any(isinstance(node, ast.Name) and node.id == name for node in walk_tree(target))
 
 
 def _binds_in(node: ast.For | ast.AsyncFor | ast.With | ast.AsyncWith, name: str) -> bool:
@@ -1745,13 +1753,13 @@ def _relation_wrappers(tree: ast.Module) -> frozenset[str]:
         if len(arguments.args) != 1 or arguments.posonlyargs or arguments.kwonlyargs or arguments.vararg:
             continue
         parameter = arguments.args[0].arg
-        returns = [node for node in ast.walk(function) if isinstance(node, ast.Return)]
+        returns = [node for node in walk_tree(function) if isinstance(node, ast.Return)]
         quoted = False
         for returned in returns:
             value = returned.value
             if not (isinstance(value, ast.Call) and _final(value) in {"Quoted", "Derived"} and len(value.args) == 1):
                 break
-            names = {node.id for node in ast.walk(value.args[0]) if isinstance(node, ast.Name)}
+            names = {node.id for node in walk_tree(value.args[0]) if isinstance(node, ast.Name)}
             if names != {parameter} or value.keywords:
                 break
             quoted = quoted or _final(value) == "Quoted"
@@ -1806,7 +1814,7 @@ def _helper_relations(tree: ast.Module) -> tuple[dict[int, frozenset[str]], dict
     calls = [
         (function, owner, node)
         for function, owner in definitions
-        for node in ast.walk(function)
+        for node in walk_tree(function)
         if isinstance(node, ast.Call)
     ]
 
@@ -1878,14 +1886,27 @@ def _helper_relations(tree: ast.Module) -> tuple[dict[int, frozenset[str]], dict
     return parameters, fields
 
 
-def _scope_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+def _scope_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[ast.AST, ...]:
+    """the nodes of a function's own scope (:func:`_walk_scope_nodes`), read once per function inside the walk's scope
+    (:func:`~threetears.enforcement.common.kept_for`): a column list followed back to its key source asks it of the
+    same function once per name it follows (profiled 2026-11-15: 14,000 reads, 8 s of 3tears' profiled walk).
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :return: the nodes
+    :rtype: tuple[ast.AST, ...]
+    """
+    return kept_for(function, _walk_scope_nodes)
+
+
+def _walk_scope_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[ast.AST, ...]:
     """the nodes of a function's own scope: never inside a comprehension (its names are its own), a nested function
     or a class.
 
     :param function: the function
     :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
     :return: the nodes
-    :rtype: list[ast.AST]
+    :rtype: tuple[ast.AST, ...]
     """
     found: list[ast.AST] = []
     pending: list[ast.AST] = list(ast.iter_child_nodes(function))
@@ -1905,7 +1926,7 @@ def _scope_nodes(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.A
         ):
             continue
         pending.extend(ast.iter_child_nodes(node))
-    return found
+    return tuple(found)
 
 
 def _binds_local(function: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
@@ -1973,16 +1994,16 @@ def _closed(value: ast.expr) -> bool:
     :return: whether it does
     :rtype: bool
     """
-    called = {id(node.func) for node in ast.walk(value) if isinstance(node, ast.Call)}
+    called = {id(node.func) for node in walk_tree(value) if isinstance(node, ast.Call)}
     counted = {
         id(inner)
-        for node in ast.walk(value)
+        for node in walk_tree(value)
         if isinstance(node, ast.Call) and _final(node) == "len"
-        for inner in ast.walk(node)
+        for inner in walk_tree(node)
     }
     return not any(
         isinstance(node, ast.Name | ast.Attribute) and id(node) not in called and id(node) not in counted
-        for node in ast.walk(value)
+        for node in walk_tree(value)
     )
 
 
@@ -1995,7 +2016,7 @@ def _leading_part(node: ast.expr) -> bool:
     :return: whether it keeps the key's lead
     :rtype: bool
     """
-    for found in ast.walk(node):
+    for found in walk_tree(node):
         if not isinstance(found, ast.Subscript):
             continue
         part = found.slice
@@ -2127,6 +2148,9 @@ class _ModuleWalk(ast.NodeVisitor):
         self._lookups: dict[str, tuple[dict[str, str], str | None]] | None = None
         #: each nested function onto the function it is nested in, read once
         self._enclosing: dict[int, ast.FunctionDef | ast.AsyncFunctionDef] | None = None
+        #: each function's or class's body (by id, held) onto the assignments that name a class (:func:`_assignments`),
+        #: read once per body instead of once per call judged in it
+        self._assignments: dict[int, tuple[list[ast.stmt], list[_Assigned]]] = {}
         self.source = source
         self.hits: list[WholeReadHit] = []
         #: every SQL statement the module writes as text, as the walk reads it
@@ -2202,10 +2226,9 @@ class _ModuleWalk(ast.NodeVisitor):
         self._envs: list[dict[str, str]] = [{}]
         #: per function on the stack, the scopes of its if/else branch bindings (:meth:`_branch_envs`)
         self._branch_scopes: list[list[dict[str, str]]] = [[]]
-        self._parents: dict[ast.AST, ast.AST] = {}
-        for node in ast.walk(tree):
-            for child in ast.iter_child_nodes(node):
-                self._parents[child] = node
+        # made per walk, never kept for the scan (kept_for): every module's map held to the scan's end is 64 MB on
+        # 3tears' tree, for under a second saved across the forwarder rounds (profiled 2026-11-15)
+        self._parents: dict[ast.AST, ast.AST] = _parent_map(tree)
         #: module-level names (and names imported into the module): a loop over one walks a fixed set of keys
         self._constants: set[str] = set()
         for statement in tree.body:
@@ -2213,7 +2236,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 self.module_functions.add(statement.name)
             elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
                 targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-                self._constants.update(n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name))
+                self._constants.update(n.id for t in targets for n in walk_tree(t) if isinstance(n, ast.Name))
             elif isinstance(statement, (ast.Import, ast.ImportFrom)):
                 self._constants.update((alias.asname or alias.name).split(".")[0] for alias in statement.names)
             if isinstance(statement, ast.ImportFrom) and statement.module and not statement.level:
@@ -2224,7 +2247,7 @@ class _ModuleWalk(ast.NodeVisitor):
         #: being written, never a data table
         self._registered = {
             node.args[0].value
-            for node in ast.walk(tree)
+            for node in walk_tree(tree)
             if isinstance(node, ast.Call)
             and _final(node) in {"register", "change_relation"}
             and node.args
@@ -3053,9 +3076,9 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         constant = any(
             isinstance(name, ast.Name) and name.id.lstrip("_").isupper() and name.id in self._constants
-            for name in ast.walk(node.iter)
+            for name in walk_tree(node.iter)
         )
-        bound = {name.id for name in ast.walk(node.target) if isinstance(name, ast.Name)} if constant else set()
+        bound = {name.id for name in walk_tree(node.target) if isinstance(name, ast.Name)} if constant else set()
         self._loops.append(bound | (self._loops[-1] if self._loops else set()))
         for child in body:
             self.visit(child)
@@ -3150,8 +3173,10 @@ class _ModuleWalk(ast.NodeVisitor):
             self._string_constants = module_constant_spans(self._tree)
         constants: list[tuple[str, int, int]] = []
         if wrapped is not None:
-            inside = [n.id for n in ast.walk(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
-            everywhere = [n.id for n in ast.walk(self._tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+            inside = [n.id for n in walk_tree(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+            everywhere = [
+                n.id for n in walk_tree(self._tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+            ]
             for name in sorted(set(inside)):
                 span = self._string_constants.get(name)
                 # a constant named anywhere else in the module is not this declaration's alone
@@ -3175,17 +3200,17 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         enclosing = [
             function
-            for function in ast.walk(self._tree)
+            for function in walk_tree(self._tree)
             if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
             and function.lineno <= node.lineno <= (function.end_lineno or function.lineno)
         ]
         if not enclosing:
             return ()
         function = max(enclosing, key=lambda found: found.lineno)
-        inside = [n.id for n in ast.walk(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
-        loads = [n.id for n in ast.walk(function) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+        inside = [n.id for n in walk_tree(wrapped) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
+        loads = [n.id for n in walk_tree(function) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)]
         bound: dict[str, list[ast.stmt]] = {}
-        for statement in ast.walk(function):
+        for statement in walk_tree(function):
             if isinstance(statement, ast.Assign):
                 for target in statement.targets:
                     if isinstance(target, ast.Name):
@@ -3287,7 +3312,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if init is None:
             return None
         bound: list[ast.expr] = []
-        for node in ast.walk(init):
+        for node in walk_tree(init):
             targets = (
                 node.targets
                 if isinstance(node, ast.Assign)
@@ -3336,7 +3361,7 @@ class _ModuleWalk(ast.NodeVisitor):
             for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)
             if argument.annotation is not None
         }
-        for node in ast.walk(function):
+        for node in walk_tree(function):
             if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 declared.setdefault(node.target.id, node.annotation)
         if name in declared:
@@ -3371,7 +3396,7 @@ class _ModuleWalk(ast.NodeVisitor):
                 )
             return None
 
-        for node in ast.walk(function):
+        for node in walk_tree(function):
             loops: list[tuple[ast.expr, ast.expr]] = []
             if isinstance(node, (ast.For, ast.AsyncFor)):
                 loops.append((node.target, node.iter))
@@ -3820,19 +3845,19 @@ class _ModuleWalk(ast.NodeVisitor):
         # the forwarder's own locals: never read as the caller's names of the same spelling
         local = {
             node.id
-            for node in ast.walk(callee.function)
+            for node in walk_tree(callee.function)
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id not in parameters
         }
         receivers = {a.arg for a in [*callee.function.args.posonlyargs, *callee.function.args.args]} - parameters
         unbound: list[str] = []
         # a local the forwarder binds once by a plain assignment (``within = Fragment(...)``): what it binds
         stored: dict[str, int] = {}
-        for node in ast.walk(callee.function):
+        for node in walk_tree(callee.function):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
                 stored[node.id] = stored.get(node.id, 0) + 1
         once = {
             node.targets[0].id: node.value
-            for node in ast.walk(callee.function)
+            for node in walk_tree(callee.function)
             if isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
@@ -3864,7 +3889,7 @@ class _ModuleWalk(ast.NodeVisitor):
             return bound
 
         steps: list[ast.Call] = []
-        for node in ast.walk(callee.function):
+        for node in walk_tree(callee.function):
             if not isinstance(node, ast.Call):
                 continue
             if (_final(node) in STEP_CALLS or _final(node) in STEP_TARGETS) and self._keyed_step(node):
@@ -3918,7 +3943,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if isinstance(built, ast.Name) and self._function_node is not None:
             bound = [
                 (target, node.value)
-                for node in ast.walk(self._function_node)
+                for node in walk_tree(self._function_node)
                 if isinstance(node, ast.Assign)
                 for target in node.targets
                 if (isinstance(target, ast.Name) and target.id == built.id)
@@ -4295,7 +4320,7 @@ class _ModuleWalk(ast.NodeVisitor):
 
         copied = deepcopy(call)
         texts: set[str] = set()
-        for node in ast.walk(copied):
+        for node in walk_tree(copied):
             text = instance_of(node)
             if text is not None:
                 assert isinstance(node, ast.Call)
@@ -4430,7 +4455,7 @@ class _ModuleWalk(ast.NodeVisitor):
             elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == name:
                 return None
             elif isinstance(node, (ast.Delete, ast.AugAssign)) and any(
-                isinstance(each, ast.Name) and each.id == name for each in ast.walk(node)
+                isinstance(each, ast.Name) and each.id == name for each in walk_tree(node)
             ):
                 return None
         # a store other than the one binding (a loop target, ``del``, a walrus) leaves it no one shape
@@ -4439,7 +4464,7 @@ class _ModuleWalk(ast.NodeVisitor):
             for node in _own_nodes(function.body)
             if isinstance(node, ast.Name) and node.id == name and not isinstance(node.ctx, ast.Load)
         ]
-        if len(bound) != 1 or len(stores) != 1 or name in _function_bindings(function, {}).parameters:
+        if len(bound) != 1 or len(stores) != 1 or name in kept_for(function, _never_rebound):
             return None
         value = bound[0]
         arms = _arms(value) if isinstance(value, ast.IfExp) else [value]
@@ -4488,7 +4513,7 @@ class _ModuleWalk(ast.NodeVisitor):
             return None
         bound = [
             node.value
-            for node in ast.walk(self._function_nodes[-1])
+            for node in walk_tree(self._function_nodes[-1])
             if isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
@@ -4520,16 +4545,16 @@ class _ModuleWalk(ast.NodeVisitor):
             (function for function in reversed(self._function_nodes) if _binds_local(function, name)),
             self._function_nodes[-1],
         )
-        for node in ast.walk(binding):
+        for node in walk_tree(binding):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    named = [element for element in ast.walk(target) if isinstance(element, ast.Name)]
+                    named = [element for element in walk_tree(target) if isinstance(element, ast.Name)]
                     if any(element.id == name for element in named):
                         if not (isinstance(target, ast.Name) and target.id == name):
                             return None
                         bound.append(node.value)
             elif isinstance(node, ast.AugAssign | ast.AnnAssign | ast.NamedExpr | ast.For | ast.AsyncFor):
-                if any(isinstance(element, ast.Name) and element.id == name for element in ast.walk(node.target)):
+                if any(isinstance(element, ast.Name) and element.id == name for element in walk_tree(node.target)):
                     return None
             elif isinstance(node, ast.Subscript) and not isinstance(node.ctx, ast.Load):
                 if isinstance(node.value, ast.Name) and node.value.id == name:
@@ -4651,7 +4676,7 @@ class _ModuleWalk(ast.NodeVisitor):
             elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
                 given.append(node.value)
             elif isinstance(node, ast.For | ast.AsyncFor) and any(
-                isinstance(element, ast.Name) and element.id == name for element in ast.walk(node.target)
+                isinstance(element, ast.Name) and element.id == name for element in walk_tree(node.target)
             ):
                 if not self._loops_over_key(node.target, node.iter, name, depth):
                     return False
@@ -4752,9 +4777,9 @@ class _ModuleWalk(ast.NodeVisitor):
             return True
         bound = {
             target.id
-            for found in ast.walk(node)
+            for found in walk_tree(node)
             if isinstance(found, ast.comprehension)
-            for target in ast.walk(found.target)
+            for target in walk_tree(found.target)
             if isinstance(target, ast.Name)
         }
         pending: list[ast.AST] = [node]
@@ -4802,7 +4827,7 @@ class _ModuleWalk(ast.NodeVisitor):
         function = self._function_node
         if not isinstance(node, ast.Name) or function is None:
             return False
-        if node.id not in _function_bindings(function, {}).parameters:
+        if node.id not in kept_for(function, _never_rebound):
             return False
         sites = self._parameter_sites.get(function.name, [])
         return bool(sites) and all(
@@ -4839,7 +4864,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if not isinstance(node, ast.Name) or not self._function_nodes:
             return True
         # every value the enclosing function binds the local to keeps the lead
-        for found in ast.walk(self._function_nodes[-1]):
+        for found in walk_tree(self._function_nodes[-1]):
             targets = (
                 found.targets
                 if isinstance(found, ast.Assign)
@@ -4944,7 +4969,7 @@ class _ModuleWalk(ast.NodeVisitor):
             for function, owner in _definitions(self._tree):
                 if (owner.name if owner is not None else "", function.name) not in self._producers:
                     continue
-                for node in ast.walk(function):
+                for node in walk_tree(function):
                     if isinstance(node, ast.Return) and node.value is not None:
                         text = _string_text(node.value, self._envs[0])
                         if text is not None and re.sub(r"\{[^}]*\}|[\s\"'.]", "", text):
@@ -4999,11 +5024,11 @@ class _ModuleWalk(ast.NodeVisitor):
         picks: dict[str, ast.expr] = {}
         if function is not None:
             assigned: dict[str, list[ast.expr]] = {}
-            for node in ast.walk(function):
+            for node in walk_tree(function):
                 if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
                     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                     for target in targets:
-                        for name in (n for n in ast.walk(target) if isinstance(n, ast.Name)):
+                        for name in (n for n in walk_tree(target) if isinstance(n, ast.Name)):
                             value = node.value if isinstance(target, ast.Name) and node.value is not None else None
                             assigned.setdefault(name.id, []).append(value if value is not None else target)
             picks = {name: values[0] for name, values in assigned.items() if len(values) == 1}
@@ -5214,7 +5239,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if not named:
             return [call]
         inlined = self._inlined_locals(call, function, frozenset(named))
-        used = sorted({node.id for node in ast.walk(inlined) if isinstance(node, ast.Name) and node.id in named})
+        used = sorted({node.id for node in walk_tree(inlined) if isinstance(node, ast.Name) and node.id in named})
         if not used:
             return [call]
         texts = [[value for value in named[name] if isinstance(value, str)] for name in used]
@@ -5261,7 +5286,7 @@ class _ModuleWalk(ast.NodeVisitor):
         for _ in range(_INLINE_DEPTH):
             for name, value in bound.items():
                 if stores.get(name) == 1 and name not in local and name not in family:
-                    if any(isinstance(node, ast.Name) and node.id in reading for node in ast.walk(value)):
+                    if any(isinstance(node, ast.Name) and node.id in reading for node in walk_tree(value)):
                         local[name] = value
                         reading.add(name)
         made: ast.expr = _copied(call)
@@ -5324,7 +5349,7 @@ class _ModuleWalk(ast.NodeVisitor):
             return None
         stores = [
             node
-            for node in ast.walk(owner)
+            for node in walk_tree(owner)
             if isinstance(node, ast.Attribute)
             and node.attr == attribute
             and isinstance(node.value, ast.Name)
@@ -5341,7 +5366,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if len(stores) != 1 or len(assigned) != 1 or not isinstance(assigned[0].value, ast.Name):
             return None
         parameter = assigned[0].value.id
-        if parameter not in _function_bindings(init, {}).parameters:
+        if parameter not in kept_for(init, _never_rebound):
             return None
         return f"{owner.name}.__init__", parameter
 
@@ -5373,8 +5398,8 @@ class _ModuleWalk(ast.NodeVisitor):
             and narrowed
             and bool(self._loops and self._loops[-1])
             and all(
-                {n.id for n in ast.walk(k.value) if isinstance(n, ast.Name)} <= self._loops[-1] | self._constants
-                and any(isinstance(n, ast.Name) and n.id in self._loops[-1] for n in ast.walk(k.value))
+                {n.id for n in walk_tree(k.value) if isinstance(n, ast.Name)} <= self._loops[-1] | self._constants
+                and any(isinstance(n, ast.Name) and n.id in self._loops[-1] for n in walk_tree(k.value))
                 for k in narrowing
                 if not _maybe_none(k.value)
             )
@@ -5608,7 +5633,7 @@ class _ModuleWalk(ast.NodeVisitor):
         """
         if self._enclosing is None:
             self._enclosing = {}
-            for outer in ast.walk(self._tree):
+            for outer in walk_tree(self._tree):
                 if isinstance(outer, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     for inner in _own_nodes(outer.body):
                         if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -5644,7 +5669,10 @@ class _ModuleWalk(ast.NodeVisitor):
                 if argument.arg == receiver.id and argument.annotation is not None:
                     known = _annotated_class(argument.annotation)
             known = (
-                _assigned_class(function.body, lambda target: isinstance(target, ast.Name) and target.id == receiver.id)
+                _assigned_class(
+                    self._assignments_of(function.body),
+                    lambda target: isinstance(target, ast.Name) and target.id == receiver.id,
+                )
                 or known
             )
             if not known and owner is not None:
@@ -5668,7 +5696,7 @@ class _ModuleWalk(ast.NodeVisitor):
         ):
             attribute = receiver.attr
             known = _assigned_class(
-                owner.body,
+                self._assignments_of(owner.body),
                 lambda target: (
                     (
                         isinstance(target, ast.Attribute)
@@ -5680,6 +5708,21 @@ class _ModuleWalk(ast.NodeVisitor):
                 ),
             )
         return known
+
+    def _assignments_of(self, body: list[ast.stmt]) -> list[_Assigned]:
+        """the assignments naming a class in ``body`` (:func:`_assignments`), read once per body.
+
+        :param body: a function's or class's statements
+        :ptype body: list[ast.stmt]
+        :return: the assignments, in walk order
+        :rtype: list[_Assigned]
+        """
+        kept = self._assignments.get(id(body))
+        if kept is not None and kept[0] is body:
+            return kept[1]
+        found = _assignments(body)
+        self._assignments[id(body)] = (body, found)
+        return found
 
     def _schema_name_text(self, node: ast.expr) -> str | None:
         """the table a collection's own schema name reads as: ``<schema>.name`` where ``<schema>`` is the walked class's
@@ -5735,7 +5778,7 @@ class _ModuleWalk(ast.NodeVisitor):
         if isinstance(node, ast.Name) and function is not None:
             bound = [
                 statement.value
-                for statement in ast.walk(function)
+                for statement in walk_tree(function)
                 if isinstance(statement, ast.Assign)
                 and len(statement.targets) == 1
                 and isinstance(statement.targets[0], ast.Name)
@@ -5903,7 +5946,7 @@ class _ModuleWalk(ast.NodeVisitor):
             return False
         bound = [
             statement.value
-            for statement in ast.walk(function)
+            for statement in walk_tree(function)
             if isinstance(statement, ast.Assign)
             and len(statement.targets) == 1
             and isinstance(statement.targets[0], ast.Name)
@@ -6031,7 +6074,7 @@ class _ModuleWalk(ast.NodeVisitor):
         for method in owner.body:
             if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            for node in ast.walk(method):
+            for node in walk_tree(method):
                 targets = (
                     node.targets
                     if isinstance(node, ast.Assign)
@@ -6055,6 +6098,21 @@ class _ModuleWalk(ast.NodeVisitor):
         return found
 
 
+def _parent_map(tree: ast.Module) -> dict[ast.AST, ast.AST]:
+    """each node of ``tree`` onto the node it is a child of.
+
+    :param tree: the module
+    :ptype tree: ast.Module
+    :return: child onto parent
+    :rtype: dict[ast.AST, ast.AST]
+    """
+    parents: dict[ast.AST, ast.AST] = {}
+    for node in walk_tree(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    return parents
+
+
 def _annotated_class(annotation: ast.expr) -> str:
     """the class an annotation names: its final segment, ``None`` left out of a union (``Tool | None``); empty for
     anything else.
@@ -6075,20 +6133,28 @@ def _annotated_class(annotation: ast.expr) -> str:
     return ""
 
 
-def _assigned_class(body: list[ast.stmt], matches: Callable[[ast.expr], bool]) -> str:
-    """the class a target is annotated with or assigned an instance of anywhere in ``body`` (nested statements
-    included): ``x: Tool``, ``x = Tool(...)``, ``self._x = Tool(...)``; empty when none says.
+#: one assignment naming a class (:func:`_assignments`): its targets, and the class's name
+_Assigned = tuple[list[ast.expr], str]
+
+
+def _assignments(body: list[ast.stmt]) -> list[_Assigned]:
+    """every assignment in ``body`` (nested statements included) that names a target's class, in walk order:
+    ``x: Tool``, ``x = Tool(...)``, ``self._x = Tool(...)``, and ``self.work = work`` in a function whose parameter is
+    annotated ``work: _Work``.
+
+    Profiled 2026-11-15: :func:`_assigned_class` walked the calling function's or class's whole body once per method
+    call judged in it, and walked each nested function again inside that walk: on the hub 15,600 such walks were 50 s
+    of the walk's 340 s under the profiler. The assignments do not depend on which receiver is asked about, so they are
+    read once per body here and each call only matches their targets (guard: tests/no_whole_reads/test_walk_cost.py).
 
     :param body: the statements
     :ptype body: list[ast.stmt]
-    :param matches: whether an assignment target is the receiver
-    :ptype matches: Callable[[ast.expr], bool]
-    :return: the class's name, or empty
-    :rtype: str
+    :return: each assignment's targets and the class it names
+    :rtype: list[_Assigned]
     """
-    known = ""
+    found: list[_Assigned] = []
     for statement in body:
-        for node in ast.walk(statement):
+        for node in walk_tree(statement):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # ``self.work = work`` where the method's parameter is annotated ``work: _Work``
                 annotated = {
@@ -6096,24 +6162,39 @@ def _assigned_class(body: list[ast.stmt], matches: Callable[[ast.expr], bool]) -
                     for argument in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
                     if argument.annotation is not None
                 }
-                for inner in ast.walk(node):
+                for inner in walk_tree(node):
                     if (
                         isinstance(inner, ast.Assign)
                         and isinstance(inner.value, ast.Name)
                         and annotated.get(inner.value.id)
-                        and any(matches(target) for target in inner.targets)
                     ):
-                        known = annotated[inner.value.id]
-            if isinstance(node, ast.AnnAssign) and matches(node.target):
-                known = _annotated_class(node.annotation) or known
-            elif (
-                isinstance(node, ast.Assign)
-                and isinstance(node.value, ast.Call)
-                and any(matches(target) for target in node.targets)
-            ):
+                        found.append((inner.targets, annotated[inner.value.id]))
+            if isinstance(node, ast.AnnAssign):
+                named = _annotated_class(node.annotation)
+                if named:
+                    found.append(([node.target], named))
+            elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
                 name = (dotted(node.value.func) or "").rsplit(".", 1)[-1]
-                known = name if name.lstrip("_")[:1].isupper() else known
-    return known
+                if name.lstrip("_")[:1].isupper():
+                    found.append((node.targets, name))
+    return found
+
+
+def _assigned_class(assignments: list[_Assigned], matches: Callable[[ast.expr], bool]) -> str:
+    """the class a target is annotated with or assigned an instance of: the last of ``assignments``
+    (:func:`_assignments`) naming it; empty when none says.
+
+    :param assignments: a body's assignments naming a class, in walk order
+    :ptype assignments: list[_Assigned]
+    :param matches: whether an assignment target is the receiver
+    :ptype matches: Callable[[ast.expr], bool]
+    :return: the class's name, or empty
+    :rtype: str
+    """
+    for targets, named in reversed(assignments):
+        if any(matches(target) for target in targets):
+            return named
+    return ""
 
 
 def _self_attribute_bound(function: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> ast.Attribute | None:
@@ -6128,7 +6209,7 @@ def _self_attribute_bound(function: ast.FunctionDef | ast.AsyncFunctionDef, name
     :rtype: ast.Attribute | None
     """
     bound: list[ast.expr | None] = []
-    for node in ast.walk(function):
+    for node in walk_tree(function):
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
@@ -6347,7 +6428,7 @@ def _never_none_parameters(modules: list[tuple[str, ast.Module]]) -> frozenset[t
     """
     definitions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     for _, tree in modules:
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _stub(node):
                 definitions.setdefault(node.name, []).append(node)
     verdicts: dict[tuple[str, str], bool] = {}
@@ -6359,7 +6440,7 @@ def _never_none_parameters(modules: list[tuple[str, ast.Module]]) -> frozenset[t
             return False
         arguments = [*caller.args.posonlyargs, *caller.args.args, *caller.args.kwonlyargs]
         held = next((argument for argument in arguments if argument.arg == value.id), None)
-        if held is None or value.id not in _function_bindings(caller, {}).parameters or _admits_none(held):
+        if held is None or value.id not in kept_for(caller, _never_rebound) or _admits_none(held):
             return False
         defaults = dict(
             zip(
@@ -6386,7 +6467,7 @@ def _never_none_parameters(modules: list[tuple[str, ast.Module]]) -> frozenset[t
         callers: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef | None, list[ast.stmt]]] = [
             (None, [statement for statement in tree.body if not isinstance(statement, definers)])
         ]
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, ast.ClassDef):
                 callers.append((None, [statement for statement in node.body if not isinstance(statement, definers)]))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -6538,13 +6619,13 @@ def _mapping_users(tree: ast.Module, mappings: set[str]) -> dict[str, set[str]]:
     users: dict[str, set[str]] = {}
     for function in (s for s in tree.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))):
         resolved: dict[str, str] = {}
-        for node in ast.walk(function):
+        for node in walk_tree(function):
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
                 mapping = subscripted(node.value)
                 if mapping is not None:
                     resolved[node.targets[0].id] = mapping
                     users.setdefault(function.name, set()).add(mapping)
-        for node in ast.walk(function):
+        for node in walk_tree(function):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
                     mapping = subscripted(argument) or (
@@ -6575,7 +6656,7 @@ def _defined_ctes(node: ast.AST, env: dict[str, str]) -> set[str]:
     """the CTE names a definition's strings define (:data:`_CTE_PART_DEFINED`), lower-cased, its constants resolved
     (``f"WITH {_NEEDLE_READ} AS MATERIALIZED ("``), a templated one's interpolations dropped (``o_{race}`` as ``o_``)."""
     names: set[str] = set()
-    for inner in ast.walk(node):
+    for inner in walk_tree(node):
         text = (
             inner.value
             if isinstance(inner, ast.Constant) and isinstance(inner.value, str)
@@ -6615,7 +6696,7 @@ def _statement_ctes(tree: ast.Module, env: dict[str, str]) -> dict[int, frozense
     functions = {function.name: function for function, owner in definitions if owner is None}
     methods = {(owner.name, function.name): function for function, owner in definitions if owner is not None}
     for function, owner in definitions:
-        for node in ast.walk(function):
+        for node in walk_tree(function):
             if not isinstance(node, ast.Call):
                 continue
             callee: ast.FunctionDef | ast.AsyncFunctionDef | None = None
@@ -6661,7 +6742,7 @@ def _transient_views(tree: ast.Module, registered: set[str], transient: Transien
     :rtype: set[str]
     """
     views: dict[str, list[str]] = {}
-    for node in ast.walk(tree):
+    for node in walk_tree(tree):
         text = _string_text(node, {}) if isinstance(node, (ast.Constant, ast.JoinedStr)) else None
         match = _TEMP_VIEW.search(text) if isinstance(text, str) else None
         if match is not None:
@@ -6717,7 +6798,32 @@ def _is_stub(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
-def _own_nodes(body: list[ast.stmt]) -> Iterator[ast.AST]:
+def _own_nodes(body: list[ast.stmt]) -> tuple[ast.AST, ...]:
+    """every node under ``body``, not descending into nested functions, lambdas or classes (:func:`_walk_own_nodes`),
+    read once per body inside the walk's scope (:func:`~threetears.enforcement.common.kept_for`): the walk asks it of
+    the same function's body from a dozen passes (profiled 2026-11-15: 14 million nodes handed out on the hub, a
+    quarter of the profiled walk).
+
+    :param body: statements
+    :ptype body: list[ast.stmt]
+    :return: the nodes
+    :rtype: tuple[ast.AST, ...]
+    """
+    return kept_for(body, _own_node_tuple)
+
+
+def _own_node_tuple(body: list[ast.stmt]) -> tuple[ast.AST, ...]:
+    """:func:`_walk_own_nodes` of ``body``, kept.
+
+    :param body: statements
+    :ptype body: list[ast.stmt]
+    :return: the nodes
+    :rtype: tuple[ast.AST, ...]
+    """
+    return tuple(_walk_own_nodes(body))
+
+
+def _walk_own_nodes(body: list[ast.stmt]) -> Iterator[ast.AST]:
     """every node under ``body``, not descending into nested functions, lambdas or classes.
 
     :param body: statements
@@ -7003,12 +7109,12 @@ def _cte_arguments(modules: list[tuple[str, ast.Module]]) -> dict[tuple[str, str
     """
     definitions: dict[str, list[str]] = {}
     for _, tree in modules:
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 definitions.setdefault(node.name, [a.arg for a in [*node.args.posonlyargs, *node.args.args]])
     found: dict[tuple[str, str], list[tuple[str, bool]]] = {}
     for relative, tree in modules:
-        for caller in ast.walk(tree):
+        for caller in walk_tree(tree):
             if not isinstance(caller, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Module)):
                 continue
             body = caller.body
@@ -7086,7 +7192,7 @@ def _imported_names(tree: ast.Module) -> frozenset[str]:
     :rtype: frozenset[str]
     """
     names: set[str] = set()
-    for statement in ast.walk(tree):
+    for statement in walk_tree(tree):
         if isinstance(statement, ast.Import):
             names.update((alias.asname or alias.name).split(".")[0] for alias in statement.names)
         elif isinstance(statement, ast.ImportFrom):
@@ -7124,12 +7230,12 @@ def _argument_names(arguments: list[ast.expr]) -> dict[str, tuple[str, str | Non
     for argument in arguments:
         bound = {
             target.id
-            for node in ast.walk(argument)
+            for node in walk_tree(argument)
             if isinstance(node, ast.comprehension)
-            for target in ast.walk(node.target)
+            for target in walk_tree(node.target)
             if isinstance(target, ast.Name)
         }
-        for node in ast.walk(argument):
+        for node in walk_tree(argument):
             read = _bound_name(node) if isinstance(node, (ast.Name, ast.Attribute)) else None
             if read is not None and read[0] not in bound:
                 found.setdefault(ast.unparse(node), read)
@@ -7209,7 +7315,7 @@ class _Substituted(ast.NodeTransformer):
             {
                 target.id
                 for generator in generators
-                for target in ast.walk(generator.target)
+                for target in walk_tree(generator.target)
                 if isinstance(target, ast.Name)
             }
         )
@@ -7387,6 +7493,19 @@ def _function_bindings(
         loops=loops,
         tuples=tuples,
     )
+
+
+def _never_rebound(function: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    """the parameters ``function`` never rebinds (:func:`_function_bindings`' ``parameters``): asked of the same
+    function once per call site and argument judged, so read once per function inside the walk's scope
+    (:func:`~threetears.enforcement.common.kept_for`).
+
+    :param function: the function
+    :ptype function: ast.FunctionDef | ast.AsyncFunctionDef
+    :return: their names
+    :rtype: frozenset[str]
+    """
+    return _function_bindings(function, {}).parameters
 
 
 def _annotated_elements(node: ast.AST, classes: Mapping[str, list[Passed]]) -> list[Passed] | None:
@@ -7610,7 +7729,7 @@ def _match_list(
     if isinstance(value, ast.Name):
         bound = [
             node.value
-            for node in ast.walk(function)
+            for node in walk_tree(function)
             if isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
@@ -7667,7 +7786,7 @@ def _match_builders(
         for statement in tree.body:
             if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            returned = [node.value for node in ast.walk(statement) if isinstance(node, ast.Return) and node.value]
+            returned = [node.value for node in walk_tree(statement) if isinstance(node, ast.Return) and node.value]
             built = _match_list(returned[0], statement, known) if len(returned) == 1 else None
             if built is None:
                 continue
@@ -7705,12 +7824,14 @@ def _parameter_values(
     """
     definitions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
     for _, tree in modules:
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             # a protocol's stub (a docstring and ``...``) declares a signature; only a body says what it does
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _stub(node):
                 definitions.setdefault(node.name, []).append(node)
-    constructors = _constructors(modules)
-    classes = _literal_constructions(modules, strings)
+    # the classes whose every construction is seen, read once for both (each read walks every module twice)
+    seen = _seen_classes(modules)
+    constructors = _constructors(seen)
+    classes = _literal_constructions(modules, strings, seen)
     contexts: list[tuple[dict[str, str], tuple[str, _Bindings] | None, list[ast.Call], tuple[str, str]]] = []
     for relative, tree in modules:
         known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
@@ -7722,7 +7843,7 @@ def _parameter_values(
             (None, [statement for statement in tree.body if not isinstance(statement, definers)])
         ]
         qualified = _qualified_names(tree)
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, ast.ClassDef):
                 scopes.append((None, [statement for statement in node.body if not isinstance(statement, definers)]))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -7954,7 +8075,7 @@ def _target_write(call: ast.Call, parameters: set[str], receivers: set[str]) -> 
         read = any((index is not None and index == p) or keyword == k for p, k in reads)
         if read and own(node):
             return ast.Constant(TRANSIENT_PRODUCED)
-        if any(isinstance(part, ast.Name) and part.id in receivers for part in ast.walk(node)):
+        if any(isinstance(part, ast.Name) and part.id in receivers for part in walk_tree(node)):
             return ast.Name(id=_RUN_TIME_VALUE, ctx=ast.Load())
         return node
 
@@ -7996,17 +8117,17 @@ def _passed_arguments(call: ast.Call, callee: Callee) -> dict[str, ast.expr] | N
     return passed
 
 
-def _constructors(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+def _constructors(seen: dict[str, ast.ClassDef]) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
     """each repo class whose every construction the walk can see (:func:`_seen_classes`), onto its ``__init__``: one
     with an ``__init__`` of its own.
 
-    :param modules: each module's path and parse
-    :ptype modules: list[tuple[str, ast.Module]]
+    :param seen: the classes whose every construction the walk can see (:func:`_seen_classes`)
+    :ptype seen: dict[str, ast.ClassDef]
     :return: class name onto its constructor
     :rtype: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
     """
     found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
-    for name, owner in _seen_classes(modules).items():
+    for name, owner in seen.items():
         init = next(
             (
                 statement
@@ -8037,22 +8158,22 @@ def _seen_classes(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.ClassD
     for _, tree in modules:
         annotations: set[int] = set()
         called: set[int] = set()
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if isinstance(node, ast.ClassDef):
                 classes.setdefault(node.name, []).append(node)
                 for base in node.bases:
                     spelled = dotted(base)
                     if spelled:
                         based.add(spelled.rsplit(".", 1)[-1])
-                annotations.update(id(element) for base in node.bases for element in ast.walk(base))
+                annotations.update(id(element) for base in node.bases for element in walk_tree(base))
             elif isinstance(node, ast.arg | ast.AnnAssign) and node.annotation is not None:
-                annotations.update(id(element) for element in ast.walk(node.annotation))
+                annotations.update(id(element) for element in walk_tree(node.annotation))
             elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.returns is not None:
-                annotations.update(id(element) for element in ast.walk(node.returns))
+                annotations.update(id(element) for element in walk_tree(node.returns))
             elif isinstance(node, ast.Call):
                 called.add(id(node.func))
-        local = local_names(tree)
-        for node in ast.walk(tree):
+        local = kept_for(tree, local_names)
+        for node in walk_tree(tree):
             if (
                 isinstance(node, ast.Name | ast.Attribute)
                 and isinstance(node.ctx, ast.Load)
@@ -8076,7 +8197,7 @@ def _seen_classes(modules: list[tuple[str, ast.Module]]) -> dict[str, ast.ClassD
                     and node.func.func.id == "type"
                 )
             )
-            for node in ast.walk(owner)
+            for node in walk_tree(owner)
         ):
             continue
         found[name] = owner
@@ -8114,7 +8235,7 @@ def _dataclass_fields(owner: ast.ClassDef) -> list[tuple[str, ast.expr | None]] 
             return None
         annotated = {
             (dotted(node) or "").rsplit(".", 1)[-1]
-            for node in ast.walk(statement.annotation)
+            for node in walk_tree(statement.annotation)
             if isinstance(node, ast.Name | ast.Attribute)
         }
         if "ClassVar" in annotated:
@@ -8124,7 +8245,7 @@ def _dataclass_fields(owner: ast.ClassDef) -> list[tuple[str, ast.expr | None]] 
 
 
 def _literal_constructions(
-    modules: list[tuple[str, ast.Module]], strings: dict[str, dict[str, str]]
+    modules: list[tuple[str, ast.Module]], strings: dict[str, dict[str, str]], seen: dict[str, ast.ClassDef]
 ) -> dict[str, list[Passed]]:
     """each repo dataclass every construction of which the walk sees (:func:`_seen_classes`) and every one of which
     spells each field as a literal or a constant (``DeleteCascade("job_fires", "job_id", "CASCADE")``), onto those
@@ -8137,17 +8258,17 @@ def _literal_constructions(
     :ptype modules: list[tuple[str, ast.Module]]
     :param strings: every walked module's path onto its once-bound strings (:func:`_module_strings`)
     :ptype strings: dict[str, dict[str, str]]
+    :param seen: the classes whose every construction the walk can see (:func:`_seen_classes`)
+    :ptype seen: dict[str, ast.ClassDef]
     :return: class name onto its constructions
     :rtype: dict[str, list[Passed]]
     """
-    fields = {
-        name: read for name, owner in _seen_classes(modules).items() if (read := _dataclass_fields(owner)) is not None
-    }
+    fields = {name: read for name, owner in seen.items() if (read := _dataclass_fields(owner)) is not None}
     built: dict[str, list[Passed]] = {name: [] for name in fields}
     unread: set[str] = set()
     for relative, tree in modules:
         known = {**_imported_strings(tree, strings), **strings.get(relative, {})}
-        for node in ast.walk(tree):
+        for node in walk_tree(tree):
             if not isinstance(node, ast.Call):
                 continue
             name = _final(node) or ""
@@ -8337,17 +8458,50 @@ def _imported_sort_orders(tree: ast.Module, per_module: dict[str, dict[str, ast.
     return found
 
 
+class ModulesByPath[T](dict[str, T]):
+    """every walked module's path onto what it binds, with each path found by the dotted names it answers to.
+
+    :func:`_module_named` looked a module up by scanning every path for one ending in the name, once per import of
+    every module, three or more times over: on the hub, 115,000 scans of ~2,400 paths, 24 s of the walk's 85 s
+    (profiled 2026-11-15). This answers the same first match from an index made once. It is made once, filled, and
+    never changed after (a later store is not indexed).
+    """
+
+    def __init__(self, entries: Mapping[str, T]) -> None:
+        """index ``entries``.
+
+        :param entries: each module's path onto what it binds
+        :ptype entries: Mapping[str, T]
+        """
+        super().__init__(entries)
+        #: each dotted name's ``/``-spelling (``pkg/tables``) onto the first path it names, in insertion order
+        self.paths: dict[str, str] = {}
+        for path in self:
+            if not path.endswith(".py"):
+                continue
+            parts = path.removesuffix(".py").split("/")
+            spellings = ["/".join(parts[start:]) for start in range(len(parts))]
+            if parts[-1] == "__init__":
+                spellings.extend("/".join(parts[start:-1]) for start in range(len(parts) - 1))
+            for spelling in spellings:
+                self.paths.setdefault(spelling, path)
+
+
 def _module_named[T](module: str, per_module: dict[str, dict[str, T]]) -> dict[str, T] | None:
     """what a walked module binds, found by its dotted name (``pkg.tables``), or None when no walked module is it.
 
     :param module: the dotted name
     :ptype module: str
-    :param per_module: every walked module's path onto what it binds
+    :param per_module: every walked module's path onto what it binds; a :class:`ModulesByPath` is looked up in its
+        index, any other mapping scanned
     :ptype per_module: dict[str, dict[str, T]]
     :return: what it binds, or None
     :rtype: dict[str, T] | None
     """
     base = module.replace(".", "/")
+    if isinstance(per_module, ModulesByPath):
+        path = per_module.paths.get(base)
+        return None if path is None else per_module[path]
     return next(
         (
             names
@@ -8512,7 +8666,7 @@ def _class_templates(cls: ast.ClassDef, known: dict[str, str], found: dict[str, 
     methods = [node for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
     attributes: dict[str, str | None] = {}
     for method in methods:
-        for node in ast.walk(method):
+        for node in walk_tree(method):
             targets = (
                 node.targets
                 if isinstance(node, ast.Assign)
@@ -8540,11 +8694,11 @@ def _class_templates(cls: ast.ClassDef, known: dict[str, str], found: dict[str, 
     passed: dict[str, list[str | None]] = {}
     for method in methods:
         once: dict[str, ast.expr | None] = {}
-        for node in ast.walk(method):
+        for node in walk_tree(method):
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
                 name = node.targets[0].id
                 once[name] = node.value if name not in once else None
-        for node in ast.walk(method):
+        for node in walk_tree(method):
             if not (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
@@ -8668,147 +8822,154 @@ def scan_whole_reads(
     :return: the walk
     :rtype: WholeReadScan
     """
-    scan = WholeReadScan(schema=schema if schema is not None else SchemaCatalog())
-    used: set[str] = set()
-    calls: list[_CallSite] = []
-    constant_uses: set[tuple[str, str, int, int]] = set()
-    module_functions: dict[str, set[str]] = {}
-    module_classes: dict[str, set[str]] = {}
-    stubs: set[str] = set()
-    imports: dict[str, dict[str, str]] = {}
-    patterns = TransientPatterns((transient,) if isinstance(transient, str) else transient)
-    pattern = patterns if patterns else None
-    modules = [(relative_posix_path(path, repo_root), path) for root in src_roots for path in iter_python_files(root)]
-    # one tree per module for the whole walk: the passes below key what they find by the nodes they found it at
-    # (a builder, a forwarder, a module's tuples) and later passes look those nodes up again, so each pass must see
-    # the same tree. the shared parse cache keeps only some files' trees (its memory bound) and parses the rest
-    # anew on each call, so the walk holds its own
-    trees = {relative: parse_python_path(path) for relative, path in modules}
-    strings = {relative: _module_strings(trees[relative]) for relative, _ in modules}
-    tuples: dict[str, dict[str, list[Passed]]] = {}
-    # twice: a module's tuple may splice one another module binds
-    for _ in range(2):
-        tuples = {
-            relative: _module_tuples(
-                trees[relative],
-                {**_imported_strings(trees[relative], strings), **strings.get(relative, {})},
-                _imported_tuples(trees[relative], relative, tuples),
+    # every pass below walks the same modules, classes and functions again: each walk is kept for the scan
+    # (remembered_walks; the numbers are at _assignments and in tests/no_whole_reads/test_walk_cost.py)
+    with remembered_walks():
+        scan = WholeReadScan(schema=schema if schema is not None else SchemaCatalog())
+        used: set[str] = set()
+        calls: list[_CallSite] = []
+        constant_uses: set[tuple[str, str, int, int]] = set()
+        module_functions: dict[str, set[str]] = {}
+        module_classes: dict[str, set[str]] = {}
+        stubs: set[str] = set()
+        imports: dict[str, dict[str, str]] = {}
+        patterns = TransientPatterns((transient,) if isinstance(transient, str) else transient)
+        pattern = patterns if patterns else None
+        modules = [
+            (relative_posix_path(path, repo_root), path) for root in src_roots for path in iter_python_files(root)
+        ]
+        # one tree per module for the whole walk: the passes below key what they find by the nodes they found it at
+        # (a builder, a forwarder, a module's tuples) and later passes look those nodes up again, so each pass must see
+        # the same tree. the shared parse cache keeps only some files' trees (its memory bound) and parses the rest
+        # anew on each call, so the walk holds its own
+        trees = {relative: parse_python_path(path) for relative, path in modules}
+        strings = ModulesByPath({relative: _module_strings(trees[relative]) for relative, _ in modules})
+        tuples: dict[str, dict[str, list[Passed]]] = {}
+        # twice: a module's tuple may splice one another module binds
+        for _ in range(2):
+            tuples = ModulesByPath(
+                {
+                    relative: _module_tuples(
+                        trees[relative],
+                        {**_imported_strings(trees[relative], strings), **strings.get(relative, {})},
+                        _imported_tuples(trees[relative], relative, tuples),
+                    )
+                    for relative, _ in modules
+                }
             )
-            for relative, _ in modules
-        }
-    cte_arguments = _cte_arguments([(relative, trees[relative]) for relative, _ in modules])
-    parameter_sites: dict[str, list[Site]] = {}
-    parameter_values = _parameter_values(
-        [(relative, trees[relative]) for relative, _ in modules],
-        strings,
-        tuples,
-        parameter_sites,
-        declared_parameters,
-    )
-    match_builders = _match_builders([(relative, trees[relative]) for relative, _ in modules], strings)
-    never_none = _never_none_parameters([(relative, trees[relative]) for relative, _ in modules])
-    sentinel_templates = declared_templates(
-        [(relative, trees[relative]) for relative, _ in modules],
-        strings,
-        lambda node, env: _string_text(node, dict(env)),
-    )
-    key_sources = declared_key_sources(trees.values())
-    sort_orders = {relative: _sort_orders(trees[relative]) for relative, _ in modules}
-    walked: list[tuple[str, Path]] = []
-    for relative, path in modules:
-        excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
-        used.update(excluded)
-        if excluded or any(part in schema_change_dirs for part in relative.split("/")[:-1]):
-            continue
-        walked.append((relative, path))
-    bounded = bounded_relations(
-        bounded_producers or {},
-        [(relative, trees[relative]) for relative, _ in walked],
-        {
-            relative: {**_imported_strings(trees[relative], strings), **strings.get(relative, {})}
-            for relative, _ in walked
-        },
-    )
-    scan.bounded_findings = bounded.findings
-
-    def walk_of(relative: str, path: Path, forwarders: RepoForwarders | None) -> _ModuleWalk:
-        tree = trees[relative]
-        return _ModuleWalk(
-            relative,
-            tree,
-            path.read_text(encoding="utf-8"),
-            pagers=pagers,
-            always_whole=always_whole,
-            narrowing=narrowing,
-            transient=pattern,
-            verify=any(relative.startswith(prefix) for prefix in verify_prefixes),
-            schema=scan.schema,
-            imported=_imported_strings(tree, strings),
-            exec_calls=exec_calls,
-            cte_arguments=cte_arguments,
-            producers=producers,
-            parameter_values=parameter_values,
-            parameter_sites=parameter_sites,
-            view_producers=view_producers,
-            tuples=_imported_tuples(tree, relative, tuples),
-            sort_orders=_imported_sort_orders(tree, sort_orders),
-            relation_producers=relation_producers,
-            match_builders=match_builders,
-            forwarders=forwarders,
-            builders=builders,
-            never_none=never_none,
-            declared=declared_parameters,
-            bounded=bounded,
-            sentinels=sentinel_templates.get(relative),
-            key_sources=key_sources,
+        cte_arguments = _cte_arguments([(relative, trees[relative]) for relative, _ in modules])
+        parameter_sites: dict[str, list[Site]] = {}
+        parameter_values = _parameter_values(
+            [(relative, trees[relative]) for relative, _ in modules],
+            strings,
+            tuples,
+            parameter_sites,
+            declared_parameters,
         )
+        match_builders = _match_builders([(relative, trees[relative]) for relative, _ in modules], strings)
+        never_none = _never_none_parameters([(relative, trees[relative]) for relative, _ in modules])
+        sentinel_templates = declared_templates(
+            [(relative, trees[relative]) for relative, _ in modules],
+            strings,
+            lambda node, env: _string_text(node, dict(env)),
+        )
+        key_sources = declared_key_sources(trees.values())
+        sort_orders = ModulesByPath({relative: _sort_orders(trees[relative]) for relative, _ in modules})
+        walked: list[tuple[str, Path]] = []
+        for relative, path in modules:
+            excluded = [prefix for prefix in excluded_prefixes if relative.startswith(prefix)]
+            used.update(excluded)
+            if excluded or any(part in schema_change_dirs for part in relative.split("/")[:-1]):
+                continue
+            walked.append((relative, path))
+        bounded = bounded_relations(
+            bounded_producers or {},
+            [(relative, trees[relative]) for relative, _ in walked],
+            {
+                relative: {**_imported_strings(trees[relative], strings), **strings.get(relative, {})}
+                for relative, _ in walked
+            },
+        )
+        scan.bounded_findings = bounded.findings
 
-    # the repo's step builders, by name across every walked module: a call of one is a step judged where it is
-    # written (R11)
-    builders = step_builders([trees[relative] for relative, _ in walked])
-    forwarders: RepoForwarders | None = None
-    if public_forwarders:
-        # each module's flow settles into the repo's shared state; once a pass over every module adds nothing, a
-        # forwarder's every caller is judged by what the forwarder hands a step
-        forwarders = RepoForwarders.collect([(relative, trees[relative]) for relative, _ in walked])
-        for _ in range(_PARAMETER_DEPTH):
-            before = forwarders.size()
-            for relative, path in walked:
-                walk_of(relative, path, forwarders)
-            if forwarders.size() == before:
-                break
-    for relative, path in walked:
-        tree = trees[relative]
-        walk = walk_of(relative, path, forwarders)
-        walk.visit(tree)
-        stubs.update(walk.stubs)
-        scan.hits.extend(walk.hits)
-        scan.statements.extend(walk.statements)
-        scan.definitions.update(walk.definitions)
-        scan.constants.update(walk.constants)
-        calls.extend(walk.calls)
-        module_functions[relative] = walk.module_functions
-        module_classes[relative] = walk.module_classes
-        scan.operators.extend(walk.operators)
-        scan.declarations.extend(walk.declarations)
-        imports[relative] = walk.imports
-        scan.declared_matched.update(walk.declared_matched)
-        scan.declarations_used.update(walk.declarations_used)
-        constant_uses |= constant_readers(relative, tree)
-        scan.files_scanned += 1
-    resolved, callers = _resolve(
-        calls,
-        scan.hits,
-        module_functions,
-        scan.definitions,
-        stubs,
-        imports,
-        module_classes,
-        scan.operators,
-        constant_uses,
-    )
-    scan.hits.extend(resolved)
-    scan.operator_callers = callers
-    scan.unmatched_exclusions = [prefix for prefix in excluded_prefixes if prefix not in used]
-    scan.transient_matched = patterns.matched
-    return scan
+        def walk_of(relative: str, path: Path, forwarders: RepoForwarders | None) -> _ModuleWalk:
+            tree = trees[relative]
+            return _ModuleWalk(
+                relative,
+                tree,
+                path.read_text(encoding="utf-8"),
+                pagers=pagers,
+                always_whole=always_whole,
+                narrowing=narrowing,
+                transient=pattern,
+                verify=any(relative.startswith(prefix) for prefix in verify_prefixes),
+                schema=scan.schema,
+                imported=_imported_strings(tree, strings),
+                exec_calls=exec_calls,
+                cte_arguments=cte_arguments,
+                producers=producers,
+                parameter_values=parameter_values,
+                parameter_sites=parameter_sites,
+                view_producers=view_producers,
+                tuples=_imported_tuples(tree, relative, tuples),
+                sort_orders=_imported_sort_orders(tree, sort_orders),
+                relation_producers=relation_producers,
+                match_builders=match_builders,
+                forwarders=forwarders,
+                builders=builders,
+                never_none=never_none,
+                declared=declared_parameters,
+                bounded=bounded,
+                sentinels=sentinel_templates.get(relative),
+                key_sources=key_sources,
+            )
+
+        # the repo's step builders, by name across every walked module: a call of one is a step judged where it is
+        # written (R11)
+        builders = step_builders([trees[relative] for relative, _ in walked])
+        forwarders: RepoForwarders | None = None
+        if public_forwarders:
+            # each module's flow settles into the repo's shared state; once a pass over every module adds nothing, a
+            # forwarder's every caller is judged by what the forwarder hands a step
+            forwarders = RepoForwarders.collect([(relative, trees[relative]) for relative, _ in walked])
+            for _ in range(_PARAMETER_DEPTH):
+                before = forwarders.size()
+                for relative, path in walked:
+                    walk_of(relative, path, forwarders)
+                if forwarders.size() == before:
+                    break
+        for relative, path in walked:
+            tree = trees[relative]
+            walk = walk_of(relative, path, forwarders)
+            walk.visit(tree)
+            stubs.update(walk.stubs)
+            scan.hits.extend(walk.hits)
+            scan.statements.extend(walk.statements)
+            scan.definitions.update(walk.definitions)
+            scan.constants.update(walk.constants)
+            calls.extend(walk.calls)
+            module_functions[relative] = walk.module_functions
+            module_classes[relative] = walk.module_classes
+            scan.operators.extend(walk.operators)
+            scan.declarations.extend(walk.declarations)
+            imports[relative] = walk.imports
+            scan.declared_matched.update(walk.declared_matched)
+            scan.declarations_used.update(walk.declarations_used)
+            constant_uses |= constant_readers(relative, tree)
+            scan.files_scanned += 1
+        resolved, callers = _resolve(
+            calls,
+            scan.hits,
+            module_functions,
+            scan.definitions,
+            stubs,
+            imports,
+            module_classes,
+            scan.operators,
+            constant_uses,
+        )
+        scan.hits.extend(resolved)
+        scan.operator_callers = callers
+        scan.unmatched_exclusions = [prefix for prefix in excluded_prefixes if prefix not in used]
+        scan.transient_matched = patterns.matched
+        return scan
