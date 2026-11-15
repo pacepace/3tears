@@ -108,6 +108,8 @@ FILLED = frozenset(
         "state",
         "flip_margin",
         "margin_informative",
+        "caveat_list",
+        "first_screen",
     }
 )
 
@@ -189,6 +191,7 @@ def test_a_built_input_and_bundle_hold_no_key_the_move_added(name: str) -> None:
         document = built.model_dump(mode="json", by_alias=True)
         assert not _keys(document) & (INPUT_KEYS - FILLED), sorted(_keys(document) & (INPUT_KEYS - FILLED))
         assert not any("checks" in judged for judged in document["judged"].values())
+    assert not set(bundle.frame()) & FILLED, "the campaign bundle holds its list in memory and dumps none of it"
     for aspect in bundle.aspects:
         held = _keys(aspect.to_dict())
         assert not held & (BUNDLE_KEYS - BUNDLE_FILLED), sorted(held & (BUNDLE_KEYS - BUNDLE_FILLED))
