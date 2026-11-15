@@ -34,7 +34,7 @@ import json
 import math
 import random
 import statistics
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, get_args
 
@@ -1065,7 +1065,9 @@ def _gate_lifted(values: list[float]) -> bool:
     return read.status == "pass" and f"borderline:{_GATE}" not in raised
 
 
-def test_a_borderline_gate_s_planned_cases_lift_it_four_times_in_five_at_today_s_estimate() -> None:
+def test_a_borderline_gate_s_planned_cases_lift_it_four_times_in_five_at_today_s_estimate(
+    record_property: Callable[[str, object], None],
+) -> None:
     """Seeded simulation through the real path, 2,000 designs. Today: 180 cases with a mean of 93 and a per-case spread
     of 25 against a gate at 90, its 95% interval reaching below the line: borderline. The plan holds today's cases
     fixed and sizes the new ones to lift four times in five if the truth is today's estimate
@@ -1091,7 +1093,7 @@ def test_a_borderline_gate_s_planned_cases_lift_it_four_times_in_five_at_today_s
 
     designs = 2000
     pooled = sum(_gate_lifted(today + [rng.gauss(93.0, 25.0) for _ in range(plan.cases)]) for _ in range(designs))
-    print(f"measured caveat-list gate pooled: {pooled / designs:.4f} at {plan.cases} cases")
+    record_property("measured", f"caveat-list gate pooled: {pooled / designs:.4f} at {plan.cases} cases")
     assert abs(pooled / designs - 0.80) <= _TOLERANCE, pooled / designs
 
 
