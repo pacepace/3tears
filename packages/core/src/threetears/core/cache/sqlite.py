@@ -787,6 +787,10 @@ class SQLiteBackend:
         :rtype: None
         """
         pk_cols = self._table_keys.get(table)
+        if table not in self._evictable:
+            # declared KEEP since its rows were picked: never evicted, and the ledger forgets its recency
+            self.budget.emptied(self, table)
+            return
         if not keys or not pk_cols or self._path is None:
             return
         pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
