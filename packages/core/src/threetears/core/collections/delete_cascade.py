@@ -32,6 +32,7 @@ from threetears.core.collections.generation import (
 )
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.keyed import AnyOf, Sort, keyset_rows
+from threetears.interfaces.keyed.rows import KeyColumns
 from threetears.observe import get_logger
 
 __all__ = ["CascadedRows", "DeleteCascade", "announce_delete_cascade", "read_delete_cascade"]
@@ -216,7 +217,7 @@ async def announce_delete_cascade(collection: Any, cascaded: Sequence[CascadedRo
 
 
 async def _children(
-    pool: Any, table: str, column: str, carried: Sequence[str], key: Sequence[str], values: Sequence[Any]
+    pool: Any, table: str, column: str, carried: Sequence[str], key: KeyColumns, values: Sequence[Any]
 ) -> list[Any]:
     """the rows of ``table`` whose ``column`` is one of ``values``, read in pages of ``key`` under the L3 rail's row
     cap (:func:`~threetears.core.keyed.keyset_rows`): ``WHERE column = ANY($1) [AND past the last row] ORDER BY key
@@ -235,18 +236,21 @@ async def _children(
     :param carried: the columns read, ``key`` among them
     :ptype carried: Sequence[str]
     :param key: the child's primary key, declared identifiers
-    :ptype key: Sequence[str]
+    :ptype key: KeyColumns
     :param values: the parents' values
     :ptype values: Sequence[Any]
     :return: the rows
     :rtype: list[Any]
     """
+    # the table and column are one declared DeleteCascade's pair, every one of them literal, so the no-whole-reads
+    # walk judges this read once per construction (its index on the child column), never as a run-time table
+    order = tuple(Sort(name, cast=None) for name in key)
     # each statement asks one row under the cap, which the rail answers whole; a full answer says more follow
     return await keyset_rows(
         pool,
         table,
         columns=list(carried),
         by={column: AnyOf(list(values), cast=None)},
-        order=[Sort(name, cast=None) for name in key],
+        order=order,
         page=L3_RAIL_ROW_CAP - 2,
     )

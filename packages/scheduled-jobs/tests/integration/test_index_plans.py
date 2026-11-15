@@ -15,6 +15,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+from threetears.core.collections.delete_cascade import read_delete_cascade
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.captured import CapturedL3
@@ -102,9 +103,10 @@ async def test_scheduled_jobs_next_fire(conn: asyncpg.Connection) -> None:
 
 
 async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:
-    """Flips if the latest fire of each listed job, or one job's history page (newest first, completed by
-    ``fire_id``), stops reading idx_job_fires_job_time_key, or the page reads and sorts the job's fires rather than
-    walking the index in its order (v006: the index holds ``fire_id DESC`` after ``actual_fired_at DESC``)."""
+    """Flips if the latest fire of each listed job, one job's history page (newest first, completed by ``fire_id``),
+    or the fires a job's delete is about to cascade (read_delete_cascade, DeleteCascade on ScheduledJobCollection)
+    stop reading idx_job_fires_job_time_key, or the page reads and sorts the job's fires rather than walking the
+    index in its order (v006: the index holds ``fire_id DESC`` after ``actual_fired_at DESC``)."""
     jobs = [row["job_id"] for row in await conn.fetch("SELECT job_id FROM scheduled_jobs LIMIT 20")]
     captured = CapturedL3()
     _, fires = _stores(captured)
@@ -132,6 +134,15 @@ async def test_job_fires_job_time(conn: asyncpg.Connection) -> None:
     assert not set(_node_types(page.plan)) & {"Sort", "Incremental Sort"}, page.plan
     # the page of 2 with keyset_page's one row past it
     assert page.rows_scanned <= 2 + 1, page
+    # a job's delete reads the fires its ON DELETE CASCADE takes, by the job: the long-lived job's 2,004
+    cascading = CapturedL3(real=conn)
+    held, _ = _stores(cascading)
+    found = await read_delete_cascade(held, [(job["partition_key"], job["job_id"])])
+    assert [len(rows.keys) for rows in found] == [2004], found
+    (sql, args), *_ = cascading.asked
+    cascade = await explain_statement(conn, sql, *args)
+    assert plan_uses_index(cascade, "idx_job_fires_job_time_key"), cascade.plan
+    assert cascade.rows_scanned <= 2004, cascade
 
 
 async def test_job_fires_dispatching(conn: asyncpg.Connection) -> None:

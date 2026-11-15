@@ -57,6 +57,7 @@ from threetears.core.collections.schema_backed import (
     STRING_TYPE,
     UUID_TYPE,
     Column,
+    Index,
     SchemaBackedCollection,
     TableSchema,
     UniqueConstraint,
@@ -125,6 +126,25 @@ _DATASOURCE_TABLES_SCHEMA = TableSchema(
     unique_constraints=(
         UniqueConstraint(
             "datasource_tables_datasource_id_schema_name_table_name_key", "datasource_id", "schema_name", "table_name"
+        ),
+    ),
+    indexes=(
+        # hub v146: the tables bound to a template. Declared here too because 3tears reads by it: a template's delete
+        # reads the tables its ON DELETE SET NULL unbinds (DeleteCascade on TableTemplateCollection), through
+        # read_delete_cascade's keyset read by template_id. The hub's own read keeps its place in the purpose (the
+        # hub's gate holds it to that read); the hub's migration stays the one that builds the index
+        Index(
+            "datasource_tables_by_template",
+            "template_id",
+            where="template_id IS NOT NULL",
+            purpose=(
+                "packages/core/src/threetears/core/collections/delete_cascade.py::_children",
+                "src/aibots/hub/datasources/schema_digest.py::tables_bound_to_template",
+            ),
+            plan_test=(
+                "packages/datasources/tests/integration/test_index_plans.py::"
+                "test_a_template_delete_reads_the_tables_it_unbinds_through_datasource_tables_by_template"
+            ),
         ),
     ),
     write_generation=WRITE_GENERATION,

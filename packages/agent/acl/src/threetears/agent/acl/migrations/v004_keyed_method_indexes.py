@@ -43,9 +43,11 @@ _ACL_KEYED_METHOD_INDEXES_DDL: tuple[str, ...] = (
     "-- leads with the group too, but the group is the table's partition, so a read of a group's every member\n"
     "-- names this index rather than a partition's whole key\n"
     "CREATE INDEX IF NOT EXISTS idx_group_members_group_id ON group_members (group_id)",
-    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.list_scoped_to_namespace\n"
+    "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.list_scoped_to_namespace;"
+    " packages/core/src/threetears/core/collections/delete_cascade.py::_children\n"
     "-- plan_test: packages/agent/acl/tests/integration/test_index_plans.py::test_assignments_scope_namespace\n"
-    "-- reason: a namespace's grants are read before it is torn down or rescoped, and its row cascades them\n"
+    "-- reason: a namespace's grants are read before it is torn down or rescoped, and its row cascades them (its"
+    " delete reads the grants its ON DELETE CASCADE takes first, DeleteCascade)\n"
     "CREATE INDEX IF NOT EXISTS idx_role_assignments_scope_namespace ON role_assignments (scope_namespace_id)"
     " WHERE scope_namespace_id IS NOT NULL",
     "-- purpose: packages/agent/acl/src/threetears/agent/acl/collections.py::RoleAssignmentCollection.list_of_type_customer\n"
