@@ -37,6 +37,8 @@ from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
 from threetears.core.keyset import read_keyset_pages
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import NonFiniteNumericError
+from threetears.core import keyed
+from threetears.core.keyed import Sort, inline_l1, run_inline
 from threetears.core.collections.tier_reads import ReadTier, record_tier_read
 from threetears.core.collections.bypassing_write import BypassingWrite
 from threetears.core.collections.caller_transaction import CallerTransaction, shared_advance_for
@@ -210,6 +212,10 @@ Table(
 
 #: the most markers past its cap one write removes from a table (a lowered cap's excess goes over several writes)
 _ABSENT_MARKER_TRIM: Final = 1_000
+
+#: the keys one statement of a table-wide L1 drop reads (:meth:`BaseCollection._l1_keys`): a page of an in-process
+#: table along its primary key, so no statement holds the whole table
+L1_KEY_PAGE: Final = 1_000
 
 #: the key a recorded absence is read by: its table, then its own key
 _ABSENT_MARKER_PK: Final = ("table_name", "key")
@@ -3609,14 +3615,30 @@ class BaseCollection(ABC, Generic[EntityT]):
         l1 = self.l1_backend
         if l1 is not None and (not hasattr(l1, "has_table") or l1.has_table(self.table_name)):
             columns = self.primary_key_columns
-            selected = ", ".join(quote_identifier(column) for column in columns)
-            keys = [
-                tuple(row[column] for column in columns)
-                for row in l1.execute_query(f"SELECT {selected} FROM {quote_identifier(self.table_name)}")
-            ]
+            keys = [tuple(row[column] for column in columns) for row in self._l1_keys(l1, columns)]
             self._evict_l1_many([key if len(key) > 1 else key[0] for key in keys])
             dropped = len(keys)
         return dropped
+
+    def _l1_keys(self, l1: Any, columns: KeyColumns) -> list[dict[str, Any]]:
+        """every key this collection's L1 table holds, read page by page in key order.
+
+        Why pages (2026-11-14, no-whole-reads drive): this was one ``SELECT <key> FROM <table>`` of the process's
+        cache; the drop must hear every row go (each change listener, each fence key), so it still visits every key,
+        but each statement reads :data:`L1_KEY_PAGE` keys along the table's primary key (:func:`keyed.keyset_rows`), as every other read of a
+        table does. The keys are gathered first and evicted in the one write, as before.
+
+        :param l1: the L1 backend holding the table (SQLite, or the DuckDB L1)
+        :ptype l1: Any
+        :param columns: the primary key's columns
+        :ptype columns: KeyColumns
+        :return: the keys, as rows of the key's columns
+        :rtype: list[dict[str, Any]]
+        """
+        db = inline_l1(l1)
+        # uncast: each page binds the last row's own value, typed by the column (SQLite has no ``::`` casts)
+        order = [Sort(column, cast=None) for column in columns]
+        return run_inline(keyed.keyset_rows(db, self.table_name, columns=list(columns), by={}, order=order, page=L1_KEY_PAGE))
 
     async def _seed_l2(self, entity_id: Any, stored: dict[str, Any], revision: int) -> bool:
         """put a row read from L3 into L2 only if nothing has happened to the key since it was read.

@@ -25,7 +25,9 @@ from typing import Any, ClassVar, Literal
 import pytest
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table
 
+from threetears.core.cache.duckdb import DuckDBBackend
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.collections import base as base_module
 from threetears.core.collections import (
     WRITE_GENERATION,
     BaseCollection,
@@ -696,3 +698,38 @@ class TestReadsAreCountedByTier:
 
         assert await reader.members.ensure("r1") is not None
         assert await _drained() == {_TABLE: {"l2": 1}}
+
+
+class TestATableWideDropReadsL1InPages:
+    """a table-wide drop visits every L1 key, page by page along the key, never one statement of the whole table."""
+
+    @pytest.mark.parametrize("l1_kind", ["sqlite", "duckdb"])
+    async def test_every_row_leaves_and_each_statement_reads_one_page(
+        self, bus: _Lossy, source: _Source, monkeypatch: pytest.MonkeyPatch, l1_kind: str
+    ) -> None:
+        monkeypatch.setattr(base_module, "L1_KEY_PAGE", 7)
+        pod = _Pod(bus, {}, source, scope="reader")
+        if l1_kind == "duckdb":
+            duck = DuckDBBackend()
+            duck.initialize(_metadata())
+            pod.members._l1 = duck  # type: ignore[attr-defined]
+        l1 = pod.members.l1_backend
+        assert l1 is not None
+        keys = [f"m{n:03d}" for n in range(30)]
+        for key in keys:
+            l1.upsert(_TABLE, {"id": key, "member_id": f"p{key}"}, "id")
+        heard: list[Any] = []
+        pod.members.add_l1_change_listener(heard.append)
+        statements: list[str] = []
+        if l1_kind == "sqlite":
+            raw = l1.get_connection()
+            raw.set_trace_callback(statements.append)  # type: ignore[union-attr]
+
+        assert pod.members.drop_cached_table() == 30
+        reads = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
+
+        assert sorted(heard) == keys, "every key's listener heard it go"
+        assert l1.execute_query(f"SELECT count(*) AS n FROM {_TABLE}")[0]["n"] == 0
+        if l1_kind == "sqlite":
+            assert len(reads) == 4, reads  # 30 keys at 7 a page, each asking 8: 4 statements
+            assert all("LIMIT" in sql and "ORDER BY" in sql for sql in reads), reads

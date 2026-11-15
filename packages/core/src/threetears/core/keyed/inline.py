@@ -23,9 +23,10 @@ from types import TracebackType
 from typing import Any, TypeVar
 
 from threetears.core.cache.duckdb_binds import run_bound
-from threetears.core.keyed.threaded import duckdb_arrow
+from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.keyed.threaded import InlineSQLite, duckdb_arrow
 
-__all__ = ["InlineDuckDB", "InlineTransaction", "run_inline"]
+__all__ = ["InlineDuckDB", "InlineTransaction", "inline_l1", "run_inline"]
 
 _T = TypeVar("_T")
 
@@ -161,6 +162,24 @@ class InlineDuckDB:
         :rtype: InlineTransaction
         """
         return InlineTransaction(self._conn)
+
+
+def inline_l1(l1: Any) -> InlineSQLite | InlineDuckDB:
+    """an L1 backend (the SQLite L1, or the DuckDB L1) as the reader the keyed helpers take, each statement run at
+    once on the caller's thread: for synchronous cache code reading its own in-process tables by key, driven by
+    :func:`run_inline`.
+
+    .. code-block:: python
+
+        rows = run_inline(keyed.keyset_rows(inline_l1(l1), "t", columns=["id"], by={}, order=[Sort("id", cast=None)]))
+
+    :param l1: a :class:`~threetears.core.cache.sqlite.SQLiteBackend`, or a DuckDB L1 backend (its thread's
+        connection, ``get_connection()``)
+    :ptype l1: Any
+    :return: the reader
+    :rtype: InlineSQLite | InlineDuckDB
+    """
+    return InlineSQLite(l1) if isinstance(l1, SQLiteBackend) else InlineDuckDB(l1.get_connection())
 
 
 def run_inline(awaitable: Coroutine[Any, Any, _T]) -> _T:
