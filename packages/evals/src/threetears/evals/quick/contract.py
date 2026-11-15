@@ -264,7 +264,8 @@ def _refuse_a_runner_that_returns_nothing(runner: Any, arm: str | None, field_na
     can be read. A runner that has a ``return`` and returns ``None`` on every case is the product answering nothing,
     and is scored.
 
-    :raises ValueError: Its code holds no ``return`` of a value and no ``yield``, naming it and what to return.
+    :raises ValueError: Its code holds no ``return`` of a value, no ``yield`` and no ``raise``, naming it and what to
+        return.
     """
     if isinstance(runner, Log | WorldRunner):
         return
@@ -291,11 +292,12 @@ def _refuse_a_runner_that_returns_nothing(runner: Any, arm: str | None, field_na
 
 
 def _returns_a_value(body: Sequence[ast.stmt]) -> bool:
-    """Whether a function body returns or yields a value anywhere, outside the functions and classes it defines."""
+    """Whether a function body returns or yields a value, or raises, anywhere outside the functions and classes it
+    defines: a runner that raises on purpose (one standing in for a refusing model) is the product failing, scored."""
     pending: list[ast.AST] = list(body)
     while pending:
         node = pending.pop()
-        if isinstance(node, ast.Yield | ast.YieldFrom):
+        if isinstance(node, ast.Yield | ast.YieldFrom | ast.Raise):
             return True
         if isinstance(node, ast.Return) and not (
             node.value is None or (isinstance(node.value, ast.Constant) and node.value.value is None)

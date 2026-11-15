@@ -158,8 +158,8 @@ def test_a_runner_that_returns_nothing_is_refused_before_anything_runs() -> None
 
 
 def test_a_runner_that_returns_nothing_is_run_where_no_field_is_read_off_its_answer() -> None:
-    """A function grader may grade what the runner did rather than what it returned, and a field every case expects
-    absent is answered by None: neither is refused."""
+    """A function grader may grade what the runner did rather than what it returned, a field every case expects absent
+    is answered by None, and a runner that raises stands in for a product that fails: none is refused."""
 
     def acts(case: Mapping[str, Any]) -> None:
         case.get("text")
@@ -167,7 +167,11 @@ def test_a_runner_that_returns_nothing_is_run_where_no_field_is_read_off_its_ans
     def did(case: Mapping[str, Any], out: Any) -> bool:
         return out is None
 
+    def refuses(case: Mapping[str, Any]) -> str:
+        raise RuntimeError("the provider refused the request")
+
     Eval(CASES, acts, [did], k=1)
+    Eval(CASES, refuses, ["label"], k=1)
     Eval([{**case, "refund": None} for case in CASES], acts, ["refund"], k=1)
 
 
