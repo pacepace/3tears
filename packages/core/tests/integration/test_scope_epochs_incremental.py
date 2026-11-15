@@ -469,11 +469,19 @@ async def _plan(pool: asyncpg.Pool, sql: str, params: tuple[Any, ...]) -> Statem
         return plan
 
 
-class _ReadsPlanned(PlanRecorder):
-    """a commit's connection whose reads are planned; its writes (the fence) run unplanned."""
+class _ReadsPlanned:
+    """a commit's connection whose reads are planned (a :class:`PlanRecorder`'s); its writes (the fence) run
+    unplanned on the connection."""
+
+    def __init__(self, conn: Any) -> None:
+        self._raw = conn
+        self.recorder = PlanRecorder(conn)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.recorder, name)
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
-        return await self._conn.fetchrow(sql, *args)
+        return await self._raw.fetchrow(sql, *args)
 
 
 async def _change_read(pool: asyncpg.Pool, reader: ScopeEpochs, l3: _CountingL3) -> tuple[str, tuple[Any, ...]]:
@@ -502,7 +510,7 @@ async def test_the_pending_scopes_are_read_through_their_partial_index(pool: asy
         recorder = _ReadsPlanned(conn)
         async with CallerTransaction(recorder):
             await writer.commit(version, (), conn=recorder)
-    [plan] = [plan for plan in recorder.plans if '"pending" IS NOT NULL' in plan.sql]
+    [plan] = [plan for plan in recorder.recorder.plans if '"pending" IS NOT NULL' in plan.sql]
     assert plan_uses_index(plan, "scope_epochs_pending", partial=True), plan.plan
     assert (await _whole(pool)).epochs == {
         **{f"race:r{index:05d}": 2 for index in range(_PLANNED_SCOPES)},
