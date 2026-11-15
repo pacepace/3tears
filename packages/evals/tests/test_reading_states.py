@@ -483,7 +483,9 @@ def test_every_reason_has_a_remedy_and_every_remedy_closes_something() -> None:
     assert set(REMEDY_OF_REASON) == set(
         get_args(SetAsideReason) + get_args(WithheldReason) + get_args(NotAvailableReason)
     )
-    assert set(REMEDY_OF_REASON.values()) | {"declare_looks"} == set(get_args(Remedy))
+    # The kinds' remedies close the rest; test_caveat_list holds that every remedy closes some caveat.
+    assert set(REMEDY_OF_REASON.values()) < set(get_args(Remedy))
+    assert "no_action" not in REMEDY_OF_REASON.values()
     assert Reason == SetAsideReason | WithheldReason | NotAvailableReason
 
 

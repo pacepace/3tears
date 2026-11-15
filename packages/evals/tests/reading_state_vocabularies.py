@@ -135,7 +135,9 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "Corrected.against",
         "FamilyComparison.delta_note",
         "analysis/completeness.py:GateRule",
+        "analysis/report_input.py:NoActionReason",
         "analysis/report_input.py:Remedy",
+        "analysis/report_input.py:UnsizedReason",
     ),
     _CHECK: (
         "kernel/evidence_tiers.py:CriterionState",

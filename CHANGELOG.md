@@ -18,9 +18,18 @@ report input built from a bundle now carries `caveat_list` and `first_screen`.
   settings not confirmed). A stored input with no list is given one on read.
 - The builder attaches the first-screen value: the gate (setup, an unfinished run or too few cases, with the runs
   it names), at most three ranked reasons and the count past them, the call, and `steps`: what would change each
-  reason as a typed `RemedyStep` (a remedy kind, the catalogue action that takes it and its arguments, a planned size
-  and a declared look for more evidence, and the action that prices a step that spends). Every one of the sixteen
-  reasons has exactly one remedy; `no_variation` is marked as the answer itself.
+  reason, one per reason shown, as a typed `RemedyStep`: a remedy kind; the catalogue action that takes it, each
+  call of it named and typed as the action's own parameters, and the parameters left to the taker (`needs`); for
+  more evidence, a declared look with a planned size read from the figure it would settle (the cases a design needs
+  to clear its line four times in five at today's estimate, or, below the floor where an interval is stated, the
+  cases that reach it), or `unsized` saying why none can be read; and the action that prices a step that spends.
+  Every one of the sixteen reasons, and every kind the first screen can show, has the act that addresses it (a judge
+  below its bar is replaced, raters who disagree sharpen the criterion, every case reading alike takes more cases, a
+  late criterion or a pick among many is confirmed on fresh cases); an analyst's own kind or a method-only kind takes
+  `no_action`, saying which.
+- Caveat ids are unique by construction (a typed caveat adds its reason, then its coordinate, where its reading holds
+  another in the same state), and two raisers that raise different caveats under one id are refused rather than one
+  kept.
 - A check against people silences a check against a model on its criterion only where its result decides (met or
   not met). A reading withheld on one arm silences only what is scoped to that arm.
 - The decision read is on the numbers side: `analysis/answer.py` (standing, survivors, dominance, materiality),
@@ -29,8 +38,8 @@ report input built from a bundle now carries `caveat_list` and `first_screen`.
 - `ResultCondition.judging`'s `set_aside` is `not_asked`; a condition handed back under the old spelling reads as
   the new one.
 
-**For hosts:** a report input built fresh digests differently from one built before (its `caveat_list`); a frozen
-snapshot keeps its digest. Durable minor 17.1 adds `SweptAxis.ordered`, `AspectDesign.planned_looks`,
+**For hosts:** neither `caveat_list` nor `first_screen` is in `report_input_digest`: no stored or built digest, and
+no snapshot id, moves. Durable minor 17.1 adds `SweptAxis.ordered`, `AspectDesign.planned_looks`,
 `EvalCampaign.volume_per_month` and `CampaignCall.made_by`, `model`, `on_behalf_of` and `evidence_fingerprint`, each
 optional and written only when set: deploy this build to every reader before a campaign sets one. Ten new
 provisional names, the types the campaign bundle's new in-memory fields hold: `threetears.evals.analysis` exports

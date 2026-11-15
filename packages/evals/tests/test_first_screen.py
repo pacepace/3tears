@@ -28,7 +28,7 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis import first_screen as first_screen_module
 from threetears.evals.schema import reading_states
-from threetears.evals.analysis.caveats import CLASS_OF_KIND, caveat_list, first_screen_of, from_legacy, remedy
+from threetears.evals.analysis.caveats import CLASS_OF_KIND, caveat_list, from_legacy, remedy, screen
 from threetears.evals.analysis.checks import Check
 from threetears.evals.analysis.first_screen import RANKS, REASONS_SHOWN, first_screen, subsumed
 from threetears.evals.analysis.report_input import CallRead, CaveatEntry, FirstScreen, Gate, GateRun, ReportInput
@@ -589,7 +589,7 @@ def test_a_stored_input_s_caveats_become_entries_with_the_same_ids_and_their_kin
     assert {"late", "short_run"} <= {entry.kind for entry in entries}
     assert all(entry.state is None or entry.kind == "latency" for entry in entries), "absent reads counted"
     assert all(entry.deciding == (entry.cls == "E" and entry.reach == "report") for entry in entries)
-    assert first_screen_of(stored).reasons == shown(caveat_list(stored), called_arms=["September"]).reasons
+    assert screen(stored, caveat_list(stored)).reasons == shown(caveat_list(stored), called_arms=["September"]).reasons
 
 
 # --- the function reads no kind, no name and no prose ---------------------------------------------------------------

@@ -1034,7 +1034,11 @@ class CaveatEntry(_Part):
     against: Literal["people", "model"] | None = Field(
         default=None, description="For a caveat about an instrument's check: what the instrument was checked against."
     )
-    criterion: str | None = Field(default=None, description="For such a caveat: the criterion the check decides.")
+    criterion: str | None = Field(
+        default=None,
+        description="For such a caveat: the criterion the check decides; for a gate cleared on a point estimate or a "
+        "borderline figure: the gate, by id.",
+    )
     same_family: bool = Field(
         default=False, description="For a check against a model: whether the model is of a candidate's family."
     )
@@ -1074,6 +1078,9 @@ class Gate(_Part):
 
     rule: Literal["setup", "unfinished", "too_small"] = Field(description="Which rule stopped the read.")
     runs: list[GateRun] = Field(default_factory=list, description="The runs the rule names.")
+    fewest_cases: int | None = Field(
+        default=None, ge=0, description="For too few cases: the fewest usable cases an arm read holds."
+    )
     waiting: int = Field(default=0, ge=0, description="The open report-wide caveats waiting below the gate.")
 
 
@@ -1090,33 +1097,55 @@ class CallRead(_Part):
     )
 
 
-#: The one act that would close a caveat, as a closed kind; ``nothing_to_do`` where the reading is the answer.
+#: The one act that would close a caveat, as a closed kind; ``no_action`` where nothing the package knows of closes it,
+#: with the reason the step states (:data:`NoActionReason`).
 Remedy = Literal[
     "resume_or_rerun",
     "rerun_on_one_cell",
     "remeasure_or_attest",
     "rerun_serially",
+    "rerun_balanced",
     "check_against_people",
     "replace_instrument",
+    "sharpen_criterion",
     "repair_rig",
     "add_cases",
+    "confirm_on_fresh_cases",
     "record_and_rerun",
     "run_live",
     "draw_at_random",
     "finish_read",
     "declare_looks",
-    "nothing_to_do",
+    "declare_criteria",
+    "name_control",
+    "no_action",
 ]
+
+#: Why a step that is more evidence states no planned size: ``no_interval``, the figure it would settle states no
+#: interval or standard error (a percentile states none); ``no_spread``, every case read alike, so no spread per case
+#: sizes a design; ``on_the_line``, today's estimate sits exactly on its line, so no finite size settles it there;
+#: ``no_count``, no count says how many cases the figure rests on; ``nothing_to_settle``, the caveat names no figure
+#: with a line, a margin or a floor a size could be read against.
+UnsizedReason = Literal["no_interval", "no_spread", "on_the_line", "no_count", "nothing_to_settle"]
+
+#: Why no act closes a caveat: ``unclassed_kind``, an analyst's own kind, outside the package's classes;
+#: ``method_only``, a kind that only ever lands in the method section and qualifies no answer.
+NoActionReason = Literal["unclassed_kind", "method_only"]
+
+#: A value one argument of a catalogue action's call takes.
+StepArgument = str | bool | int | list[str]
 
 
 class RemedyStep(_Part):
     """What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as
     a value a person reads and an agent can take.
 
-    Where an action of the engine's catalogue takes the step, ``action`` names it and ``arguments`` fill it from the
-    caveat's own arms, runs and coordinate. Where the step is more evidence, ``planned_cases`` is its size, stated
-    before it runs and never "until it separates", and taking it is one more declared look at the readings it names.
-    A step that spends names the action that prices it first; code never takes a step.
+    Where an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the
+    step makes, every argument named and typed as the action's own parameters, and ``needs`` names the parameters the
+    step cannot fill from what the caveat holds, which the taker supplies to every call. Where the step is more
+    evidence, ``planned_cases`` is its size, read from the figure it would settle and stated before it runs, never
+    "until it separates"; where no size can be read, ``unsized`` says why. Taking such a step is one more declared look
+    at the readings it names. A step that spends names the action that prices it first; code never takes a step.
     """
 
     remedy: Remedy = Field(description="What would close it.")
@@ -1124,12 +1153,24 @@ class RemedyStep(_Part):
     action: str | None = Field(
         default=None, description="The catalogue action that takes it; none where a host or a person acts."
     )
-    arguments: dict[str, str | list[str]] = Field(
-        default_factory=dict, description="The action's arguments, filled from what the caveat names."
+    calls: list[dict[str, StepArgument]] = Field(
+        default_factory=list,
+        description="Each call of the action the step makes, its arguments by the action's own parameter names; empty "
+        "where no action takes it.",
     )
+    needs: list[str] = Field(
+        default_factory=list,
+        description="The action's parameters no call fills, by its own names, which the taker supplies to every call.",
+    )
+    arms: list[str] = Field(default_factory=list, description="The arms it is about, by id; empty for all.")
+    runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
     planned_cases: int | None = Field(
-        default=None, ge=1, description="For more evidence: the cases to add per arm named, planned before it runs."
+        default=None,
+        ge=1,
+        description="For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from "
+        "the figure it would settle, planned before it runs.",
     )
+    unsized: UnsizedReason | None = Field(default=None, description="For more evidence no size can be read for: why.")
     declared_look: bool = Field(
         default=False, description="Whether taking it is one more look at the readings it names, declared as such."
     )
@@ -1143,13 +1184,18 @@ class RemedyStep(_Part):
     priced_by: str | None = Field(
         default=None, description="For a step that spends: the catalogue action that prices it before it is taken."
     )
+    no_action: NoActionReason | None = Field(default=None, description="For a caveat no act closes: why none does.")
 
     @model_validator(mode="after")
     def _priced_and_planned(self) -> Self:
         if self.spends and self.priced_by is None:
             raise ValueError("a step that spends names the action that prices it")
-        if self.declared_look and self.planned_cases is None:
-            raise ValueError("a step that is one more look states its planned size")
+        if self.declared_look and (self.planned_cases is None) == (self.unsized is None):
+            raise ValueError("a step that is one more look states its planned size, or why it has none, and not both")
+        if (self.remedy == "no_action") != (self.no_action is not None):
+            raise ValueError("a step that takes no action says why none does, and only such a step does")
+        if (self.action is None) != (not self.calls):
+            raise ValueError("a step an action takes makes at least one call of it, and a step none takes makes none")
         return self
 
 

@@ -1983,7 +1983,7 @@
       }
      ],
      "default": null,
-     "description": "For such a caveat: the criterion the check decides.",
+     "description": "For such a caveat: the criterion the check decides; for a gate cleared on a point estimate or a borderline figure: the gate, by id.",
      "title": "Criterion"
     },
     "same_family": {
@@ -2629,6 +2629,7 @@
       "unfinished",
       "too_small"
      ],
+     "title": "Rule",
      "type": "string"
     },
     "runs": {
@@ -2636,17 +2637,35 @@
      "items": {
       "$ref": "#/$defs/GateRun"
      },
+     "title": "Runs",
      "type": "array"
     },
+    "fewest_cases": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For too few cases: the fewest usable cases an arm read holds.",
+     "title": "Fewest Cases"
+    },
     "waiting": {
+     "default": 0,
      "description": "The open report-wide caveats waiting below the gate.",
      "minimum": 0,
+     "title": "Waiting",
      "type": "integer"
     }
    },
    "required": [
     "rule"
    ],
+   "title": "Gate",
    "type": "object"
   },
   "GateRun": {
@@ -2753,7 +2772,7 @@
   },
   "RemedyStep": {
    "additionalProperties": false,
-   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it and ``arguments`` fill it from the\ncaveat's own arms, runs and coordinate. Where the step is more evidence, ``planned_cases`` is its size, stated\nbefore it runs and never \"until it separates\", and taking it is one more declared look at the readings it names.\nA step that spends names the action that prices it first; code never takes a step.",
+   "description": "What would change one first-screen reason, or what stops a campaign being read: the one act that closes it, as\na value a person reads and an agent can take.\n\nWhere an action of the engine's catalogue takes the step, ``action`` names it, ``calls`` holds each call of it the\nstep makes, every argument named and typed as the action's own parameters, and ``needs`` names the parameters the\nstep cannot fill from what the caveat holds, which the taker supplies to every call. Where the step is more\nevidence, ``planned_cases`` is its size, read from the figure it would settle and stated before it runs, never\n\"until it separates\"; where no size can be read, ``unsized`` says why. Taking such a step is one more declared look\nat the readings it names. A step that spends names the action that prices it first; code never takes a step.",
    "properties": {
     "remedy": {
      "description": "What would close it.",
@@ -2762,16 +2781,21 @@
       "rerun_on_one_cell",
       "remeasure_or_attest",
       "rerun_serially",
+      "rerun_balanced",
       "check_against_people",
       "replace_instrument",
+      "sharpen_criterion",
       "repair_rig",
       "add_cases",
+      "confirm_on_fresh_cases",
       "record_and_rerun",
       "run_live",
       "draw_at_random",
       "finish_read",
       "declare_looks",
-      "nothing_to_do"
+      "declare_criteria",
+      "name_control",
+      "no_action"
      ],
      "title": "Remedy",
      "type": "string"
@@ -2802,23 +2826,56 @@
      "description": "The catalogue action that takes it; none where a host or a person acts.",
      "title": "Action"
     },
-    "arguments": {
-     "additionalProperties": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "items": {
+    "calls": {
+     "description": "Each call of the action the step makes, its arguments by the action's own parameter names; empty where no action takes it.",
+     "items": {
+      "additionalProperties": {
+       "anyOf": [
+        {
          "type": "string"
         },
-        "type": "array"
-       }
-      ]
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "integer"
+        },
+        {
+         "items": {
+          "type": "string"
+         },
+         "type": "array"
+        }
+       ]
+      },
+      "type": "object"
      },
-     "description": "The action's arguments, filled from what the caveat names.",
-     "title": "Arguments",
-     "type": "object"
+     "title": "Calls",
+     "type": "array"
+    },
+    "needs": {
+     "description": "The action's parameters no call fills, by its own names, which the taker supplies to every call.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Needs",
+     "type": "array"
+    },
+    "arms": {
+     "description": "The arms it is about, by id; empty for all.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Arms",
+     "type": "array"
+    },
+    "runs": {
+     "description": "The runs it is about, by id; empty for none named.",
+     "items": {
+      "type": "string"
+     },
+     "title": "Runs",
+     "type": "array"
     },
     "planned_cases": {
      "anyOf": [
@@ -2831,8 +2888,28 @@
       }
      ],
      "default": null,
-     "description": "For more evidence: the cases to add per arm named, planned before it runs.",
+     "description": "For more evidence: the cases to add per arm named (on fresh cases, the cases to run), read from the figure it would settle, planned before it runs.",
      "title": "Planned Cases"
+    },
+    "unsized": {
+     "anyOf": [
+      {
+       "enum": [
+        "no_interval",
+        "no_spread",
+        "on_the_line",
+        "no_count",
+        "nothing_to_settle"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For more evidence no size can be read for: why.",
+     "title": "Unsized"
     },
     "declared_look": {
      "default": false,
@@ -2880,6 +2957,23 @@
      "default": null,
      "description": "For a step that spends: the catalogue action that prices it before it is taken.",
      "title": "Priced By"
+    },
+    "no_action": {
+     "anyOf": [
+      {
+       "enum": [
+        "unclassed_kind",
+        "method_only"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a caveat no act closes: why none does.",
+     "title": "No Action"
     }
    },
    "required": [
