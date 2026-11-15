@@ -23,6 +23,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 
 from threetears.agent.intention.collections import IntentionsCollection
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _READ_AT = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
@@ -46,6 +47,7 @@ def _l1_metadata() -> MetaData:
         Column("source_conversation_id", String(255)),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return meta
 

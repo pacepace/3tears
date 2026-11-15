@@ -50,6 +50,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing import entity_collection_stub
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _make_metadata() -> MetaData:
@@ -67,6 +68,7 @@ def _make_metadata() -> MetaData:
         Column("score", Integer),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     Table(
         "stub_parity_composite",
@@ -76,6 +78,7 @@ def _make_metadata() -> MetaData:
         Column("name", String(255)),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from threetears.core.cache import sqlite as sqlite_module
 from threetears.core.cache.base import stored_time
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 _IDS = itertools.count(1)
@@ -53,6 +54,7 @@ def _metadata(*extra: Column) -> MetaData:
         Column("wall", Time),
         Column("zoned", Time(timezone=True)),
         *extra,
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

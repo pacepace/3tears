@@ -30,6 +30,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import BigInteger, Column as SaColumn, MetaData, String, Table
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
@@ -82,6 +83,7 @@ def _metadata() -> MetaData:
         SaColumn("state", String(8), primary_key=True),
         SaColumn("geo_id", BigInteger, primary_key=True),
         SaColumn("votes", BigInteger),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 
@@ -1421,7 +1423,13 @@ def _derived_replica(
 ) -> tuple[DuckDBBackend, CopyFollower]:
     """a replica whose copy holds a table its owner derives (a settle's), which its checkpoint holds too."""
     metadata = _metadata()
-    Table(_DERIVED, metadata, SaColumn("state", String(8), primary_key=True), SaColumn("total", BigInteger))
+    Table(
+        _DERIVED,
+        metadata,
+        SaColumn("state", String(8), primary_key=True),
+        SaColumn("total", BigInteger),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
     backend = DuckDBBackend()
     backend.initialize(metadata)
     followed = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]

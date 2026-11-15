@@ -36,6 +36,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.ddl.change_notes import NOTE_REACH_SETTING
 from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 #: the transaction a recording broker opens
 _TX_ID = "019d9a00-0000-7000-8000-0000000000aa"
@@ -50,6 +51,7 @@ SCHEMA = TableSchema(
         Column("shape", BYTES_TYPE, nullable=True),
         Column("loaded_at", DATETIMETZ_TYPE, nullable=True),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 _WHEN = datetime(2026, 10, 22, 12, 30, tzinfo=UTC)
@@ -341,6 +343,7 @@ async def test_copy_many_refuses_rows_that_disagree_on_their_columns() -> None:
             Column("source", STRING_TYPE),
             Column("loaded_at", DATETIMETZ_TYPE, nullable=True, server_default="now()"),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     store = SqlL3Backend(object())
     store.register_schema("loads", defaulted)
@@ -363,7 +366,9 @@ async def test_copy_many_refuses_rows_that_disagree_on_their_columns() -> None:
 async def test_copy_many_refuses_a_column_a_binary_copy_cannot_write(column: Column, value: Any) -> None:
     # a jsonb value binds through the pool's text-format codec, a vector through a cast: a binary
     # COPY has neither, so the load is refused before anything is sent
-    table = TableSchema(name="docs", primary_key="id", columns=[Column("id", STRING_TYPE), column])
+    table = TableSchema(
+        name="docs", primary_key="id", columns=[Column("id", STRING_TYPE), column], l1_eviction=TEST_L1_TABLE
+    )
     store = SqlL3Backend(object())
     store.register_schema("docs", table)
     conn = _CopyingConn()

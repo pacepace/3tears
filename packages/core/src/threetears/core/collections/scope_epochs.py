@@ -123,6 +123,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.coordination.lease import KVLease
 from threetears.core.entities.base import BaseEntity
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "SCOPE_EPOCHS_TABLE",
@@ -246,6 +247,7 @@ def scope_epochs_schema(name: str = SCOPE_EPOCHS_TABLE) -> TableSchema:
             ),
         ),
         on_conflict="update",
+        l1_eviction=Declared(Policy.KEEP, "a writer's epoch and settle state: a reader treats it as complete"),
     )
 
 

@@ -52,6 +52,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING
 from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 SCHEMA = TableSchema(
     name="lsf_rows",
@@ -64,6 +65,7 @@ SCHEMA = TableSchema(
         Column("loaded_at", DATETIMETZ_TYPE, nullable=True),
         Column("detail", JSONB_TYPE, nullable=True),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 _WHEN = datetime(2026, 10, 22, 12, 30, tzinfo=UTC)

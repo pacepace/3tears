@@ -47,6 +47,7 @@ from threetears.core.data.collection_factory import create_dynamic_collection
 from threetears.core.data.schema import ColumnDef, TableDef
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _WHEN = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
 _CANONICAL = "2026-10-01T12:30:00.000000+00:00"
@@ -148,7 +149,13 @@ def _sqlite_with_a_json_column() -> SQLiteBackend:
     :rtype: SQLiteBackend
     """
     metadata = MetaData()
-    Table("rows", metadata, Column("id", String, primary_key=True), Column("data", JSONB))
+    Table(
+        "rows",
+        metadata,
+        Column("id", String, primary_key=True),
+        Column("data", JSONB),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
     backend = SQLiteBackend(db_name="stored_json_datetime")
     backend.initialize(metadata)
     return backend
@@ -290,6 +297,7 @@ class _TzRows(SchemaBackedCollection[_TzEntity]):
             SchemaColumn("date_created", DATETIMETZ_TYPE),
             SchemaColumn("date_updated", DATETIMETZ_TYPE),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property

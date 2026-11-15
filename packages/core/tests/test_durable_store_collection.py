@@ -24,6 +24,7 @@ from threetears.core.collections.flush import WriteBuffer, flush_pending
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _make_metadata() -> MetaData:
@@ -35,6 +36,7 @@ def _make_metadata() -> MetaData:
         Column("text", String(4096)),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

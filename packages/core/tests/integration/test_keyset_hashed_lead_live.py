@@ -25,6 +25,7 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.keyset import keyset_pages
 from threetears.core.testing.plans import PlanRecorder, StatementPlan, on_yugabyte, plan_problems
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -33,6 +34,7 @@ _WIDE = TableSchema(
     name="wide",
     primary_key=("state", "geo_id"),
     columns=[Column("state", STRING_TYPE), Column("geo_id", BIGINT_TYPE), Column("votes", BIGINT_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 _WIDE_STATES = 50
 _WIDE_PER_STATE = 3_000
@@ -42,6 +44,7 @@ _NARROW = TableSchema(
     name="narrow",
     primary_key=("race", "candidate"),
     columns=[Column("race", STRING_TYPE), Column("candidate", BIGINT_TYPE), Column("votes", BIGINT_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 _NARROW_RACES = 3_000
 _NARROW_PER_RACE = 2
@@ -205,6 +208,7 @@ _PG_NARROW = TableSchema(
     name="narrow_pg",
     primary_key=("race", "candidate"),
     columns=[Column("race", STRING_TYPE), Column("candidate", BIGINT_TYPE), Column("votes", BIGINT_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 _PG_PINNED_RACES = [f"r{n:05d}" for n in range(1, _PG_NARROW_RACES + 1, 5)][::-1] + ["r99999"]
 

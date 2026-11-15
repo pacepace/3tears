@@ -25,6 +25,8 @@ from threetears.core.serialization import deserialize_from_json, serialize_to_js
 from threetears.observe import get_logger
 
 from threetears.core.data.schema import TableDef
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 __all__ = [
     "create_dynamic_collection",
@@ -195,7 +197,16 @@ def _build_sa_metadata(table_def: TableDef) -> Any:
         else:
             sa_type = sa_type_map.get(col.column_type, String(255))
         sa_columns.append(Column(col.name, sa_type, primary_key=col.primary_key, nullable=col.nullable))
-    Table(table_def.name, metadata, *sa_columns)
+    Table(
+        table_def.name,
+        metadata,
+        *sa_columns,
+        info={
+            L1_EVICTION_INFO: Declared(
+                Policy.EVICTABLE, "a dynamic collection's rows cached on a read by key; a miss reads L2/L3 and refills"
+            )
+        },
+    )
     return metadata
 
 

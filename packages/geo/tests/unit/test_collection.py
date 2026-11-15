@@ -29,6 +29,7 @@ from threetears.geo.geometry import UndecodableGeometry, decode_geometry
 from threetears.geo.mvt import PARTIAL_LAYER_SUFFIX
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.object_store.filesystem import FilesystemObjectStore
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _PHOENIX_LON = -112.07
 _PHOENIX_LAT = 33.45
@@ -634,6 +635,7 @@ class TestThroughAFeatureCache:
                 SAColumn("layer", String, primary_key=True),
                 SAColumn("source_version", Integer, primary_key=True),
                 SAColumn("feature_id", String, primary_key=True),
+                info={L1_EVICTION_INFO: TEST_L1_TABLE},
             )
             backend = SQLiteBackend(f"geo_wired_{abs(hash(request.node.nodeid))}")
             backend.initialize(metadata)

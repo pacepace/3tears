@@ -76,6 +76,7 @@ from threetears.core.keyed.deletes import delete_before
 from threetears.nats.errors import KvError
 from threetears.observe import get_logger
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "COORDINATION_TABLE_SCHEMAS",
@@ -515,6 +516,7 @@ class CoordinationCountersCollection(CoordinationCollection):
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
         ),
+        l1_eviction=Declared(Policy.KEEP, "written behind: an L1 row may hold an increment L3 has not got yet"),
     )
 
 
@@ -553,6 +555,7 @@ class CoordinationClaimsCollection(CoordinationCollection):
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
         ),
+        l1_eviction=Declared(Policy.KEEP, "written behind: an L1 row may hold a claim L3 has not got yet"),
     )
 
 
@@ -586,6 +589,9 @@ class CoordinationRevocationsCollection(CoordinationCollection):
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
+        ),
+        l1_eviction=Declared(
+            Policy.EVICTABLE, "synchronous writes; rows cached on a read by key; a miss reads L2/L3 and refills"
         ),
     )
 
@@ -621,6 +627,9 @@ class CoordinationRedemptionsCollection(CoordinationCollection):
                 plan_test="packages/core/tests/integration/test_coordination_expiry_plans.py"
                 "::test_each_expiry_sweep_finds_its_rows_through_its_expiry_index",
             ),
+        ),
+        l1_eviction=Declared(
+            Policy.EVICTABLE, "synchronous CAS writes; rows cached on a read by key; a miss reads L2/L3 and refills"
         ),
     )
 

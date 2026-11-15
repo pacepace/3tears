@@ -42,6 +42,7 @@ from threetears.core.data.collection_factory import create_dynamic_collection
 from threetears.core.data.schema import ColumnDef, TableDef
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import CorruptCacheEntry
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _ROW_ID = uuid.UUID("01926f3a-0000-7000-8000-000000000001")
 _WHEN = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
@@ -63,6 +64,7 @@ class _TypedRows(SchemaBackedCollection[_Entity]):
             Column("blob", BYTES_TYPE, nullable=True),
             Column("doc", JSONB_TYPE, nullable=True),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property

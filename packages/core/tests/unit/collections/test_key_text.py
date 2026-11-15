@@ -23,6 +23,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _PACIFIC = timezone(timedelta(hours=-8))
 _AT = datetime(2026, 11, 3, 19, 0, 0, tzinfo=_PACIFIC)
@@ -42,6 +43,7 @@ def _collection() -> Any:
         name=f"snaps_{uuid.uuid4().hex[:8]}",
         primary_key=("office", "at"),
         columns=[Column("office", STRING_TYPE), Column("at", DATETIMETZ_TYPE), Column("seen", DATETIMETZ_TYPE)],
+        l1_eviction=TEST_L1_TABLE,
     )
     cls = collection_for_schema(schema, entity_class=_Snapshot)
     cls.invalidation_columns = ("seen",)

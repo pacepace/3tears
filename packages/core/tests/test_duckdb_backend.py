@@ -27,6 +27,7 @@ from sqlalchemy import (
     Table,
 )
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _make_metadata() -> MetaData:
@@ -41,6 +42,7 @@ def _make_metadata() -> MetaData:
         Column("data", JSONB),
         Column("created_at", DateTime),
         Column("raw_bytes", BYTEA),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 
@@ -238,6 +240,7 @@ class TestSerializationRoundTrip:
             metadata,
             Column("id", UUID, primary_key=True),
             Column("blob", LargeBinary),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         b = DuckDBBackend()
         b.initialize(metadata)
@@ -263,6 +266,7 @@ class TestSerializationRoundTrip:
             metadata,
             Column("id", UUID, primary_key=True),
             Column("blob", BYTEA),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         b = DuckDBBackend()
         b.initialize(metadata)
@@ -356,6 +360,7 @@ def _partitioned_backend() -> DuckDBBackend:
         Column("state", String(8)),
         Column("votes", Integer),
         Column("counted_at", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend = DuckDBBackend(scope_keys=_STATE_SCOPES)
     backend.initialize(metadata)
@@ -443,6 +448,7 @@ class TestPartitions:
             Column("id", Integer, primary_key=True),
             Column("label", String(32)),
             Column("big", Numeric(30, 0)),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         backend = DuckDBBackend()
         backend.initialize(metadata)
@@ -715,7 +721,13 @@ class TestPartitions:
         assert _partitioned_backend().schema_digest("results") == _partitioned_backend().schema_digest("results")
         other = DuckDBBackend()
         metadata = MetaData()
-        Table("results", metadata, Column("race", String(64), primary_key=True), Column("votes", String(8)))
+        Table(
+            "results",
+            metadata,
+            Column("race", String(64), primary_key=True),
+            Column("votes", String(8)),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
+        )
         other.initialize(metadata)
         assert other.schema_digest("results") != _partitioned_backend().schema_digest("results")
 
@@ -738,6 +750,7 @@ class TestAScopeIsReadByADeclaredKeysLead:
             Column("state", String(8)),
             Column("votes", Integer),
             Column("counted_at", DateTime(timezone=True)),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         backend = DuckDBBackend()
         backend.initialize(metadata)
@@ -768,6 +781,7 @@ class TestAScopeIsReadByADeclaredKeysLead:
                 Column("join_state_code", String(8)),
                 Column("state", String(8)),
                 Column("run_id", String(8)),
+                info={L1_EVICTION_INFO: TEST_L1_TABLE},
             )
         # the reports pod's COPY_KEYS shape: a named table's keys, and "*" for every table it does not name
         copy_keys = {
@@ -854,6 +868,7 @@ class TestNumericReadsBackAsDecimal:
             Column("price", Numeric(12, 4)),
             Column("wide", Numeric(38, 12)),
             Column("ratio", Float()),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         b = DuckDBBackend()
         b.initialize(metadata)
@@ -880,7 +895,13 @@ class TestNumericReadsBackAsDecimal:
         self, sa_type: Numeric, reason: str
     ) -> None:
         metadata = MetaData()
-        Table("wide", metadata, Column("id", String(255), primary_key=True), Column("amount", sa_type))
+        Table(
+            "wide",
+            metadata,
+            Column("id", String(255), primary_key=True),
+            Column("amount", sa_type),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
+        )
         b = DuckDBBackend()
         try:
             with pytest.raises(UnsupportedL1ColumnError, match=rf"wide\.amount: .*{reason}"):
@@ -900,6 +921,7 @@ def _keyless_backend() -> DuckDBBackend:
         Column("state", String(8)),
         Column("votes", Integer),
         Column("counted_at", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend = DuckDBBackend(keyless=["results"], scope_keys=_STATE_SCOPES)
     backend.initialize(metadata)
@@ -1042,7 +1064,7 @@ class TestKeylessTables:
 
     def test_a_keyless_table_with_no_key_is_refused_before_anything_is_created(self) -> None:
         metadata = MetaData()
-        Table("loose", metadata, Column("a", Integer), Column("b", Integer))
+        Table("loose", metadata, Column("a", Integer), Column("b", Integer), info={L1_EVICTION_INFO: TEST_L1_TABLE})
         backend = DuckDBBackend(keyless=["loose"])
         with pytest.raises(ValueError, match="declares no primary key"):
             backend.initialize(metadata)
@@ -1091,6 +1113,7 @@ def _scoped_keyless_backend() -> DuckDBBackend:
         Column("run_id", Integer, primary_key=True),
         Column("county", String(64), primary_key=True),
         Column("votes", Integer),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend = DuckDBBackend(keyless=["projections"])
     backend.initialize(metadata)
@@ -1249,6 +1272,7 @@ def test_a_fill_deletes_what_it_was_not_given_through_the_backend_s_own_delete()
         Column("race", String(64), primary_key=True),
         Column("county", String(64), primary_key=True),
         Column("votes", Integer),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend = Counting()
     backend.deleted = []

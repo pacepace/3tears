@@ -100,6 +100,7 @@ from threetears.core.namespaces import NAMESPACE_NAME_SEPARATOR, namespace_conta
 from threetears.core.tenancy import no_tenant, tenant_column
 from threetears.interfaces.keyed.keys import TableKey, register_table_keys
 from threetears.observe import get_logger
+from threetears.core.eviction import Declared, Policy
 
 log = get_logger(__name__)
 
@@ -355,6 +356,7 @@ class GroupCollection(SchemaBackedCollection[GroupEntity]):
             Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
         ],
         cas_column="date_updated",
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -787,6 +789,7 @@ class GroupMemberCollection(SchemaBackedCollection[GroupMemberEntity]):
                 server_default="now()",
             ),
         ],
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -1139,6 +1142,7 @@ class RoleCollection(SchemaBackedCollection[RoleEntity]):
             Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
         ],
         cas_column="date_updated",
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -1450,6 +1454,7 @@ class RoleAssignmentCollection(SchemaBackedCollection[RoleAssignmentEntity]):
             # automation passes ``'auto:agent-yaml'``.
             Column("managed_by", STRING_TYPE, server_default="'manual'"),
         ],
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -2383,6 +2388,7 @@ class NamespaceCollection(SchemaBackedCollection[NamespaceEntity]):
             Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -3545,6 +3551,7 @@ class ImpersonationGateCollection(SchemaBackedCollection[ImpersonationGateEntity
             Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
         ],
         cas_column="date_updated",
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property

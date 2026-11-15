@@ -71,6 +71,7 @@ from threetears.epoch import (
 )
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.errors import KvError
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -189,6 +190,7 @@ class _Pod:
                 SchemaColumn("n", STRING_TYPE, nullable=True),
             ],
             on_conflict="update",
+            l1_eviction=TEST_L1_TABLE,
         )
         metadata = MetaData()
         schema.to_sqlalchemy_table(metadata)
@@ -1148,6 +1150,7 @@ async def _loaded_table(pool: asyncpg.Pool, schema: str, table: str) -> _Loaded:
                 SchemaColumn("geo", STRING_TYPE),
                 SchemaColumn("votes", STRING_TYPE),
             ],
+            l1_eviction=TEST_L1_TABLE,
         ),
     )
     return _Loaded(table=loaded, store=store, keeper=keeper, bus=bus, source=source)

@@ -92,6 +92,8 @@ from threetears.core.backends.schema_sql import (
     json_default as _json_default,
 )
 from threetears.core.backends.sql import SqlL3Backend
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO, declare_l1_table
+from threetears.core.eviction import Declared
 from threetears.core.collections.base import BaseCollection, EntityT
 from threetears.core.tenancy import TENANCY_UNDECLARED, Tenancy
 from threetears.core.collections.generation import WRITE_GENERATION_UNDECLARED, WriteGenerationDeclaration
@@ -1145,6 +1147,10 @@ class TableSchema:
     # which tenant the table's change records belong to (threetears.core.tenancy); the
     # collection class reads it from here, as it reads write_generation
     tenancy: Tenancy = TENANCY_UNDECLARED
+    # the table's eviction policy in a process's SQLite L1 (threetears.core.eviction: EVICTABLE, a cache of reads a
+    # miss refills; KEEP, what a reader treats as complete or a write needs), with why. No default: the L1 refuses
+    # a table that declares none (threetears.core.cache.l1_lru)
+    l1_eviction: Declared | None = None
 
     _pk_columns: KeyColumns = field(init=False, repr=False)
     _by_name: dict[str, Column] = field(init=False, repr=False)
@@ -1165,6 +1171,9 @@ class TableSchema:
             without the four preconditions its fence needs (see
             :meth:`_validate_cas_null_safe`)
         """
+        if self.l1_eviction is not None:
+            # declared where the table is declared: every L1 and the cache metrics read it by the table's name
+            declare_l1_table(self.name, self.l1_eviction)
         pk = self.primary_key
         pk_cols: tuple[str, ...] = (pk,) if isinstance(pk, str) else tuple(pk)
         # coerce partition columns to immutable so callers do not have
@@ -1710,6 +1719,7 @@ class TableSchema:
             *sa_columns,
             *sa_fk_constraints,
             *sa_unique_constraints,
+            info={} if self.l1_eviction is None else {L1_EVICTION_INFO: self.l1_eviction},
         )
 
         # indexes are built against the table's own columns so a ``desc``

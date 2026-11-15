@@ -35,6 +35,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 LAYER = TableSchema(
     name="layer",
@@ -46,6 +47,7 @@ LAYER = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 ONE_KEY = TableSchema(
@@ -57,6 +59,7 @@ ONE_KEY = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 #: a statement is key-led when its WHERE opens on the leading key column, as an array or one value
@@ -273,7 +276,7 @@ def test_a_key_led_delete_names_one_key_column_as_an_array_and_fixes_the_rest() 
 
 
 def test_a_key_column_with_no_array_form_is_refused() -> None:
-    schema = TableSchema(name="docs", primary_key="doc", columns=[Column("doc", JSONB_TYPE)])
+    schema = TableSchema(name="docs", primary_key="doc", columns=[Column("doc", JSONB_TYPE)], l1_eviction=TEST_L1_TABLE)
     with pytest.raises(ValueError, match="docs"):
         build_key_led_delete_sql(schema, varying="doc")
 
@@ -330,6 +333,7 @@ DOCS = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -508,6 +512,7 @@ JSONB_KEYED = TableSchema(
     name="tiles",
     primary_key=("tile", "doc"),
     columns=[Column("tile", STRING_TYPE), Column("doc", JSONB_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 

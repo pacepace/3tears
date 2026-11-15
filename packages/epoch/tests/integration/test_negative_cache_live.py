@@ -37,6 +37,7 @@ from threetears.core.entities.base import BaseEntity
 from threetears.epoch import EpochGenerationSource
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.kv import build_kv_stream_config
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -54,6 +55,7 @@ def _metadata() -> MetaData:
         Column("expires_at", DateTime(timezone=True)),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

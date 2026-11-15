@@ -40,6 +40,7 @@ from threetears.core.coordination.replay_anchor import CollectionReplayAnchor
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import Principal, Subjects, kv_key_scope_for
 from threetears.observe import HealthCheck, HealthTier
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _collection_tables() -> MetaData:
@@ -49,7 +50,7 @@ def _collection_tables() -> MetaData:
     :rtype: MetaData
     """
     metadata = MetaData()
-    Table("widgets", metadata, Column("id", String(64), primary_key=True))
+    Table("widgets", metadata, Column("id", String(64), primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
     return metadata
 
 

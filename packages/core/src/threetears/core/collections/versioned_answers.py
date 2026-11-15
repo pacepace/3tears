@@ -110,6 +110,7 @@ from threetears.core.exceptions import ConcurrentModificationError, GenerationUn
 from threetears.nats.collection_key_requests import MAX_PURGED_KEYS, CollectionKeysRequestError
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "Announced",
@@ -873,6 +874,7 @@ def _answers_schema(table_name: str) -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, nullable=True),
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
         ],
+        l1_eviction=Declared(Policy.EVICTABLE, "an index copy of L2's; a miss reads L2"),
     )
 
 
@@ -894,6 +896,9 @@ def _index_schema(table_name: str) -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, nullable=True),
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
         ],
+        l1_eviction=Declared(
+            Policy.EVICTABLE, "an answer copied from L2, a pure function of its key; a miss reads L2 or computes it"
+        ),
     )
 
 

@@ -36,6 +36,7 @@ from threetears.agent.tools.object_resolver import (
     ObjectResolveRequestModel,
     ObjectResolveResponseModel,
 )
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _SCOPE = "01947100-0000-7000-8000-0000000000aa"
 _CUSTOMER = UUID("06a41d51-a6d5-7824-8000-29ab66754fc0")
@@ -188,7 +189,7 @@ class TestTheL1TableIsRegisteredByTheCacheModule:
 
     def test_the_pod_s_own_tables_survive_beside_it(self) -> None:
         metadata = MetaData()
-        Table("widgets", metadata, Column("id", String(64), primary_key=True))
+        Table("widgets", metadata, Column("id", String(64), primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
         backend = create_tool_pod_l1_backend(metadata)
         assert backend.has_table("widgets") is True
         assert backend.has_table(OBJECT_RESOLUTIONS_TABLE) is True

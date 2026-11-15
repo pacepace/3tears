@@ -23,6 +23,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from threetears.agent.intention.collections import IntentionsCollection
 from threetears.core.testing.sqla_parity import assert_tables_equivalent
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 # Embedding dimension carried by the intentions reference fixture.
 # Mirrors ``threetears.agent.intention.collections._INTENTION_VECTOR_DIM``;
@@ -94,6 +95,7 @@ def _reference_intentions_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 

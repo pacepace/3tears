@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import Column, MetaData, Numeric, String, Table
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
@@ -28,7 +29,13 @@ from threetears.core.cache.duckdb import DuckDBBackend, arrow_rows, query_arrow 
 @pytest.fixture()
 def backend() -> Any:
     metadata = MetaData()
-    Table("shares", metadata, Column("id", String, primary_key=True), Column("share", Numeric(12, 4)))
+    Table(
+        "shares",
+        metadata,
+        Column("id", String, primary_key=True),
+        Column("share", Numeric(12, 4)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
     made = DuckDBBackend()
     made.initialize(metadata)
     connection = made.get_connection()

@@ -14,6 +14,7 @@ from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, String, Tab
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from threetears.core.cache.base import L1Backend
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _make_metadata() -> MetaData:
@@ -28,6 +29,7 @@ def _make_metadata() -> MetaData:
         Column("active", Boolean),
         Column("data", JSONB),
         Column("created_at", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 
@@ -336,6 +338,7 @@ def test_duckdb_loads_a_parquet_file(tmp_path: Path) -> None:
         Column("state", String(2)),
         Column("votes", Integer),
         Column("note", String(20)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend = DuckDBBackend()
     backend.initialize(metadata)
@@ -378,6 +381,7 @@ def test_duckdb_loads_a_parquet_file_with_computed_columns(tmp_path: Path) -> No
         Column("party", String(10)),
         Column("scope", String(2)),
         Column("kind", String(2)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend = DuckDBBackend()
     backend.initialize(metadata)
@@ -482,7 +486,7 @@ def test_a_sqlite_table_of_only_key_columns_takes_an_upsert() -> None:
     from threetears.core.cache.sqlite import SQLiteBackend
 
     metadata = MetaData()
-    Table("tags", metadata, Column("name", String(20), primary_key=True))
+    Table("tags", metadata, Column("name", String(20), primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
     backend = SQLiteBackend(db_name=f"test_{uuid.uuid4().hex[:8]}")
     backend.initialize(metadata)
     try:
@@ -511,6 +515,7 @@ def test_names_with_spaces_and_capitals_survive_every_statement(kind: str) -> No
         metadata,
         Column("County Id", String(20), primary_key=True),
         Column("% of Exp. In", String(20)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend.initialize(metadata)
     try:

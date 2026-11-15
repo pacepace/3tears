@@ -41,6 +41,7 @@ from threetears.core.data.embedding_width import (
     schema_with_embedding_dim,
 )
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _POSTGRES_VERSION = "PostgreSQL 16.4 (Debian 16.4-1.pgdg120+2) on x86_64-pc-linux-gnu"
 _YUGABYTE_VERSION = "PostgreSQL 15.12-YB-2025.2.0.0-b0 on x86_64-pc-linux-gnu"
@@ -101,6 +102,7 @@ _SCHEMA = TableSchema(
         Index("ix_notes_body", "body"),
         Index("ix_notes_embedding", "embedding", using="hnsw", ops={"embedding": "vector_cosine_ops"}),
     ),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -226,7 +228,9 @@ class TestTheDerivedSchema:
         assert schema_with_embedding_dim(_SCHEMA, 4) is _SCHEMA
 
     def test_a_schema_with_no_vector_column_is_refused(self) -> None:
-        plain = TableSchema(name="plain", primary_key="id", columns=[Column("id", UUID_TYPE)])
+        plain = TableSchema(
+            name="plain", primary_key="id", columns=[Column("id", UUID_TYPE)], l1_eviction=TEST_L1_TABLE
+        )
         with pytest.raises(ValueError, match="no vector column"):
             schema_with_embedding_dim(plain, 1536)
 

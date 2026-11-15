@@ -46,6 +46,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.keyed import Sort, keyset_page, read_by
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "IdentityVersionsCollection",
@@ -192,6 +193,7 @@ class IdentityVersionsCollection(SchemaBackedCollection[IdentityVersionEntity]):
                 where="status = 'proposed'",
             ),
         ),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property

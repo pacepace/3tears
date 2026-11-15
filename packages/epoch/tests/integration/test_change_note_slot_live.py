@@ -49,6 +49,7 @@ from threetears.core.ddl.change_notes import (
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.core.utils.change_note_slot import ChangeNoteSlot, change_note_slot_connection_class
 from threetears.epoch import EpochGenerationSource
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -416,6 +417,7 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
             name=table,
             primary_key="id",
             columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("owner", STRING_TYPE, nullable=True)],
+            l1_eviction=TEST_L1_TABLE,
         )
         # a class this process defines: noted_tables() names its table from here on
         type(f"Hooked_{table}", (collection_for_schema(declared),), {"write_generation": WRITE_GENERATION})
@@ -481,6 +483,7 @@ class TestTheMigrationRunGivesANewNotedTableItsTriggers:
                     name=table,
                     primary_key="id",
                     columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("owner", STRING_TYPE, nullable=True)],
+                    l1_eviction=TEST_L1_TABLE,
                 )
                 type(f"Agent_{table}", (collection_for_schema(declared),), {"write_generation": WRITE_GENERATION})
 

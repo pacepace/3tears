@@ -33,6 +33,7 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import L2WriteRefusedError
 from threetears.core.testing.bridge import drain_and_shutdown_bridge
 from threetears.nats import KvError, KvFullError, KvStoreExhaustedError, KvValueTooLargeError
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _SCOPE = "test-principal"
 _TABLE = "l2_degraded_rows"
@@ -101,7 +102,13 @@ def _bucket(failure: BaseException) -> AsyncMock:
 @pytest.fixture()
 def registry() -> CollectionRegistry:
     metadata = MetaData()
-    Table(_TABLE, metadata, Column("id", String, primary_key=True), Column("score", Integer))
+    Table(
+        _TABLE,
+        metadata,
+        Column("id", String, primary_key=True),
+        Column("score", Integer),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
     backend = SQLiteBackend(db_name=f"test_l2_degraded_{uuid.uuid4().hex[:8]}")
     backend.initialize(metadata)
     reg = CollectionRegistry()

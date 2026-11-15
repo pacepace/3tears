@@ -26,6 +26,7 @@ from sqlalchemy import Column, Integer, MetaData, String, Table, Text
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.scan_cache import ScanCache, ScanCacheKey
 from threetears.core.testing.loop_lateness import quietly
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 #: the writes one round times, and the rounds (after one to warm)
 WRITES = 1_000
@@ -62,6 +63,7 @@ def _l1() -> SQLiteBackend:
         Column("name", Text, nullable=False),
         Column("body", Text, nullable=False),
         Column("version", Integer, nullable=False),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     l1.initialize(metadata)
     return l1

@@ -30,6 +30,7 @@ from threetears.core.collections.delete_cascade import (
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 class _Entity(BaseEntity):
@@ -136,13 +137,14 @@ def _library() -> tuple[CollectionRegistry, _Pool, _Source]:
         }
     )
     metadata = MetaData()
-    Table("shelves", metadata, Column("id", String(64), primary_key=True))
+    Table("shelves", metadata, Column("id", String(64), primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
     Table(
         "books",
         metadata,
         Column("id", String(64), primary_key=True),
         Column("shelf_id", String(64)),
         Column("sequel_of", String(64)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     l1 = SQLiteBackend(db_name=f"cascade-{uuid4().hex}")
     l1.initialize(metadata)

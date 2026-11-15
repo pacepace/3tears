@@ -25,6 +25,7 @@ from threetears.core.config import DefaultCoreConfig
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, Text
 
 from threetears.agent.workspace.collections import WorkspaceCollection
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _workspaces_metadata() -> MetaData:
@@ -47,6 +48,7 @@ def _workspaces_metadata() -> MetaData:
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
         Column("date_deleted", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

@@ -39,6 +39,7 @@ from threetears.core.exceptions import (
 from threetears.nats import Principal, Subjects, kv_key_scope_for
 from threetears.nats.errors import KvError
 from threetears.core.testing.kv import FakeKvBucket
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _HUB_SCOPE = kv_key_scope_for(Principal.HUB)
 _AGENT_SCOPE = kv_key_scope_for(Principal.AGENT_POD, agent_id=uuid.UUID("00000000-0000-4000-8000-000000000901"))
@@ -59,6 +60,7 @@ def _make_metadata() -> MetaData:
         Column("score", Integer),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

@@ -33,6 +33,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.calibrate import budget_problem, plain_keyed_delete_seconds
 from threetears.core.testing.plans import on_yugabyte
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -46,6 +47,7 @@ _SCHEMA = TableSchema(
         Column("votes", BIGINT_TYPE, nullable=True),
     ],
     on_conflict="update",
+    l1_eviction=TEST_L1_TABLE,
 )
 
 #: a county reload's rows gone from the source

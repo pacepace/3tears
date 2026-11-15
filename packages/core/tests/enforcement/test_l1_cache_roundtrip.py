@@ -29,6 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB, UUID
 
 from threetears.core.cache.sqlite import SQLiteBackend
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _make_comprehensive_metadata() -> MetaData:
@@ -46,6 +47,7 @@ def _make_comprehensive_metadata() -> MetaData:
         Column("data", JSONB),
         Column("created_at", DateTime(timezone=True)),
         Column("raw_bytes", BYTEA),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

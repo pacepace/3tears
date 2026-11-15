@@ -16,6 +16,7 @@ import pytest
 
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
 class _ResultRow(BaseEntity):
@@ -35,6 +36,7 @@ def _schema(name: str = "results") -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
 
 
@@ -85,6 +87,7 @@ def test_a_single_column_key_names_the_entity_s_key_whole() -> None:
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     collection = collection_for_schema(schema)(CollectionRegistry(), DefaultCoreConfig(), None)
     assert collection.entity_class.primary_key_field == "source"

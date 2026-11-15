@@ -23,10 +23,17 @@ from threetears.core.collections.schema_backed import STRING_TYPE, Column, Table
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.tenancy import TENANCY_UNDECLARED, no_tenant, rows_with_tenants, tenant_column, value_tenant
 from threetears.enforcement.collection_census.census import census
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
 def _schema(name: str, declared: object) -> TableSchema:
-    return TableSchema(name=name, primary_key="id", columns=[Column("id", STRING_TYPE)], write_generation=declared)  # type: ignore[arg-type]
+    return TableSchema(
+        name=name,
+        primary_key="id",
+        columns=[Column("id", STRING_TYPE)],
+        write_generation=declared,
+        l1_eviction=TEST_L1_TABLE,
+    )  # type: ignore[arg-type]
 
 
 def test_an_opt_out_with_its_reason_reaches_the_built_class() -> None:
@@ -42,7 +49,9 @@ def test_a_switched_on_schema_s_class_is_switched_on_and_registered() -> None:
 
 def test_an_undeclared_schema_s_class_is_undeclared() -> None:
     built = collection_for_schema(
-        TableSchema(name="factory_undeclared", primary_key="id", columns=[Column("id", STRING_TYPE)])
+        TableSchema(
+            name="factory_undeclared", primary_key="id", columns=[Column("id", STRING_TYPE)], l1_eviction=TEST_L1_TABLE
+        )
     )
     assert isinstance(built.write_generation, UndeclaredWriteGeneration)
 
@@ -91,6 +100,7 @@ def test_a_tenant_column_rides_with_every_changed_row_and_names_its_tenant() -> 
         columns=[Column("id", STRING_TYPE), Column("customer_id", STRING_TYPE)],
         write_generation=WRITE_GENERATION,
         tenancy=tenant_column("customer_id"),
+        l1_eviction=TEST_L1_TABLE,
     )
     built = collection_for_schema(schema)
     assert built.tenancy == tenant_column("customer_id")

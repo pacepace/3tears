@@ -102,6 +102,7 @@ from threetears.core.keyed import (
 )
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "MEMORY_REFS_PAGE",
@@ -1193,6 +1194,7 @@ class MemoriesCollection(SchemaBackedCollection[MemoryEntity], ReadFiltered):
         # uq_memories_memory_id UNIQUE``; Alembic auto-gen distinguishes
         # the two via ``information_schema.table_constraints``.
         unique_constraints=(SchemaUniqueConstraint("uq_memories_memory_id", "memory_id"),),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(
@@ -3089,6 +3091,7 @@ class MediaCollection(SchemaBackedCollection[MediaEntity]):
         # ``ALTER TABLE ... ADD CONSTRAINT uq_media_media_id UNIQUE`` in
         # upstream alembic 064.
         unique_constraints=(SchemaUniqueConstraint("uq_media_media_id", "media_id"),),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -3265,6 +3268,7 @@ class MediaContentCollection(SchemaBackedCollection[MediaContentEntity], ReadFil
         # ``ALTER TABLE ... ADD CONSTRAINT uq_media_content_content_id
         # UNIQUE`` in upstream alembic 064.
         unique_constraints=(SchemaUniqueConstraint("uq_media_content_content_id", "content_id"),),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(self, *args: Any, embedding_dim: int = DEFAULT_EMBEDDING_DIM, **kwargs: Any) -> None:
@@ -3919,6 +3923,7 @@ class MemoryChunkCollection(SchemaBackedCollection[MemoryChunkEntity], ReadFilte
         # ``ALTER TABLE ... ADD CONSTRAINT uq_memory_chunks_chunk_id
         # UNIQUE`` in upstream alembic 064.
         unique_constraints=(SchemaUniqueConstraint("uq_memory_chunks_chunk_id", "chunk_id"),),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(self, *args: Any, embedding_dim: int = DEFAULT_EMBEDDING_DIM, **kwargs: Any) -> None:
@@ -4875,6 +4880,7 @@ class MemoryRefsCollection(SchemaBackedCollection[MemoryRefEntity]):
                 ),
             ),
         ),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -5154,6 +5160,7 @@ class MemoryConsolidationsCollection(SchemaBackedCollection[MemoryConsolidationE
                 ),
             ),
         ),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property

@@ -23,6 +23,7 @@ import pytest
 from threetears.core.backends.schema_sql import build_whole_key_delete_sql, build_whole_key_select_sql
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.testing.plans import explain_write, on_yugabyte
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -30,6 +31,7 @@ _SCHEMA = TableSchema(
     name="results",
     primary_key=("race", "geo"),
     columns=[Column("race", STRING_TYPE), Column("geo", STRING_TYPE), Column("votes", BIGINT_TYPE, nullable=True)],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 _ROWS = 300_000

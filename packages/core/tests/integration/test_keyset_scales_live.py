@@ -28,6 +28,7 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.complete_copy import read_l3_rows
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, Index, TableSchema
 from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -49,6 +50,7 @@ _SCHEMA = TableSchema(
     ],
     # led by the state, narrowed by the geography, the key its tail
     indexes=(Index("results_by_state", _STATE, _GEO, "office_key", "candidate"),),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 #: the largest state's geographies; every other state has 50

@@ -250,7 +250,8 @@ class ObjectResolutionCollection(BaseCollection[ObjectResolutionEntity]):
         entity_id = self._pk(customer_id, object_id)
         row: dict[str, Any] | None = None
         if self._l1 is not None:
-            row = self._l1.select_by_id(self.table_name, entity_id, self.primary_key_columns)
+            # through the one L1 read, so a row of a table being dropped is never served
+            row = self._select_from_l1(entity_id)
         if row is None:
             row = await self._get_from_l2(entity_id)
             if row is not None and self._l1 is not None:

@@ -35,6 +35,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _SCOPE = "seed-principal"
 _TABLE = "profiles"
@@ -51,6 +52,7 @@ def _metadata() -> MetaData:
         Column("name", String(255)),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

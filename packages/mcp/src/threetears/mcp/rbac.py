@@ -49,6 +49,7 @@ from threetears.core.keyed import Fragment, Sort, keyset_page, read_row
 from threetears.core.tenancy import no_tenant
 from threetears.observe import get_logger
 from uuid_utils import uuid7
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "McpToolGrantCollection",
@@ -131,6 +132,7 @@ class McpToolGrantCollection(SchemaBackedCollection[McpToolGrantEntity]):
         # so LocalGrantAuthorizer follows the table and reads each changed grant by key -- a lost
         # broadcast included -- never every grant again
         write_generation=WRITE_GENERATION,
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property

@@ -32,6 +32,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.tier_parity import live_tier_parity_findings
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -53,6 +54,7 @@ class _Narrow(SchemaBackedCollection[_Row]):
             Column("note", STRING_TYPE, nullable=True, server_default="NULL"),
             Column("small", INT_TYPE, nullable=True),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     entity_class = _Row  # type: ignore[assignment]
 

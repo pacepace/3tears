@@ -24,6 +24,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.geo.features import FeatureCache
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds, tile_for_point
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 #: the tile source these caches serve
 SCOPE = "ds_test"
@@ -54,6 +55,7 @@ def cache(request: pytest.FixtureRequest) -> FeatureCache:
         SAColumn("layer", String, primary_key=True),
         SAColumn("source_version", Integer, primary_key=True),
         SAColumn("feature_id", String, primary_key=True),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend = SQLiteBackend(f"geo_features_test_{abs(hash(request.node.nodeid))}")
     backend.initialize(metadata)
@@ -198,6 +200,7 @@ class TestChunkCoverage:
             SAColumn("layer", String, primary_key=True),
             SAColumn("source_version", Integer, primary_key=True),
             SAColumn("feature_id", String, primary_key=True),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         backend = SQLiteBackend(f"geo_chunk_{abs(hash(request.node.nodeid))}")
         backend.initialize(metadata)
@@ -300,6 +303,7 @@ def _cache_over(request: pytest.FixtureRequest, loader: Any, *, l1: bool = True,
             SAColumn("layer", String, primary_key=True),
             SAColumn("source_version", Integer, primary_key=True),
             SAColumn("feature_id", String, primary_key=True),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         backend = SQLiteBackend(f"geo_wide_{abs(hash(request.node.nodeid))}")
         backend.initialize(metadata)

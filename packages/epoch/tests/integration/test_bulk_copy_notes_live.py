@@ -41,6 +41,7 @@ from threetears.core.testing.calibrate import budget_problem, plain_copy_seconds
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.core.testing.plans import on_yugabyte
 from threetears.epoch import EpochGenerationSource
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -55,6 +56,7 @@ _SCHEMA = TableSchema(
         Column("votes", BIGINT_TYPE, nullable=True),
         Column("pad", STRING_TYPE, nullable=True),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 #: a large state's reload

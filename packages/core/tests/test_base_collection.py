@@ -21,6 +21,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError, L2WriteRefusedError
 from threetears.nats.errors import KvError
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 #: the principal scope every registry in this module wires. its VALUE is irrelevant here --
@@ -38,6 +39,7 @@ def _make_metadata() -> MetaData:
         Column("score", Integer),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

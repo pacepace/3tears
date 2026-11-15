@@ -42,6 +42,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.nats import Subjects, set_default_namespace
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP
 
 _TABLE = "group_members"
 
@@ -63,6 +64,7 @@ def _metadata() -> MetaData:
         # the order a compare-and-swap's row carries, for the collection whose rows one orders
         Column("l2_epoch", DateTime(timezone=True)),
         Column("l2_revision", BigInteger),
+        info={L1_EVICTION_INFO: TEST_L1_KEEP},
     )
     return metadata
 
@@ -521,6 +523,8 @@ class TestDroppingATable:
         gone: list[Any] = []
         reader.members.add_l1_change_listener(gone.append)
         reader.registry.drop_table(_TABLE, reason="test")
+        # the drop deletes on a thread (SQ3, Pace 2026-11-15); its listeners hear each row once it has
+        await reader.members.table_drops_settled()
         assert sorted(gone) == ["m1", "m2"]
 
 
@@ -723,7 +727,9 @@ class TestATableWideDropReadsL1InPages:
             raw = l1.get_connection()
             raw.set_trace_callback(statements.append)  # type: ignore[union-attr]
 
-        assert pod.members.drop_cached_table() == 30
+        # announced on the loop, deleted on a thread (SQ3, Pace 2026-11-15): the count comes when it has run
+        assert pod.members.drop_cached_table() is None
+        assert await pod.members.table_drops_settled() == 30
         reads = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]
 
         assert sorted(heard) == keys, "every key's listener heard it go"

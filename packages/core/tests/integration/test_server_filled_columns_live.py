@@ -38,6 +38,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.nats import NatsClient, set_default_namespace
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -66,6 +67,7 @@ class _SpaceVersions(SchemaBackedCollection[_SpaceRow]):
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
         ],
         cas_column="date_updated",
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property

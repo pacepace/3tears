@@ -37,6 +37,10 @@ UV_CACHE_DIR = "/tr/cache/uv"
 PLAYWRIGHT_BROWSERS_PATH = "/opt/ms-playwright"
 # packages/evals/tests/report_kit_support.py: a browser test whose Chromium cannot launch fails here
 THREETEARS_REQUIRE_CHROMIUM = "1"
+# the SQLite L1 is a file on /dev/shm (threetears.core.cache.l1_file); a runner container's /dev/shm is Docker's
+# 64 MiB default, shared by every test process of the batch, and the suite caches megabyte answers: the L1 files go
+# to the container's /tmp instead (the same code; the directory is the only difference)
+THREETEARS_L1_DIR = "/tmp"
 
 [image]
 dockerfile = "docker/testament.Dockerfile"

@@ -12,6 +12,7 @@ from sqlalchemy import BigInteger, Column, DateTime, MetaData, String, Table
 
 from threetears.core.collections.epoch_change import key_text
 from threetears.core.fingerprint import key_fingerprint, postgres_fingerprint_sql, relation_key_expression
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -27,6 +28,7 @@ def _metadata() -> MetaData:
         Column("race", String, primary_key=True),
         Column("at", DateTime(timezone=True), primary_key=True),
         Column("votes", BigInteger),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 
@@ -131,6 +133,7 @@ class TestEvictionListeners:
                 SchemaColumn("at", DATETIMETZ_TYPE),
                 SchemaColumn("votes", BIGINT_TYPE, nullable=True),
             ],
+            l1_eviction=TEST_L1_TABLE,
         )
         registry = CollectionRegistry()
         registry.configure(l1_backend=backend)

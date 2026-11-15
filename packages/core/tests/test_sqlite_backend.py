@@ -34,6 +34,7 @@ from threetears.core.collections.schema_backed import (
     TableSchema,
 )
 from threetears.core.collections.schema_backed import Column as SchemaColumn
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _make_metadata() -> MetaData:
@@ -48,6 +49,7 @@ def _make_metadata() -> MetaData:
         Column("data", JSONB),
         Column("created_at", DateTime),
         Column("raw_bytes", BYTEA),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 
@@ -351,6 +353,7 @@ class TestSerializationRoundTrip:
             metadata,
             Column("id", UUID, primary_key=True),
             Column("blob", LargeBinary),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         b = SQLiteBackend(db_name=f"test_lb_{uuid.uuid4().hex[:8]}")
         b.initialize(metadata)
@@ -377,6 +380,7 @@ class TestSerializationRoundTrip:
             metadata,
             Column("id", UUID, primary_key=True),
             Column("blob", BYTEA),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         b = SQLiteBackend(db_name=f"test_pgbytea_{uuid.uuid4().hex[:8]}")
         b.initialize(metadata)
@@ -469,6 +473,7 @@ class TestPkBindingSerialization:
             metadata,
             Column("at", DateTime, primary_key=True),
             Column("name", String(255)),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         b = SQLiteBackend(db_name=f"test_dtpk_{uuid.uuid4().hex[:8]}")
         b.initialize(metadata)
@@ -492,6 +497,7 @@ class TestAdditiveInitialize:
             metadata,
             Column("id", String(255), primary_key=True),
             Column("name", String(255)),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         return metadata
 
@@ -530,6 +536,7 @@ class TestAdditiveInitialize:
                 metadata,
                 Column("id", String(255), primary_key=True),
                 Column("name", String(255)),
+                info={L1_EVICTION_INFO: TEST_L1_TABLE},
             )
         b = SQLiteBackend(db_name=f"test_multi_{uuid.uuid4().hex[:8]}")
         b.initialize(metadata)
@@ -559,8 +566,15 @@ class TestNumericReadsBackAsDecimal:
                 SchemaColumn("id", STRING_TYPE),
                 SchemaColumn("price", NUMERIC_TYPE, precision=12, scale=2, nullable=True),
             ],
+            l1_eviction=TEST_L1_TABLE,
         ).to_sqlalchemy_table(metadata)
-        Table("ratios", metadata, Column("id", String(255), primary_key=True), Column("ratio", Float()))
+        Table(
+            "ratios",
+            metadata,
+            Column("id", String(255), primary_key=True),
+            Column("ratio", Float()),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
+        )
         b = SQLiteBackend(db_name=f"test_numeric_{uuid.uuid4().hex[:8]}")
         b.initialize(metadata)
         return b
@@ -696,6 +710,7 @@ class TestNumericReadsBackAsDecimal:
             name="ledger",
             primary_key="id",
             columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("amount", NUMERIC_TYPE, precision=18, scale=2)],
+            l1_eviction=TEST_L1_TABLE,
         ).to_sqlalchemy_table(metadata)
         b = SQLiteBackend(db_name=f"test_numeric_sum_{uuid.uuid4().hex[:8]}")
         b.initialize(metadata)
@@ -717,7 +732,13 @@ class TestNumericReadsBackAsDecimal:
         self, sa_type: Numeric, reason: str
     ) -> None:
         metadata = MetaData()
-        Table("wide", metadata, Column("id", String(255), primary_key=True), Column("amount", sa_type))
+        Table(
+            "wide",
+            metadata,
+            Column("id", String(255), primary_key=True),
+            Column("amount", sa_type),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
+        )
         b = SQLiteBackend(db_name=f"test_numeric_refused_{uuid.uuid4().hex[:8]}")
         try:
             with pytest.raises(UnsupportedL1ColumnError, match=rf"wide\.amount: .*{reason}"):
@@ -755,6 +776,7 @@ class TestDeleteManyById:
             Column("a", String(32), primary_key=True),
             Column("b", Integer, primary_key=True),
             Column("name", String(32)),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         b = SQLiteBackend(db_name=f"test_pairs_{uuid.uuid4().hex[:8]}")
         b.initialize(metadata)

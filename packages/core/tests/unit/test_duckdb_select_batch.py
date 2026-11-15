@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from threetears.core.cache.duckdb import DuckDBBackend
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 #: keys one call names at real size: a collection's get_many of a page
 _REAL_KEYS = 1_000
@@ -33,14 +34,28 @@ _POINT_QUERY_THREADS = 2
 
 def _metadata() -> MetaData:
     metadata = MetaData()
-    Table("by_text", metadata, Column("id", String, primary_key=True), Column("v", Integer), Column("note", String))
-    Table("by_int", metadata, Column("id", Integer, primary_key=True), Column("v", Integer))
+    Table(
+        "by_text",
+        metadata,
+        Column("id", String, primary_key=True),
+        Column("v", Integer),
+        Column("note", String),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
+    Table(
+        "by_int",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("v", Integer),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
     Table(
         "by_pair",
         metadata,
         Column("a", String, primary_key=True),
         Column("b", Integer, primary_key=True),
         Column("v", Integer),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     Table(
         "typed",
@@ -51,6 +66,7 @@ def _metadata() -> MetaData:
         Column("ok", Boolean),
         Column("amount", Numeric(10, 2)),
         Column("note", String),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

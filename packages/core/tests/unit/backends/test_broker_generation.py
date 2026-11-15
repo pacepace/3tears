@@ -60,6 +60,7 @@ from threetears.core.exceptions import (
     GenerationUnavailableError,
 )
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _settle(marks: GenerationMarks, table: str, token: str | None) -> GenerationVerdict:
@@ -445,6 +446,7 @@ def _pod(
         Column("id", String(255), primary_key=True),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     l1 = SQLiteBackend(db_name=f"broker_generation_{uuid.uuid4().hex[:8]}")
     l1.initialize(metadata)
@@ -491,14 +493,20 @@ class TestTheBrokerKnowsASwitchedOnTableFromItsClass:
 
         class _On(SchemaBackedCollection[_Member]):
             write_generation = WRITE_GENERATION
-            schema = TableSchema(name="census_on_table", primary_key=("id",), columns=columns)
+            schema = TableSchema(
+                name="census_on_table", primary_key=("id",), columns=columns, l1_eviction=TEST_L1_TABLE
+            )
 
         class _Off(SchemaBackedCollection[_Member]):
-            schema = TableSchema(name="census_off_table", primary_key=("id",), columns=columns)
+            schema = TableSchema(
+                name="census_off_table", primary_key=("id",), columns=columns, l1_eviction=TEST_L1_TABLE
+            )
 
         class _Absences(SchemaBackedCollection[_Member]):
             negative_cache_max_age = timedelta(seconds=30)
-            schema = TableSchema(name="census_absences_table", primary_key=("id",), columns=columns)
+            schema = TableSchema(
+                name="census_absences_table", primary_key=("id",), columns=columns, l1_eviction=TEST_L1_TABLE
+            )
 
         class _PerInstance(_SwitchedOnBrokeredMembers):
             @property

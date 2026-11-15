@@ -20,7 +20,7 @@ def _schema(*indexes: object) -> TableSchema:
             Column("state", STRING_TYPE),
             Column("votes", BIGINT_TYPE, nullable=True),
         ],
-        indexes=tuple(indexes),  # type: ignore[arg-type]
+        indexes=tuple(indexes),  # type: ignore[arg-type], l1_eviction=TEST_L1_TABLE
     )
 
 

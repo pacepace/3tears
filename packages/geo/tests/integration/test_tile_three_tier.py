@@ -33,6 +33,7 @@ from threetears.geo.collection import LayerDefinition, TileCollection
 from threetears.geo.tiles import BoundingBox, TileId, tile_bounds
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.object_store.filesystem import FilesystemObjectStore
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -74,6 +75,7 @@ def _metadata(cache_scope: str) -> MetaData:
         SAColumn("x", Integer, primary_key=True),
         SAColumn("y", Integer, primary_key=True),
         SAColumn("mvt", LargeBinary),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

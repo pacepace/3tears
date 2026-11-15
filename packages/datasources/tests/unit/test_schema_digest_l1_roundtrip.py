@@ -30,6 +30,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.datasources.collections import DataSourceSchemaDigestCollection
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _digest_metadata() -> MetaData:
@@ -49,6 +50,7 @@ def _digest_metadata() -> MetaData:
         Column("source_fingerprint", Text, nullable=True),
         Column("date_created", TIMESTAMP, nullable=False),
         Column("date_updated", TIMESTAMP, nullable=False),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

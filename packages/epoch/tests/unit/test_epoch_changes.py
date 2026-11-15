@@ -70,6 +70,7 @@ from threetears.epoch import (
     quiet_pass_interval,
 )
 from threetears.nats import set_default_namespace
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 async def _restore(
@@ -104,6 +105,7 @@ def _metadata() -> MetaData:
         Column("member_id", String(255)),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

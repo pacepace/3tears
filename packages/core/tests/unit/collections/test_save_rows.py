@@ -42,6 +42,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 SCHEMA = TableSchema(
     name="results",
@@ -53,6 +54,7 @@ SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -196,6 +198,7 @@ DEFAULTED = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -353,6 +356,7 @@ async def test_a_collection_fencing_with_a_null_safe_cas_is_refused() -> None:
         ],
         cas_column="date_updated",
         cas_null_safe=True,
+        l1_eviction=TEST_L1_TABLE,
     )
     collection, conn = _collection(fenced), _Conn()
     with pytest.raises(ValueError, match="null-safe CAS"):
@@ -370,6 +374,7 @@ SHAPES = TableSchema(
     name="shapes",
     primary_key="id",
     columns=[Column("id", STRING_TYPE), Column("shape", BYTES_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -446,6 +451,7 @@ WIDE = TableSchema(
     name="wide",
     primary_key="id",
     columns=[Column("id", STRING_TYPE), *(Column(f"j{i:02d}", JSONB_TYPE) for i in range(20))],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
