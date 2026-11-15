@@ -148,8 +148,12 @@ _KEYED_FRAGMENT_TEXT: Final[str] = "__keyed_fragment__ = $9"
 TRANSIENT_PRODUCED: Final[str] = "__transient_produced__"
 
 #: the helpers whose ``order`` is the key they walk: a run-time order there is the declared key (``pk``) when it flows
-#: from a declared key source, as a batch's run-time columns are
-_KEY_WALKS: Final[frozenset[str]] = frozenset({"keyset_page", "keyset_rows", "count_at_most", "holds_any"})
+#: from a declared key source, as a batch's run-time columns are. The pure builders of a page's statement
+#: (``keyset_page_statement``, ``keyset_rows_statement``: what the two pagers send, for a caller that builds it once and
+#: sends it through its own reader, a geo layer's tile read) walk the same order and are judged the same way
+_KEY_WALKS: Final[frozenset[str]] = frozenset(
+    {"keyset_page", "keyset_rows", "keyset_page_statement", "keyset_rows_statement", "count_at_most", "holds_any"}
+)
 
 #: the most combinations of resolved parameter values a keyed helper call is judged under; past it, unresolved
 _MAX_PARAMETER_COMBINATIONS: Final[int] = 16
