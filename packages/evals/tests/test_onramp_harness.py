@@ -365,3 +365,16 @@ async def test_a_recorded_agent_run_replays_offline_turn_for_turn_in_another_san
     assert replayed.stopped == "done" and replayed.report == recorded.report
     assert [(s.act, s.observation) for s in replayed.steps] == [(s.act, s.observation) for s in recorded.steps]
     assert replayed.steps[3].observation.text.splitlines()[1] == ".", "the sandbox's path is shown as ."
+
+
+def test_a_run_whose_every_arm_is_recorded_replays_and_needs_no_switch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    monkeypatch.delenv("ONRAMP_LIVE", raising=False)
+    monkeypatch.delenv("RECORD", raising=False)
+    (tmp_path / "docs-control.jsonl").write_text("", encoding="utf-8")
+    argv = ["--arm", f"docs@control={tmp_path / 'w.whl'}", "--recordings", str(tmp_path), "--dry-run"]
+    assert main(argv) == 0 and "nothing spent" in capsys.readouterr().out
+    monkeypatch.setenv("RECORD", "1")  # records them again, live
+    assert main(argv) == 0 and "nothing spent" not in capsys.readouterr().out
+    assert main(argv[:-1]) == 2 and "ONRAMP_LIVE=1" in capsys.readouterr().err
