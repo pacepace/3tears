@@ -6,6 +6,166 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a judge checked against itself: re-score noise in the judge's own table
+
+**Added:** a bundle fills two fields the shape move left unset, from the judge's repeats (`judge_repeat`). Each judged
+arm whose results were re-scored carries `rescore`: the re-score variance with its range (`variance_interval`, new;
+half the mean squared difference between a counted score and its repeat, read only for a repeat by the very judge that
+scored the arm), the repeated results and cases behind it, and, on a pass/fail dimension that counts toward a trial's
+pass, `e` (how often a repeat fails a result whose first reading passed, with its Wilson interval over cases) and the
+ceiling it puts on pass^k, `(1 - e)^(k - 1)`, as a range at the arm's `k` (new optional field on `Rescore`). Below 20
+repeated results from 10 cases its state is `not_available`, `too_few`, and no figure is given; where the ceiling is
+read and cannot be (no first reading passed), it alone is `not_available`, `too_few` (`ceiling_state`, new). Each
+paired judged contrast whose two arms have their figures carries `rescore_share`, the share of the contrast's
+variance that is the judge's re-score noise, low then high; it exists at one trial per case. The variance's and the
+share's ranges are one 95% interval each (Fay and Feuer's gamma interval on a weighted sum of counts), the share's on
+the sum of both arms' terms, not the share at each end of the arms' ranges; their coverage is held from both sides in
+`tests/test_simulated_judge_noise.py`. Both are named re-score noise, never judge error: a judge that repeats itself
+exactly reads none and may still be wrong. Nothing reads them: no interval, verdict, state, caveat or page line moves,
+and the report input carries neither. A bundle over results nobody re-scored is unchanged, byte for byte.
+
+**Changed:** a judge repeat asked of every result of a run (`judge_repeat_work` with no `result_ids`) now asks them in
+an order the engine draws at random, so the results repeated before a stop are a random draw, and each repeat records
+how its result was chosen (`JudgeRepeat.sample`: `random`, or `selected` where results were named by id; core minor
+15.22). Re-score noise reads only a random draw's repeats: an arm whose repeats are none of them one reads
+`not_available`, `not_drawn_at_random` (named by id) or `not_recorded` (stored before this release).
+
+**For hosts:** a repeat stored before this release supports no re-score figure. To read an arm's re-score noise,
+repeat its run with no results named.
+
+### evals: a campaign cell holds one definition of each host measure and one answering model, and an unrecorded coordinate matches nothing (#1187)
+
+**Changed:** what a host measure counts is part of the test setup. In a campaign, runs that recorded different
+definitions of a host measure (`EvalRun.measure_definitions`) are under different test setups: they share no cell and
+no contrast, and the bundle says why (`refused_merges`, `apparatus_differs` on `measure_definitions`). A run whose
+results hold a host measure and that recorded no definition is under a setup of its own: it is pooled and compared
+with nothing (`apparatus_unknown` on `measure_definitions`), `next_experiments` says what stating the definitions
+would pool, and the aspect's page prints the disclosure with the remedy. A run with no host measure, and a campaign
+whose runs all recorded one definition, read exactly as before, under the same cell ids.
+
+**Changed:** two runs whose candidate responses each named no model no longer share a cell. Each is a cell of its own
+under the arm's setup, compared with the control alone (`apparatus_unknown` on `served_model:candidate`), and the
+campaign page says so and names the remedy. A run that names what answered it pools as before, whatever the name: a
+provider's dated model, a scripted client's own name, a recording. One silent run alone in its arm is still that
+arm's one cell.
+
+**Changed:** a replayed call or writer turn whose recorded reply named no model reports its recording as what answered
+(`recording:` and 12 hex digits of the file's sha256), so replays of one recording pool. `Log` takes
+`served_model=` and reads a `served_model` key off a line.
+
+**Changed:** `CELL_MODEL_VERSION` is 15: one move for the served-model split, the measure-definition setup and the
+unrecorded-served-model rule. The frontier's cell sentence and the comparison set's disclosures say what a
+campaign's cells keep apart.
+
+**Changed:** every reader of the test setup reads the definitions, not the cells alone: the confound scans name
+`measure_definitions` (`apparatus_confounds`, a coverage row's `confounded_by`), and the divergence lens tests no pair
+of lever levels whose runs were not read under one recorded definition (counted in `divergences_untested`).
+
+**Changed:** an arm split on either coordinate is read per cell, never as an arm. `Cell.split_on` (new, left out
+when empty) names the coordinates a cell's arm is split on, and every arm-level reader (the campaign's rows, floors
+and pairs, a measurement's rates, the report input's figures, the figures across aspects, a one-arm campaign)
+withholds such an arm. Two arms
+that share no setup, because their runs were read under different definitions or under none recorded, get no floor
+and no row. `AnswerSplit.coordinate` (new; left out when `served_model`) says which coordinate, and the page and the
+report input word it. On an aspect's page, the verdict line gives such an arm no pass count and never says it passed
+more or less often than the control, or that the evidence cannot tell them apart: a sentence says it is not compared,
+and why; its scoreboard row keeps what ran and was lost, its passes and failures are withheld (flagged "read per
+model" or "read per definition"), its cost too where the answering model splits it, and it has no outcome bar. The
+report input's scoreboard row for a split arm carries no `passed` and no `failed`, and no `reply_cost_usd` where the
+answering model splits it, and says why in a typed `state` (new, optional, left out when unset: `withheld`, reason
+`split`, naming the coordinate). A written page's `scoreboard.<arm>.failed` and `count.failures.<aspect>.<arm>` keys
+are refused for it on that aspect because of that state (the campaign's `count.failures` still counts every failed
+trial); an input that never stated `passed` and holds no state reads its failures as it always did. Across aspects
+(`CampaignAggregate`, the scorecard's equal-weight row), such an arm's pass rate is withheld, naming the aspect, and
+`cheaper_on` and `dearer_on` never name an aspect where either arm was answered by more than one model. A contrast's
+figures sentence gives a split arm's side no pass count, only its mean.
+
+**Changed:** one action, `runs_attest` (`write`; `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`,
+`attestation_note?`), states a coordinate of stored runs that they did not record, and answers in one shape whichever
+coordinate (`coordinate`, `run_ids`, `already_attested`, `stated`, `attested_by`). `coordinate` is the closed set
+`AttestableCoordinate` (`measure_definition`, `served_model`). It replaces `runs_attest_definitions`, which no release
+shipped. `coordinate: "served_model"` records the statement on each run (`EvalRun.served_model_attestation`: who,
+when, the model, and the results it covers; core minor 15.21) and **rewrites no row**: the evidence stays as the
+responses left it. The campaign's cells, pass^k, the served-model confound scan and a comparison set read those
+silent rows through the statement; the bundle carries that they did (`ArmServedModel.n_attested` and
+`attested_models`, `RunSummary.attested_coordinates` for either coordinate); the identity disclosure stays and adds
+"Attested, not recorded", and an aspect page names runs whose definitions were stated. A run with no silent candidate
+row, or one already stated as another model, is refused before anything is written; stating the same value twice
+changes nothing. A statement is evidence: it moves the fingerprint of every bundle over the runs it stamps.
+`threetears.evals.run.attest_served_model` is exported.
+
+**Changed:** a comparison set reads the served model: `served_model_differs` where runs that asked for one model were
+answered by two, `context_incomplete` where a run's responses named no model and nothing was stated, and
+`served_model_disclosure` says which runs.
+
+**Changed:** history, a pivot, the frontier's composite, cost and latency, a two-run comparison and a bisection read
+runs outside a campaign's cells and keep apart what the cells keep apart, read through the cells themselves
+(`split_coordinates`): runs answered by different models, or read under different definitions of a host measure, or
+with either unrecorded, never pool. A history marks such a change between two runs as a boundary
+(`SeriesPoint.split_on` and `state`, new, left out when empty): no regression verdict across it, a fresh baseline
+after it, and a run that is itself split has no value. A pivot cell where one arm's observations are apart is
+`withheld` (`PivotCell.split_on` and `state`), and so is a cell, or a pooled column, holding two arms read under
+different definitions or under none recorded; no pooled column figure is read over either; `compute_pivot` takes the
+`runs` and `results` behind its rows. A bisection (`runs_bisect`) names `measure_definitions` and
+`served_model:candidate` among what differs, agrees or is unknown (unknown where a side recorded nothing). A frontier point's composite, cost, latency and cost per acceptable outcome read
+its headline pass^k cell and the runs one cell with them on both coordinates: a run apart on either is named with its
+own pass^k and counted in none of them. A two-run comparison reads no delta where a side is itself split on either
+coordinate, or the two were read under different definitions or under none recorded (`composite_comparability` says
+which); two runs answered by different models are still compared, as a split cell is compared with the control.
+
+**Changed:** a run launched now records every coordinate of its identity, or says it did not. A replayed completion
+or writer turn whose recorded reply named no model is answered by its recording. Where the host's own code answered
+and named nothing, the run says so, naming the coordinate and the remedy (a WARNING and a line of
+`Result.disclosures`): an eval over a `Log` whose lines name no served model as it launches, an eval whose runner
+returns an `Answer` naming no `served_model` once its arm ran. A take-up of a run stored before runs recorded
+definitions stays unrecorded, and says so as it is taken up (a WARNING).
+
+**For hosts:** after this change, two kinds of stored run stop pooling, and each has one remedy.
+- *Every campaign over runs that hold host measures and recorded no definition loses its contrasts until the host
+  attests.* That is every run stored before runs recorded definitions (#1160) on a host with measures of its own.
+- *Runs whose candidate responses named no model each stand alone in their arm* (a router echoing a requested alias
+  back, a logged output, an `Answer` or a kind's usage row naming no `served_model`). Going forward, report
+  `served_model` from the completion client, the `Answer` or the log line; a scripted test double names itself there.
+- *Upgrade procedure, in order:*
+  1. For each measure whose reading code changed what it counts behind an unchanged descriptor, raise
+     `MetricDescriptor.definition_revision` once per change, and deploy that host build. The digest covers the
+     descriptor's fields and its revision, never the reading code, so the descriptors as they were give today's
+     digests: attesting them would pool every era across real changes.
+  2. Deploy this evals build to every reader (an older build pools an attested run on the key its launch stamped).
+  3. Map each stored run to the era of reading code it ran under, from the release the run records.
+  4. Before any statement, re-measure each run a build carrying #1160 recorded before step 1 that did not run under
+     the earliest era's code (`run_remeasure`, with a `measure_rereader` that answers a measure whose code did not
+     change since as stored), so it records today's digests. Such a run recorded revision-0 digests, which step 5
+     states for the earliest era, and a statement never replaces a record: left as it is, it pools with the earliest
+     era's runs once they are stated, whatever code it ran under. One that ran under the earliest era's code is of
+     that era already and needs nothing. Where `run_remeasure` refuses such a run (a moved measure shaped the run,
+     or no reader can answer it from what was stored), it cannot be kept apart from runs recorded or stated at
+     revision 0: run it again under today's code and delete it, and until then state no era at revision 0 (leave
+     the earliest era's runs unrecorded).
+  5. For each era, call `runs_attest` with `coordinate: "measure_definition"` and `measure_definitions` set to
+     `MeasureRegistry(descriptors at that era's revisions, measures removed since included).definition_digests()`;
+     omit `measure_definitions` for runs made under today's code. It touches no result and may be run twice.
+  6. Call `runs_attest` with `coordinate: "served_model"` over the runs `model_identity_disclosure` names, where the
+     host knows what answered.
+  7. Regenerate stored reports over attested runs. Until a run is attested, a stored report over it reads as
+     current (its evidence did not move) while a re-assembled bundle withholds its contrasts; attesting moves the
+     fingerprint.
+- No host apparatus dimension may be named `measure_definitions`. `ApparatusClass.alone_to` (new, optional, left out
+  when unset) names the run a class is alone to. A host that called `runs_attest_definitions` on an unreleased build
+  calls `runs_attest` with `coordinate: "measure_definition"`.
+
+**Not yet:** two readers still pool across definitions of a host measure, and each says so where it is read. The
+frontier's dominance and cheapest-pick tests read contestants' headline cells whatever definition read each. A
+frontier says so, once, in its text and on an aspect page's method, wherever a subject's contestants were not all read
+under one definition (or one recorded none), and wherever a contestant's run is kept out of its headline cell, as the last sentence of the cell sentence
+(`PASS_HAT_K_CELL_READING`). The frontier stores the fact, not the sentence: `FrontierResult.definitions_apart` (new,
+a boolean, left out of a dump when false) is carried in a stored aspect bundle's `frontier`, the sentence is rendered
+at read (`DEFINITIONS_APART_READING`), and rewording it moves no stored bundle and no fingerprint. A frontier read
+under one definition throughout, with no run kept out, says nothing of definitions, and its bundle reads and digests
+as before. A launch estimate's `detectable_effect` plans from variance pooled over every earlier run of the
+template: where those runs were not all read under one definition, or some recorded none, its `assumptions` end
+saying so.
+
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
 **Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone
@@ -396,7 +556,7 @@ pooling with no other run (owner ruling, 2026-11-14: a silence is never a match)
 (`measure_definitions_differ`, `context_incomplete`, `measure_definition_disclosure`). A take-up of a run that recorded
 other definitions than the host's current ones is refused; one that recorded none is taken up and stays unrecorded.
 
-**Added:** two actions reach the doors below, `runs_attest_definitions` and `run_remeasure` (both `write`).
+**Added:** two actions reach the doors below, `runs_attest_definitions` (since replaced by `runs_attest`, #1187) and `run_remeasure` (both `write`).
 `threetears.evals.run.attest_measure_definitions` records a host's statement of the definitions stored runs
 ran under (`EvalRun.measure_attestation`: who, when, what), touching no result and refusing a run that already records
 definitions. `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=False)` reads a stored run's host
@@ -405,8 +565,7 @@ held (`EvalResult.measure_rereads`), the run is marked (`EvalRun.measure_remeasu
 definitions it was read under. Nothing is interpolated: an unanswered stored value, a missing reader or a moved
 measure that declares `shapes_run` refuses the run before anything is written.
 
-**Not yet:** a campaign's own cells (variant by rig), and so its tables, composites, bars and history, do not read
-measure definitions and still pool such runs. The comparison disclosure says so on the page.
+A campaign's own cells follow in the entry "a campaign cell holds one definition of each host measure" (#1187).
 
 **For hosts:**
 - *Marking a change:* raise `MetricDescriptor.definition_revision` (default 0) on a measure whenever its reading code
@@ -419,8 +578,9 @@ measure definitions and still pool such runs. The comparison disclosure says so 
 - *On upgrade:* nothing to migrate and no stored key moves. Stored runs whose results hold a host measure each stand
   alone in pass^k until backfilled. A host that assembles runs itself sets
   `measure_definitions=profile.measures.definition_digests()`.
-- *Backfilling old runs:* call `attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=...)`
-  with the digests of the descriptors as they were when those runs ran
+- *Backfilling old runs:* follow the numbered procedure in the #1187 entry above, which raises
+  `definition_revision` first. Call `attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=...)`
+  with the digests of the descriptors, at the revisions they had, when those runs ran
   (`MeasureRegistry(descriptors_then).definition_digests()`), and with today's for runs made since the change. It
   reads no result or trace, takes any number of runs, and may be run twice: a run already attested with the same
   definitions is left as it was (`Attested.already_attested`), and one attested with other definitions is refused. To read

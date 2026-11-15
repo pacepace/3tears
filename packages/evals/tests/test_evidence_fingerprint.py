@@ -31,7 +31,7 @@ import sys
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -615,7 +615,14 @@ def _pinned_v2() -> dict[str, dict[str, list[str]]]:
     return pinned
 
 
-@pytest.mark.parametrize("name", WITH_BUNDLES)
+#: The campaigns whose evidence a version 2 fingerprint was stored over and is still what it was. ``courierhost`` is
+#: left out, and its entry in ``fingerprints_v2.json`` kept as the build before version 3 stored it, never re-taken:
+#: its fixture's upgrade step now attests the definitions its runs ran under (#1187), so its evidence moved, and no
+#: earlier build ever recorded a version 2 fingerprint over the evidence it holds now.
+_V2_UNMOVED: Final = tuple(name for name in WITH_BUNDLES if name != "courierhost")
+
+
+@pytest.mark.parametrize("name", _V2_UNMOVED)
 def test_a_fingerprint_stored_under_version_2_is_reproduced_through_like(name: str) -> None:
     """Each hot-path campaign's ``v2:`` fingerprints, as the build before version 3 recorded them, are what this
     build answers when asked in their version: across the manifest joining the bundle and the exact small-sample
@@ -644,6 +651,9 @@ def test_a_field_the_bundle_gains_after_version_2_is_no_part_of_a_version_2_fing
 
     assert evidence_digest(grown, like="v2:") == evidence_digest(document, like="v2:")
     assert evidence_digest(_stored_under_v2_document(document)) == evidence_digest(document, like="v2:")
+    # A field added inside a frozen value (#1187: a frontier whose contestants' definitions differ) is left out too.
+    apart = {**document, "frontier": {**document["frontier"], "definitions_apart": True}}
+    assert evidence_digest(apart, like="v2:") == evidence_digest(document, like="v2:")
     assert evidence_digest(grown) == evidence_digest(document)
 
 

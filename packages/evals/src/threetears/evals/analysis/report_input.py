@@ -330,6 +330,14 @@ class ScoreboardRow(_Part):
         exclude_if=lambda value: value is None,
         description="The arm's one cost reading, the fallback from cost per reply decided once.",
     )
+    # Left out of the document when unset, so an input built before the field existed digests as it did, and its row
+    # reads counted whatever counts it states or leaves out.
+    state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The row's state where its passes and failures are not counted, with its reason: withheld where "
+        "the cells keep the arm apart on a coordinate, which it names; none reads counted.",
+    )
 
 
 class PairRead(_Part):
