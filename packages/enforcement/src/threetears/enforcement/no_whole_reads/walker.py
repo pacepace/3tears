@@ -3415,7 +3415,14 @@ class _ModuleWalk(ast.NodeVisitor):
                 return ast.Dict(keys=keys, values=values)
             # a sequence of constants (``order=(STATE_COLUMN,)``): each element the string it names
             if isinstance(value, (ast.Tuple, ast.List)):
-                elements = [literal(element) for element in value.elts]
+                # a sequence spread into it (``*narrowing``, ``*((Fragment(...),) if tags else ())``): what it
+                # spreads, resolved as an element is, so :func:`_hoisted` can splice it in
+                elements = [
+                    ast.Starred(value=literal(element.value), ctx=ast.Load())
+                    if isinstance(element, ast.Starred)
+                    else literal(element)
+                    for element in value.elts
+                ]
                 return _hoisted(
                     ast.Tuple(elts=elements, ctx=ast.Load())
                     if isinstance(value, ast.Tuple)
@@ -4494,7 +4501,14 @@ class _ModuleWalk(ast.NodeVisitor):
         if not self._function_nodes:
             return None
         bound: list[ast.expr] = []
-        for node in ast.walk(self._function_nodes[-1]):
+        # the function whose scope holds the name: an inner function reading a local of the one it is written in (a
+        # ``narrowing`` tuple an inner ``_nearest`` spreads into its read) reads what that one binds, as
+        # :meth:`_derived_from_key` finds it; walked whole, so a binding or change anywhere in it still counts
+        binding = next(
+            (function for function in reversed(self._function_nodes) if _binds_local(function, name)),
+            self._function_nodes[-1],
+        )
+        for node in ast.walk(binding):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     named = [element for element in ast.walk(target) if isinstance(element, ast.Name)]
@@ -6239,6 +6253,26 @@ def _hoisted(sequence: ast.Tuple | ast.List) -> ast.expr:
     :rtype: ast.expr
     """
     for index, element in enumerate(sequence.elts):
+        before, after = sequence.elts[:index], sequence.elts[index + 1 :]
+        # a literal sequence spread into it (``*(a, b)``): its elements, in its place
+        if isinstance(element, ast.Starred) and isinstance(element.value, ast.Tuple | ast.List):
+            return _hoisted(type(sequence)(elts=[*before, *element.value.elts, *after], ctx=ast.Load()))
+        # one literal sequence or another spread by a condition (``*((Fragment("t.tags @> $1", ...),) if tags else
+        # ())``, the idiom of an optional filter): a copy for each, that sequence spread in, judged in turn as a
+        # fragment chosen by a condition is (a predicate that narrows only when present is still the read's)
+        if (
+            isinstance(element, ast.Starred)
+            and isinstance(element.value, ast.IfExp)
+            and all(isinstance(arm, ast.Tuple | ast.List) for arm in _arms(element.value))
+        ):
+            spread: list[ast.expr] = [
+                _hoisted(type(sequence)(elts=[*before, ast.Starred(value=arm, ctx=ast.Load()), *after], ctx=ast.Load()))
+                for arm in _arms(element.value)
+            ]
+            chained_spread = spread[-1]
+            for copy in reversed(spread[:-1]):
+                chained_spread = ast.IfExp(test=ast.Constant(True), body=copy, orelse=chained_spread)
+            return chained_spread
         if not isinstance(element, ast.IfExp) or (arms := _fragment_arms(element)) is None:
             continue
         copies: list[ast.expr] = [
