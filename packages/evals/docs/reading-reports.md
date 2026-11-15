@@ -387,7 +387,7 @@ document's appendix lists its Checks after Method, each name defined by its expr
 
 ### Style
 
-`threetears.evals.analysis.style` holds every rendered sentence to one set of rules, `lint_prose`: no meta-prose
+`threetears.evals.analysis.style` holds every rendered sentence to one set of rules: no meta-prose
 about the page ("rests on", "written by", "a count, not a ranking"), no hedge on a measured fact ("no measurable"),
 no `key=value`, no chain of dashes, no sentence over 28 words or with more than three numbers (that is a table), no
 header over three words, and the declared question only on its own quoted line. `humanize` is the one seam an

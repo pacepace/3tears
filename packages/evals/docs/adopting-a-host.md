@@ -1303,9 +1303,9 @@ release, on:
   stores, the refusals, the version constants, the `Known*` vocabularies a declared signature takes and the value
   tuples a page names (`USAGE_ROLES`, …), the quick path and what it returns, and every name this guide, the [ladder](ladder.md), the README or an
   example imports. Such a name moves only with
-  a `MIGRATIONS.toml` record and a deprecation cycle: the release that moves it exports the new name beside the old
-  one, which keeps working for that minor release and is named in its notes, and the next minor release removes the
-  old name, recorded as any removal is.
+  a `MIGRATIONS.toml` record that names what replaces it, in a single cut-over (owner ruling, 2026-11-15): the
+  release that moves or removes it exports no shim beside it, its notes print the old name with its replacement, and
+  a host changes its imports once, against that map.
 - **`stable`** is the rest of the declared surface: what a topic guide, the agent and MCP guides or the courier host
   imports, the quick path's whole root, and what the one production host binds beyond the contract. Such a name may
   move in any release, recorded in `MIGRATIONS.toml` and printed in that release's notes, never shimmed.
@@ -1315,25 +1315,26 @@ release, on:
   [reference](reference.md#public-api) does not list it.
 
 The first two tiers are the declared surface, mapped by role and rung in [the surface](surface.md), and each is one
-kind: typed in an eval, bound by a host, invoked, received or for tests. A name is declared by criteria, never to meet
+kind: typed in an eval, bound by a host, the function behind an action, invoked by a host's code, received, or for
+tests. A name is declared by criteria, never to meet
 a count. Someone outside the package needs it: you type it, a host implements, passes or calls it, an agent invokes
 it, or it is a shape one of those is handed. Production code or a shipped example uses it, and a test alone does not
 count. It is the one way to do its thing. A name you type is taught on a rung or a page. Its meaning can be promised;
 otherwise it is provisional. A name that fails one is demoted, and the totals by kind are reported on the surface
-page as a trend, not a budget. A declared
-name stays declared while something outside the package imports it, a shipped page teaches it or a declared
-signature reaches it, or while it is a port you implement, a version constant or a one-minor shim, or a stable name
-only a known host's tests import, until that host accepts that it may move (the rules, in full: the comment on
-`HOST_CONTRACT` in `packages/evals/scripts/public_surface.py`). Otherwise it is provisional; a name that goes provisional still imports, nothing warns,
-and `MIGRATIONS.toml` names it.
+page as a trend, not a budget. Use is read from code alone: another package's source, the shipped completion client,
+a shipped example, a code block on a page that imports, calls or names the name as code, or a host's production code
+as its generated import list records it. A page's prose does not count, and neither does a host's test. A port you
+implement, a shape you are handed and an action's function need no caller of their own: what names them is used.
+`tests/test_declared_holdbacks.py` holds this.
 `packages/evals/api/surface.json` records each name's tier beside its kind (and, for a declared name, its
 signature), and `HOST_CONTRACT` and `STABLE` in `packages/evals/scripts/public_surface.py` declare the first two
 tiers, with the reason for each group of names. The [reference](reference.md#public-api) lists the declared names
 and marks each host-contract one *host contract*. Nothing a host's production code imports is provisional: each
-adopting host's import list sits in `packages/evals/tests/fixtures/host_imports/`, and a test fails while a name on
-one is provisional, unless the host accepted that a name only its tests import may move. If your host binds to a
-provisional name, send your list to be added: promoting a name costs nothing, and demoting one withdraws a promise,
-so it is recorded.
+adopting host's import list sits in `packages/evals/tests/fixtures/host_imports/`, generated from a checkout of the
+host by `packages/evals/scripts/record_host_imports.py` (never edited by hand; the script states what counts as the
+host's production code, and its tests never do), and a test fails while a name on one is provisional. If your host's
+production code binds to a provisional name, record your list with the script and send it: promoting a name costs
+nothing, and demoting one withdraws a promise, so it is recorded.
 
 **The installed build ships its tiers**, so your suite can gate its own imports against the version it runs
 (`surface_tier` raises `KeyError` for a name no root exports, so a reach below a root fails too):
@@ -2269,7 +2270,7 @@ may be removed in a later release, and that release's `MIGRATIONS.toml` notes sa
 with a core major and an upgrader). None is deprecated, and nothing here changes what is stored. Two of them hang
 off [`host-contract`](#stability-tiers) names: `KnownUsageRole` carries `inner_agent` and `external`, and
 `WorldDimension` reaches `Triggered` through its `when`. Removing either is a signature change to a contract name,
-so it goes through the deprecation cycle, never straight out in one release's notes.
+so it is recorded in `MIGRATIONS.toml` with what replaces it, as a single cut-over.
 
 - **`AsyncDelivery` and `AsyncExternalSpend`** (on `EvalResult.async_deliveries`, a core document). They cover
   background work a candidate hands off and gets back turns later, with its own model spend and the paid

@@ -4,7 +4,8 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
 (``generate_api_snapshot.py``) writes each declared name's kind into the tier map the wheel ships, beside its tier,
 and ``generate_surface.py`` renders ``docs/surface.md`` and ``llms.txt`` from the same kinds.
 
-A declared name (``host-contract`` or ``stable``) is exactly one of five kinds:
+A declared name (``host-contract`` or ``stable``) is exactly one of six kinds (:data:`KIND_MEANINGS` gives each in one
+line, as ``docs/surface.md`` and ``llms.txt`` print it):
 
 - ``typed``: a user writes it in an eval file. Each one a rung teaches is in :data:`TYPED` with that rung, held to
   what the rung's example and its ladder section import; one a page teaches off the ladder is in
@@ -12,8 +13,10 @@ A declared name (``host-contract`` or ``stable``) is exactly one of five kinds:
 - ``bound``: a host implements it or builds it and hands it to the engine: a protocol a host implements, a store, a
   registry, a client, a kind seam, a function handed over as a value, a factory that builds one, and a shape a host
   builds for a seam.
-- ``invoked``: an operation called by name, from host code or as an action of the catalogue, and a function a host
-  calls to do one step the way the engine does it (a formatter, a digest, a wire reader).
+- ``action``: the function behind an action of the catalogue. An agent or an operator invokes the action by its name,
+  through the catalogue a host serves, and the action does the work; no host code need import the function.
+- ``invoked``: a function a host's own code calls: to make the engine act (launch, run, judge, read, write, price), or
+  to do one step the way the engine does it (a formatter, a digest, a wire reader).
 - ``received``: a value someone is handed and reads: a result or stored-document shape, a protocol the engine
   implements and hands a host, a literal, a constant, an error.
 - ``tests``: a conformance kit, a recorder or a guard a host runs in its own tests.
@@ -48,7 +51,7 @@ from public_surface import PACKAGE_ROOT, SurfaceEntry, assignment, declared, is_
 from pydantic import BaseModel
 
 #: A declared name's kind: what it asks of the person or agent who meets it.
-Kind = Literal["typed", "bound", "invoked", "received", "tests"]
+Kind = Literal["typed", "bound", "action", "invoked", "received", "tests"]
 
 #: The kinds, in the order a reader meets them.
 KINDS: tuple[Kind, ...] = typing.get_args(Kind)
@@ -80,9 +83,6 @@ TYPED_IN_DOCS: Mapping[str, str] = MappingProxyType(
         # What a runner returns to report its spend when it calls no ``Model``: every ladder runner calls one, which
         # reports its own spend, so the cost guide teaches it.
         "threetears.evals.Answer": "docs/cost-and-budgets.md",
-        # The runner for an app that cannot be wrapped as a function: every ladder app can, so the concepts page
-        # teaches it beside the runner it replaces.
-        "threetears.evals.Log": "docs/concepts.md",
     }
 )
 
@@ -112,10 +112,10 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         "threetears.evals.ops.history_launch_pricer": "bound",
         "threetears.evals.run.launchable_judge_kind": "bound",
         "threetears.evals.storage.bridge_async_store": "bound",
-        "threetears.evals.quick.measure": "bound",
         # A conformance check a host runs in its own tests.
         "threetears.evals.kernel.host.check_world_conformance": "tests",
-        # Operations: each makes the engine do something (launch, run, judge, read, write, price, render, assemble).
+        # Functions a host's code calls to make the engine act (launch, run, judge, read, write, price, render,
+        # assemble). None is an action of the catalogue: an action's function is ``action`` by rule.
         "threetears.evals.kernel.failed_call_output": "invoked",
         "threetears.evals.kernel.prompt_drift": "invoked",
         "threetears.evals.kernel.host.check_seed": "invoked",
@@ -179,23 +179,18 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         "threetears.evals.ops.start_paid_call": "invoked",
         "threetears.evals.negotiation.closest_settings": "invoked",
         "threetears.evals.negotiation.negotiate": "invoked",
-        # Functions a host calls to do one step the way the engine does it (a formatter, a parser, a digest, a clock, a
-        # wire reader): each is on a host's import list or a page teaches a host to call it.
+        # Functions a host's code calls to do one step the way the engine does it (a formatter, a parser, a digest, a
+        # wire reader): each is used by a host's production code or a shipped example's (criterion 2).
         "threetears.evals.surface_tier": "invoked",
         "threetears.evals.schema.bind_cell_identity": "invoked",
-        "threetears.evals.schema.check_after": "invoked",
         "threetears.evals.schema.current_cell_identity": "invoked",
         "threetears.evals.schema.field_in_values": "invoked",
-        "threetears.evals.schema.is_builtin_judge_config_id": "invoked",
-        "threetears.evals.schema.judge_config_of": "invoked",
         "threetears.evals.schema.label_key_of": "invoked",
         "threetears.evals.schema.nested_schemas": "invoked",
-        "threetears.evals.schema.utc_now_iso": "invoked",
         "threetears.evals.kernel.confusion_cell": "invoked",
         "threetears.evals.kernel.extract_json": "invoked",
         "threetears.evals.kernel.extract_json_array": "invoked",
         "threetears.evals.kernel.fold_phase_timings": "invoked",
-        "threetears.evals.kernel.production_replicating_cost": "invoked",
         "threetears.evals.kernel.seed_digest": "invoked",
         "threetears.evals.kernel.strict_response_format": "invoked",
         "threetears.evals.run.corpus_digests": "invoked",
@@ -203,10 +198,8 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         "threetears.evals.run.metered_cell_tally": "invoked",
         "threetears.evals.run.precondition_failure_text": "invoked",
         "threetears.evals.run.run_blocking": "invoked",
-        "threetears.evals.analysis.check_names": "invoked",
         "threetears.evals.analysis.dollars_text": "invoked",
         "threetears.evals.analysis.format_number": "invoked",
-        "threetears.evals.analysis.host_declarations_digest": "invoked",
         "threetears.evals.analysis.humanize": "invoked",
         "threetears.evals.analysis.judge_key": "invoked",
         "threetears.evals.analysis.tier_sentence": "invoked",
@@ -261,8 +254,7 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         "threetears.evals.actions.ConformanceSample": "tests",
         # A host's own test builds it: one shared construction path and the callers that must reach it.
         "threetears.evals.run.FidelityContract": "tests",
-        # What a decorator or a template hands back to be read, and a kit's stage.
-        "threetears.evals.quick.Measure": "received",
+        # What a template hands back to be read, and a kit's stage.
         "threetears.evals.schema.ConversationSpec": "received",
         "threetears.evals.actions.ConformanceStage": "tests",
         # The host and the seams it wires: what a host builds and hands every entrypoint, its routes, its own
@@ -718,7 +710,8 @@ KIND_MEANINGS: Mapping[Kind, str] = MappingProxyType(
     {
         "typed": "a newcomer writes it in an eval file",
         "bound": "a host implements it or hands it to the engine",
-        "invoked": "an operation called by name to make the engine do something, from host code or as an action",
+        "action": "the function behind an action of the catalogue, which an agent or operator invokes by name",
+        "invoked": "a function a host's own code calls, to make the engine act or do one step its way",
         "received": "a value someone is handed and reads",
         "tests": "a kit, recorder or guard a host runs in its own tests",
     }
@@ -785,7 +778,7 @@ def kind_by_rule(
     3. A protocol, by who implements it (:func:`protocol_sides`): ``bound`` where a host does, ``received`` where the
        engine does and hands it to a host's code, or satisfies it with its own storage. No host must implement the
        second, so it is not bound; a host meets it in what it is handed and in the signatures it calls.
-    4. A function named as an action of the catalogue (:func:`action_names`): ``invoked``.
+    4. A function named as an action of the catalogue (:func:`action_names`): ``action``.
     5. An exception, an enum, a literal or a constant: ``received``.
     6. A type alias over a ``Callable``: ``bound`` (a host hands the engine the callable); any other: ``received``.
     7. A model, dataclass or typed dict that a declared name other than a seam returns, or a received shape holds,
@@ -805,7 +798,7 @@ def kind_by_rule(
         side = protocol_sides().get(qualified)
         return None if side is None else "bound" if side == HOST_IMPLEMENTS else "received"
     if kind in ("function", "async function"):
-        return "invoked" if qualified.rsplit(".", 1)[1] in action_names() else None
+        return "action" if qualified.rsplit(".", 1)[1] in action_names() else None
     if kind in ("exception", "enum", "literal") or kind.startswith("constant"):
         return "received"
     if kind == "type alias":
@@ -848,8 +841,9 @@ def how_to_decide(name: str, entry: SurfaceEntry) -> str:
     return (
         f"{name} ({entry.kind}) has no kind, since no rule decides it: record it in KIND_ENTRIES in "
         f"packages/evals/scripts/surface_kinds.py as the one that fits ({meanings}), asking first whether a "
-        "newcomer writes it, then whether a host implements it or hands it to the engine, then whether a caller "
-        "invokes it to make the engine act, and otherwise it is only read"
+        "newcomer writes it, then whether a host implements it or hands it to the engine, then whether a host's "
+        "own code calls it (invoked; an action's function is action by rule, never entered), and otherwise it is "
+        "only read"
     )
 
 
@@ -902,7 +896,7 @@ def _is_shape(entry: SurfaceEntry) -> bool:
 
 @dataclasses.dataclass(frozen=True)
 class Reach:
-    """Which ``typed``, ``bound``, ``invoked`` or ``tests`` name reaches each received shape.
+    """Which ``typed``, ``bound``, ``action``, ``invoked`` or ``tests`` name reaches each received shape.
 
     :ivar by: ``root.name`` of a received shape → the declared name nearest it that reaches it: a parameter, return,
         field or raised error of that name, or of a type it reaches, names the shape. ``None`` when nothing does.
@@ -912,10 +906,10 @@ class Reach:
 
 
 def shape_reach(surface: Mapping[str, SurfaceEntry], kinds: Mapping[str, Kind]) -> Reach:
-    """Walk outward from every ``typed``, ``bound``, ``invoked`` and ``tests`` name (a kit hands back its report),
+    """Walk outward from every ``typed``, ``bound``, ``action``, ``invoked`` and ``tests`` name (a kit hands back its report),
     nearest first, through every engine type it names, and record for each received shape the starting name that
     reached it first."""
-    starts = [name for kind in ("typed", "bound", "invoked", "tests") for name in kinds if kinds[name] == kind]
+    starts = [name for kind in KINDS if kind != "received" for name in kinds if kinds[name] == kind]
     held = [name for name, kind in kinds.items() if kind == "received" and not _is_shape(surface[name])]
     shapes = [name for name, kind in kinds.items() if kind == "received" and _is_shape(surface[name])]
     objects = _objects([*starts, *shapes])
@@ -946,7 +940,7 @@ def shape_reach(surface: Mapping[str, SurfaceEntry], kinds: Mapping[str, Kind]) 
 
 
 def unreached_shapes(reach: Reach) -> list[str]:
-    """Every received shape no ``typed``, ``bound``, ``invoked`` or ``tests`` name reaches."""
+    """Every received shape no ``typed``, ``bound``, ``action``, ``invoked`` or ``tests`` name reaches."""
     return [name for name, by in reach.by.items() if by is None]
 
 
@@ -1086,26 +1080,27 @@ def admission_problems(surface: Mapping[str, SurfaceEntry], kinds: Mapping[str, 
     """Each declared name that fails a criterion code can check (owner ruling, 2026-11-15), with what to do.
 
     1. Someone outside the package needs it, by its kind's rule: a received shape is reached from a ``typed``,
-       ``bound``, ``invoked`` or ``tests`` name, through a signature or a docstring (:func:`shape_reach`).
+       ``bound``, ``action``, ``invoked`` or ``tests`` name, through a signature or a docstring (:func:`shape_reach`).
     3. It is the one way to do its thing: of two near-duplicate shapes (:func:`near_duplicate_shapes`), one's
        docstring names the other, saying why both exist.
     4. A name a user types is taught: on the rung recorded for it in :data:`TYPED`, which is exactly what the rungs
        import (:func:`taught_rungs`), or on the page :data:`TYPED_IN_DOCS` records, which names it. A ``typed`` kind
        comes from those two alone, never from :data:`KIND_ENTRIES`.
 
-    Criterion 2 (production code or a shipped example uses it) is held by ``tests/test_declared_holdbacks.py``: every
-    declared name is imported outside the package's source and tests, carried by a host's import list, named on a
-    shipped page or reached by a declared signature. Criterion 5 is the tier: a name whose meaning cannot be promised
-    is ``provisional``, never declared.
+    Criterion 2 (production code or a shipped example uses it; a test alone does not count) is held by
+    ``tests/test_declared_holdbacks.py``: a declared name is used in code by another package's source, a shipped
+    example, a code block on a shipped page, or a host's production code (``tests/fixtures/host_imports/``, generated
+    by ``scripts/record_host_imports.py``), unless its kind needs no caller of its own. Criterion 5 is the tier: a
+    name whose meaning cannot be promised is ``provisional``, never declared.
     """
     problems: list[str] = []
     declared_shapes = {name: entry for name, entry in surface.items() if name in kinds}
     for name in unreached_shapes(shape_reach(declared_shapes, kinds)):
         problems.append(
-            f"{name} is a received shape that no typed, bound, invoked or tests name hands anyone, by a signature or "
-            "a docstring (criterion 1): name it where it is handed over (the annotation, or a :class: role in the "
-            "docstring of what returns or raises it), or demote it: drop it from its root's __all__, record it "
-            "removed in MIGRATIONS.toml and regenerate the snapshot"
+            f"{name} is a received shape that no typed, bound, action, invoked or tests name hands anyone, by a "
+            "signature or a docstring (criterion 1): name it where it is handed over (the annotation, or a :class: "
+            "role in the docstring of what returns or raises it), or demote it: drop it from its root's __all__, "
+            "record it removed in MIGRATIONS.toml and regenerate the snapshot"
         )
     objects = objects_of(name for pair in near_duplicate_shapes(kinds) for name in pair)
     for one, other in near_duplicate_shapes(kinds):

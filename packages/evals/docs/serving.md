@@ -856,7 +856,7 @@ the bundle an analysis of this campaign reads, so the export carries it. Nothing
 | Key | What it is |
 |---|---|
 | `built_by` | provenance: the factory, `module:callable`, the exporter says the profile came from. The mint checks it is text and never imports it |
-| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it, computed with `threetears.evals.analysis.host_declarations_digest(profile)`; required, and a declaration without it is refused, naming any key that looks like it |
+| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it (`AnalysisContextBundle.host_declarations_digest`), and as `campaign_export` writes it; required, and a declaration without it is refused, naming any key that looks like it |
 
 The rest of the declaration (measures, bars, kinds, release label) is the host's record. The freeze calls each
 sweepable's reader, the host's lever reader and each kind contract's levels on every run, so the profile is built

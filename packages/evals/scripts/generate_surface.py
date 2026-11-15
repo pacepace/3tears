@@ -9,14 +9,15 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
     uv run python packages/evals/scripts/generate_surface.py --check
 
 Both are read from each declared name's kind (``surface_kinds.py``) and, for a ``typed`` name, the rung that teaches
-it. ``docs/surface.md`` opens with the names a first eval needs and what each rung adds, then the host's contract, the
-operations, the action catalogue, a host's test kits, the shapes by the concept each belongs to, the reading states
-with their reasons and remedies, the near-duplicate shapes, and last the counts by kind, reported as a trend and never
-a budget; each line is a name and the first sentence
-of its own docstring. ``llms.txt`` is what an AI agent adopting the package reads first: what it is, the first
-example whole, how to get and run the examples, how to read what comes back, where a later task's names are, and the
-actions. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only what an install holds or the repository
-by URL. ``tests/test_surface_docs.py`` fails while either committed file is not what this makes of the package.
+it. ``docs/surface.md`` opens with the kinds, one line each, then the names a first eval needs and what each rung adds,
+then the host's contract, the functions a host's code calls, the action catalogue and the functions behind it, a
+host's test kits, the shapes by the concept each belongs to, the reading states with their reasons and remedies, the
+near-duplicate shapes, and last the counts by kind, reported as a trend and never a budget; each line is a name and
+the first sentence of its own docstring. ``llms.txt`` is what an AI agent adopting the package reads first: what it
+is, the first example whole, how to get and run the examples, how to read what comes back, where a later task's names
+are, the actions, and the kinds, one line each. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only
+what an install holds or the repository by URL. ``tests/test_surface_docs.py`` fails while either committed file is
+not what this makes of the package.
 """
 
 from __future__ import annotations
@@ -75,7 +76,6 @@ LEDGER_PATH = PACKAGE_ROOT / "tests" / "fixtures" / "declared_holdbacks.txt"
 
 #: Each ledger reason, as the page's table names what holds a name listed under it.
 LEDGER_REASONS: Mapping[str, str] = {
-    "discodon-tests-only": "Discodon's tests import it, and nothing else imports, names or reaches it",
     "port-host-implements": "A protocol a host implements and hands the engine",
     "protocol-engine-provides": "A protocol the engine implements and hands a host, or its storage satisfies",
     "unreached": "Nothing",
@@ -266,6 +266,12 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     yield "Each line is a name, `threetears.evals.` dropped, and the first sentence of its docstring; the"
     yield "[reference](reference.md#public-api) has the rest."
     yield ""
+    yield "## The kinds"
+    yield ""
+    yield "Every name below is exactly one kind: what it asks of the person or agent who meets it."
+    yield ""
+    yield from (f"- `{kind}`: {KIND_MEANINGS[kind]}." for kind in KINDS)
+    yield ""
     yield "## Writing an eval"
     yield ""
     yield f"### Your first eval: these {len(first)}"
@@ -302,7 +308,9 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     yield from (surface.line(name) for name in rest)
     yield ""
     invoked = surface.of_kind("invoked")
-    yield f"## Operations: {len(invoked)} names a host or an agent calls"
+    yield f"## Functions a host's code calls: {len(invoked)}"
+    yield ""
+    yield "Each is `invoked`: your code imports it and calls it. None is an action; the actions follow."
     yield ""
     for root, names in _by_root(invoked).items():
         yield f"### `{root}` ({len(names)})"
@@ -312,13 +320,21 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     actions = _actions()
     yield f"## The action catalogue: {sum(len(each) for _, each in actions)} actions an agent calls"
     yield ""
-    yield "`actions.eval_catalogue()` holds them; `transports.fastmcp.mount_fastmcp` serves them over MCP."
+    yield "`actions.eval_catalogue()` holds them; `transports.fastmcp.mount_fastmcp` serves them over MCP. An agent or"
+    yield "an operator invokes each by its name, with no Python, and the action does the work."
     yield ""
     for workflow, each in actions:
         yield f"### {workflow} ({len(each)})"
         yield ""
         yield from (f"- `{name}`: {md_text(first_sentence(text))}" for name, text in each)
         yield ""
+    behind = surface.of_kind("action")
+    yield f"### The functions behind actions, importable too ({len(behind)})"
+    yield ""
+    yield "Each is `action`: the function an action of that name runs. A host's code may call it directly."
+    yield ""
+    yield from (surface.line(name) for name in behind)
+    yield ""
     kits = surface.of_kind("tests")
     yield f"## A host's own tests: {len(kits)} kits, recorders and guards"
     yield ""
@@ -552,6 +568,10 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     )
     for workflow, each in actions:
         yield from _wrapped(f"{workflow}: {', '.join(name for name, _ in each)}", "  ")
+    yield ""
+    yield from _wrapped(f"KINDS: every declared name is one; {at_tag('docs/surface.md')} lists each under its kind")
+    for kind in KINDS:
+        yield from _wrapped(f"{kind}: {KIND_MEANINGS[kind]}.", "  ")
 
 
 # --- main --------------------------------------------------------------------------------------------------------

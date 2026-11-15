@@ -76,8 +76,7 @@ LATER TASKS, BY RUNG (https://github.com/pacepace/3tears/blob/<tag>/packages/eva
     transports.fastmcp.mount_fastmcp
   Rung 5, evaluate the evaluator: harness.AnalystSkill, harness.Writer, harness.WriterEval
   Off the ladder, taught on a page: Answer
-    (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/cost-and-budgets.md); Log
-    (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/concepts.md)
+    (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/cost-and-budgets.md)
 
 EMBEDDING IT IN AN APP (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/adopting-a-host.md)
   A product builds one kernel.host.EvalHost and hands it to every entrypoint. The 18 ports a host
@@ -114,3 +113,14 @@ ACTIONS: 87, called without writing Python
     settle_cases, price_tradeoff, levers_effects
   Investigate: blocks: block_catalog, block_render, report_check
   Investigate: gaps: capability_gap
+
+KINDS: every declared name is one;
+  https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/surface.md lists each under its
+  kind
+  typed: a newcomer writes it in an eval file.
+  bound: a host implements it or hands it to the engine.
+  action: the function behind an action of the catalogue, which an agent or operator invokes by
+    name.
+  invoked: a function a host's own code calls, to make the engine act or do one step its way.
+  received: a value someone is handed and reads.
+  tests: a kit, recorder or guard a host runs in its own tests.

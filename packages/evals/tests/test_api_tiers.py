@@ -1,20 +1,21 @@
 """Every public name carries a stability tier, every name a host is taught to import is ``host-contract``, and every
 name any page or example host imports is declared.
 
-A public name is ``host-contract`` (it moves only with a ``MIGRATIONS.toml`` record and a deprecation cycle),
+A public name is ``host-contract`` (it moves only with a ``MIGRATIONS.toml`` record naming its replacement, a single
+cut-over with no shim),
 ``stable`` (the rest of the declared surface: it may move in any release, recorded and never shimmed) or
 ``provisional`` (exported, mostly because a declared signature reaches it, and promised nothing). ``HOST_CONTRACT``
 and ``STABLE`` in ``scripts/public_surface.py`` are the one place the first two are declared, and the snapshot
 (``api/surface.json``) records each entry's tier as the generator derives it.
 
 This holds the lists' completeness, not their taste: a name the host guide, the ladder, the README or an example
-imports is one a host was told to write against, so a release moving it without the deprecation cycle would break
+imports is one a host was told to write against, so a release moving it without a record of its replacement would break
 a host that did exactly what the docs said; and a name a topic guide or an example host imports is one a reader was
 shown, so it may not be provisional. What else belongs in either list is a judgement their comments record, and
 nothing here second-guesses it beyond each kind's ceiling.
 
 Every declared name is also exactly one kind (``scripts/surface_kinds.py``): ``typed`` in an eval, ``bound`` by a
-host, ``invoked``, ``received`` or for ``tests``. This holds that each has one, and that each is admitted by the
+host, ``action`` (behind the catalogue), ``invoked`` by a host's code, ``received`` or for ``tests``. This holds that each has one, and that each is admitted by the
 criteria code can check (owner ruling, 2026-11-15): a received shape is reached, two near-duplicate shapes say why
 both exist, and a typed name is taught on the rung that imports it or the page recorded for it. No total is held to a
 number; the adopter's two goals, a first eval's names and rung 3's, are.
@@ -169,7 +170,7 @@ def test_a_kind_comes_from_its_rule_or_its_entry() -> None:
     # implement it, so it is not bound.
     assert kind["threetears.evals.kernel.CellSink"] == "received"
     assert kind["threetears.evals.kernel.RunStore"] == "received"
-    assert kind["threetears.evals.ops.runs_list"] == "invoked"  # an action's name
+    assert kind["threetears.evals.ops.runs_list"] == "action"  # an action's name: invoked through the catalogue
     assert kind["threetears.evals.analysis.format_number"] == "invoked"  # a step a host does the engine's way
     assert kind["threetears.evals.Answer"] == "typed"  # taught on a page, not a rung
     assert kind["threetears.evals.schema.EvalRun"] == "received"
@@ -233,17 +234,19 @@ def test_a_name_no_criterion_admits_is_refused_with_what_to_do(monkeypatch: pyte
     # Only the shape, and nothing that could reach it.
     lone = kinds_of.admission_problems(declared, {"threetears.evals.schema.EvalRun": "received"})
     assert any(
-        problem.startswith("threetears.evals.schema.EvalRun is a received shape that no typed, bound, invoked")
+        problem.startswith("threetears.evals.schema.EvalRun is a received shape that no typed, bound, action, invoked")
         and "demote it" in problem
         for problem in lone
     )
     monkeypatch.setattr(kinds_of, "TYPED_IN_DOCS", {"threetears.evals.Answer": "docs/ladder.md"})
-    monkeypatch.setattr(kinds_of, "KIND_ENTRIES", {**kinds_of.KIND_ENTRIES, "threetears.evals.Log": "typed"})
+    monkeypatch.setattr(kinds_of, "KIND_ENTRIES", {**kinds_of.KIND_ENTRIES, "threetears.evals.quick.as_host": "typed"})
     problems = kinds_of.admission_problems(declared, kinds)
     assert "threetears.evals.Answer is recorded as taught on docs/ladder.md, which does not name it (criterion 4)" in (
         problems
     )
-    assert any(problem.startswith("threetears.evals.Log is entered typed in KIND_ENTRIES") for problem in problems)
+    assert any(
+        problem.startswith("threetears.evals.quick.as_host is entered typed in KIND_ENTRIES") for problem in problems
+    )
 
 
 def test_a_first_eval_needs_two_names_and_rung_three_five() -> None:
@@ -367,10 +370,10 @@ def test_a_tier_change_is_a_diff_in_review() -> None:
     assert "moved from tier host-contract to stable" in finding.problem
 
 
-def test_a_host_contract_name_leaving_unrecorded_names_the_deprecation_cycle() -> None:
+def test_a_host_contract_name_leaving_unrecorded_asks_for_its_replacement() -> None:
     [finding] = surface.snapshot_findings({}, {f"{A}.gone": Entry("class", "", "host-contract")}, _release(), None)
     assert not finding.regenerating_fixes
-    assert "keeps working beside its new home for one minor release" in finding.problem
+    assert "names what replaces it (Port: ...)" in finding.problem
 
 
 def test_a_snapshot_entry_without_a_tier_is_refused(tmp_path: Path) -> None:

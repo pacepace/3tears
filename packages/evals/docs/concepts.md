@@ -9,7 +9,7 @@ reports use. Nothing here assumes you have built an eval before. Why the pieces 
 
 An eval is three slots, `Eval(cases, runner, grader)`. Run it, and it gives you a result you read; give it two
 runners, and it is a comparison. That is the whole of it: [World](ladder.md#rung-4a-an-agent-graded-on-the-world-it-leaves)
-and `Log` are shapes of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
+is another shape of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
 modifiers.
 
 ### Case (test case)
@@ -22,8 +22,7 @@ kind (a `lookalike`, say) so every reading is also split by kind, and `world` is
 ### Runner
 
 The code under test: any function from one case to an answer, async or not. It is one **arm**, one version under
-test. A runner may also be a `World`'s, which hosts your agent in a seeded state, or a `Log` of outputs your app
-pushed when it cannot be wrapped as a function.
+test. A runner may also be a `World`'s, which hosts your agent in a seeded state.
 
 ### Grader
 

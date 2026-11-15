@@ -38,8 +38,8 @@
     },
     "threetears.evals.Log": {
       "kind": "class",
-      "signature": "Log(path: str | os.PathLike[str]) -> None",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.Model": {
       "kind": "class",
@@ -295,11 +295,6 @@
       "kind": "dataclass",
       "signature": "CellTrace(spans: list[dict[str, Any]] = list(), total_ms: float | None = None, llm_ms: float | None = None, tool_ms: float | None = None)",
       "tier": "stable"
-    },
-    "threetears.evals.schema.check_after": {
-      "kind": "function",
-      "signature": "check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None",
-      "tier": "host-contract"
     },
     "threetears.evals.schema.check_grouping": {
       "kind": "function",
@@ -686,11 +681,6 @@
       "signature": "IntervalScale(kind: Literal['interval'] = 'interval', value: float, unit: str | None = None)",
       "tier": "host-contract"
     },
-    "threetears.evals.schema.is_builtin_judge_config_id": {
-      "kind": "function",
-      "signature": "is_builtin_judge_config_id(config_id: str | None) -> bool",
-      "tier": "host-contract"
-    },
     "threetears.evals.schema.is_pass": {
       "kind": "function",
       "signature": "",
@@ -730,11 +720,6 @@
       "kind": "constant (dict)",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.schema.judge_config_of": {
-      "kind": "function",
-      "signature": "judge_config_of(recorded: str | None) -> str | None",
-      "tier": "host-contract"
     },
     "threetears.evals.schema.JUDGE_WORDING_CHANGE_SENTENCE": {
       "kind": "constant (str)",
@@ -1455,11 +1440,6 @@
       "kind": "type alias",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.schema.utc_now_iso": {
-      "kind": "function",
-      "signature": "utc_now_iso() -> str",
-      "tier": "stable"
     },
     "threetears.evals.schema.VariationAxis": {
       "kind": "model",
@@ -2780,11 +2760,6 @@
       "kind": "model",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.kernel.production_replicating_cost": {
-      "kind": "function",
-      "signature": "production_replicating_cost(usage: Sequence[UsageView], *, substituted_deliveries: int, candidate_kind: str | None) -> float | None",
-      "tier": "stable"
     },
     "threetears.evals.kernel.program_cost": {
       "kind": "function",
@@ -5396,11 +5371,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.check_names": {
-      "kind": "function",
-      "signature": "check_names(checks: Iterable[str], declared: Mapping[str, str]) -> dict[str, str]",
-      "tier": "host-contract"
-    },
     "threetears.evals.analysis.compare_two_runs": {
       "kind": "function",
       "signature": "",
@@ -6015,11 +5985,6 @@
       "kind": "model",
       "signature": "",
       "tier": "provisional"
-    },
-    "threetears.evals.analysis.host_declarations_digest": {
-      "kind": "function",
-      "signature": "host_declarations_digest(profile: HostProfile) -> str",
-      "tier": "host-contract"
     },
     "threetears.evals.analysis.humanize": {
       "kind": "function",
@@ -7438,13 +7403,13 @@
     },
     "threetears.evals.quick.Measure": {
       "kind": "class",
-      "signature": "Measure(compute: Callable[..., Any], descriptor: MetricDescriptor) -> None",
-      "tier": "stable"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.quick.measure": {
       "kind": "function",
-      "signature": "measure(*, name: str | None = None, reader_name: str | None = None, description: str | None = None, family: str = 'mechanical', transferability_class: str = 'mechanical', attribution_scope: str = 'end_to_end', data_type: str = 'numeric', **declared: Any) -> Callable[[Callable[..., Any]], Measure]",
-      "tier": "host-contract"
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.quick.run_cli": {
       "kind": "function",
