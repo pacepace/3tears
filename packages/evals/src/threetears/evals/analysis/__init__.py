@@ -103,6 +103,18 @@ from threetears.evals.analysis.bundle.schema import (
 from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view, aspect_views
 from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
 from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
+from threetears.evals.analysis.report_input import (
+    CallRead,
+    CaveatEntry,
+    FirstScreen,
+    Gate,
+    GateRun,
+    NoActionReason,
+    Remedy,
+    RemedyStep,
+    StepArgument,
+    UnsizedReason,
+)
 from threetears.evals.analysis.campaign_readings import (
     AggregateFigure,
     AggregateWeighting,
@@ -453,6 +465,17 @@ __all__ = [
     "Corrected",
     "Looks",
     "Rescore",
+    # The one caveat list and the first screen read off it, which the campaign bundle holds.
+    "CallRead",
+    "CaveatEntry",
+    "FirstScreen",
+    "Gate",
+    "GateRun",
+    "NoActionReason",
+    "Remedy",
+    "RemedyStep",
+    "StepArgument",
+    "UnsizedReason",
     # A campaign read one aspect at a time, and the shapes of what code reads off it across aspects.
     "AggregateFigure",
     "AggregateWeighting",

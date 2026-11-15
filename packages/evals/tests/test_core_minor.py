@@ -656,6 +656,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
     from threetears.evals.schema.completion import StopReason
     from threetears.evals.schema.judge_attribution import JudgeAttributionSource
     from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome
+    from threetears.evals.schema.reading_states import Maker
     from threetears.evals.schema.world_events import WorldEventCause, WorldEventKind
 
     def values(alias: Any) -> frozenset[Any]:
@@ -696,6 +697,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "ConversationSpec.turn_scheduler": frozenset({"round_robin", "llm_decided"}),
         "BudgetStop.currency": frozenset({"cost_usd", "metered_calls"}),
         "RaterKind": values(models.RaterKind),
+        "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),
         "SecondJudgeAskedBy": values(SecondJudgeAskedBy),
         "StopReason": values(StopReason),

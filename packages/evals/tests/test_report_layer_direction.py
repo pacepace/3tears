@@ -203,6 +203,7 @@ _PRESENTATION_TREES = frozenset({"report", "analyst"})
 _NUMBERS_MODULES = frozenset(
     {
         "agreement",
+        "answer",
         "arms",
         "blind_read",
         "aspects",
@@ -218,6 +219,8 @@ _NUMBERS_MODULES = frozenset(
         "completeness",
         "confusion",
         "contention",
+        "costs",
+        "criteria",
         "depth",
         "depth_reading",
         "errors",
@@ -232,6 +235,7 @@ _NUMBERS_MODULES = frozenset(
         "latency_partition",
         "measurement_windows",
         "out_of_run_spend",
+        "per_input",
         "quantities",
         "reads",
         "references",

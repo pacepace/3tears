@@ -3,13 +3,15 @@
 The report input and the bundle gained every optional field the first-screen work fills later (a reading's state, the
 caveat list, the first-screen value, the shapes of a check), all unset. Contracts held here:
 
-- **Built fixtures digest as they did.** For each hot-path campaign whose bundle is the same on every platform, the
-  report input built from it (as a page reads it, and as an analyst's snapshot counts it) is the document it was
-  before the fields existed, by the digest of the whole document with its floats rounded as a fingerprint rounds them
-  (``fixtures/shape_move/input_digests.json``, written from the tree before the move). The bundles'
-  own fingerprints and every page are held by the hot-path oracle.
-- **A document with no new field set holds no new key.** No built input and no assembled bundle, on any hot-path
-  campaign, dumps a key the move added, at any depth: so it dumps byte for byte as it did.
+- **Built fixtures digest as they did, but for the list.** For each hot-path campaign whose bundle is the same on
+  every platform, the report input built from it (as a page reads it, and as an analyst's snapshot counts it) is the
+  document it was before the fields existed, by the digest of the whole document with its floats rounded as a
+  fingerprint rounds them (``fixtures/shape_move/input_digests.json``, written from the tree before the move), once
+  the two keys the builder now fills are set apart: the caveat list and the first-screen value, both derived and
+  outside the input's own digest. What the list holds is held by ``test_caveat_list.py``. The bundles' own
+  fingerprints and every page are held by the hot-path oracle.
+- **A document with no new field set holds no new key.** No built input, but for those two keys, and no assembled
+  bundle, on any hot-path campaign, dumps a key the move added, at any depth.
 - **A stored document reads as before.** Every stored report input fixture validates, carries none of the new
   fields, and digests as the model before the move digested it, whatever order its keys come in.
 - **The first-screen value is outside the digest**, set or not.
@@ -104,11 +106,17 @@ def _digests(name: str) -> dict[str, str]:
     return {"page": _rounded_digest(page), "analyst": _rounded_digest(analyst)}
 
 
+#: The keys of a built input the builder fills since the move: the one caveat list and the first-screen value.
+FILLED = frozenset({"caveat_list", "first_screen"})
+
+
 def _rounded_digest(built: ReportInput) -> str:
-    """The digest of an input's whole document as a bundle's fingerprint reads one: every float rounded to twelve
-    significant figures first (``identity_json``), since the last bits of a computed float differ between the
-    platforms the suite runs on, and the pins are one file."""
+    """The digest of an input's whole document as a bundle's fingerprint reads one, the keys the builder fills since
+    the move set apart: every float rounded to twelve significant figures first (``identity_json``), since the last
+    bits of a computed float differ between the platforms the suite runs on, and the pins are one file."""
     document = built.model_dump(mode="json", by_alias=True)
+    assert FILLED <= set(document), "the builder fills the caveat list and the first screen"
+    document = {key: value for key, value in document.items() if key not in FILLED}
     return hashlib.sha256(identity_json(document).encode("utf-8")).hexdigest()
 
 
@@ -156,9 +164,12 @@ def test_each_stored_input_s_digest_is_what_it_was_before_the_move() -> None:
 def test_a_built_input_and_bundle_hold_no_key_the_move_added(name: str) -> None:
     bundle = _campaign(name)
     for built in (report_input(bundle), report_input(bundle, counted=True)):
-        document = built.model_dump(mode="json", by_alias=True)
+        document = {
+            key: value for key, value in built.model_dump(mode="json", by_alias=True).items() if key not in FILLED
+        }
         assert not _keys(document) & INPUT_KEYS, sorted(_keys(document) & INPUT_KEYS)
         assert not any("checks" in judged for judged in document["judged"].values())
+    assert not set(bundle.frame()) & FILLED, "the campaign bundle holds its list in memory and dumps none of it"
     for aspect in bundle.aspects:
         held = _keys(aspect.to_dict())
         assert not held & BUNDLE_KEYS, sorted(held & BUNDLE_KEYS)

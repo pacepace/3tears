@@ -3,18 +3,20 @@
 :func:`completeness_disclosure` says how much of a run's planned work produced a usable measurement, and
 :func:`degraded_run_disclosures` collects that sentence for every degraded run a projection pools.
 :func:`bundle_stopped_short` says whether a reading over a bundle may open with a verdict, and
-:func:`unfinished_opening` what it opens with where it may not.
+:func:`unfinished_opening` what it opens with where it may not, and :func:`gate_rule` which rule of the verdict chain
+stops a reading over a bundle being read at all.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, Literal
 
 from threetears.evals.analysis.run_ending import RunEnding, StoppedShort, stopped_short
+from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 
 if TYPE_CHECKING:
-    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+    from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
     from threetears.evals.schema.models import (
         EvalRun,
         RunCompleteness,
@@ -192,3 +194,55 @@ def unfinished_opening(bundle: AnalysisContextBundle, arm: Callable[[str], str])
         return None
     stopped = " ".join(_unfinished_sentences(bundle, arm))
     return stopped, f"{stopped} {short.pooled()}."
+
+
+#: The share of an arm's trials whose loss to the test setup, alone or as the gap between two arms, means the run
+#: measured its setup rather than the models. A stand-in until a test across arms decides it.
+SETUP_GATE_SHARE: Final = 1 / 3
+
+#: The rules of the verdict chain that stop a reading being read at all, in the order the chain reads them.
+GateRule = Literal["setup", "unfinished", "too_small"]
+
+
+def lost_share(board: ArmScoreboard) -> float:
+    """The share of an arm's trials lost to the test setup; 0 for an arm that ran none.
+
+    :param board: The arm's scoreboard.
+    :ptype board: ArmScoreboard
+    :return: The share, 0 to 1.
+    :rtype: float
+    """
+    return sum(board.lost.values()) / board.ran if board.ran else 0.0
+
+
+def setup_failed(bundle: AnalysisContextBundle) -> bool:
+    """Whether the setup gate holds: an arm lost more than :data:`SETUP_GATE_SHARE` of its trials to the test setup,
+    or two arms' shares differ by more than that.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: True when the run measured its setup rather than the models.
+    :rtype: bool
+    """
+    shares = [lost_share(board) for board in bundle.scoreboard if board.ran]
+    return bool(shares) and (max(shares) > SETUP_GATE_SHARE or max(shares) - min(shares) > SETUP_GATE_SHARE)
+
+
+def gate_rule(bundle: AnalysisContextBundle) -> GateRule | None:
+    """Which rule of the verdict chain stops a reading over ``bundle`` being read, in the chain's order: the setup lost
+    too many trials, a member run did not finish, or, with more than one arm, an arm has too few usable cases. None
+    when it can be read (one arm, or enough cases), or when no trial ran, which is nothing to read rather than a gate.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: The rule, or None.
+    :rtype: GateRule | None
+    """
+    boards = bundle.scoreboard
+    if boards and setup_failed(bundle):
+        return "setup"
+    if bundle_stopped_short(bundle) is not None:
+        return "unfinished"
+    if len(boards) > 1 and any(board.usable_cases < SMALL_N_BAND_FLOOR for board in boards):
+        return "too_small"
+    return None
