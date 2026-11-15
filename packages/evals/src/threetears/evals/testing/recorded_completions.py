@@ -1100,7 +1100,8 @@ def _call_key(
 
 def _plain(inputs: Mapping[str, Any]) -> dict[str, Any]:
     """A call's inputs as a plain JSON object, as a line stores them and a key hashes them."""
-    return json.loads(json.dumps(dict(inputs), sort_keys=True, allow_nan=False))
+    plain: dict[str, Any] = json.loads(json.dumps(dict(inputs), sort_keys=True, allow_nan=False))
+    return plain
 
 
 def _short(value: Any) -> str:
