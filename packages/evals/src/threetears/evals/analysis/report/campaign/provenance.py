@@ -37,7 +37,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Crite
 from threetears.evals.analysis.report.campaign.common import named_arms
 from threetears.evals.analysis.report.campaign.names import AspectNames, measure_name_of
 from threetears.evals.analysis.report.campaign.warnings import listed, where
-from threetears.evals.analysis.report.decision import floor_statement
+from threetears.evals.analysis.floors import floor_statement
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
@@ -49,7 +49,8 @@ from threetears.evals.analysis.report.model import (
     TableCell,
     TableColumn,
 )
-from threetears.evals.analysis.report.words import judged_name, label_case
+from threetears.evals.analysis.report.words import label_case
+from threetears.evals.analysis.style import judged_name
 from threetears.evals.analysis.style import ArmName
 from threetears.evals.kernel.campaign import EvalCampaign
 

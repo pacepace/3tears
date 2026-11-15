@@ -24,15 +24,14 @@ from threetears.evals.analysis.report.aspect.contrasts import _comparison_blocks
 from threetears.evals.analysis.report.aspect.guardrails import _guardrail_blocks
 from threetears.evals.analysis.report.aspect.readings import _label_blocks, _readings_blocks, _strata_blocks
 from threetears.evals.analysis.report.cost_unit import money_ruler
-from threetears.evals.analysis.report.decision import (
+from threetears.evals.analysis.floors import (
     FloorVerdict,
     SampleProjection,
     case_cost_usd,
     floor_projection,
     floors_projection,
-    projected_cell,
-    projection_note,
 )
+from threetears.evals.analysis.report.projection_words import projected_cell, projection_note
 from threetears.evals.analysis.report.figures import MeasureRuler, Rulers
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
@@ -77,7 +76,7 @@ def _decision_blocks(
     Where a floor is unclear, a ``To show the floors hold``
     table follows: for each unclear floor, what showing it holds needs if the arms do not differ and if they differ as
     observed, each count with its cost
-    (:func:`~threetears.evals.analysis.report.decision.floor_projection`), then one line saying how each count was
+    (:func:`~threetears.evals.analysis.floors.floor_projection`), then one line saying how each count was
     found and that it is about, what repeats do, and, where holding needs more cases than the run used on every side,
     that it does. A floor broken or held projects nothing.
     """

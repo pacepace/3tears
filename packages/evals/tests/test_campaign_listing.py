@@ -59,7 +59,7 @@ from threetears.evals.analysis.campaign_readings import (
     ShownReading,
 )
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
-from threetears.evals.analysis.report.decision import FloorDecision, FloorStatus
+from threetears.evals.analysis.floors import FloorDecision, FloorStatus
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.offload import run_blocking

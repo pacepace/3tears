@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: numbers never import presentation, with no exemption
+
+**Changed:** no module on the numbers side of `threetears.evals.analysis` (the statistics, the bundle, the lenses, the
+campaign's readings, the report input) imports a presentation module, by any route, and
+`tests/test_report_layer_direction.py` holds it with no list of exceptions. Nothing a report, a page, a command line
+or an action prints changed. What moved:
+
+- Reading a floor is numbers: `analysis/report/decision.py` is now `analysis/floors.py`. The two functions that word
+  a projection in a page's forms (`projected_cell`, `projection_note`) are in
+  `analysis/report/projection_words.py`.
+- A sentence held as words and typed figures (`Said`, `SaidFigure`) is numbers: `analysis/report/said.py` is now
+  `analysis/said.py`.
+- A judge's tier sentence is wording: `tier_sentence_in` moved from `analysis/agreement.py` to
+  `analysis/lens_text.py`, beside `tier_sentence`.
+- `judged_name` moved from `analysis/report/words.py` to `analysis/style.py`, beside `measure_name`.
+- A numbers module spells a fixed-form figure through `kernel/numbers.py` alone, as the engine's packages do, never
+  through `PageForms.off_page()`. Two fixed forms joined that module for it: `spell_share` (a share in whole percent)
+  and `spell_ledger_dollars` (a ledger's dollars, to four decimals); `PageForms.share` and `PageForms.money_ledger`
+  call them. `tests/test_one_owner_of_number_forms.py` holds the numbers side to that route on the engine's terms.
+
+**For hosts:** nothing, if you import from the public roots, whose names are unchanged. Each moved name has one
+home and no forwarding import, so an import written against a module below a root follows it: the floor names from
+`threetears.evals.analysis.floors`, `projected_cell` and `projection_note` from
+`threetears.evals.analysis.report.projection_words`, `Said` and `SaidFigure` from `threetears.evals.analysis.said`, `judged_name` from
+`threetears.evals.analysis.style`, `tier_sentence_in` from `threetears.evals.analysis.lens_text`.
 ### evals: a campaign's cells never pool two answering models, and an operator's judge case takes the next revision
 
 **Changed:** a campaign cell is one arm under one test setup answered by one candidate model (owner ruling,

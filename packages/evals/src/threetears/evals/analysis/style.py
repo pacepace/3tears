@@ -168,6 +168,23 @@ def measure_name(name: str, reader_name: str | None = None, *, declared: str | N
     return reader_name or humanize("dimension", name)
 
 
+def judged_name(dimension: str, declared: str | None = None) -> str:
+    """A judged dimension's name, the one rule every surface names it by: the label its input declares for it
+    (``Judged.label``) wherever one is declared, on a chart, a table, a figure key and in prose alike; else its name as
+    :func:`measure_name` spells it (``reply stays on topic``). Unmarked: a heading adds the judged mark
+    (:func:`~threetears.evals.analysis.report.words.judged_heading`), and a label its capital
+    (:func:`~threetears.evals.analysis.report.words.label_case`).
+
+    :param dimension: The dimension, as the rubric names it.
+    :ptype dimension: str
+    :param declared: The label its input declares, or None for none.
+    :ptype declared: str | None
+    :return: The name.
+    :rtype: str
+    """
+    return declared or measure_name(dimension)
+
+
 def _action_word(builtin: str | None) -> str | None:
     """The word a call predicate's subject takes after its action (``Send message calls``), read off the goal
     grammar's own sets, so a builtin the grammar gains is named as its set's are: ``refusals`` for a builtin reading
@@ -815,6 +832,7 @@ __all__ = [
     "code",
     "declared_check_name",
     "humanize",
+    "judged_name",
     "is_dump",
     "lever_reader_name",
     "lever_spelled",

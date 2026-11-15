@@ -21,7 +21,7 @@ from threetears.evals.analysis.report.number_forms.policy import (
     policy_rate,
 )
 from threetears.evals.analysis.report.number_forms.printed import MeasureForm
-from threetears.evals.analysis.report.said import SaidFigure
+from threetears.evals.analysis.said import SaidFigure
 from threetears.evals.analysis.report.unit_once import interval_alone, interval_beside, unit_spaced
 from threetears.evals.kernel.numbers import round_half_even
 
