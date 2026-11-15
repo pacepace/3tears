@@ -32,6 +32,12 @@ from threetears.core.backends import (
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema
 
 
+#: a registered table for the scan tests: a scan reads only a table whose key the store knows
+_WIDGETS = TableSchema(
+    name="widgets", primary_key="id", columns=[Column("id", STRING_TYPE), Column("kind", STRING_TYPE)]
+)
+
+
 class _RecordingPool:
     """An asyncpg-pool stand-in that records every (sql, params) and returns canned rows."""
 
@@ -229,25 +235,40 @@ async def test_sql_durable_store_generates_expected_sql() -> None:
     assert sql == 'DELETE FROM "links" WHERE "a" = $1 AND "b" = $2'
     assert params == (1, 2)
 
-    # scan with filters → SELECT … WHERE; scan() with none → SELECT *
-    pool = _RecordingPool(rows=[{"id": "e1"}])
-    await SqlL3Backend(pool).scan("widgets", {"kind": "gadget"})
-    assert pool.calls[-1][0] == 'SELECT * FROM "widgets" WHERE "kind" = $1'
-    await SqlL3Backend(pool).scan("widgets")
-    assert pool.calls[-1][0] == 'SELECT * FROM "widgets"'
+    # scan reads a registered table in pages of its key, the filters in each page's WHERE; an unregistered table,
+    # whose key the store does not know, is refused unsent (it was one unbounded SELECT *)
+    pool = _RecordingPool(rows=[{"id": "e1", "kind": "gadget"}])
+    backend = SqlL3Backend(pool)
+    backend.register_schema("widgets", _WIDGETS)  # type: ignore[arg-type]
+    assert await backend.scan("widgets", {"kind": "gadget"}) == [{"id": "e1", "kind": "gadget"}]
+    sql, params = pool.calls[-1]
+    assert sql.startswith('SELECT * FROM "widgets" WHERE "kind" = $1') and 'ORDER BY "id"' in sql and "LIMIT" in sql
+    assert params[0] == "gadget"
+    await backend.scan("widgets")
+    assert pool.calls[-1][0].startswith('SELECT * FROM "widgets"') and 'ORDER BY "id"' in pool.calls[-1][0]
+    pool = _RecordingPool()
+    with pytest.raises(ValueError, match="no registered schema"):
+        await SqlL3Backend(pool).scan("gizmos", {"kind": "gadget"})
+    with pytest.raises(ValueError, match="no registered schema"):
+        await SqlL3Backend(pool).scan("gizmos")
+    assert pool.calls == [], "an unregistered table's scan reached the pool"
 
 
 @pytest.mark.asyncio
 async def test_sql_l3_backend_rejects_injecting_identifiers() -> None:
     """a quote in a table or column name must not slip into generated SQL: the call refuses it unsent."""
     pool = _RecordingPool()
-    await SqlL3Backend(pool).scan("widgets", {"name": "x"})
-    assert pool.calls[-1][0] == 'SELECT * FROM "widgets" WHERE "name" = $1'
+    backend = SqlL3Backend(pool)
+    backend.register_schema("widgets", _WIDGETS)  # type: ignore[arg-type]
+    await backend.scan("widgets", {"kind": "x"})
+    assert pool.calls[-1][0].startswith('SELECT * FROM "widgets" WHERE "kind" = $1')
 
     hostile = 'id"; DROP TABLE x; --'
     pool = _RecordingPool()
+    backend = SqlL3Backend(pool)
+    backend.register_schema("widgets", _WIDGETS)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
-        await SqlL3Backend(pool).scan("widgets", {hostile: 1})
+        await backend.scan("widgets", {hostile: 1})
     with pytest.raises(ValueError):
         await SqlL3Backend(pool).delete(hostile, {"id": 1})
     assert pool.calls == [], "a refused identifier reached the pool"
