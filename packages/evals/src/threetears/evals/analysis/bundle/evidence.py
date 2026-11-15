@@ -395,11 +395,14 @@ _ATTESTATION_NOT: Final[Mapping[str, str]] = {
     "note": "the host's prose for why it knows; the definitions are the evidence"
 }
 
-#: A host's statement of the model that answered a run's candidate calls whose responses named none (#1187). The
-#: stated model is on the results' usage rows too; who stated it and when is what tells a statement from a response.
+#: A host's statement of the model that answered a run's candidate calls whose responses named none (#1187). The rows
+#: stay as the responses left them; the statement, and the results it covers, are what the cells read them through.
 _SERVED_ATTESTATION: Final[Mapping[str, Any]] = dict.fromkeys(
-    ("attested_at", "attested_by", "served_model"), _AS_STORED
+    ("attested_at", "attested_by", "served_model", "result_ids"), _AS_STORED
 )
+_SERVED_ATTESTATION_NOT: Final[Mapping[str, str]] = {
+    "note": "the host's prose for why it knows; the stated model and the results it covers are the evidence"
+}
 
 #: One re-measure of a run: the definitions it held before and after, and what was read again.
 _REMEASURE: Final[Mapping[str, Any]] = dict.fromkeys(
@@ -693,7 +696,7 @@ _census(AsyncExternalSpend, _EXTERNAL_SPEND)
 _census(JudgeCutShort, _CUT_SHORT)
 _census(EvalRun, _RUN, _RUN_NOT)
 _census(MeasureAttestation, _ATTESTATION, _ATTESTATION_NOT)
-_census(ServedModelAttestation, _SERVED_ATTESTATION, _ATTESTATION_NOT)
+_census(ServedModelAttestation, _SERVED_ATTESTATION, _SERVED_ATTESTATION_NOT)
 _census(MeasureRemeasure, _REMEASURE)
 _census(SubjectSnapshot, _SUBJECT, _SUBJECT_NOT)
 _census(SweepableValue, _LEVEL, _LEVEL_NOT)
