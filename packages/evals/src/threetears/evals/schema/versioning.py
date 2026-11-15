@@ -185,8 +185,8 @@ the document, so extending one is a major. Each, and why:
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
   cause it does not name (``truncated``), kept apart from a call that failed (``error``).
 - On a blind read: ``BlindSlot``, ``BlindAsk``, ``BlindPreferenceAnswer`` — what an item showed and asked, and
-  what an answer gave, which its ratings are read from; ``BlindRaterKind`` — a person's answer is read as people's
-  and a reference reviewer's apart, never pooled; ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which
+  what an answer gave, which its ratings are read from (who made an answer is a ``Maker``, above: a person's is read
+  as people's and a model's apart, never pooled); ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which
   test a preference was read by, and what it read; ``SampleKind`` — whether answers are a random sample.
 - The reading states a stored preference carries (``ReadingState``, ``SetAsideReason``, ``WithheldReason``,
   ``NotAvailableReason``, ``Coordinate``) — the one closed set every reader shares; a new member is made in one

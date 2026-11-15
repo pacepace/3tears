@@ -398,7 +398,7 @@ async def test_an_attested_answer_is_the_host_s_name_for_the_person_and_an_answe
     stored = off_loop(host.eval_host.storage.load_blind_read_with_etag, read.id, TOYHOST_SCOPE)[0]
     assert stored is not None
     (answer,) = stored.answers
-    assert (answer.rater, answer.rater_kind, answer.collected_by, answer.prefer) == (
+    assert (answer.rater, answer.made_by, answer.collected_by, answer.prefer) == (
         PERSON,
         "person",
         CALLER.identity,
@@ -424,7 +424,7 @@ async def test_a_model_s_answers_are_kept_only_from_inside_the_read_s_own_review
         BlindAnswer(
             item=read.items[0].item,
             rater=REVIEWER,
-            rater_kind="reference",
+            made_by="model",
             verdicts=[BlindVerdict(slot="A", dim=DIM.name, score=5)],
         )
     ]
@@ -451,7 +451,7 @@ async def test_a_model_s_answers_are_kept_only_from_inside_the_read_s_own_review
     assert status.result is not None and status.result["read_id"] == read_id, "the job hands back the read's line"
     stored = off_loop(host.eval_host.storage.load_blind_read_with_etag, read_id, TOYHOST_SCOPE)[0]
     assert stored is not None and stored.review_job_id is not None
-    assert {(answer.rater, answer.rater_kind) for answer in stored.answers} == {(REVIEWER, "reference")}
+    assert {(answer.rater, answer.made_by) for answer in stored.answers} == {(REVIEWER, "model")}
     assert len(stored.answers) == len(stored.items), "every item answered, by the declared reviewer"
     assert [client.calls for client in built if client.calls], "the job made the calls"
     line = off_loop(blind_read_get, host.eval_host, read_id, TOYHOST_SCOPE)

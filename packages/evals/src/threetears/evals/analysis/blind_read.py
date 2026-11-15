@@ -67,7 +67,6 @@ from threetears.evals.schema.blind_read import (
     BlindOutput,
     BlindPreference,
     BlindPreferenceTest,
-    BlindRaterKind,
     BlindRead,
     BlindReadReport,
     BlindSheet,
@@ -81,7 +80,7 @@ from threetears.evals.schema.blind_read import (
     SheetOutput,
 )
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.reading_states import SampleKind, StateOf
+from threetears.evals.schema.reading_states import Maker, SampleKind, StateOf
 from threetears.evals.schema.models import (
     SCALES,
     CalibrationRating,
@@ -424,7 +423,7 @@ def _answered_in_full(read: BlindRead, item: BlindItem, answer: BlindAnswer) -> 
     return not ("preference" in read.ask and len(item.outputs) == 2 and answer.prefer is None)
 
 
-def read_sample(read: BlindRead, rater: str, kind: BlindRaterKind = "person") -> BlindSample:
+def read_sample(read: BlindRead, rater: str, kind: Maker = "person") -> BlindSample:
     """Whether ``rater``'s answered items are a random sample: the first ``m`` of the order, or not.
 
     A skip is an answer, so a skipped item keeps a prefix a prefix; so is an item answered in part. Both follow
@@ -436,18 +435,18 @@ def read_sample(read: BlindRead, rater: str, kind: BlindRaterKind = "person") ->
     :param rater: The rater, as their answers name them.
     :ptype rater: str
     :param kind: Whether the rater is a person or a model: the two never share a sample, whatever they are named.
-    :ptype kind: BlindRaterKind
+    :ptype kind: Maker
     :return: The sample: ``random`` with its counts, ``selected``, or ``none``.
     :rtype: BlindSample
     """
-    own = [answer for answer in read.answers if (answer.rater, answer.rater_kind) == (rater, kind)]
+    own = [answer for answer in read.answers if (answer.rater, answer.made_by) == (rater, kind)]
     answered = {answer.item for answer in own}
     order = [item.item for item in read.items]
     items = {item.item: item for item in read.items}
     sample: SampleKind = "none" if not answered else "random" if answered == set(order[: len(answered)]) else "selected"
     return BlindSample(
         rater=rater,
-        rater_kind=kind,
+        made_by=kind,
         sample=sample,
         answered=len(answered),
         skipped=len({answer.item for answer in own if answer.skipped}),
@@ -541,7 +540,7 @@ def _ratings_of(read: BlindRead) -> list[tuple[CalibrationRating, BlindAnswer]]:
         if item is None:
             raise ValueError(f"an answer names item {answer.item!r}, which is no item of blind read {read.id!r}")
         outputs = {output.slot: output for output in item.outputs}
-        person = answer.rater_kind == "person"
+        person = answer.made_by == "person"
         _refuse_unasked_verdicts(read, item, answer)
         for verdict in answer.verdicts:
             output = outputs[verdict.slot]
@@ -604,7 +603,7 @@ def _agreements(
     ratings: Sequence[CalibrationRating],
     results: Sequence[EvalResult],
     *,
-    anchor: BlindRaterKind,
+    anchor: Maker,
     names: list[str] | None,
     before: Mapping[JudgeKey, str],
     own: frozenset[str],
@@ -637,9 +636,7 @@ def _agreements(
                     anchor=anchor,
                     anchor_names=names if names is not None else entry.raters,
                     decides=anchor == "person",
-                    shares_family=anchor == "reference"
-                    and names is not None
-                    and _same_family(names[0], entry.judge_model),
+                    shares_family=anchor == "model" and names is not None and _same_family(names[0], entry.judge_model),
                     pairs=entry.n,
                     results=entry.results,
                     cases=len(
@@ -671,7 +668,7 @@ def _agreements(
 def _preference(
     read: BlindRead,
     answers: Sequence[BlindAnswer],
-    samples: Mapping[tuple[str, BlindRaterKind], BlindSample],
+    samples: Mapping[tuple[str, Maker], BlindSample],
     *,
     closing: bool = False,
 ) -> BlindPreference:
@@ -688,7 +685,7 @@ def _preference(
         if answer.item in planned_ids:
             by_rater.setdefault(answer.rater, []).append(answer)
     done = sorted(rater for rater, own in by_rater.items() if {answer.item for answer in own} == planned_ids)
-    kind = answers[0].rater_kind
+    kind = answers[0].made_by
     if not done and planned and closing:
         return _anytime_preference(read, answers, samples, by_rater)
     if not done or not planned:
@@ -777,7 +774,7 @@ def _preference(
 def _anytime_preference(
     read: BlindRead,
     answers: Sequence[BlindAnswer],
-    samples: Mapping[tuple[str, BlindRaterKind], BlindSample],
+    samples: Mapping[tuple[str, Maker], BlindSample],
     by_rater: Mapping[str, Sequence[BlindAnswer]],
 ) -> BlindPreference:
     """The preference of a read closed before any rater answered every planned item: read once, at the close, by the
@@ -787,7 +784,7 @@ def _anytime_preference(
     (``tests/test_simulated_blind_read.py``). Items with no preference given are left out and counted."""
     control = next(arm.key for arm in read.arms if arm.role == "control")
     candidate = next(arm.key for arm in read.arms if arm.role == "candidate")
-    kind = answers[0].rater_kind
+    kind = answers[0].made_by
     planned = read.items[: read.draw.planned_items]
     pairs = [item for item in planned if len(item.outputs) == 2]
     shares: dict[str, list[float]] = {}
@@ -943,18 +940,18 @@ def close_blind_read(
     results = list(results)
     given = _ratings_of(read)
     ratings = [rating for rating, _ in given]
-    keys = list(dict.fromkeys((answer.rater, answer.rater_kind) for answer in read.answers))
+    keys = list(dict.fromkeys((answer.rater, answer.made_by) for answer in read.answers))
     samples = {key: read_sample(read, *key) for key in keys}
     own = frozenset(rating.id for rating in ratings)
     random_ids = frozenset(
-        rating.id for rating, answer in given if samples[(answer.rater, answer.rater_kind)].sample == "random"
+        rating.id for rating, answer in given if samples[(answer.rater, answer.made_by)].sample == "random"
     )
     if tiers_before is None:
         judged = {key for result in results for score in result.judge_scores() if (key := judge_key(result, score.dim))}
         tiers_before = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), judged)
     before = {judge_key_of(tier): tier.tier for tier in tiers_before}
     people = [
-        *(rating for rating, answer in given if answer.rater_kind == "person"),
+        *(rating for rating, answer in given if answer.made_by == "person"),
         *(rating for rating in other_ratings if rating.rater_kind == "person"),
     ]
     agreement = [
@@ -968,7 +965,7 @@ def close_blind_read(
     served: dict[str, set[str]] = {}
     unrecorded: set[str] = set()
     for answer in read.answers:
-        if answer.rater_kind != "reference":
+        if answer.made_by != "model":
             continue
         reviewed.setdefault(answer.rater, [])
         if answer.skipped:
@@ -978,7 +975,7 @@ def close_blind_read(
         else:
             served.setdefault(answer.rater, set()).add(answer.reviewer_served_model)
     for rating, answer in given:
-        if answer.rater_kind == "reference":
+        if answer.made_by == "model":
             reviewed[answer.rater].append(rating)
     asked = set(judge_models)
     refused: dict[str, list[str]] = {}
@@ -986,7 +983,7 @@ def close_blind_read(
         for entry, reading in _agreements(
             reviewed[reviewer],
             results,
-            anchor="reference",
+            anchor="model",
             names=[reviewer],
             before=before,
             own=own,
@@ -1009,12 +1006,11 @@ def close_blind_read(
     closing = closed_by is not None
     planned_ids = {item.item for item in read.items[: read.draw.planned_items]}
     finished = any(
-        planned_ids <= {answer.item for answer in read.answers if (answer.rater, answer.rater_kind) == key}
-        for key in keys
+        planned_ids <= {answer.item for answer in read.answers if (answer.rater, answer.made_by) == key} for key in keys
     )
     preferences: list[BlindPreference] = []
     if "preference" in read.ask:
-        for kind in ("person", "reference"):
+        for kind in ("person", "model"):
             for group in _preference_groups(read, kind):
                 if group:
                     preferences.append(_preference(read, group, samples, closing=closing))
@@ -1041,7 +1037,7 @@ def close_blind_read(
         read=closed,
         ratings=ratings,
         random=random_ids,
-        reviewed={rating.id: answer.rater for rating, answer in given if answer.rater_kind == "reference"},
+        reviewed={rating.id: answer.rater for rating, answer in given if answer.made_by == "model"},
     )
 
 
@@ -1056,7 +1052,7 @@ def _with_the_deciding_anchor(agreement: Sequence[BlindAgreement]) -> list[Blind
     for reading in agreement:
         beside = [other for other in agreement if (other.dim, other.judge_model) == (reading.dim, reading.judge_model)]
         person = next((other for other in beside if other.anchor == "person"), None)
-        references = [other for other in beside if other.anchor == "reference"]
+        references = [other for other in beside if other.anchor == "model"]
         person_decides = person is not None and (person.calibration in ("met", "not_met") or not references)
         if reading.anchor == "person":
             decides = person_decides
@@ -1066,9 +1062,9 @@ def _with_the_deciding_anchor(agreement: Sequence[BlindAgreement]) -> list[Blind
     return marked
 
 
-def _preference_groups(read: BlindRead, kind: str) -> list[list[BlindAnswer]]:
+def _preference_groups(read: BlindRead, kind: Maker) -> list[list[BlindAnswer]]:
     """The answers a preference is read over: every person's together, and each reference reviewer's alone."""
-    answers = [answer for answer in read.answers if answer.rater_kind == kind]
+    answers = [answer for answer in read.answers if answer.made_by == kind]
     if kind == "person":
         return [answers] if answers else []
     return [[answer for answer in answers if answer.rater == rater] for rater in sorted({a.rater for a in answers})]

@@ -21,7 +21,13 @@ meanwhile refuses the close (409) and no rating exists for a read still open; it
 with the read closed, and closing again writes the ratings still missing. A read closed before anyone answered every
 planned item reads its preference by the anytime test, valid wherever it stopped.
 `blind_read_get` and `blind_reads_list` read them back. A read is a new durable document (durable minor 17.3), carried
-by a campaign's export.
+by a campaign's export. Who made each answer is stored as `made_by` (`person` or `model`, the one `Maker` a recorded call
+uses too), never as a third kind of rater.
+
+**Changed:** a blind read's report says who answered as `person` or `model`: `BlindSample.made_by` replaces
+`rater_kind`, and `BlindAgreement.anchor` and `BlindPreference.anchor` read `model` where they read `reference`.
+`BlindRaterKind` is removed. A labels file's `rater_kind` column is unchanged, and `reference` there still names a
+model.
 
 **Added:** `campaign_record` takes `made_by` (`person` or `model`), `person`, `call_model` and `on_behalf_of`. A model's
 call stores the model and whom it acted for and reads back with both, in the call and in a campaign's listing; a

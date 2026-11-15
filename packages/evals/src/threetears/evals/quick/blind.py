@@ -202,7 +202,8 @@ def read_labels(path: Path, read: BlindRead, results: Sequence[EvalResult]) -> L
                 {
                     "item": item.item,
                     "rater": rater,
-                    "rater_kind": kind,
+                    # The file's word for a model is reference, as it always was; the answer stores who made it.
+                    "made_by": "model" if kind == "reference" else "person",
                     "reviewer_served_model": served if kind == "reference" else None,
                     "verdicts": [],
                     "prefer": None,
@@ -266,7 +267,7 @@ def read_labels(path: Path, read: BlindRead, results: Sequence[EvalResult]) -> L
             answer = {**answer, "verdicts": [], "prefer": None}
         elif not answer["verdicts"] and answer["prefer"] is None:
             continue
-        built.append(BlindAnswer(collected_by=path.name if answer["rater_kind"] == "person" else None, **answer))
+        built.append(BlindAnswer(collected_by=path.name if answer["made_by"] == "person" else None, **answer))
     return LabelsRead(built, loose, unread)
 
 
@@ -614,7 +615,7 @@ def keep_reviewed(path: Path, read: BlindRead, reviewer: str) -> None:
         writer = csv.DictWriter(opened, fieldnames=_KEPT_COLUMNS, lineterminator="\n")
         writer.writeheader()
         for answer in read.answers:
-            if (answer.rater, answer.rater_kind) != (reviewer, "reference"):
+            if (answer.rater, answer.made_by) != (reviewer, "model"):
                 continue
             outputs = {output.slot: output for output in items[answer.item].outputs}
             row = {"item": answer.item, "rater": reviewer, "rater_kind": "reference"}
@@ -649,11 +650,11 @@ def _figure(value: float) -> str:
 
 
 def _who(kind: str, name: str) -> str:
-    return f"a model ({name})" if kind == "reference" else name
+    return f"a model ({name})" if kind == "model" else name
 
 
 def _sample_words(sample: BlindSample, *, several: bool) -> str:
-    who = f" by {_who(sample.rater_kind, sample.rater)}" if sample.rater_kind == "reference" or several else ""
+    who = f" by {_who(sample.made_by, sample.rater)}" if sample.made_by == "model" or several else ""
     read = f"{sample.answered} of {sample.items} cases read blind{who}"
     left = [f"{sample.skipped} skipped"] if sample.skipped else []
     left += [f"{sample.partial} answered in part"] if sample.partial else []
@@ -696,8 +697,8 @@ def _agreement_clause(reading: BlindAgreement) -> str:
 
 def _preference_line(preference: BlindPreference, shown: Mapping[str, str]) -> str:
     head = "preference"
-    if preference.anchor == "reference":
-        head = f"preference of {_who('reference', preference.anchor_names[0])}, not a person"
+    if preference.anchor == "model":
+        head = f"preference of {_who('model', preference.anchor_names[0])}, not a person"
     if preference.withheld:
         return (
             f"{head}: shown when the first {preference.planned} cases are answered "
@@ -763,7 +764,7 @@ def _review_lines(review: BlindReview, kept: str | None) -> list[str]:
         else ""
     )
     line = (
-        f"reviewer: {_who('reference', review.reviewer)} read the blind read for {asked}{reused}; the cost of checking "
+        f"reviewer: {_who('model', review.reviewer)} read the blind read for {asked}{reused}; the cost of checking "
         "the judge, in no candidate's cost"
     )
     lines = [line]
@@ -821,7 +822,7 @@ def judge_lines(
             *reviews,
         ]
     assert report is not None  # samples or loose labels come from a closed read
-    people = [sample for sample in samples if sample.rater_kind == "person"]
+    people = [sample for sample in samples if sample.made_by == "person"]
     lines = [f"judge: {_sample_words(sample, several=len(people) > 1)}" for sample in samples]
     if loose:
         lines.append(
@@ -832,14 +833,12 @@ def judge_lines(
     width = max((len(reading.dim) for reading in report.agreement), default=0)
     by_person = [reading for reading in report.agreement if reading.anchor == "person"]
     lines += [f"  {reading.dim.ljust(width)}  {_agreement_clause(reading)}" for reading in by_person]
-    reviewers = dict.fromkeys(reading.anchor_names[0] for reading in report.agreement if reading.anchor == "reference")
+    reviewers = dict.fromkeys(reading.anchor_names[0] for reading in report.agreement if reading.anchor == "model")
     for reviewer in reviewers:
-        own = [r for r in report.agreement if r.anchor == "reference" and r.anchor_names[0] == reviewer]
+        own = [r for r in report.agreement if r.anchor == "model" and r.anchor_names[0] == reviewer]
         checked = [check for check in report.reviewer_checks if check.reviewer == reviewer]
         against = "" if checked else ", not yet against people"
-        lines += under(
-            f"{'beside it, ' if by_person else ''}checked against {_who('reference', reviewer)}{against}:", "  "
-        )
+        lines += under(f"{'beside it, ' if by_person else ''}checked against {_who('model', reviewer)}{against}:", "  ")
         lines += [f"    {reading.dim.ljust(width)}  {_agreement_clause(reading)}" for reading in own]
         if any(reading.shares_family for reading in own):
             lines += under(
@@ -849,7 +848,7 @@ def judge_lines(
             kappa = "kappa undefined" if check.kappa is None else f"kappa {_figure(check.kappa)}"
             lines += under(f"{reviewer} against people on {check.dim}: {check.outputs} outputs, {kappa}", "    ")
     for reviewer, reason in ((reviewer, reason) for reviewer, why in report.not_checked.items() for reason in why):
-        lines += under(f"not checked against {_who('reference', reviewer)}: {reason}", "  ")
+        lines += under(f"not checked against {_who('model', reviewer)}: {reason}", "  ")
     lines += reviews
     lines += [_preference_line(preference, shown or {}) for preference in report.preferences]
     if people:

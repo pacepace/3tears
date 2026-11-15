@@ -458,7 +458,7 @@ class Result:
                 return drawn, outside, results, []
             # Only answers on this very draw are read back: an answer to another draw is asked for again.
             earlier = read_labels(kept_at, drawn, results).answers
-            mine = [answer for answer in earlier if (answer.rater, answer.rater_kind) == (name, "reference")]
+            mine = [answer for answer in earlier if (answer.rater, answer.made_by) == (name, "model")]
             return drawn, outside, results, mine
 
         read, loose, results, earlier = await run_blocking(self.host.blocking_executor, recorded)
@@ -501,7 +501,7 @@ class Result:
                 await client.aclose()
 
         def closed() -> Result:
-            others = [answer for answer in read.answers if (answer.rater, answer.rater_kind) != (name, "reference")]
+            others = [answer for answer in read.answers if (answer.rater, answer.made_by) != (name, "model")]
             reviews = [review_ for review_ in read.reviews if review_.reviewer != name]
             again = close_blind_read(
                 read.model_copy(

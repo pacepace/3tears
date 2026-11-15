@@ -706,7 +706,6 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "BlindSlot": values(blind_read.BlindSlot),
         "BlindAsk": values(blind_read.BlindAsk),
         "BlindPreferenceAnswer": values(blind_read.BlindPreferenceAnswer),
-        "BlindRaterKind": values(blind_read.BlindRaterKind),
         "BlindPreferenceTest": values(blind_read.BlindPreferenceTest),
         "BlindPreference.verdict": frozenset({"improved", "regressed", "not_separated"}),
         "SampleKind": values(reading_states.SampleKind),

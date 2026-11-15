@@ -600,7 +600,7 @@ def test_an_answer_the_read_does_not_ask_is_refused() -> None:
 
 def _reference(read: BlindRead, position: int, model: str, **kwargs: Any) -> BlindAnswer:
     kwargs.setdefault("reviewer_served_model", f"{model}-0613")
-    return _answer(read, position, rater=model, rater_kind="reference", **kwargs)
+    return _answer(read, position, rater=model, made_by="model", **kwargs)
 
 
 def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s() -> None:
@@ -621,14 +621,14 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
     assert report is not None
     (reading,) = report.agreement
     assert (reading.anchor, reading.anchor_names, reading.decides, reading.tier) == (
-        "reference",
+        "model",
         [reviewer],
         True,
         "calibrated",
     )
     assert not reading.shares_family and report.reviewer_checks == [] and report.not_checked == {}
     (preference,) = report.preferences
-    assert (preference.anchor, preference.anchor_names) == ("reference", [reviewer])
+    assert (preference.anchor, preference.anchor_names) == ("model", [reviewer])
     lines = judge_lines(closed.read, labels_name=None, labels_there=False, shown={})
     assert lines[0] == (
         f"judge: 24 of 24 cases read blind by a model ({reviewer}), in the drawn order (a random sample)"
@@ -719,9 +719,9 @@ def test_a_person_s_reading_decides_once_it_is_decided_and_the_anchor_is_measure
     assert few.read.report is not None
     by_anchor = {reading.anchor: reading for reading in few.read.report.agreement}
     assert (by_anchor["person"].calibration, by_anchor["person"].decides) == ("insufficient", False)
-    assert (by_anchor["reference"].tier, by_anchor["reference"].decides) == ("calibrated", True)
+    assert (by_anchor["model"].tier, by_anchor["model"].decides) == ("calibrated", True)
     # The two are never pooled: each reading counts its own rater's pairs alone.
-    assert (by_anchor["person"].pairs, by_anchor["reference"].pairs) == (6, 48)
+    assert (by_anchor["person"].pairs, by_anchor["model"].pairs) == (6, 48)
     (check,) = few.read.report.reviewer_checks
     assert (check.reviewer, check.dim, check.outputs, check.exact_agreement) == (reviewer, GROUNDED.name, 6, 1.0)
     lines = judge_lines(few.read, labels_name="labels.csv", labels_there=True)
@@ -733,8 +733,8 @@ def test_a_person_s_reading_decides_once_it_is_decided_and_the_anchor_is_measure
     )
     assert full.read.report is not None
     decided = {reading.anchor: reading.decides for reading in full.read.report.agreement}
-    assert decided == {"person": True, "reference": False}
-    assert {p.anchor for p in full.read.report.preferences} == {"person", "reference"}
+    assert decided == {"person": True, "model": False}
+    assert {p.anchor for p in full.read.report.preferences} == {"person", "model"}
 
 
 # parity-with: threetears.evals.schema.completion.PricedCompletion
@@ -809,8 +809,8 @@ async def test_a_model_answers_the_sheet_one_call_per_case_shown_only_what_a_per
     reviewer, ledger = FakeReviewer(), FakeLedger()
     answers, review = await _reviewed(read, reviewer, ledger)
     assert len(reviewer.sent) == 6 and [answer.item for answer in answers] == [item.item for item in read.items]
-    assert {(a.rater, a.rater_kind, a.reviewer_served_model, a.prefer) for a in answers} == {
-        ("scripted/reviewer", "reference", "scripted/reviewer-0613", "B")
+    assert {(a.rater, a.made_by, a.reviewer_served_model, a.prefer) for a in answers} == {
+        ("scripted/reviewer", "model", "scripted/reviewer-0613", "B")
     }
     for _, user in reviewer.sent:
         for mark in (CONTROL_RUN, CANDIDATE_RUN, "res-", "case-0", "v1", "v2", JUDGE_MODEL, "JUDGE-REASONING-MARK"):
@@ -820,7 +820,7 @@ async def test_a_model_answers_the_sheet_one_call_per_case_shown_only_what_a_per
     (shape,) = {json.dumps(sent, sort_keys=True) for sent in reviewer.formats}
     schema = json.loads(shape)["json_schema"]
     assert schema["strict"] is True and schema["schema"]["properties"]["prefer"]["enum"] == ["A", "B", "tie"]
-    assert read_sample(_with(read, answers), "scripted/reviewer", "reference").sample == "random"
+    assert read_sample(_with(read, answers), "scripted/reviewer", "model").sample == "random"
     # Every call is on the ledger under its own purpose, and the reading states what they cost.
     assert [(row.purpose, row.model, row.outcome) for row in ledger.rows] == [
         ("reviewer", "scripted/reviewer", "completed")
@@ -925,16 +925,16 @@ def test_a_sheet_filled_in_from_the_top_reads_as_a_random_sample_and_out_of_orde
     _fill(read, labels, [0, 1, 2, 3])
     got = read_labels(labels, read, results)
     assert (len(got.answers), got.loose, got.unread) == (4, [], [])
-    assert {(a.rater, a.rater_kind, a.collected_by, a.prefer) for a in got.answers} == {
+    assert {(a.rater, a.made_by, a.collected_by, a.prefer) for a in got.answers} == {
         ("labels.csv", "person", "labels.csv", "B")
     }
     assert read_sample(_with(read, got.answers), "labels.csv").sample == "random"
     _fill(read, labels, [0, 2, 7])
     assert read_sample(_with(read, read_labels(labels, read, results).answers), "labels.csv").sample == "selected"
-    # The kind is per row, a person unless it says reference, and a reference names its model.
+    # The kind is per row, a person unless it says reference (the file's word for a model), which names its model.
     _fill(read, labels, [0, 1], rater="other/reviewer-9", rater_kind="reference")
-    assert {(a.rater, a.rater_kind, a.collected_by) for a in read_labels(labels, read, results).answers} == {
-        ("other/reviewer-9", "reference", None)
+    assert {(a.rater, a.made_by, a.collected_by) for a in read_labels(labels, read, results).answers} == {
+        ("other/reviewer-9", "model", None)
     }
     _fill(read, labels, [0], rater_kind="robot")
     with pytest.raises(ValueError, match="rater_kind 'robot'"):
@@ -951,6 +951,50 @@ def test_a_sheet_filled_in_from_the_top_reads_as_a_random_sample_and_out_of_orde
     _fill(read, labels, [0, 1], label="skip", prefer="")
     skipped = read_labels(labels, read, results).answers
     assert [(a.skipped, a.verdicts, a.prefer) for a in skipped] == [(True, [], None)] * 2
+
+
+def test_the_files_a_rung_2_read_wrote_before_answers_said_who_made_them_still_read(tmp_path: Path) -> None:
+    """The two files the rung-2 blind read stores on disk, as that build wrote them (it stored no read document), each
+    read into answers that carry ``made_by``. Their word for a model stays ``reference``: it is the file's word, which a
+    labeller types and an older kept file holds, and it reads as a model."""
+    results, evidence = _campaign(6)
+    read = _draw(results, evidence)
+    # The labels a person saved from the page or filled into blind_read.csv: a blank rater_kind is a person.
+    labels = tmp_path / "labels.csv"
+    _fill(read, labels, [0, 1, 2])
+    header = labels.read_text(encoding="utf-8").splitlines()[0]
+    assert header.startswith("position,item,slot,dimension,") and ",rater,rater_kind,prefer," in header
+    people = read_labels(labels, read, results).answers
+    assert {(a.rater, a.made_by, a.collected_by) for a in people} == {("labels.csv", "person", "labels.csv")}
+    # A model's answers the quick path kept under blind_reads/, in that build's columns, reference and all.
+    kept = tmp_path / "kept.csv"
+    columns = (
+        "item,slot,dimension,label,reason,rater,rater_kind,served_model,prefer,output_fingerprint,criterion_fingerprint"
+    )
+    lines = [columns]
+    for item in read.items[:4]:
+        for number, output in enumerate(item.outputs):
+            fingerprints = f"{output.output_fingerprint},{output.criterion_fingerprints[GROUNDED.name]}"
+            prefer = "B" if number == 0 and len(item.outputs) == 2 else ""
+            lines.append(
+                f"{item.item},{output.slot},{GROUNDED.name},pass,,scripted/reviewer,reference,scripted/reviewer-0613,"
+                f"{prefer},{fingerprints}"
+            )
+    kept.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    model = read_labels(kept, read, results).answers
+    assert {(a.rater, a.made_by, a.reviewer_served_model, a.collected_by) for a in model} == {
+        ("scripted/reviewer", "model", "scripted/reviewer-0613", None)
+    }
+    both = _with(read, [*people, *model])
+    assert read_sample(both, "scripted/reviewer", "model").sample == "random"
+    assert read_sample(both, "labels.csv").sample == "random"
+    closed = close_blind_read(both, results)
+    assert closed.read.report is not None
+    assert {(s.rater, s.made_by) for s in closed.read.report.samples} == {
+        ("labels.csv", "person"),
+        ("scripted/reviewer", "model"),
+    }
+    assert {reading.anchor for reading in closed.read.report.agreement} == {"person", "model"}
 
 
 def test_an_older_to_label_sheet_and_another_draw_s_labels_still_read_as_not_drawn_at_random(tmp_path: Path) -> None:

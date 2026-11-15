@@ -60,7 +60,7 @@ PINNED_DURABLE_SCHEMA_MINOR = 3
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "blind_read": "8ec0b012ee4d96e3fd2ea795d4818ff2dc3e4992923e99dc53a8541b78342d44",
+    "blind_read": "2264fc6eb68d4bf78e49df1d1a4f5fdc5f803b09fe0211d15b1214830749f8ba",
     "calibration_rating": "553f2b18a27f7c16d75d15b94991e73eb6b94823d9b64bc0c5e6c947d36668ed",
     "case_set": "641be25ae259334dc4cc884519019971474be378aa111ecc50ac2a31029fe3f4",
     "eval_analyst_gap": "68893d3133e251a797ab3287eb0db3fc008cbfb42304a6685bf11767a4b993a6",
@@ -130,7 +130,7 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v16/judge_config_tombstone.json": "4831dcf1c41fa3725f578d2119d046473c832cec7fb25a3ab04fa57d5b26eea7",
     "v16/rubric_dim.json": "34a340255217cbafb3b9be7c6517d3b200b77aa07aedf77c32f06b372db3bc45",
     "v16/rubric_dim_tombstone.json": "374d32a4b7497c976dec064095209bffd224d861dac6f17b492366e60034ad09",
-    "v17/blind_read.json": "3dff66b7143ea260333126dee95bdc17a1548aa153f3e53d6daa176590c6d034",
+    "v17/blind_read.json": "56f5bcbe75a7b9cab3506eedbec5d3cbb775290f44d7a233e50c8cf3b338e510",
     "v17/calibration_rating.json": "64213ddc7847462b483759ce1ee07928b2245c1c6572deabaebe1801d3044370",
     "v17/eval_analyst_gap.json": "a3a45b37c6417984f079bc78856bfd29a852bd62a8b2971eabe91ea202220258",
     "v17/case_set.json": "60fa982745ed59772ca13d6a5637efd2abf6d8226fe101635370e0fae4a08129",

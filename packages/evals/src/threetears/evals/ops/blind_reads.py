@@ -252,14 +252,14 @@ def _earlier(reads: Sequence[BlindRead], read: BlindRead) -> int:
 
 
 def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
-    keys = list(dict.fromkeys((answer.rater, answer.rater_kind) for answer in read.answers))
+    keys = list(dict.fromkeys((answer.rater, answer.made_by) for answer in read.answers))
     raters = []
     for rater, kind in keys:
         sample = read_sample(read, rater, kind)
         raters.append(
             BlindReadRater(
                 rater=rater,
-                made_by="person" if kind == "person" else "model",
+                made_by=kind,
                 sample=sample.sample,
                 answered=sample.answered,
                 skipped=sample.skipped,
@@ -271,7 +271,7 @@ def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
         BlindReadCheck(
             dim=entry.dim,
             judge_model=entry.judge_model,
-            made_by="person" if entry.anchor == "person" else "model",
+            made_by=entry.anchor,
             raters=list(entry.anchor_names),
             results=entry.results,
             cases=entry.cases,
@@ -289,7 +289,7 @@ def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
     ]
     preferences = [
         BlindReadPreference(
-            made_by="person" if entry.anchor == "person" else "model",
+            made_by=entry.anchor,
             raters=list(entry.anchor_names),
             control=entry.control,
             candidate=entry.candidate,
@@ -711,7 +711,7 @@ def blind_read_answer(
             answer = BlindAnswer(
                 item=item,
                 rater=canonical,
-                rater_kind="person",
+                made_by="person",
                 collected_by=collected_by,
                 verdicts=_verdicts(read, verdicts or {}, reason),
                 prefer=prefer,
@@ -726,7 +726,7 @@ def blind_read_answer(
         kept = [
             each
             for each in read.answers
-            if not (each.item == item and each.rater == canonical and each.rater_kind == "person")
+            if not (each.item == item and each.rater == canonical and each.made_by == "person")
         ]
         return read.model_copy(update={"answers": [*kept, answer]})
 
@@ -817,7 +817,7 @@ def keep_review(
                 remedy="have the read's declared reviewer read it (blind_read_review)",
             )
         if stray := sorted(
-            {answer.rater for answer in answers if answer.rater_kind != "reference" or answer.rater != read.reviewer}
+            {answer.rater for answer in answers if answer.made_by != "model" or answer.rater != read.reviewer}
         ):
             raise EvalServiceError(
                 f"blind read {read_id} declared {read.reviewer} as its reviewer, and answers name {', '.join(stray)}",
@@ -832,7 +832,7 @@ def keep_review(
         kept = [
             each
             for each in read.answers
-            if not (each.item in given and each.rater == read.reviewer and each.rater_kind == "reference")
+            if not (each.item in given and each.rater == read.reviewer and each.made_by == "model")
         ]
         return read.model_copy(update={"answers": [*kept, *answers], "reviews": [*read.reviews, review]})
 
@@ -878,7 +878,7 @@ async def blind_read_review(host: OpsHost, read_id: str, scope_id: str) -> JobsS
             f"blind read {read_id}'s review is running as job {ACTION_JOB_PREFIX}{read.review_job_id}",
             remedy="poll it (job_poll) and ask again once it ends",
         )
-    answered = {answer.item for answer in read.answers if answer.rater_kind == "reference"}
+    answered = {answer.item for answer in read.answers if answer.made_by == "model"}
     todo = {item.item for item in read.items} - answered
     if not todo:
         raise ValidationFailedError(

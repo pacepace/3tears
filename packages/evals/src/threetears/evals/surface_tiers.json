@@ -40,7 +40,6 @@
 "threetears.evals.schema.BlindPreference": "provisional",
 "threetears.evals.schema.BlindPreferenceAnswer": "provisional",
 "threetears.evals.schema.BlindPreferenceTest": "provisional",
-"threetears.evals.schema.BlindRaterKind": "provisional",
 "threetears.evals.schema.BlindRead": "provisional",
 "threetears.evals.schema.BlindReadReport": "provisional",
 "threetears.evals.schema.BlindReview": "provisional",

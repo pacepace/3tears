@@ -11,9 +11,10 @@ the criteria as worded. It names no arm, run or result, and carries no judge sco
 analysis already performs, by the label key of each output (its fingerprint and the criterion's); what must be kept
 is the draw (:class:`BlindDraw`), which lives on the :class:`BlindRead` and never on the sheet.
 
-**Who answered is part of every answer** (:data:`BlindRaterKind`). A ``person`` is a person. A ``reference`` is a
-model that answered the same drawn sheet, named by its model id: a reference reviewer. A reference reviewer's answer
-is never a person's, on any surface: it is read apart, and where both exist the person's decides.
+**Who answered is part of every answer** (``made_by``, a :data:`~threetears.evals.schema.reading_states.Maker`, the
+one type a recorded call, an answer and a reading share). A ``person`` is a person. A ``model`` is a model that
+answered the same drawn sheet, named by its model id: a reference reviewer. A model's answer is never a person's, on
+any surface: it is read apart, and where both exist the person's decides.
 
 The shapes here are plain documents with no behaviour. The mechanism (drawing, the sheet, the standing, closing) is
 :mod:`threetears.evals.analysis.blind_read`.
@@ -26,7 +27,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from threetears.evals.schema.base import CoreShapeModel, DurableDocumentModel, EvalDocumentModel
-from threetears.evals.schema.reading_states import SampleKind, StateOf
+from threetears.evals.schema.reading_states import Maker, SampleKind, StateOf
 from threetears.evals.schema.versioning import DURABLE_SCHEMA_VERSION
 from threetears.evals.schema.models import (
     DimName,
@@ -39,9 +40,6 @@ from threetears.evals.schema.models import (
 
 #: The slot an output is shown in. A single is always ``A``; a pair's two outputs are ``A`` and ``B`` as drawn.
 BlindSlot = Literal["A", "B"]
-
-#: Who answered a blind read: a ``person``, or a ``reference`` reviewer (a model that answered the drawn sheet).
-BlindRaterKind = Literal["person", "reference"]
 
 #: What a rater preferred of a pair: the output in a slot, or neither.
 BlindPreferenceAnswer = Literal["A", "B", "tie"]
@@ -129,17 +127,17 @@ class BlindAnswer(EvalDocumentModel, CoreShapeModel):
 
     item: str = Field(min_length=1, description="The item answered (BlindItem.item).")
     rater: str = Field(min_length=1, description="Who answered: a person as the host names them, or a model id.")
-    rater_kind: BlindRaterKind = Field(
+    made_by: Maker = Field(
         default="person",
-        description="A person, or a reference reviewer (a model). A reference reviewer's answer is never a person's.",
+        description="A person, or a model (the read's reviewer). A model's answer is never a person's.",
     )
     reviewer_served_model: str | None = Field(
         default=None,
         min_length=1,
-        description="The model that served a reference reviewer's answer, as the provider named it. None for a person.",
+        description="The model that served a model's answer, as the provider named it. None for a person.",
     )
     reviewer_effort: str | None = Field(
-        default=None, min_length=1, description="The effort a reference reviewer was asked for, where it was."
+        default=None, min_length=1, description="The effort a model was asked for, where it was."
     )
     collected_by: str | None = Field(
         default=None, min_length=1, description="Who relayed a person's answer into the read, where someone did."
@@ -150,15 +148,15 @@ class BlindAnswer(EvalDocumentModel, CoreShapeModel):
     skipped: bool = Field(default=False, description="The rater passed on the item: counted, in no figure.")
 
     @model_validator(mode="after")
-    def _a_skip_answers_nothing_and_only_a_reference_names_a_served_model(self) -> BlindAnswer:
+    def _a_skip_answers_nothing_and_only_a_model_names_a_served_model(self) -> BlindAnswer:
         """Refuse a skip that carries an answer, and a person's answer that names a model.
 
         :raises ValueError: Naming which.
         """
         if self.skipped and (self.verdicts or self.prefer is not None):
             raise ValueError(f"the answer to item {self.item!r} is skipped, so it carries no verdict or preference")
-        if self.rater_kind == "person" and (self.reviewer_served_model or self.reviewer_effort):
-            raise ValueError("a person's answer names no served model or effort; those are a reference reviewer's")
+        if self.made_by == "person" and (self.reviewer_served_model or self.reviewer_effort):
+            raise ValueError("a person's answer names no served model or effort; those are a model's")
         return self
 
 
@@ -166,7 +164,7 @@ class BlindSample(EvalDocumentModel, CoreShapeModel):
     """Whether one rater's answered items are a random sample: a structural fact, read off the order."""
 
     rater: str = Field(min_length=1)
-    rater_kind: Literal["person", "reference"]
+    made_by: Maker
     sample: SampleKind = Field(
         description="`random`: the first `answered` items of the order. `selected`: any other set. `none`: nothing."
     )
@@ -212,16 +210,14 @@ class BlindAgreement(EvalDocumentModel, CoreShapeModel):
     dim: DimName = Field(description="The criterion.")
     scale: RubricScale
     judge_model: str | None = Field(description="The model that served the judge's scores; None where unnamed.")
-    anchor: Literal["person", "reference"] = Field(
-        description="Whose answers the judge is read against: people's, or a model's (reference)."
-    )
+    anchor: Maker = Field(description="Whose answers the judge is read against: people's, or a model's.")
     anchor_names: list[str] = Field(
         min_length=1, description="The people, sorted; or the one reference reviewer's model id."
     )
     decides: bool = Field(
         description=(
             "Whether this reading decides the criterion's tier. A person reading does once it is itself decided (met "
-            "or not met at the tier's floor), or where no reference reading exists; until then a reference reading "
+            "or not met at the tier's floor), or where no model's reading exists; until then a model's reading "
             "stands and the person reading is shown beside it."
         )
     )
@@ -269,7 +265,7 @@ class BlindReviewerCheck(EvalDocumentModel, CoreShapeModel):
 class BlindPreference(EvalDocumentModel, CoreShapeModel):
     """Which of a pair one kind of rater preferred, per case, and whether that separates the arms."""
 
-    anchor: Literal["person", "reference"]
+    anchor: Maker
     anchor_names: list[str] = Field(min_length=1)
     random: bool = Field(description="Whether every rater behind it answered a random sample.")
     control: str = Field(min_length=1, description="The control arm (BlindArm.key).")
@@ -535,7 +531,6 @@ __all__ = [
     "BlindPreference",
     "BlindPreferenceAnswer",
     "BlindPreferenceTest",
-    "BlindRaterKind",
     "BlindRead",
     "BlindReadReport",
     "BlindReview",

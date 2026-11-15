@@ -553,7 +553,7 @@ async def test_a_judge_is_a_grader_its_answers_written_to_read_blind_and_read_ba
     assert calibration.kappa == pytest.approx(1.0)
     read, _ = _blind(again)
     assert read is not None and read.report is not None
-    assert [(s.rater, s.rater_kind, s.sample, s.answered) for s in read.report.samples] == [
+    assert [(s.rater, s.made_by, s.sample, s.answered) for s in read.report.samples] == [
         ("owner", "person", "random", 4)
     ]
     lines = again.calibration_lines()
@@ -714,14 +714,14 @@ async def test_a_model_answers_the_blind_read_and_is_read_as_a_model_never_as_a_
     # sampled, the agreement, the preference with its test, and what the model's reading cost.
     found = result.blind_read
     assert found is not None and found.cases == 8
-    assert [(s.rater, s.rater_kind, s.sample, s.answered) for s in found.samples] == [
-        ("scripted/reviewer", "reference", "random", 8)
+    assert [(s.rater, s.made_by, s.sample, s.answered) for s in found.samples] == [
+        ("scripted/reviewer", "model", "random", 8)
     ]
     assert [(a.dim, a.anchor, a.anchor_names, a.pairs, a.cases) for a in found.agreement] == [
-        ("answer.billing", "reference", ["scripted/reviewer"], 16, 8)
+        ("answer.billing", "model", ["scripted/reviewer"], 16, 8)
     ]
     assert [(p.anchor, p.verdict, p.test, p.prefer_candidate) for p in found.preferences] == [
-        ("reference", "not_separated", "exact_sign", 4)
+        ("model", "not_separated", "exact_sign", 4)
     ]
     assert [(r.reviewer, r.calls, r.reused, r.cost_usd) for r in found.reviews] == [
         ("scripted/reviewer", 8, 0, pytest.approx(0.0008))

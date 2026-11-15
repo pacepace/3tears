@@ -257,13 +257,13 @@ async def answer_sheet(
             verdicts, prefer = _answer_of(sheet, index, str(getattr(recorded.result, "content", "")))
         except _ReplyUnusable as unusable:
             unanswered.append(f"case {index + 1}: {unusable}")
-            answers.append(BlindAnswer(item=item.item, rater=model, rater_kind="reference", skipped=True))
+            answers.append(BlindAnswer(item=item.item, rater=model, made_by="model", skipped=True))
             continue
         answers.append(
             BlindAnswer(
                 item=item.item,
                 rater=model,
-                rater_kind="reference",
+                made_by="model",
                 reviewer_served_model=which,
                 verdicts=verdicts,
                 prefer=prefer,

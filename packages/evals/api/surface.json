@@ -196,11 +196,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.schema.BlindRaterKind": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.BlindRead": {
       "kind": "model",
       "signature": "",
