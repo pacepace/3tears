@@ -20,7 +20,8 @@ log = get_logger(__name__)
 
 _DISPATCHING_INDEX_SQL = (
     "-- purpose: packages/agent/wake/src/threetears/agent/wake/collections.py"
-    "::WakeFireCollection.reap_stale_dispatching\n"
+    "::WakeFireCollection.reap_stale_dispatching; "
+    "packages/agent/wake/src/threetears/agent/wake/manual.py::_in_flight\n"
     "-- plan_test: packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_dispatching\n"
     "-- reason: wake_fires carries five indexes: the reaper's in-flight sweep and the agent and user fire counts\n"
     "CREATE INDEX IF NOT EXISTS idx_wake_fires_dispatching "

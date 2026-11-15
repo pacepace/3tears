@@ -456,7 +456,7 @@ def wake_fires_table(metadata: MetaData) -> Table:
             "actual_fired_at",
             postgresql_where=sa_text("status = 'dispatching'"),
             info={
-                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.reap_stale_dispatching",
+                "purpose": "packages/agent/wake/src/threetears/agent/wake/collections.py::WakeFireCollection.reap_stale_dispatching; packages/agent/wake/src/threetears/agent/wake/manual.py::_in_flight",
                 "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_wake_fires_dispatching",
                 "reason": "wake_fires carries five indexes: the reaper's in-flight sweep and the agent and user fire counts",
             },

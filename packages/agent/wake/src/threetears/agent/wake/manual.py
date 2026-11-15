@@ -12,8 +12,8 @@ dispatch callback, a terminal status -- with three differences:
   ``min_gap``, and never while a fire of it is still dispatching.
 
 The limit is taken by **one transaction** (:func:`_claim`): a keyed ``UPDATE`` of
-``agent_wake_schedules.last_manual_fire_at`` whose guards are the limit, then,
-only when it wrote the row, the insert of the fire row. Two callers at once
+``agent_wake_schedules.last_manual_fire_at`` guarded by the gap, the check that
+no fire of the wake is in flight, then the insert of the fire row. Two callers at once
 contend on the wake's row lock, held to the end of the first's transaction;
 the second re-reads the row the first committed, finds the stamp inside the
 gap, updates nothing and inserts nothing. A count of fire rows followed by an
@@ -61,15 +61,40 @@ MANUAL_FIRE_SOURCE = "manual"
 #: Why a manual fire was not claimed.
 ManualRefusal = Literal["too_soon", "dispatching", "gone"]
 
-# A fire of the wake in flight: the limit's second guard, and the refusal's wording. Read through the small partial
-# index of the fires in flight (idx_wake_fires_dispatching, WHERE status = 'dispatching'), the wake as a filter: a
-# bounded read of the fires dispatching now, never a walk of the wake's whole fire history (coordinator ruling,
-# 2026-11-15). ``status`` is written as the index's own literal so a generic plan can prove the predicate. Proven at a
-# busy wake's size (its 2,000 fires against the 500 in flight) by test_index_plans.py::test_wake_fires_dispatching.
-_IN_FLIGHT = (
-    "EXISTS (SELECT 1 FROM wake_fires f"
-    " WHERE f.status = 'dispatching' AND f.conversation_id = $1 AND f.schedule_id = $2)"
-)
+
+class _InFlight(Exception):
+    """A fire of the wake is in flight: raised inside the claim's transaction, so the stamp it wrote is rolled back."""
+
+
+async def _in_flight(conn: Any, schedule_id: UUID) -> bool:
+    """Whether a fire of the wake is in flight: the limit's second guard, and the refusal's wording.
+
+    Read through the small partial index of the fires in flight (idx_wake_fires_dispatching, ``WHERE status =
+    'dispatching'``: the pin written as that literal, so PostgreSQL's generic plan can prove the predicate, and the
+    index named to YugabyteDB as the one binding the most pins), the wake as a filter: a bounded read of the
+    fires dispatching now, never a walk of the wake's whole fire history (coordinator ruling, 2026-11-15). The wake
+    is named by its schedule alone: v014's wake_fires_schedule_conversation_fk ties a fire's (conversation_id,
+    schedule_id) to its schedule's primary key, so the conversation would select the same rows, and bound,
+    YugabyteDB read the conversation's every fire through the hashed primary key prefix (a busy conversation's 6,000;
+    the claim's NOT EXISTS was read so). Proven at a busy wake's size (its 2,000 fires against the 500 in flight) on
+    both engines by test_index_plans.py::test_wake_fires_dispatching.
+
+    :param conn: a connection or pool
+    :ptype conn: Any
+    :param schedule_id: the wake
+    :ptype schedule_id: UUID
+    :return: whether one of its fires is dispatching
+    :rtype: bool
+    """
+    # __SPANS_PARTITIONS__: the fires in flight across conversations, the wake's by its globally unique schedule_id
+    found = await read_row(
+        conn,
+        "wake_fires",
+        by={"status": "dispatching"},
+        columns=("fire_id",),
+        where=[Fragment('t."schedule_id" = $1', (schedule_id,))],
+    )
+    return found is not None
 
 
 async def _claim(
@@ -84,12 +109,14 @@ async def _claim(
 ) -> bool:
     """Take the limit and insert the in-flight fire row, in the caller's transaction on ``conn``.
 
-    The ``UPDATE``'s guards are the whole limit: the stamp is outside the gap, and no fire of this wake is in flight.
-    It takes the wake's row lock, held to the end of the transaction, so the insert that follows is the only one any
-    caller makes inside the gap: a second caller waits on the lock, re-reads the row the first committed and writes
-    nothing. Was one statement (an ``UPDATE ... RETURNING`` feeding the ``INSERT``); a keyed write and a keyed insert
-    in one transaction are as atomic, and the concurrency test proves it (test_manual_fire_and_grid). ``date_updated``
-    is left alone on purpose: saves of the wake are fenced on it, and nothing a cached row holds changes.
+    The ``UPDATE``'s guard is the gap; it takes the wake's row lock, held to the end of the transaction, so the insert
+    that follows is the only one any caller makes inside the gap: a second caller waits on the lock, re-reads the row
+    the first committed and writes nothing. Under the lock, a fire of the wake in flight refuses the claim
+    (:class:`_InFlight`, rolling the stamp back): read after the lock, it sees at least what the statement's own
+    ``NOT EXISTS`` saw. Was one statement (an ``UPDATE ... RETURNING`` feeding the ``INSERT``); a keyed write, the
+    in-flight read and a keyed insert in one transaction are as atomic, and the concurrency test proves it
+    (test_manual_fire_and_grid). ``date_updated`` is left alone on purpose: saves of the wake are fenced on it, and
+    nothing a cached row holds changes.
 
     :param conn: the transaction's connection
     :ptype conn: Any
@@ -107,19 +134,19 @@ async def _claim(
     :ptype requested_by: str
     :return: whether the limit was taken and the row inserted
     :rtype: bool
+    :raises _InFlight: when the gap allowed the claim but a fire of the wake is in flight
     """
     stamped = await update_keyed(
         conn,
         "agent_wake_schedules",
         values={"last_manual_fire_at": at},
         by={"conversation_id": conversation_id, "schedule_id": schedule_id},
-        where=[
-            Fragment('("last_manual_fire_at" IS NULL OR "last_manual_fire_at" <= $1)', (at - min_gap,)),
-            Fragment(f"NOT {_IN_FLIGHT}", (conversation_id, schedule_id)),
-        ],
+        where=[Fragment('("last_manual_fire_at" IS NULL OR "last_manual_fire_at" <= $1)', (at - min_gap,))],
     )
     if stamped.count == 0:
         return False
+    if await _in_flight(conn, schedule_id):
+        raise _InFlight
     await conn.execute(
         "INSERT INTO wake_fires ("
         "conversation_id, fire_id, schedule_id, webhook_subscription_id, "
@@ -158,13 +185,7 @@ async def _why_refused(pool: Any, conversation_id: UUID, schedule_id: UUID, min_
     if row is None:
         return ManualFireRefused("gone")
     last = row["last_manual_fire_at"]
-    in_flight = await read_row(
-        pool,
-        "wake_fires",
-        by={"status": "dispatching", "conversation_id": conversation_id, "schedule_id": schedule_id},
-        columns=("fire_id",),
-    )
-    if in_flight is not None:
+    if await _in_flight(pool, schedule_id):
         return ManualFireRefused("dispatching", last_manual_fire_at=last)
     return ManualFireRefused(
         "too_soon",
@@ -256,16 +277,19 @@ async def claim_manual_fire(
     schedule_id = schedule.schedule_id
     # cache-bypass: the limit must be decided by the row as committed, on its row lock; no cached
     # row can answer it, and the stamp is a column no cached row carries.
-    async with pool.acquire() as conn, conn.transaction():
-        claimed = await _claim(
-            conn,
-            conversation_id,
-            schedule_id,
-            at=at,
-            min_gap=min_gap,
-            fire_id=fire_id,
-            requested_by=requested_by,
-        )
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            claimed = await _claim(
+                conn,
+                conversation_id,
+                schedule_id,
+                at=at,
+                min_gap=min_gap,
+                fire_id=fire_id,
+                requested_by=requested_by,
+            )
+    except _InFlight:
+        claimed = False
     if not claimed:
         raise await _why_refused(pool, conversation_id, schedule_id, min_gap)
     trigger = WakeTrigger(

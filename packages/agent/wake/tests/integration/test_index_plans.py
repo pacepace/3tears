@@ -298,8 +298,7 @@ async def test_wake_fires_dispatching(conn: asyncpg.Connection) -> None:
     busy = await _busy_conversation(conn)
     claim, *why = await _manual_claim(conn, busy.conversation, busy.schedule)
     assert claim[0].startswith('UPDATE "agent_wake_schedules"'), claim
-    plan = await explain_write(conn, claim[0], *claim[1])
-    assert plan_uses_index(plan, "idx_wake_fires_dispatching", partial=True), plan.plan
+    # the claim's in-flight check and the refusal's are the one read (_in_flight); refused, the refusal's is asked
     (in_flight, in_flight_args), *_ = [asked for asked in why if '"wake_fires"' in asked[0]]
     plan = await explain_statement(conn, in_flight, *in_flight_args)
     assert plan_uses_index(plan, "idx_wake_fires_dispatching", partial=True), plan.plan
