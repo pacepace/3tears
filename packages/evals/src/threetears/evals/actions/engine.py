@@ -3286,7 +3286,11 @@ def engine_actions() -> tuple[Action, ...]:
             result=ServedModelAttested,
             handler=_runs_attest_served_model,
             render=render.render_model,
-            example={"run_ids": [run_id], "served_model": "vendor/model-2026-08", "attestation_note": "pinned upstream"},
+            example={
+                "run_ids": [run_id],
+                "served_model": "vendor/model-2026-08",
+                "attestation_note": "pinned upstream",
+            },
             detail=(
                 "For runs whose candidate responses named no model (a router that echoed a requested alias back, a "
                 "logged output, a host's answer naming none): each pools with no other run, in pass^k and in a "

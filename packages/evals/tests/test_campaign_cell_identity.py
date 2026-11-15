@@ -200,7 +200,9 @@ def test_two_runs_of_one_arm_read_under_two_definitions_never_share_a_cell_or_a_
     stale = by_run[tuple(sorted(result.id for result in old[1]))]
     assert current.apparatus_class_id == control.apparatus_class_id, "the run read as the control was shares its rig"
     assert stale.apparatus_class_id != control.apparatus_class_id
-    assert _contrasted(bundle) == {current.apparatus_class_id}, "the run read under the old definition is in no contrast"
+    assert _contrasted(bundle) == {current.apparatus_class_id}, (
+        "the run read under the old definition is in no contrast"
+    )
     (refused,) = bundle.refused_merges
     assert (refused.reason, refused.dimensions) == ("apparatus_differs", [_DEFINITIONS])
 
