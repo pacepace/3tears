@@ -48,7 +48,8 @@ import json
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Final
 
-from threetears.evals.schema import REASONING_EFFORTS, CompletionClient, sent_settings_of
+from threetears.evals.schema import REASONING_EFFORTS, CompletionClient
+from threetears.evals.schema.completion import sent_settings_of
 from threetears.evals.schema.logs import contain, get_logger
 
 log = get_logger(__name__)

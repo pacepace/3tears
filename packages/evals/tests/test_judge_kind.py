@@ -33,9 +33,9 @@ from threetears.evals.kernel import (
     VariantConfig,
     judge_case_of,
     judge_trial_of,
-    production_replicating_cost,
     withhold_failure_detail,
 )
+from threetears.evals.kernel.usage_capture import production_replicating_cost
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.providers import Provider, ProviderError, describe_failure
 from threetears.evals.providers.failures import error_from_response
