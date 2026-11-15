@@ -630,6 +630,9 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # The one routing of a model call that raised, by the owner the host's describer read: what makes an account's
         # refusal stop a run and a model not served skip the judge and stop its arm, for a host's own kind too.
         "threetears.evals.kernel.failed_call_output",
+        # Asks the host's describer whose failure a call was, keeping the call's failure if the describer itself
+        # raises, and logs it with its traceback only when nothing was withheld: what a kind does before routing.
+        "threetears.evals.kernel.describe_and_log_failure",
         "threetears.evals.kernel.CandidateTelemetry",
         "threetears.evals.kernel.CandidatePreparationFailed",
         "threetears.evals.kernel.CandidateKindDefect",

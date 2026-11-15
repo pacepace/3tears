@@ -223,6 +223,8 @@ The engine's kernel: the behaviour every other package runs on, over the shapes 
   <br>`confusion_cell(expected: str, predicted: str) -> str`
 - **`default_job_timeout`** · *host contract* · function · Enforce a job budget with `asyncio.timeout` and nothing else.
   <br>`default_job_timeout(budget_s: float) -> AsyncIterator[float]`
+- **`describe_and_log_failure`** · *host contract* · function · Describe a failed call (`describe_failure`) and log it (`log_provider_failure`).
+  <br>`describe_and_log_failure(describer: ProviderFailureDescriber, exc: BaseException, *, logger: logging.Logger, where: str, message: str, args: tuple[object, ...] = (), level: int = 40) -> ProviderFailure`
 - **`extract_json`** · function · Extract a JSON object from provider output.
   <br>`extract_json(content: str) -> dict[str, Any]`
 - **`extract_json_array`** · function · Extract a JSON array from provider output, handling markdown code blocks.

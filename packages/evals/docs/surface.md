@@ -132,7 +132,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `providers.describe_failure`: What the engine may know of a call through the client that raised: the host's `failure_describer`.
 - `providers.Model`: the same as `Model`.
 
-## Functions a host's code calls: 77
+## Functions a host's code calls: 78
 
 Each is `invoked`: your code imports it and calls it. None is an action; the actions follow.
 
@@ -148,9 +148,10 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 - `schema.label_key_of`: The label key of one judgement: `evidence` read on `dim`.
 - `schema.nested_schemas`: Every schema written directly inside `schema`, in declaration order.
 
-### `kernel` (8)
+### `kernel` (9)
 
 - `kernel.confusion_cell`: The value a classification reports under `confusion_cell`: `expected → predicted`.
+- `kernel.describe_and_log_failure`: Describe a failed call (`describe_failure`) and log it (`log_provider_failure`).
 - `kernel.extract_json`: Extract a JSON object from provider output.
 - `kernel.extract_json_array`: Extract a JSON array from provider output, handling markdown code blocks.
 - `kernel.failed_call_output`: A cell's output for a model call that failed, routed by whose failure it was.
@@ -771,10 +772,10 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | `typed` | 12 | a newcomer writes it in an eval file |
 | `bound` | 93 | a host implements it or hands it to the engine |
 | `action` | 17 | the function behind an action of the catalogue, which an agent or operator invokes by name |
-| `invoked` | 91 | a function a host's own code calls, to make the engine act or do one step its way |
+| `invoked` | 92 | a function a host's own code calls, to make the engine act or do one step its way |
 | `received` | 258 | a value someone is handed and reads |
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
-| all | 488 | |
+| all | 489 | |
 
 Of these, 22 await demotion (issue #1199), listed in their section above.
 

@@ -43,7 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, Literal
 
@@ -64,6 +64,7 @@ from threetears.evals.kernel import (
     MetricDescriptor,
     WorldSession,
     VariantConfig,
+    describe_and_log_failure,
     failed_call_output,
     withhold_failure_detail,
 )
@@ -92,7 +93,13 @@ from threetears.evals.kernel.host import (
     default_cell_timeout,
 )
 from threetears.evals.ops import JobsStarted, OpsHost, start_action_job
-from threetears.evals.schema import IntervalScale, ProviderFailure, SubjectSnapshot, SweepableValue
+from threetears.evals.schema import (
+    IntervalScale,
+    ProviderFailure,
+    ProviderFailureDescriber,
+    SubjectSnapshot,
+    SweepableValue,
+)
 from threetears.evals.run import (
     KindWiring,
     LaunchHost,
@@ -253,7 +260,7 @@ class CourierOverlays(BaseModel):
     #: as three unrelated names. ``auto`` is the planner's own choice (exhaustive on a ``-pro`` model, greedy
     #: otherwise), so on every model it searches at least as hard as ``greedy`` and at most as hard as ``exhaustive``.
     solver: Annotated[Literal["greedy", "auto", "exhaustive"], Ordinal()] = Field(
-        "auto", title="solver", description="how hard the planner searches for a round's ordering"
+        default="auto", title="solver", description="how hard the planner searches for a round's ordering"
     )
     #: A map is an open family: each zone a launch sets is a knob of its own. ``MemberActsOn`` names the measure an
     #: entry is meant to move, so a report checks that more downtown slack moved the on-time rate, and says so.
@@ -369,7 +376,7 @@ class RoutePlannerKind:
         world: WorldRegistry,
         *,
         overlays: CourierOverlays | None = None,
-        describe: Callable[[BaseException], ProviderFailure] = describe_courier_failure,
+        describe: ProviderFailureDescriber = describe_courier_failure,
     ) -> None:
         """Bind the world this kind seeds through, the knobs its launch turned, and the host's failure describer."""
         self._world = world
@@ -412,10 +419,19 @@ class RoutePlannerKind:
                 outage=test_case.variation_params.get("outage") == "true",
             )
         except PlannerOverloaded as overloaded:
-            # Whose failure the call was is the host's describer's to say; what follows is the engine's rule, which
-            # failed_call_output holds: a provider's decline excludes the cell and the run goes on, an account's
-            # refusal stops the run, and anything else is charged to the planner.
-            failure = self._describe(overloaded)
+            # Whose failure the call was is the host's describer's to say; describe_and_log_failure asks it, keeps the
+            # failure described if the describer itself raises, and logs the traceback only when nothing is withheld.
+            # What follows is the engine's rule, which failed_call_output holds: a provider's decline excludes the cell
+            # and the run goes on, an account's refusal stops the run, and anything else is charged to the planner.
+            failure = describe_and_log_failure(
+                self._describe,
+                overloaded,
+                logger=_log,
+                where="Courier planner call",
+                message="planner: the call for case %s raised",
+                args=(test_case.id,),
+                level=logging.WARNING,
+            )
             return failed_call_output(
                 failure.owner,
                 failure.description,

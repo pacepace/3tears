@@ -118,6 +118,7 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         # Functions a host's code calls to make the engine act (launch, run, judge, read, write, price, render,
         # assemble). None is an action of the catalogue: an action's function is ``action`` by rule.
         "threetears.evals.kernel.failed_call_output": "invoked",
+        "threetears.evals.kernel.describe_and_log_failure": "invoked",
         "threetears.evals.kernel.prompt_drift": "invoked",
         "threetears.evals.kernel.host.check_seed": "invoked",
         "threetears.evals.run.admit_template": "invoked",

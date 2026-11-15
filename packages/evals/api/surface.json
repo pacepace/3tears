@@ -2018,8 +2018,8 @@
     },
     "threetears.evals.kernel.describe_and_log_failure": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
+      "signature": "describe_and_log_failure(describer: ProviderFailureDescriber, exc: BaseException, *, logger: logging.Logger, where: str, message: str, args: tuple[object, ...] = (), level: int = 40) -> ProviderFailure",
+      "tier": "host-contract"
     },
     "threetears.evals.kernel.DesignRefused": {
       "kind": "exception",

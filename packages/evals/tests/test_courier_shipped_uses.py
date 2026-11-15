@@ -3,9 +3,11 @@
 Offline throughout: the courier's planner model is scripted, so nothing here spends.
 
 - ``failed_call_output``: a round planned while the planner's endpoint is overloaded is excluded as the provider's,
-  and the run goes on; the courier's describer is what says whose failure it was.
+  and the run goes on; the courier's describer is what says whose failure it was, and a describer that raises does
+  not replace the failure it was describing.
 - ``Ordinal`` and ``MemberActsOn``: a launch through the catalogue turns the courier's knobs and the planner runs at
-  them; the solver's levels rank, and the downtown slack names the measure it acts on.
+  them; the solver's levels rank, the downtown slack names the measure it acts on, and turning it moves that
+  measure while slack in another zone does not.
 - ``start_action_job``: the courier's own action proposes cases as a job, read back through ``job_poll``.
 """
 
@@ -20,7 +22,7 @@ from threetears.evals.kernel import withhold_failure_detail
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import OpsHost
 from threetears.evals.run import RunnerOptions, execute_run
-from threetears.evals.schema import EvalResult, EvalTestCase, OrdinalScale
+from threetears.evals.schema import EvalResult, EvalRun, EvalTestCase, OrdinalScale, ProviderFailure
 from packages.evals.tests.fixtures.courierhost import (
     COURIER_CONTRACT,
     COURIER_KIND,
@@ -96,6 +98,24 @@ async def test_with_no_describer_of_its_own_the_same_failure_is_charged_to_the_p
     assert all((result.candidate_error or "").startswith("planner: the call failed: ") for result in results)
 
 
+def _describer_that_raises(exc: BaseException) -> ProviderFailure:
+    """A host describer with a bug of its own."""
+    raise RuntimeError(f"the describer could not read {type(exc).__name__}")
+
+
+async def test_a_describer_that_itself_raises_leaves_the_planner_s_failure_recorded() -> None:
+    """The describer's own failure never replaces the call's: the cell is charged to the planner, its text withheld."""
+    host = replace(courier_host(), failure_describer=_describer_that_raises)
+
+    results = await _planned(host, "planner-lite", [_outage_case()])
+
+    assert results and all(result.infra_error is None for result in results)
+    assert all(
+        (result.candidate_error or "").startswith("planner: the call failed: PlannerOverloaded: (detail withheld")
+        for result in results
+    ), [result.candidate_error for result in results]
+
+
 async def _call(tool: MountedTool, host: OpsHost, arguments: dict[str, Any]) -> dict[str, Any]:
     outcome = await tool.call(arguments, host=host, caller=CALLER)
     assert outcome.refusal is None and outcome.structured is not None, outcome.text
@@ -110,11 +130,10 @@ async def _settled(tool: MountedTool, host: OpsHost, job_id: str) -> dict[str, A
     return status
 
 
-async def test_a_launch_turns_the_courier_s_knobs_and_the_planner_runs_at_them() -> None:
+async def _launched(knobs: dict[str, Any]) -> tuple[EvalRun, list[EvalResult]]:
+    """One planner-lite arm launched through the catalogue with ``knobs`` turned: its run and results, once completed."""
     host = off_loop(courier_ops_host)  # the factory stores the courier's template, a blocking call
     (tool, _admin) = courier_catalogue().mount_all(standard_tools())
-    knobs = {"solver": "exhaustive", "zone_slack_min": {DEPOT_ZONE: 10}}
-
     started = await _call(
         tool,
         host,
@@ -128,15 +147,43 @@ async def test_a_launch_turns_the_courier_s_knobs_and_the_planner_runs_at_them()
         },
     )
     status = await _settled(tool, host, started["jobs"][0]["job_id"])
-
     assert status["state"] == "completed", status
     (run_id,) = status["run_ids"]
     storage = host.launch.eval_host.storage
     run = off_loop(storage.load_eval_run, run_id, COURIER_SCOPE)
-    assert run is not None and run.overlays == knobs
-    results = off_loop(storage.query_eval_results_by_run, run_id, COURIER_SCOPE)
+    assert run is not None
+    return run, off_loop(storage.query_eval_results_by_run, run_id, COURIER_SCOPE)
+
+
+def _on_time(results: list[EvalResult]) -> dict[str, float | bool | str]:
+    """Each case's on-time rate."""
+    assert results
+    return {result.test_case_id: result.host_measures[ON_TIME_RATE] for result in results}
+
+
+async def test_a_launch_turns_the_courier_s_knobs_and_the_planner_runs_at_them() -> None:
+    knobs = {"solver": "exhaustive", "zone_slack_min": {DEPOT_ZONE: 10}}
+
+    run, results = await _launched(knobs)
+
+    assert run.overlays == knobs
     # The lite model plans greedily on its own and misses the closed roads; searching exhaustively, it misses none.
-    assert results and all(result.host_measures[ON_TIME_RATE] == 1.0 for result in results)
+    assert set(_on_time(results).values()) == {1.0}
+
+
+async def test_slack_in_the_depot_s_zone_keeps_a_greedy_round_on_time_and_slack_elsewhere_does_not() -> None:
+    """The behaviour ``MemberActsOn`` attributes: downtown slack moves the on-time rate, another zone's does not."""
+    greedy = {"solver": "greedy"}
+    _, without = await _launched({**greedy, "zone_slack_min": {}})
+    _, downtown = await _launched({**greedy, "zone_slack_min": {DEPOT_ZONE: 10}})
+    _, elsewhere = await _launched({**greedy, "zone_slack_min": {"harbour": 10}})
+
+    # Greedy, the planner is late at both of the depot's closed roads on every round; ten minutes of slack is two
+    # stops' worth, so downtown it reaches every stop in its window.
+    stops = {case.id: int(case.variation_params["stops"]) for case in courier_cases()}
+    assert _on_time(without) == {case_id: (count - 2) / count for case_id, count in stops.items()}
+    assert _on_time(downtown) == dict.fromkeys(stops, 1.0)
+    assert _on_time(elsewhere) == _on_time(without)
 
 
 def test_the_solver_s_levels_rank_and_the_downtown_slack_names_what_it_acts_on() -> None:
