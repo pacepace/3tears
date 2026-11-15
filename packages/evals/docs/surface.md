@@ -331,7 +331,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `campaign_archive`: Archive a campaign (or restore it): out of listings, nothing destroyed.
 - `result_regrade`: Grade one stored result again from its trace: report every verdict that moves, store on apply.
 - `run_remeasure`: Read one stored run's host measures again under the host's current definitions: report, or store.
-- `runs_attest_definitions`: State the measure definitions stored runs ran under, for runs that recorded none; no result is touched.
+- `runs_attest`: State one coordinate of stored runs that they did not record: their measure definitions or served model.
 - `result_rate`: Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled.
 - `result_rate_person`: Record a person's rating of one judged dimension, relayed by a caller the host attests for them.
 - `analysis_archive`: Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed.

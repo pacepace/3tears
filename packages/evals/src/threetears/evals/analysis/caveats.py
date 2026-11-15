@@ -100,7 +100,7 @@ from threetears.evals.analysis.answer import (
     unsettled_arms,
 )
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.cells import NextExperiment, answer_split_variants
+from threetears.evals.analysis.cells import NextExperiment, split_arms
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.completeness import GateRule, gate_rule
 from threetears.evals.analysis.criteria import criterion_reads
@@ -756,7 +756,9 @@ _PASSED = "passed"
 
 
 def _input_facts(report_input: ReportInput) -> Iterator[_Fact]:
-    """Every reading, pair, contrast and figure the input holds in a state, and every arm not one cell."""
+    """Every reading, pair, contrast and figure the input holds in a state, every arm not one cell, and every arm the
+    cells keep apart on an aspect, read from its scoreboard row's typed ``state`` (withheld, split, on the coordinate it
+    names), which a stored input carries as the built one does."""
     lead = report_input.aspects[0].id if report_input.aspects else ""
     for aspect in report_input.aspects:
         for reading in aspect.readings:
@@ -799,6 +801,11 @@ def _input_facts(report_input: ReportInput) -> Iterator[_Fact]:
                 yield _Fact("withheld", "split", coordinate, address, held_arm.id)
             elif state == "unrecorded":
                 yield _Fact("withheld", "identity_unrecorded", coordinate, address, held_arm.id)
+    for aspect in report_input.aspects:
+        for arm, row in aspect_board(report_input, aspect.id).items():
+            if row.state is not None and row.state.state != "counted":
+                held = row.state
+                yield _Fact(held.state, held.reason, held.coordinate, f"{aspect.id}/{_PASSED}", arm)
 
 
 def _measured_on(report_input: ReportInput, key: str, arm: str, lead: str) -> list[str]:
@@ -920,15 +927,14 @@ def from_states(report_input: ReportInput, bundle: CampaignBundle | None = None)
 
 
 def _bundle_facts(bundle: CampaignBundle) -> Iterator[_Fact]:
-    """What only the bundle holds about an arm not being one cell: an arm read per answering model on an aspect, and
-    one holding several cells of one rig there, the second unrecorded where recording a dimension would pool them."""
+    """What only the bundle holds about an arm not being one cell: one holding several cells of one rig on an aspect,
+    unrecorded where recording a dimension would pool them. An arm the cells split on a coordinate of its identity is
+    left to its scoreboard row's state (:func:`_input_facts`), the one home of that fact."""
     for aspect in bundle.aspects:
-        answered = answer_split_variants(aspect.cells)
-        for variant in sorted(answered):
-            yield _Fact("withheld", "split", "served_model", f"{aspect.aspect}/{_PASSED}", bundle.label_of(variant))
+        split = split_arms(aspect.cells)
         rigs: dict[str, set[str]] = {}
         for cell in aspect.cells:
-            if cell.variant_key not in answered:
+            if cell.variant_key not in split:
                 rigs.setdefault(cell.variant_key, set()).add(cell.apparatus_class_id)
         unrecorded = {experiment.variant_key for experiment in aspect.next_experiments}
         for variant, held in rigs.items():

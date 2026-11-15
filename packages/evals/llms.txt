@@ -114,8 +114,8 @@ ACTIONS: 87, called without writing Python
     judge_profiles_record, judge_profiles_list, scope_pivot, runs_compare, runs_bisect,
     scope_out_of_run_spend, scope_history, scope_frontier, scope_export, campaign_export
   Curate: cases_rename, run_archive, run_label, campaign_archive, result_regrade, run_remeasure,
-    runs_attest_definitions, result_rate, result_rate_person, analysis_archive, writer_case_archive,
-    run_delete, analysis_delete, insight_delete
+    runs_attest, result_rate, result_rate_person, analysis_archive, writer_case_archive, run_delete,
+    analysis_delete, insight_delete
   Investigate: snapshot: report_snapshot_freeze
   Investigate: facts: campaign_overview, readings_list, contrasts_list, measure_read, examples_list,
     caveats_list, figure_keys_check

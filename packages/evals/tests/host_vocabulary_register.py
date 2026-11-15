@@ -89,6 +89,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/gate.py": {},
     "analysis/judge_drift.py": {},
     "analysis/judge_kind_readings.py": {},
+    "analysis/judge_noise.py": {},
     "analysis/judge_profiles.py": {},
     "analysis/judge_temperature.py": {},
     "ops/regressions.py": {},

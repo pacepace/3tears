@@ -10,7 +10,7 @@ no verdict (:func:`unfinished_line`, the ``unfinished`` rule): whether there is 
    and the line names the arm, how many it lost, the cause most of them share in words, and the remedy.
 2. **One arm.** ``agent passed 31 of 36 trials on 12 cases.`` — its pass rate as the count it is computed over
    (:func:`passed_clause`), the campaign page's lead; then the cases it missed: ``Cases that failed a trial: r08,
-   r09, r10.``
+   r09, r10.`` An arm split on a coordinate of its identity has no one pass rate, and the line says why.
 3. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
    difference is called; the case floor itself is a caveat line under the scoreboard (:func:`caveat_lines`).
 4. **A declared question.** What its contrasts came to on the measure it leads on, in their own verdict words
@@ -21,6 +21,11 @@ no verdict (:func:`unfinished_line`, the ``unfinished`` rule): whether there is 
 
 A guardrail an arm is not shown safe on is a second sentence, what it means for the decision first: ``v2 may do worse
 than v1 on the No invented total score guardrail.``
+
+**An arm not read against the control is never compared with it** (:func:`~threetears.evals.analysis.cells.unread_arms`,
+the one question every arm-level reader asks): an arm split on the answering model or on a host measure's definition,
+or two arms read under different definitions, or under none recorded. No rule says it passed more or less often, or
+that the evidence cannot tell it apart; a sentence of its own says it is not compared, and why (:func:`_not_compared`).
 
 **One result, one sentence.** The aspect page's verdict and the quick print's first line print
 :attr:`VerdictLine.text`; the exit line opens with :attr:`~VerdictLine.lead`. A campaign page leading on a measure a
@@ -52,7 +57,9 @@ from threetears.evals.analysis.bundle.schema import (
     FailCause,
 )
 from threetears.evals.analysis.quantities import is_money
+from threetears.evals.analysis.cells import split_arms, unread_arms
 from threetears.evals.analysis.completeness import SETUP_GATE_SHARE, lost_share, setup_failed, unfinished_opening
+from threetears.evals.analysis.floors import definitions_moved
 from threetears.evals.analysis.stats import SMALL_N_BAND_FLOOR
 from threetears.evals.analysis.style import cannot_tell_apart, measure_name
 from threetears.evals.analysis.report.words import PASS_RATE, comparison_words, judged_heading
@@ -64,6 +71,7 @@ from threetears.evals.kernel.metrics import (
     goal_check_of,
 )
 from threetears.evals.kernel.result_condition import CandidateFailureCause, ExclusionCause
+from threetears.evals.schema.reading_states import Coordinate
 
 if TYPE_CHECKING:
     from threetears.evals.analysis.report.blocks import Verdict
@@ -560,6 +568,10 @@ def verdict_line(
         return unfinished
     if len(boards) == 1:
         (board,) = boards
+        if unread_arms(bundle.cells, board.variant_key):
+            # Its trials are two cells' (two answering models, or two definitions): no one pass rate is the arm's.
+            result = f"{arm(board.variant_key)} has no one pass rate: {_split_why(bundle, board.variant_key)}."
+            return VerdictLine(rule="one_arm", text=result, lead=result)
         result = f"{_one_arm(board, arm, graded=_holds_a_check(bundle))}."
         return VerdictLine(
             rule="one_arm", text=result + _missed_cases(bundle, case_name or (lambda case: case)), lead=result
@@ -583,7 +595,7 @@ def verdict_line(
             )
             return VerdictLine(
                 rule=rule,
-                text=prefix + text + _guardrail_sentences(verdicts),
+                text=prefix + text + _guardrail_sentences(verdicts) + _not_compared_sentences(bundle, arm),
                 lead=result,
                 decisions=decisions,
                 undecided=any(verdict.outcome == "not_separated" for verdict in led),
@@ -602,24 +614,33 @@ def verdict_line(
             if verdict.kind == "contrast" and f"{verdict.heading}: {verdict.words}" in said
         )
     )
+    read = _read_against_control(bundle)
+    not_compared = _not_compared_sentences(bundle, arm)
     # Whether the line says no reading tells any arm apart from the control (:func:`_undecided`).
     undecided = True
-    if said and costs_only:
-        # A cost is never the lead on its own: what the evidence leaves undecided first, then the cost.
+    if said and costs_only and read:
+        # A cost is never the lead on its own: what the evidence leaves undecided first, then the cost. Only where
+        # some arm is read against the control: an arm never compared with it is not undecided.
         result = f"{_undecided(bundle, arm)} on every reading but cost; " + "; ".join(said)
     elif said:
         result, undecided = "; ".join(said), False
     elif declared_question and not any(family.aspect is not None for family in bundle.multiple_comparisons.families):
         result, undecided = "The declared question is untested", False
-    else:
+    elif read:
         result = _undecided(bundle, arm) + (
             " on any reading the question asks" if declared_question else " on any reading"
         )
-    if declared_question:
+    else:
+        # Every arm is apart from the control: nothing was compared, so nothing is undecided either, and the line is
+        # why (an arm's name is never capitalised as a sentence's opening word would be).
+        result, undecided, not_compared = not_compared.strip().removesuffix("."), False, ""
+    if declared_question and read:
         result = result[:1].upper() + result[1:]
+    # Every arm not read against the control is said to be, and why, whatever else the line says (its own text, where
+    # nothing else was compared, already is that).
     guardrails = (
         _guardrail_sentences(verdicts) if verdicts else "".join(f" {line}" for line in guardrail_lines(bundle, arm))
-    )
+    ) + not_compared
     return VerdictLine(
         rule=rule, text=f"{prefix}{result}.{guardrails}", lead=f"{result}.", decisions=(result,), undecided=undecided
     )
@@ -653,13 +674,93 @@ def _control_key(bundle: AnalysisContextBundle) -> str | None:
     return control if any(board.variant_key == control for board in bundle.scoreboard) else None
 
 
+def _control_of(bundle: AnalysisContextBundle) -> str:
+    """The arm the others are read against: the control where it ran, else the scoreboard's first arm."""
+    return _control_key(bundle) or bundle.scoreboard[0].variant_key
+
+
 def _undecided(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     """That the evidence tells no arm apart from the control, the arms by name, the control last:
     ``the evidence cannot tell v2 and v1 apart`` (:func:`~threetears.evals.analysis.style.cannot_tell_apart`). Never
-    "no difference", and never "nothing separated": an undecided contrast claims none."""
-    key = _control_key(bundle) or bundle.scoreboard[0].variant_key
-    others = [arm(board.variant_key) for board in bundle.scoreboard if board.variant_key != key]
-    return cannot_tell_apart(others, arm(key))
+    "no difference", and never "nothing separated": an undecided contrast claims none. Only the arms read against the
+    control are named (:func:`_read_against_control`), and the caller asks only where one is: an arm never compared with it
+    is not undecided."""
+    return cannot_tell_apart([arm(key) for key in _read_against_control(bundle)], arm(_control_of(bundle)))
+
+
+def _not_read(bundle: AnalysisContextBundle) -> list[str]:
+    """The arms not read against the control, in the scoreboard's order
+    (:func:`~threetears.evals.analysis.cells.unread_arms`, the one question every arm-level reader asks): one of the
+    two is split on a coordinate of its identity, or the two share no test setup."""
+    control = _control_of(bundle)
+    moved = definitions_moved(bundle)
+    return [
+        board.variant_key
+        for board in bundle.scoreboard
+        if board.variant_key != control
+        and unread_arms(bundle.cells, control, board.variant_key, definitions_moved=moved)
+    ]
+
+
+def _read_against_control(bundle: AnalysisContextBundle) -> list[str]:
+    """The arms read against the control, in the scoreboard's order: every other arm but those :func:`_not_read`."""
+    control = _control_of(bundle)
+    apart = set(_not_read(bundle))
+    return [board.variant_key for board in bundle.scoreboard if board.variant_key not in apart | {control}]
+
+
+#: Why an arm split on a coordinate of its identity has no one figure, by the coordinate: its trials are two cells'.
+_SPLIT_WHY: Final[dict[Coordinate, str]] = {
+    "served_model": (
+        "its trials were answered by more than one model, or by one no response named, so they are read per model"
+    ),
+    "measure_definition": (
+        "its trials were read under more than one definition of a host measure, or under none recorded, so they are "
+        "read per definition"
+    ),
+}
+
+
+def _split_why(bundle: AnalysisContextBundle, key: str) -> str:
+    """Why the arm ``key``, split on a coordinate of its identity, has no one figure: the first coordinate it is
+    split on, in the order :data:`~threetears.evals.schema.reading_states.Coordinate` lists them."""
+    on = split_arms(bundle.cells).get(key, {})
+    coordinate = next(coordinate for coordinate in get_args(Coordinate) if coordinate in on)
+    return _SPLIT_WHY[coordinate]
+
+
+def _not_compared(bundle: AnalysisContextBundle, arm: Callable[[str], str], key: str) -> str:
+    """Why the arm ``key`` is not compared with the control, as a sentence: ``next is not compared with pinned: its
+    trials were read under more than one definition of a host measure, or under none recorded, so they are read per
+    definition.``
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :param arm: Names an arm by its variant key.
+    :ptype arm: Callable[[str], str]
+    :param key: An arm not read against the control (:func:`~threetears.evals.analysis.cells.unread_arms`).
+    :ptype key: str
+    :return: The sentence, with its closing stop.
+    :rtype: str
+    """
+    control = _control_of(bundle)
+    split = split_arms(bundle.cells)
+    if control in split:
+        why = f"{arm(control)}'s " + _split_why(bundle, control).removeprefix("its ")
+    elif key in split:
+        why = _split_why(bundle, key)
+    else:
+        why = (
+            "the two were read under different definitions of a host measure, or under none recorded, so they share "
+            "no test setup"
+        )
+    return f"{arm(key)} is not compared with {arm(control)}: {why}."
+
+
+def _not_compared_sentences(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
+    """`` next is not compared with pinned: ...`` — one sentence per arm not read against the control
+    (:func:`_not_compared`); empty where every arm is."""
+    return "".join(f" {_not_compared(bundle, arm, key)}" for key in _not_read(bundle))
 
 
 def _one_arm(board: ArmScoreboard, arm: Callable[[str], str], *, graded: bool) -> str:
@@ -757,27 +858,32 @@ def _guardrail_sentences(verdicts: Sequence[Verdict]) -> str:
 def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
     """Which arm passed more of its usable trials than the control, in words, and that no difference is called; where
     nothing graded can fail a trial (:func:`_holds_a_check`), how many cases each arm ran and that no grader says pass
-    or fail, with no pass comparison, which would compare trials nothing judged."""
-    control = _control_key(bundle) or bundle.scoreboard[0].variant_key
+    or fail, with no pass comparison, which would compare trials nothing judged. An arm not read against the control
+    (:func:`_not_read`) is left out: its own sentence says why."""
+    control = _control_of(bundle)
     boards = {board.variant_key: board for board in bundle.scoreboard}
     reference = boards[control]
+    apart = set(_not_read(bundle))
     if not _holds_a_check(bundle):
-        ordered = [board for board in bundle.scoreboard if board.variant_key != control] + [reference]
+        ordered = [board for board in bundle.scoreboard if board.variant_key not in apart | {control}] + [reference]
         names = [arm(board.variant_key) for board in ordered]
+        apart_said = _not_compared_sentences(bundle, arm)
+        if len(ordered) == 1:
+            return apart_said.strip()
         if len({board.usable_cases for board in ordered}) == 1:
             ran = f"{', '.join(names[:-1])} and {names[-1]} ran {reference.usable_cases} cases each"
         else:
             ran = ", ".join(
                 f"{name} ran {board.usable_cases} cases" for name, board in zip(names, ordered, strict=True)
             )
-        return f"{ran}; no grader here says pass or fail; too few cases to call a difference."
+        return f"{ran}; no grader here says pass or fail; too few cases to call a difference." + apart_said
 
     def share(board: ArmScoreboard) -> float:
         return board.passed / board.usable if board.usable else 0.0
 
     said = []
     for board in bundle.scoreboard:
-        if board.variant_key == control:
+        if board.variant_key == control or board.variant_key in apart:
             continue
         compared = (
             "more often than"
@@ -787,7 +893,10 @@ def _too_small(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> str:
             else "as often as"
         )
         said.append(f"{arm(board.variant_key)} passed {compared} {arm(control)}")
-    return "; ".join(said) + "; too few cases to call a difference."
+    apart_said = _not_compared_sentences(bundle, arm)
+    if not said:
+        return apart_said.strip()
+    return "; ".join(said) + "; too few cases to call a difference." + apart_said
 
 
 def guardrail_name(bundle: AnalysisContextBundle, name: str, reading: str) -> str:

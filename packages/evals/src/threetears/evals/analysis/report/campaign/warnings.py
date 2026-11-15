@@ -218,9 +218,31 @@ def _answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[
     :rtype: list[str]
     """
     by_arm: dict[str, list[AnswerSplit]] = {}
+    defined: dict[str, list[AnswerSplit]] = {}
     for split in readings.answer_splits:
-        by_arm.setdefault(split.arm, []).append(split)
+        (by_arm if split.coordinate == "served_model" else defined).setdefault(split.arm, []).append(split)
     lines: list[str] = []
+    for arm, splits in defined.items():
+        # Kept from one figure by a host measure's definition: the arm's runs were read under more than one, or
+        # under none recorded, or under another than the control's.
+        label = splits[0].arm_label
+        on = where([names(split.aspect) for split in splits], len(readings.aspects))
+        how = (
+            "under no recorded definition of a host measure"
+            if all(split.unrecorded for split in splits)
+            else "under more than one definition of a host measure, or under another than the control's"
+        )
+        scope = "the whole campaign" if len(splits) == len(readings.aspects) else on
+        kept = (
+            f"{scope} is not compared, since no candidate is read against {label} there"
+            if arm == readings.control
+            else f"no change, interval or verdict is given for {label} there"
+        )
+        lines.append(
+            f"{label}'s runs on {on} were read {how}, so their values are not one quantity and {kept}. Its host "
+            "states the definitions those runs ran under (runs_attest, coordinate measure_definition), or re-measures "
+            "them (run_remeasure)."
+        )
     for arm, splits in by_arm.items():
         label = splits[0].arm_label
         models = sorted({model for split in splits for model in split.served_models})
@@ -232,6 +254,21 @@ def _answer_split_lines(readings: CampaignReadings, names: AspectNames) -> list[
         else:
             answered = "more than one model"
         on = where([names(split.aspect) for split in splits], len(readings.aspects))
+        if unnamed and not models:
+            # Nothing named a model at all: runs silent alike are read apart, since two silences are no match, and
+            # the remedy is the host's statement.
+            scope = "the whole campaign" if len(splits) == len(readings.aspects) else on
+            kept = (
+                f"{scope} is not compared, since no candidate is read against {label} there"
+                if arm == readings.control
+                else f"no change, interval or verdict is given for {label} there"
+            )
+            lines.append(
+                f"{label}'s responses on {on} named no model in more than one run, so nothing says one model answered "
+                f"them and each such run is read apart: {kept}. Its host states the model that answered them "
+                "(runs_attest, coordinate served_model)."
+            )
+            continue
         if arm == readings.control:
             # Every contrast is read against the control, so a control read per model leaves none to read: all of
             # the campaign where it is split on every aspect.
