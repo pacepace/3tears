@@ -2,13 +2,18 @@
 
 Stating a coordinate after the fact (``runs_attest``) is an upgrade step for old data, never something a new run
 needs. So every kind of launch the package offers is held to it here: the run it stores records the definitions of
-its host's measures, and each of its candidate calls names what answered it. The one launch that cannot know (a log
-of outputs whose lines name no served model) says so as it launches, naming the coordinate and the remedy, rather
-than leaving it to surface later as a campaign that will not compare.
+its host's measures, and each of its candidate calls names what answered it. A scripted or replayed completion
+records what answered (a replay whose recorded reply named none is answered by the recording itself: completions and
+writer turns alike). Where the package cannot know, because the host's own code answered and named nothing (a log
+whose lines name no served model, an ``Answer`` with a model and no ``served_model``), the run says so, naming the
+coordinate and the remedy: a log as it launches, an ``Answer`` once its arm ran, both on the result and as a WARNING,
+never left to surface later as a campaign that will not compare. A take-up of a run stored before this build is held
+in ``test_run_resume.py``: it stays unrecorded, and says so as it is taken up.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -22,6 +27,8 @@ from threetears.evals.kernel.metrics import holds_host_measure
 from threetears.evals.kernel.scoring import definitions_unrecorded
 from threetears.evals.ops import LaunchArguments, OpsHost, run_launch
 from threetears.evals.storage import InMemoryDocumentStore
+from threetears.evals.schema import TurnMessage
+from threetears.evals.testing import RecordedTurns
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.launch import toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
@@ -152,3 +159,81 @@ async def test_a_log_that_names_no_served_model_says_so_as_it_launches_with_the_
     assert "log served_model= with each output" in said and "runs_attest, coordinate served_model" in said
     assert said in result.render(), "the run's own print says it"
     assert [record for record in caplog.records if record.getMessage() == said and record.levelno == logging.WARNING]
+
+
+async def test_a_quick_answer_naming_a_model_and_no_served_model_says_so_once_its_arm_ran(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The host's code answered and named nothing: the package cannot know what answered, and says so on the result
+    and in the log, with the coordinate and the remedy."""
+
+    def scripted(case: Mapping[str, Any]) -> Answer:
+        """A host function that called something it does not name."""
+        return Answer({"label": "billing"}, model="vendor/alias-latest", cost_usd=0.0)
+
+    with caplog.at_level(logging.WARNING):
+        result = await Eval(TICKETS, scripted, ["label"], k=1).run(store=":memory:")
+
+    assert _unrecorded_of(result) == ["served_model"], "the coordinate really is unknown, and only that one"
+    (said,) = [line for line in result.disclosures if "served model" in line]
+    assert f"{len(TICKETS)} of {len(TICKETS)} result(s)" in said and "identity coordinate served_model" in said
+    assert "Answer(served_model=...)" in said and "runs_attest, coordinate served_model" in said
+    assert [record for record in caplog.records if record.getMessage() == said and record.levelno == logging.WARNING]
+
+
+async def test_a_quick_answer_naming_its_served_model_says_nothing(caplog: pytest.LogCaptureFixture) -> None:
+    def scripted(case: Mapping[str, Any]) -> Answer:
+        return Answer({"label": "billing"}, model="m", served_model="m-2026-08", cost_usd=0.0)
+
+    with caplog.at_level(logging.WARNING):
+        result = await Eval(TICKETS, scripted, ["label"], k=1).run(store=":memory:")
+
+    assert not [line for line in result.disclosures if "served model" in line]
+    assert not [record for record in caplog.records if "served_model" in record.getMessage()]
+
+
+async def test_a_replayed_writer_turn_whose_recorded_reply_named_no_model_is_answered_by_the_recording(
+    tmp_path: Path,
+) -> None:
+    """A writer replay knows what answers it: the recording, the same identity for every turn of one file."""
+    path = tmp_path / "turns.jsonl"
+    reply = {
+        "content": [{"type": "text", "text": "Done."}],
+        "stop_reason": "end_turn",
+        "model": "m",
+        "served_model": None,
+        **dict.fromkeys(
+            (
+                "provider_stop_reason",
+                "input_tokens",
+                "output_tokens",
+                "reasoning_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "cost_usd",
+                "price_source",
+                "pricing_failure",
+                "sent_binding",
+                "input_transformations",
+            )
+        ),
+    }
+    lines = [
+        {
+            "recorder_version": RecordedTurns.FORMAT_VERSION,
+            "recorded_at": "2026-11-01T00:00:00+00:00",
+            "session": "analyst",
+            "index": index,
+            "kind": "reply",
+            "reply": reply,
+        }
+        for index in range(2)
+    ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    session = RecordedTurns.replay(path).turn_session("analyst", snapshot="snap-1")
+
+    first = await session.turn(system="", messages=[TurnMessage("user", "?")], tools=(), max_tokens=1)
+    second = await session.turn(system="", messages=[TurnMessage("user", "?")], tools=(), max_tokens=1)
+
+    assert first.served_model is not None and first.served_model.startswith("recording:")
+    assert first.served_model == second.served_model, "one recording, one identity"

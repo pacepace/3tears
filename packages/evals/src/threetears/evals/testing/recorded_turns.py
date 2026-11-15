@@ -43,6 +43,7 @@ line number.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -395,9 +396,20 @@ def _restored(value: Any, snapshot: str) -> Any:  # Any: a JSON value
     return value
 
 
+#: What a replayed turn whose recorded reply named no model is answered by, before the recording's digest: the same
+#: identity a replayed completion takes (``threetears.evals.testing.RecordedCompletions``).
+_RECORDING_ANSWERED = "recording:"
+
+
 def _read_recording(path: Path) -> dict[str, _SessionLines]:
-    """Session -> its lines as read; any line this recorder does not write refuses the whole file by its number."""
+    """Session -> its lines as read; any line this recorder does not write refuses the whole file by its number.
+
+    A reply that names no served model is replayed as answered by the recording itself (``recording:`` and the first
+    12 hex digits of the sha256 of its file): a replay knows what answers it, so a run replayed from it never reads as
+    answered by an unknown model, and two replays of one recording are answered alike.
+    """
     sessions: dict[str, _SessionLines] = {}
+    answered_by = f"{_RECORDING_ANSWERED}{hashlib.sha256(path.read_bytes()).hexdigest()[:12]}"
     with path.open(encoding="utf-8") as file:
         for number, text in enumerate(file, start=1):
             if not text.strip():
@@ -442,7 +454,7 @@ def _read_recording(path: Path) -> dict[str, _SessionLines]:
                 TurnReply.from_json(reply)
             except ValueError as unread:
                 raise _unreadable(path, f"line {number}'s reply cannot be read: {unread}") from unread
-            lines.replies.append(reply)
+            lines.replies.append(reply if reply.get("served_model") else {**reply, "served_model": answered_by})
     return sessions
 
 

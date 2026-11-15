@@ -329,6 +329,32 @@ def _shown(value: Any) -> str:
     return text if len(text) <= 40 else f"{text[:37]}..."
 
 
+def _take_up_unrecorded_notice(stored: EvalRun, fresh: EvalRun) -> str | None:
+    """What a take-up of a run stored before runs recorded measure definitions keeps unrecorded, said as it is taken up.
+
+    Such a run is taken up and stays unrecorded: the take-up stamps nothing on it, so its cells written now, which a
+    fresh client answers and which name their served model, join a run whose definitions nothing records. Where its
+    results hold a host measure it pools with nothing until its host states the definitions or re-measures it. Its
+    cells written before the take-up keep whatever their responses named, and a silence among them stays a silence
+    until its host states the model.
+
+    :param stored: The run as stored.
+    :ptype stored: EvalRun
+    :param fresh: The run the take-up's launch assembled.
+    :ptype fresh: EvalRun
+    :return: The notice, or ``None`` where the run records what the launch would.
+    :rtype: str | None
+    """
+    if stored.measure_definitions is not None or not fresh.measure_definitions:
+        return None
+    return (
+        f"run '{stored.id}' is taken up and stays unrecorded on identity coordinate measure_definition: it was stored "
+        "before runs recorded the definitions of their host's measures, and a take-up stamps none, so where its "
+        "results hold a host measure it pools with no other run; its host states the definitions it ran under "
+        "(runs_attest, coordinate measure_definition) or re-measures it (run_remeasure)"
+    )
+
+
 def _resume_drift(stored: EvalRun, fresh: EvalRun, template: EvalTemplate, profile: HostProfile) -> list[str]:
     """Every way the run a launch of ``stored`` assembles now would measure otherwise than ``stored`` did.
 
@@ -569,6 +595,9 @@ class RunResumption:
                 f"{'; '.join(differences)}",
                 remedy=remedy,
             )
+        if notice := _take_up_unrecorded_notice(stored, fresh):
+            # Said as the run is taken up, never left to a campaign over it that will not compare.
+            log.warning("%s", notice)
         first = RunLifetime(
             holder=stored.lease.holder if stored.lease is not None else None,
             epoch=self.epoch - 1,

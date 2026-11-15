@@ -517,6 +517,7 @@ class Eval:
             levels = {control: {"model": summaries[0].candidate_model}}
 
         def declared() -> Result:
+            said = disclosures + tuple(_silent_served_model(host, keyed, scope_id, self.arms))
             result = declare(
                 host,
                 keyed,
@@ -547,7 +548,7 @@ class Eval:
                     store=where,
                     fields=tuple(self.plan.fields),
                     judge=judge,
-                    disclosures=disclosures,
+                    disclosures=said,
                     **blind_reading(judge, read, keyed),
                 ),
                 examples,
@@ -589,6 +590,49 @@ class Eval:
                 log.warning("%s", unnamed)
                 said.append(unnamed)
         return said
+
+
+def _silent_served_model(
+    host: EvalHost, keyed: Mapping[str, EvalSummary], scope_id: str, given: Mapping[str | None, Any]
+) -> list[str]:
+    """What the result says, once its arms ran, of each arm whose candidate rows name no served model.
+
+    The other side of the launch notice a :class:`Log` gets: a runner that returns an :class:`Answer` with a model and
+    no ``served_model`` stores a candidate row that names none, and nothing else knows what answered. Said on the
+    result and as a WARNING, naming the coordinate and the remedy, never left to a campaign that will not compare.
+    An arm that is a log was told at launch, and is not told twice.
+
+    :param host: The host whose store holds the runs.
+    :ptype host: EvalHost
+    :param keyed: Each arm's summary, by the arm's name.
+    :ptype keyed: Mapping[str, EvalSummary]
+    :param scope_id: The scope the runs are in.
+    :ptype scope_id: str
+    :param given: The eval's arms as given, by name.
+    :ptype given: Mapping[str | None, Any]
+    :return: One line per such arm.
+    :rtype: list[str]
+    """
+    logged = {name for name, runner in given.items() if isinstance(runner, Log)}
+    lines: list[str] = []
+    for arm, summary in keyed.items():
+        if arm in logged or (None in logged and len(keyed) == 1):
+            continue
+        results = host.storage.query_eval_results_by_run(summary.run_id, scope_id)
+        silent = sum(
+            1 for result in results if any(row.role == "candidate" and not row.served_model for row in result.usage)
+        )
+        if not silent:
+            continue
+        line = (
+            f"{silent} of {len(results)} result(s) of arm {arm} (run {summary.run_id}) hold a candidate call that names "
+            "no served model (identity coordinate served_model), so nothing says which model answered and the run "
+            "pools with no other run; return Answer(served_model=...) naming what answered, or state it afterwards "
+            "(runs_attest, coordinate served_model)"
+        )
+        log.warning("%s", line)
+        lines.append(line)
+    return lines
 
 
 def _landed_usd(summaries: Sequence[EvalSummary]) -> float | None:

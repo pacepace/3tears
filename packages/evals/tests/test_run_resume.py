@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -639,23 +640,54 @@ def _as_stored_before_measure_definitions(store: ClockedStore, run_id: str) -> N
 
 
 async def test_a_run_interrupted_before_runs_recorded_measure_definitions_is_taken_up_and_stays_unrecorded(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """An upgrade loses no run in flight, and the take-up stamps nothing the run did not record: it stays out of
-    every pool its host measures would join, until its host attests or re-measures it."""
+    every pool its host measures would join, until its host attests or re-measures it. What it keeps unrecorded is
+    said as it is taken up (a WARNING naming the coordinate and the remedy), and the cells written now name what
+    answered them, as any fresh launch's do (#1187)."""
     holder, run_id, _, store = await _interrupted(monkeypatch, "cancelled")
     _as_stored_before_measure_definitions(store, run_id)
     stored = off_loop(_run, holder, run_id)
     assert stored.measure_definitions is None
     resumer = other_process(holder)
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
-    assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+    with caplog.at_level(logging.WARNING):
+        await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+        assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = off_loop(_run, holder, run_id)
     assert run.status == "completed"
     assert run.measure_definitions is None and run.measure_attestation is None
     assert run.context_key == stored.context_key, "the key it had, never today's"
+    (said,) = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "taken up and stays unrecorded" in record.getMessage()
+    ]
+    assert f"run '{run_id}'" in said and "identity coordinate measure_definition" in said
+    assert "runs_attest, coordinate measure_definition" in said and "run_remeasure" in said
+    rows = [
+        row
+        for result in off_loop(holder.eval_host.storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)
+        for row in result.usage
+        if row.role == "candidate"
+    ]
+    assert rows and all(row.served_model for row in rows), "a cell written by a take-up names what answered it"
+
+
+async def test_a_run_that_recorded_its_measure_definitions_is_taken_up_with_no_notice(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    holder, run_id, launched, _ = await _interrupted(monkeypatch, "cancelled")
+    assert launched.measure_definitions
+    resumer = other_process(holder)
+
+    with caplog.at_level(logging.WARNING):
+        await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+        assert (await settled(resumer, run_job_id(run_id))).state == "completed"
+
+    assert not [record for record in caplog.records if "stays unrecorded" in record.getMessage()]
 
 
 async def test_a_run_that_recorded_other_measure_definitions_than_the_hosts_current_ones_is_refused(
