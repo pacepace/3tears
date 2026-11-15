@@ -65,10 +65,14 @@ def _passes(app: str, root: Path, name: str) -> list[bool]:
 
 @pytest.mark.parametrize("app", sorted(FIXTURES))
 def test_each_app_fails_only_its_planted_slice_and_its_twin_passes_every_case(app: str, tmp_path: Path) -> None:
-    shipped = _passes(app, APPS / app, f"onramp_{app}_shipped")
-    twin_root = tmp_path / app
-    shutil.copytree(APPS / app, twin_root)
-    shutil.copytree(TWINS / app, twin_root, dirs_exist_ok=True)
+    # Each loaded from a copy of its own, with no bytecode beside it: the app and its twin can be the same size with
+    # the same timestamp, and a cached compile of one would then be run for the other.
+    no_cache = shutil.ignore_patterns("__pycache__")
+    shipped_root, twin_root = tmp_path / "shipped", tmp_path / "twin"
+    shutil.copytree(APPS / app, shipped_root, ignore=no_cache)
+    shutil.copytree(APPS / app, twin_root, ignore=no_cache)
+    shutil.copytree(TWINS / app, twin_root, ignore=no_cache, dirs_exist_ok=True)
+    shipped = _passes(app, shipped_root, f"onramp_{app}_shipped")
     assert all(_passes(app, twin_root, f"onramp_{app}_twin")), "the twin is the app with its defect fixed"
     assert 0 < shipped.count(False) < len(shipped), "the defect is planted on a slice, not everywhere"
 
@@ -167,8 +171,8 @@ class _Priced:
 async def test_a_run_stops_before_a_turn_that_could_take_it_past_its_cap(tmp_path: Path) -> None:
     sandbox = Sandbox.create(tmp_path / "app", "recipes", _build(tmp_path))
     run = await attempt(sandbox, _Priced(0.10, 0.10), Caps(cost_usd=0.35))
-    assert run.stopped == "cap" and len(run.usages) == 2, "0.20 spent, and a third turn could reach 0.30 + 0.10"
-    assert run.spent() == pytest.approx(0.20) and run.tokens("input_tokens") == 200
+    assert run.stopped == "cap" and len(run.usages) == 3, "0.30 spent, and a fourth turn could reach 0.40"
+    assert run.spent() == pytest.approx(0.30) and run.tokens("input_tokens") == 300
 
 
 async def test_a_turn_no_price_can_bound_is_never_sent_under_a_cap(tmp_path: Path) -> None:

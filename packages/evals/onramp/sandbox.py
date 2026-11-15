@@ -253,7 +253,7 @@ class Sandbox:
         """
         shutil.copytree(APPS / self.app, dest, ignore=shutil.ignore_patterns("__pycache__"))
         if twin:
-            shutil.copytree(TWINS / self.app, dest, dirs_exist_ok=True)
+            shutil.copytree(TWINS / self.app, dest, ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
         shipped = {p.relative_to(APPS / self.app).as_posix() for p in (APPS / self.app).rglob("*") if p.is_file()}
         for relative in overlay:
             source = self.root / relative
