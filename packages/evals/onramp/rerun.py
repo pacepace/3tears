@@ -5,7 +5,8 @@ only from the package's public root. The file is loaded as the eval door loads i
 ``sys.path``, its relative paths read beside it), and its first ``Eval`` is run into memory. With ``--nothing`` the
 same eval is run again with every arm swapped for a runner that returns ``None``: the share of cases it then fails.
 
-Prints ``{"refused": why}`` and exits 2 when the file does not load or the eval refuses to run.
+Prints ``{"refused": why}`` and exits 2 when the file does not load, the eval refuses to run, or the build lacks a
+field the reading needs (it names the build and the field; nothing is read with a default in its place).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+from importlib.metadata import PackageNotFoundError, version
 import os
 import sys
 from collections import defaultdict
@@ -39,6 +41,34 @@ def unpassed(result: Result) -> float:
     for trial in result.results(result.control):
         failed[trial.case] |= trial.state == "lost" or not all(trial.scores.get(name) for name in readings)
     return sum(failed.values()) / len(failed) if failed else 1.0
+
+
+class Unreadable(Exception):
+    """The build lacks a field this reading needs: a reading made without it would be wrong, so none is made."""
+
+
+def outcome(trial: Any) -> str:  # Any: the build's own result type
+    """How a result ended, as the build states it (``scored``, ``failed``, ``excluded``).
+
+    :raises Unreadable: The build's results carry no ``outcome``, naming the build and the field.
+    """
+    try:
+        return str(trial.outcome)
+    except AttributeError:
+        raise Unreadable(
+            f"{_build()} has no {type(trial).__name__}.outcome, which this reading counts scored results by"
+        ) from None
+
+
+def _build() -> str:
+    """The build this runs on: where its ``threetears.evals`` is, and the distribution installed beside it."""
+    import threetears.evals
+
+    where = Path(threetears.evals.__file__).parent
+    try:
+        return f"the threetears.evals build at {where} (3tears-evals {version('3tears-evals')} installed)"
+    except PackageNotFoundError:
+        return f"the threetears.evals build at {where} (no 3tears-evals distribution installed)"
 
 
 def directions(ev: Eval, module: Any) -> dict[str, bool | None]:  # Any: the eval file's module
@@ -68,7 +98,7 @@ def read(result: Result, declared: Mapping[str, bool | None]) -> dict[str, Any]:
         "readings": list(result.grader_readings),
         "finished": all(summary.status == "completed" for summary in result.arms.values()),
         # Results a grader scored: not failed by the candidate (its runner raised) and not excluded.
-        "scored": sum(1 for trial in result.results(result.control) if getattr(trial, "outcome", None) == "scored"),
+        "scored": sum(1 for trial in result.results(result.control) if outcome(trial) == "scored"),
         "means": {name: means.get(name) for name in result.grader_readings},
         "higher_is_better": {name: declared.get(name, True) for name in result.grader_readings},
     }
@@ -92,7 +122,7 @@ async def main(path: Path, *, nothing_too: bool) -> dict[str, Any]:
         if nothing_too:
             ev.arms = {arm: nothing for arm in ev.arms}
             read_out["nothing_unpassed"] = unpassed(await ev.run(store=":memory:"))
-    except ValueError as refusal:
+    except (ValueError, Unreadable) as refusal:
         return {"refused": str(refusal)}
     return read_out
 

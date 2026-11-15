@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 
 from packages.evals.onramp.agent import Caps, ScriptedBrain
-from packages.evals.onramp.campaign import CONTROL_REF, adopter, isolation_refusal, onramp_eval, trials
+from packages.evals.onramp.campaign import CONTROL_REF, adopter, isolation_refusal, onramp_eval, preflight, trials
 from packages.evals.onramp.isolation import COPY_BYTES, ENVIRONMENT, GRADING
 from packages.evals.onramp.sandbox import HERE, DocsBuild, Sandbox
 
@@ -299,3 +299,10 @@ async def test_a_sparse_file_past_the_volume_fails_its_command_and_writes_no_mor
     left = sorted(path.relative_to(sandbox.root) for path in sandbox.root.rglob("*"))
     assert left == sorted([*shipped, Path("sparse.py")]), left
     assert [path.name for path in tmp_path.iterdir()] == ["app"]
+
+
+@pytest.mark.timeout(1200)
+def test_the_scripted_pre_flight_passes_every_app_on_the_control_wheel(control: DocsBuild, tmp_path: Path) -> None:
+    """The guard every agent run passes first: the fixed transcripts succeed on each arm's wheel, in its containers,
+    3 of 3 apps on every check; a wheel the harness reads wrong is refused there (the offline test holds the refusal)."""
+    assert preflight([control], tmp_path) is None

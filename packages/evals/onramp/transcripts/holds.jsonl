@@ -4,4 +4,4 @@
 {"tool": "run", "command": "cat tests/fixtures/requests.jsonl"}
 {"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom service import handle\n\n\ndef desk(case):\n    \"\"\"Answer one request at the holds desk.\"\"\"\n    return handle(case[\"request\"])\n\n\ndef flags_expired(case, out):\n    \"\"\"The holds flagged expired are exactly the ones past their pickup date.\"\"\"\n    return sorted(hold.id for hold in out.holds if hold.expired) == case[\"expired\"]\n\n\nholds = Eval(\"tests/fixtures/requests.jsonl\", runner=desk, grader=[flags_expired], k=1)\n"}
 {"tool": "run", "command": "python -m threetears.evals evals.py"}
-{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"pass_rate\": 0.375, \"finished\": true}"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"flags_expired\", \"pass_rate\": 0.375, \"finished\": true}"}

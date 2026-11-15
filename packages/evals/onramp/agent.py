@@ -436,8 +436,17 @@ def _cut(text: str) -> str:
     return text if len(text) <= OLD_STEP_CHARS else text[:OLD_STEP_CHARS] + " [... cut; read it again if you need it]"
 
 
-def _logged(log: Path | None, turn: int, usage: Usage | None, step: Step | None, stopped: str | None = None) -> None:
-    """One line of the run's progress, written as it happens, so a run cut off keeps what it did."""
+def _logged(
+    log: Path | None,
+    turn: int,
+    usage: Usage | None,
+    step: Step | None,
+    stopped: str | None = None,
+    files: Mapping[str, str] | None = None,
+) -> None:
+    """One line of the run's progress, written as it happens, so a run cut off keeps what it did; after a turn that
+    may change the directory, its state (:meth:`~.sandbox.Sandbox.manifest`), so the run can be graded again as it
+    stood at any turn."""
     if log is None:
         return
     row: dict[str, Any] = {"turn": turn}  # Any: JSON
@@ -450,6 +459,8 @@ def _logged(log: Path | None, turn: int, usage: Usage | None, step: Step | None,
             row["reply"] = step.reply
     if stopped is not None:
         row["stopped"] = stopped
+    if files is not None:
+        row["files"] = dict(files)
     with log.open("a", encoding="utf-8") as out:
         out.write(json.dumps(row) + "\n")
 
@@ -537,7 +548,8 @@ async def _turns(sandbox: Sandbox, brain: Brain, caps: Caps, system: str, run: A
         else:
             observation = await sandbox.run(act.command)
         run.steps.append(Step(turn, act, observation))
-        _logged(log, turn, usage, run.steps[-1])
+        changes = act.tool == "write" or (act.tool == "run" and act.command.split()[:1] in (["python"], ["python3"]))
+        _logged(log, turn, usage, run.steps[-1], files=sandbox.manifest() if changes else None)
     run.stopped = "turns"
 
 

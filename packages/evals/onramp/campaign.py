@@ -371,6 +371,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if isinstance(built, str):
         print(f"onramp-agent: {built}", file=sys.stderr)
         return 2
+    if (refusal := preflight(built, run_dir / "preflight")) is not None:
+        print(f"onramp-agent: {refusal}", file=sys.stderr)
+        return 2
     arms: dict[str, Runner] = {}
     for build in built:
         try:
@@ -382,6 +385,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         caps = Caps(cost_usd=priced.per_run_usd)
         arms[build.name] = adopter(build, lambda _sandbox, brain=brain: brain, workdir=run_dir, caps=caps)
     return _finish(onramp_eval(arms, k=args.k, max_cost_usd=args.cap, apps=apps), run_dir)
+
+
+def preflight(builds: Sequence[DocsBuild], workdir: Path) -> str | None:
+    """Why an agent run on ``builds`` may not start, or ``None``: the fixed transcripts that succeed are run against
+    each build first, in its trial containers, offline and free, and every check must pass on every app. A build the
+    harness cannot read right (a field renamed, a door that moved) would otherwise fail its arm's trials quietly."""
+    for build in builds:
+        arm = {build.name: adopter(build, scripted(), workdir=workdir, caps=Caps())}
+        result = asyncio.run(onramp_eval(arm, k=1, max_cost_usd=None).run(store=workdir / f"{slug(build.name)}.sqlite"))
+        if (refusal := preflight_refusal(build.name, trials(result))) is not None:
+            return refusal
+    return None
+
+
+def preflight_refusal(arm: str, rows: Sequence[Mapping[str, Any]]) -> str | None:  # Any: a trial's stored row
+    """Why ``arm``'s scripted pre-flight refuses an agent run, or ``None`` when every check passed on every app."""
+    apps = [json.loads(line)["app"] for line in CASES.read_text(encoding="utf-8").splitlines() if line.strip()]
+    passed = {
+        row["record"]["app"]
+        for row in rows
+        if isinstance(row["record"], Mapping) and all(row["scores"].get(g.__name__) == 1.0 for g in GRADERS)
+    }
+    if len(passed) == len(apps) == len(rows):
+        return None
+    failed = [app for app in apps if app not in passed]
+    said = []
+    for row in rows:
+        record = row["record"] if isinstance(row["record"], Mapping) else {}
+        app_reading = record.get("checks", {}).get("app", {})
+        if isinstance(app_reading, Mapping) and "refused" in app_reading:
+            said.append(f"{record.get('app')}: {app_reading['refused']}")
+    why = f"; {'; '.join(said)}" if said else ""
+    return (
+        f"the scripted pre-flight passed {len(passed)} of {len(apps)} apps on arm {arm} (failed: {', '.join(failed)})"
+        f"{why}: the harness cannot read this build right, so an agent run on it would not measure the docs"
+    )
 
 
 def _host_builds(wheels: Mapping[str, str], workdir: Path) -> list[DocsBuild]:
@@ -476,5 +515,7 @@ def census(rows: Sequence[Mapping[str, Any]]) -> list[str]:  # Any: a trial's st
         "  per run.",
         "  it cannot show: a success rate to rely on, a difference between apps (each has a few trials), or whether",
         "  a failure belongs to the docs or to the model.",
+        "  between arms, compare each check's k of n only: never errors_hit, and never the count of trials the",
+        "  harness failed none of, which differ with how each arm's agents behave, not with what the harness is.",
     ]
     return lines

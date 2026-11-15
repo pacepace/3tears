@@ -324,6 +324,17 @@ class Sandbox:
             shutil.copy2(source, dest / relative)
         return dest
 
+    def manifest(self) -> dict[str, str]:
+        """Every file in the sandbox, its store and caches aside, by its path relative to the root, with the sha256 of
+        its bytes: the state of the directory, as a run logs it after each turn that may change it."""
+        return {
+            path.relative_to(self.root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(self.root.rglob("*"))
+            if path.is_file()
+            and not path.relative_to(self.root).as_posix().startswith(".evals/")
+            and "__pycache__" not in path.parts
+        }
+
     def made(self) -> list[str]:
         """Every file in the sandbox the app did not ship, its store and caches aside: what the agent left."""
         shipped = {p.relative_to(APPS / self.app).as_posix() for p in (APPS / self.app).rglob("*") if p.is_file()}

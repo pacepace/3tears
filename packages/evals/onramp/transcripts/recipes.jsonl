@@ -5,4 +5,4 @@
 {"tool": "read", "path": "tests/fixtures/scaling.jsonl", "start": 1}
 {"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom kitchen import Kitchen\n\nkitchen = Kitchen()\n\n\ndef scale(case):\n    \"\"\"Scale a recipe to the case's servings.\"\"\"\n    return kitchen.scale(case[\"recipe\"], case[\"servings\"])\n\n\ndef as_expected(case, out):\n    \"\"\"Every ingredient comes out in the quantity and unit the team expects.\"\"\"\n    return out[\"ingredients\"] == case[\"expected\"][\"ingredients\"]\n\n\nrecipes = Eval(\"tests/fixtures/scaling.jsonl\", runner=scale, grader=[as_expected], k=1)\n"}
 {"tool": "run", "command": "python -m threetears.evals evals.py"}
-{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"pass_rate\": 0.6, \"finished\": true}"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"as_expected\", \"pass_rate\": 0.6, \"finished\": true}"}

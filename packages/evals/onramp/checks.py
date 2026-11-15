@@ -10,8 +10,8 @@ the event loop (``quick/one_call.py``), where three re-runs of an eval would sta
   the package states is better for it (``higher_is_better``), and a runner that does nothing passes at most half its
   cases: the eval beats doing nothing.
 - :func:`read_right`: the agent's report matches the run: the first line verbatim, the pass rate within half a point
-  of the measure it names (of one of the run's measures, when the name is none the run printed), and ``finished``
-  true exactly when the run finished.
+  of the measure it names (of the eval's one measure, when the name is none the run printed), and ``finished`` true
+  exactly when the run finished.
 
 Every re-run is a command in the trial's container (:class:`~.isolation.Container`), as the agent's own were: the
 regrade runs what the agent wrote, so it runs it where the agent ran it, with no network, and it makes no model call.
@@ -163,21 +163,26 @@ def _plain(name: str) -> str:
 
 
 def reported_measures(report: Mapping[str, Any], app: Mapping[str, Any]) -> list[float]:  # Any: JSON
-    """The means the report's ``pass_rate`` may be: the measure it names, when the run has one of that name; else any
-    measure the run read, since which is "first" differs between the console's order and the eval's."""
+    """The mean the report's ``pass_rate`` must be: the measure it names, when the run has one of that name (named as
+    the console printed it or as the eval declared it); else the eval's one measure, when it has exactly one. An eval
+    of several measures whose name matches none has no mean to read against, so nothing passes: a value that happens to
+    equal another measure is not a reading of it."""
     means = {name: mean for name, mean in app["means"].items() if mean is not None}
     named = _plain(str(report.get("measure") or ""))
     chosen = [mean for name, mean in means.items() if named and _plain(name) == named]
-    return chosen or list(means.values())
+    if chosen:
+        return chosen
+    return list(means.values()) if len(app["readings"]) == 1 else []
 
 
 def read_right(case: dict[str, Any], out: dict[str, Any]) -> bool:
     """The agent's report matches the run: its first line verbatim, its pass rate within half a point of the measure it
-    names (or of one of the run's measures, when it names none the run printed), its ending.
+    names (or of the eval's one measure, when the name is none the run printed), its ending.
 
-    A competent reading passes whichever measure it reports, named or not; a pass rate that is no measure's mean (a
-    share read off the case count when a grader says otherwise, a figure made up) fails, as does a measure named and
-    another's value given.
+    A competent reading names the measure it reports, as the console printed it or as the eval declared it, and gives
+    its value; of an eval with one measure, the name may be left out. A pass rate that is not the named measure's (a
+    share read off the case count when a grader says otherwise, another measure's value, a figure made up) fails, and
+    so does an unnamed one when the eval has several measures: a coincidence with one of them is not a reading.
     """
     report, checks = out["report"], out["checks"]
     if report is None or checks["problem"] or "refused" in checks["app"]:

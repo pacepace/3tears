@@ -6,6 +6,14 @@ its directory, and each reply from the run's recordings), reads its turns again 
 runs the regrade again in containers of the trial's own image, and grades it with today's checks. It writes
 ``rescore.jsonl`` and ``rescore.txt`` beside the run, and prints each check's count before and after.
 
+A trial is graded on the directory as it stood at the turn it now ends on, which its report was made about. When
+nothing after that turn changed the directory (no write, no ``python`` command), that is the directory the run left,
+and the grade is exact. Otherwise the directory is rebuilt at that turn: the app as shipped, the agent's writes up to
+it replayed from ``steps.jsonl``, and its ``python`` commands up to it run again in containers. A run that logged its
+directory's state after each such turn (``files`` in ``steps.jsonl``, since 2026-11-16) has the rebuild checked
+against it: a rebuild that matches is exact. One that does not, or one of a run that logged no state (the baseline of
+2026-11-15), is labelled not comparable, and the table counts it apart.
+
 A turn that today's rules read as a tool call the run never made (a reply refused then and taken now) cannot be
 replayed, since the agent never saw its result: it is counted and named, and the trial is graded on what it did.
 """
@@ -68,27 +76,70 @@ def read_again(steps: Sequence[Mapping[str, Any]], replies: Sequence[str]) -> di
     return {"ended": None, "report": None, "report_from": "", "unmade": unmade, "refused": refused}
 
 
+#: How a trial's directory was had at the turn it now ends on.
+EXACT = "the directory as the run left it"
+REBUILT_EXACT = "rebuilt at its end, and it matches the state the run logged there"
+REBUILT_DIFFERS = "rebuilt at its end, and it differs from the state the run logged there: not comparable"
+REBUILT_UNLOGGED = "rebuilt at its end; the run logged no per-turn state to check it against: not comparable"
+COMPARABLE = (EXACT, REBUILT_EXACT)
+
+
+def _changes(step: Mapping[str, Any]) -> bool:  # Any: a logged step
+    """Whether a logged turn may have changed the directory: a write, or a ``python`` command."""
+    act = step.get("act") or {}
+    words = str(act.get("command", "")).split()[:1]
+    return act.get("tool") == "write" or (act.get("tool") == "run" and words in (["python"], ["python3"]))
+
+
+async def _rebuilt(
+    logged: Sequence[Mapping[str, Any]], ended: int, record: Mapping[str, Any], build: DocsBuild, dest: Path
+) -> tuple[Sandbox, str]:  # Any: a logged step
+    """The trial's directory at turn ``ended``: the app as shipped, its writes replayed and its ``python`` commands run
+    again, in order; and how far it can be trusted (:data:`REBUILT_EXACT` and its kin)."""
+    sandbox = Sandbox.create(dest, record["app"], build, Container(build.image or ""))
+    state: dict[str, str] | None = None
+    for step in logged:
+        if int(step["turn"]) > ended or not _changes(step):
+            continue
+        act = step["act"]
+        if act["tool"] == "write":
+            sandbox.write(act["path"], act["text"])
+        else:
+            await sandbox.run(act["command"])
+        state = step.get("files", state)
+    if state is None:
+        return sandbox, REBUILT_UNLOGGED
+    return sandbox, REBUILT_EXACT if sandbox.manifest() == state else REBUILT_DIFFERS
+
+
 async def _rescore(row: Mapping[str, Any], replies: Sequence[str], docs: Path) -> dict[str, Any]:  # Any: JSON
     record = row["record"]
     trial = Path(record["sandbox"]).parent
     logged = [json.loads(line) for line in (trial / "steps.jsonl").read_text(encoding="utf-8").splitlines()]
-    again = read_again([step for step in logged if "observation" in step], replies)
+    steps = [step for step in logged if "observation" in step]
+    again = read_again(steps, replies)
     ended = again["ended"]
     ran = [command for command in record["commands"] if ended is None or command["turn"] < ended]
     later = [command["turn"] for command in record["commands"] if ended is not None and command["turn"] > ended]
+    changed_after = [
+        int(step["turn"]) for step in steps if ended is not None and step["turn"] > ended and _changes(step)
+    ]
     report, problem = parse_report(again["report"])
     built = record["build"]
     build = DocsBuild(
         built["name"], Path(Container.python), docs, docs / "llms.txt", built["source"], built["image"],
         Path(built["package_dir"]),
     )  # fmt: skip
-    sandbox = Sandbox(Path(record["sandbox"]), record["app"], build, Container(built["image"]))
-    sandbox.written = list(record["written"])
     out = trial / "rescore"
     if out.exists():
         shutil.rmtree(out)
     out.mkdir()
     started = time.monotonic()
+    if ended is not None and changed_after:
+        sandbox, state = await _rebuilt(steps, ended, record, build, out / f"at-turn-{ended}")
+    else:
+        sandbox, state = Sandbox(Path(record["sandbox"]), record["app"], build, Container(built["image"])), EXACT
+        sandbox.written = list(record["written"])
     checks = await regrade(sandbox, out, report, ran)
     took = round(time.monotonic() - started, 1)
     rescored = {
@@ -111,9 +162,12 @@ async def _rescore(row: Mapping[str, Any], replies: Sequence[str], docs: Path) -
         "after": scores,
         "causes": failure_causes({"record": rescored, "scores": scores}),
         "ended_on": ended,
+        "report": report,
         "report_from": again["report_from"],
         "unmade_turns": again["unmade"],
         "commands_after_the_end": later,
+        "changed_after_the_end": changed_after,
+        "state": state,
         "regrade_s": took,
         "checks": checks,
     }
@@ -133,21 +187,37 @@ def rescore(run_dir: Path) -> list[str]:
 
     done = asyncio.run(every())
     (run_dir / "rescore.jsonl").write_text("".join(json.dumps(item) + "\n" for item in done), encoding="utf-8")
-    lines = ["| check | before | after | after, failures the harness caused |", "|---|---|---|---|"]
+    apart = [item for item in done if item["state"] not in COMPARABLE]
+    kept = [item for item in done if item["state"] in COMPARABLE]
+    named = ", ".join(item["trial"] for item in apart)
+    lines = [
+        f"| check | before | after, all {len(done)} | after, the {len(kept)} comparable | "
+        "after, failures the harness caused |",
+        "|---|---|---|---|---|",
+    ]
     for grader in GRADERS:
         name = grader.__name__
         before = sum(1 for item in done if item["before"].get(name) == 1.0)
         after = sum(1 for item in done if item["after"][name] == 1.0)
+        comparable = sum(1 for item in kept if item["after"][name] == 1.0)
         harness = sum(1 for item in done if item["causes"].get(name) == "harness")
-        lines.append(f"| {name} | {before} of {len(done)} | {after} of {len(done)} | {harness} |")
+        lines.append(
+            f"| {name} | {before} of {len(done)} | {after} of {len(done)} | {comparable} of {len(kept)} | {harness} |"
+        )
+    if apart:
+        lines.append(f"not comparable ({named}): graded on a rebuild of the directory at the turn it now ends on")
     for item in done:
         moved = [name for name in item["after"] if item["after"][name] != item["before"].get(name)]
         lines.append(
             f"{item['trial']}: ends on turn {item['ended_on']}, report from {item['report_from'] or 'nowhere'}, "
-            f"regrade {item['regrade_s']}s"
+            f"graded on {item['state']}, regrade {item['regrade_s']}s"
             + (f"; moved: {', '.join(moved)}" if moved else "")
             + (f"; turns read now as acts never made: {item['unmade_turns']}" if item["unmade_turns"] else "")
-            + (f"; commands after its end: {item['commands_after_the_end']}" if item["commands_after_the_end"] else "")
+            + (
+                f"; changed after its end: turns {item['changed_after_the_end']}"
+                if item["changed_after_the_end"]
+                else ""
+            )
         )
     (run_dir / "rescore.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return lines

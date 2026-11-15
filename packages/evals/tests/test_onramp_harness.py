@@ -58,6 +58,7 @@ from packages.evals.onramp.campaign import (
     census,
     clopper_pearson,
     failure_causes,
+    preflight_refusal,
     live_refusal,
     main,
     quote,
@@ -1089,20 +1090,26 @@ def test_an_eval_that_scored_nothing_does_not_run_and_one_that_scored_any_case_d
     assert not eval_runs({}, {"checks": _run_facts(scored=0)})
 
 
-def test_the_pass_rate_is_read_against_the_measure_named_or_any_the_run_read() -> None:
-    """H8: which measure is "first" differs between the console and the eval, so a reading of any of the run's
-    measures is right; a named measure is held to its own value, and a number no measure reads fails."""
+def test_the_pass_rate_is_read_against_the_measure_named_or_the_evals_only_one() -> None:
+    """H8: the report names the measure it reads, as the console printed it or as the eval declared it, and is held to
+    that measure's value. Unnamed (or named as none the run printed) it is read against the eval's one measure, and of
+    an eval with several it is right against none: a value that equals another measure by chance is not a reading."""
     line = "g: r passed 2 of 3 cases."
     report = {"first_line": line, "finished": True}
 
-    def reads(**given: Any) -> bool:
-        return read_right({}, {"report": {**report, **given}, "checks": _run_facts()})
+    def reads(facts: dict[str, Any] | None = None, **given: Any) -> bool:
+        return read_right({}, {"report": {**report, **given}, "checks": facts or _run_facts()})
 
     assert reads(pass_rate=0.6667, measure="Accuracy") and reads(pass_rate=1.0, measure="Slug score")
-    assert reads(pass_rate=1.0) and reads(pass_rate=0.667, measure="headword"), "no name the run printed: any measure"
+    assert not reads(pass_rate=1.0), "unnamed, of two measures: 1.0 is slug's by coincidence, a case share misread"
+    assert not reads(pass_rate=0.667, measure="headword"), "a name the run did not print, of two measures"
     assert not reads(pass_rate=1.0, measure="accuracy"), "named, and another measure's value given"
-    assert not reads(pass_rate=0.5), "no measure reads 0.5"
     assert not reads(pass_rate=0.6667, measure="accuracy", first_line="g: r passed 2 of 3"), "the line cut short"
+    one = _run_facts(readings=["grader"], means={"grader": 0.6})
+    assert reads(one, pass_rate=0.6) and reads(one, pass_rate=0.6, measure="Grader score"), (
+        "one measure: no name needed"
+    )
+    assert not reads(one, pass_rate=1.0), "a case share read off the first line, against a grader's 0.60"
 
 
 def test_what_the_harness_caused_is_told_apart_where_it_can_be_told_mechanically() -> None:
@@ -1155,3 +1162,72 @@ def test_a_stored_run_is_read_again_with_todays_rules_and_ends_where_a_report_wa
 
 
 _BLANK_ACT: dict[str, Any] = {"path": "", "start": 1, "text": "", "command": ""}  # Any: an act's fields
+
+
+def test_a_build_whose_results_lack_a_field_the_reading_needs_is_refused_by_name_and_fails_the_pre_flight(
+    tmp_path: Path,
+) -> None:
+    """Item 2 of the Critic's round 3: a wheel whose results carry no ``outcome`` is read as an error naming the build
+    and the field, never as zero scored; that reading fails ``eval_runs``, and the pre-flight refuses its arm by name."""
+    shaped = tmp_path / "wheel" / "threetears" / "evals"
+    shaped.mkdir(parents=True)
+    (shaped / "__init__.py").write_text(
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass\nclass Summary:\n    status: str = 'completed'\n\n\n"
+        "@dataclass\nclass Measure:\n    name: str\n    mean: float\n\n\n"
+        "@dataclass\nclass Arm:\n    measures: list\n    status: str = 'completed'\n\n\n"
+        "@dataclass\nclass Trial:\n    case: str\n    state: str = 'passed'\n    scores: dict | None = None\n\n\n"
+        "class Result:\n"
+        "    name, control, grader_readings = 'renamed', 'runner', ['ok']\n"
+        "    arms = {'runner': Arm([Measure('ok', 1.0)])}\n\n"
+        "    def results(self, arm=None):\n"
+        "        return [Trial('0', scores={'ok': True})]\n\n\n"
+        "class Eval:\n"
+        "    arms = {'runner': None}\n\n"
+        "    async def run(self, store=None):\n"
+        "        return Result()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "work").mkdir()
+    (tmp_path / "work" / "evals.py").write_text("from threetears.evals import Eval\n\nev = Eval()\n", encoding="utf-8")
+    environment = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(tmp_path / "wheel")}
+    done = subprocess.run(
+        [sys.executable, str(RERUN), "evals.py"], cwd=tmp_path / "work", capture_output=True, text=True, env=environment
+    )
+    reading = json.loads(done.stdout.splitlines()[-1])
+    assert done.returncode == 2 and "Trial.outcome" in reading["refused"], reading
+    assert str(tmp_path / "wheel" / "threetears" / "evals") in reading["refused"], "the build is named by where it is"
+
+    facts = {"problem": "", "door_exit": 0, "stored": True, "door_first_line": "x", "app": reading}
+    assert not eval_runs({}, {"checks": facts})
+    rows = [
+        {"scores": {"eval_runs": 0.0, "measures_the_app": 0.0, "read_right": 0.0},
+         "record": {"app": app, "checks": facts}}
+        for app in ("recipes", "holds", "glossator")
+    ]  # fmt: skip
+    refused = preflight_refusal("docs@renamed", rows)
+    assert refused is not None and "arm docs@renamed" in refused and "0 of 3 apps" in refused
+    assert "Trial.outcome" in refused, "the reason is named, not only the count"
+    passing = [{**row, "scores": dict.fromkeys(row["scores"], 1.0)} for row in rows]
+    assert preflight_refusal("docs@control", passing) is None
+    assert preflight_refusal("docs@control", passing[:2]) is not None, "every app, not two of three"
+
+
+async def test_a_run_logs_its_directorys_state_after_every_turn_that_may_change_it(tmp_path: Path) -> None:
+    """So a run can be graded again as it stood at any turn (item 1 of the Critic's round 3)."""
+    sandbox = Sandbox.create(tmp_path / "app", "recipes", _build(tmp_path))
+    script = tmp_path / "script.jsonl"
+    acts = [
+        {"tool": "write", "path": "a.py", "text": "print(1)\n"},
+        {"tool": "read", "path": "a.py"},
+        {"tool": "run", "command": "python a.py"},
+        {"tool": "write", "path": "a.py", "text": "print(2)\n"},
+    ]
+    script.write_text("".join(json.dumps(act) + "\n" for act in acts), encoding="utf-8")
+    await attempt(sandbox, ScriptedBrain(script, sandbox), Caps(), log=tmp_path / "steps.jsonl")
+    rows = [json.loads(line) for line in (tmp_path / "steps.jsonl").read_text(encoding="utf-8").splitlines()]
+    logged = {row["turn"]: row.get("files") for row in rows if "observation" in row}
+    assert logged[2] is None, "a read changes nothing"
+    assert logged[1] is not None and logged[3] is not None and logged[4] is not None
+    first, last = logged[1]["a.py"], logged[4]["a.py"]
+    assert first != last and last == sandbox.manifest()["a.py"]
