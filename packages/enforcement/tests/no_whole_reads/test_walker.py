@@ -7283,3 +7283,112 @@ def test_a_run_time_table_read_by_its_declared_key_is_keyed(tmp_path: Path) -> N
         assert flagged in functions, (flagged, found)
     for keyed in ("page_by_key", "counted_by_key", "labels_by_key"):
         assert keyed not in functions, (keyed, found)
+
+
+_CASCADE_KINDS = """
+    from dataclasses import dataclass
+    from typing import Literal
+
+    from threetears.core.collections.schema_backed import Index, TableSchema
+    from threetears.core.keyed import AnyOf, Sort, keyset_rows
+    from threetears.interfaces.keyed.rows import KeyColumns
+
+    FIRES = TableSchema(
+        name="fires",
+        primary_key="fire_id",
+        columns=[],
+        indexes=(Index("fires_by_job", "job_id", purpose="src/pkg/cascade.py::_children"),),
+    )
+    GRANTS = TableSchema(
+        name="grants",
+        primary_key="grant_id",
+        columns=[],
+        indexes=(Index("grants_by_owner", "owner_id", purpose="src/pkg/cascade.py::_children"),),
+    )
+    NOTES = TableSchema(name="notes", primary_key="note_id", columns=[])
+
+
+    @dataclass(frozen=True)
+    class Cascade:
+        child_table: str
+        child_column: str
+        action: Literal["CASCADE", "SET NULL"]
+        parent_column: str = "id"
+
+
+    async def _children(pool, table, column, carried, key: KeyColumns, values):
+        order = tuple(Sort(name, cast=None) for name in key)
+        return await keyset_rows(
+            pool, table, columns=list(carried), by={column: AnyOf(list(values), cast=None)}, order=order, page=10
+        )
+
+
+    async def read(collection, values):
+        cascades: tuple[Cascade, ...] = getattr(type(collection), "cascades", ())
+        for cascade in cascades:
+            columns = tuple(collection.primary_key_columns)
+            carried = tuple(dict.fromkeys((*columns, *collection.carried)))
+            await _children(collection.pool, cascade.child_table, cascade.child_column, carried, columns, values)
+"""
+
+_CASCADE_JOBS = """
+    from pkg.cascade import Cascade
+
+
+    class Jobs:
+        cascades = (Cascade("fires", "job_id", "CASCADE", parent_column="job_id"),)
+
+
+    class Users:
+        cascades = (Cascade("grants", child_column="owner_id", action="SET NULL"),)
+"""
+
+
+def _cascade_findings(tmp_path: Path, extra: str) -> list[str]:
+    """the gate's findings of reads over the cascade fixture (its indexes' own plan-test findings left out),
+    ``extra`` written as ``pkg/more.py``."""
+    modules = {"pkg/__init__.py": "", "pkg/cascade.py": _CASCADE_KINDS, "pkg/jobs.py": _CASCADE_JOBS}
+    if extra:
+        modules["pkg/more.py"] = extra
+    return [finding for finding in no_whole_reads_findings(_config(tmp_path, modules)) if _HIT.match(finding)]
+
+
+def test_a_cascade_loop_s_table_and_column_are_judged_as_each_literal_construction_pairs_them(tmp_path: Path) -> None:
+    """Flips if a helper's table and column, read off a loop over a local annotated ``tuple[Cascade, ...]``
+    (``cascade.child_table``, ``cascade.child_column``), stay unknown when every ``Cascade(...)`` the repo builds is
+    literal, or if they are crossed (``fires`` judged by ``owner_id``, which no index of it leads with) rather than
+    paired construction by construction."""
+    found = _cascade_findings(tmp_path, "")
+    assert found == [], found
+
+
+def test_a_cascade_construction_whose_pair_is_not_keyed_is_named_at_the_construction(tmp_path: Path) -> None:
+    """Flips if a literal ``Cascade(...)`` whose child column no index of its table leads with passes, or is named
+    anywhere but at its own construction (the call reading the loop names no one table)."""
+    found = _cascade_findings(
+        tmp_path,
+        """
+        from pkg.cascade import Cascade
+
+
+        class Pages:
+            cascades = (Cascade("notes", "page_id", "CASCADE"),)
+        """,
+    )
+    assert found and all(finding.startswith("src/pkg/more.py:") and "notes" in finding for finding in found), found
+
+
+def test_a_cascade_loop_stays_unknown_when_one_construction_is_not_literal(tmp_path: Path) -> None:
+    """Flips if a loop over ``tuple[Cascade, ...]`` is judged when one ``Cascade(...)`` the repo builds names its
+    table at run time: that one could be any table, so the read stays unknown."""
+    found = _cascade_findings(
+        tmp_path,
+        """
+        from pkg.cascade import Cascade
+
+
+        def made(table):
+            return Cascade(table, "page_id", "CASCADE")
+        """,
+    )
+    assert any(re.search(r" in _children: unknown-\S+ ", finding) for finding in found), found

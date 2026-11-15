@@ -23,6 +23,7 @@ from threetears.agent.acl import collections as acl
 from threetears.agent.acl.migrations import register as register_acl
 from threetears.agent.acl.types import ScopeType
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
+from threetears.core.collections.delete_cascade import read_delete_cascade
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
@@ -728,11 +729,19 @@ async def test_members_of_groups(conn: asyncpg.Connection) -> None:
 
 
 async def test_assignments_scope_namespace(conn: asyncpg.Connection) -> None:
-    """Flips if a namespace's namespace-scope grants stop reading idx_role_assignments_scope_namespace."""
+    """Flips if a namespace's namespace-scope grants, or the grants a namespace's delete is about to cascade
+    (read_delete_cascade, DeleteCascade on NamespaceCollection), stop reading idx_role_assignments_scope_namespace."""
     namespaces = await _seed_assignments(conn)
     assignments, recorder = _recorded(acl.RoleAssignmentCollection, conn)
     await assignments.list_scoped_to_namespace(namespaces[3])
     assert plan_uses_index(recorder.plans[0], "idx_role_assignments_scope_namespace"), recorder.plans[0].plan
+    held, cascading = _recorded(acl.NamespaceCollection, conn)
+    found = await read_delete_cascade(held, [("customer", namespaces[3])])
+    plan = cascading.plans[0]
+    granted = await conn.fetchval("SELECT count(*) FROM role_assignments WHERE scope_namespace_id = $1", namespaces[3])
+    assert granted and [len(rows.keys) for rows in found] == [granted], found
+    assert plan_uses_index(plan, "idx_role_assignments_scope_namespace"), json.dumps(plan.plan)[:2500]
+    assert plan.rows_scanned == granted, json.dumps(plan.plan)[:2500]
 
 
 async def test_assignments_scope_type_customer(conn: asyncpg.Connection) -> None:
