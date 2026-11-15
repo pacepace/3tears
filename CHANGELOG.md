@@ -18,7 +18,10 @@ second judge's pass and a measure attestation change no value the test reads and
 count needs is not stored (a deleted run, an archived member, an untimed result, re-judges stored per result), the
 count is a lower bound and says so. Where a member joined before membership was recorded (durable 17.3), looks were
 not recorded: no count of looks is given (`Looks.recorded` false, `taken` none), since the stored occasions can be too
-many as well as too few, and `evidence_changes` gives the count as what it is. Each aspect records its runs joining
+many as well as too few, and `evidence_changes` gives the count as what it is. Where looks were recorded since (an
+existing campaign joined or extended after 17.3), `taken` is the first comparison and those, a lower count: at least
+that many looks since looks were recorded, earlier ones not recorded. `Looks.launched` and `largest_step` give the
+cases the first look read and the most one later look added. Each aspect records its runs joining
 and leaving, append-only (`Aspect.membership`), and a new campaign is stamped `EvalCampaign.looks_rule`. `Looks.tests`
 names the tests the aspect's readings are read by (`bounded`, `t`).
 
@@ -32,11 +35,14 @@ the simulated setting; not shown on t-test aspects); the per-look level is `look
 is not shown for a test the aspect uses (extends sized by the planner from the reading before are shown to hold α only
 where the measured rate's 97.5% upper bound is at most α: today on the bounded test, not on the t test), the caveat
 list carries one `looks` entry per aspect, class D, naming every claim of the aspect and carrying the looks and, per
-test, the false-separation rate the seeded simulation measured for that test, plan and count, with its upper bound
-and its named row (`significance.FALSE_SEPARATION`; the larger of batches fixed in advance and planner-sized extends,
-since which added the looks is not stored), or none where no row measured that situation (`CaveatEntry.looks`,
-`false_separation`); at method reach where the aspect claims nothing or the campaign was created before looks were
-counted. An aspect whose looks were not recorded carries one method-reach entry saying so, with no rate, where its
+test, a reference false-separation rate: what a seeded simulation of that test, plan and count measured, in the
+setting it states (a single contrast, the launch sizes, the extend cap), with the simulation's own uncertainty and its
+named row (`significance.FALSE_SEPARATION`; the larger of batches fixed in advance and planner-sized extends, since
+which added the looks is not stored). It is never the campaign's own rate, which can be higher. None is quoted where no
+row measured that situation, where the aspect's own launch or largest step falls outside the setting, or where the
+count is a lower count, which is shown alone (`CaveatEntry.looks`, `false_separation`). At method reach where the
+aspect claims nothing or the campaign was created before looks were counted and every member's joining is recorded;
+looks recorded since 17.3 on an older campaign reach the report. An aspect whose looks were not recorded carries one method-reach entry saying so, with no rate, where its
 evidence changed more than once. An aspect's `looks` is outside the report input's digest: a look taken re-keys no
 input and no snapshot.
 

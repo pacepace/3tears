@@ -724,15 +724,12 @@ def _looks_caveats(built):  # type: ignore[no-untyped-def]  # the input's caveat
 _TWO_LOOKS_AND_A_GAIN = dict(shift=0.08, seed="gain-0")
 
 
-def _quoted(
-    test: SeparationTest, planned: int | None, taken: int, *, at_least: bool = False, launched: int | None = None
-) -> FalseSeparation:
+def _quoted(test: SeparationTest, planned: int | None, taken: int, *, launched: int | None = None) -> FalseSeparation:
     """What the caveat quotes for ``test``: the named row's figure and setting, read straight off the table."""
-    measured = looks_false_separation(test, planned, taken, at_least=at_least, launched=launched)
+    measured = looks_false_separation(test, planned, taken, launched=launched)
     return FalseSeparation(
         test=test,
         rate=measured.rate,
-        reads=measured.reads,
         upper=measured.upper,
         row=measured.row,
         looks=measured.looks,
@@ -810,7 +807,7 @@ def test_the_caveat_quotes_the_row_measured_for_its_situation(
     measured = FALSE_SEPARATION[row]
     assert (measured.test, measured.planned) == (test, planned)
     assert quote.rate == measured.rates[taken - 1], "the named row's own figure"
-    assert (quote.reads, quote.setting) == ("measured", measured.setting), "the reference setting rides with it"
+    assert quote.setting == measured.setting, "the reference setting rides with it"
     assert quote.launched and quote.largest_step is not None
     assert quote.upper == pytest.approx(measured_upper_bound(measured.rates[taken - 1], measured.replicates))
     others = [
@@ -873,9 +870,9 @@ def test_a_second_look_at_a_campaign_created_before_looks_were_counted_qualifies
     assert looks.reach == "method" and looks.looks is not None and looks.looks.plannable is False
 
 
-def test_a_plan_whose_keeping_the_count_cannot_show_raises_the_caveat_and_quotes_a_floor() -> None:
-    """A run deleted after its look: the count is a lower bound, so looks past the plan cannot be ruled out. The
-    reference quoted is a floor: the smaller procedure's rate at that many looks, which more looks only raise."""
+def test_a_plan_whose_keeping_the_count_cannot_show_raises_the_caveat_with_the_count_alone() -> None:
+    """A run deleted after its look: the count is a lower count, so looks past the plan cannot be ruled out. More looks
+    may have been taken and no row is a floor, so the count is shown alone, with no rate."""
     gone = MembershipChange(run_id="gone", change="left", at=_stamp(300))
     built = _built(*_bundle([("g1", 0, range(20))], planned=2, left=[gone], **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
     (aspect,) = built.aspects
@@ -883,14 +880,7 @@ def test_a_plan_whose_keeping_the_count_cannot_show_raises_the_caveat_and_quotes
     stripped = aspect.looks.model_copy(update={"tests": [], "launched": None, "largest_step": None})
     assert stripped == Looks(planned=2, taken=2, lower_bound=True)
     (looks,) = _looks_caveats(built)
-    assert looks.reach == "report"
-    assert looks.false_separation == [
-        _quoted(test, 2, 2, at_least=True, launched=aspect.looks.launched) for test in aspect.looks.tests
-    ]
-    for quote in looks.false_separation:
-        assert quote.reads == "floor" and quote.rate is not None
-        smaller = min(row.rates[1] for row in FALSE_SEPARATION.values() if (row.test, row.planned) == (quote.test, 2))
-        assert quote.rate == smaller
+    assert (looks.reach, looks.looks, looks.false_separation) == ("report", aspect.looks, [])
 
 
 def test_a_campaign_whose_looks_were_not_recorded_says_so_with_no_rate_and_no_count_of_looks() -> None:
@@ -916,7 +906,7 @@ def test_a_campaign_whose_looks_were_not_recorded_and_whose_evidence_changed_onc
 
 def test_a_campaign_extended_after_the_record_raises_at_report_reach_with_the_looks_recorded_since() -> None:
     """Mixed: a campaign created before looks were counted, its first launch unrecorded, extended since. The looks
-    recorded since are a lower count, the caveat reaches the report (owner ruling L5), and the reference is a floor."""
+    recorded since are a lower count, shown alone with no rate, and the caveat reaches the report (owner ruling L5)."""
     built = _built(
         *_bundle(
             [("g1", 0, range(20)), ("g2", 120, range(20, 40))], unrecorded={0}, stamped=False, **_TWO_LOOKS_AND_A_GAIN
@@ -927,7 +917,8 @@ def test_a_campaign_extended_after_the_record_raises_at_report_reach_with_the_lo
     assert (aspect.looks.recorded, aspect.looks.taken, aspect.looks.lower_bound) == (False, 2, True)
     (looks,) = _looks_caveats(built)
     assert looks.reach == "report"
-    assert looks.false_separation and all(quote.reads == "floor" for quote in looks.false_separation)
+    assert (looks.looks, looks.false_separation) == (aspect.looks, [])
+    assert "false_separation" not in looks.model_dump(by_alias=True)
 
 
 def test_a_campaign_whose_looks_were_recorded_gets_a_count_and_a_rate() -> None:

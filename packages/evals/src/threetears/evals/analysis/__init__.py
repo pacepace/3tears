@@ -187,7 +187,6 @@ from threetears.evals.analysis.lenses.cost_estimate import (
 from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
 from threetears.evals.analysis.lenses.history import HISTORY_METRICS
 from threetears.evals.analysis.significance import (
-    QuoteReads,
     SeparationTest,
     Unquoted,
     format_significance,
@@ -474,8 +473,7 @@ __all__ = [
     "Rescore",
     # The test a reading's claims are read by, which a caveat on looks quotes a measured rate for.
     "SeparationTest",
-    # How a caveat on looks quotes its reference rate, and why it quotes none.
-    "QuoteReads",
+    # Why a caveat on looks quotes no reference rate.
     "Unquoted",
     # The one caveat list and the first screen read off it, which the campaign bundle holds.
     "CallRead",

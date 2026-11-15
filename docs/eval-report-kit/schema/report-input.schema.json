@@ -334,7 +334,7 @@
        "type": "null"
       }
      ],
-     "description": "How often the aspect's test was looked at, against how often it planned to be."
+     "description": "How often the aspect's test was looked at, against how often it planned to be. Derived from stored facts about the campaign (its launches, membership, re-judges), never an input the author gave, so never part of the input's digest; the plan it is read against (`AspectDesign.planned_looks`) is."
     }
    },
    "additionalProperties": false,
@@ -2056,7 +2056,7 @@
      "description": "For a caveat on looks: the aspect's looks, planned and taken, or that they were not recorded (`Aspect.looks`)."
     },
     "false_separation": {
-     "description": "For a caveat on looks: per test the aspect's readings are read by, how often a test with no true difference separates at some look, measured for that many looks under that plan (the level the readings it names now hold, in place of the one stated), or that it was not measured. Empty where the aspect's looks were not recorded: no rate is stated for a count that is not one.",
+     "description": "For a caveat on looks: per test the aspect's readings are read by, a reference false-separation rate from a simulation of that test, plan and count, with the setting it was simulated in, or why none is quoted. A reference figure, never this campaign's own rate, which is not known and can be higher. Empty where the looks counted are a lower count (more may have been taken, so no row is the situation's: the count is shown alone), or were not recorded.",
      "items": {
       "$ref": "#/$defs/FalseSeparation"
      },
@@ -2093,22 +2093,6 @@
       }
      ],
      "description": "The rate a reference simulation of this test, plan and count measured, as a share, in the setting beside it; never this campaign's rate. None where none is quoted (``unquoted`` says why)."
-    },
-    "reads": {
-     "anyOf": [
-      {
-       "enum": [
-        "measured",
-        "floor"
-       ],
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "description": "measured: the reference rate for exactly ``looks`` looks (the larger of batches fixed in advance and planner-sized extends, since which added the looks is not stored); floor: where the looks counted are a lower count, the smaller of the two at ``looks`` looks, which more looks only raise. None with no rate."
     },
     "upper": {
      "anyOf": [
@@ -3211,7 +3195,7 @@
     },
     "declared_look": {
      "default": false,
-     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it were the first, so adding cases and reading again even once errs more often than that level says.",
+     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. The looks are counted: past the aspect's plan (past the first with none), or within it where keeping the plan is not shown, the reading after it carries a caveat on looks, with a reference false-separation rate from a simulated setting.",
      "title": "Declared Look",
      "type": "boolean"
     },

@@ -6596,11 +6596,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.QuoteReads": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.RangeBarsChart": {
       "kind": "model",
       "signature": "",

@@ -450,17 +450,12 @@ def measured_upper_bound(rate: float, replicates: int) -> float:
 #: simulated (``outside_setting``).
 Unquoted = Literal["not_measured", "outside_setting"]
 
-#: How a quoted reference rate reads: for exactly that many looks (``measured``), or, where the count is a lower bound,
-#: for that many looks or more (``floor``: the smaller procedure's rate, which more looks only raise).
-QuoteReads = Literal["measured", "floor"]
-
 
 class MeasuredRate(NamedTuple):
     """The reference false-separation rate a caveat on looks quotes for one test (:func:`looks_false_separation`).
 
     :ivar test: The test it is measured for.
     :ivar rate: The reference rate, as a share; None where none is quoted (``unquoted`` says why).
-    :ivar reads: ``measured`` for exactly ``looks`` looks, ``floor`` for ``looks`` or more; None with no rate.
     :ivar upper: The simulation's uncertainty on it (:func:`measured_upper_bound`); None with no rate.
     :ivar row: The :data:`FALSE_SEPARATION` row it is read from; None with no rate.
     :ivar looks: The looks the rate is for.
@@ -472,7 +467,6 @@ class MeasuredRate(NamedTuple):
 
     test: SeparationTest
     rate: float | None
-    reads: QuoteReads | None
     upper: float | None
     row: str | None
     looks: int
@@ -496,7 +490,6 @@ def looks_false_separation(
     planned: int | None,
     taken: int,
     *,
-    at_least: bool = False,
     launched: int | None = None,
     largest_step: int | None = None,
 ) -> MeasuredRate:
@@ -507,8 +500,9 @@ def looks_false_separation(
     by more cases a step, or reading several claims at once can err more, and for a claim of held (one tail) it is the
     two-sided separation rate. How the looks after the first were added (in batches fixed in advance, or sized by the
     planner from the reading before) is not stored, so the rate quoted is the larger of the two procedures' rows for
-    this test, plan and count, named by its row. Where ``taken`` is a lower bound (``at_least``), it is the smaller of
-    the two at ``taken`` looks: a floor for that many looks or more, since a row's rate only grows with looks.
+    this test, plan and count, named by its row. A count that is only a lower count is no situation a row measured
+    (more looks may have been taken, and each row is the largest over its settings, so no row is a floor): the caller
+    quotes nothing for it.
 
     No rate is quoted where either procedure has no row for this test and plan or measured fewer looks
     (``not_measured``), or where the campaign's own first-look cases (``launched``) or largest step
@@ -518,10 +512,8 @@ def looks_false_separation(
     :ptype test: SeparationTest
     :param planned: The looks the plan in force allows; None where none is.
     :ptype planned: int | None
-    :param taken: The looks taken, at least one; with ``at_least``, the fewest that were.
+    :param taken: The looks taken, at least one.
     :ptype taken: int
-    :param at_least: Whether ``taken`` is a lower bound.
-    :ptype at_least: bool
     :param launched: The cases the campaign's contrast read at its first look; None where not known.
     :ptype launched: int | None
     :param largest_step: The most cases one of its later looks added; None where not known.
@@ -531,21 +523,19 @@ def looks_false_separation(
     """
     rows = _rows(test, planned)
     if set(rows) != set(LOOKS_PROCEDURES) or any(taken > len(row.rates) for _, row in rows.values()):
-        return MeasuredRate(test, None, None, None, None, taken, None, (), None, "not_measured")
-    pick = min if at_least else max
-    name, row = pick(rows.values(), key=lambda named: named[1].rates[taken - 1])
+        return MeasuredRate(test, None, None, None, taken, None, (), None, "not_measured")
+    name, row = max(rows.values(), key=lambda named: named[1].rates[taken - 1])
     simulated = tuple(sorted({cases for _, each in rows.values() for cases in each.launched}))
     step = max(each.largest_step for _, each in rows.values())
     outside = (launched is not None and not simulated[0] <= launched <= simulated[-1]) or (
         largest_step is not None and largest_step > step
     )
     if outside:
-        return MeasuredRate(test, None, None, None, None, taken, row.setting, simulated, step, "outside_setting")
+        return MeasuredRate(test, None, None, None, taken, row.setting, simulated, step, "outside_setting")
     rate = row.rates[taken - 1]
     return MeasuredRate(
         test,
         rate,
-        "floor" if at_least else "measured",
         measured_upper_bound(rate, row.replicates),
         name,
         taken,

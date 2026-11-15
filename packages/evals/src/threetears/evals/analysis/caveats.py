@@ -75,8 +75,9 @@ the step says that instead of offering an act that cannot work. A criterion set 
 closed by no case added to this campaign, so its step is the confirmation in a new one.
 Taking a step that adds cases is one more look at the readings it names, and says so; the looks are counted
 (:func:`~threetears.evals.analysis.significance.looks_taken`), and a reading past its plan carries a caveat on looks
-that states the false-separation rate measured for its test, plan and that many looks, or that none was measured; an
-aspect whose looks were not recorded says so, with no rate.
+that quotes a reference false-separation rate simulated for its test, plan and that many looks, with its setting,
+never the campaign's own rate (none where no row covers it, or the count is a lower count); an aspect whose looks were
+not recorded says so, with no rate.
 
 Nothing here reads an eval's kind, a campaign's shape or a measure's name.
 """
@@ -947,10 +948,11 @@ def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
     sized by the planner only where the reference rate's upper bound is at most α).
 
     It carries, per test the aspect's readings are read by (``Looks.tests``), a reference false-separation rate with
-    the setting it was simulated in (:func:`~threetears.evals.analysis.significance.looks_false_separation`): for
-    exactly that many looks, or, where the count is a lower bound, a floor for that many or more; none where no row
-    measured the situation or the aspect's own launch or extend sizes fall outside the setting. It is never the
-    campaign's own rate.
+    the setting it was simulated in (:func:`~threetears.evals.analysis.significance.looks_false_separation`), for
+    exactly that many looks; none where no row measured the situation or the aspect's own launch or extend sizes fall
+    outside the setting. It is never the campaign's own rate. Where the count is a lower count (a deleted run, a
+    re-judge, looks recorded only since 17.3), the count is shown alone, with no rate: more looks may have been taken,
+    and no row is a floor.
 
     **Looks not recorded** and none recorded since (``Looks.recorded`` false, ``taken`` None) raise one entry at method
     reach saying so, where the stored evidence changed more than once, with no rate: the count is neither a lower nor an
@@ -985,19 +987,19 @@ def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
             reach = "method"
         else:
             reach = "report" if aspect.asked or not asked else "scoped"
-        quoted = [
-            _reference(
-                looks_false_separation(
-                    test,
-                    planned,
-                    taken,
-                    at_least=looks.lower_bound,
-                    launched=looks.launched,
-                    largest_step=looks.largest_step,
+        # A lower count is shown alone: more looks may have been taken, so no row is the situation's.
+        quoted = (
+            []
+            if looks.lower_bound
+            else [
+                _reference(
+                    looks_false_separation(
+                        test, planned, taken, launched=looks.launched, largest_step=looks.largest_step
+                    )
                 )
-            )
-            for test in looks.tests
-        ]
+                for test in looks.tests
+            ]
+        )
         yield _entry(
             report_input, f"looks:{aspect.id}", "looks", reach, readings=readings, looks=looks, false_separation=quoted
         )
@@ -1008,7 +1010,6 @@ def _reference(measured: MeasuredRate) -> FalseSeparation:
     return FalseSeparation(
         test=measured.test,
         rate=measured.rate,
-        reads=measured.reads,
         upper=measured.upper,
         row=measured.row,
         looks=measured.looks,

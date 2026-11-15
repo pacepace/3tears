@@ -62,7 +62,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.evals.analysis.checks import Check, Corrected, Looks
-from threetears.evals.analysis.significance import QuoteReads, SeparationTest, Unquoted
+from threetears.evals.analysis.significance import SeparationTest, Unquoted
 from threetears.evals.schema.reading_states import (
     ArmIdentity,
     CaveatClass,
@@ -1020,14 +1020,6 @@ class FalseSeparation(_Part):
             "it; never this campaign's rate. None where none is quoted (``unquoted`` says why)."
         )
     )
-    reads: QuoteReads | None = Field(
-        default=None,
-        description=(
-            "measured: the reference rate for exactly ``looks`` looks (the larger of batches fixed in advance and "
-            "planner-sized extends, since which added the looks is not stored); floor: where the looks counted are a "
-            "lower count, the smaller of the two at ``looks`` looks, which more looks only raise. None with no rate."
-        ),
-    )
     upper: float | None = Field(
         default=None,
         description=(
@@ -1136,7 +1128,8 @@ class CaveatEntry(_Part):
             "For a caveat on looks: per test the aspect's readings are read by, a reference false-separation rate from "
             "a simulation of that test, plan and count, with the setting it was simulated in, or why none is quoted. "
             "A reference figure, never this campaign's own rate, which is not known and can be higher. Empty where "
-            "the aspect's looks were not recorded and none were since."
+            "the looks counted are a lower count (more may have been taken, so no row is the situation's: the count "
+            "is shown alone), or were not recorded."
         ),
     )
 
@@ -1330,8 +1323,9 @@ class RemedyStep(_Part):
     declared_look: bool = Field(
         default=False,
         description="Whether taking it reads the same readings again with the cases it adds: one more look at them, "
-        "stated before it is taken. The looks are counted: past the aspect's plan (past the first with none) the "
-        "reading after it carries a caveat on looks, which states how often that many looks err.",
+        "stated before it is taken. The looks are counted: past the aspect's plan (past the first with none), or "
+        "within it where keeping the plan is not shown, the reading after it carries a caveat on looks, with a "
+        "reference false-separation rate from a simulated setting.",
     )
     results_needed: int | None = Field(
         default=None, ge=1, description="For a check: how many more results it needs before it can decide."
