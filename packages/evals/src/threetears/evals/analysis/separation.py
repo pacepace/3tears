@@ -354,7 +354,9 @@ def cases_to_separate(per_case: float, distance: float, level: float, *, sided: 
     :ptype distance: float
     :param level: The level, as a share.
     :ptype level: float
-    :param sided: 1 for an estimate against a line, 2 for two arms against each other.
+    :param sided: 1 for a one-sided bound at ``level``; 2 for an interval stated two-sided at ``level``: two arms
+        against each other, or an estimate whose two-sided interval must clear its line (what a page prints and what
+        a gate's borderline or an unsettled reading is lifted by).
     :ptype sided: Literal[1, 2]
     :param power: The share of such designs that clear, if the truth equals today's estimate.
     :ptype power: float

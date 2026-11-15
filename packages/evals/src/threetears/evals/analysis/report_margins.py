@@ -106,6 +106,9 @@ class CriterionFigure:
     :ivar half_width: The interval's half-width, where the input states only that; for a mean alone, like ``ci``.
     :ivar derived: Whether ``ci`` was derived here rather than stated: an overall mean that is the plain mean of its
         target-matrix cells, its interval combined from theirs (:mod:`~threetears.evals.analysis.cell_mean`).
+    :ivar sem: The standard error the input states on a mean; None for any other statistic, or where none is stated.
+    :ivar n: The observations the figure rests on, where the input states them.
+    :ivar n_cases: The distinct cases behind them, where the input states them.
     """
 
     value: float
@@ -114,6 +117,9 @@ class CriterionFigure:
     ci: tuple[float, float] | None = None
     half_width: float | None = None
     derived: bool = False
+    sem: float | None = None
+    n: int | None = None
+    n_cases: int | None = None
 
 
 @dataclass(frozen=True)
@@ -394,10 +400,15 @@ def criterion_figures(report_input: ReportInput, criterion: Criterion, arm: str)
         ci = (float(stat.ci[0]), float(stat.ci[1])) if mean and stat.ci is not None else None
         half_width = float(stat.half_width) if mean and stat.half_width is not None else None
         derived = _derived_interval(report_input, criterion, arm) if mean and task is None and cell is None else None
+        sem = float(stat.sem) if mean and stat.sem is not None else None
         if ci is None and half_width is None and derived is not None:
-            found.append(CriterionFigure(float(value), task, cell, derived, None, derived=True))
+            found.append(
+                CriterionFigure(
+                    float(value), task, cell, derived, None, derived=True, sem=sem, n=stat.n, n_cases=stat.n_cases
+                )
+            )
             continue
-        found.append(CriterionFigure(float(value), task, cell, ci, half_width))
+        found.append(CriterionFigure(float(value), task, cell, ci, half_width, sem=sem, n=stat.n, n_cases=stat.n_cases))
     return found
 
 

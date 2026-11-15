@@ -40,6 +40,7 @@ from threetears.evals.analysis.campaign_readings import (
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.references import CellAddress, campaign_cell_aliases
+from threetears.evals.analysis.report_input import CaveatEntry, FirstScreen
 from threetears.evals.analysis.style import lever_spelled
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
 from threetears.evals.kernel.declaration import (
@@ -175,6 +176,18 @@ class CampaignBundle(EvalDocumentModel):
     )
     aspects: list[AnalysisContextBundle] = Field(
         min_length=1, description="Each aspect's evidence bundle, in the campaign's order."
+    )
+    # The two below are derived from the rest and the campaign's call, held in memory for the code page and never
+    # dumped: no frame, fingerprint or stored analysis holds them, so they are no evidence and move nothing.
+    caveat_list: list[CaveatEntry] | None = Field(
+        default=None,
+        exclude=True,
+        description="Every qualification of the campaign's answer, each once, typed, as its report input lists them.",
+    )
+    first_screen: FirstScreen | None = Field(
+        default=None,
+        exclude=True,
+        description="The first screen's slots as its report input computes them, with the campaign's call as of now.",
     )
 
     @field_validator("schema_version")

@@ -136,6 +136,16 @@ class SweptAxis(EvalDocumentModel, CoreShapeModel):
     rationale: str = Field(
         default="", description="Why this axis is in the campaign. Optional, and the first thing a reader wants."
     )
+    ordered: bool = Field(
+        default=False,
+        # Written only when set, so an axis stating none is stored as it was before the field.
+        exclude_if=lambda value: not value,
+        description=(
+            "Whether the levels are points on one scale, in the order `values` lists them (a reasoning budget, a "
+            "sample size), so a reading may be drawn across them. False: the levels are kinds (two prompts, two "
+            "models), and no line joins them."
+        ),
+    )
 
     @field_validator("reader_name")
     @classmethod
@@ -708,6 +718,17 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
             "`measure_latency=True`, one cell at a time; latency read under concurrency is withheld from every "
             "reading. False: a bar on a latency measure, a merit axis of latency or `latency` in `merit_priority` "
             "is refused when the design is declared."
+        ),
+    )
+    planned_looks: int | None = Field(
+        default=None,
+        ge=1,
+        # Written only when stated, so a design stating none is stored as it was before the field.
+        exclude_if=lambda looks: looks is None,
+        description=(
+            "How many times this aspect's contrasts are planned to be read, declared before the first: each read "
+            "after more runs join is one more look, and a test looked at more often than planned is read at a "
+            "looser level than it states. None = no plan stated."
         ),
     )
     measure_order: list[str] = Field(

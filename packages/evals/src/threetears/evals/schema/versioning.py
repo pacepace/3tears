@@ -178,6 +178,8 @@ the document, so extending one is a major. Each, and why:
 - ``BudgetStop.currency`` — what a per-run ceiling counts; a stop in a currency an older build cannot name would be
   stated in a unit it cannot read, and its dollars and its calls are not one quantity.
 - ``RaterKind`` — calibration reads a person as ground truth.
+- ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
+  would be stated as neither.
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
@@ -900,16 +902,28 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   alone, so every stored rating still proves. An older build (v17.0) reading a rating that holds it keeps it
 #:   opaquely and writes it back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-#: - **v17.2** — a new durable type, the blind read: ``blind_read`` (``BlindRead``), a seeded random order of a
+#: - **v17.2** — a campaign may state what the first screen reads beside its readings: a swept axis may say its levels
+#:   are points on one scale (``SweptAxis.ordered``, default False), an aspect's design how many looks it plans
+#:   (``AspectDesign.planned_looks``, default None), the campaign what its subject serves a month
+#:   (``EvalCampaign.volume_per_month``, default None, snapshotted as ``CampaignDeclaration.volume_per_month``), and
+#:   a recorded call who made it (``CampaignCall.made_by``, ``model``, ``on_behalf_of``, each default None) and the
+#:   campaign bundle's fingerprint it was read against (``CampaignCall.evidence_fingerprint``, default None). Each is
+#:   written only when set, so a campaign setting none is stored exactly as v17.1 stored it, and a call stored before
+#:   reads as made by nobody recorded. None is in a variant key, a measurement context or a fingerprint until a
+#:   campaign sets it; a campaign bundle's fingerprint reads the declaration without its defaults, so it moves only for
+#:   a campaign filed at this minor that sets one. An older build reading a campaign at this minor keeps the fields
+#:   opaquely and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v17.3** — a new durable type, the blind read: ``blind_read`` (``BlindRead``), a seeded random order of a
 #:   campaign's judged outputs, the answers given to it (a person's, relayed by a caller the host attests for them, or
 #:   the declared reviewer model's, taken only from its own review job), and its close. Stored by the host door's
 #:   actions (``blind_read_create`` and its siblings); the quick path still recomputes its read and stores none. Its
 #:   optional fields ``reviewer``, ``review_job_id`` and ``closed_early`` are written only when set. No other durable
-#:   shape moves, so every document v17.1 stored is stored byte for byte as before. An older build never reads the
+#:   shape moves, so every document v17.2 stored is stored byte for byte as before. An older build never reads the
 #:   type (every read selects by ``doc_type``); its operator wipe of durable documents leaves these in place, and its
 #:   deletes never reach them (a new doc type's two disclosed costs, above).
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 2
+DURABLE_SCHEMA_MINOR: int = 3
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
