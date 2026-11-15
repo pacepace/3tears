@@ -32,12 +32,19 @@ definition, and a second pass finishes it: a result already read again under the
 definitions with the ones its host says it ran under, touching no result: for a host that knows which revision of
 its reading code was live when the run was made. The run then pools with the runs of those definitions, and can
 later be re-measured into the current ones.
+
+**The served model has the same door.** A run whose candidate responses named no model (a router that echoed a
+requested alias back, a logged output, a host's answer that named none) pools with no other run, since nothing says
+what answered it. :func:`attest_served_model` records its host's statement of the model that did
+(:class:`~threetears.evals.schema.models.ServedModelAttestation`), naming the results it covers, and touches no
+row: a reading that pools by answering model reads those silent rows through the statement, as attested, not
+recorded. It never stands beside a model a response named.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from pydantic import Field
@@ -46,15 +53,18 @@ from threetears.evals.kernel.errors import ConflictError, NotFoundError, Validat
 from threetears.evals.kernel.host.measures import MeasureRereadRequest
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.remedies import FIND_RUN
+from threetears.evals.kernel.scoring import remeasure_unfinished
 from threetears.evals.run.run_document import update_eval_run
 from threetears.evals.run.runner import refuse_misfit_host_measures
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.reading_states import AttestableCoordinate
 from threetears.evals.schema.models import (
     NON_TERMINAL_RUN_STATUSES,
     MeasureAttestation,
     MeasureRemeasure,
     MeasureReread,
+    ServedModelAttestation,
     utc_now_iso,
 )
 
@@ -141,7 +151,7 @@ async def remeasure_run(host: EvalHost, run_id: str, scope_id: str, *, apply: bo
     report = Remeasure(
         run_id=run.id,
         applied=apply,
-        already_current=run.measure_definitions == plan.now and not _unfinished(run),
+        already_current=run.measure_definitions == plan.now and not remeasure_unfinished(run),
         was=run.measure_definitions,
         now=plan.now,
         moved=plan.moved,
@@ -186,7 +196,7 @@ def _plan(host: EvalHost, run_id: str, scope_id: str) -> _Plan:
             remedy=f"re-measure once it has finished (job_poll run:{run.id})",
         )
     now, was = measures.definition_digests(), run.measure_definitions
-    if was == now and not _unfinished(run):
+    if was == now and not remeasure_unfinished(run):
         return _Plan(run=run, now=now, moved=[], rereads=[])
     moved = sorted(name for name in {*now, *(was or {})} if was is None or was.get(name) != now.get(name))
     # A measure the host no longer declares has no current definition to read under: its stored values stay as
@@ -260,11 +270,6 @@ def _read_under(result: EvalResult, name: str, digest: str) -> bool:
     return False
 
 
-def _unfinished(run: EvalRun) -> bool:
-    """Whether a re-measure of the run began and did not finish."""
-    return bool(run.measure_remeasures) and run.measure_remeasures[-1].completed_at is None
-
-
 def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> None:
     """Mark the run as being re-measured, store each result's new values, then complete the run's record.
 
@@ -281,7 +286,7 @@ def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> Non
             return None
         data = current.to_dict()
         # A pass cut short left its own unfinished mark: this pass takes its place.
-        kept = current.measure_remeasures[:-1] if _unfinished(current) else current.measure_remeasures
+        kept = current.measure_remeasures[:-1] if remeasure_unfinished(current) else current.measure_remeasures
         data["measure_remeasures"] = [*(entry.to_dict() for entry in kept), record.to_dict()]
         return data
 
@@ -318,7 +323,7 @@ def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> Non
             ) from raced
 
     def _complete(current: EvalRun) -> dict[str, Any] | None:
-        if not _unfinished(current) or current.measure_remeasures[-1].remeasured_at != record.remeasured_at:
+        if not remeasure_unfinished(current) or current.measure_remeasures[-1].remeasured_at != record.remeasured_at:
             return None
         data = current.to_dict()
         data["measure_definitions"] = dict(plan.now)
@@ -338,15 +343,18 @@ def _write(host: EvalHost, plan: _Plan, report: Remeasure, scope_id: str) -> Non
 
 
 class Attested(EvalBaseModel):
-    """What a host's attestation of stored runs' measure definitions wrote."""
+    """What a host's statement of one coordinate of stored runs wrote: one shape, whichever coordinate."""
 
+    coordinate: AttestableCoordinate = Field(description="The coordinate stated: measure_definition or served_model.")
     run_ids: list[str] = Field(description="The runs stamped by this call, in the order given.")
     already_attested: list[str] = Field(
         default_factory=list,
-        description="The runs an earlier attestation had stamped with these same definitions: left as they were.",
+        description="The runs an earlier statement had stamped with the same value, whole: left as they were.",
     )
-    definitions: dict[str, str] = Field(description="The definitions stated for each, measure key -> digest.")
-    attested_by: str
+    stated: dict[str, str] = Field(
+        description="What was stated of each run: measure key -> definition digest, or served_model -> the model."
+    )
+    attested_by: str = Field(description="Who stated it.")
 
 
 async def attest_measure_definitions(
@@ -456,7 +464,146 @@ async def attest_measure_definitions(
     already = await run_blocking(host.blocking_executor, write)
     stamped = [run_id for run_id in run_ids if run_id not in already]
     log.info("eval.attest_measure_definitions runs=%d already=%d by=%s", len(stamped), len(already), attested_by)
-    return Attested(run_ids=stamped, already_attested=already, definitions=stated, attested_by=attested_by)
+    return Attested(
+        coordinate="measure_definition",
+        run_ids=stamped,
+        already_attested=already,
+        stated=stated,
+        attested_by=attested_by,
+    )
+
+
+def _silent_candidate_rows(result: EvalResult) -> int:
+    """How many of a result's candidate usage rows name no served model."""
+    return sum(1 for row in result.usage if row.role == "candidate" and not row.served_model)
+
+
+async def attest_served_model(
+    host: EvalHost,
+    run_ids: Sequence[str],
+    scope_id: str,
+    served_model: str,
+    *,
+    attested_by: str,
+    note: str | None = None,
+) -> Attested:
+    """Record a host's statement of the model that answered stored runs whose candidate responses named none.
+
+    The host's word, never the engine's guess: the id a run asked for is not evidence of what answered it, and
+    nothing else a silent run stores is. Each run records who stated it, when, the model and the results it covers
+    (``EvalRun.served_model_attestation``: those whose candidate rows named no model when it was made). **No row is
+    touched**: the evidence stays as the responses left it, so the identity disclosure stays true and a model a
+    response named is always told from one a host stated. A reading that pools by answering model (a campaign's
+    cells, pass^k, a comparison set's badges) reads those results' silent rows THROUGH the statement
+    (:func:`~threetears.evals.analysis.reporting.pooled_as`), and the bundle carries the fact that it did
+    (``ArmServedModel.n_attested``, ``RunSummary.attested_coordinates``). History, a pivot, the frontier's composite
+    and a two-run comparison read them through it the same way
+    (:func:`~threetears.evals.analysis.bundle.observations.split_coordinates`).
+
+    Every run is checked before any is written. Stating again what an earlier attestation stated is no error: the
+    run is named in ``already_attested``. Stating ANOTHER model over an attestation is refused, and so is a run none
+    of whose candidate rows is silent: a statement never stands beside a response's word.
+
+    :param host: The host whose store holds the runs.
+    :ptype host: EvalHost
+    :param run_ids: The stored runs to stamp.
+    :ptype run_ids: Sequence[str]
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :param served_model: The model that answered their candidate calls, as a provider's response would name it.
+    :ptype served_model: str
+    :param attested_by: Who states it, as the host names them: a person or a job.
+    :ptype attested_by: str
+    :param note: Why the host knows, in its own words.
+    :ptype note: str | None
+    :return: What was written.
+    :rtype: Attested
+    :raises NotFoundError: A run is not in the scope.
+    :raises ValidationFailedError: ``served_model`` or ``attested_by`` is blank; a run is still pending or running; a
+        run was attested with another model; or none of a run's candidate rows is silent. Raised before anything is
+        written.
+    :raises ConflictError: A run changed between the check and its write; runs written before it stay stamped.
+    """
+    stated = served_model.strip()
+    if not stated or not attested_by.strip():
+        raise ValidationFailedError(
+            "an attestation states the model that answered and who states it",
+            remedy="pass served_model, as a provider's response would name it, and attested_by",
+        )
+
+    def write() -> list[str]:
+        storage = host.storage
+        already: list[str] = []
+        silent_by_run: dict[str, list[str]] = {}
+        for run_id in run_ids:
+            run = storage.load_eval_run(run_id, scope_id)
+            if run is None:
+                raise NotFoundError("run", run_id, remedy=FIND_RUN)
+            if run.status in NON_TERMINAL_RUN_STATUSES:
+                raise ValidationFailedError(
+                    f"run '{run.id}' is {run.status}: its cells are still being written",
+                    remedy=f"attest once it has finished (job_poll run:{run.id})",
+                )
+            before = run.served_model_attestation
+            if before is not None:
+                if before.served_model != stated:
+                    raise ValidationFailedError(
+                        f"run '{run.id}' was already attested as answered by {before.served_model}; a statement is "
+                        "never replaced",
+                        remedy="leave it as stated; a host that stated the wrong model corrects the run's document "
+                        "itself",
+                    )
+                already.append(run.id)
+                continue
+            silent = sorted(
+                result.id
+                for result in storage.query_eval_results_by_run(run.id, scope_id)
+                if _silent_candidate_rows(result)
+            )
+            if not silent:
+                raise ValidationFailedError(
+                    f"run '{run.id}' holds no candidate usage row that names no served model: its responses named "
+                    "what answered, or its candidate made no model call; a statement never replaces a record",
+                    remedy="leave it as recorded",
+                )
+            silent_by_run[run.id] = silent
+
+        def _stamp_with(record: ServedModelAttestation) -> Callable[[EvalRun], dict[str, Any] | None]:
+            def _stamp(current: EvalRun) -> dict[str, Any] | None:
+                if current.served_model_attestation is not None:
+                    # Stamped since the check: by this same statement, or by another model (read below).
+                    return None
+                data = current.to_dict()
+                data["served_model_attestation"] = record.to_dict()
+                return data
+
+            return _stamp
+
+        for run_id, silent in silent_by_run.items():
+            record = ServedModelAttestation(attested_by=attested_by, served_model=stated, result_ids=silent, note=note)
+            outcome = update_eval_run(storage, run_id, scope_id, _stamp_with(record))
+            now = storage.load_eval_run(run_id, scope_id)
+            held = now.served_model_attestation if now is not None else None
+            if held is None or held.served_model != stated:
+                raise ConflictError(
+                    f"run '{run_id}' changed while its served model was being attested ({outcome}); it was not "
+                    "stamped, and the runs named before it were",
+                    remedy="attest the remaining runs again",
+                )
+            if outcome != "saved":
+                already.append(run_id)
+        return already
+
+    already = await run_blocking(host.blocking_executor, write)
+    stamped = [run_id for run_id in run_ids if run_id not in already]
+    log.info("eval.attest_served_model runs=%d already=%d by=%s", len(stamped), len(already), attested_by)
+    return Attested(
+        coordinate="served_model",
+        run_ids=stamped,
+        already_attested=already,
+        stated={"served_model": stated},
+        attested_by=attested_by,
+    )
 
 
 def _attested_as(run: EvalRun, stated: Mapping[str, str]) -> bool:
@@ -466,4 +613,10 @@ def _attested_as(run: EvalRun, stated: Mapping[str, str]) -> bool:
     )
 
 
-__all__ = ["Attested", "Remeasure", "attest_measure_definitions", "remeasure_run"]
+__all__ = [
+    "Attested",
+    "Remeasure",
+    "attest_measure_definitions",
+    "attest_served_model",
+    "remeasure_run",
+]

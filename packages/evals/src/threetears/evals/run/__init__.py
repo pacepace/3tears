@@ -171,7 +171,13 @@ from threetears.evals.run.job_work import (
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.run.regrade import Regrade, RegradedDim, regrade
-from threetears.evals.run.remeasure import Attested, Remeasure, attest_measure_definitions, remeasure_run
+from threetears.evals.run.remeasure import (
+    Attested,
+    Remeasure,
+    attest_measure_definitions,
+    attest_served_model,
+    remeasure_run,
+)
 from threetears.evals.run.judge_kind import (
     FrozenJudgeCase,
     JudgeCaseFreezeReport,
@@ -412,6 +418,7 @@ __all__ = [
     "rate_result",
     "regrade",
     "attest_measure_definitions",
+    "attest_served_model",
     "remeasure_run",
     "record_witnessed_cell",
     "stamp_witnessed_judge",

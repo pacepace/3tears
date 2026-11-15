@@ -97,12 +97,21 @@ class Rescore(_Shape):
 
     state: StateOf | None = Field(default=None, description="Its state where it is not counted.")
     variance: float | None = Field(default=None, description="The variance between scorings of one reply.")
+    variance_interval: tuple[float, float] | None = Field(
+        default=None, exclude_if=lambda value: value is None, description="The interval on it."
+    )
     repeated_results: int | None = Field(default=None, description="Results scored more than once.")
     repeated_cases: int | None = Field(default=None, description="Distinct cases behind them.")
     fail_given_pass: float | None = Field(default=None, description="How often a passed reply fails on a re-score.")
     fail_given_pass_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     ceiling_low: float | None = Field(default=None, description="The low end of the ceiling the noise puts on pass^k.")
     ceiling_high: float | None = Field(default=None, description="Its high end.")
+    k: int | None = Field(default=None, description="The k the ceiling is read at: the most scores one case holds.")
+    ceiling_state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Where the ceiling is read for the dimension and could not be: not available, why.",
+    )
 
 
 class Looks(_Shape):

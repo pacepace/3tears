@@ -283,12 +283,16 @@ class TestAResponseNamingNoModelIsUnknownNotTheAlias:
         assert {c.contrast.apparatus_class_id for c in comparisons} == {cell.apparatus_class_id for cell in alias}
         assert {c.contrast.n_cases for c in comparisons} == {12}
 
-    def test_two_unrecorded_runs_are_alike_in_what_they_did_not_say_and_stay_one_cell(self) -> None:
-        """As for any unrecorded dimension: identically silent observations pool, and the arm reads unrecorded."""
+    def test_two_unrecorded_runs_are_two_cells_since_two_silences_are_no_match(self) -> None:
+        """#1187: two runs whose responses named no model can have been answered by two models, so neither joins
+        the other's cell; each is still read against the control under the rig, and the bundle says why."""
         bundle = _alias_against_pinned([_served(None), _served(None)])
-        (alias,) = _alias_cells(bundle)
-        assert (alias.n_observations, alias.rig_class_id) == (72, None)
-        assert bundle.refused_merges == []
+        cells = _alias_cells(bundle)
+        assert [cell.n_observations for cell in cells] == [36, 36]
+        assert sorted(cell.observation_ids for cell in cells) == sorted([_alias_run(0), _alias_run(1)])
+        assert len({cell.rig_class_id for cell in cells}) == 1 and cells[0].rig_class_id is not None
+        (refused,) = bundle.refused_merges
+        assert (refused.reason, refused.dimensions) == ("apparatus_unknown", [_CONFOUND])
 
 
 class TestARunTheProviderMovedPartWayThrough:

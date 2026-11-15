@@ -49,6 +49,7 @@ from threetears.evals.analysis.agreement import (
     person_scores_by_result,
 )
 from threetears.evals.analysis.judge_drift import judge_drift
+from threetears.evals.analysis.judge_noise import with_rescore_noise
 from threetears.evals.analysis.revisions import refuse_pooled_revisions
 from threetears.evals.analysis.judge_profiles import judged_ratings, judges_tiers
 from threetears.evals.analysis.arms import arm_names
@@ -58,13 +59,16 @@ from threetears.evals.analysis.contention import (
 )
 from threetears.evals.analysis.cells import (
     pool_observations,
+    MEASURE_DEFINITIONS_DIMENSION,
     rig_of,
     split_on_served_model,
     subject_key_instabilities,
 )
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import (
+    attested_served_models,
     model_identity_disclosure,
+    served_attestation_disclosure,
     project_score_records,
     request_settings_disclosure,
     request_settings_readings,
@@ -109,7 +113,12 @@ from threetears.evals.analysis.bundle.insights import (
     carried_insights,
     retracted_insights,
 )
-from threetears.evals.analysis.bundle.observations import classify_apparatus, observations_of, variant_key_of_run
+from threetears.evals.analysis.bundle.observations import (
+    classify_apparatus,
+    measure_definition_levels,
+    observations_of,
+    variant_key_of_run,
+)
 from threetears.evals.analysis.bundle.measures import (
     failures_as_misses,
     goal_check_proofs_of,
@@ -532,6 +541,18 @@ def assemble_context_bundle(
     # disclose it — the coverage map (where most findings are formed), the divergences, and
     # the campaign-wide scan that answers even when neither of those exists.
     apparatus_levels = read_apparatus_levels(runs, results_by_run, profile=profile)
+    # What each host measure counted is the instrument's, so where the runs were not all read under one definition it
+    # is a dimension of the rig, read here once for every reader of the rig below: the cells (runs under two
+    # definitions are under two rigs, and a run holding host measures that recorded none is under a rig of its own,
+    # #1187: an unrecorded coordinate matches nothing), the confound scans, the coverage rows, the divergences and the
+    # factor aliasing. Absent where the runs all say one thing, so such a campaign's every id is what it was.
+    if definition_levels := measure_definition_levels(runs, results_by_run):
+        if MEASURE_DEFINITIONS_DIMENSION in apparatus_levels:
+            raise ValueError(
+                f"the host declares an apparatus dimension named {MEASURE_DEFINITIONS_DIMENSION}, the name the "
+                "package reads a run's measure definitions under"
+            )
+        apparatus_levels[MEASURE_DEFINITIONS_DIMENSION] = definition_levels
     # Derived before the lenses, because it decides which runs each of them compares: the keys that name the
     # declared control's arm under this build — the stored key, which cells stamped under its predicate carry
     # for good, and the key its lever map re-keys to under this one. `campaign_design` matches them against
@@ -557,7 +578,7 @@ def assemble_context_bundle(
     mechanisms = mechanism_observations(results, profile=profile)
     # Which model answered each result's candidate calls, read once so every lens that names the served
     # model as a confound and the per-arm readings agree about it.
-    served = served_models(results)
+    served = served_models(results, attested_served_models(runs))
     design = campaign_design(
         runs,
         declared_control,
@@ -603,7 +624,7 @@ def assemble_context_bundle(
     )
     # One arm's observations under one rig stay one cell only while one candidate model answered them all: a served
     # model that changed between runs, or that some responses did not name, classes them apart before anything pools
-    # (owner, 2026-10-23: a silent served model never joins a cell).
+    # (owner, 2026-10-23: a silent served model never joins a cell, nor another silent run's).
     observations, classes = split_on_served_model(
         observations,
         {c.apparatus_class_id: c for c in apparatus_classes.values()},
@@ -741,7 +762,15 @@ def assemble_context_bundle(
         # When each run was measured, as data: a fact, never a reason to read runs apart.
         measurement_windows=windows,
         launch_disclosure=_launch_disclosure(runs),
-        model_identity_disclosure=model_identity_disclosure(unconfirmed_model_identities(runs, results)),
+        model_identity_disclosure=" ".join(
+            said
+            for said in (
+                model_identity_disclosure(unconfirmed_model_identities(runs, results)),
+                served_attestation_disclosure(runs),
+            )
+            if said
+        )
+        or None,
         request_settings_disclosure=request_settings_disclosure(request_settings_readings(runs, results)),
         # Scanned over every resolved run, not over a lever's cohort. A campaign that swept
         # nothing has an empty coverage map and no divergences, and both confound-bearing
@@ -933,6 +962,11 @@ def assemble_context_bundle(
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
         planned_looks=planned_looks,
+    )
+    # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
+    # paired judged contrast's share of it, filled last so no other section copies them.
+    bundle.judged_measures, bundle.multiple_comparisons = with_rescore_noise(
+        bundle.judged_measures, bundle.multiple_comparisons, results_by_cell, projection.records
     )
     # The tests its readings are read by, which a caveat on its looks quotes a measured rate for.
     if looks is not None:

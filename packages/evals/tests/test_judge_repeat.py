@@ -492,21 +492,20 @@ class TestWhatWasPaidForIsReported:
     async def test_an_account_refusal_stops_the_repeat_before_any_later_call(self):
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=3, failure_describer=_describe_account_refusal)
-        order = [
-            planned_id
-            for planned_id in (r.id for r in off_loop(host.storage.query_eval_results_by_run, run_id, _SCOPE))
-        ]
-        refused_party = 1
-        judge.refused_parties = {refused_party}
+        # The results are repeated in a drawn order, so two of the three refuse: whichever comes first is the refusal,
+        # and it comes before the last result whatever the order.
+        judge.refused_parties = {1, 2}
         judge.calls.clear()
 
         report = await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
 
         assert report.stopped is not None and "refused" in report.stopped
         parties_called = [int(re.search(r"party: p(\d+)", user).group(1)) for _, _, user in judge.calls]  # type: ignore[union-attr]
-        assert parties_called[-1] == refused_party, "nothing is called after the refusal"
-        repeated_up_to_refusal = order[: parties_called.index(refused_party) + 1]
-        assert report.repeated == repeated_up_to_refusal, "the refused result's answer is recorded; nothing after it"
+        assert parties_called[-1] in judge.refused_parties, "nothing is called after the refusal"
+        assert not judge.refused_parties & set(parties_called[:-1]), "the first refusal stops the repeat"
+        assert len(set(report.repeated)) == len(report.repeated) == len(parties_called), (
+            "the refused result's answer is recorded; nothing after it"
+        )
         assert len(report.repeated) < 3, "the refusal must come before the last result, or the stop is vacuous"
         assert report.calls_made == len(judge.calls)
 
@@ -643,6 +642,36 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
 
         with pytest.raises(ValidationFailedError, match="are not results of run"):
             await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, result_ids=["elsewhere"])
+
+
+class TestARepeatRecordsHowItsResultsWereChosen:
+    async def test_every_result_asked_is_a_random_draw_and_results_named_by_id_are_selected(self):
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge, cases=3)
+        stored = off_loop(_results, host, run_id)
+
+        await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+        await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0, result_ids=[stored[0].id])
+
+        samples = {
+            result.id: [repeat.sample for repeat in result.judge_repeats] for result in off_loop(_results, host, run_id)
+        }
+        assert samples == {
+            stored[0].id: ["random", "selected"],
+            stored[1].id: ["random"],
+            stored[2].id: ["random"],
+        }
+
+    async def test_every_result_asked_is_asked_in_a_drawn_order(self):
+        # Six results have 720 orders: four repeats asked in one order would happen by chance about once in 370 million.
+        judge = _PricedJudge()
+        host, run_id = await _judged_run(judge, cases=6)
+        stored = [result.id for result in off_loop(host.storage.query_eval_results_by_run, run_id, _SCOPE)]
+        orders = set()
+        for _ in range(4):
+            report = await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
+            orders.add(tuple(report.repeated))
+        assert orders != {tuple(stored)} and len(orders) > 1
 
 
 class TestARepeatReadsItsRunAPageAtATime:

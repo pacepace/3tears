@@ -181,7 +181,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`CORE_RESET_DOC_TYPES`** · constant (frozenset) · Every `doc_type` a core baseline reset deletes: the core and every regenerable type, and never a durable one.
 - **`CORE_SCHEMA_MINOR`** · *host contract* · constant (int) · The core minor this build writes within `CORE_SCHEMA_VERSION`.
-  <br>`= 20`
+  <br>`= 22`
 - **`CORE_SCHEMA_VERSION`** · *host contract* · constant (int) · The core version this build writes. Every bump is a baseline reset, appends one line here and moves `CORE_BASELINE_VERSION` with it.
   <br>`= 15`
 - **`COST_CAP_ORIGINS`** · *host contract* · constant (tuple) · The values of `CostCapOrigin` this build knows, in the order its readers list them.
@@ -605,7 +605,7 @@ The engine's analysis package: campaigns, context bundles, generated analyses an
 **Constants**
 
 - **`CELL_MODEL_VERSION`** · *host contract* · constant (int) · The cell model this module implements, stamped onto every analysis generated under it (`GenerationProvenance.cell_model_version`).
-  <br>`= 14`
+  <br>`= 15`
 - **`DECLARED_NAME_CHARS`** · *host contract* · constant (int) · The most characters a declared display name holds: an aspect's short name, a goal check's name, a stratum's name.
   <br>`= 32`
 - **`GOAL_CHECK`** · *host contract* · constant (str) · What a page calls a goal check its template names nothing and whose expression names no subject a reader can read (`_check_subject`): numbered where an aspect reads several such (`check_names`).
@@ -1183,7 +1183,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `arm_mechanisms` | `list[ArmMechanismReading]` | `[]` | Each arm's mean of every covariate read as an observed mechanism (today the candidate's reasoning share, `reasoning_ratio`), sorted by arm then covariate. |
 | `arm_served_models` | `list[ArmServedModel]` | `[]` | Which model the provider's responses named as having answered each arm's candidate calls, sorted by arm. |
 | `arm_production_footings` | `dict[str, PooledProductionFooting]` | `{}` | Arm (variant key) -> what each of its runs set away from the subject's production configuration, read off the host's sweepable declarations: `runs` maps run id -> that run's footing (`moved` with levels, `unchecked`, `held`; null for a run nobody could check). |
-| `cell_model_version` | `int` | `14` | Which definition of a cell produced `cells`. |
+| `cell_model_version` | `int` | `15` | Which definition of a cell produced `cells`. |
 | `host_declarations_digest` | `str` | required | sha256 of the host's declared sweepables (each one's name, role, blank rule and whether it is a dimension of the rig, `Sweepable.rig_dimension`) and world dimension names — the declarations that partition observations into apparatus classes and arms (`host_declarations_digest`). |
 | `cells` | `list[Cell]` | `[]` | Every (variant, apparatus class) that any observation landed in, with how many observations pooled there and over how many cases and repeats per case. |
 | `variant_index` | `list[VariantIndexEntry]` | `[]` | One entry per keyed variant — the variant key and the resolved lever map it was digested from. |
@@ -1512,7 +1512,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_archive` | `write` | `campaign_id`, `archived?` | Archive a campaign (or restore it): out of listings, nothing destroyed. |
 | `result_regrade` | `write` | `result_id`, `checks?`, `judges?`, `apply?` | Grade one stored result again from its trace: report every verdict that moves, store on apply. |
 | `run_remeasure` | `write` | `run_id`, `store?` | Read one stored run's host measures again under the host's current definitions: report, or store. |
-| `runs_attest_definitions` | `write` | `run_ids`, `measure_definitions?`, `attestation_note?` | State the measure definitions stored runs ran under, for runs that recorded none; no result is touched. |
+| `runs_attest` | `write` | `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`, `attestation_note?` | State one coordinate of stored runs that they did not record: their measure definitions or served model. |
 | `result_rate` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason` | Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled. |
 | `result_rate_person` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason`, `person`, `rating_source`, `rated_at?` | Record a person's rating of one judged dimension, relayed by a caller the host attests for them. |
 | `analysis_archive` | `write` | `analysis_id`, `archived`, `archive_reason?` | Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed. |
@@ -1540,7 +1540,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `aspects` (on `campaign_create`) | array of `object` | Where the question is measured, each {label?, short_name?, template_id?, margin?, design?, run_ids?}. label omitted names the aspect after the campaign's behavior, each / written - (tools/search is tools-search, as aspect_label_for writes it); one aspect at most omits it. short_name is what a page prints for the aspect in table cells and sentences, at most 32 characters and no other aspect's label or short name; omitted, the label is printed whole. design is what the aspect sets out to learn: axes (at least one: {axis_id, reader_name?, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares; reader_name, what every page calls the lever, omitted takes the name the host declares for it), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally merit_axes, bars ([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control there before it is shown worse: optional and never assumed, it makes a question of a control a non-inferiority one, a question without it is a superiority question read against zero, and a campaign naming no control never states one (it holds its arms to bars). template_id omitted is the one template every run of the aspect ran. Labels are unique, and a run belongs to one aspect. |
 | `aspects` (on `campaign_update`) | array of `object` or `null` | Where the question is measured, each {label?, short_name?, template_id?, margin?, design?, run_ids?}. label omitted names the aspect after the campaign's behavior, each / written - (tools/search is tools-search, as aspect_label_for writes it); one aspect at most omits it. short_name is what a page prints for the aspect in table cells and sentences, at most 32 characters and no other aspect's label or short name; omitted, the label is printed whole. design is what the aspect sets out to learn: axes (at least one: {axis_id, reader_name?, values: [{content, display}], rationale?}, each axis_id a lever or open-family member this host declares; reader_name, what every page calls the lever, omitted takes the name the host declares for it), held_fixed ({stimulus: controlled\|uncontrolled, stimulus_reason (required when uncontrolled), apparatus: commissioned\|witnessed}), and optionally merit_axes, bars ([{measure_id, threshold, direction}], no looser than the registered ones), guardrail_margins, merit_priority and intended_repetitions. margin, in points of a 0-100 pass rate, is how far a candidate may fall below the control there before it is shown worse: optional and never assumed, it makes a question of a control a non-inferiority one, a question without it is a superiority question read against zero, and a campaign naming no control never states one (it holds its arms to bars). template_id omitted is the one template every run of the aspect ran. Labels are unique, and a run belongs to one aspect. |
 | `aspects_from` | array of `string` or `object` | Campaigns of this scope whose aspects this one adopts whole — template, runs, design, margin, and when its design was declared and its question asked — with their floors and arms: each a campaign id, or {campaign_id, label} to adopt a campaign's one aspect under another label. An adopted aspect keeps its readings' standing; what this campaign adds to it (a question, a floor, a margin, an arm) carries the time it was added. An adopted aspect keeps its short_name, and an adopted arm its own. Two aspects under one label or printed alike, or one run in two of them, are refused. |
-| `attestation_note` | `string` or `null` | Why the host knows which definitions the runs ran under. |
+| `attestation_note` | `string` or `null` | Why the host knows what it states of the runs, in its own words. |
 | `bar` | `number` or `null` | The pass^k a variant must clear, from 0 to 1; omitted ranks the variants without a verdict. |
 | `bars_overridden` | array of `string` | Each absolute bar the decided arm missed that the call overrides, as `<aspect>/<measure>` (an aspect label holds no slash), the aspect and measure the page's bars table names it by. |
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
@@ -1568,6 +1568,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `condition_filter` | `'ok'` \| `'candidate_fail'` \| `'infra_exclude'` or `null` | List only results in this condition: ok (delivered, scored), candidate_fail (scored as a hard fail) or infra_exclude (a harness fault, in no aggregate). |
 | `confirm` | `string` | Must echo the id of what is destroyed, exactly. |
 | `control_from_run_id` | `string` or `null` | One of the campaign's runs whose variant becomes the control arm, the stack every other is read against: its variant key is resolved from the run, so nobody types it. Needs a declared campaign. Null clears the control; omitted leaves it as it is. |
+| `coordinate` | `'served_model'` \| `'measure_definition'` | Which coordinate of the runs' identity is stated: measure_definition (what each host measure counted when the runs' values were read) or served_model (the model that answered their candidate calls). No other coordinate is stated after the fact. |
 | `criteria` | array of `string` or `null` | Criteria, by dimension name; omitted takes every dimension a result was judged on. |
 | `criterion` | `string` | The rubric dimension's name on that template. |
 | `criterion_dim` | `string` or `null` | Only the profiles of this criterion's dim; omitted lists every one. |
@@ -1612,7 +1613,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `limit` | `integer` | The most rows to return, up to 200. |
 | `margins` | `object` | An adopted aspect's label to its margin, in points of a 0-100 pass rate, more than 0 and less than 100: a margin declared at adoption, carrying the time it was added. |
 | `max_cost_usd` | `number` or `null` | A per-run cost cap in dollars, at or below the host's ceiling; it can only lower that ceiling, and a value above it is refused. |
-| `measure_definitions` | `object` or `null` | measure key -> the definition digest those runs ran under, as the host computes it from the measure descriptors as they were. Omitted: the host's current definitions, for runs made since its last definition change. |
+| `measure_definitions` | `object` or `null` | For measure_definition: measure key -> the definition digest those runs ran under, as the host computes it from the measure descriptors as they were. Omitted: the host's current definitions, for runs made since its last definition change. |
 | `measure_latency` | `boolean` | Declare latency under test: each run executes its cases one at a time, with no other run beside it. False runs several cases at once — far faster — and the latency then recorded is marked read under concurrency and never compared. |
 | `metric` | `string` or `null` | The measure to read; omitted reads the composite score. |
 | `min_absolute_change` | `number` | The smallest move a regression flag counts, in the measure's unit; 0 lets the test decide. |
@@ -1657,6 +1658,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `second_judge_model` | `string` | The model the second judge sends every judged dimension to. |
 | `second_judge_temperature` | `number` or `null` | The temperature every second-judge call is requested at; omitted for what each prompt asks. |
 | `selection` | `'borderline'` \| `'all'` | Which scored dims are re-judged: borderline (stored score inside the scale, or a recorded repeat or second judge disagreed) or all. |
+| `served_model` | `string` or `null` | For served_model: the model that answered those runs' candidate calls, as a provider's response would name it: the dated version, never a floating alias. |
 | `short_names` | `object` or `null` | An aspect's label to its short name, what a page prints for it in table cells and sentences (at most 32 characters, no other aspect's label or short name), or to null to print its label whole. An aspect not named keeps its own. Editable once runs have joined, since it changes nothing any run measures; refused beside aspects, whose own short_name says it. |
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
 | `since` | `string` or `null` | Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each by its own time; omit for every gap. |

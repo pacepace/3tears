@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         SecondJudgeScore,
         SecondJudging,
     )
+    from threetears.evals.schema.reading_states import SampleKind
 
 __all__ = [
     "GoalReading",
@@ -236,6 +237,8 @@ class RepeatView(Protocol):
     def judge_config_ids(self) -> Mapping[str, str]: ...
     @property
     def scores(self) -> Sequence[RepeatedScoreView]: ...
+    @property
+    def sample(self) -> SampleKind | None: ...
 
 
 class SecondScoreView(Protocol):
@@ -664,6 +667,7 @@ class RepeatReading:
 
     judge_config_ids: Mapping[str, str]
     scores: tuple[RepeatedScoreReading, ...]
+    sample: SampleKind | None = None
 
     @classmethod
     def of(cls, repeat: JudgeRepeat, shared: SharedValues) -> RepeatReading:
@@ -671,6 +675,7 @@ class RepeatReading:
         return cls(
             judge_config_ids=shared.names(repeat.judge_config_ids),
             scores=tuple(RepeatedScoreReading.of(entry, shared) for entry in repeat.scores),
+            sample=repeat.sample,
         )
 
 

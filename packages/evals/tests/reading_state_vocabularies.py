@@ -121,6 +121,7 @@ _PAGE = "how a page draws a mark"
 #: Every discovered vocabulary that is no word about whether a reading counts, under the reason it is not.
 NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
     _SHARED: (
+        "schema/reading_states.py:AttestableCoordinate",
         "schema/reading_states.py:CaveatClass",
         "schema/reading_states.py:CaveatReach",
         "schema/reading_states.py:Coordinate",
