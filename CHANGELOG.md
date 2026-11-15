@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a judged contrast is checked against a blind read, and people's ratings correct a cell's mean only from a random sample
+
+**Added:** a separated judged contrast can carry one `corrected` field where a blind read covers its two cells
+(`judged_contrasts_corrected`, which the assembly calls with the stored blind reads once reads are stored): the contrast as the read's reader would see it, a check of its one verdict and never a second one. The judge's
+difference over the read's cases plus the mean of reader minus judge over the labelled pair items
+(`analysis/people_corrected.py`), read at the level the contrast's own Holm step used. Its result is `met`
+(confirms), `not_met` with `people_disagree` (contradicts) or `instrument_leans` (the judge leans toward the arm the
+verdict favours), `undecided`, or `insufficient` with `too_few` from 20 labelled cases; it decides from 60, the
+smallest count at which every bar of `tests/test_simulated_people_corrected.py` held. With fewer than 20, a sample not
+drawn at random, more than a tenth skipped, or an unrecorded coordinate, its state is `not_available` with that
+reason. `Corrected` gains an optional `reason` from the shared set.
+
+**Changed:** the prediction-powered estimate beside a cell's judged mean reads people's ratings only where they are a
+random sample (the first items of a blind read's drawn order) or rate every counted result of the cell. Ratings a
+person chose to give leave it `not_available`, `not_drawn_at_random`; the code-only report says "not drawn at random".
+`PredictionPoweredReading.unavailable_reason`, a sentence, is replaced by `state`, a shared state and reason.
+
+**For hosts:** a cell estimate that read ratings of part of a cell given outside a blind read now reads not
+available. Rate the whole cell, or ask for the ratings through a blind read answered from the top; the bundle reads a
+blind read's sample once reads are stored.
+
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
 **Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer

@@ -196,7 +196,7 @@ class TestTheOutcomes:
 
     def test_more_than_a_tenth_skipped_states_no_figure(self) -> None:
         pairs = OUTCOMES["met"][0]
-        assert _read(pairs, skipped=len(pairs) // 9).state == StateOf(
+        assert _read(pairs, skipped=len(pairs) // 8).state == StateOf(
             state="not_available", reason="skipped_past_limit"
         )
         assert _read(pairs, skipped=len(pairs) // 10).state is None

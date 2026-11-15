@@ -473,12 +473,16 @@ judge's figure, here for a judge biased 0.8 high over a true mean of 3 (one draw
 - **Which ratings count.** Exactly those agreement pairs (step 6): a person's rating, of a result read, on a
   dimension its judge scored on the same scale (`person_scores_by_result`). Several people on one result count
   as their mean. On a candidate failure the judge's score counts the scale floor, so the person's does too.
+- **Only a random sample.** The ratings must be a person's answers to the first items of a blind read's drawn order,
+  or rate every counted result in the cell. Ratings a person chose to give follow content, and the rectifier is then
+  biased in a direction nothing measures: the estimate reads `not available`, `not_drawn_at_random`. A model's
+  rating never enters it.
 - **The interval** is clustered by case like every other: the analytic cluster-robust variance of the estimate
   (`prediction_powered_mean`), which carries the covariance between the judge's mean and the rectifier (the
   rated results are among those the judge's mean covers), read on t with the rated cases minus one degrees of
   freedom.
-- **At least 10 rated results** (`PPI_MIN_LABELLED_RESULTS`). Below it the estimate reads `not available` and
-  says how many were rated: the correction is estimated from the rated results alone, and below ten its spread is
+- **At least 10 rated results** (`PPI_MIN_LABELLED_RESULTS`). Below it the estimate reads `not available`,
+  `too_few`, and says how many were rated: the correction is estimated from the rated results alone, and below ten its spread is
   too uncertain to put an interval on.
 - A cell nobody rated carries no estimate (`None`). Ratings are per cell, so 10 rated results per arm you want
   corrected, not 10 in all.
