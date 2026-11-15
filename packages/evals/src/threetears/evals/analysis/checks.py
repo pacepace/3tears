@@ -102,6 +102,7 @@ class Rescore(_Shape):
     fail_given_pass_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     ceiling_low: float | None = Field(default=None, description="The low end of the ceiling the noise puts on pass^k.")
     ceiling_high: float | None = Field(default=None, description="Its high end.")
+    k: int | None = Field(default=None, description="The k the ceiling is read at: the most scores one case holds.")
 
 
 class Looks(_Shape):

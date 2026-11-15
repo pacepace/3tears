@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a judge checked against itself: re-score noise in the judge's own table
+
+**Added:** a bundle fills two fields the shape move left unset, from the judge's repeats (`judge_repeat`). Each judged
+arm whose results were re-scored carries `rescore`: the re-score variance (half the mean squared difference between a
+counted score and its repeat, read only for a repeat by the very judge that scored the arm), the repeated results and
+cases behind it, and, on a pass/fail dimension that counts toward a trial's pass, `e` (how often a repeat fails a
+result whose first reading passed, with its Wilson interval over cases) and the ceiling it puts on pass^k,
+`(1 - e)^(k - 1)`, as a range at the arm's `k` (new optional field on `Rescore`). Below 20 repeated results from 10
+cases its state is `not_available`, `too_few`, and no figure is given. Each paired judged contrast whose two arms have
+their figures carries `rescore_share`, the share of the contrast's variance that is the judge's re-score noise, low
+then high; it exists at one trial per case. Both are named re-score noise, never judge error: a judge that repeats
+itself exactly reads none and may still be wrong. Nothing reads them: no interval, verdict, state, caveat or page line
+moves, and the report input carries neither. A bundle over results nobody re-scored is unchanged, byte for byte. The
+statistics are held against a planted truth in `tests/test_simulated_judge_noise.py`.
+
+**For hosts:** nothing.
+
 ### evals: a recorded judge call over a report page is keyed by what the page was rendered from, not by its words
 
 **Changed:** a word the package prints differently on a report writer's page, or in its computed facts, no longer
