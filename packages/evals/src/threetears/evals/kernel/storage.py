@@ -1028,7 +1028,8 @@ class EvalStorage:
     Load paths go through each model's own ``from_dict``, which validates exactly as construction
     does: a stored document with a field the model does not declare, without one it requires, or
     written under another ``schema_version`` is refused, never coerced or filtered — see the module
-    docstring.
+    docstring. Every read and write refuses a call on a thread running an event loop
+    (:exc:`~threetears.evals.schema.StoreCalledOnEventLoop`), so async code offloads it.
     """
 
     def __init__(self, store: DocumentStore, *, host_doc_types: Sequence[str] = ()):

@@ -264,13 +264,14 @@ records its config's id. The id is a fingerprint of the engine's wording only: a
 guide are its criterion, which a stored profile keys on separately, so editing them does not change it. Change a word
 of the built-in wording, as a release may, and every dimension judged with it is judged by a new judge. Its scores
 form their own agreement groups, tiers and drift readings, and no stored profile measured on the old wording is read
-for it (`is_builtin_judge_config_id` tells a built-in id from a config's).
+for it (a built-in id starts with `builtin:`, and a config's never does).
 
 **So is the reply format a configured judge is sent.** The engine appends one reply-format contract to every
 prompt, an operator's `prompt_template` included, so a configured judge reads its config and that suffix. A
 configured call records `<config id>@<sha12>`: the config's id and a fingerprint of the suffix's wording for the
 dimension's scale and artifact. A release that rewords the suffix makes every configured judge a new judge, as a
-new config version would, though no config changed. `judge_config_of` reads the config's id back from either form.
+new config version would, though no config changed. The config's id is the part of a recorded identity before the
+`@`.
 
 A result whose recorded judge identity is not today's (a release has reworded the built-in prompt or the suffix
 since it was judged) is not re-judged or repeated, because whether today's prompt is the judge that scored it cannot

@@ -42,7 +42,7 @@ from packages.evals.tests.ops_support import (
     settled,
 )
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.analysis import host_declarations_digest
+from threetears.evals.analysis.bundle.schema import host_declarations_digest
 from threetears.evals.harness import ReasonedOn, WriterCaseFile
 from threetears.evals.kernel import EvalInsight, NotFoundError, UnreadableRecordError, ValidationFailedError
 from threetears.evals.ops import CampaignExport, OpsHost, UnresolvedLink, campaign_export
@@ -53,8 +53,8 @@ from threetears.evals.schema import (
     JudgeConfig,
     JudgeConfigTombstone,
     RubricDim,
-    judge_config_of,
 )
+from threetears.evals.schema.models import judge_config_of
 from threetears.evals.storage import InMemoryDocumentStore
 
 SCOPE = TOYHOST_SCOPE

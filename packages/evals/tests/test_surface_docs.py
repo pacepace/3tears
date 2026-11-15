@@ -53,8 +53,11 @@ def test_the_page_opens_with_the_first_eval_and_ends_with_the_counts() -> None:
     first = page.index(f"### Your first eval: these {load_script('surface_kinds.py').typed_through(1)}")
     assert first < 10
     assert page[first + 2].startswith("- `Eval`: ")
-    assert page.index("## The counts") > page.index("## Findings: 10 shapes to resolve")
-    assert not any("Ceiling" in line for line in page[:40])
+    assert page.index("## The counts") > page.index("## Near-duplicate shapes: 2, each saying why both exist")
+    # The totals are reported as a trend, never held to a number: the counts' tables have no budget or ceiling column.
+    headers = [line for line in page[page.index("## The counts") :] if line.startswith("| ") and "Names" in line]
+    assert headers[:2] == ["| Kind | Names | Who meets it |", "| Typed names | Names | Goal |"]
+    assert not [header for header in headers if "Budget" in header or "Ceiling" in header]
 
 
 def test_the_agent_file_is_short_true_and_sufficient() -> None:
@@ -84,3 +87,32 @@ def test_the_agent_file_is_short_true_and_sufficient() -> None:
         assert match[0].startswith(("https://", "packages/evals/examples")) or match[0].startswith("(https://"), (
             f"llms.txt names {match[0]!r}, which the installed package does not hold"
         )
+
+
+def test_a_registered_name_is_listed_only_in_its_register_s_section() -> None:
+    """The debt registers (issue #1199) are shown as such: a name awaiting demotion or needing a shipped example is
+    listed in its register's section and among no healthy names, and the agent's file offers only the second, marked."""
+    kinds = load_script("surface_kinds.py")
+    page = generator.SURFACE_PATH.read_text(encoding="utf-8")
+    sections = {part.split("\n", 1)[0]: part for part in page.split("\n## ")[1:]}
+    demotion = f"Awaiting demotion ({kinds.REGISTER_ISSUE}): {len(kinds.AWAITING_DEMOTION)}"
+    shipped = f"Needs a shipped example ({kinds.REGISTER_ISSUE}): {len(kinds.AWAITING_SHIPPED_USE)}"
+    for title, register in ((demotion, set(kinds.AWAITING_DEMOTION)), (shipped, set(kinds.AWAITING_SHIPPED_USE))):
+        assert title in sections, f"docs/surface.md has no section {title!r}"
+        listed = {f"threetears.evals.{name}" for name in _NAME_LINE.findall(sections[title])}
+        assert listed == register, f"{title} lists {sorted(listed ^ register)} wrongly"
+        elsewhere = {
+            f"threetears.evals.{name}"
+            for other, text in sections.items()
+            if other not in (demotion, shipped)
+            for name in _NAME_LINE.findall(text)
+        }
+        assert not elsewhere & register, f"listed among healthy names too: {sorted(elsewhere & register)}"
+    agent = generator.AGENT_PATH.read_text(encoding="utf-8")
+    offered = [
+        name for name in kinds.AWAITING_DEMOTION if re.search(rf"(?<![\w.]){re.escape(generator.short(name))}\b", agent)
+    ]
+    assert not offered, f"llms.txt offers names awaiting demotion: {offered}"
+    marked = agent.split(f"NEEDS A SHIPPED EXAMPLE ({kinds.REGISTER_ISSUE})")
+    assert len(marked) == 2, "llms.txt does not mark the names that need a shipped example"
+    assert all(f"  {generator.short(name)}: " in marked[1] for name in kinds.AWAITING_SHIPPED_USE)

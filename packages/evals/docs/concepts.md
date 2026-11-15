@@ -9,7 +9,7 @@ reports use. Nothing here assumes you have built an eval before. Why the pieces 
 
 An eval is three slots, `Eval(cases, runner, grader)`. Run it, and it gives you a result you read; give it two
 runners, and it is a comparison. That is the whole of it: [World](ladder.md#rung-4a-an-agent-graded-on-the-world-it-leaves)
-and `Log` are shapes of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
+is another shape of runner, `Model` is a client you may ignore, and `grader(...)` and `Answer` are optional
 modifiers.
 
 ### Case (test case)
@@ -22,8 +22,7 @@ kind (a `lookalike`, say) so every reading is also split by kind, and `world` is
 ### Runner
 
 The code under test: any function from one case to an answer, async or not. It is one **arm**, one version under
-test. A runner may also be a `World`'s, which hosts your agent in a seeded state, or a `Log` of outputs your app
-pushed when it cannot be wrapped as a function.
+test. A runner may also be a `World`'s, which hosts your agent in a seeded state.
 
 ### Grader
 
@@ -703,7 +702,7 @@ An `Eval` takes plain functions, so a few things you might think of as documenta
 | A runner's docstring | its first line | The [template](#template)'s intent, which a [judge](#judge) reads beside every answer, so rewording it can move judged scores. With several arms, it is read only when every arm's docstring shares that first line. | Reword the docstring; a judged run's `summary.render()` prints the intent and where it came from. |
 | A runner's `__name__` | the whole name | The arm's label: the run's candidate model, keyed into its variant, and the eval's default name. | Name the arm: a runner mapping of one (`{"arm-a": runner}`). A comparison names each arm by its key on the `candidate` lever, every arm at one model; keys named `"model=m1"` are models. |
 | A function grader's `__name__` | the whole name | The [measure](#measure)'s name, in the summary, reports and the analysis bundle. | Rename the function. |
-| A function grader's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on the function (`@measure(...)`), or on a [host](#host) of your own (`host=`). |
+| A function grader's docstring | its first line | The measure's description, in the analysis bundle's `measure_catalog`, which a model writing an [analysis](#analysis) reads for what the measure means. | Declare the measure, with its description, on the function (`@measure(...)`, provisional), or on a [host](#host) of your own (`host=`). |
 | A world tool's function: `__name__`, docstring and type hints | the name, the docstring's first line, and each parameter's type | The tool's name, description and parameter schema, which the model is shown, as in any tool-use API. | None: the function's name, docstring and types are the tool's. |
 
 With no docstring, a function grader is described as "The score the `<name>` function gave the candidate's answer.",

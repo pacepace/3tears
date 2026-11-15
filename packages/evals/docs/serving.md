@@ -700,8 +700,8 @@ did.
 
 ## Reporter runs are retired
 
-The analysis reporter kind, its cases and its three actions (`reporter_case_freeze`, `reporter_cases_list`,
-`reporter_case_archive`) are retired with the memo writer and the report planner they measured. The report writer
+The analysis reporter kind, its cases and its three actions (`reporter_case_freeze`, `reporter_cases_list` and
+`reporter_case_archive`, all retired) went with the memo writer and the report planner they measured. The report writer
 is measured by a writer campaign (below, and rung 5, `examples/5-writer/`), judged pairwise
 ([Judges and calibration](judges-and-calibration.md#pairwise-preference-for-the-report-writer)).
 
@@ -797,8 +797,8 @@ What the closure holds:
 - each run's results and traces, calibration ratings, second judge passes, temperature checks and out-of-run spend;
 - the judge configs its runs and results record, a deleted config's tombstone, and each config's rubric dim. A run
   records the bare config id it committed to at launch; a result records the configured judge's identity,
-  `<config id>@<sha12>` (read with the package's `judge_config_of`), the config and a fingerprint of the reply format
-  it was sent. A value in the other type's form refuses the export. A built-in judge's identity, `builtin:<sha12>`, is
+  `<config id>@<sha12>`: the config's id before the `@`, and after it a fingerprint of the reply format it was
+  sent. A value in the other type's form refuses the export. A built-in judge's identity, `builtin:<sha12>`, is
   listed in the manifest's `builtin_judge_config_ids` and names no document;
 - the campaign's analyses, report snapshots, report documents and their sessions and analyst gaps;
 - every insight on the campaign's subject in the scope, whichever campaign minted it;
@@ -856,7 +856,7 @@ the bundle an analysis of this campaign reads, so the export carries it. Nothing
 | Key | What it is |
 |---|---|
 | `built_by` | provenance: the factory, `module:callable`, the exporter says the profile came from. The mint checks it is text and never imports it |
-| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it, computed with `threetears.evals.analysis.host_declarations_digest(profile)`; required, and a declaration without it is refused, naming any key that looks like it |
+| `host_declarations_digest` | the digest of the declarations that partition observations (each sweepable's name, role, blank rule and rig dimension, and the world's names), as every analysis bundle records it (`AnalysisContextBundle.host_declarations_digest`), and as `campaign_export` writes it; required, and a declaration without it is refused, naming any key that looks like it |
 
 The rest of the declaration (measures, bars, kinds, release label) is the host's record. The freeze calls each
 sweepable's reader, the host's lever reader and each kind contract's levels on every run, so the profile is built

@@ -8,10 +8,9 @@
 #
 # Every public name has a stability tier, recorded in api/surface.json and declared in one place, HOST_CONTRACT and
 # STABLE in scripts/public_surface.py. The promise starts at 0.70.0, the first tagged release:
-#   host-contract  a name a host writes against. It moves only with a record here AND a deprecation cycle: the
-#                  release that moves it exports the new name beside the old one, which keeps working for that minor
-#                  release and is named in that section's `notes`; the next minor release drops the old name, and its
-#                  section records the removal in a [[release.change]] as any move is recorded.
+#   host-contract  a name a host writes against. It moves only with a record here whose `why` names what replaces
+#                  it ("Port: ..."), in a single cut-over (owner ruling, 2026-11-15): no shim is exported beside it,
+#                  and a host changes its imports once, against the release notes printed from this file.
 #   stable         the rest of the declared surface (docs/surface.md). Any release may move it, recorded here, and
 #                  there is no compatibility shim.
 #   provisional    every other name a root exports, most because a declared signature reaches it. Promised nothing:
@@ -441,6 +440,80 @@ why = """
 They named the rows of the world conformance kit's obligations table for a package test, and the kit read neither:
 it derives each dimension's checks from its declared shape (obligations). Port: call obligations, or read the
 dimension's verdicts on WorldConformanceReport.for_dimension.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["CassetteStore", "DefinitionStore", "RunRecordStore"]
+why = """
+Demoted by the 2026-11-15 owner ruling that a public name is admitted by criteria, not by a count: no declared
+operation takes or returns any of them, so no host is handed one or must implement one. The engine implements all
+three with its own storage and keeps using them inside. RunStore, ResultStore and JobStore hold no cassette or
+definition method, so none replaces CassetteStore or DefinitionStore. Port: type a CassetteStore or DefinitionStore
+parameter as threetears.evals.kernel.EvalStorage, which implements both; a RunRecordStore parameter as
+threetears.evals.kernel.EvalStorage too, or as RunStore where only runs are read and ResultStore where only results
+are
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["sent_settings_of"]
+why = """
+Demoted by the 2026-11-15 owner ruling: it is the engine's own reader of a completion's sent_settings, and no host
+calls it. A value of the wrong type is still refused when the engine reads it. Port: getattr(completion,
+"sent_settings", None)
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["production_replicating_cost"]
+why = """
+Demoted by admission criterion 2 (owner ruling, 2026-11-15): no production code calls it, only tests. Every cost
+surface still reads a cell's production cost through it. Port: read the production cost an arm's readings report
+(the bundle scoreboard's ArmScoreboard.reply_cost_usd, the mean of this per reply, None when every reply withheld it)
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["is_builtin_judge_config_id"]
+why = """
+Demoted by admission criterion 2 (owner ruling, 2026-11-15: production code or a shipped example uses a public name;
+a test alone does not count): no production code or shipped example calls it, and no host's tests import it. The
+engine keeps using it inside. Port: config_id is not None and config_id.startswith("builtin:")
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["judge_config_of"]
+why = """
+Demoted by admission criterion 2 (owner ruling, 2026-11-15: production code or a shipped example uses a public name;
+a test alone does not count): no production code or shipped example calls it, and no host's tests import it. The
+engine keeps using it inside. Port: the part of a recorded `<config id>@<sha12>` before the `@`; None for a built-in identity
+(`builtin:...`) or None
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["utc_now_iso"]
+why = """
+Demoted by admission criterion 2 (owner ruling, 2026-11-15: production code or a shipped example uses a public name;
+a test alone does not count): no production code or shipped example calls it, and no host's tests import it. The
+engine keeps using it inside. Port: datetime.now(UTC).isoformat()
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["lint_prose"]
+why = """
+Demoted by the 2026-11-15 owner ruling: it holds the sentences the package's own code writes to the report style
+rules, and no host or page calls it. The rules still hold every rendered sentence.
 """
 
 [[release]]

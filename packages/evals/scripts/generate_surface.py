@@ -8,14 +8,18 @@ Dev tooling for ``3tears-evals``: it lives beside the package, not in it, and is
     # Exit 1 when either committed file is stale, without writing:
     uv run python packages/evals/scripts/generate_surface.py --check
 
-Both are read from each declared name's kind (``surface_kinds.py``) and, for a ``typed`` name, the rung that teaches
-it. ``docs/surface.md`` opens with the names a first eval needs and what each rung adds, then the host's contract, the
-operations, the action catalogue, a host's test kits, the shapes by the concept each belongs to, the reading states
-with their reasons and remedies, and last the counts each kind is held to; each line is a name and the first sentence
-of its own docstring. ``llms.txt`` is what an AI agent adopting the package reads first: what it is, the first
-example whole, how to get and run the examples, how to read what comes back, where a later task's names are, and the
-actions. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only what an install holds or the repository
-by URL. ``tests/test_surface_docs.py`` fails while either committed file is not what this makes of the package.
+Both are read from each declared name's kind (``surface_kinds.py``) and, for a ``typed`` name, the rung that teaches it.
+``docs/surface.md`` opens with the names a first eval needs and what each rung adds, then the host's contract, the
+functions a host's code calls, the functions behind actions, the action catalogue, a host's test kits, the shapes by the
+concept each belongs to, the two registers issue #1199 settles (awaiting demotion, and needing a shipped example), each
+name in its register's section and in no other, the reading states with their reasons and remedies, the near-duplicate
+shapes, and last the counts by kind, each kind with its meaning in one line, reported as a trend and never a budget;
+each line is a name and the first sentence of its own docstring. ``llms.txt`` is what an AI agent adopting the package
+reads first: what it is, the first example whole, how to get and run the examples, how to read what comes back, where a
+later task's names are, the names that need a shipped example (marked so), the actions, and the kinds, one line each;
+a name awaiting demotion is never offered to the agent. The wheel ships it as ``threetears/evals/llms.txt``, so it cites only what an
+install holds or the repository by URL. ``tests/test_surface_docs.py`` fails while either committed file is not what
+this makes of the package.
 """
 
 from __future__ import annotations
@@ -40,20 +44,23 @@ from public_surface import (
     paragraphs,
 )
 from surface_kinds import (
-    FIRST_EVAL_CEILING,
-    HELPERS,
-    KIND_BUDGETS,
-    KIND_CEILINGS,
+    AWAITING_DEMOTION,
+    AWAITING_SHIPPED_USE,
+    ENGINE_PROVIDES,
+    FIRST_EVAL_GOAL,
+    HOST_IMPLEMENTS,
     KIND_MEANINGS,
     KINDS,
-    NEAR_DUPLICATES,
-    THROUGH_RUNG_3_CEILING,
+    REGISTER_ISSUE,
+    THROUGH_RUNG_3_GOAL,
     TYPED,
-    UNTAUGHT_TYPED,
+    TYPED_IN_DOCS,
     Kind,
     counts,
     declared_kinds,
+    near_duplicate_shapes,
     objects_of,
+    protocol_sides,
     rung_anchors,
     rung_titles,
     shape_reach,
@@ -74,7 +81,6 @@ LEDGER_PATH = PACKAGE_ROOT / "tests" / "fixtures" / "declared_holdbacks.txt"
 
 #: Each ledger reason, as the page's table names what holds a name listed under it.
 LEDGER_REASONS: Mapping[str, str] = {
-    "discodon-tests-only": "Discodon's tests import it, and nothing else imports, names or reaches it",
     "port-host-implements": "A protocol a host implements and hands the engine",
     "protocol-engine-provides": "A protocol the engine implements and hands a host, or its storage satisfies",
     "unreached": "Nothing",
@@ -133,6 +139,9 @@ EXAMPLES_GUIDE = PACKAGE_ROOT / "examples" / "README.md"
 
 PREFIX = "threetears.evals."
 
+#: Every name either register holds, which no healthy section lists.
+REGISTERED: frozenset[str] = AWAITING_DEMOTION | frozenset(AWAITING_SHIPPED_USE)
+
 
 def short(qualified: str) -> str:
     """A name as both files print it: ``threetears.evals.`` dropped."""
@@ -181,7 +190,8 @@ class Surface:
         self._first: dict[int, str] = {}
 
     def of_kind(self, kind: Kind) -> list[str]:
-        return [name for name in self.entries if self.kinds[name] == kind]
+        """The names of one kind, less those a register holds: each register has its own section."""
+        return [name for name in self.entries if self.kinds[name] == kind and name not in REGISTERED]
 
     def line(self, qualified: str) -> str:
         """One name's line; the second spelling of one class or function says whose it is."""
@@ -279,47 +289,50 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
         if names:
             yield from (surface.line(name) for name in names)
             yield ""
-    untaught = [name for name in surface.entries if name in UNTAUGHT_TYPED]
-    yield f"### Written in an eval, taught on no rung ({len(untaught)})"
+    off_ladder = [name for name in surface.entries if name in TYPED_IN_DOCS]
+    yield f"### Written in an eval, taught on a page rather than a rung ({len(off_ladder)})"
     yield ""
-    yield from (surface.line(name) for name in untaught)
+    for name in off_ladder:
+        page = TYPED_IN_DOCS[name]
+        yield f"{surface.line(name)} Taught in [{Path(page).stem}]({Path(page).relative_to('docs')})."
     yield ""
-    ledger = _ledger()
+    sides = protocol_sides()
     bound = surface.of_kind("bound")
     yield f"## The host's contract: {len(bound)} names a host implements or hands the engine"
     yield ""
-    for reason, title in (
-        ("port-host-implements", "Ports a host implements"),
-        ("protocol-engine-provides", "Protocols the engine provides"),
-    ):
-        names = [name for name in bound if ledger.get(name) == reason]
-        yield f"### {title} ({len(names)})"
-        yield ""
-        yield from (surface.line(name) for name in names)
-        yield ""
-    rest = [name for name in bound if ledger.get(name) not in ("port-host-implements", "protocol-engine-provides")]
+    ports = [name for name in bound if sides.get(name) == HOST_IMPLEMENTS]
+    yield f"### Ports a host implements ({len(ports)})"
+    yield ""
+    yield from (surface.line(name) for name in ports)
+    yield ""
+    rest = [name for name in bound if name not in ports]
     yield f"### What a host builds and hands the engine ({len(rest)})"
     yield ""
     yield from (surface.line(name) for name in rest)
     yield ""
     invoked = surface.of_kind("invoked")
-    operations = [name for name in invoked if name not in HELPERS]
-    yield f"## Operations: {len(operations)} names called to make the engine act"
+    yield f"## Functions a host's code calls: {len(invoked)}"
     yield ""
-    for root, names in _by_root(operations).items():
+    yield "Each is `invoked`: your code imports it and calls it. None is an action; the actions follow."
+    yield ""
+    for root, names in _by_root(invoked).items():
         yield f"### `{root}` ({len(names)})"
         yield ""
         yield from (surface.line(name) for name in names)
         yield ""
-    helpers = [name for name in invoked if name in HELPERS]
-    yield f"### Helpers: {len(helpers)} that repeat a step of the engine's"
+    behind = surface.of_kind("action")
+    yield f"## The functions behind actions: {len(behind)}"
     yield ""
-    yield from (surface.line(name) for name in helpers)
+    yield "Each is `action`: the function an action of the catalogue (below) runs, under the same name. An agent or an"
+    yield "operator invokes the action by name; a host's code may also call the function."
+    yield ""
+    yield from (surface.line(name) for name in behind)
     yield ""
     actions = _actions()
     yield f"## The action catalogue: {sum(len(each) for _, each in actions)} actions an agent calls"
     yield ""
-    yield "`actions.eval_catalogue()` holds them; `transports.fastmcp.mount_fastmcp` serves them over MCP."
+    yield "`actions.eval_catalogue()` holds them; `transports.fastmcp.mount_fastmcp` serves them over MCP. An agent or"
+    yield "an operator invokes each by its name, with no Python, and the action does the work."
     yield ""
     for workflow, each in actions:
         yield f"### {workflow} ({len(each)})"
@@ -334,8 +347,15 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     received = surface.of_kind("received")
     yield f"## Shapes: {len(received)} values a reader is handed"
     yield ""
+    provided = [name for name in received if sides.get(name) == ENGINE_PROVIDES]
+    yield f"### Protocols the engine implements and hands a host ({len(provided)})"
+    yield ""
+    yield from (surface.line(name) for name in provided)
+    yield ""
     groups: dict[str, list[str]] = {}
     for name in received:
+        if name in provided:
+            continue
         concept = "Constants" if name not in surface.reach.by else concept_of(name, surface.entries[name])
         groups.setdefault(concept, []).append(name)
     for concept in (*(c for c, _ in CONCEPTS), "Errors", "Other", "Constants"):
@@ -344,6 +364,24 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
             yield ""
             yield from (surface.line(name) for name in groups[concept])
             yield ""
+    demoting = [name for name in surface.entries if name in AWAITING_DEMOTION]
+    yield f"## Awaiting demotion ({REGISTER_ISSUE}): {len(demoting)}"
+    yield ""
+    yield "Declared, and used by no production code and no shipped example (admission criteria 2 and 3): only tests, the"
+    yield "toy host, a page's prose or the action catalogue reach each. Where an action runs one, the action is the door"
+    yield f"to use. Issue {REGISTER_ISSUE} demotes them together with the namespace re-root, so a host migrates once; do"
+    yield "not start using one."
+    yield ""
+    yield from (f"{surface.line(name)} ({surface.kinds[name]})" for name in demoting)
+    yield ""
+    needing = [name for name in surface.entries if name in AWAITING_SHIPPED_USE]
+    yield f"## Needs a shipped example ({REGISTER_ISSUE}): {len(needing)}"
+    yield ""
+    yield "Each is the only door to something a host must be able to do, and no shipped example uses it yet: use it as"
+    yield f"its line says. Issue {REGISTER_ISSUE} adds the example."
+    yield ""
+    yield from (f"- `{short(name)}`: {md_text(AWAITING_SHIPPED_USE[name])}" for name in needing)
+    yield ""
     states = reading_states()
     yield f"## Reading states: {len(states)} reasons a reading is not counted, and what closes each"
     yield ""
@@ -351,38 +389,34 @@ def _surface_lines(surface: Surface) -> Iterator[str]:
     yield "|---|---|---|"
     yield from (f"| `{state}` | `{reason}` | `{remedy}` |" for state, reason, remedy in states)
     yield ""
-    unreached = [name for name, by in surface.reach.by.items() if by is None]
-    yield f"## Findings: {len(unreached) + len(NEAR_DUPLICATES)} shapes to resolve"
+    pairs = near_duplicate_shapes(surface.kinds)
+    yield f"## Near-duplicate shapes: {len(pairs)}, each saying why both exist"
     yield ""
-    yield f"### Reached by no declared signature ({len(unreached)})"
-    yield ""
-    yield from (f"- `{short(name)}`" for name in unreached)
-    yield ""
-    yield f"### Near-duplicate shapes ({len(NEAR_DUPLICATES)})"
-    yield ""
-    yield from (f"- `{short(one)}` and `{short(other)}`" for one, other in sorted(NEAR_DUPLICATES))
+    yield from (f"- `{short(one)}` and `{short(other)}`" for one, other in pairs)
     yield ""
     total = counts(surface.kinds)
     yield "## The counts"
     yield ""
-    yield "| Kind | Who meets it | Names | Budget | Ceiling |"
-    yield "|---|---|---|---|---|"
-    for kind in KINDS:
-        budget, ceiling = KIND_BUDGETS[kind], KIND_CEILINGS[kind]
-        yield (
-            f"| `{kind}` | {KIND_MEANINGS[kind]} | {total[kind]} | {budget if budget is not None else 'none'} | "
-            f"{ceiling if ceiling is not None else 'none'} |"
-        )
-    yield f"| all | | {sum(total.values())} | | |"
+    yield "A name is public when it meets the admission criteria, not to meet a number: these counts are reported each"
+    yield "wave as a trend. The goals are the adopter's, a first eval's names and rung 3's."
     yield ""
-    yield "| Typed names | Names | Budget |"
+    yield "| Kind | Names | Who meets it |"
     yield "|---|---|---|"
-    yield f"| A first eval (rungs 0 and 1) | {typed_through(1)} | {FIRST_EVAL_CEILING} |"
-    yield f"| Through rung 3 | {typed_through(3)} | {THROUGH_RUNG_3_CEILING} |"
-    yield f"| The whole ladder | {len(TYPED)} | {KIND_BUDGETS['typed']} |"
-    yield f"| Taught on no rung | {len(UNTAUGHT_TYPED)} | 0 |"
+    for kind in KINDS:
+        yield f"| `{kind}` | {total[kind]} | {KIND_MEANINGS[kind]} |"
+    yield f"| all | {sum(total.values())} | |"
     yield ""
-    reasons = list(ledger.values())
+    yield f"Of these, {len(AWAITING_DEMOTION)} await demotion and {len(AWAITING_SHIPPED_USE)} need a shipped example"
+    yield f"(issue {REGISTER_ISSUE}), each listed in its register's section above."
+    yield ""
+    yield "| Typed names | Names | Goal |"
+    yield "|---|---|---|"
+    yield f"| A first eval (rungs 0 and 1) | {typed_through(1)} | {FIRST_EVAL_GOAL} |"
+    yield f"| Through rung 3 | {typed_through(3)} | {THROUGH_RUNG_3_GOAL} |"
+    yield f"| The whole ladder | {len(TYPED)} | |"
+    yield f"| Taught on a page rather than a rung | {len(TYPED_IN_DOCS)} | |"
+    yield ""
+    reasons = list(_ledger().values())
     yield "The hold-back ledger, [`tests/fixtures/declared_holdbacks.txt`](../tests/fixtures/declared_holdbacks.txt),"
     yield "lists every declared name the tree alone does not hold; `tests/test_declared_holdbacks.py` holds it."
     yield ""
@@ -535,11 +569,13 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     for rung, names in by_rung.items():
         if rung > 1:
             yield from _wrapped(f"Rung {rung}, {surface.rungs[rung]}: {_names(names) or 'no new name'}", "  ")
-    untaught = [name for name in surface.entries if name in UNTAUGHT_TYPED]
-    yield from _wrapped(f"On no rung, in the reference: {_names(untaught)}", "  ")
+    off_ladder = [name for name in surface.entries if name in TYPED_IN_DOCS]
+    yield from _wrapped(
+        f"Off the ladder, taught on a page: {'; '.join(f'{short(n)} ({at_tag(TYPED_IN_DOCS[n])})' for n in off_ladder)}",
+        "  ",
+    )
     yield ""
-    ledger = _ledger()
-    ports = [name for name in surface.of_kind("bound") if ledger.get(name) == "port-host-implements"]
+    ports = [name for name in surface.of_kind("bound") if protocol_sides().get(name) == HOST_IMPLEMENTS]
     yield f"EMBEDDING IT IN AN APP ({at_tag('docs/adopting-a-host.md')})"
     yield from _wrapped(
         f"A product builds one kernel.host.EvalHost and hands it to every entrypoint. The {len(ports)} ports a host "
@@ -547,6 +583,10 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
         "  ",
     )
     yield from _wrapped(f"Every declared name, with one line each: {at_tag('docs/surface.md')}", "  ")
+    yield ""
+    yield f"NEEDS A SHIPPED EXAMPLE ({REGISTER_ISSUE}): the only door to each; no shipped example uses it yet"
+    for name in AWAITING_SHIPPED_USE:
+        yield from _wrapped(_plain(f"{short(name)}: {AWAITING_SHIPPED_USE[name]}"), "  ")
     yield ""
     actions = _actions()
     yield f"ACTIONS: {sum(len(each) for _, each in actions)}, called without writing Python"
@@ -557,6 +597,10 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     )
     for workflow, each in actions:
         yield from _wrapped(f"{workflow}: {', '.join(name for name, _ in each)}", "  ")
+    yield ""
+    yield from _wrapped(f"KINDS: every declared name is one; {at_tag('docs/surface.md')} lists each under its kind")
+    for kind in KINDS:
+        yield from _wrapped(f"{kind}: {KIND_MEANINGS[kind]}.", "  ")
 
 
 # --- main --------------------------------------------------------------------------------------------------------

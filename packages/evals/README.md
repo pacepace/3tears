@@ -84,8 +84,9 @@ since only the host knows what it pays ([who sets the prices](docs/cost-and-budg
 pip install, fetch the examples from the repository first
 ([how](examples/README.md#running-them)).
 
-> **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves with a
-> deprecation cycle, and any other declared name may change in any release, recorded in `MIGRATIONS.toml`. The declared
+> **The public API is still changing.** From 0.70.0 only its host contract is promised: a name on it moves only with a
+> `MIGRATIONS.toml` record naming its replacement, in a single cut-over, and any other declared name may change in any
+> release, recorded there too. The declared
 > names are [mapped by role and rung](docs/surface.md); the rest a root exports are provisional
 > ([stability tiers](docs/adopting-a-host.md#stability-tiers)).
 
