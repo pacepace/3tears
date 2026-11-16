@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `loop_turns.emptied` frees sets and dicts too
+
+`emptied` and `emptied_off_loop` (`threetears.core.loop_turns`) took lists only; they now take any mix of lists, sets
+and dicts. A set or dict is emptied an item at a time (`pop` / `popitem`), its turn with the loop looked at every
+`STEP_ITEMS` items, as a list is a slice at a time: a large set of keys dropped by its last reference is one
+deallocation that holds the event loop throughout. Consumers drop their own set-and-dict copies (the reports pod's
+`emptied_unordered`).
+
+### core: `keyed.distinct(..., fenced=True)` keeps a reader's costly conditions above the distinct rows
+
+`distinct` takes `fenced`, which ends its select `OFFSET 0`: a statement reading the distinct rows keeps its conditions
+above them, so a costly one (a call into Python) runs once a distinct row. Unfenced, DuckDB pushed such a condition
+below the `DISTINCT` into the scan: 30,003 calls' values over 30,000 rows of three values, 6 fenced; 30 ms of a 37 ms
+statement on a reports Overview page, 15 ms fenced. Off by default; an unfenced step's SQL is unchanged.
+
 ### core: a follower on a direct L3 pool reads a keys-unknown epoch's keys from the change notes
 
 `PoolNotedKeysReader` (`threetears.core.collections.change_notes`) is a noted-keys reader over a direct L3 pool: it
