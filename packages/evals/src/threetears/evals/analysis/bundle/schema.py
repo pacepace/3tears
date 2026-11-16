@@ -34,7 +34,7 @@ from threetears.evals.kernel.evidence_tiers import (
 )
 from threetears.evals.analysis.judge_drift import JudgeDrift
 from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
-from threetears.evals.schema.reading_states import ArmIdentity, StateOf
+from threetears.evals.schema.reading_states import ArmIdentity, AttestableCoordinate, StateOf
 from threetears.evals.analysis.cells import (
     CELL_MODEL_VERSION,
     Cell,
@@ -504,6 +504,23 @@ class ArmServedModel(EvalDocumentModel):
             "involving it names the served_model confound. unrecorded = at most one model was named and some call "
             "named none, so whether the arm was answered by one model cannot be established."
         )
+    )
+
+    # Both left out of the document when nothing was stated, so an arm no host attested is stored as it was.
+    n_attested: int = Field(
+        default=0,
+        ge=0,
+        exclude_if=lambda value: not value,
+        description=(
+            "Of the unrecorded results, those whose run's host stated afterwards which model answered: attested, "
+            "not recorded. The responses still named none, so n_unrecorded and state are what was recorded; the "
+            "arm's cells pool those results with the stated model's on the host's word, and a reader is told so."
+        ),
+    )
+    attested_models: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description="The models those statements name, sorted. A host's word, never a response's.",
     )
 
     @model_validator(mode="after")
@@ -1349,6 +1366,17 @@ class RunSummary(EvalDocumentModel):
             "assembled before the field existed (its shape names no apparatus, so read it as not carried)."
         ),
     )
+    # Left out of the document when empty, so a run no host attested summarises as one did before the field existed.
+    attested_coordinates: list[AttestableCoordinate] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "The coordinates of this run's identity its host stated after the run, which the run did not record: "
+            "`measure_definition` (EvalRun.measure_attestation) and `served_model` (EvalRun.served_model_attestation)"
+            ". Attested, not recorded: the run pools on the host's word, and a reading over it says so. Empty = "
+            "nothing was stated of it."
+        ),
+    )
     # Left out of the document when unset, so a run that finished summarises, and is fingerprinted, as one did before
     # the field existed.
     ended_because: str | None = Field(
@@ -2066,7 +2094,27 @@ class ComparisonFamily(EvalDocumentModel):
     correction: Literal["holm"] = Field(
         default=MULTIPLE_COMPARISON_CORRECTION, description="The family-wise correction applied."
     )
-    alpha: float = Field(default=SIGNIFICANCE_ALPHA, description="The family-wise error rate the verdicts hold.")
+    alpha: float = Field(
+        default=SIGNIFICANCE_ALPHA,
+        description=(
+            "The family-wise error rate the plan is for: the verdicts hold it over every look the aspect's plan allows "
+            "whose size was fixed before its data; over extends sized by the planner from the readings, only where "
+            "the simulation of looks shows it (`significance.plan_kept`: on the bounded test in the simulated "
+            "setting, not on the t test). Under a plan each look is read at `look_alpha`."
+        ),
+    )
+    # Left out with no plan, so a family read at alpha dumps as it did.
+    look_alpha: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The level each look's verdicts are read at under a plan of L looks (`AspectDesign.planned_looks`): "
+            "alpha / L, so the family holds `alpha` over all L where each look's size was fixed before its data (over "
+            "planner-sized extends, only where `significance.plan_kept` shows it). Its intervals are at "
+            "1 − look_alpha / family_size. "
+            "None with no plan in force, where each look reads at `alpha`."
+        ),
+    )
     family_size: int = Field(
         ge=0,
         description=(
@@ -2087,7 +2135,9 @@ class ComparisonFamily(EvalDocumentModel):
         default=None,
         description=(
             "The level of each comparison's `interval`: 1 − alpha / family_size, Bonferroni's, so the family's "
-            "intervals hold together at 1 − alpha. None when no comparison carried a p."
+            "intervals hold together at 1 − alpha (under a plan of looks, 1 − look_alpha / family_size, so they hold "
+            "together at 1 − alpha over its looks where each look's size was fixed before its data; over "
+            "planner-sized extends, only where `significance.plan_kept` shows it). None when no comparison carried a p."
         ),
     )
     n_untested: int = Field(ge=0, description="Comparisons in the family that could run no test, so carry no p.")
@@ -4187,7 +4237,26 @@ _V2_FIELDS: Final[frozenset[str]] = frozenset(
 #: Field names added, since the freeze, INSIDE a value one of :data:`_V2_FIELDS` holds (a new field of a comparison, a
 #: scoreboard row, a cell), which a version 2 pre-image leaves out at every depth. A change that adds such a field
 #: names it here; a name any shape-66 document already uses at any depth cannot be listed.
-_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset()
+_ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
+    # How often an aspect's test was looked at (`reading_scope.looks`), and the level each look of a family is read
+    # at under a plan (`ComparisonFamily.look_alpha`), both since judges D1.
+    {"looks", "look_alpha"}
+    # #1187: what a cell's arm is split on, what a host stated of a run or an arm after the fact, what a
+    # comparison set says of the models that answered its runs, and that a frontier's contestants' definitions differ.
+    | {
+        "split_on",
+        "attested_coordinates",
+        "n_attested",
+        "attested_models",
+        "served_model_disclosure",
+        "definitions_apart",
+    }
+)
+
+
+#: The cell model every version 2 fingerprint was taken under: bundle shape 66 and cell model 14 moved together, and
+#: no build wrote a version 2 fingerprint after cell model 15.
+_V2_CELL_MODEL_VERSION: Final[int] = 14
 
 
 def known_fingerprint(fingerprint: str) -> bool:
@@ -4251,6 +4320,10 @@ def evidence_digest(document: Mapping[str, Any], *, like: str | None = None) -> 
     if isinstance(manifest, Mapping) and not (like is not None and like.startswith(_V2_PREFIX)):
         return manifest_fingerprint(manifest)
     evidence = {key: value for key, value in document.items() if key in _V2_FIELDS}
+    if isinstance(stamped := evidence.get("cell_model_version"), int) and stamped > _V2_CELL_MODEL_VERSION:
+        # The cell model's version is the package's, not evidence, and version 2 hashed it: put back, as each
+        # Hedges' g is, so a version 2 fingerprint is matched by the same evidence assembled under a later model.
+        evidence["cell_model_version"] = _V2_CELL_MODEL_VERSION
     if isinstance(scoreboard := evidence.get("scoreboard"), list):
         # How an arm's cost was priced (_NOT_ARM_EVIDENCE) is no part of what the bundle read.
         evidence["scoreboard"] = unpresented(scoreboard, _NOT_ARM_EVIDENCE)

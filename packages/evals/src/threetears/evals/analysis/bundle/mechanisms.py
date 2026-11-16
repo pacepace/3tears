@@ -15,8 +15,10 @@ from typing import Literal, NamedTuple
 
 from threetears.evals.analysis.reporting import (
     pool_served_readings,
+    pooled_as,
     ResultServedReading,
     served_reading,
+    through_attestation,
 )
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
@@ -516,8 +518,10 @@ def arm_mechanisms(
 ServedModels = dict[str, ResultServedReading]
 
 
-def served_models(results: Iterable[ResultView]) -> ServedModels:
-    """Read which model answered each result's candidate calls, off its candidate usage rows.
+def served_models(results: Iterable[ResultView], attested: Mapping[str, str] | None = None) -> ServedModels:
+    """Read which model answered each result's candidate calls, off its candidate usage rows, with what its run's
+    host stated afterwards beside a silence (``attested``: result id -> the stated model,
+    :func:`~threetears.evals.analysis.reporting.attested_served_models`).
 
     ``RoleUsage.served_model`` only — what the provider's response named — and never ``RoleUsage.model``
     or the run's ``candidate_model``, which are what the launch asked for and, for a floating alias, name
@@ -528,7 +532,12 @@ def served_models(results: Iterable[ResultView]) -> ServedModels:
     :return: Each result's reading, for the results whose candidate left a usage row.
     :rtype: ServedModels
     """
-    return {result.id: reading for result in results if (reading := served_reading(result)) is not None}
+    stated = attested or {}
+    return {
+        result.id: through_attestation(reading, stated.get(result.id))
+        for result in results
+        if (reading := served_reading(result)) is not None
+    }
 
 
 def served_model_confounds(result_ids: Iterable[str], served: ServedModels) -> list[Confound]:
@@ -556,8 +565,10 @@ def served_model_confounds(result_ids: Iterable[str], served: ServedModels) -> l
     unrecorded = False
     for result_id in result_ids:
         if (reading := served.get(result_id)) is not None:
-            by_requested.setdefault(reading.requested, set()).update(reading.served)
-            unrecorded = unrecorded or reading.unrecorded
+            # Read as the cells read it: a silence its host stated the model of stands for that model.
+            models, silent = pooled_as(reading)
+            by_requested.setdefault(reading.requested, set()).update(models)
+            unrecorded = unrecorded or silent
     if any(len(models) > 1 for models in by_requested.values()):
         return [Confound(dimension=CANDIDATE_SERVED_MODEL_CONFOUND, kind="served_model")]
     if unrecorded:

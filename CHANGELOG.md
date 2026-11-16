@@ -49,6 +49,331 @@ with the key put back exactly as stored, rebuilt from `n_labelled` and `min_labe
 outside a blind read now reads not available: rate the whole cell, or ask for the ratings through a blind read
 answered from the top. The bundle reads a blind read's sample once reads are stored.
 
+### evals: `schema.check_after` is public again, and the host's recorded import list is re-taken
+
+**Fixed:** `threetears.evals.schema.check_after` is exported again, `host-contract`, kind `invoked`. The entry
+"a public name is admitted by criteria" below removed it as a name no production code uses, working from Discodon's
+import list as recorded at a78b15b66 (2026-11-13). That list was stale: Discodon's production store
+(`discodon/evals/storage.py`) imports and calls `check_after` since its 7b2e0afeb pin. The name meets the admission
+criteria: every `DocumentStore` adapter that declares `after` calls it, every store the package ships does, the
+host guide teaches it again, and its meaning is the port's own refusal. That entry claimed Discodon's production code
+imported none of the removed names; the claim was false and is corrected there.
+
+**Changed:** Discodon's recorded lists (`tests/fixtures/host_imports/discodon.txt` and `host_test_imports/`) are
+re-taken at 73996c83e (2026-11-16) by `scripts/record_host_imports.py`, whose header names that commit. A new test
+imports every name on a host's production list from the root the host names it on, from the recorded list alone.
+
+**Added:** a shipped example of `run.update_template`: the courier host renames a stratum that already has a name
+and retires a scenario through it (`tests/fixtures/courierhost/`), the two things only it does.
+
+**For hosts:** nothing to change for `check_after`: `from threetears.evals.schema import check_after` imports as it did
+at 7b2e0afeb. The three names Discodon's tests import that left their roots stay removed; their ports are in the
+entry below.
+
+### evals: a runner that raised on every case says so on the first line; a withheld case key is named in the error; llms.txt says where cases come from
+
+**Fixed:** an eval whose runner raised on every case printed `cases: runner ran 4 of 4 cases; no grader here says pass
+or fail.` over a grader declared `-> bool`. Where the candidate failed every graded trial without answering, the first
+line, the page's lead and every other surface that states a pass count (`passed_clause`, from `pass_count`) now say
+how many it failed on and the first error, once: `gloss failed on all 4 cases, so no answer was graded: the runner
+raised KeyError: 'word'.` Such an arm is compared with nothing: beside other arms it is named in that sentence and
+`Nothing is compared with gloss.`, and no pass share or contrast is stated against it.
+
+**Changed:** whether a line states a pass count is read off each reading's declared kind (a goal check, a classifier's
+accuracy, a host measure declared pass/fail or a boolean with a better end, a judged dimension that counts), over the
+readings the design lists (`AspectDesign.measure_order`) and those the catalog describes. A declared reading no trial
+scored has no stated kind there: it is read as no check, and the line says so (`fields_stripped scored on no trial, so
+it is read as no check`), never guessed to be one.
+
+**Changed:** a runner or grader that raises `KeyError` on a reserved case key the case held (`id`, `stratum`, `world`)
+has its error say the key is withheld from the runner and every grader, and what to do: `the candidate raised
+KeyError: 'id'; the case's 'id' names the case: the package reads it and withholds it from the runner and every
+grader; if your function needs the value, copy it into the case under another key as well`. Every reserved key stays
+withheld. Nothing stored moves: the stored case, its template id and every recording key are as before.
+
+**Docs:** `llms.txt` gains a short `YOUR APP'S CASES` passage: start from the cases the app already has (the data
+files its tests read, tables in its test code, examples in its README or docs), which file shapes load as cases, take
+expected values from its documentation or specification, never from running it, and the package keeps a case's `id`,
+`stratum` and `world`. It says an app that calls no model needs `Eval` alone. The examples' command says it runs from
+the fetched directory, and the KINDS heading points at the surface page named above instead of repeating its address.
+
+### evals: looks are counted from stored facts, a plan of looks tightens every claim, and a reading past it says how often that errs (judges D1)
+
+**Added:** a look is an occasion on which a contrast's test could have been read again on more or different evidence.
+An aspect's reading scope carries `looks` (`planned`, `taken`; `plannable`, `lower_bound` and `late_plan` where they
+say more), the most any contrast there has had, counted from stored facts at read time: the first once both arms hold
+a result; then each launch whose results changed what the test reads (more cases run on one arm and then the other are
+one look), each membership write (a run joined after its results were scored is a look when it joins; a run removed
+or deleted keeps the look it made, and its leaving is another), each re-measure and each re-judge. Judge repeats, a
+second judge's pass and a measure attestation change no value the test reads and are not counted. Where a fact the
+count needs is not stored (a deleted run, an archived member, an untimed result, re-judges stored per result), the
+count is a lower bound and says so. Where a member joined before membership was recorded (durable 17.3), looks were
+not recorded: no count of looks is given (`Looks.recorded` false, `taken` none), since the stored occasions can be too
+many as well as too few, and `evidence_changes` gives the count as what it is. Where looks were recorded since (an
+existing campaign joined or extended after 17.3), `taken` is the first comparison and those, a lower count: at least
+that many looks since looks were recorded, earlier ones not recorded. `Looks.launched` and `largest_step` give the
+cases the first look read and the most one later look added. Each aspect records its runs joining
+and leaving, append-only (`Aspect.membership`), and a new campaign is stamped `EvalCampaign.looks_rule`. `Looks.tests`
+names the tests the aspect's readings are read by (`bounded`, `t`).
+
+**Changed:** under `AspectDesign.planned_looks` = L, declared before the first look, each look of the aspect's family
+reads at α/L (`ComparisonFamily.look_alpha`), and a floor's and a guardrail's `held`, a campaign row's
+`within_margin` and the cases an unclear row projects are read at 1 − (1 − level)/L. `ComparisonFamily.alpha` and
+`CampaignReadings.alpha` are the level the plan is for, which pages print: it holds over looks whose sizes were fixed
+before their data, and over extends sized by the planner only where the simulation shows it (on pass-rate aspects in
+the simulated setting; not shown on t-test aspects); the per-look level is `look_alpha`. A plan declared after the first look is no plan (`late_plan`). With no plan nothing moves. Past its plan
+(past the first look with none), under a plan a lower-bound count cannot show was kept, or within a plan whose keeping
+is not shown for a test the aspect uses (extends sized by the planner from the reading before are shown to hold α only
+where the measured rate's 97.5% upper bound is at most α: today on the bounded test, not on the t test), the caveat
+list carries one `looks` entry per aspect, class D, naming every claim of the aspect and carrying the looks and, per
+test, a reference false-separation rate: what a seeded simulation of that test, plan and count measured, in the
+setting it states (a single contrast, the launch sizes, the extend cap), with the simulation's own uncertainty and its
+named row (`significance.FALSE_SEPARATION`; the larger of batches fixed in advance and planner-sized extends, since
+which added the looks is not stored). It is never the campaign's own rate, which can be higher. None is quoted where no
+row measured that situation, where the aspect's own launch or largest step falls outside the setting, or where the
+count is a lower count, which is shown alone (`CaveatEntry.looks`, `false_separation`). At method reach where the
+aspect claims nothing or the campaign was created before looks were counted and every member's joining is recorded;
+looks recorded since 17.3 on an older campaign reach the report. An aspect whose looks were not recorded carries one method-reach entry saying so, with no rate, where its
+evidence changed more than once. An aspect's `looks` is outside the report input's digest: a look taken re-keys no
+input and no snapshot.
+
+**For hosts:** nothing to do. A campaign whose author will add cases and read again can declare how many looks it plans
+on the aspect's design before its first result.
+
+### evals: a newcomer's wiring mistakes are refused with the fix named, not scored as 0%
+
+**Changed:** a field grader that no answer of any arm carries is refused once the arms have run (exit 2 at the file
+door), naming the fields the answers do carry: `no answer has a field 'label', so its grader could score none of them;
+the answers carry category: grade the field they carry, or have the runner return 'label'`. It used to score every
+case 0% and exit 0. Answers that hold no fields say which shapes do. The refused eval's runs are archived (kept and
+restorable, as `run_archive` keeps a run): `ls`, the history and the frontier read none of them, and no campaign is
+filed. What is the product failing is still scored as before, 0% included: an arm whose answers lack a field another
+arm's carry, answers that carry the field and are all wrong, and answers that are all `None` from a runner that
+returns a value somewhere (one returning `None` where the model's output never parsed), each case's answer stored as
+`None`.
+
+**Changed:** `Eval(...)` refuses, before anything runs, a runner that cannot be called with one case (a world's agent
+with a case and its tools), a runner whose code has no `return` of a value while a field grader reads its answer, a
+function grader that cannot take `(case, out)`, and a case a field grader other than the classifier cannot read a
+label from. Each names the signature to declare, what to return, or the fields the case carries. The first two used
+to score 0% and exit 0, the others to fail the run after the runner had answered every case. The signature read is
+what is called (a decorator's wrapper, not the function it wraps) and never evaluates annotations, so a name imported
+only under `if TYPE_CHECKING:` is no error; a callable whose signature cannot be read (a C wrapper such as
+`functools.cache`) is not refused. A function grader's annotations are never evaluated either: its argument
+annotations are not read for its kind, and its return annotation is read as written text (a return annotated with a
+name imported only for type checking is refused naming it; see the entry on a function grader's kind).
+
+**Changed:** a field is read off any object answer as `out.<field>`, so a dataclass answer is graded by its field; it
+used to read as no label.
+
+**Changed:** `python -m threetears.evals --help`, and the command with no argument, open with the file door
+(`python -m threetears.evals FILE.py`, rung 1's example); a first argument that is neither an eval file nor a command
+is refused naming both. A model with no key and no recording names `recording=` as the way to run without one, and an
+eval of several arms with no name names `name=` or a cases file, not an example from another app.
+
+**For hosts:** no code to change, and two things a host sees. An eval whose answers are objects other than a dict or
+a pydantic model (a dataclass, a named tuple, a plain object) graded by a field moves from 0% to its real score on
+upgrade: its history then shows a step that is the package's change, not the product's. And a run that was scoring a
+field no answer carried now stops with exit 2, its runs archived; `include_archived=True` lists them, and
+`run_archive(..., archived=False)` restores one.
+
+### evals: a function grader is a check unless it declares a number, and a first line states no pass count nothing judged
+
+**Fixed:** an `Eval` grader written `def right(case, out): return out == case["want"]`, with no return annotation, was
+read as a score no case can fail: the first line printed `passed 3 of 3 cases` over `Right score: mean 0.3333`, and
+a comparison's gate passed over it (an arm right on thirty cases against one wrong on all thirty exited 0). A function
+grader's kind is now read from what its author declared, never from its source: annotated `-> bool`, a check;
+annotated `-> float` or `-> int`, or given a range (`grader(f, range=(1, 5))`), a number; neither, a check. An
+annotation read as both (`-> bool | float`) or as neither (an alias, `-> np.float64`, `-> Any`) is refused when the
+`Eval` is built, saying what was read and the spellings accepted; it is parsed as written, never evaluated. A check's
+False fails the case on the first line, it is listed among the misses, it prints as a pass rate with its count (`33%,
+1 of 3 trials`), and a comparison gates on it. A value the declaration contradicts (anything but `True`, `False`, 0
+or 1 from a check, `None` from a function that falls off its end and a numpy bool among them; from a grader declared
+to grade a number, a bool, `None`, NaN, infinity, a string, or a score outside its declared range) fails the run at
+the first such answer, naming the case and the fix; no cell is dropped from the count or the mean. A grader that
+raises, or a `Measure` that returns no number, leaves its case ungraded and the run goes on, but the first line counts
+every case that ran and says how many were not graded, which, and the first error as recorded (`classify passed 7 of
+10 cases; 3 were not graded. Not graded: c0, c1, c2 (...)`); a comparison says the same of each arm beside its
+figures. The report page's lead, an aspect fold's heading and an analysis listing's line say the same clause, from one
+owner (`analysis.bundle.trials.pass_count`, worded by `report.verdict.passed_clause`), never a count over the graded
+cases alone; the pass rate, its interval and every verdict stay over the graded trials. A grader's own error is named
+as the author's: `the grader right raised TypeError: ...`, where it read `the scorer`. A grader written `async def`, or annotated with `None` among its kinds (`-> bool | None`), is refused when the
+`Eval` is built. Where no grader is a check and no judged dimension counts, one arm's first line states no pass count
+(`classify ran 3 of 3 cases; no grader here says pass or fail.`, its readings carrying the means), and two arms under
+the case floor compare none (`b and a ran 3 cases each; no grader here says pass or fail; too few cases to call a
+difference.`).
+
+**For hosts:** an unannotated function grader that returns numbers (`return 0.5`) now fails its run: annotate it
+`-> float`, or declare its range. A grader annotated `-> float` or `-> int` that returns a bool fails its run: annotate
+it `-> bool`. A run graded before this by an unannotated grader stored its grades under a number's measure
+definition; read back through the same grader, its 0.0s fail their trials, and that recorded definition keeps it from
+pooling with runs graded now. A grader annotated `-> bool | float`, or with an annotation the engine reads as neither
+kind, is refused until it names one. A check returning a numpy bool fails its run: return `bool(...)`. A grader of a number whose `None`, NaN or
+out-of-range score used to exclude its cell now fails its run: return a finite number on its scale, or declare the
+scale it has (`range=`). An old run of an
+unannotated grader of a number (0.25, 0.5), re-read before the grader is annotated, is described as a check, its every
+non-zero value a pass: annotate the grader `-> float` before re-reading it.
+
+### evals: a judge checked against itself: re-score noise in the judge's own table
+
+**Added:** a bundle fills two fields the shape move left unset, from the judge's repeats (`judge_repeat`). Each judged
+arm whose results were re-scored carries `rescore`: the re-score variance with its range (`variance_interval`, new;
+half the mean squared difference between a counted score and its repeat, read only for a repeat by the very judge that
+scored the arm), the repeated results and cases behind it, and, on a pass/fail dimension that counts toward a trial's
+pass, `e` (how often a repeat fails a result whose first reading passed, with its Wilson interval over cases) and the
+ceiling it puts on pass^k, `(1 - e)^(k - 1)`, as a range at the arm's `k` (new optional field on `Rescore`). Below 20
+repeated results from 10 cases its state is `not_available`, `too_few`, and no figure is given; where the ceiling is
+read and cannot be (no first reading passed), it alone is `not_available`, `too_few` (`ceiling_state`, new). Each
+paired judged contrast whose two arms have their figures carries `rescore_share`, the share of the contrast's
+variance that is the judge's re-score noise, low then high; it exists at one trial per case. The variance's and the
+share's ranges are one 95% interval each (Fay and Feuer's gamma interval on a weighted sum of counts), the share's on
+the sum of both arms' terms, not the share at each end of the arms' ranges; their coverage is held from both sides in
+`tests/test_simulated_judge_noise.py`. Both are named re-score noise, never judge error: a judge that repeats itself
+exactly reads none and may still be wrong. Nothing reads them: no interval, verdict, state, caveat or page line moves,
+and the report input carries neither. A bundle over results nobody re-scored is unchanged, byte for byte.
+
+**Changed:** a judge repeat asked of every result of a run (`judge_repeat_work` with no `result_ids`) now asks them in
+an order the engine draws at random, so the results repeated before a stop are a random draw, and each repeat records
+how its result was chosen (`JudgeRepeat.sample`: `random`, or `selected` where results were named by id; core minor
+15.22). Re-score noise reads only a random draw's repeats: an arm whose repeats are none of them one reads
+`not_available`, `not_drawn_at_random` (named by id) or `not_recorded` (stored before this release).
+
+**For hosts:** a repeat stored before this release supports no re-score figure. To read an arm's re-score noise,
+repeat its run with no results named.
+
+### evals: a campaign cell holds one definition of each host measure and one answering model, and an unrecorded coordinate matches nothing (#1187)
+
+**Changed:** what a host measure counts is part of the test setup. In a campaign, runs that recorded different
+definitions of a host measure (`EvalRun.measure_definitions`) are under different test setups: they share no cell and
+no contrast, and the bundle says why (`refused_merges`, `apparatus_differs` on `measure_definitions`). A run whose
+results hold a host measure and that recorded no definition is under a setup of its own: it is pooled and compared
+with nothing (`apparatus_unknown` on `measure_definitions`), `next_experiments` says what stating the definitions
+would pool, and the aspect's page prints the disclosure with the remedy. A run with no host measure, and a campaign
+whose runs all recorded one definition, read exactly as before, under the same cell ids.
+
+**Changed:** two runs whose candidate responses each named no model no longer share a cell. Each is a cell of its own
+under the arm's setup, compared with the control alone (`apparatus_unknown` on `served_model:candidate`), and the
+campaign page says so and names the remedy. A run that names what answered it pools as before, whatever the name: a
+provider's dated model, a scripted client's own name, a recording. One silent run alone in its arm is still that
+arm's one cell.
+
+**Changed:** a replayed call or writer turn whose recorded reply named no model reports its recording as what answered
+(`recording:` and 12 hex digits of the file's sha256), so replays of one recording pool. `Log` takes
+`served_model=` and reads a `served_model` key off a line.
+
+**Changed:** `CELL_MODEL_VERSION` is 15: one move for the served-model split, the measure-definition setup and the
+unrecorded-served-model rule. The frontier's cell sentence and the comparison set's disclosures say what a
+campaign's cells keep apart.
+
+**Changed:** every reader of the test setup reads the definitions, not the cells alone: the confound scans name
+`measure_definitions` (`apparatus_confounds`, a coverage row's `confounded_by`), and the divergence lens tests no pair
+of lever levels whose runs were not read under one recorded definition (counted in `divergences_untested`).
+
+**Changed:** an arm split on either coordinate is read per cell, never as an arm. `Cell.split_on` (new, left out
+when empty) names the coordinates a cell's arm is split on, and every arm-level reader (the campaign's rows, floors
+and pairs, a measurement's rates, the report input's figures, the figures across aspects, a one-arm campaign)
+withholds such an arm. Two arms
+that share no setup, because their runs were read under different definitions or under none recorded, get no floor
+and no row. `AnswerSplit.coordinate` (new; left out when `served_model`) says which coordinate, and the page and the
+report input word it. On an aspect's page, the verdict line gives such an arm no pass count and never says it passed
+more or less often than the control, or that the evidence cannot tell them apart: a sentence says it is not compared,
+and why; its scoreboard row keeps what ran and was lost, its passes and failures are withheld (flagged "read per
+model" or "read per definition"), its cost too where the answering model splits it, and it has no outcome bar. The
+report input's scoreboard row for a split arm carries no `passed` and no `failed`, and no `reply_cost_usd` where the
+answering model splits it, and says why in a typed `state` (new, optional, left out when unset: `withheld`, reason
+`split`, naming the coordinate). A written page's `scoreboard.<arm>.failed` and `count.failures.<aspect>.<arm>` keys
+are refused for it on that aspect because of that state (the campaign's `count.failures` still counts every failed
+trial); an input that never stated `passed` and holds no state reads its failures as it always did. Across aspects
+(`CampaignAggregate`, the scorecard's equal-weight row), such an arm's pass rate is withheld, naming the aspect, and
+`cheaper_on` and `dearer_on` never name an aspect where either arm was answered by more than one model. A contrast's
+figures sentence gives a split arm's side no pass count, only its mean.
+
+**Changed:** one action, `runs_attest` (`write`; `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`,
+`attestation_note?`), states a coordinate of stored runs that they did not record, and answers in one shape whichever
+coordinate (`coordinate`, `run_ids`, `already_attested`, `stated`, `attested_by`). `coordinate` is the closed set
+`AttestableCoordinate` (`measure_definition`, `served_model`). It replaces `runs_attest_definitions`, which no release
+shipped. `coordinate: "served_model"` records the statement on each run (`EvalRun.served_model_attestation`: who,
+when, the model, and the results it covers; core minor 15.21) and **rewrites no row**: the evidence stays as the
+responses left it. The campaign's cells, pass^k, the served-model confound scan and a comparison set read those
+silent rows through the statement; the bundle carries that they did (`ArmServedModel.n_attested` and
+`attested_models`, `RunSummary.attested_coordinates` for either coordinate); the identity disclosure stays and adds
+"Attested, not recorded", and an aspect page names runs whose definitions were stated. A run with no silent candidate
+row, or one already stated as another model, is refused before anything is written; stating the same value twice
+changes nothing. A statement is evidence: it moves the fingerprint of every bundle over the runs it stamps.
+`threetears.evals.run.attest_served_model` is exported.
+
+**Changed:** a comparison set reads the served model: `served_model_differs` where runs that asked for one model were
+answered by two, `context_incomplete` where a run's responses named no model and nothing was stated, and
+`served_model_disclosure` says which runs.
+
+**Changed:** history, a pivot, the frontier's composite, cost and latency, a two-run comparison and a bisection read
+runs outside a campaign's cells and keep apart what the cells keep apart, read through the cells themselves
+(`split_coordinates`): runs answered by different models, or read under different definitions of a host measure, or
+with either unrecorded, never pool. A history marks such a change between two runs as a boundary
+(`SeriesPoint.split_on` and `state`, new, left out when empty): no regression verdict across it, a fresh baseline
+after it, and a run that is itself split has no value. A pivot cell where one arm's observations are apart is
+`withheld` (`PivotCell.split_on` and `state`), and so is a cell, or a pooled column, holding two arms read under
+different definitions or under none recorded; no pooled column figure is read over either; `compute_pivot` takes the
+`runs` and `results` behind its rows. A bisection (`runs_bisect`) names `measure_definitions` and
+`served_model:candidate` among what differs, agrees or is unknown (unknown where a side recorded nothing). A frontier point's composite, cost, latency and cost per acceptable outcome read
+its headline pass^k cell and the runs one cell with them on both coordinates: a run apart on either is named with its
+own pass^k and counted in none of them. A two-run comparison reads no delta where a side is itself split on either
+coordinate, or the two were read under different definitions or under none recorded (`composite_comparability` says
+which); two runs answered by different models are still compared, as a split cell is compared with the control.
+
+**Changed:** a run launched now records every coordinate of its identity, or says it did not. A replayed completion
+or writer turn whose recorded reply named no model is answered by its recording. Where the host's own code answered
+and named nothing, the run says so, naming the coordinate and the remedy (a WARNING and a line of
+`Result.disclosures`): an eval over a `Log` whose lines name no served model as it launches, an eval whose runner
+returns an `Answer` naming no `served_model` once its arm ran. A take-up of a run stored before runs recorded
+definitions stays unrecorded, and says so as it is taken up (a WARNING).
+
+**For hosts:** after this change, two kinds of stored run stop pooling, and each has one remedy.
+- *Every campaign over runs that hold host measures and recorded no definition loses its contrasts until the host
+  attests.* That is every run stored before runs recorded definitions (#1160) on a host with measures of its own.
+- *Runs whose candidate responses named no model each stand alone in their arm* (a router echoing a requested alias
+  back, a logged output, an `Answer` or a kind's usage row naming no `served_model`). Going forward, report
+  `served_model` from the completion client, the `Answer` or the log line; a scripted test double names itself there.
+- *Upgrade procedure, in order:*
+  1. For each measure whose reading code changed what it counts behind an unchanged descriptor, raise
+     `MetricDescriptor.definition_revision` once per change, and deploy that host build. The digest covers the
+     descriptor's fields and its revision, never the reading code, so the descriptors as they were give today's
+     digests: attesting them would pool every era across real changes.
+  2. Deploy this evals build to every reader (an older build pools an attested run on the key its launch stamped).
+  3. Map each stored run to the era of reading code it ran under, from the release the run records.
+  4. Before any statement, re-measure each run a build carrying #1160 recorded before step 1 that did not run under
+     the earliest era's code (`run_remeasure`, with a `measure_rereader` that answers a measure whose code did not
+     change since as stored), so it records today's digests. Such a run recorded revision-0 digests, which step 5
+     states for the earliest era, and a statement never replaces a record: left as it is, it pools with the earliest
+     era's runs once they are stated, whatever code it ran under. One that ran under the earliest era's code is of
+     that era already and needs nothing. Where `run_remeasure` refuses such a run (a moved measure shaped the run,
+     or no reader can answer it from what was stored), it cannot be kept apart from runs recorded or stated at
+     revision 0: run it again under today's code and delete it, and until then state no era at revision 0 (leave
+     the earliest era's runs unrecorded).
+  5. For each era, call `runs_attest` with `coordinate: "measure_definition"` and `measure_definitions` set to
+     `MeasureRegistry(descriptors at that era's revisions, measures removed since included).definition_digests()`;
+     omit `measure_definitions` for runs made under today's code. It touches no result and may be run twice.
+  6. Call `runs_attest` with `coordinate: "served_model"` over the runs `model_identity_disclosure` names, where the
+     host knows what answered.
+  7. Regenerate stored reports over attested runs. Until a run is attested, a stored report over it reads as
+     current (its evidence did not move) while a re-assembled bundle withholds its contrasts; attesting moves the
+     fingerprint.
+- No host apparatus dimension may be named `measure_definitions`. `ApparatusClass.alone_to` (new, optional, left out
+  when unset) names the run a class is alone to. A host that called `runs_attest_definitions` on an unreleased build
+  calls `runs_attest` with `coordinate: "measure_definition"`.
+
+**Not yet:** two readers still pool across definitions of a host measure, and each says so where it is read. The
+frontier's dominance and cheapest-pick tests read contestants' headline cells whatever definition read each. A
+frontier says so, once, in its text and on an aspect page's method, wherever a subject's contestants were not all read
+under one definition (or one recorded none), and wherever a contestant's run is kept out of its headline cell, as the last sentence of the cell sentence
+(`PASS_HAT_K_CELL_READING`). The frontier stores the fact, not the sentence: `FrontierResult.definitions_apart` (new,
+a boolean, left out of a dump when false) is carried in a stored aspect bundle's `frontier`, the sentence is rendered
+at read (`DEFINITIONS_APART_READING`), and rewording it moves no stored bundle and no fingerprint. A frontier read
+under one definition throughout, with no run kept out, says nothing of definitions, and its bundle reads and digests
+as before. A launch estimate's `detectable_effect` plans from variance pooled over every earlier run of the
+template: where those runs were not all read under one definition, or some recorded none, its `assumptions` end
+saying so.
+
 ### evals: a public name is admitted by criteria, and the surface's totals are reported, not budgeted
 
 **Changed:** a declared name of `3tears-evals` is public only when it is admitted (owner ruling, 2026-11-15): someone
@@ -87,8 +412,8 @@ the second, marked.
 **Changed:** a shipped page that names, as code, a name `MIGRATIONS.toml` records removed fails a test, unless the
 page marks it removed where it names it; a page that teaches a provisional name, the `@name(...)` spelling included,
 must mark it provisional there. `@measure(...)` is marked provisional on the two pages that teach it, and the pages that
-told a reader to call `check_after`, `check_names`, `judge_config_of` or `is_builtin_judge_config_id` now give the
-replacement inline.
+told a reader to call `check_names`, `judge_config_of` or `is_builtin_judge_config_id` now give the replacement
+inline.
 
 **Changed:** a host-contract name moves only with a `MIGRATIONS.toml` record naming its replacement, in a single
 cut-over with no shim (owner ruling, 2026-11-15). The host guide (its stability tiers and its upgrading section),
@@ -96,7 +421,7 @@ the README, the reference and `MIGRATIONS.toml`'s header said a deprecation cycl
 
 **Removed:** names no production code uses, from their public roots: `kernel.CassetteStore`,
 `kernel.DefinitionStore`, `kernel.RunRecordStore`, `kernel.production_replicating_cost`,
-`schema.sent_settings_of`, `schema.check_after`, `schema.is_builtin_judge_config_id`, `schema.judge_config_of`,
+`schema.sent_settings_of`, `schema.is_builtin_judge_config_id`, `schema.judge_config_of`,
 `schema.utc_now_iso`, `analysis.lint_prose`, `analysis.check_names` and `analysis.host_declarations_digest`. The
 engine still uses each inside; `MIGRATIONS.toml` records each released one with its port. `Log`, `quick.measure` and
 `quick.Measure` stay importable but are provisional now: `Eval`'s signature names `Log`, and the toy host declares its
@@ -113,7 +438,6 @@ imports against this map:
 - `schema.is_builtin_judge_config_id`: `config_id is not None and config_id.startswith("builtin:")`.
 - `schema.judge_config_of`: the part of a recorded `<config id>@<sha12>` before the `@`; `None` for a built-in one.
 - `schema.utc_now_iso`: `datetime.now(UTC).isoformat()`.
-- `schema.check_after`: refuse an `after` given without `order_by`, or one that is not a (scalar, `str` id) pair.
 - `kernel.production_replicating_cost` (Discodon's tests import it): read an arm's production cost off the bundle
   scoreboard, `ArmScoreboard.reply_cost_usd`.
 - `analysis.host_declarations_digest` (Discodon's tests import it): read `AnalysisContextBundle.host_declarations_digest`
@@ -122,7 +446,9 @@ imports against this map:
   in the template's `goal_check_names`.
 - `analysis.lint_prose`: no replacement; nothing imported it.
 
-Discodon's production code imports none of these. Nothing stored changes.
+Discodon's production code imports none of these, by its list as re-recorded at 73996c83e. Its tests import three:
+`kernel.production_replicating_cost`, `analysis.check_names` and `analysis.host_declarations_digest`. Nothing stored
+changes.
 
 ### evals: the one caveat list is filled and the first screen computed, with a typed next step per reason (#1192)
 
@@ -439,7 +765,7 @@ pooling with no other run (owner ruling, 2026-11-14: a silence is never a match)
 (`measure_definitions_differ`, `context_incomplete`, `measure_definition_disclosure`). A take-up of a run that recorded
 other definitions than the host's current ones is refused; one that recorded none is taken up and stays unrecorded.
 
-**Added:** two actions reach the doors below, `runs_attest_definitions` and `run_remeasure` (both `write`).
+**Added:** two actions reach the doors below, `runs_attest_definitions` (since replaced by `runs_attest`, #1187) and `run_remeasure` (both `write`).
 `threetears.evals.run.attest_measure_definitions` records a host's statement of the definitions stored runs
 ran under (`EvalRun.measure_attestation`: who, when, what), touching no result and refusing a run that already records
 definitions. `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=False)` reads a stored run's host
@@ -448,8 +774,7 @@ held (`EvalResult.measure_rereads`), the run is marked (`EvalRun.measure_remeasu
 definitions it was read under. Nothing is interpolated: an unanswered stored value, a missing reader or a moved
 measure that declares `shapes_run` refuses the run before anything is written.
 
-**Not yet:** a campaign's own cells (variant by rig), and so its tables, composites, bars and history, do not read
-measure definitions and still pool such runs. The comparison disclosure says so on the page.
+A campaign's own cells follow in the entry "a campaign cell holds one definition of each host measure" (#1187).
 
 **For hosts:**
 - *Marking a change:* raise `MetricDescriptor.definition_revision` (default 0) on a measure whenever its reading code
@@ -462,8 +787,9 @@ measure definitions and still pool such runs. The comparison disclosure says so 
 - *On upgrade:* nothing to migrate and no stored key moves. Stored runs whose results hold a host measure each stand
   alone in pass^k until backfilled. A host that assembles runs itself sets
   `measure_definitions=profile.measures.definition_digests()`.
-- *Backfilling old runs:* call `attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=...)`
-  with the digests of the descriptors as they were when those runs ran
+- *Backfilling old runs:* follow the numbered procedure in the #1187 entry above, which raises
+  `definition_revision` first. Call `attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=...)`
+  with the digests of the descriptors, at the revisions they had, when those runs ran
   (`MeasureRegistry(descriptors_then).definition_digests()`), and with today's for runs made since the change. It
   reads no result or trace, takes any number of runs, and may be run twice: a run already attested with the same
   definitions is left as it was (`Attested.already_attested`), and one attested with other definitions is refused. To read

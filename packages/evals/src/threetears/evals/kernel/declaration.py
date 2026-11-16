@@ -1019,6 +1019,63 @@ def printed_aspect_name(label: str, short_name: str | None, *, campaign: str | N
     return label
 
 
+class MembershipChange(EvalDocumentModel, CoreShapeModel):
+    """One run joining or leaving an aspect, recorded append-only, so a look a run's evidence made is never erased.
+
+    A look at a contrast happens when the evidence it reads changes (:func:`~threetears.evals.analysis.significance.looks_taken`):
+    a run's results arriving, an old run joining, a run leaving. Membership (:attr:`Aspect.run_ids`) says only what is
+    held now, so a run removed, or joined after its results were scored, would otherwise erase or misdate the look it
+    made. A departure keeps what its look is counted by once the run is gone (it may be deleted): when its first
+    result was scored, and the launch it belonged to.
+    """
+
+    run_id: str = Field(min_length=1, description="The run that joined or left.")
+    change: Literal["joined", "left"] = Field(description="Whether the run joined the aspect or left it.")
+    at: str = Field(description="When it joined or left (ISO-8601); every change one write makes carries one time.")
+    first_result_at: str | None = Field(
+        default=None,
+        exclude_if=lambda stamp: stamp is None,
+        description=(
+            "On a departure, when the run's first result was scored (ISO-8601). None on a join, and for a run that "
+            "held no result when it left."
+        ),
+    )
+    launch: str | None = Field(
+        default=None,
+        exclude_if=lambda launch: launch is None,
+        description=(
+            "On a departure, the launch group the run was launched in. None on a join, and for a run launched alone."
+        ),
+    )
+
+
+def membership_changed(
+    prior: Iterable[MembershipChange],
+    *,
+    joined: Iterable[str] = (),
+    left: Iterable[MembershipChange] = (),
+    at: str,
+) -> list[MembershipChange]:
+    """An aspect's membership record with ``joined`` runs joining at ``at`` and the ``left`` departures appended.
+
+    :param prior: The aspect's record before the write (:attr:`Aspect.membership`).
+    :ptype prior: Iterable[MembershipChange]
+    :param joined: The runs joining it.
+    :ptype joined: Iterable[str]
+    :param left: The departures, each already holding what its look is counted by.
+    :ptype left: Iterable[MembershipChange]
+    :param at: When the write is made.
+    :ptype at: str
+    :return: The record to store: every earlier change, then this write's.
+    :rtype: list[MembershipChange]
+    """
+    return [
+        *prior,
+        *(MembershipChange(run_id=run_id, change="joined", at=at) for run_id in joined),
+        *(departure.model_copy(update={"at": at, "change": "left"}) for departure in left),
+    ]
+
+
 class Aspect(EvalDocumentModel, CoreShapeModel):
     """One part of what a campaign asks, read on its own runs: its template, its margin, its design and its runs.
 
@@ -1074,6 +1131,18 @@ class Aspect(EvalDocumentModel, CoreShapeModel):
     run_ids: list[str] = Field(
         default_factory=list,
         description="Curated membership: the runs this aspect reads. A run belongs to one aspect of a campaign at most.",
+    )
+    # Written only once a run has joined or left through a write that records it, so an aspect stored before is
+    # stored as it was.
+    membership: list[MembershipChange] = Field(
+        default_factory=list,
+        exclude_if=lambda changes: not changes,
+        description=(
+            "Every run that joined or left this aspect, and when, append-only: what counts the looks its contrasts "
+            "had (a run joined after its results were scored is a look when it joins; a run that left made its look "
+            "and its leaving is another). Empty for an aspect stored before the record, whose looks are then a "
+            "lower bound."
+        ),
     )
     declared_at: str | None = Field(
         default=None, description="When this aspect's design was declared (ISO-8601); None when it declares none."
@@ -1997,6 +2066,8 @@ __all__ = [
     "Margin",
     "ArmRole",
     "Aspect",
+    "MembershipChange",
+    "membership_changed",
     "AspectDesign",
     "BarName",
     "BarNameKind",

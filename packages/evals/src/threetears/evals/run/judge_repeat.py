@@ -35,6 +35,7 @@ failed, has no first score to agree with.
 from __future__ import annotations
 
 import math
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -75,6 +76,7 @@ if TYPE_CHECKING:
     from threetears.evals.schema.models import JudgeConfig
     from threetears.evals.schema.completion import BoundCompletionClient, CompletionResult
     from threetears.evals.kernel.storage import EvalStorage
+    from threetears.evals.schema.reading_states import SampleKind
     from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeRequest
 
 log = get_logger(__name__)
@@ -354,6 +356,8 @@ class _Prepared:
     contexts: list[JudgeContext]
     #: Per budgeted client, every call it may make, each as many times as one dim can be attempted.
     calls: list[tuple[BudgetedJudgeClient, list[PlannedCall]]]
+    #: How the results were chosen, recorded on each one's repeat.
+    sample: SampleKind
 
 
 async def _prepare(
@@ -366,12 +370,16 @@ async def _prepare(
 ) -> _Prepared:
     """Collect the run, build the judge over budgeted clients, and plan every call — admitting nothing yet.
 
+    Asked of every result, the results are repeated in an order drawn at random, so those repeated before any stop are
+    a random draw from the run's, and each repeat records it (``sample``); results named by id are ``selected``.
     The caller owns ``service`` and enters it, which releases every client built here.
     """
     clients = host.completion_clients("a judge repeat")
     collected = await run_blocking(
         host.blocking_executor, collect_repeatable, host.storage, run_id, scope_id, result_ids
     )
+    if result_ids is None:
+        random.SystemRandom().shuffle(collected.planned)
     budget = OutOfRunBudget(
         store=host.storage,
         scope_id=scope_id,
@@ -409,7 +417,12 @@ async def _prepare(
                 [planned_judge_call(request)] * JUDGE_CALL_ATTEMPTS
             )
     return _Prepared(
-        collected=collected, budget=budget, service=service, contexts=contexts, calls=list(by_client.values())
+        collected=collected,
+        budget=budget,
+        service=service,
+        contexts=contexts,
+        calls=list(by_client.values()),
+        sample="random" if result_ids is None else "selected",
     )
 
 
@@ -554,7 +567,7 @@ async def _repeat(
             context=context,
             only=frozenset(planned.dims),
         )
-        repeat = _repeat_of(planned.result, outcomes, judge_model=collected.judge_model)
+        repeat = _repeat_of(planned.result, outcomes, judge_model=collected.judge_model, sample=prepared.sample)
         scored += sum(1 for entry in repeat.scores if entry.repeat is not None)
         unanswered += sum(1 for entry in repeat.scores if entry.repeat is None)
         if await run_blocking(host.blocking_executor, _record, host.storage, planned.result.id, scope_id, repeat):
@@ -596,7 +609,9 @@ async def _repeat(
     return report
 
 
-def _repeat_of(result: EvalResult, outcomes: list[tuple[str, JudgeOutcome]], *, judge_model: str) -> JudgeRepeat:
+def _repeat_of(
+    result: EvalResult, outcomes: list[tuple[str, JudgeOutcome]], *, judge_model: str, sample: SampleKind
+) -> JudgeRepeat:
     """The repeat to record: each dim's first score beside the judge's answer to it this time."""
     entries = []
     for dim, outcome in outcomes:
@@ -620,6 +635,7 @@ def _repeat_of(result: EvalResult, outcomes: list[tuple[str, JudgeOutcome]], *, 
         judge_model=judge_model,
         scores=entries,
         judge_config_ids={dim: outcome.config_id for dim, outcome in outcomes if outcome.config_id is not None},
+        sample=sample,
     )
 
 

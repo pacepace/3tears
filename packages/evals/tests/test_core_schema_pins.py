@@ -84,21 +84,21 @@ from threetears.evals.schema.versioning import (
 PINNED_CORE_SCHEMA_VERSION = 15
 
 #: The ``CORE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_CORE_SCHEMA_MINOR = 20
+PINNED_CORE_SCHEMA_MINOR = 22
 
 #: Each core type's validation JSON schema, normalised (:func:`core_shape_digest`), by ``doc_type``.
 CORE_SHAPE_DIGESTS: dict[str, str] = {
-    "eval_action_job": "574fad7d0bf838830c2548315b604775934b8d23704332f4ef5e7de131575c5d",
-    "eval_analysis_attempt": "a9a1f78dcf1437f0760317cb6d0d89eb855e63ef37d7979d153bc970e6482d0d",
-    "eval_generation_slot": "096ded466bde6d22395c5c3d3d02682b3f1b23447989ce50073021f26fe43dde",
-    "eval_judge_temperature_check": "b506f3da9c1dec5dc926fe39745d1d99bd73a04e8612e5d5c3be3554009cfc6e",
-    "eval_launch": "dae759f0cebb00f5143db7d8e6f3b9b7ba92ceb97c75ede39bfd68e76fc9e6a8",
-    "eval_out_of_run_spend": "c41477c3013e6d68822be4ebe22175882eee35adc444664e78b3ce83d63da410",
-    "eval_result": "b903b7b4d8f324958ea94e5d5fd739a52c45b4840eac397ee64eec4c67f9f844",
-    "eval_run": "2b48222969d5a32090cf7127ebaf886fa34934881d9d27ee81e3c0bb8ba2440a",
-    "eval_second_judge_pass": "f547f3ccae2abd47d3b6064e0444d4814833aa129f3d37d29b7912ba6f18f99f",
-    "eval_sweep": "e8bacc7a8dc74a209bb5750416793d5a95bcfd7d6cf3b818aee7b3f06f0d5f1a",
-    "eval_trace": "92e470ca59e74b1a43179132c607d3875d71ff7577969ba16cd24a1765ed67e0",
+    "eval_action_job": "1755a3587dedbe6128682faa8bc3d1e02909fab3cda01e20eb0600fb5886a829",
+    "eval_analysis_attempt": "c02f7aa8b688faf9cb55b7246b5c5ae6b4f747b321dbe23e21376ac7676c48ec",
+    "eval_generation_slot": "bd277937fe600b7f160cce6396fa3e4abf58293783a3dbb906958b92c2351868",
+    "eval_judge_temperature_check": "add5d412fd987f15a53b1768cd0c5ba3ffba3b5f1cd7edb6cd7586e54b8799d6",
+    "eval_launch": "710585608d0b6d525142c77bbccfabe418189c5ae986a9edc4b4eb942801eb97",
+    "eval_out_of_run_spend": "a486f42a47adb92914f1c113ac763f370ccca999a9ea1dc6fd43a610e08bff28",
+    "eval_result": "70b82e4d04ad654b07069b3edfc877f675f8ea99d18659364c844bfd3e69c595",
+    "eval_run": "b11fe796123593964046ff2fbbf4e01faf8f000a2202d716ecc09f6d236c06a1",
+    "eval_second_judge_pass": "0afe2139ad08767d6521b8222772c5bdb1582b4f94bcd8d977385f66b9c25c97",
+    "eval_sweep": "cca56f29a5b4bbbe90e8bdd0348cbad5b0a5c0ad826ebba94c63ebaa4c597964",
+    "eval_trace": "e41133f89c7b6cda1652e4ff4dac90ee59db0abcc0aa9fdf910569f6a3be42e8",
 }
 
 #: The fields the store addresses each core type by, pinned: a step may never touch one, so the set moving

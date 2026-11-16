@@ -312,7 +312,7 @@ def documents() -> dict[str, str]:
 #: fingerprinted a shape-3 frame (at shape 2, without ``readings.aggregate`` or ``arm_spellings``), computes the old
 #: pin; shape 4 reads its frame as it is, so only the shape, the empty ``arm_spellings`` and the aggregate moved it.
 PINNED: dict[str, str] = {
-    "CELL_MODEL_VERSION": "14",
+    "CELL_MODEL_VERSION": "15",
     "IDENTITY_VERSION": "25",
     "Queue discipline under a full queue cells": (
         "b5891590ed94b7c2b7425372664a24f7f2c4d80e77a9e001ece5e0a7544a0ed9@6aa21c8030ab220f21fa1422945cfff2cfa"
@@ -349,9 +349,9 @@ PINNED: dict[str, str] = {
     # The one entry that moves with the durable version: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
     # order 16.8, a carried case's source 16.9, a lever's stored reader name 17.0, a rating's evidence inputs 17.1, the
-    # first screen's declaration and call fields 17.2. It is no part of what a run, cell, pool, pairing, analysis or
-    # reporter case keys on.
-    "durable version": "17.2",
+    # first screen's declaration and call fields 17.2, a campaign's looks rule and an aspect's membership 17.3. It is no
+    # part of what a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "17.3",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",
@@ -386,9 +386,11 @@ PINNED: dict[str, str] = {
 #: ``fixtures/report_inputs/migrate_bundle_shape_66.py`` (the shape, the factor-pair scan's completeness and each
 #: trial's failed check held as its measure key, and nothing else), are these bundles leaf for leaf, less
 #: ``lever_names``.
+#: The two bundles were re-pinned at cell model 15 (#1187): each bundle carries the model's version
+#: (``cell_model_version``), and stamped 14 this build writes them byte for byte as pinned before; nothing else moved.
 PINNED_DOCUMENTS: dict[str, str] = {
-    "Queue discipline under a full queue bundle": "6cecb73f534b2ab4eef7ecca16c67eca958d2df381557f7a339021b3b9b162d4",
-    "Queue discipline under an empty queue bundle": "1674792720401ffdeef819b8e0f5e5aa6f70218bd3adfbf85e82ee8ea63b4a72",
+    "Queue discipline under a full queue bundle": "babb2d56c5c3cae693e753ed9e03a1c647b4f883ea23bccfb7f10bcde65552f0",
+    "Queue discipline under an empty queue bundle": "03f9bd1bbebd19f87ac4b5adfce0c76dd2af8d276da5f8ca1ffc2feee2f2a1e7",
     "campaign": "6c2b383b36fc2664a2457021aac7d61d330ed17119760d15694105bb2a99c215",
     "template": "ebdd07699d7ce094a952d8f66505439368260a790589e08f69ae10ad3c10c755",
 }

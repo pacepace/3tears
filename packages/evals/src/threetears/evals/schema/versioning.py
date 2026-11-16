@@ -177,11 +177,16 @@ the document, so extending one is a major. Each, and why:
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
 - ``BudgetStop.currency`` — what a per-run ceiling counts; a stop in a currency an older build cannot name would be
   stated in a unit it cannot read, and its dollars and its calls are not one quantity.
+- ``MembershipChange.change`` — the engine records it, never a host, and the looks at a contrast are counted by it
+  (a join after the results is a look, a departure keeps the look the run made); a change an older build cannot name
+  would be counted as neither, and a look erased.
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
   would be stated as neither.
 - ``OutOfRunOutcome`` — binary and complete.
 - ``SecondJudgeAskedBy`` — an unknown asker's pass would be pooled into the wrong agreement.
+- ``SampleKind`` — whether the items a measurement was read on stand for what they were drawn from; a figure is read
+  only from a random draw, so a new kind of sample changes what an older build may claim from it.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
   cause it does not name (``truncated``), kept apart from a call that failed (``error``).
 - Every ``doc_type`` — a new type is a new model, never a new value.
@@ -459,7 +464,24 @@ CORE_SCHEMA_VERSION: int = 15
 #:   strings alone, so every label key is what it was. An older build reads such evidence without it, and a re-judge
 #:   there keys its calls by their prompts, as it did.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 20
+#: - **v15.21** — a host's statement of the model that answered a run's candidate calls is recorded:
+#:   ``EvalRun.served_model_attestation`` (default None: never attested, or stored before the field existed) holds
+#:   who stated it, when, the model and the results it covers (``result_ids``: those whose candidate rows named no
+#:   model when it was made), written by the ``runs_attest`` action. No usage row is rewritten: a reading that pools by
+#:   answering model reads those rows through it. Left out of the document when unset, so a run never attested is
+#:   stored as before. In no identity, key or digest. An older build reads the run's rows as they were recorded and
+#:   pools none of them on the statement, which is what the rows say.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+#: - **v15.22** — a judge repeat records how its result was chosen: ``JudgeRepeat.sample`` (default None), on
+#:   ``EvalResult.judge_repeats``: ``random`` where every result of the run was asked, in an order the engine drew
+#:   (``judge_repeat_work`` with no result named), so the results repeated before any stop are a random draw;
+#:   ``selected`` where results were named by id. An arm's re-score noise reads only a random draw's repeats; an
+#:   arm whose repeats are none of them one reads ``not available`` (``not_drawn_at_random``, or ``not_recorded``
+#:   for a repeat stored before this minor). Left out of the document when unset, so a repeat stored before is stored
+#:   byte for byte as before. Evidence in a bundle's fingerprint only where set. An older build reads such a repeat
+#:   without it, and reads its self-agreement as it did.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 22
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When
@@ -912,7 +934,16 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   a campaign filed at this minor that sets one. An older build reading a campaign at this minor keeps the fields
 #:   opaquely and writes them back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 2
+#: - **v17.3** — a campaign created once each contrast's looks were counted says so: ``EvalCampaign.looks_rule``
+#:   (``1``, default None), stamped by the engine at creation and never taken from a caller. Written only when set, so a
+#:   campaign created before is stored exactly as v17.2 stored it, and reads as created before looks were counted: its
+#:   looks qualify the method only and none of its stored verdicts moves. Each aspect records its runs joining and
+#:   leaving, append-only: ``Aspect.membership`` (a list of ``MembershipChange``, default empty, left out while empty),
+#:   so a look a run's evidence made is never erased by removing it; an aspect with a member stored before reads its
+#:   looks as not recorded (no count of looks, as neither bound). Neither is in a variant key, measurement context, declaration snapshot or fingerprint. An older build
+#:   reading a campaign at this minor keeps both opaquely and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 3
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

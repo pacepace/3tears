@@ -12,9 +12,20 @@ Evals for LLM features, from a classifier to a tool-using agent: it runs each ve
   a `Judge`) — and `await ev.run()` runs it, returning a `Result` that prints quietly and writes its
   report. `python -m threetears.evals FILE` runs every eval a `.py` or `.toml` file declares.
 
-A FIRST EVAL NEEDS 2 NAMES
+A FIRST EVAL NEEDS AT MOST 2 NAMES
   Eval: What is evaluated: the cases, the runner under test, and what counts as right.
   Model: One model, as the engine's completion client and as three helpers for a runner of your own.
+  An app that calls no model needs Eval alone: its runner is the app's own function.
+
+YOUR APP'S CASES
+Start from the cases the app already has: the data files its tests read, the tables of inputs and
+  expected outputs in its test code, the examples its README or docs give. A .jsonl file (an object
+  a line), a .json list of objects, a .csv with a header row or a .toml [[cases]] table loads as the
+  eval's cases. Take each expected value from the app's documentation or specification, never by
+  running the app or reading its code and copying what it gives: a case that expects what the app
+  does today cannot catch what it does wrong. One case, whole: {"id": "double-charge", "email": "I
+  was billed twice this month.", "category": "billing"}. The package keeps a case's id, stratum and
+  world keys: it reads them and hands the runner and every grader the case without them.
 
 THE FIRST EXAMPLE, WHOLE (1-triage/triage.py of the examples fetched below; its docstring left out)
   from typing import Literal
@@ -51,8 +62,8 @@ Each email is triaged k=3 times; it replays `recordings/triage.jsonl` offline, a
 GETTING THE EXAMPLES: they are not in the installed package; fetch them from the repository
   git clone --depth 1 --branch <tag> --filter=blob:none --sparse https://github.com/pacepace/3tears
   cd 3tears && git sparse-checkout set packages/evals/examples && cd packages/evals/examples
-Then run one from that directory: python -m threetears.evals 1-triage/triage.py. Each rung reads its
-  cases and replays its recordings from beside itself, so keep its directory together.
+Then run one from that fetched directory: python -m threetears.evals 1-triage/triage.py. Each rung
+  reads its cases and replays its recordings from beside itself, so keep its directory together.
 
 READING WHAT COMES BACK
 The first line printed is the answer. Rung 1 prints:
@@ -114,8 +125,8 @@ ACTIONS: 87, called without writing Python
     judge_profiles_record, judge_profiles_list, scope_pivot, runs_compare, runs_bisect,
     scope_out_of_run_spend, scope_history, scope_frontier, scope_export, campaign_export
   Curate: cases_rename, run_archive, run_label, campaign_archive, result_regrade, run_remeasure,
-    runs_attest_definitions, result_rate, result_rate_person, analysis_archive, writer_case_archive,
-    run_delete, analysis_delete, insight_delete
+    runs_attest, result_rate, result_rate_person, analysis_archive, writer_case_archive, run_delete,
+    analysis_delete, insight_delete
   Investigate: snapshot: report_snapshot_freeze
   Investigate: facts: campaign_overview, readings_list, contrasts_list, measure_read, examples_list,
     caveats_list, figure_keys_check
@@ -124,9 +135,7 @@ ACTIONS: 87, called without writing Python
   Investigate: blocks: block_catalog, block_render, report_check
   Investigate: gaps: capability_gap
 
-KINDS: every declared name is one;
-  https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/surface.md lists each under its
-  kind
+KINDS: every declared name is one; the surface page named above lists each under its kind
   typed: a newcomer writes it in an eval file.
   bound: a host implements it or hands it to the engine.
   action: the function behind an action of the catalogue, which an agent or operator invokes by

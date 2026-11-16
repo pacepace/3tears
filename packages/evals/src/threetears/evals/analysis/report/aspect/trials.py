@@ -11,7 +11,7 @@ from typing import TypedDict
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialRow
 from threetears.evals.analysis.report.aspect.common import (
-    _case_namer,
+    case_namer,
     _case_numbers,
     _control_key,
     _printed_strata,
@@ -64,7 +64,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
     control = _control_key(bundle)
     arms = [board.variant_key for board in bundle.scoreboard]
     numbers = _case_numbers(bundle)
-    case_name = _case_namer(bundle)
+    case_name = case_namer(bundle)
     by_case: dict[str, list[TrialRow]] = {}
     for trial in bundle.trials:
         by_case.setdefault(trial.case_id, []).append(trial)
@@ -271,7 +271,7 @@ def _trial_blocks(
     arms = len(bundle.scoreboard)
     exclusions = arm_exclusions(bundle)
     statuses = arm_run_statuses(bundle)
-    case_name = _case_namer(bundle)
+    case_name = case_namer(bundle)
     checks = bundle.named_checks()
     # Each check that is no goal check, by the measure key a trial's failed check carries, worded at its failing value
     # as the pass rule words its passing one.

@@ -338,7 +338,7 @@ def _case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
     return {case: index for index, case in enumerate(sorted(labels, key=lambda case: (labels[case], case)), start=1)}
 
 
-def _case_namer(bundle: AnalysisContextBundle) -> Callable[[str], str]:
+def case_namer(bundle: AnalysisContextBundle) -> Callable[[str], str]:
     """Name a case as every table does: by the name its author gave it where its label reads as one
     (``double-charge``), else ``case N`` — never its first input."""
     labels = {trial.case_id: trial.case_label for trial in bundle.trials}
@@ -359,4 +359,5 @@ def _listed(ids: Sequence[str]) -> str:
 
 __all__ = [
     "NO_STRATUM",
+    "case_namer",
 ]

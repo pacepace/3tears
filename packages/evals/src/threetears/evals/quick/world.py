@@ -596,6 +596,12 @@ def world_case_payload(seed: dict[str, Any]) -> dict[str, Any]:
     return {SEED_KEY: seed}
 
 
+def carries_a_starting_state(test_case: EvalTestCase) -> bool:
+    """Whether a stored case carries a world's starting state (:data:`SEED_KEY`, from its author's reserved ``world``
+    key): this module's key, so this module answers for it."""
+    return SEED_KEY in test_case.host_payload
+
+
 class WorldCellKind:
     """One cell of a world with state: seeds the case's world, runs the callable kind over it, grades the end state.
 
