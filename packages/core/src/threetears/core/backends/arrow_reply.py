@@ -101,16 +101,22 @@ class _RailReply:
         self.json_bytes = json_bytes
 
 
-def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
+def reply_rows(reply: bytes, types: Mapping[str, Any], *, bytes_mark: bool = True) -> _RailReply:
     """a rail reply's rows as one Arrow table typed by ``types``, parsed without the interpreter lock.
 
     Blocking, and CPU for as long as the reply is long, but Arrow's reader lets go of the interpreter
     lock while it parses: run it on a thread (``asyncio.to_thread``) and the event loop runs beside it.
 
+    The datasource rail's reply (``datasources.query``) has the same fields an ``l3.query`` reply's rows are read by
+    (``success``, ``rows``, ``truncated``, ``max_reply_bytes``), so this reads it too, with ``bytes_mark=False``: that
+    rail writes a bytes value as bare hex, so its text carries no mark.
+
     :param reply: the broker's reply, as its bytes
     :ptype reply: bytes
     :param types: column name -> its Arrow type, every column the statement selects, in its order
     :ptype types: Mapping[str, pyarrow.DataType]
+    :param bytes_mark: refuse text carrying the L3 rail's bytes mark (``\\x``), which ``fetch`` answers as bytes
+    :ptype bytes_mark: bool
     :return: the reply's success, and its rows
     :rtype: _RailReply
     :raises ReplyNotArrowError: when a value is not of its column's type, or text carries the bytes mark
@@ -140,7 +146,7 @@ def reply_rows(reply: bytes, types: Mapping[str, Any]) -> _RailReply:
     rows = pa.Table.from_struct_array(pa.array([], row_type))
     if success:
         rows = pa.Table.from_struct_array(parsed.column("rows").combine_chunks().flatten())
-        for name, kind in types.items():
+        for name, kind in types.items() if bytes_mark else ():
             if (pa.types.is_string(kind) or pa.types.is_large_string(kind)) and rows.num_rows:
                 if pc.any(pc.starts_with(rows.column(name), _BYTES_MARK)).as_py():
                     raise ReplyNotArrowError(

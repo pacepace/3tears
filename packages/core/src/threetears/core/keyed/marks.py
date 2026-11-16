@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.keyed._filters import Derived, Fragment, by_conditions, narrowing, relation, sent_by
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.marks import MarkedRead, PageAfter
@@ -42,6 +43,7 @@ async def read_past_marks(
     by: Mapping[str, Any] | None = None,
     where: Sequence[Fragment] = (),
     floor: Mapping[str, Any] | None = None,
+    types: Mapping[str, Any] | None = None,
 ) -> MarkedRead:
     """the rows of ``relation`` whose stamps moved past ``marks``, and the marks to save next.
 
@@ -68,6 +70,11 @@ async def read_past_marks(
     :param floor: stamp -> the bound a stamp with no saved mark is read past, bound deliberately by a caller whose
         relation's every row is past it (``0001-01-01``): never a cold start's whole read; none when None
     :ptype floor: Mapping[str, Any] | None
+    :param types: each column read and its Arrow type as ``conn``'s reply carries it; given, the rows are read as one
+        Arrow table (:attr:`MarkedRead.table`, through ``conn``'s ``fetch_arrow`` where it has one:
+        :func:`~threetears.core.backends.arrow_reply.l3_fetch_arrow`), the stamps' columns alone made Python values for
+        the marks. None reads dicts
+    :ptype types: Mapping[str, pyarrow.DataType] | None
     :return: the rows and the marks to save
     :rtype: MarkedRead
     :raises ValueError: when no mark is named, a mark is None with no floor (a cold start, read on its own), or a
@@ -102,6 +109,15 @@ async def read_past_marks(
     clause = " AND ".join([*pinned, f"({moved})"]) if pinned else moved
     selected = ", ".join(quote(column) for column in columns)
     sql = f"SELECT {selected} FROM {quote(relation)} WHERE {clause}"
+    if types is not None:
+        table = await l3_fetch_arrow(sent_by(conn), sql, *params, types=types)
+        newest = dict(marks)
+        for stamp in marks:
+            # one stamp column's values made Python values, compared with its mark as the dict read compares them
+            for value in table.column(stamp).to_pylist():
+                if value is not None and value > newest[stamp]:
+                    newest[stamp] = value
+        return MarkedRead(rows=[], marks=newest, table=table)
     rows = [dict(row) for row in await sent_by(conn).fetch(sql, *params)]
     newest = dict(marks)
     for row in rows:

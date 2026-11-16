@@ -32,20 +32,24 @@ none rewritten in place.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any, Final
 
+from threetears.core.backends.arrow_reply import _rail_arrow_table
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.keyed import _filters
 from threetears.core.keyed._filters import Derived, Fragment, Selected, by_conditions, narrowing, sent_by
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.held import Held, HeldArrow, HeldMapping
 from threetears.core.keyed.held import hash_bytes as _hash_bytes
+from threetears.core.keyed.held import stamped_hashes
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import Sort, keyset_rows
-from threetears.core.keyed.rows import KeyBatch, read_keyed
+from threetears.core.keyed.rows import KeyBatch, read_keyed, read_keyed_arrow
 from threetears.core.keyed.threaded import ThreadedDuckDB
 from threetears.core.sql_fragments import quote_identifier
 from threetears.interfaces.keyed.changed import (
@@ -61,6 +65,9 @@ try:
     import pyarrow as pa
 except ImportError:  # NOSILENT: the snapshot extra is optional; held is then a mapping (an Arrow table needs it)
     pa = None
+
+#: a row hash's Arrow type: text, as every dialect's hash expression answers it (:func:`row_hash_sql`)
+_HASH_TYPE: Any = None if pa is None else pa.string()
 
 __all__ = [
     "ROW_HASH_COLUMN",
@@ -413,6 +420,7 @@ async def read_changed(
     full_rows_at_most: int | None = None,
     groups: Mapping[str | None, tuple[Any, GroupHash]] | None = None,
     group_rows_at_most: int | None = None,
+    types: Mapping[str, Any] | None = None,
 ) -> ChangedRows:
     """the rows of ``relation`` inside the scope ``by`` / ``where`` names whose hash differs from ``held``, read in
     full by key, and the held keys the scope no longer holds.
@@ -474,6 +482,14 @@ async def read_changed(
         groups (the caller reads them its own way, one export: a move judged broad on phase 0 alone, with no phase 1
         spent). Needs ``group``. None: no cap
     :ptype group_rows_at_most: int | None
+    :param types: each column of ``columns`` (by its name) and its Arrow type as ``conn``'s reply carries it; given,
+        the full rows are read as one Arrow table (:attr:`ChangedRows.table`) through ``conn``'s ``fetch_arrow``
+        (:func:`~threetears.core.keyed.read_keyed_arrow`), never one Python object a row, each row's hash stamped
+        from phase 1's answer by its key as the dict read stamps it, never selected again (the md5 cost about 40 reply
+        bytes a row: :func:`~threetears.core.keyed.held.stamped_hashes`). A row written between the phases is held
+        with phase 1's hash, so the next read finds it moved and reads it again, as the dict read always has. None
+        reads dicts (:attr:`ChangedRows.rows`)
+    :ptype types: Mapping[str, pyarrow.DataType] | None
     :return: the changed rows (each key as the warehouse answers it) and the gone keys (as ``held`` names them)
     :rtype: ChangedRows
     :raises ValueError: when the key is empty, or as :func:`row_hash_sql`, :func:`~threetears.core.keyed.keyset_rows`
@@ -481,6 +497,55 @@ async def read_changed(
         ``group`` is no key column or ``full_rows_at_most`` is negative, or ``groups`` or ``group_rows_at_most`` is
         given without ``group``
     """
+    changed = await _read_changed(
+        conn,
+        relation,
+        key=key,
+        columns=columns,
+        held=held,
+        hash_columns=hash_columns,
+        by=by,
+        where=where,
+        page=page,
+        batch=batch,
+        row_cap=row_cap,
+        key_kinds=key_kinds,
+        group=group,
+        full_rows_at_most=full_rows_at_most,
+        groups=groups,
+        group_rows_at_most=group_rows_at_most,
+        types=types,
+    )
+    if types is not None and changed.table is None:
+        # an answer with no full row read (none moved, or capped): its table is an empty one of the types
+        changed = replace(
+            changed,
+            table=_joined_tables([], {**{name: types[name] for name in _names(columns)}, ROW_HASH_COLUMN: _HASH_TYPE}),
+        )
+    return changed
+
+
+async def _read_changed(
+    conn: Any,
+    relation: str | Derived,
+    *,
+    key: Sequence[str | Sort],
+    columns: Sequence[str | Selected],
+    held: Mapping[tuple[Any, ...], str | None] | Any,
+    hash_columns: Sequence[HashColumn],
+    by: Mapping[str, Any] | None = None,
+    where: Sequence[Fragment] = (),
+    page: int | None = None,
+    batch: int | None = None,
+    row_cap: int | None = None,
+    key_kinds: Sequence[HashColumn] = (),
+    group: str | None = None,
+    full_rows_at_most: int | None = None,
+    groups: Mapping[str | None, tuple[Any, GroupHash]] | None = None,
+    group_rows_at_most: int | None = None,
+    types: Mapping[str, Any] | None = None,
+) -> ChangedRows:
+    """:func:`read_changed`, its answer before an Arrow read's empty table is filled in."""
     kinds = _key_kinds(key, hash_columns, key_kinds)
     order = _sorts(key, kinds)
     if not order:
@@ -608,9 +673,24 @@ async def read_changed(
     for wanted_key in wanted:
         patterns.setdefault(tuple(value is None for value in wanted_key), []).append(wanted_key)
     rows: list[Mapping[str, Any]] = []
+    # of an Arrow read: the columns asked and the row's hash, each statement's table
+    arrow_types = (
+        None if types is None else {**{name: types[name] for name in _names(columns)}, ROW_HASH_COLUMN: _HASH_TYPE}
+    )
+    # read as the Python rows are: the columns and the key, the hash stamped from phase 1's answer, never selected
+    # again (stamped_hashes); a key column neither asked nor typed is read with the hash beside it instead
+    stamps = types is not None and all(column in named or column in types for column in key_columns)
+    read_types = None if not stamps or types is None else {name: types[name] for name in _names(read_columns)}
+    arrow_columns = read_columns if stamps else [*columns, hashed]
+    tables: list[Any] = []
     for nulls, pattern_keys in patterns.items():
         present = [at for at, null in enumerate(nulls) if not null]
         pinned = {**(by or {}), **{key_columns[at]: None for at, null in enumerate(nulls) if null}}
+        if not present and arrow_types is not None:
+            # a key with every part NULL (none of a production key's): its few rows made the table on a thread
+            nulled = await keyset_rows(conn, relation, columns=arrow_columns, by=pinned, order=order, where=where)
+            tables.append(await asyncio.to_thread(_rail_arrow_table, nulled, read_types or arrow_types))
+            continue
         if not present:
             rows.extend(await keyset_rows(conn, relation, columns=read_columns, by=pinned, order=order, where=where))
             continue
@@ -633,6 +713,19 @@ async def read_changed(
                 as_list=dialect is Dialect.REDSHIFT,
             )
         )
+        if arrow_types is not None:
+            tables += await read_keyed_arrow(
+                conn,
+                relation,
+                keys=keys,
+                types=read_types or arrow_types,
+                columns=arrow_columns,
+                by=pinned,
+                batch=batch,
+                row_cap=cap,
+                where=where,
+            )
+            continue
         rows.extend(
             await read_keyed(
                 conn,
@@ -644,6 +737,21 @@ async def read_changed(
                 row_cap=cap,
                 where=where,
             )
+        )
+    if arrow_types is not None:
+        return ChangedRows(
+            rows=[],
+            gone_keys=gone,
+            changed_keys=wanted,
+            moved_groups=moved_groups,
+            moved_group_rows=moved_group_rows,
+            table=(
+                await asyncio.to_thread(
+                    _stamped_table, tables, read_types, arrow_types, key_columns, kinds, answered_hashes
+                )
+                if read_types is not None
+                else _joined_tables(tables, arrow_types)
+            ),
         )
     stamped = [
         {
@@ -842,3 +950,33 @@ async def _group_hash_rows(
         if len(rows) < page:
             return found
         last = [rows[-1][named[alias]] for _, _, alias in levels]
+
+
+def _names(columns: Sequence[str | Selected]) -> list[str]:
+    """each select-list item's name: a column's own, an expression's alias."""
+    return [column.alias if isinstance(column, Selected) else column for column in columns]
+
+
+def _stamped_table(
+    tables: Sequence[Any],
+    read_types: Mapping[str, Any],
+    types: Mapping[str, Any],
+    key_columns: Sequence[str],
+    kinds: Sequence[HashColumn],
+    hashes: Mapping[tuple[str | None, ...], Any],
+) -> Any:
+    """statements' Arrow tables of the columns and key as one, each row's hash stamped from phase 1's answer
+    (:func:`~threetears.core.keyed.held.stamped_hashes`), laid out as ``types``: the columns asked, then the hash.
+    Run on a thread: 4.6 ms for 10,000 rows of a four-column key (2026-11-15, AR2b), the key texts' Arrow kernels and
+    one string a wanted key."""
+    read = _joined_tables(tables, read_types)
+    stamped = stamped_hashes(read, key_columns, kinds, key_text, hashes)
+    asked = [name for name in types if name != ROW_HASH_COLUMN]
+    return read.select(asked).append_column(pa.field(ROW_HASH_COLUMN, _HASH_TYPE), stamped)
+
+
+def _joined_tables(tables: Sequence[Any], types: Mapping[str, Any]) -> Any:
+    """statements' Arrow tables as one, joined without a copy; an empty one of ``types`` when there are none."""
+    if not tables:
+        return pa.schema([pa.field(name, kind) for name, kind in types.items()]).empty_table()
+    return pa.concat_tables(tables)

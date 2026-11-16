@@ -48,8 +48,9 @@ Needs ``pyarrow`` (the ``export`` extra), imported only when a file is read.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -81,6 +82,7 @@ __all__ = [
     "IncompleteExportError",
     "PresigningExportStore",
     "export_part",
+    "export_part_arrow",
     "export_select",
     "read_export",
 ]
@@ -337,23 +339,80 @@ async def read_export(store: ExportStore, result: DatasourceExportResult, *, buc
     :raises IncompleteExportError: when the export is elsewhere, its manifest names a file outside it,
         or its files hold a different number of rows than the warehouse wrote
     """
-    _check_export_location(result, bucket=bucket)
     rows: list[dict[str, Any]] = []
+    for data in await _export_files(store, result, bucket=bucket):
+        rows.extend(_parquet_rows(data))
+    _held_to_count(len(rows), result)
+    return rows
+
+
+async def _read_export_arrow(store: ExportStore, result: DatasourceExportResult, *, bucket: str) -> pa.Table:
+    """:func:`read_export`, its rows one Arrow table as the files hold them (each file read on a thread), never one
+    Python object a row: for a caller that hands the rows on (a worker process) rather than reads them.
+
+    :param store: an object store over the export bucket
+    :ptype store: ExportStore
+    :param result: the export
+    :ptype result: DatasourceExportResult
+    :param bucket: the bucket the caller reads; an export in any other is refused
+    :ptype bucket: str
+    :return: the rows; a table of no columns when the export wrote none
+    :rtype: pyarrow.Table
+    :raises IncompleteExportError: as :func:`read_export`
+    """
+    tables = [
+        await asyncio.to_thread(_parquet_table, data) for data in await _export_files(store, result, bucket=bucket)
+    ]
+    # each file's own types, widened where two files differ (a decimal's precision is each file's own): no value moves
+    table = pa.concat_tables(tables, promote_options="permissive") if tables else pa.table({})
+    _held_to_count(table.num_rows, result)
+    return table
+
+
+async def _export_files(store: ExportStore, result: DatasourceExportResult, *, bucket: str) -> list[bytes]:
+    """the bytes of every file an export's manifest lists, the manifest's count held to the warehouse's.
+
+    :param store: an object store over the export bucket
+    :ptype store: ExportStore
+    :param result: the export
+    :ptype result: DatasourceExportResult
+    :param bucket: the bucket the caller reads
+    :ptype bucket: str
+    :return: each file's bytes, in the manifest's order
+    :rtype: list[bytes]
+    :raises IncompleteExportError: when the export is elsewhere, its manifest names a file outside it, or counts
+        other rows than the warehouse wrote
+    """
+    _check_export_location(result, bucket=bucket)
+    files: list[bytes] = []
     if result.row_count > 0:
         manifest = json.loads(await _read_object(store, result.manifest_path))
-        files = _manifest_files(manifest, result)
-        counted = _counted_total(files)
+        listed = _manifest_files(manifest, result)
+        counted = _counted_total(listed)
         if counted is not None and counted != result.row_count:
             raise IncompleteExportError(
                 f"the export's manifest counts {counted} rows, the warehouse says it wrote {result.row_count}"
             )
-        for file in files:
-            rows.extend(_parquet_rows(await _read_object(store, file.object_name)))
-    if len(rows) != result.row_count:
+        for file in listed:
+            files.append(await _read_object(store, file.object_name))
+    return files
+
+
+def _held_to_count(rows: int, result: DatasourceExportResult) -> None:
+    """refuse an export whose files hold other than the rows the warehouse says it wrote.
+
+    :param rows: the rows the files hold
+    :ptype rows: int
+    :param result: the export
+    :ptype result: DatasourceExportResult
+    :return: nothing
+    :rtype: None
+    :raises IncompleteExportError: naming both counts
+    """
+    if rows != result.row_count:
         raise IncompleteExportError(
-            f"the export's files hold {len(rows)} rows, the warehouse says it wrote {result.row_count}"
+            f"the export's files hold {rows} rows, the warehouse says it wrote {result.row_count}"
         )
-    return rows
 
 
 def _check_export_location(result: DatasourceExportResult, *, bucket: str) -> None:
@@ -407,6 +466,68 @@ async def export_part(
     bucket: str,
     where: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    """one part of a relation, read through an export and proven whole and unmoved (:func:`_export_part`).
+
+    :return: the part's rows
+    :rtype: list[dict[str, Any]]
+    """
+    rows: list[dict[str, Any]] = await _export_part(
+        client,
+        store,
+        datasource_name,
+        relation=relation,
+        columns=columns,
+        destination=destination,
+        bucket=bucket,
+        where=where,
+        read=read_export,
+    )
+    return rows
+
+
+async def export_part_arrow(
+    client: DatasourceQueryClient,
+    store: ExportStore,
+    datasource_name: str,
+    *,
+    relation: str,
+    columns: Sequence[str | Selected],
+    destination: str,
+    bucket: str,
+    where: Mapping[str, str] | None = None,
+) -> pa.Table:
+    """:func:`export_part`, its rows one Arrow table as the export's files hold them (:func:`_read_export_arrow`): for a
+    caller that hands the rows on to a worker process rather than reads them.
+
+    :return: the part's rows
+    :rtype: pyarrow.Table
+    """
+    table: pa.Table = await _export_part(
+        client,
+        store,
+        datasource_name,
+        relation=relation,
+        columns=columns,
+        destination=destination,
+        bucket=bucket,
+        where=where,
+        read=_read_export_arrow,
+    )
+    return table
+
+
+async def _export_part(
+    client: DatasourceQueryClient,
+    store: ExportStore,
+    datasource_name: str,
+    *,
+    relation: str,
+    columns: Sequence[str | Selected],
+    destination: str,
+    bucket: str,
+    where: Mapping[str, str] | None = None,
+    read: Callable[..., Awaitable[Any]] = read_export,
+) -> Any:
     """one part of a relation, read through an export and proven whole and unmoved.
 
     :param client: the caller's datasource client (its identity asks for the export)
@@ -426,8 +547,10 @@ async def export_part(
     :ptype bucket: str
     :param where: the part, as equality filters; the whole relation when None
     :ptype where: Mapping[str, str] | None
-    :return: the part's rows
-    :rtype: list[dict[str, Any]]
+    :param read: how the export's files are read: :func:`read_export` (dicts) or :func:`_read_export_arrow`
+    :ptype read: Callable[..., Awaitable[Any]]
+    :return: the part's rows, as ``read`` answers them
+    :rtype: Any
     :raises IncompleteExportError: when the part moved during the export, the export is not the one
         asked for, or it does not hold exactly its rows
     :raises ExportNotDeletedError: when the proven export could not be deleted
@@ -441,7 +564,7 @@ async def export_part(
     result = await client.export(datasource_name, select, destination=destination)
     # from here every way out deletes the export, refused or read: no copy of warehouse rows
     # outlives the load (delete after load, Pace's ruling)
-    rows: list[dict[str, Any]] = []
+    rows: Any = []
     refused: IncompleteExportError | None = None
     unwinding: BaseException | None = None
     try:
@@ -464,7 +587,7 @@ async def export_part(
                     f"{relation} {filters or ''}: the warehouse exported {result.row_count} rows, the relation "
                     f"holds {before.row_count}"
                 )
-            rows = await read_export(store, result, bucket=bucket)
+            rows = await read(store, result, bucket=bucket)
         except IncompleteExportError as exc:
             refused = exc
             raise

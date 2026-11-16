@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import cast, Any
 
 import duckdb
+import pyarrow as pa
 import pytest
 
 from threetears.core.keyed import (
@@ -615,6 +616,23 @@ class TestMarks:
         assert read.marks == {"stamp": _START + timedelta(seconds=49)}
         again = await read_past_marks(ThreadedDuckDB(db), "t", columns=["b", "stamp"], marks=read.marks)
         assert again.rows == [] and again.marks == read.marks
+
+    async def test_an_arrow_read_past_the_marks_answers_the_dict_read_s_rows_and_marks(
+        self, db: duckdb.DuckDBPyConnection
+    ) -> None:
+        """Flips if read_past_marks given types answers other rows or other next marks than its dict read."""
+        mark = _START + timedelta(seconds=45)
+        as_dicts = await read_past_marks(ThreadedDuckDB(db), "t", columns=["b", "stamp"], marks={"stamp": mark})
+        as_arrow = await read_past_marks(
+            ThreadedDuckDB(db),
+            "t",
+            columns=["b", "stamp"],
+            marks={"stamp": mark},
+            types={"b": pa.int64(), "stamp": pa.timestamp("us")},
+        )
+        assert as_arrow.rows == []
+        assert as_arrow.table.to_pylist() == as_dicts.rows
+        assert as_arrow.marks == as_dicts.marks
 
     async def test_a_read_with_no_mark_is_a_cold_start_and_refused(self, db: duckdb.DuckDBPyConnection) -> None:
         """Flips if a missing mark reads the whole record as "everything changed"."""

@@ -116,6 +116,9 @@ class ChangedRows:
     :ptype moved_groups: list[Any]
     :param moved_group_rows: the rows the moved groups hold, as phase 0 answered them
     :ptype moved_group_rows: int
+    :param table: of a read given ``types``, the full rows as one Arrow table, each with its hash under
+        :data:`ROW_HASH_COLUMN` (``rows`` is then empty); None otherwise
+    :ptype table: pyarrow.Table | None
     """
 
     rows: list[dict[str, Any]]
@@ -124,3 +127,4 @@ class ChangedRows:
     capped: bool = False
     moved_groups: list[Any] = field(default_factory=list)
     moved_group_rows: int = 0
+    table: Any = None
