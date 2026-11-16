@@ -44,6 +44,24 @@ An intra-family API addition ships in a MINOR bump
      PyPI first. Nothing checks for it -- `verify-dist-complete.sh` only confirms every member
      built -- and a tag pushed without it publishes the members ahead of the new one, then
      fails, leaving a family that cannot install until the version is republished.
+   - **The browser packages (`web/`, `@3tears/web-*`)** move with the bump (`npm-lockstep-files`)
+     and publish to npmjs.com from `release.yml`'s `npm-publish`, after PyPI, by npm trusted
+     publishing (OIDC, provenance, no secret). The job runs only when the repository variable
+     `NPM_PUBLISH` is `true`. A version already published is skipped, so a republish dispatch is
+     safe. Each package's `repository.url` must be exactly `https://github.com/pacepace/3tears`,
+     or provenance is refused.
+   - **A release that adds a web package** (0.95.0 adds `@3tears/web-pwa`): a package's trusted
+     publisher is set in its own settings on npmjs.com, so it cannot exist before the package does.
+     The first version publishes with a token, once:
+     1. On npmjs.com, as a member of the `3tears` organisation, create a granular access token:
+        read and write to the `@3tears` scope's packages, a short expiry (a day is enough).
+     2. Add it as the repository secret `NPM_TOKEN` (`gh secret set NPM_TOKEN`), and set the
+        repository variable `NPM_PUBLISH` to `true` if it is not.
+     3. Cut the release as usual; `npm-publish` uses the token while the secret is set.
+     4. On npmjs.com, in each new package's settings, add a trusted publisher: GitHub Actions,
+        organisation `pacepace`, repository `3tears`, workflow `release.yml`.
+     5. Delete the secret (`gh secret delete NPM_TOKEN`) and revoke the token. Later releases
+        publish by OIDC with no secret.
    - **`packages/evals/MIGRATIONS.toml`:** in the same PR, rename its `version = "unreleased"`
      section to the version being tagged (keep its `since`). The tag must ship with its section named
      for it: `release_notes.py v<version>` reads it by that name, and the next release starts a new

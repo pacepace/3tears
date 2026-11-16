@@ -1,0 +1,65 @@
+{
+  "name": "@3tears/web-pwa",
+  "version": "0.95.0",
+  "description": "Installable web apps: manifest and head tags, a shell-only service worker, update prompt, Web Push, notification routing, Media Session, wake lock, display mode, safe areas",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pacepace/3tears",
+    "directory": "web/packages/pwa"
+  },
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./worker": {
+      "types": "./types/worker.d.ts",
+      "default": "./src/worker.js"
+    },
+    "./workbox": {
+      "types": "./types/workbox.d.ts",
+      "default": "./src/workbox.js"
+    },
+    "./react": {
+      "types": "./types/react.d.ts",
+      "default": "./src/react.js"
+    },
+    "./vite": {
+      "types": "./types/vite.d.ts",
+      "default": "./src/vite.js"
+    },
+    "./shell-worker.js": "./src/shell-worker.js",
+    "./safe-area.css": "./src/safe-area.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "types",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "./src/shell-worker.js",
+    "./src/safe-area.css"
+  ],
+  "peerDependencies": {
+    "react": ">=19"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "types": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.js"
+  }
+}

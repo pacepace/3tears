@@ -1,0 +1,26 @@
+{
+  "name": "@3tears/web",
+  "private": true,
+  "description": "The 3tears browser packages (@3tears/*): one job per package, released with the Python family at the same version",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24",
+    "npm": ">=11.10.0"
+  },
+  "scripts": {
+    "test": "npm run test --workspaces --if-present && node --test examples/*.test.js",
+    "test:browser": "npm run test:browser --workspaces --if-present && node --test --test-concurrency=1 examples/browser/*.test.js",
+    "types": "npm run types --workspaces --if-present",
+    "check": "npm run types && git diff --exit-code -- packages/*/types && npm test && npm run test:browser"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "playwright": "1.64.1",
+    "react": "^19.2.0",
+    "typescript": "~5.9.3"
+  }
+}
