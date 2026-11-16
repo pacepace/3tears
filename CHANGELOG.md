@@ -12,17 +12,16 @@ packages (bumped in lock-step).
 `contrasts_list`, `measure_read`, `examples_list`, `measure_breakdown`, `price_tradeoff`) or for `price_tradeoff`'s
 `what_if` raised a bare `TypeError` from pydantic, which ended the report writer's loop and the paid run. Every call's
 arguments are now held to the action's parameters in one place (`MountedTool.call`), for every action. Those seven
-parameters keep their constraints on the string, inside the optional, and declare `null` the parameter not given
-(`threetears.evals.actions.params.NullIsOmitted`), so such a call answers exactly as one that left it out. No other
-parameter's `null` changes meaning: where a parameter admits `null` the action receives it as sent
-(`campaign_update`'s `control_from_run_id: null` still clears the control), and where it does not, `null` is refused
+parameters keep their constraints on the string, inside the optional, and declare `null` the parameter not given,
+so such a call answers exactly as one that left it out. No other parameter's `null` changes meaning: where a
+parameter admits `null` the action receives it as sent (`campaign_update`'s `control_from_run_id: null` still
+clears the control), and where it does not, `null` is refused
 like any value that does not fit. A value that does not fit (a wrong type, a list where a string is expected, `null`
 for a required parameter) is refused `validation_failed` (422) naming the parameter and what it takes, so the model
 calls again. A value pydantic raises as a bare `TypeError` is refused the same way, with one WARNING naming the
 action. A `TypeError` raised by the package's
 own code (a parameter model's validator, the action's handler) is still a defect and propagates. The tools' published
-schemas are unchanged. A host action's parameter may declare `NullIsOmitted` the same way; an action refuses it on a
-required parameter.
+schemas are unchanged.
 
 **Fixed (#1248):** the report writer's loop filed any exception in its client-failure slot, so a defect in package
 code (a tool's handler, the submission check, a review's reading) reached the host's failure describer, which withheld

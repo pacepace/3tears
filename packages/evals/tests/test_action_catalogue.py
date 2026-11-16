@@ -11,8 +11,9 @@ is pinned here holds for FastMCP (``test_fastmcp_transport.py``) and any adapter
   value, an engine refusal — each says what was wrong and what would be right.
 - **A host contributes actions** that mount and run like the engine's.
 - **Every construction refusal fires** — a name that is not ``noun_verb``, an undescribed or nested or
-  reserved parameter, a destructive action with no ``confirm``, long work that returns no job, an
-  example that is not a valid call, a duplicate name, one parameter name meaning two things on a tool.
+  reserved parameter, a required one declaring ``null`` not given, a destructive action with no ``confirm``,
+  long work that returns no job, an example that is not a valid call, a duplicate name, one parameter name
+  meaning two things on a tool.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from __future__ import annotations
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
 
 import re
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 from pydantic import BaseModel, Field
@@ -39,6 +40,7 @@ from threetears.evals.actions import (
     render_jobs_started,
     standard_tools,
 )
+from threetears.evals.actions.params import NullIsOmitted
 from threetears.evals.actions.render import render_cited
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.base import EvalBaseModel
@@ -376,6 +378,10 @@ class _Reserved(EvalBaseModel):
     topic: str = Field(description="Collides with help's.")
 
 
+class _RequiredNullIsOmitted(EvalBaseModel):
+    note: Annotated[str | None, Field(description="Required, so null cannot read as left out."), NullIsOmitted()]
+
+
 class _OptionalConfirm(EvalBaseModel):
     confirm: str | None = Field(default=None, description="Optional, which a destructive action may not be.")
 
@@ -414,6 +420,10 @@ async def _no_path(stage: Any) -> dict[str, Any]:
         ({"params": _Undescribed, "example": {"note": "x"}}, "note is not"),
         ({"params": _Nested, "example": {"inner": {"note": "x"}}}, "parameters are flat"),
         ({"params": _Reserved, "example": {"topic": "x"}}, "topic is reserved"),
+        (
+            {"params": _RequiredNullIsOmitted, "example": {"note": "x"}},
+            "note declares null not given .* but is required",
+        ),
         ({"permission": "destructive"}, "declares a required `confirm`"),
         ({"permission": "destructive", "params": _OptionalConfirm, "example": {}}, "declares a required `confirm`"),
         ({"long_running": True}, "long work returns JobsStarted"),
