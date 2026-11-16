@@ -175,7 +175,7 @@ from threetears.evals.analysis.bundle.comparisons import (
     reading_scope,
 )
 from threetears.evals.analysis.bundle.judges import judge_change
-from threetears.evals.analysis.bundle.trials import trials_and_census
+from threetears.evals.analysis.bundle.trials import case_places, trials_and_census
 from threetears.evals.analysis.bundle.time_axis import time_axis
 from threetears.evals.analysis.bundle.surface import measure_catalog
 from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -962,6 +962,13 @@ def assemble_context_bundle(
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
         planned_looks=planned_looks,
+        # A rereadable design reads its paired contrasts on a range by the mixture bet, over the cases in the order the
+        # campaign first launched them: a case added later is bet on after every case before it.
+        reread_order=(
+            case_places([run.test_case_ids for run in runs])
+            if declared_design is not None and declared_design.rereadable
+            else None
+        ),
     )
     # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
     # paired judged contrast's share of it, filled last so no other section copies them.

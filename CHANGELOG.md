@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a quick comparison may be read again as cases are added, with nothing declared
+
+**Changed:** a comparison an `Eval` runs (two arms or more) is filed `rereadable` (`AspectDesign.rereadable`, new,
+optional, durable v17.5), and each paired contrast on a declared range (a pass rate, a score on its scale) is read by
+a mixture bet: the mean of ten bets staking fixed shares of the cap, over the cases in the order they were first run,
+hedged over the two directions (`stats.bounded_separation_p`, `bounded_difference_interval`, `bounded_mean_p` and
+`paired_equivalence` gain `mixture`; `separation_test` too). No stake depends on a declared count, so a newcomer may
+add cases and run the comparison again as often as they like, and each verdict, p and interval keeps its error over
+every such read. Holm stays the correction: a bet reading's adjusted p holds every t reading's p at 1, so a cost or
+latency reading cannot let it step down. The print says so in one sentence under its first line, and the family's
+disclosure carries it (`comparisons.REREAD_SENTENCE`, `ComparisonFamily.rereadable`). Seeded simulation: at most 3.3%
+false separations at a nominal 5% over five reads with adds sized from the data; a single read at k = 1, 80% against
+60% on 60 cases separates 37.1% of the time where the reading it replaces did 43.6%. Cost and latency stay t readings,
+read once. Engine campaigns, and every campaign not filed `rereadable`, read exactly as before; a design is
+`rereadable` or plans looks, never both.
+Quick-path readings move: intervals on bounded readings are wider (rung 3a's Accuracy, 20 points worse or 18 better,
+now reads 24 or 22), and rung 3b's `total` no longer reads equivalent within its 20-point margin on 30 cases.
+
+**For hosts:** deploy this build to every reader before filing a campaign at durable v17.5; an older build reads a
+`rereadable` campaign's contrasts at their cases, as before the field.
+
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 
 **Fixed:** under a plan of looks (`AspectDesign.planned_looks`), the aspect page's contrast table head, the change

@@ -309,7 +309,7 @@ def trials_and_census(
     :param names: The name each test case's author gave it, by case id, for the cases that have one.
     :ptype names: Mapping[str, str] | None
     :param case_lists: The member runs' frozen case lists (``EvalRun.test_case_ids``), in the bundle's run order: each
-        case's place is where it first stands in them, from 1 (:func:`_case_places`), carried on its rows
+        case's place is where it first stands in them, from 1 (:func:`case_places`), carried on its rows
         (:attr:`~threetears.evals.analysis.bundle.schema.TrialRow.case_place`), and whether they differ is
         ``case_lists_differ``. Empty carries no place.
     :ptype case_lists: Sequence[Sequence[str]]
@@ -355,7 +355,7 @@ def trials_and_census(
     evidence = load_judge_evidence(traced) if traced else {}
     labels = _case_labels(kept, strata, evidence, names or {})
     whole = _whole(kept, load_results)
-    places = _case_places(case_lists)
+    places = case_places(case_lists)
     rows = [
         _row(
             f"T{index}",
@@ -378,7 +378,7 @@ def trials_and_census(
     )
 
 
-def _case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
+def case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
     """Each case's place from 1: where it first stands in ``case_lists``, the member runs' frozen case lists chained
     in the bundle's run order (created, then id), each case kept where it first appears. Where every run holds one
     list (an ``Eval``'s every arm, the usual host campaign), that is the case's line in it, the line of a cases file.

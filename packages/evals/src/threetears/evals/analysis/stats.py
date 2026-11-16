@@ -1784,6 +1784,7 @@ def bounded_difference_interval(
     value_range: tuple[float, float],
     confidence: float = INTERVAL_LEVEL,
     planned_n: int | None = None,
+    mixture: bool = False,
 ) -> tuple[float, float] | None:
     """The interval on ``mean(b) − mean(a)`` from the bounded test by betting, valid at every n on a declared range.
 
@@ -1801,6 +1802,13 @@ def bounded_difference_interval(
     k at once, so a reading stopped at any k, on any rule, keeps its level (Ville's inequality). At k = N it is the
     interval with no ``planned_n`` over the same pairs listed in case order, number for number.
 
+    **The mixture bet's** (``mixture``, paired only): every difference the two-sided mixture
+    (:func:`bounded_separation_p` with ``mixture``) has not rejected at ``1 − confidence`` over the pairs in the
+    order given, the order the cases were added. One wealth process gives both, so the interval excludes zero exactly
+    where that test's p is at most ``1 − confidence``; and it is one reading of a confidence sequence that covers at
+    every count at once, so cases may be added and it read again as often as wanted at the coverage it states. None
+    where the sequence has excluded every difference, which happens at most ``1 − confidence`` of the time.
+
     :param sample_a: The control's per-case values, in a fixed case order.
     :ptype sample_a: Sequence[float | Fraction]
     :param sample_b: The arm's, aligned with ``sample_a`` when ``paired``.
@@ -1814,11 +1822,15 @@ def bounded_difference_interval(
     :param planned_n: The cases the bet was fixed for before the first pair, the pairs given in the order bet on;
         None for a bet over these pairs alone, in :func:`bet_order` of their count.
     :ptype planned_n: int | None
+    :param mixture: Read the mixture bet's interval, over the pairs in the order given.
+    :ptype mixture: bool
     :return: ``(low, high)``, or None with fewer than two values a side, or a value outside the declared range.
     :rtype: tuple[float, float] | None
-    :raises ValueError: ``planned_n`` on an unpaired reading, or below the pairs given.
+    :raises ValueError: ``planned_n`` on an unpaired reading, or below the pairs given; ``mixture`` unpaired or with
+        ``planned_n``.
     """
     _check_planned(planned_n, paired=paired, given=len(sample_b))
+    _check_mixture(mixture, planned_n=planned_n, paired=paired)
     if len(sample_a) < 2 or len(sample_b) < 2:
         return None
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
@@ -1829,7 +1841,11 @@ def bounded_difference_interval(
     tail = (1.0 - confidence) / 2.0
     if paired:
         width = float(high - low)
-        return _bounded_mean_interval([y - x for x, y in zip(a, b)], (-width, width), alpha=tail, planned_n=planned_n)
+        diffs = [y - x for x, y in zip(a, b)]
+        if mixture:
+            kept = _hedged_interval(_scaled_to_unit(diffs, (-width, width), ordered=True), 1.0 - confidence)
+            return None if kept is None else (-width + 2.0 * width * kept[0], -width + 2.0 * width * kept[1])
+        return _bounded_mean_interval(diffs, (-width, width), alpha=tail, planned_n=planned_n)
     bounds = (float(low), float(high))
     low_a, high_a = _bounded_mean_interval(a, bounds, alpha=tail / 2.0)
     low_b, high_b = _bounded_mean_interval(b, bounds, alpha=tail / 2.0)
@@ -1919,6 +1935,7 @@ def separation_test(
     *,
     paired: bool,
     value_range: tuple[float, float] | None = None,
+    mixture: bool = False,
 ) -> SeparationTest:
     """The separation test between two samples: the t-test where the values have spread, the bounded test where not.
 
@@ -1936,6 +1953,10 @@ def separation_test(
     fifth) gives twenty cases all at +1 about one time in 87, where the sign flip states one in 524,288. So it
     called a uniform move separated far more often than α under a null of no change in the mean.
 
+    **Read by the mixture bet** (``mixture``, paired, on a declared range): the bounded test decides whatever the
+    spread, by the hedged mixture over the pairs in the order given (:func:`bounded_separation_p` with ``mixture``),
+    so its p keeps α however often cases are added and it is read again; no t-test runs.
+
     Identical values on both sides (no gap, no spread) read p = 1. **The spread is decided on exact values**
     (:func:`exact_decimal`): over floats a constant shift such as ``i/10`` against ``i/10 + 0.5`` carries a residue
     a t-test reads as a tiny, perfectly consistent spread, with a p near 1e-113.
@@ -1948,9 +1969,15 @@ def separation_test(
     :ptype paired: bool
     :param value_range: The reading's declared inclusive bounds, or None when it declares none.
     :ptype value_range: tuple[float, float] | None
+    :param mixture: Read the bounded mixture bet, over the pairs in the order given, whatever the spread.
+    :ptype mixture: bool
     :return: The :class:`SeparationTest`.
     :rtype: SeparationTest
+    :raises ValueError: ``mixture`` unpaired, or with no declared range.
     """
+    _check_mixture(mixture, paired=paired)
+    if mixture and value_range is None:
+        raise ValueError("a mixture bet reads a declared range: give value_range with mixture")
     a = [exact_decimal(x) for x in sample_a]
     b = [exact_decimal(y) for y in sample_b]
     if len(a) < 2 or len(b) < 2 or (paired and len(a) != len(b)):
@@ -1958,6 +1985,11 @@ def separation_test(
     exact = no_spread_p(a, b, paired=paired)
     if exact == 1.0:
         return SeparationTest(1.0, "identical")
+    if mixture and value_range is not None:
+        bet = bounded_separation_p(a, b, paired=True, value_range=value_range, mixture=True)
+        if bet is not None:
+            return SeparationTest(bet, "bounded")
+        return SeparationTest(None, None, UNIFORM_MOVE_OUTSIDE_RANGE if exact is not None else None)
     if exact is not None:
         if value_range is None:
             return SeparationTest(None, None, UNIFORM_MOVE_NEEDS_RANGE)
@@ -2078,6 +2110,7 @@ def bounded_mean_p(
     *,
     alpha: float = SIGNIFICANCE_ALPHA,
     planned_n: int | None = None,
+    mixture: bool = False,
 ) -> float:
     """The one-sided p for H0 ``E[X] ≤ null_mean`` against ``E[X] > null_mean``, for any ``X`` inside ``value_range``.
 
@@ -2107,6 +2140,15 @@ def bounded_mean_p(
     each reshuffled) are two tests, and stopping at the first that separates is optional stopping; one bet is not.
     At k = N the p is the one with no ``planned_n`` over the same values listed in case order.
 
+    **A mixture stake, fixed for no count** (``mixture``): the values are bet on in the order given (the order the
+    cases were added, which the caller fixed before their values were seen) and the capital is the mean of
+    :data:`_MIXTURE_STAKES` bets, each staking a fixed share ``j / D`` of the cap on every value
+    (:func:`_mixture_log_path`; Waudby-Smith and Ramdas 2024, §5.6, "diversified Kelly"). An average of nonnegative
+    supermartingales started at 1 is one, and no stake depends on a declared N, on α or on how many values follow,
+    so the p over the first k values is that one capital read at k, for every k at once: cases may be added and the
+    p read again as often as wanted, and it keeps its α (Ville's inequality). ``alpha`` and ``planned_n`` play no
+    part; ``planned_n`` with it is refused.
+
     :param values: The observations, each inside ``value_range``.
     :ptype values: Sequence[float | Fraction]
     :param null_mean: The largest mean H0 allows.
@@ -2118,14 +2160,35 @@ def bounded_mean_p(
     :param planned_n: The cases the bet was fixed for before its first value, the values given in the order bet on;
         None for a bet over these values alone, in :func:`bet_order` of their count.
     :ptype planned_n: int | None
+    :param mixture: Bet with the mixture stake, in the order given, valid at every k at once.
+    :ptype mixture: bool
     :return: The p, in ``[0, 1]``.
     :rtype: float
-    :raises ValueError: The range is empty, a value lies outside it, or there are more values than ``planned_n``.
+    :raises ValueError: The range is empty, a value lies outside it, there are more values than ``planned_n``, or
+        ``planned_n`` is given with ``mixture``.
     """
+    _check_mixture(mixture, planned_n=planned_n)
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
-    scaled = _scaled_to_unit(values, value_range, planned_n=planned_n)
+    scaled = _scaled_to_unit(values, value_range, planned_n=planned_n, ordered=mixture)
+    m = float((exact_decimal(null_mean) - low) / (high - low))
+    if mixture:
+        return _capital_p(_mixture_log_path(scaled, m))
     horizon = len(scaled) if planned_n is None else planned_n
-    return _betting_p(scaled, float((exact_decimal(null_mean) - low) / (high - low)), alpha, horizon)
+    return _betting_p(scaled, m, alpha, horizon)
+
+
+def _check_mixture(mixture: bool, *, planned_n: int | None = None, paired: bool = True) -> None:
+    """Refuse a mixture bet read with a ``planned_n`` (the mixture is fixed for no count) or unpaired (an unpaired
+    reading's cut between the two means moves with each case read, so no one capital is read again).
+
+    :raises ValueError: Either.
+    """
+    if not mixture:
+        return
+    if planned_n is not None:
+        raise ValueError("a mixture bet is fixed for no count of cases: give planned_n or mixture, not both")
+    if not paired:
+        raise ValueError("a mixture bet is read paired: an unpaired reading's cut moves with each case")
 
 
 def _check_planned(planned_n: int | None, *, paired: bool, given: int) -> None:
@@ -2145,10 +2208,15 @@ def _check_planned(planned_n: int | None, *, paired: bool, given: int) -> None:
 
 
 def _scaled_to_unit(
-    values: Sequence[float | Fraction], value_range: tuple[float, float], *, planned_n: int | None = None
+    values: Sequence[float | Fraction],
+    value_range: tuple[float, float],
+    *,
+    planned_n: int | None = None,
+    ordered: bool = False,
 ) -> list[float]:
     """Values checked exactly against their declared range, then rescaled to ``[0, 1]`` in the order bet on: their
-    :func:`bet_order` with no ``planned_n``, and the order given with one (the caller's, fixed before the first).
+    :func:`bet_order` with no ``planned_n``, and the order given with one, or where ``ordered`` (the caller's, fixed
+    before the first).
 
     :raises ValueError: The range is empty, a value lies outside it, or there are more values than ``planned_n``.
     """
@@ -2163,7 +2231,7 @@ def _scaled_to_unit(
     # Checked exactly above; the betting itself is float arithmetic, clamped so a rounding cannot leave the range.
     low_f, width = float(low), float(high - low)
     scaled = [min(1.0, max(0.0, (float(v) - low_f) / width)) for v in exact]
-    return scaled if planned_n is not None else [scaled[i] for i in bet_order(len(scaled))]
+    return scaled if planned_n is not None or ordered else [scaled[i] for i in bet_order(len(scaled))]
 
 
 @lru_cache(maxsize=256)
@@ -2223,20 +2291,154 @@ def _betting_p_staked(scaled: Sequence[float], stakes: Sequence[float], m: float
         return 0.0 if any(z > 0.0 for z in scaled) else 1.0
     if m >= 1.0:
         return 1.0
+    return _capital_p(_log_capital_path(scaled, stakes, m))
+
+
+def _log_capital_path(scaled: Sequence[float], stakes: Sequence[float], m: float) -> list[float]:
+    """The one bet every test by betting here makes: its log capital after each value, against the rescaled null ``m``
+    in ``(0, 1)``, each value multiplying the capital by ``1 + λ (z − m)`` with ``λ`` its stake capped at
+    :data:`_BET_CAP` ``/ m``, so no value at the bottom of the range can ruin it.
+
+    :param scaled: The values on ``[0, 1]``, in the order bet on.
+    :ptype scaled: Sequence[float]
+    :param stakes: Each value's stake before its cap.
+    :ptype stakes: Sequence[float]
+    :param m: The rescaled null mean, strictly inside ``(0, 1)``.
+    :ptype m: float
+    :return: The log capital after each value, in order.
+    :rtype: list[float]
+    """
     cap = _BET_CAP / m
     log1p = math.log1p
-    log_capital = best = 0.0
-    # min() and max() spelled as comparisons, which pick the same float, without a builtin call per value: the
-    # bisection runs this loop over every value 33 times a bound.
+    log_capital = 0.0
+    path = []
+    # min() spelled as a comparison, which picks the same float, without a builtin call per value: a bisection runs
+    # this loop over every value 33 times a bound.
     for z, stake in zip(scaled, stakes):
         log_capital += log1p((cap if cap < stake else stake) * (z - m))
-        if log_capital > best:
-            best = log_capital
-    return min(1.0, math.exp(-best))
+        path.append(log_capital)
+    return path
+
+
+def _capital_p(log_path: Sequence[float]) -> float:
+    """The p of a capital that started at 1: one over the most it ever reached (Ville's inequality)."""
+    return min(1.0, math.exp(-max(0.0, max(log_path, default=0.0))))
+
+
+#: How many betting fractions the mixture stake averages over (:func:`_mixture_log_path`): ``j / D`` of the cap for
+#: ``j`` from 1 to ``D``, evenly spaced. Ten was simulated against the plan of looks at k = 1 and 3, L = 2 and 3, before
+#: it was chosen (``looks-bet-simulation-1116.md``, "Mixture stakes"): it held α in every cell and needed 0.96 to 1.32
+#: times the cases of a test read once at a fixed n.
+_MIXTURE_STAKES = 10
+
+
+def _log_add_exp(a: float, b: float) -> float:
+    """``log(e^a + e^b)``, without overflow."""
+    if a == -math.inf:
+        return b
+    high, low = (a, b) if a >= b else (b, a)
+    return high + math.log1p(math.exp(low - high))
+
+
+def _mixture_log_path(scaled: Sequence[float], m: float) -> list[float]:
+    """The mixture stake's log capital after each value against the rescaled null ``m``: the mean of
+    :data:`_MIXTURE_STAKES` bets (:func:`_log_capital_path`), the j-th staking ``j / D`` of the cap :data:`_BET_CAP`
+    ``/ m`` on every value. No stake depends on a declared count, on α or on the values, so the mixture is one
+    capital however many values follow (Waudby-Smith and Ramdas 2024, §5.6).
+
+    At ``m`` on the range's ends no bet can be staked: at 0 one value above it refutes the null outright (an infinite
+    capital), at 1 nothing can.
+
+    :param scaled: The values on ``[0, 1]``, in the order bet on.
+    :ptype scaled: Sequence[float]
+    :param m: The rescaled null mean.
+    :ptype m: float
+    :return: The log capital after each value, in order.
+    :rtype: list[float]
+    """
+    if m <= 0.0:
+        refuted = False
+        path = []
+        for z in scaled:
+            refuted = refuted or z > 0.0
+            path.append(math.inf if refuted else 0.0)
+        return path
+    if m >= 1.0:
+        return [0.0] * len(scaled)
+    n = len(scaled)
+    paths = [
+        _log_capital_path(scaled, [j / _MIXTURE_STAKES * _BET_CAP / m] * n, m) for j in range(1, _MIXTURE_STAKES + 1)
+    ]
+    log_d = math.log(_MIXTURE_STAKES)
+    mixed = []
+    for column in zip(*paths):
+        total = -math.inf
+        for log_capital in column:
+            total = _log_add_exp(total, log_capital)
+        mixed.append(total - log_d)
+    return mixed
+
+
+def _hedged_log_path(scaled: Sequence[float], m: float) -> list[float]:
+    """The two-sided mixture's log capital after each value: half the upward mixture (on ``z > m``) plus half the
+    downward one (on ``z < m``, the upward one on ``1 − z`` against ``1 − m``), each :func:`_mixture_log_path`.
+
+    Hedged capital (Waudby-Smith and Ramdas 2024, §4.2, with θ = 1/2): under H0 ``E[z] = m`` each half is a
+    nonnegative supermartingale started at 1/2, so their sum ever reaches ``1/α`` with probability at most α. The
+    test of ``m`` and the interval on the mean are both read off it (:func:`_hedged_p`, :func:`_hedged_interval`), so
+    the interval excludes ``m`` exactly where the test rejects it.
+    """
+    up = _mixture_log_path(scaled, m)
+    down = _mixture_log_path([1.0 - z for z in scaled], 1.0 - m)
+    half = math.log(2.0)
+    return [_log_add_exp(u, d) - half for u, d in zip(up, down)]
+
+
+def _hedged_p(scaled: Sequence[float], m: float) -> float:
+    """The two-sided mixture p against the rescaled null ``m``: one over the most the hedged capital ever reached."""
+    return _capital_p(_hedged_log_path(scaled, m))
+
+
+def _hedged_interval(scaled: Sequence[float], alpha: float) -> tuple[float, float] | None:
+    """Every rescaled mean the hedged mixture has never rejected at ``alpha`` over the values read so far, as an
+    interval on ``[0, 1]``: the confidence sequence's reading at this many values, covering at every count at once.
+
+    Found from a mean it keeps (the values' mean, else the first of 63 evenly spaced points it keeps) by bisection
+    toward each end, as :func:`bounded_mean_lower_bound` finds its bound; each end is the farthest mean found
+    rejected, so rounding only widens. None where it keeps no mean at all: the sequence's running reading has excluded
+    every one, which happens with probability at most ``alpha``.
+    """
+    threshold = math.log(1.0 / alpha)
+
+    def kept(m: float) -> bool:
+        return max(_hedged_log_path(scaled, m), default=0.0) < threshold
+
+    centre = sum(scaled) / len(scaled)
+    start = next((m for m in (centre, *(j / 64 for j in range(1, 64))) if kept(m)), None)
+    if start is None:
+        return None
+    ends = []
+    for edge in (0.0, 1.0):
+        if kept(edge):
+            ends.append(edge)
+            continue
+        rejected, inside = edge, start
+        for _ in range(_BOUND_STEPS):
+            middle = (rejected + inside) / 2.0
+            if kept(middle):
+                inside = middle
+            else:
+                rejected = middle
+        ends.append(rejected)
+    return ends[0], ends[1]
 
 
 def paired_equivalence(
-    diffs: Sequence[float | Fraction], margin: float | None, *, value_range: tuple[float, float] | None = None
+    diffs: Sequence[float | Fraction],
+    margin: float | None,
+    *,
+    value_range: tuple[float, float] | None = None,
+    mixture: bool = False,
 ) -> tuple[bool | None, float | None]:
     """The paired TOST against ``± margin``: whether the mean difference is shown inside it, and its p.
 
@@ -2270,6 +2472,9 @@ def paired_equivalence(
     :ptype margin: float | None
     :param value_range: The measure's declared inclusive bounds, or None when it declares none.
     :ptype value_range: tuple[float, float] | None
+    :param mixture: Read each one-sided test by the mixture stake over the differences in the order given
+        (:func:`bounded_mean_p`), so the TOST p keeps its α however often cases are added and it is read again.
+    :ptype mixture: bool
     :return: ``(equivalent, p)``. Both None when no test could decide: no positive margin, no declared range
         (:func:`equivalence_untested_reason` says so), fewer than two pairs, or a difference outside ± the
         range's width (the declared range is contradicted, so its bound is not a bound).
@@ -2282,14 +2487,16 @@ def paired_equivalence(
     width = exact_decimal(value_range[1]) - exact_decimal(value_range[0])
     if any(abs(d) > width for d in exact):
         return None, None
-    p = _bounded_tost_p(exact, margin, (float(-width), float(width)))
+    p = _bounded_tost_p(exact, margin, (float(-width), float(width)), mixture=mixture)
     return p < SIGNIFICANCE_ALPHA, p
 
 
-def _bounded_tost_p(diffs: Sequence[Fraction], margin: float, bounds: tuple[float, float]) -> float:
+def _bounded_tost_p(
+    diffs: Sequence[Fraction], margin: float, bounds: tuple[float, float], *, mixture: bool = False
+) -> float:
     """The TOST p of :func:`paired_equivalence` on a declared range: the larger bounded one-sided p."""
-    above_lower = bounded_mean_p(diffs, -exact_decimal(margin), bounds)
-    below_upper = bounded_mean_p([-d for d in diffs], -exact_decimal(margin), bounds)
+    above_lower = bounded_mean_p(diffs, -exact_decimal(margin), bounds, mixture=mixture)
+    below_upper = bounded_mean_p([-d for d in diffs], -exact_decimal(margin), bounds, mixture=mixture)
     return max(above_lower, below_upper)
 
 
@@ -2301,6 +2508,7 @@ def bounded_separation_p(
     value_range: tuple[float, float],
     alpha: float = SIGNIFICANCE_ALPHA,
     planned_n: int | None = None,
+    mixture: bool = False,
 ) -> float | None:
     """The two-sided p of the bounded test by betting that ``mean(b) ≠ mean(a)``, valid at every n on a declared range.
 
@@ -2316,6 +2524,14 @@ def bounded_separation_p(
     each stake is tuned to N (:func:`bounded_mean_p`), so the p over the first k ≤ N pairs holds α at any stop, and at
     k = N it is the p with no ``planned_n`` over the same pairs listed in case order.
 
+    **The mixture bet** (``mixture``, paired only): the differences are bet on in the order given, the order the
+    cases were added, by the mixture stake (:func:`bounded_mean_p`), and the two directions are hedged rather than
+    doubled: the capital is half the upward mixture's plus half the downward one's (:func:`_hedged_log_path`), and
+    the p is one over the most it reached. No stake depends on a count, so the p over the first k pairs is one
+    capital read at k: cases may be added and the p read again as often as wanted, and a reading at or below α
+    happens at most α of the time under the null over every such re-read together. Its interval
+    (:func:`bounded_difference_interval` with ``mixture``) is read off the same capital. ``alpha`` plays no part.
+
     :param sample_a: One side's per-case values, in a fixed case order.
     :ptype sample_a: Sequence[float | Fraction]
     :param sample_b: The other's, aligned with ``sample_a`` when ``paired``.
@@ -2329,12 +2545,16 @@ def bounded_separation_p(
     :param planned_n: The cases the bet was fixed for before the first pair, the pairs given in the order bet on;
         None for a bet over these pairs alone, in :func:`bet_order` of their count.
     :ptype planned_n: int | None
+    :param mixture: Read the hedged mixture bet, over the pairs in the order given.
+    :ptype mixture: bool
     :return: The p, in ``[0, 1]``; None with fewer than two values a side, paired samples of different lengths, or a
         value outside the declared range.
     :rtype: float | None
-    :raises ValueError: ``planned_n`` on an unpaired reading, or below the pairs given.
+    :raises ValueError: ``planned_n`` on an unpaired reading, or below the pairs given; ``mixture`` unpaired or with
+        ``planned_n``.
     """
     _check_planned(planned_n, paired=paired, given=len(sample_b))
+    _check_mixture(mixture, planned_n=planned_n, paired=paired)
     a = [exact_decimal(v) for v in sample_a]
     b = [exact_decimal(v) for v in sample_b]
     if len(a) < 2 or len(b) < 2 or (paired and len(a) != len(b)):
@@ -2345,6 +2565,8 @@ def bounded_separation_p(
     if paired:
         width = float(high - low)
         diffs = [y - x for x, y in zip(a, b)]
+        if mixture:
+            return _hedged_p(_scaled_to_unit(diffs, (-width, width), ordered=True), 0.5)
         upward = bounded_mean_p(diffs, 0.0, (-width, width), alpha=alpha / 2.0, planned_n=planned_n)
         downward = bounded_mean_p([-d for d in diffs], 0.0, (-width, width), alpha=alpha / 2.0, planned_n=planned_n)
         return min(1.0, 2.0 * min(upward, downward))

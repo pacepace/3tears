@@ -292,6 +292,23 @@ the corrected interval on that gain reaches below zero. One v2 trial failed on m
 counts against v2, stated, never excluded: a model's unusable answer is the candidate's failure.
 [Reading reports](reading-reports.md#reading-a-comparison) explains each verdict.
 
+**Adding cases and reading again.** When the evidence cannot tell the arms apart, add invoices and run `compare.py`
+again, as often as you like, with nothing declared first. The line under the first line says what that allows:
+
+```text
+Each verdict and interval on a pass rate or a score on its declared range stays valid however many times cases are added and the comparison is read again; a single read gives up some power for that, and cost and latency are read once, so they are not covered.
+```
+
+- **Why it holds.** Each pass rate, and each score on its declared range, is read by a bet whose stakes depend on no
+  count of cases declared ahead: a mixture of fixed betting fractions over the cases in the order they were first
+  run. A reading after you add cases is the same bet read later, so stopping when it first tells the arms apart keeps
+  the error it states. Append new cases to the end of the cases file, so each reading's cases come after the last
+  reading's.
+- **What it costs.** Read once, it tells the arms apart a little later than a test fixed for that many cases would:
+  its intervals are somewhat wider. That is the price of reading again freely.
+- **What it does not cover.** Cost and latency are read by a t test on each run's cases alone, so re-reading them as
+  cases are added is not covered; nor is adding an arm or a grader between reads, which asks a new question.
+
 ## Rung 3b: a margin, so a reading can be equivalent
 
 [`margin.py`](../examples/3-invoices/margin.py) is 3a with a margin on `total`:

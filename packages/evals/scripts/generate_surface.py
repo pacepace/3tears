@@ -524,6 +524,9 @@ def _names(names: list[str]) -> str:
 
 
 def _agent_lines(surface: Surface) -> Iterator[str]:
+    # What re-reading a comparison allows, in the one sentence the print says it in.
+    from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE
+
     by_rung = surface.typed_by_rung()
     first = surface.first_eval()
     yield "3tears-evals: read this first"
@@ -571,6 +574,15 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     yield from _wrapped(printed_first_line("Rung 1: your own function"), "  ")
     yield from _wrapped("A comparison's first line says whether the evidence tells the arms apart. Rung 3a prints:")
     yield from _wrapped(printed_first_line("Rung 3a: two prompts, compared"), "  ")
+    yield from _wrapped(
+        f"The line under a comparison's first line says what reading it again allows: {REREAD_SENTENCE}"
+    )
+    yield from _wrapped(
+        "So add cases and run the comparison again as often as you like, with nothing declared first: append the new "
+        "cases to the end of the cases file, since each reading bets on the cases in the order they were first run. "
+        "What it does not cover: cost and latency, read by a t test on each run's cases alone, and an arm or a "
+        "grader added between reads, which asks a new question."
+    )
     yield from _wrapped(
         "Below it: each measure's rate, the top misses with why each missed, and where the report page is. A "
         "refusal before anything runs goes to stderr with exit 2; an action that refuses answers with refused: "

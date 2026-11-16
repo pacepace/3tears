@@ -2141,6 +2141,18 @@ class ComparisonFamily(EvalDocumentModel):
         ),
     )
     n_untested: int = Field(ge=0, description="Comparisons in the family that could run no test, so carry no p.")
+    rereadable: bool = Field(
+        default=False,
+        # Left out of the document while false, so a family read as before is this shape byte for byte.
+        exclude_if=lambda rereadable: not rereadable,
+        description=(
+            "Whether the mixture bet read this family's paired comparisons on a declared range (the aspect's design is "
+            "`rereadable`, `AspectDesign.rereadable`): each such comparison's p, equivalence p and interval are that "
+            "bet's, over its cases in the order they were added, valid however many times cases are added and the "
+            "family read again; a comparison no bet read (cost, latency, unpaired) is read once, as before. False "
+            "everywhere else."
+        ),
+    )
     comparisons: list[FamilyComparison] = Field(
         default_factory=list,
         description="Ordered by reading, name, rig and contrast variant.",
@@ -4277,6 +4289,10 @@ _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
     }
     # #1209: each trial's case's place in its runs' case lists (`trials[].case_place`), which only names a case.
     | {"case_place"}
+    # Whether a family's paired readings on a range were read by the mixture bet (`ComparisonFamily.rereadable`),
+    # written only where an aspect's design is `rereadable` (`AspectDesign.rereadable`, which a bundle carrying the
+    # declaration holds as well).
+    | {"rereadable"}
 )
 
 

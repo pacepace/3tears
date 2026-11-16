@@ -731,6 +731,19 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
             "looser level than it states. None = no plan stated."
         ),
     )
+    rereadable: bool = Field(
+        default=False,
+        # Written only when stated, so a design stating none is stored as it was before the field.
+        exclude_if=lambda rereadable: not rereadable,
+        description=(
+            "Whether this aspect's contrasts may be read again as cases are added, with no plan of looks: each paired "
+            "contrast on a declared range (a pass rate, a score on its scale) is then read by a bet whose stakes "
+            "depend on no declared count (a mixture over fixed betting fractions), over its cases in the order they "
+            "were first launched, so its verdict and interval keep their error however many times it is read. A "
+            "contrast with no range (cost, latency) is read once, as before. False = every contrast is read at the "
+            "cases it holds. Not with `planned_looks`."
+        ),
+    )
     measure_order: list[str] = Field(
         default_factory=list,
         # Written only when stated, so a design stating none is stored as it was before the field.
@@ -768,6 +781,22 @@ class AspectDesign(EvalDocumentModel, CoreShapeModel):
         :raises ValueError: One of them appears twice.
         """
         _refuse_repeated_design_entries(self.axes, self.bars, self.guardrail_margins, self.merit_priority)
+        return self
+
+    @model_validator(mode="after")
+    def _rereadable_or_planned(self) -> AspectDesign:
+        """Refuse a design both ``rereadable`` and planning looks: the two read a re-read by different rules, so a
+        design states one.
+
+        :return: The validated design.
+        :rtype: AspectDesign
+        :raises ValueError: Both are stated.
+        """
+        if self.rereadable and self.planned_looks is not None:
+            raise ValueError(
+                "a design is rereadable or plans its looks, not both: drop planned_looks to read the contrasts again "
+                "as cases are added, or drop rereadable to read them at a plan of looks"
+            )
         return self
 
     @model_validator(mode="after")

@@ -79,6 +79,7 @@ from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE
 from threetears.evals.analysis.bundle.trials import pass_count, trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
@@ -562,7 +563,7 @@ class Result:
                 ]
             )
         one_arm = len(self.arms) == 1
-        lines = self._stopped_lines() or [self._verdict_line()]
+        lines = self._stopped_lines() or [self._verdict_line(), *self._reread_line()]
         # How far its judge can be trusted is read with the verdict: against people's labels, then on its examples.
         judged = self.calibration_lines() + (self.judge_examples.lines() if self.judge_examples is not None else [])
         if one_arm:
@@ -786,6 +787,13 @@ class Result:
         guardrail an arm is not shown safe on. The page, its lead, this line and the exit line say one sentence.
         """
         return f"{self.name}: {self._verdict().text}"
+
+    def _reread_line(self) -> list[str]:
+        """What a reader may do with the comparison the first line reads, one line under it: read it again as cases are
+        added (:data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE`), where the mixture bet read its
+        family; empty for one arm, or a family no bet read."""
+        families = self.report.bundle.multiple_comparisons.families
+        return [REREAD_SENTENCE] if any(family.rereadable for family in families) else []
 
     def _stopped_lines(self) -> list[str]:
         """The first lines of the print of a run that did not finish, in place of its verdict; empty when every arm's
@@ -1608,6 +1616,11 @@ def declare(
     grader's measure in the order the eval lists them (:attr:`Result.grader_readings`), filed on the aspect's design so
     the campaign's page leads on the first of them, as the printed line does; empty files none.
 
+    A comparison's design is filed ``rereadable`` (:attr:`~threetears.evals.kernel.declaration.AspectDesign.rereadable`):
+    a newcomer may add cases and run it again as often as they like, with nothing declared, and each paired contrast
+    on a declared range keeps its error over every such reading (the mixture bet,
+    :data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE`).
+
     ``declared_at`` is when the caller fixed the design and the control, where that was before its arms ran: an eval
     fixes both in the call that launches them, so the campaign filed once they have run is written once, dated then
     (:func:`~threetears.evals.analysis.create_campaign`'s ``declared_at``), never as chosen once its readings were
@@ -1649,6 +1662,10 @@ def declare(
         design["guardrail_margins"] = [entry.model_dump() for entry in guardrail_margins]
     if measure_order:
         design["measure_order"] = list(dict.fromkeys(measure_order))
+    if len(arms) > 1:
+        # A newcomer adds cases and runs the eval again, as often as they like, with no plan declared: each paired
+        # contrast on a range is read by the mixture bet, which keeps its error however often it is read again.
+        design["rereadable"] = True
     # One aspect, the eval's: every arm ran the one template the eval authored, so the aspect names it (a judged
     # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). A margin
     # on the pass rate is filed only where the eval's author wrote one; none is ever assumed.
