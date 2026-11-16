@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -619,3 +620,61 @@ def test_a_grader_that_cannot_take_case_and_answer_is_refused() -> None:
         "the grader right(out) cannot be called as right(case, out), which is how each answer is handed "
         "to it; declare it to take exactly that: def right(case, out): ..."
     )
+
+
+# --- what cannot be read is run, and only that: any other failure of reading reaches the author --------------------
+
+
+class _SignatureThatFails:
+    """A callable whose signature raises something other than what marks a callable that has none."""
+
+    __name__ = "right"
+
+    @property
+    def __signature__(self) -> inspect.Signature:
+        raise RuntimeError("reading this signature failed")
+
+    def __call__(self, case: Mapping[str, Any], out: Any) -> bool:
+        return bool(out == case["label"])
+
+
+def test_a_runner_whose_signature_fails_to_read_raises_that_failure() -> None:
+    with pytest.raises(RuntimeError, match="reading this signature failed"):
+        Eval(CASES, _SignatureThatFails(), ["label"], name="unreadable")
+
+
+def _defined_where_no_file_holds_it() -> Callable[..., Any]:
+    """A runner with no return of a value, defined by ``exec``: ``inspect.getsource`` finds no source for it."""
+    namespace: dict[str, Any] = {}
+    exec("def classify(case):\n    case.get('text')\n", namespace)
+    runner: Callable[..., Any] = namespace["classify"]
+    return runner
+
+
+def test_a_runner_whose_source_cannot_be_read_is_not_refused() -> None:
+    """Its source would show it returns nothing; with none to read the check cannot tell, so it does not refuse."""
+    Eval(CASES, _defined_where_no_file_holds_it(), ["label"], name="sourceless")
+
+
+def test_a_runner_whose_source_fails_to_read_otherwise_raises_that_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def failing(_: object) -> str:
+        raise RuntimeError("reading this source failed")
+
+    monkeypatch.setattr(inspect, "getsource", failing)
+    with pytest.raises(RuntimeError, match="reading this source failed"):
+        Eval(CASES, _right, ["label"], name="unreadable")
+
+
+def test_a_grader_whose_signature_cannot_be_read_is_not_refused() -> None:
+    """A C wrapper (``functools.cache``) shows no signature of its own: the check cannot tell, so it does not refuse."""
+
+    @functools.cache
+    def right(case: Mapping[str, Any], out: Any) -> bool:
+        return bool(out == case["label"])
+
+    Eval(CASES, _right, [right])
+
+
+def test_a_grader_whose_signature_fails_to_read_raises_that_failure() -> None:
+    with pytest.raises(RuntimeError, match="reading this signature failed"):
+        Eval(CASES, _right, [_SignatureThatFails()])

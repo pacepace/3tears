@@ -29,6 +29,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, overload
 
 from pydantic import BaseModel
@@ -47,6 +48,12 @@ UNUSABLE_ANSWER = "(unusable answer)"
 
 #: What :func:`field_value` returns for an answer that has no such field.
 _MISSING = object()
+
+
+class _CannotTell(Enum):
+    """What reading a grader's signature finds when it has none. Cannot tell means do not refuse: it is called."""
+
+    NO_SIGNATURE = "no signature to read"
 
 
 def _a_number(value: object) -> bool:
@@ -299,12 +306,9 @@ def _refuse_a_grader_that_cannot_take_its_arguments(target: Callable[..., Any], 
 
     :raises ValueError: Its signature cannot bind two positional arguments.
     """
-    try:
-        # The outermost signature, what is called (a decorator's wrapper, not the function it wraps), its annotations
-        # read as forward references and never evaluated: a name imported only for type checking is no error.
-        signature = inspect.signature(target, follow_wrapped=False, annotation_format=annotationlib.Format.FORWARDREF)
-    except TypeError, ValueError:
-        return  # no signature to read (a builtin, a C wrapper): it cannot be told, so it is called as it is
+    signature = _signature_as_called(target)
+    if isinstance(signature, _CannotTell):
+        return
     try:
         signature.bind("case", "out")
     except TypeError:
@@ -312,6 +316,20 @@ def _refuse_a_grader_that_cannot_take_its_arguments(target: Callable[..., Any], 
             f"the grader {name}{_bare(signature)} cannot be called as {name}(case, out), which is how each answer is handed to "
             f"it; declare it to take exactly that: def {name}(case, out): ..."
         ) from None
+
+
+def _signature_as_called(target: Callable[..., Any]) -> inspect.Signature | _CannotTell:
+    """The outermost signature, what is called (a decorator's wrapper, not the function it wraps), or
+    :attr:`_CannotTell.NO_SIGNATURE` when it has none to read.
+
+    Its annotations are read as forward references and never evaluated: a name imported only for type checking is no
+    error.
+    """
+    try:
+        return inspect.signature(target, follow_wrapped=False, annotation_format=annotationlib.Format.FORWARDREF)
+    except TypeError, ValueError:
+        # inspect.signature's own refusal: a builtin or a C wrapper (functools.cache) shows no signature to read.
+        return _CannotTell.NO_SIGNATURE
 
 
 def plan_graders(graders: Any) -> GraderPlan:

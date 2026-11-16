@@ -35,6 +35,7 @@ import textwrap
 import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Any, TypeIs
@@ -202,6 +203,13 @@ def _bare(signature: inspect.Signature) -> inspect.Signature:
     )
 
 
+class _CannotTell(Enum):
+    """What reading an author's function finds when it cannot be read. Cannot tell means do not refuse: it is run."""
+
+    NO_SIGNATURE = "no signature to read"
+    NO_SOURCE = "no source to read"
+
+
 def _refuse_an_unusable_runner(runner: Any, arm: str | None) -> None:
     said = "the runner" if arm is None else f"the arm {arm!r}"
     if not isinstance(runner, WorldRunner | Log) and not callable(runner):
@@ -216,8 +224,8 @@ def _refuse_an_unusable_runner(runner: Any, arm: str | None) -> None:
         (runner.agent, "case, tools", "async def") if isinstance(runner, WorldRunner) else (runner, "case", "def")
     )
     signature = _signature_as_called(called)
-    if signature is None:
-        return  # no signature to read (a builtin, a C wrapper): it cannot be told, so it is called as it is
+    if isinstance(signature, _CannotTell):
+        return
     try:
         signature.bind(*handed.split(", "))
     except TypeError:
@@ -228,8 +236,8 @@ def _refuse_an_unusable_runner(runner: Any, arm: str | None) -> None:
         ) from None
 
 
-def _signature_as_called(called: Any) -> inspect.Signature | None:
-    """The signature ``called`` is called through, or ``None`` when it has none to read.
+def _signature_as_called(called: Any) -> inspect.Signature | _CannotTell:
+    """The signature ``called`` is called through, or :attr:`_CannotTell.NO_SIGNATURE` when it has none to read.
 
     The outermost one: a decorator's wrapper is what is called, even one that copies the function's name with
     ``functools.wraps`` and takes other arguments than it. Annotations are read as forward references, never
@@ -238,7 +246,8 @@ def _signature_as_called(called: Any) -> inspect.Signature | None:
     try:
         return inspect.signature(called, follow_wrapped=False, annotation_format=annotationlib.Format.FORWARDREF)
     except TypeError, ValueError:
-        return None
+        # inspect.signature's own refusal: a builtin or a C wrapper (functools.cache) shows no signature to read.
+        return _CannotTell.NO_SIGNATURE
 
 
 def _declare_as(called: Any, handed: str, written: str) -> tuple[str, str]:
@@ -282,10 +291,9 @@ def _refuse_a_runner_that_returns_nothing(runner: Any, arm: str | None, field_na
     target = getattr(target, "__func__", target)
     if not inspect.isfunction(target) or target.__name__ == "<lambda>" or hasattr(target, "__wrapped__"):
         return  # cannot be read, or its value is its expression's: it cannot be told, so it is run
-    try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(target)))
-    except OSError, TypeError, SyntaxError:
-        return  # no source to read: it cannot be told, so it is run
+    tree = _source_of(target)
+    if isinstance(tree, _CannotTell):
+        return
     defined = tree.body[0] if tree.body else None
     if not isinstance(defined, ast.FunctionDef | ast.AsyncFunctionDef) or defined.name != target.__name__:
         return
@@ -296,6 +304,15 @@ def _refuse_a_runner_that_returns_nothing(runner: Any, arm: str | None, field_na
         f"{said} {target.__name__} returns nothing (it has no return of a value), so every answer would be None and "
         f"its grader could read {field_name!r} off none of them: return the answer from it"
     )
+
+
+def _source_of(function: Callable[..., Any]) -> ast.Module | _CannotTell:
+    """The parsed source of ``function``, or :attr:`_CannotTell.NO_SOURCE` when it has none to read."""
+    try:
+        return ast.parse(textwrap.dedent(inspect.getsource(function)))
+    except OSError, SyntaxError:
+        # Defined where no file holds it (exec, a REPL): OSError; the file changed since it was loaded: SyntaxError.
+        return _CannotTell.NO_SOURCE
 
 
 def _returns_a_value(body: Sequence[ast.stmt]) -> bool:
