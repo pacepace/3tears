@@ -54,6 +54,13 @@ now runs on worker threads taking turns with the loop (`threetears.core.loop_tur
 returns each unchanged) and between the rows read. `CallerTransaction.restate_many` takes a thread's turns. A
 loop_timing budget at 33,786 keys, red on the old code (32.1 ms against 5 ms), plus a counted check that the loop runs
 between stretches of returned rows (34 stretches, one a statement, on the old code).
+### enforcement: a consumer's in-checkout environment is read as 3tears, the dependency
+
+`no_whole_reads` reads the installed 3tears sources for the indexes and keys a consumer's table list copies from it, and
+skipped every tree inside the repo root, so a consumer whose `.venv` sits in its checkout (`uv sync`, CI and laptops
+alike) read none: each 3tears index its table list copies (`scope_epochs_pending`, `source_tokens_by_signal_c`, ...)
+was judged as its own and refused for naming no purpose. A tree under `site-packages` / `dist-packages` is now the
+dependency's wherever it sits; only 3tears' own source trees are skipped in its own repo.
 
 ### core: a bulk delete and a listened collection's write hold the event loop a few milliseconds at most
 
