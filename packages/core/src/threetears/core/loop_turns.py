@@ -3,9 +3,12 @@
 CPU work moved off the event loop onto a thread still holds the interpreter lock while it runs Python: the loop's
 thread asks for the lock and waits CPython's switch interval (5 ms by default) for it, and on a loaded host a waiting
 thread is often not the one handed it, so the loop fell behind by several intervals at a time while the thread ran. A
-thread that hands the loop a turn whenever it has held the lock :data:`HOLD_SECONDS` keeps every stretch of the loop's
+thread that hands the loop a turn whenever it has held the lock :data:`_HOLD_SECONDS` keeps every stretch of the loop's
 wait under a millisecond, whatever the switch interval (:class:`LoopTurns`). Its per-item loops take a turn every
 :data:`STEP_ITEMS` items (:func:`stepped`).
+
+Work that must stay on the loop (calls made "on the event loop", as an L1 change listener's) takes the same turns from
+the loop's side: :func:`called_in_turns` lets the loop's other work run whenever it has held the loop as long.
 
 Born in the Arrow copy's build (:mod:`threetears.core.backends.arrow_copy`); shared since a bulk write's per-key work
 (its keys checked and enrolled, its L1 fence keys made) ran on threads too, and at 33,786 keys held the loop 15 ms at a
@@ -17,10 +20,10 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import Any, Final, TypeVar
 
-__all__ = ["HOLD_SECONDS", "STEP_ITEMS", "LoopTurns", "emptied", "stepped"]
+__all__ = ["STEP_ITEMS", "LoopTurns", "called_in_turns", "emptied", "stepped"]
 
 _Item = TypeVar("_Item")
 
@@ -30,7 +33,7 @@ _Item = TypeVar("_Item")
 #: a stretch stays under 1 ms: on a loaded host the OS can stop the build while it holds the lock, and the caller's
 #: loop is late by that stop only when its tick falls inside a stretch, so the shorter the stretches the rarer that is
 #: (1 ms stretches: 47.5 ms worst, p99 4.7 ms of added lateness on a Linux container with every CPU busy)
-HOLD_SECONDS: Final = 0.0005
+_HOLD_SECONDS: Final = 0.0005
 
 #: how long the build blocks when it lets the loop run and has no loop to hand the turn to
 _TURN_SECONDS: Final = 0.0002
@@ -40,12 +43,12 @@ _TURN_SECONDS: Final = 0.0002
 _TURN_WAIT_SECONDS: Final = 0.05
 
 #: the items a per-item loop on the thread runs between two looks at its turn (:func:`stepped`): as the Arrow copy's
-#: build reads values (``_SLICE_VALUES``), few enough that no stretch nears :data:`HOLD_SECONDS`
+#: build reads values (``_SLICE_VALUES``), few enough that no stretch nears :data:`_HOLD_SECONDS`
 STEP_ITEMS: Final = 128
 
 
 class LoopTurns:
-    """the build's turns with the caller's event loop: past :data:`HOLD_SECONDS` of holding the interpreter lock, the
+    """the build's turns with the caller's event loop: past :data:`_HOLD_SECONDS` of holding the interpreter lock, the
     build hands the loop a turn and blocks until the loop has run.
 
     A turn is handed, not offered: the build schedules a callback on the loop and waits for it to run. A sleep offered
@@ -68,7 +71,7 @@ class LoopTurns:
         :return: nothing
         :rtype: None
         """
-        if time.monotonic() - self._since >= HOLD_SECONDS:
+        if time.monotonic() - self._since >= _HOLD_SECONDS:
             self.hand()
 
     def hand(self) -> None:
@@ -124,3 +127,30 @@ def emptied(lists: Iterable[list[Any]], loop: asyncio.AbstractEventLoop | None =
         while each:
             del each[-STEP_ITEMS:]
             turns.take()
+
+
+async def called_in_turns(items: Sequence[_Item], call: Callable[[_Item], None], every: int = STEP_ITEMS) -> None:
+    """``call`` with each of ``items``, in order, on the event loop, the loop's other work let run
+    (``asyncio.sleep(0)``) whenever the calls have held it :data:`_HOLD_SECONDS`, looked at every ``every`` items.
+
+    For calls that must run on the loop and so cannot go to a thread: a collection's L1 change listeners
+    (:meth:`~threetears.core.collections.base.BaseCollection.add_l1_change_listener`) heard each key of a 33,786-row
+    write in one stretch, as the write evicted it and again as its commit settled it, 5-6 ms a stretch with a scope
+    snapshot's two holders listening (a 10-core Apple host, 2026-11-16). Between two turns no other task runs, as
+    before; across them it may, as across any await.
+
+    :param items: the items
+    :ptype items: Sequence[_Item]
+    :param call: called with each item; what it raises ends the calls and is raised here
+    :ptype call: Callable[[_Item], None]
+    :param every: the items between two looks at the clock
+    :ptype every: int
+    :return: nothing
+    :rtype: None
+    """
+    since = time.monotonic()
+    for index, item in enumerate(items):
+        if index % every == 0 and index and time.monotonic() - since >= _HOLD_SECONDS:
+            await asyncio.sleep(0)
+            since = time.monotonic()
+        call(item)

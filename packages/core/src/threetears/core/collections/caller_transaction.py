@@ -112,6 +112,7 @@ _ByCollection = dict[int, tuple["BaseCollection[Any]", list[Any], list[dict[str,
 
 def _grouped(
     enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> tuple[_ByCollection, dict[str, SharedAdvance]]:
     """a settling transaction's enrollments, by collection, and the advances its tables share; pure, so a thread may
     make them.
@@ -124,13 +125,17 @@ def _grouped(
 
     :param enrolled: every key the transaction's writes enrolled, in order
     :ptype enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]
+    :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`): without them a 33,786-key
+        commit's grouping held the interpreter lock 1.6-3.3 ms at a stretch (2026-11-16); None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
     :return: each collection with its keys and the rows its writes saw; each table more than one instance wrote,
         with the advance they share
     :rtype: tuple[dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]],
         dict[str, SharedAdvance]]
     """
+    turns = LoopTurns(loop) if loop is not None else None
     by_collection: _ByCollection = {}
-    for collection, entity_id, row in enrolled:
+    for collection, entity_id, row in enrolled if turns is None else stepped(enrolled, turns):
         _, keys, rows = by_collection.setdefault(id(collection), (collection, [], []))
         keys.append(entity_id)
         rows.append(row)
@@ -142,7 +147,9 @@ def _grouped(
             changed=[
                 collection.changed_row(key, row)
                 for collection, keys, rows in written
-                for key, row in zip(keys, rows, strict=True)
+                for key, row in (
+                    zip(keys, rows, strict=True) if turns is None else stepped(zip(keys, rows, strict=True), turns)
+                )
             ]
         )
         for table, written in instances.items()
@@ -427,9 +434,9 @@ class CallerTransaction:
         else:
             # a commit of 33,786 rows held the loop 41-71 ms here grouping its keys and building a change record
             # a key (the WD2 bench, 2026-11-16, 179 columns, save_rows and save_arrow alike); on a thread the loop
-            # is held at most a GIL switch interval at a time. Pure work over this transaction's own list, awaited
+            # is handed a turn every half millisecond (LoopTurns). Pure work over this transaction's own list, awaited
             # before anything is settled, so the order every cache hears its keys in is unchanged
-            by_collection, shared = await asyncio.to_thread(_grouped, enrolled)
+            by_collection, shared = await asyncio.to_thread(_grouped, enrolled, asyncio.get_running_loop())
         sharing = _SHARED.set(shared)
         try:
             failure = await self._settle_each(by_collection)

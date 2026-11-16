@@ -7,6 +7,10 @@ call a key; every row checked, stamped and keyed on the loop; each statement's t
 the loop, 7-8 ms a statement; and the statements' parameters freed on the loop as the write returned. All of it now
 runs on worker threads that hand the loop a turn every half millisecond (:mod:`threetears.core.loop_turns`).
 
+A bulk delete through ``delete_rows`` held it the same way, its keys checked, bound, grouped into statements and
+enrolled on the loop, and a collection with L1 change listeners (a complete copy's, a scope snapshot's) heard every key
+of a write a call a key on the loop, twice: as the write evicted it and as the commit settled it.
+
 The window is the whole write: ``tx.begin``, the save, ``tx.commit`` and the settle, the hub a bus that answers at once.
 """
 
@@ -152,7 +156,9 @@ class _Hub:
         )
 
 
-async def _written(save: Callable[[Any, Any], Any], *, door: bool) -> tuple[list[Tick], list[Tick]]:
+async def _written(
+    save: Callable[[Any, Any], Any], *, door: bool, listeners: tuple[Callable[[], None], ...] = ()
+) -> tuple[list[Tick], list[Tick]]:
     """the loop's ticks and the host's idle loop's while one transaction writes :data:`_REAL` rows with ``save``.
 
     The collector is held for the window, as a serving process holds it through a refresh (the reports pod's
@@ -162,6 +168,9 @@ async def _written(save: Callable[[Any, Any], Any], *, door: bool) -> tuple[list
     backend = _Hub(door=door).proxy()
     collection = _Candidates(CollectionRegistry(), DefaultCoreConfig(), None)
     collection.l3_pool = backend
+    for listener in listeners:
+        # as a scope snapshot's ``on_change`` adds its holders' (scope_epochs)
+        collection.add_l1_change_listener(_on_change(listener))
 
     async def write() -> None:
         async with backend.acquire() as conn, CallerTransaction(conn):
@@ -199,6 +208,63 @@ def _loop_steps(rows: list[dict[str, Any]], *, stamped: bool) -> float:
         assert len(set(keys)) == len(keys)
         for key, each in zip(keys, data, strict=True):
             transaction.enroll(MagicMock, key, row=each)
+        return time.perf_counter() - started
+    finally:
+        gc.enable()
+
+
+def _delete_steps(rows: list[dict[str, Any]]) -> float:
+    """what a delete's per-key steps alone take here, done as the loop once did them: each key made a tuple, checked
+    for its width, made the key it is enrolled by and enrolled."""
+    transaction = CallerTransaction(MagicMock())
+    keys = [tuple(row[name] for name in _KEY) for row in rows]
+    gc.disable()
+    try:
+        started = time.perf_counter()
+        named = [tuple(key) for key in keys]
+        assert not [key for key in named if len(key) != len(_KEY)]
+        for key in named:
+            transaction.enroll(MagicMock, key if len(key) > 1 else key[0], row=None)
+        return time.perf_counter() - started
+    finally:
+        gc.enable()
+
+
+def _on_change(listener: Callable[[], None]) -> Callable[[Any], None]:
+    """``listener`` as a scope snapshot's ``on_change`` adds it to its collection's L1 (scope_epochs)."""
+    return lambda _key: listener()
+
+
+class _Holder:
+    """a holder listening to a collection's L1 through a scope snapshot (the reports pod's rows function and its
+    loaded check, two a snapshot): each change heard marks it dirty and starts a rebuild unless one is running."""
+
+    def __init__(self) -> None:
+        self.heard = 0
+        self._dirty = asyncio.Event()
+        self._builder: asyncio.Task[Any] | None = None
+
+    def changed(self) -> None:
+        self.heard += 1
+        self._dirty.set()
+        if self._builder is None or self._builder.done():
+            self._builder = asyncio.get_running_loop().create_task(self._dirty.wait())
+
+    async def settled(self) -> None:
+        if self._builder is not None:
+            await self._builder
+
+
+def _heard_keys(count: int) -> float:
+    """what hearing ``count`` keys alone takes here, two :class:`_Holder`'s calls a key as the loop once made them;
+    from a coroutine."""
+    listeners = [_on_change(_Holder().changed), _on_change(_Holder().changed)]
+    gc.disable()
+    try:
+        started = time.perf_counter()
+        for row in range(count):
+            for listener in tuple(listeners):
+                listener(row)
         return time.perf_counter() - started
     finally:
         gc.enable()
@@ -257,6 +323,112 @@ class TestTheWritesPerRowStepsLeaveTheLoop:
         assert settled == [], "a refused write enrolled keys"
 
 
+class TestABulkDeletesKeysLeaveTheLoop:
+    async def test_many_keys_are_enrolled_from_a_thread_every_key_in_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        made: list[int] = []
+        original = CallerTransaction.enrollments
+
+        def recording(*args: Any, **kwargs: Any) -> Any:
+            made.append(threading.get_ident())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(CallerTransaction, "enrollments", staticmethod(recording))
+        backend = _Hub(door=False).proxy()
+        collection = _Candidates(CollectionRegistry(), DefaultCoreConfig(), None)
+        collection.l3_pool = backend
+        settled: list[Any] = []
+
+        async def settle(keys: Any) -> None:
+            settled.extend(keys)
+
+        collection.invalidate_cache_many = settle
+        async with backend.acquire() as conn, CallerTransaction(conn):
+            assert await collection.delete_rows([_key(index) for index in range(200)], conn=conn) == 200
+        assert made and threading.get_ident() not in made, "the enrollments were made on the loop"
+        assert settled == [_key(index) for index in range(200)]
+
+    async def test_a_key_of_the_wrong_width_is_still_refused_before_anything_is_enrolled(self) -> None:
+        keys = [_key(index) for index in range(200)]
+        keys[150] = keys[150][:-1]
+        backend = _Hub(door=False).proxy()
+        collection = _Candidates(CollectionRegistry(), DefaultCoreConfig(), None)
+        collection.l3_pool = backend
+        settled: list[Any] = []
+
+        async def settle(keys: Any) -> None:
+            settled.extend(keys)
+
+        collection.invalidate_cache_many = settle
+        async with backend.acquire() as conn, CallerTransaction(conn):
+            with pytest.raises(ValueError, match=r"key \('k0-0-150'.*has 6 values where the key has 7"):
+                await collection.delete_rows(keys, conn=conn)
+        assert settled == [], "a refused delete enrolled keys"
+
+
+class TestAListenerHearsEveryKeyOnTheLoop:
+    @pytest.mark.parametrize("how", ["save_arrow", "save_rows", "delete_rows"])
+    async def test_every_key_is_heard_in_order_on_the_loop_as_written_and_as_settled(self, how: str) -> None:
+        rows = _rows_of(300)
+        backend = _Hub(door=how == "save_arrow").proxy()
+        collection = _Candidates(CollectionRegistry(), DefaultCoreConfig(), None)
+        collection.l3_pool = backend
+        loop_thread = threading.get_ident()
+        heard: list[Any] = []
+        off_loop: list[int] = []
+
+        def listener(key: Any) -> None:
+            if threading.get_ident() != loop_thread:
+                off_loop.append(threading.get_ident())
+            heard.append(key)
+
+        collection.add_l1_change_listener(listener)
+        async with backend.acquire() as conn, CallerTransaction(conn):
+            if how == "save_arrow":
+                await collection.save_arrow(_table(rows), conn=conn)
+            elif how == "save_rows":
+                await collection.save_rows(rows, conn=conn)
+            else:
+                await collection.delete_rows([_key(index) for index in range(300)], conn=conn)
+            assert heard == [_key(index) for index in range(300)], "the write's eviction was not heard key by key"
+        assert off_loop == [], "a listener was called off the loop"
+        assert heard == [_key(index) for index in range(300)] * 2, "the commit's settle was not heard key by key"
+
+    async def test_the_loop_runs_between_stretches_of_33786_keys_heard(self) -> None:
+        # what the timing budget below bounds by the clock, counted: the loop's other work runs while the keys are
+        # heard, not once they all are (the old write heard every key of a pass in one stretch: two stretches)
+        rows = _rows()
+        table = _table(rows)
+        backend = _Hub(door=True).proxy()
+        collection = _Candidates(CollectionRegistry(), DefaultCoreConfig(), None)
+        collection.l3_pool = backend
+        turns = 0
+        seen: list[int] = []
+
+        async def ticker() -> None:
+            nonlocal turns
+            while True:
+                turns += 1
+                await asyncio.sleep(0)
+
+        holders = (_Holder(), _Holder())
+        for holder in holders:
+            collection.add_l1_change_listener(_on_change(holder.changed))
+        collection.add_l1_change_listener(lambda _key: seen.append(turns))
+        ticking = asyncio.get_running_loop().create_task(ticker())
+        try:
+            async with backend.acquire() as conn, CallerTransaction(conn):
+                await collection.save_arrow(table, conn=conn)
+        finally:
+            ticking.cancel()
+        for holder in holders:
+            await holder.settled()
+        stretches = sum(1 for before, after in zip(seen, seen[1:]) if after != before) + 1
+        assert len(seen) == 2 * _REAL
+        assert stretches > 2, f"the {2 * _REAL:,} keys were heard in {stretches} stretches, the loop held throughout"
+
+
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileARealSizeWriteIsSaved:
     @pytest.mark.parametrize("how", ["save_arrow", "save_rows"])
@@ -283,5 +455,52 @@ class TestTheLoopRunsWhileARealSizeWriteIsSaved:
         assert worst < bound, (
             f"the loop was held {worst * 1000:.1f} ms past the host's idle loop while {_REAL:,} rows were written "
             f"with {how} ({latest(ticks, every=_TICK) * 1000:.1f} ms in all; the per-row steps take "
+            f"{one_pass * 1000:.1f} ms here)"
+        )
+
+    async def test_a_ticker_is_never_held_while_33786_keys_are_deleted(self) -> None:
+        rows = _rows()
+        keys = [_key(row) for row in range(_REAL)]
+        one_pass = _delete_steps(rows)
+        # the old delete ran these steps, and more (each key's values bound, the keys grouped into statements a JSON
+        # text a key column a key), in one stretch on the loop; 5 ms at the least, a GIL switch interval
+        bound = max(0.005, one_pass / 2)
+
+        async def delete(collection: Any, conn: Any) -> None:
+            await collection.delete_rows(keys, conn=conn)
+
+        ticks, host = await trusted(
+            lambda: _written(delete, door=False), lambda measured: measured, host_may_be_late=bound
+        )
+        worst = added_lateness(ticks, host, every=_TICK)
+        assert worst < bound, (
+            f"the loop was held {worst * 1000:.1f} ms past the host's idle loop while {_REAL:,} keys were deleted "
+            f"({latest(ticks, every=_TICK) * 1000:.1f} ms in all; the per-key steps take {one_pass * 1000:.1f} ms here)"
+        )
+
+    async def test_a_ticker_is_never_held_while_a_listened_collection_writes_33786_rows(self) -> None:
+        rows = _rows()
+        table = _table(rows)
+        one_pass = _heard_keys(_REAL)
+        # the old write called the listeners a key at a time on the loop, every key in one stretch, as the write
+        # evicted it and again as the commit settled it; 5 ms at the least, a GIL switch interval
+        bound = max(0.005, one_pass / 2)
+        holders = (_Holder(), _Holder())
+
+        async def save(collection: Any, conn: Any) -> None:
+            await collection.save_arrow(table, conn=conn)
+
+        ticks, host = await trusted(
+            lambda: _written(save, door=True, listeners=tuple(holder.changed for holder in holders)),
+            lambda measured: measured,
+            host_may_be_late=bound,
+        )
+        for holder in holders:
+            await holder.settled()
+            assert holder.heard >= 2 * _REAL, "a holder did not hear every key as written and as settled"
+        worst = added_lateness(ticks, host, every=_TICK)
+        assert worst < bound, (
+            f"the loop was held {worst * 1000:.1f} ms past the host's idle loop while a listened collection wrote "
+            f"{_REAL:,} rows ({latest(ticks, every=_TICK) * 1000:.1f} ms in all; hearing the keys takes "
             f"{one_pass * 1000:.1f} ms here)"
         )
