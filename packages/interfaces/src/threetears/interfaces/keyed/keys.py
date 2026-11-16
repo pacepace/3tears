@@ -74,6 +74,7 @@ __all__ = [
     "register_partial_predicates",
     "not_null_guards",
     "partial_predicate",
+    "primary_key",
     "stated_literals",
 ]
 
@@ -439,6 +440,21 @@ def register_table_indexes(table: str, indexes: Iterable[DeclaredIndex]) -> None
     if relation is None:
         raise ValueError(f"{table!r} names no table (schema.table, or a bare table): its indexes cannot be registered")
     _INDEXES.extend(pair for pair in {(relation, index) for index in indexes} if pair not in _INDEXES)
+
+
+def primary_key(table: Any) -> tuple[str, ...] | None:
+    """the primary key columns of the table ``table`` names, as its declaration registered them; None for a derived
+    relation, a name no declaration registers, or one registering no primary key.
+
+    :param table: the relation read
+    :ptype table: Any
+    :return: the key's columns, in order, or None
+    :rtype: tuple[str, ...] | None
+    """
+    relation = _relation(table) if isinstance(table, str) else None
+    if relation is None:
+        return None
+    return next((index.columns for named, index in _INDEXES if named == relation and index.primary), None)
 
 
 def _rank(index: DeclaredIndex, pinned: set[str], sorts: Sequence[Sort]) -> tuple[int, int, bool] | None:

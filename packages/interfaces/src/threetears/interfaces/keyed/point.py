@@ -32,7 +32,7 @@ from threetears.interfaces.keyed.filters import (
     renumbered,
     selected_column,
 )
-from threetears.interfaces.keyed.keys import stated_literals
+from threetears.interfaces.keyed.keys import primary_key, stated_literals
 from threetears.interfaces.keyed.page import Sort, order_by_terms
 from threetears.interfaces.keyed.steps import Step
 
@@ -477,22 +477,39 @@ def read_nearest_statement(
         if columns is None:
             sql, params = _sql(table, by, columns, limit=False, where=where, also=also)
             return f"{sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}", [*params, nearest.text, limit]
-        # WHY the columns are selected outside the ranked rows (MS1, 2026-11-15): no index serves a text rank, so the
-        # read ranks every row its pins and match leave, and a select list written beside the rank is evaluated for
-        # each of those rows, not for the ``limit`` kept. Memory's ambient keyword arm selects ``t.embedding::text``:
-        # for an owner of 20,000 memories (1024-dim) all matching the query, PostgreSQL spent 330 of its 357 ms turning
-        # every embedding into text (26 ms with that one column left out). Here the ranked rows are read whole
-        # (``t.*``; the planner keeps only the columns the outer list names), ranked and cut to ``limit`` inside, and
-        # the select list, Selected expressions included (each names the row ``t``, as the derived table is named),
-        # runs on the kept rows alone, re-sorted by the rank, ties in the same ``then`` order. Same rows, same order.
-        # Measured: scratchpad ms1/m3-pg.log, m3-yb.log, m4-*.log; held by
+        # WHY the columns are read for the kept rows alone (MS1, 2026-11-15): no index serves a text rank, so the read
+        # ranks every row its pins and match leave, and a select list written beside the rank is read and evaluated
+        # for each of those rows, not for the ``limit`` kept. Memory's ambient keyword arm selects
+        # ``t.embedding::text``. For an owner of 20,000 memories (1024-dim, among 100,050) all matching the query:
+        # PostgreSQL 357 ms, 330 of them casting every embedding to text; YugabyteDB 662-699 ms, reading every
+        # embedding from storage. Ranking the rows whole in a derived table (``t.*``, the select list over its kept
+        # rows) fixed PostgreSQL (35 ms) but not YugabyteDB (687 ms: the outer list naming ``t.embedding`` still
+        # fetched it for every ranked row; 154 ms with no embedding named at all). So the ranked read selects only
+        # the table's primary key and the rank, under its order and ``LIMIT``, and each kept row is read again by
+        # that key (``CROSS JOIN LATERAL``, driven from the kept rows: as a plain join YugabyteDB hashed every row of
+        # the agent, see the joined read below) for the select list, Selected expressions included (each names the
+        # row ``t``, as the lateral read is named), re-sorted by the rank, ties in the same ``then`` order. Same rows
+        # (one statement, one snapshot: each kept row is there to read again), same order. A relation with no
+        # declared primary key (a derived one) keeps the derived-table form. Measured: scratchpad ms1/m2-*.raw
+        # (before), m4-*.raw (derived table), m5-*.raw (by key); held by
         # packages/agent/memory/tests/integration/test_keyword_arm_plans.py.
         rank = quote_identifier(nearest.rank)
-        sql, params = _sql(table, by, None, limit=False, where=where, also=also)
-        listed = ", ".join([*(selected_column(column) for column in columns), f"t.{rank}"])
+        selected = [selected_column(column) for column in columns]
+        key = primary_key(table)
+        if key is None:
+            sql, params = _sql(table, by, None, limit=False, where=where, also=also)
+            return (
+                f"SELECT {', '.join([*selected, f't.{rank}'])} FROM ({sql} ORDER BY {distance} DESC{ties}"
+                f" LIMIT ${place + 1}) AS t ORDER BY t.{rank} DESC{ties}",
+                [*params, nearest.text, limit],
+            )
+        listed = ", ".join([*selected, f"r.{rank}"])
+        sql, params = _sql(table, by, key, limit=False, where=where, also=also)
+        again = " AND ".join(f"t.{quote_identifier(column)} = r.{quote_identifier(column)}" for column in key)
+        reread = relation(table, "t", [])
         return (
-            f"SELECT {listed} FROM ({sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}) AS t"
-            f" ORDER BY t.{rank} DESC{ties}",
+            f"SELECT {listed} FROM ({sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}) AS r"
+            f" CROSS JOIN LATERAL (SELECT * FROM {reread} WHERE {again}) AS t ORDER BY r.{rank} DESC{ties}",
             [*params, nearest.text, limit],
         )
     # WHY the read is wrapped (``SELECT ... FROM (<the read> LIMIT k) AS n ORDER BY distance``), measured 2026-11-14:

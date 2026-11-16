@@ -30,7 +30,7 @@ from threetears.core.keyed import (
     read_row,
     read_value,
 )
-from threetears.interfaces.keyed.keys import register_partial_predicates
+from threetears.interfaces.keyed.keys import DeclaredIndex, register_partial_predicates, register_table_indexes
 from threetears.interfaces.keyed.point import read_by_statement
 
 
@@ -270,6 +270,34 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
         f'TRUE) ORDER BY {rank} DESC LIMIT $5) AS t ORDER BY t."fts_rank" DESC'
     )
     assert params == ("a", "u", "red apples", "red apples", 3)
+
+
+async def test_a_text_ranked_read_of_a_keyed_table_reads_its_columns_again_for_the_kept_rows_alone() -> None:
+    """Flips if a ``TextRank`` read of a table with a declared primary key reads more than that key and the rank under
+    its order and LIMIT, or does not read each kept row again by every key column (driven from the kept rows) for its
+    columns, ``Selected`` expressions over ``t`` included, re-sorted by the rank with its ties (WHY at
+    ``read_nearest_statement``): the select list then ran on every ranked row."""
+    register_table_indexes(
+        "ranked_by_key_probe", [DeclaredIndex("ranked_by_key_probe_pkey", ("agent_id", "doc_id"), primary=True)]
+    )
+    conn = _Sent()
+    await read_nearest(
+        conn,
+        "ranked_by_key_probe",
+        by={"agent_id": "a"},
+        nearest=TextRank("search_vector", "red", then=("doc_id",)),
+        limit=3,
+        columns=("doc_id", Selected("t.embedding::text", "embedding")),
+    )
+    [(sql, params)] = conn.calls
+    rank = "ts_rank_cd(t.\"search_vector\", websearch_to_tsquery('english', $2))"
+    assert sql == (
+        f'SELECT t."doc_id", t.embedding::text AS "embedding", r."fts_rank" FROM (SELECT t."agent_id", t."doc_id", '
+        f'{rank} AS "fts_rank" FROM "ranked_by_key_probe" AS t WHERE t."agent_id" = $1 ORDER BY {rank} DESC, '
+        't."doc_id" LIMIT $3) AS r CROSS JOIN LATERAL (SELECT * FROM "ranked_by_key_probe" AS t WHERE t."agent_id" = '
+        'r."agent_id" AND t."doc_id" = r."doc_id") AS t ORDER BY r."fts_rank" DESC, t."doc_id"'
+    )
+    assert params == ("a", "red", 3)
 
 
 @pytest.mark.parametrize("config", ["english", "pg_catalog.simple", "Spanish_2"])
