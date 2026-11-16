@@ -1,4 +1,4 @@
-"""the 3tears source trees a consumer's gate reads for the declarations it depends on (``_dependency_roots``).
+"""the 3tears source trees a consumer's gate reads for the declarations it depends on (``dependency_roots``).
 
 A consumer's environment is usually inside its checkout (``uv sync`` makes ``.venv`` there, in CI as on a laptop), so
 an installed 3tears inside the repo root is still the dependency's source; only 3tears' own repo, whose packages are
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import threetears
 
-from threetears.enforcement.no_whole_reads import _dependency_roots
+from threetears.enforcement.no_whole_reads import dependency_roots
 
 
 def _tree(root: Path, *parts: str) -> Path:
@@ -35,13 +35,13 @@ def test_a_consumers_venv_inside_its_checkout_is_the_dependency(
 ) -> None:
     installed = _tree(tmp_path, ".venv", "lib", "python3.14", "site-packages")
     monkeypatch.setattr(threetears, "__path__", [str(installed)])
-    assert _dependency_roots(tmp_path) == (installed,)
+    assert dependency_roots(tmp_path) == (installed,)
 
 
 def test_3tears_own_trees_are_never_its_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     own = _tree(tmp_path, "packages", "core", "src")
     monkeypatch.setattr(threetears, "__path__", [str(own)])
-    assert _dependency_roots(tmp_path) == ()
+    assert dependency_roots(tmp_path) == ()
 
 
 def test_an_install_outside_the_checkout_is_the_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,4 +49,4 @@ def test_an_install_outside_the_checkout_is_the_dependency(tmp_path: Path, monke
     repo.mkdir()
     installed = _tree(tmp_path, "env", "lib", "python3.14", "site-packages")
     monkeypatch.setattr(threetears, "__path__", [str(installed)])
-    assert _dependency_roots(repo) == (installed,)
+    assert dependency_roots(repo) == (installed,)

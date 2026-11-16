@@ -130,6 +130,7 @@ __all__ = [
     "BoundBy",
     "NoWholeReadsConfig",
     "declaration_defects",
+    "dependency_roots",
     "no_whole_reads_findings",
     "use_the_helper_counts",
     "use_the_helper_findings",
@@ -414,7 +415,7 @@ def _proving_test_defect(
 _INSTALLED_PARTS: Final[frozenset[str]] = frozenset({"site-packages", "dist-packages"})
 
 
-def _dependency_roots(repo_root: Path) -> tuple[Path, ...]:
+def dependency_roots(repo_root: Path) -> tuple[Path, ...]:
     """the source trees of the installed 3tears packages, read for their table declarations: every one but the repo's
     own sources. An environment inside the checkout (a consumer's ``.venv``, as ``uv sync`` makes it in CI and on a
     laptop) is still the dependency's: skipping it read every 3tears index a consumer's table list copies as the
@@ -458,7 +459,7 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
     catalog = collect_schema(
         config.repo_root,
         (*config.src_roots, *config.schema_roots),
-        dependency_roots=_dependency_roots(config.repo_root) if config.dependency_schema else (),
+        dependency_roots=dependency_roots(config.repo_root) if config.dependency_schema else (),
         excluded_prefixes=config.excluded_prefixes,
         table_lists=config.table_lists,
     )
