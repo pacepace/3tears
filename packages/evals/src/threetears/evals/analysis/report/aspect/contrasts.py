@@ -439,6 +439,7 @@ def _plan_lines(bundle: AnalysisContextBundle, surface: DecisionSurface, forms: 
             reading_heading(surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name))
             for comparison in family.comparisons
             if comparison.interval_basis is not None
+            # prose-canary: allow — UnkeptPlan.why is a Literal code decides (past, uncounted, sized), not a model's
             and (unkept.why != "sized" or comparison.interval_basis in unkept.tests)
         ]
         # The plan's level: the joint one, or a family of one's 1 − α, never its interval's level at each look.
