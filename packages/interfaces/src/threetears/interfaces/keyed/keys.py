@@ -533,7 +533,8 @@ def serving_index(
     """the declared index that serves a keyed read of ``table`` pinning ``by``, in ``order``; None when none does.
 
     An unordered read (no sort, or one sorting only pinned columns) is served by the index binding most of its pins
-    (:func:`_unordered_serving`).
+    (:func:`_unordered_serving`); so is a read sorting by an expression, which no plain index holds, unless only the
+    primary key binds its pins (None: the planner's own choice).
 
     :param table: the relation read (a derived relation, or a name no declaration registers, has none)
     :ptype table: Any
@@ -552,11 +553,23 @@ def serving_index(
         return None
     pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
     sorts = [sort for sort in order if sort.expression is not None or sort.column not in pinned]
+    sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
     if not sorts:
-        sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
         return _unordered_serving(relation, pinned, by, guarded, sets)
     if any(sort.expression is not None for sort in sorts):
-        return None
+        # WHY an order by an expression names the index binding most pins (D5 via the coordinator, 2026-11-15): no
+        # plain B-tree index holds such an order, so the read sorts whatever rows it reads and the fewest is the best
+        # it can do: the unordered read's choice. Unnamed, YugabyteDB read a user's enabled skills (recency first,
+        # COALESCE(last_used_at, '-infinity')) through the user's prefix of uq_skills_agent_user_name, all 2,000 of
+        # them, rather than the 200 enabled ones of idx_skills_agent_user_enabled, which binds all three pins
+        # (skills' test_skills_agent_user_enabled on YugabyteDB: 2,000 rows scanned before, 200 after).
+        # WHY not an order by plain columns that no declared index holds: an index the declarations do not name may
+        # hold it, and naming a declared one overrides it. The hub's provider model pages (gateway_models by
+        # provider, by status / type / dates) read v160's (provider_id, <sort>, id) indexes, which its TableSchema
+        # does not declare; named its declared idx_gw_models_provider_model instead, YugabyteDB read 333 and 1,021
+        # rows for a page of 21 (YB1, 2026-11-16). The primary key stays unnamed (the planner's own choice).
+        fallback = _unordered_serving(relation, pinned, by, guarded, sets)
+        return None if fallback is None or fallback.primary else fallback
     ranked = [
         (rank, index)
         for named, index in _INDEXES

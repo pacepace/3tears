@@ -28,6 +28,7 @@ from threetears.agent.skills.collections import (
     AgentSkillInvocationCollection,
     SkillShapeError,
 )
+from threetears.core.keyed import AnyOf, Sort, serving_index
 
 
 def _new_uuid() -> UUID:
@@ -459,3 +460,30 @@ class TestSkillSaveShape:
             written.columns
         )
         assert {"tool", "arguments"} <= set(written.columns)
+
+
+#: the listing's order and its either-state pin, as AgentSkillCollection.list_for_user's keyset page writes them
+_RECENT_FIRST_PAGE = (
+    Sort(
+        "last_used_or_never",
+        cast="timestamptz",
+        descending=True,
+        expression="COALESCE(t.\"last_used_at\", '-infinity'::timestamptz)",
+    ),
+    Sort("date_created", cast="timestamptz", descending=True),
+    Sort("skill_id", cast="uuid", descending=True),
+)
+_EITHER_ENABLED = AnyOf((True, False), cast="boolean")
+
+
+def test_the_user_s_listing_reads_the_enabled_index_on_yugabyte() -> None:
+    """Flips if the user's recency-ordered skills listing (no declared index holds its order) is not served by
+    idx_skills_agent_user_enabled, the index binding its three pins: unhinted, YugabyteDB read it through the user's
+    prefix of uq_skills_agent_user_name, every disabled skill too (D5, 2026-11-15). Listing either state (a set of
+    both), the index still binds the agent and the user beyond the primary key."""
+    for enabled in (True, _EITHER_ENABLED):
+        by = {"agent_id": _new_uuid(), "user_id": _new_uuid(), "enabled": enabled}
+        served = serving_index("agent_skills", by, _RECENT_FIRST_PAGE)
+        assert served is not None, enabled
+        if enabled is True:
+            assert served.name == "idx_skills_agent_user_enabled", served
