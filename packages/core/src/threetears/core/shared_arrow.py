@@ -108,8 +108,8 @@ from threetears.core.eviction import (
     Declared,
     Policy,
     Tier,
-    declare,
-    policy_of,
+    policy_declare,
+    policy_lookup,
 )
 from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger, remove_tree
@@ -159,7 +159,7 @@ __all__ = [
     "VersionFile",
     "column_print",
     "epochs_version",
-    "fell_back_to_serving",
+    "serving_fallback_counted",
     "file_tokens",
     "merge_parts",
     "merged_rows",
@@ -239,8 +239,8 @@ class _Entry(enum.StrEnum):
 
 #: every kind of entry's eviction policy, in the one vocabulary of the cache tiers (``threetears.core.eviction``;
 #: Pace, 2026-11-15: eviction depends on what an entry is doing, and there is no default, as with the L1). Declared as
-#: the module is imported (:func:`~threetears.core.eviction.declare`): a kind with no policy here fails the import,
-#: never taken as KEEP; ``test_shared_arrow_eviction`` lists every kind and its policy (``declared(Tier.SHARED)``).
+#: the module is imported (:func:`~threetears.core.eviction.policy_declare`): a kind with no policy here fails the import,
+#: never taken as KEEP; ``test_shared_arrow_eviction`` lists every kind and its policy (``policies_declared(Tier.SHARED)``).
 #: The store evicts only kinds declared EVICTABLE.
 _EVICTION: Final[Mapping[_Entry, Declared]] = MappingProxyType(
     {
@@ -267,7 +267,7 @@ _EVICTION: Final[Mapping[_Entry, Declared]] = MappingProxyType(
         _Entry.STAGING: Declared(Policy.KEEP, "a writer is writing it; a dead writer's is swept, never evicted"),
     }
 )
-declare(Tier.SHARED, _Entry, _EVICTION)
+policy_declare(Tier.SHARED, _Entry, _EVICTION)
 
 #: the prefix of a version or a result being written, and of a directory being removed
 _STAGING_PREFIX: Final = ".staging-"
@@ -2735,7 +2735,7 @@ _SERVING_FALLBACKS = counter(
 )
 
 
-def fell_back_to_serving(what: str) -> None:
+def serving_fallback_counted(what: str) -> None:
     """count work run in the serving process because its shared Arrow workers could not take it (no room, a dead
     worker, the version gone): the consumer's side of the shared-memory metrics, beside the store's own refusals.
 
@@ -4017,7 +4017,7 @@ class SharedArrowStore:
         :return: (its name, its last use in ns, the bytes it alone holds), or None
         :rtype: tuple[str, int, int] | None
         """
-        if not policy_of(Tier.SHARED, _Entry.VERSION_CACHED.value).evictable:
+        if not policy_lookup(Tier.SHARED, _Entry.VERSION_CACHED.value).evictable:
             return None
         current = None if self._current is None else self._current.name
         best: tuple[str, int, int] | None = None

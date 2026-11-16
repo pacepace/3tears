@@ -25,7 +25,7 @@ from threetears.core.shm_autosize import (
     Sample,
     ShmAutosize,
     SizeRequest,
-    measure,
+    pod_measure,
 )
 
 GIB = 1 << 30
@@ -219,7 +219,7 @@ class TestMeasuringThePod:
         cgroup.mkdir()
         (cgroup / "memory.current").write_text("3221225472\n")
         (cgroup / "memory.max").write_text("8589934592\n")
-        sample = measure(tmp_path, cgroup_root=cgroup)
+        sample = pod_measure(tmp_path, cgroup_root=cgroup)
         assert sample.volume_size_bytes > 0 and 0 <= sample.volume_used_bytes <= sample.volume_size_bytes
         assert (sample.memory_used_bytes, sample.memory_limit_bytes) == (3 * GIB, 8 * GIB)
 
@@ -228,8 +228,8 @@ class TestMeasuringThePod:
         cgroup.mkdir()
         (cgroup / "memory.current").write_text("1024\n")
         (cgroup / "memory.max").write_text("max\n")
-        assert measure(tmp_path, cgroup_root=cgroup).memory_limit_bytes is None
+        assert pod_measure(tmp_path, cgroup_root=cgroup).memory_limit_bytes is None
 
     def test_with_no_cgroup_it_reads_the_process(self, tmp_path: Path) -> None:
-        sample = measure(tmp_path, cgroup_root=tmp_path / "none")
+        sample = pod_measure(tmp_path, cgroup_root=tmp_path / "none")
         assert sample.memory_used_bytes > 0 and sample.memory_limit_bytes is None

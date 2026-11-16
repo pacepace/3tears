@@ -57,8 +57,8 @@ from threetears.core.eviction import (
     Declared,
     Policy,
     Tier,
-    declare,
-    declared,
+    policy_declare,
+    policies_declared,
 )
 from threetears.observe import contain, get_logger
 
@@ -93,9 +93,9 @@ POLICY_EPOCH: list[int] = [0]
 
 
 def declare_l1_table(name: str, policy: Declared) -> None:
-    """declare one L1 table's policy in the cache family's declarations (:func:`threetears.core.eviction.declare`,
+    """declare one L1 table's policy in the cache family's declarations (:func:`threetears.core.eviction.policy_declare`,
     ``Tier.L1``, the kind named by the table), where every reader of a table's policy finds it
-    (:func:`~threetears.core.eviction.policy_of`): the ledger, and the held-bytes sampler's ``policy`` label.
+    (:func:`~threetears.core.eviction.policy_lookup`): the ledger, and the held-bytes sampler's ``policy`` label.
 
     A table's name is its kind: one table, one policy, in every L1 of the process. ``TableSchema(l1_eviction=...)``
     reaches this where the table is declared, and ``SQLiteBackend.initialize`` for a table that carries its policy
@@ -112,7 +112,7 @@ def declare_l1_table(name: str, policy: Declared) -> None:
     :return: nothing
     :rtype: None
     """
-    before = declared(Tier.L1).get(name)
+    before = policies_declared(Tier.L1).get(name)
     if before is not None and (before.policy is policy.policy or before.policy is Policy.KEEP):
         if before.policy is not policy.policy:
             log.warning(
@@ -126,7 +126,7 @@ def declare_l1_table(name: str, policy: Declared) -> None:
             extra={"extra_data": {"table": name, "keep": policy.why, "evictable": before.why}},
         )
     kinds = enum.StrEnum("L1Table", {"TABLE": name})  # type: ignore[misc]
-    declare(Tier.L1, kinds, {kinds["TABLE"]: policy})
+    policy_declare(Tier.L1, kinds, {kinds["TABLE"]: policy})
     POLICY_EPOCH[0] += 1
 
 
@@ -545,7 +545,7 @@ class L1Ledger:
         return {"keep": kept, "evictable": evictable, "overhead": overhead}
 
     def status(self) -> dict[str, int]:
-        """the tallies, for autosize (:func:`threetears.core.shm_autosize.measure`): never the file system.
+        """the tallies, for autosize (:func:`threetears.core.shm_autosize.pod_measure`): never the file system.
 
         :return: ``kept_bytes`` (``KEEP``, last measured), ``max_bytes`` (the budget) and ``evictable_bytes``
         :rtype: dict[str, int]

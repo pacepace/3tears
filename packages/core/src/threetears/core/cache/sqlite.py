@@ -70,7 +70,7 @@ from threetears.core.cache.base import (
     stored_time,
 )
 from threetears.core.declared import whole_read
-from threetears.core.eviction import Declared, Tier, declared, policy_of
+from threetears.core.eviction import Declared, Tier, policies_declared, policy_lookup
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
 
@@ -305,7 +305,7 @@ class SQLiteBackend:
         :rtype: set[str]
         """
         if self._policy_epoch != POLICY_EPOCH[0]:
-            current = declared(Tier.L1)
+            current = policies_declared(Tier.L1)
             self._evictable_tables = {
                 table for table in self._policies if (current.get(table) or self._policies[table]).evictable
             }
@@ -348,7 +348,7 @@ class SQLiteBackend:
             policy = table.info.get(L1_EVICTION_INFO)
             if policy is None:
                 # declared by name elsewhere (``declare_l1_table``), or refused: there is no default
-                policies[table.name] = policy_of(Tier.L1, table.name)
+                policies[table.name] = policy_lookup(Tier.L1, table.name)
             elif isinstance(policy, Declared):
                 declare_l1_table(table.name, policy)
                 policies[table.name] = policy
@@ -868,7 +868,7 @@ class SQLiteBackend:
             return 0
 
     def status(self) -> dict[str, int]:
-        """the process's L1 tallies for autosize (:func:`threetears.core.shm_autosize.measure`).
+        """the process's L1 tallies for autosize (:func:`threetears.core.shm_autosize.pod_measure`).
 
         :return: ``kept_bytes`` and ``max_bytes`` (and ``evictable_bytes``), from the ledger's tallies
         :rtype: dict[str, int]

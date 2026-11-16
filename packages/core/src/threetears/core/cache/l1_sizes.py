@@ -20,7 +20,7 @@ SQ2 2026-11-15). While the in-memory (memdb) L1 holds its whole-database lock, a
 that walk once a minute (the audit's item 5); a WAL L1 lets the write through.
 
 **Which tables.** Every table of a watched L1 is measured; a table whose eviction policy is not declared
-(:func:`threetears.core.eviction.declared` for :attr:`~threetears.core.eviction.Tier.L1`) is not exported, since
+(:func:`threetears.core.eviction.policies_declared` for :attr:`~threetears.core.eviction.Tier.L1`) is not exported, since
 the family has no "no policy" label, and is logged once.
 """
 
@@ -34,7 +34,7 @@ from typing import Final
 
 from threetears.core.cache.l1_pages import TableSize, measure
 from threetears.core.cache.sqlite import SQLiteBackend
-from threetears.core.eviction import HELD_BYTES, HELD_ENTRIES, Tier, declared
+from threetears.core.eviction import HELD_BYTES, HELD_ENTRIES, Tier, policies_declared
 from threetears.observe import contain, get_logger
 
 __all__ = ["L1_SIZES", "measure"]
@@ -136,7 +136,7 @@ class _L1Sizes:
         :return: nothing
         :rtype: None
         """
-        policies = declared(Tier.L1)
+        policies = policies_declared(Tier.L1)
         exported: set[tuple[str, str]] = set()
         for table, size in sizes.items():
             policy = policies.get(table)

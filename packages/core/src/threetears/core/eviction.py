@@ -6,8 +6,8 @@ and the metrics read the same in code, docs and panels for every tier (Pace, 202
 and L2"); no tier invents its own.
 
 **The policy** (:class:`Policy`), declared per table, entry kind or bucket with a one-line reason
-(:class:`Declared`) through :func:`declare` as the tier's module is imported, and never defaulted: a kind set with an
-undeclared kind fails the import, and a lookup of one is refused (:func:`policy_of`). :func:`declared` lists a tier's.
+(:class:`Declared`) through :func:`policy_declare` as the tier's module is imported, and never defaulted: a kind set with an
+undeclared kind fails the import, and a lookup of one is refused (:func:`policy_lookup`). :func:`policies_declared` lists a tier's.
 
 - ``EVICTABLE``: a cache; dropping it is a miss that refills from the tier below. Evicted least recently used first.
 - ``KEEP``: must stay complete, or is durable state; never evicted. It counts first against the budget; a write that
@@ -49,9 +49,9 @@ __all__ = [
     "Declared",
     "Policy",
     "Tier",
-    "declare",
-    "declared",
-    "policy_of",
+    "policy_declare",
+    "policies_declared",
+    "policy_lookup",
 ]
 
 
@@ -102,12 +102,12 @@ class _UndeclaredError(LookupError):
     """a kind of entry with no declared eviction policy: there is no default."""
 
 
-#: each tier's declared kinds, by kind name: what :func:`declared` reads, written by :func:`declare` as each tier's
+#: each tier's declared kinds, by kind name: what :func:`policies_declared` reads, written by :func:`policy_declare` as each tier's
 #: module is imported (code, never data: a restart declares them again)
 _DECLARED: dict[Tier, Mapping[str, Declared]] = {}
 
 
-def declare[K: enum.Enum](tier: Tier, kinds: type[K], policies: Mapping[K, Declared]) -> Mapping[str, Declared]:
+def policy_declare[K: enum.Enum](tier: Tier, kinds: type[K], policies: Mapping[K, Declared]) -> Mapping[str, Declared]:
     """declare a tier's kinds of entry and their policies, refusing a kind with none: called once per kind set, as
     the tier's module is imported, so an undeclared kind fails the import, never a write at night.
 
@@ -133,9 +133,9 @@ def declare[K: enum.Enum](tier: Tier, kinds: type[K], policies: Mapping[K, Decla
     return _DECLARED[tier]
 
 
-def declared(tier: Tier) -> Mapping[str, Declared]:
+def policies_declared(tier: Tier) -> Mapping[str, Declared]:
     """a tier's declared kinds and their policies, by kind name: what a test lists, and what a tier reads its own
-    policy from (:func:`policy_of`).
+    policy from (:func:`policy_lookup`).
 
     :param tier: the tier
     :ptype tier: Tier
@@ -145,7 +145,7 @@ def declared(tier: Tier) -> Mapping[str, Declared]:
     return _DECLARED.get(tier, MappingProxyType({}))
 
 
-def policy_of(tier: Tier, kind: str) -> Declared:
+def policy_lookup(tier: Tier, kind: str) -> Declared:
     """a kind's declared policy, refusing one with none (no default: "never" by omission would hide a cache, and
     "evictable" by omission would drop durable state).
 
@@ -158,7 +158,7 @@ def policy_of(tier: Tier, kind: str) -> Declared:
     :raises LookupError: when it has none
     """
     try:
-        return declared(tier)[kind]
+        return policies_declared(tier)[kind]
     except KeyError:
         raise _UndeclaredError(
             f"{tier} kind {kind!r} declares no eviction policy (EVICTABLE or KEEP, with why)"

@@ -22,7 +22,7 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
-from threetears.core.eviction import Declared, Policy, Tier, declared
+from threetears.core.eviction import Declared, Policy, Tier, policies_declared
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO
 from threetears.core.testing.loop_lateness import quietly
 
@@ -79,8 +79,8 @@ class TestDeclarations:
 
     def test_every_declared_table_is_in_the_family_declarations(self, tmp_path: Path) -> None:
         backend, _ = _backend(tmp_path, 1 << 20)
-        assert declared(Tier.L1)["lru_cached"].policy is Policy.EVICTABLE
-        assert declared(Tier.L1)["lru_kept"].policy is Policy.KEEP
+        assert policies_declared(Tier.L1)["lru_cached"].policy is Policy.EVICTABLE
+        assert policies_declared(Tier.L1)["lru_kept"].policy is Policy.KEEP
         backend.reset()
 
     def test_two_declarations_that_disagree_keep_the_table(self) -> None:
@@ -88,7 +88,7 @@ class TestDeclarations:
         declare_l1_table(name, _CACHED)
         declare_l1_table(name, _KEPT)
         declare_l1_table(name, _CACHED)
-        assert declared(Tier.L1)[name].policy is Policy.KEEP
+        assert policies_declared(Tier.L1)[name].policy is Policy.KEEP
 
 
 class TestTheBudget:

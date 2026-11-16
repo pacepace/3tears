@@ -26,9 +26,9 @@ import pytest
 from prometheus_client import REGISTRY
 
 from packages.core.tests.unit.shared_arrow import jobs
-from threetears.core.eviction import Declared, Policy, Tier, declare, declared, policy_of
+from threetears.core.eviction import Declared, Policy, Tier, policy_declare, policies_declared, policy_lookup
 from threetears.core.shared_arrow import (
-    fell_back_to_serving,
+    serving_fallback_counted,
     SharedArrowFullError,
     SharedArrowPool,
     SharedArrowStore,
@@ -311,16 +311,16 @@ class _Kinds(enum.StrEnum):
 
 class TestEveryKindDeclaresItsEviction:
     def test_every_kind_the_store_holds_has_its_ruled_policy_and_a_reason(self) -> None:
-        shared = declared(Tier.SHARED)
+        shared = policies_declared(Tier.SHARED)
         assert set(shared) == set(_POLICY), "a kind this test does not list, or one it lists that is gone"
         assert {kind: each.policy for kind, each in shared.items()} == _POLICY
         assert all(each.why.strip() for each in shared.values())
 
     def test_a_kind_set_with_a_kind_undeclared_is_refused_never_defaulted(self) -> None:
         with pytest.raises(LookupError, match="declare no eviction policy"):
-            declare(Tier.L1, _Kinds, {_Kinds.ONE: Declared(Policy.KEEP, "a test's kind")})
+            policy_declare(Tier.L1, _Kinds, {_Kinds.ONE: Declared(Policy.KEEP, "a test's kind")})
         with pytest.raises(LookupError, match="declares no eviction policy"):
-            policy_of(Tier.SHARED, "no_such_kind")
+            policy_lookup(Tier.SHARED, "no_such_kind")
         with pytest.raises(ValueError, match="reason"):
             Declared(Policy.KEEP, " ")
 
@@ -328,5 +328,5 @@ class TestEveryKindDeclaresItsEviction:
 class TestServingFallbacksAreCounted:
     def test_a_consumers_fallback_is_counted_in_the_family(self) -> None:
         what = f"fallback-{uuid.uuid4().hex[:8]}"
-        fell_back_to_serving(what)
+        serving_fallback_counted(what)
         assert _sample("threetears_cache_serving_fallbacks_total", what) == 1

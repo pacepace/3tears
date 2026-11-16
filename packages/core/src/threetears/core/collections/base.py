@@ -103,7 +103,7 @@ from threetears.core.exceptions import (
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger, set_span_attribute, traced
 from threetears.observe.metrics import counter
-from threetears.core.eviction import Declared, Policy, Tier, declared
+from threetears.core.eviction import Declared, Policy, Tier, policies_declared
 from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 if TYPE_CHECKING:
@@ -1031,7 +1031,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         if self._l1 is None or not self._declares_deferred_l3_writes:
             return
-        policy = declared(Tier.L1).get(self.table_name)
+        policy = policies_declared(Tier.L1).get(self.table_name)
         if policy is not None and policy.policy is Policy.EVICTABLE:
             raise TypeError(
                 f"{type(self).__name__} defers its L3 writes, and its L1 table {self.table_name!r} is declared "
