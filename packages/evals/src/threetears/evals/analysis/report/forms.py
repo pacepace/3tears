@@ -71,6 +71,7 @@ from typing import TYPE_CHECKING, Any, overload
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME, AnalysisContextBundle, FamilyComparison
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.campaign_readings import CampaignReadings
+from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS, delta_unit, is_money, number_in, with_unit
 from threetears.evals.analysis.report.blocks import LANDS_AT, CellValue, TableCell
 from threetears.evals.analysis.report.campaign.measure_kinds import money_rulers, rate_measures, shown_measures
@@ -1341,7 +1342,7 @@ class PageForms:
         text = policy_effect(value)
         return self._issue("", "", "effect", value, text, text, "")
 
-    def confidence(self, level: str, family: ContrastFamily | None = None) -> Printed:
+    def confidence(self, level: str, family: ContrastFamily | None = None, looks: Looks | None = None) -> Printed:
         """An interval's level, as every heading prints it (:func:`interval_level`): the joint guarantee where its
         family corrects its comparisons together (``95% (adjusted for 16 comparisons)``), any other level as stated.
 
@@ -1349,10 +1350,13 @@ class PageForms:
         :ptype level: str
         :param family: The contrast family the interval belongs to; None for none.
         :ptype family: ContrastFamily | None
+        :param looks: The looks of the family's aspect, which say whether its plan's level is shown held; None for
+            none.
+        :ptype looks: Looks | None
         :return: The level's words.
         :rtype: Printed
         """
-        text = interval_level(level, family)
+        text = interval_level(level, family, looks)
         return self._issue("", "", "confidence", None, text, text, "")
 
     def drawn_confidence(self, level: float) -> Printed:

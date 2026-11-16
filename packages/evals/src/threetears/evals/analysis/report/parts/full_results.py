@@ -67,6 +67,7 @@ from threetears.evals.analysis.report.keys.reads import (
     cost_ruler,
 )
 from threetears.evals.analysis.report.keys.resolve import format_figure, held_figure, resolve
+from threetears.evals.analysis.report.keys.vocabulary import looks_of
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.number_forms.printed import ColumnMoney, MeasureForm
 from threetears.evals.analysis.report.parts.charting import money_words, stat_value
@@ -503,7 +504,7 @@ def _level(report_input: ReportInput, forms: PageForms, contrast: Contrast) -> s
         None,
     )
     level = contrast.level or (family.level if family is not None else None)
-    return forms.confidence(level, family).text if level else None
+    return forms.confidence(level, family, looks_of(report_input, contrast.aspect)).text if level else None
 
 
 def _verdict(contrast: Contrast) -> TableCell:

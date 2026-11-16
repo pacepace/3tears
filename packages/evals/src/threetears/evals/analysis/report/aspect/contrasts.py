@@ -36,7 +36,8 @@ from threetears.evals.analysis.report.aspect.common import (
 from threetears.evals.analysis.report.aspect.guardrails import guardrail_verdicts
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, Rulers, report_rulers
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee
+from threetears.evals.analysis.caveats import UnkeptPlan
+from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee, plan_condition, plan_unshown
 from threetears.evals.analysis.report.model import (
     CellValue,
     DisclosureBlock,
@@ -390,12 +391,22 @@ def _side_text(
     return text, figure
 
 
-def _family_guarantee(family: ComparisonFamily, forms: PageForms, *, noun: str = "") -> str:
+def _family_guarantee(
+    bundle: AnalysisContextBundle, family: ComparisonFamily, forms: PageForms, *, noun: str = ""
+) -> str | None:
     """What a family's intervals guarantee, as a heading or a cell says it (owner ruling, level in headings): the
     joint level its correction holds them at, over its size (``95% (adjusted for 11 comparisons)``), never its
     per-interval level, which is the family's disclosure's and the glossary's; a family of one at its own level. A
     ``noun`` follows the level, as a column's head names what it holds (``95% interval (adjusted for 11
-    comparisons)``)."""
+    comparisons)``). None where the family's plan of looks is not shown to hold that level (:func:`_unkept`): the
+    head and the cell then print no level, and :func:`_plan_lines` states it with its condition."""
+    if _unkept(bundle, family) is not None:
+        return None
+    return _joint_text(family, forms, noun=noun)
+
+
+def _joint_text(family: ComparisonFamily, forms: PageForms, *, noun: str = "") -> str:
+    """The joint level a family's intervals are read to hold together at, as :func:`_family_guarantee` prints it."""
     after = f" {noun}" if noun else ""
     guarantee = joint_guarantee(family.alpha, family.family_size, corrected=family.interval_level is not None)
     if guarantee is None:
@@ -403,6 +414,37 @@ def _family_guarantee(family: ComparisonFamily, forms: PageForms, *, noun: str =
         return f"{_level_text(level, forms)}{after}"
     joint, size = guarantee
     return FAMILY_LEVEL_TEMPLATE.format(joint=f"{_level_text(joint, forms)}{after}", size=size)
+
+
+def _unkept(bundle: AnalysisContextBundle, family: ComparisonFamily) -> UnkeptPlan | None:
+    """Whether the family's plan of looks is not shown to hold the level it is for over the aspect's looks, on the
+    tests its own comparisons are read by (:func:`~threetears.evals.analysis.report.keys.vocabulary.plan_unshown`);
+    None where it is shown, or no plan is in force (``look_alpha`` None)."""
+    if family.look_alpha is None or family.interval_level is None:
+        return None
+    tests = {comparison.interval_basis for comparison in family.comparisons if comparison.interval_basis is not None}
+    return plan_unshown(bundle.reading_scope.looks, tests)
+
+
+def _plan_lines(bundle: AnalysisContextBundle, surface: DecisionSurface, forms: PageForms) -> list[str]:
+    """Per family whose plan of looks is not shown to hold its level (:func:`_unkept`), the sentence stating that level
+    with its condition (:func:`~threetears.evals.analysis.report.keys.vocabulary.plan_condition`): within the plan,
+    the readings whose test is not shown to keep it; past the plan, or with more looks possible, every reading of the
+    family."""
+    lines = []
+    for family in bundle.multiple_comparisons.families:
+        if (unkept := _unkept(bundle, family)) is None:
+            continue
+        named = [
+            reading_heading(surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name))
+            for comparison in family.comparisons
+            if comparison.interval_basis is not None
+            and (unkept.why != "sized" or comparison.interval_basis in unkept.tests)
+        ]
+        # The plan's level: the joint one, or a family of one's 1 − α, never its interval's level at each look.
+        level = _joint_text(family, forms) if family.family_size > 1 else _level_text(1 - family.alpha, forms)
+        lines.append(plan_condition(level, unkept, list(dict.fromkeys(named))))
+    return lines
 
 
 def _contrast_margin(bundle: AnalysisContextBundle, comparison: FamilyComparison) -> float | None:
@@ -591,7 +633,7 @@ def _comparison_blocks(
     under: list[int] = []
     # What every shown interval guarantees: one guarantee, and the header says it; more, and each cell says its own.
     levels = {
-        _family_guarantee(family, forms)
+        _family_guarantee(bundle, family, forms)
         for family in comparisons.families
         for comparison in family.comparisons
         if family.interval_level is not None and comparison.interval is not None and forms.small_n(comparison) is None
@@ -616,7 +658,7 @@ def _comparison_blocks(
                 forms,
                 form=form,
                 places=places,
-                said_level=None if len(levels) == 1 else _family_guarantee(family, forms),
+                said_level=None if len(levels) == 1 else _family_guarantee(bundle, family, forms),
                 measure=comparison.name,
                 kind=comparison.reading,
             )
@@ -705,8 +747,10 @@ def _comparison_blocks(
             if family.interval_level is not None and any(c.interval is not None for c in family.comparisons)
         ]
         interval_head = (
-            _family_guarantee(guaranteed[0], forms, noun="interval") if len(levels) == 1 and guaranteed else "Interval"
-        )
+            _family_guarantee(bundle, guaranteed[0], forms, noun="interval")
+            if len(levels) == 1 and guaranteed
+            else None
+        ) or "Interval"
         candidates = list(dict.fromkeys(str(row["contrast"].value) for row in shown))
         controls = list(dict.fromkeys(str(row["control_label"].value) for row in shown))
         # Two arms: each arm's figure heads its own column, and an arm column would only repeat the header.
@@ -754,6 +798,8 @@ def _comparison_blocks(
             ),
         ]
     blocks.extend(_note(disclosure_words(family.disclosure)) for family in comparisons.families)
+    if shown:
+        blocks.extend(_note(line) for line in _plan_lines(bundle, surface, forms))
     unranged = sorted(
         {
             reading_heading(surface, comparison.name, comparison.reading, declared=bundle.check_name(comparison.name))

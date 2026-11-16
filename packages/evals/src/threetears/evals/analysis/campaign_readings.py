@@ -675,6 +675,10 @@ class CampaignReadings(EvalDocumentModel):
             "aspects): alpha / L. None with no plan in force, where each look is tested at `alpha`."
         ),
     )
+    # Left out with no plan, so readings with none dump as they did.
+    planned_looks: int | None = Field(
+        default=None, ge=2, exclude_if=lambda value: value is None, description="The L of `look_alpha`; None with none."
+    )
     control: str | None = Field(description="The control arm's variant key; None when the campaign declares none.")
     control_label: str = Field(description="What a reader calls the control; empty when there is none.")
     aspects: list[str] = Field(description="The aspects' labels, in the campaign's order.")
@@ -1363,6 +1367,7 @@ def campaign_readings(
                 campaign_id=campaign.id,
                 alpha=SIGNIFICANCE_ALPHA,
                 look_alpha=look_alpha,
+                planned_looks=plan,
                 control=None,
                 control_label="",
                 aspects=labels,
@@ -1496,6 +1501,7 @@ def campaign_readings(
             campaign_id=campaign.id,
             alpha=SIGNIFICANCE_ALPHA,
             look_alpha=look_alpha,
+            planned_looks=plan,
             control=control.variant_key,
             control_label=control.label,
             aspects=labels,

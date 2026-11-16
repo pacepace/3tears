@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a page prints a plan of looks' level only where keeping the plan is shown
+
+**Fixed:** under a plan of looks (`AspectDesign.planned_looks`), the aspect page's contrast table head, the change
+scorecard's glyph key and Methods paragraph, the choice scorecard's note under the pairs and the written page's interval
+heads printed the level the plan is for (`95% (adjusted for 16 comparisons)`, or one arm's error rate) from `alpha`
+with no condition. The plan holds that level only where each look's cases were fixed before its results, or where the
+simulation shows planner-sized extends keep it (`significance.plan_kept`: pass rates on the bounded test, not means on
+the t test, where a plan of two errs 5.6% at a nominal 5%). Each now prints the level only where the plan is shown
+kept for every test its readings use, over the looks taken. One decision says so, `caveats.unkept_plan`, which the
+caveat on looks reads too. Otherwise no head or key prints a level, and one line states the plan's level with its
+condition: why it is not shown (a look's cases sized from an earlier reading; the most looks any contrast had, past the
+plan; or a count that may be short), naming the readings behind it. On a change of several candidates that line says
+the level is each arm's intervals', and the Methods paragraph keeps the sentence that the correction does not run
+across the arms, with no rate. The written page's heads and level cells print `multiplicity-corrected` in place of a
+level, for a family of any size, one comparison included: each interval's own level holds no better over several
+looks, and the caveat on looks says why.
+`CampaignReadings` gains `planned_looks`, the plan its `look_alpha` is read under (optional, left out with none). The
+method is unchanged: no reading, interval or verdict moves. With no plan nothing moves. The looks entry below said pages
+print that level; that was the defect, and it is corrected there.
+
+**For hosts:** nothing to do.
+
 ### evals: one name per case on every line; no rate over nothing graded; an eval that graded nothing exits 1
 
 **Fixed:** one result numbered the same cases two ways: the first line from 1 (`Cases that failed a trial: case 2,
@@ -163,7 +185,8 @@ names the tests the aspect's readings are read by (`bounded`, `t`).
 **Changed:** under `AspectDesign.planned_looks` = L, declared before the first look, each look of the aspect's family
 reads at α/L (`ComparisonFamily.look_alpha`), and a floor's and a guardrail's `held`, a campaign row's
 `within_margin` and the cases an unclear row projects are read at 1 − (1 − level)/L. `ComparisonFamily.alpha` and
-`CampaignReadings.alpha` are the level the plan is for, which pages print: it holds over looks whose sizes were fixed
+`CampaignReadings.alpha` are the level the plan is for, which pages print only where keeping the plan is shown
+(the entry "a page prints a plan of looks' level only where keeping the plan is shown" above): it holds over looks whose sizes were fixed
 before their data, and over extends sized by the planner only where the simulation shows it (on pass-rate aspects in
 the simulated setting; not shown on t-test aspects); the per-look level is `look_alpha`. A plan declared after the first look is no plan (`late_plan`). With no plan nothing moves. Past its plan
 (past the first look with none), under a plan a lower-bound count cannot show was kept, or within a plan whose keeping
