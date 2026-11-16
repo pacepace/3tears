@@ -177,6 +177,9 @@ the document, so extending one is a major. Each, and why:
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
 - ``BudgetStop.currency`` — what a per-run ceiling counts; a stop in a currency an older build cannot name would be
   stated in a unit it cannot read, and its dollars and its calls are not one quantity.
+- ``MembershipChange.change`` — the engine records it, never a host, and the looks at a contrast are counted by it
+  (a join after the results is a look, a departure keeps the look the run made); a change an older build cannot name
+  would be counted as neither, and a look erased.
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
   would be stated as neither.
@@ -924,7 +927,16 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   a campaign filed at this minor that sets one. An older build reading a campaign at this minor keeps the fields
 #:   opaquely and writes them back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 2
+#: - **v17.3** — a campaign created once each contrast's looks were counted says so: ``EvalCampaign.looks_rule``
+#:   (``1``, default None), stamped by the engine at creation and never taken from a caller. Written only when set, so a
+#:   campaign created before is stored exactly as v17.2 stored it, and reads as created before looks were counted: its
+#:   looks qualify the method only and none of its stored verdicts moves. Each aspect records its runs joining and
+#:   leaving, append-only: ``Aspect.membership`` (a list of ``MembershipChange``, default empty, left out while empty),
+#:   so a look a run's evidence made is never erased by removing it; an aspect with a member stored before reads its
+#:   looks as not recorded (no count of looks, as neither bound). Neither is in a variant key, measurement context, declaration snapshot or fingerprint. An older build
+#:   reading a campaign at this minor keeps both opaquely and writes them back.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 3
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

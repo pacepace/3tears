@@ -198,10 +198,13 @@ class LatencyView(Protocol):
 
 
 class RescoreView(Protocol):
-    """A re-judge's record as the readers read it: its spend."""
+    """A re-judge's record as the readers read it: its spend, and when it was made (a look at the result's
+    contrasts, :func:`~threetears.evals.analysis.significance.looks_taken`)."""
 
     @property
     def cost_usd(self) -> float | None: ...
+    @property
+    def rejudged_at(self) -> str: ...
 
 
 class RepeatedScoreView(Protocol):
@@ -616,14 +619,15 @@ class LatencyReading:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RescoreReading:
-    """A re-judge's record: its spend (:class:`RescoreView`)."""
+    """A re-judge's record: its spend and when it was made (:class:`RescoreView`)."""
 
     cost_usd: float | None
+    rejudged_at: str
 
     @classmethod
     def of(cls, rescore: JudgeRescore) -> RescoreReading:
         """The reading of a stored re-judge."""
-        return cls(cost_usd=rescore.cost_usd)
+        return cls(cost_usd=rescore.cost_usd, rejudged_at=rescore.rejudged_at)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -170,6 +170,8 @@ from threetears.evals.analysis.bundle.cell_notes import (
 )
 from threetears.evals.analysis.bundle.comparisons import (
     multiple_comparisons,
+    aspect_looks,
+    aspect_tests,
     reading_scope,
 )
 from threetears.evals.analysis.bundle.judges import judge_change
@@ -926,6 +928,20 @@ def assemble_context_bundle(
     bundle.launch_declarations = launch_declarations
     # After the catalog, which says each measure's better direction and axis: a family is the readings a
     # question's axes name, and a reading with no better end has no verdict to correct.
+    # How often the aspect's test was looked at, and the plan in force: a plan declared after the first look is none.
+    looks = aspect_looks(
+        runs,
+        results_by_cell,
+        control=control,
+        planned=declared_design.planned_looks if declared_design is not None else None,
+        declared_at=declared.declared_at if declared is not None else None,
+        membership=view.membership,
+        plannable=campaign.looks_rule is not None,
+        unread=bool(unresolved or archived),
+    )
+    planned_looks = (
+        looks.planned if looks is not None else declared_design.planned_looks if declared_design is not None else None
+    )
     bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = multiple_comparisons(
         view.aspect,
         declared,
@@ -945,14 +961,22 @@ def assemble_context_bundle(
         # The overall pass rate is compared on each trial as the scoreboard below reads it, at the same threshold: in
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
+        planned_looks=planned_looks,
     )
     # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
     # paired judged contrast's share of it, filled last so no other section copies them.
     bundle.judged_measures, bundle.multiple_comparisons = with_rescore_noise(
         bundle.judged_measures, bundle.multiple_comparisons, results_by_cell, projection.records
     )
+    # The tests its readings are read by, which a caveat on its looks quotes a measured rate for.
+    if looks is not None:
+        looks = looks.model_copy(
+            update={
+                "tests": aspect_tests(bundle.multiple_comparisons.families, bundle.guardrails, bundle.floor_contrasts)
+            }
+        )
     bundle.reading_scope = reading_scope(
-        declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at
+        declared, bundle.measure_catalog, bundle.judged_measures, first_result_at=first_result_at, looks=looks
     ).model_copy(update={"untimed_results": untimed_results})
     # The design froze when the campaign's first run joined it (`update_campaign` refuses a design edit from then on).
     bundle.design_frozen_at = first_run_at

@@ -19,7 +19,7 @@ from pydantic import Field
 
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor
+from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignArm, Floor, MembershipChange
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalDocumentModel
 
@@ -106,6 +106,10 @@ class AspectView(EvalDocumentModel):
         description="The eval_template the aspect's runs were gathered on; None names none."
     )
     run_ids: list[str] = Field(description="The runs this aspect reads, as curated.")
+    membership: list[MembershipChange] = Field(
+        default_factory=list,
+        description="Every run that joined or left the aspect, and when (`Aspect.membership`): what its looks count.",
+    )
     declared: AspectDeclaration | None = Field(
         description="What the campaign declared, as this aspect reads it. None = exploratory: the aspect declares no design."
     )
@@ -201,5 +205,6 @@ def _view(campaign: EvalCampaign, aspect: Aspect) -> AspectView:
         short_name=aspect.short_name,
         template_id=aspect.template_id,
         run_ids=list(aspect.run_ids),
+        membership=list(aspect.membership),
         declared=declared,
     )

@@ -53,6 +53,8 @@ def _storage_double() -> MagicMock:
     storage = MagicMock(spec=EvalStorage)
     storage.query_eval_result_ids_by_run.return_value = []
     storage.list_campaigns.return_value = []
+    # A run that left reads as gone: its departure records no first result, as a deleted run's does.
+    storage.load_eval_run.return_value = None
     storage.delete_eval_result.return_value = True
     storage.delete_eval_run.return_value = True
     storage.delete_analysis.return_value = True

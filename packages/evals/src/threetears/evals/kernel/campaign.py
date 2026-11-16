@@ -245,6 +245,18 @@ class EvalCampaign(DurableDocumentModel):
         description="What a person decided over the campaign's readings. None = no call recorded yet.",
     )
     archived: bool = Field(default=False)
+    # Written only when stamped, so a campaign created before looks were counted is stored as it was.
+    looks_rule: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Internal, never printed: 1 when the campaign was created once each contrast's looks were counted, so its "
+            "design could declare them (`AspectDesign.planned_looks`) and its looks past any plan qualify its report; "
+            "None for a campaign created before, whose stored verdicts do not move and whose looks qualify the method "
+            "only. Stamped by the engine at creation, never taken from a caller."
+        ),
+    )
     created_at: str = Field(default_factory=utc_now_iso)
     created_by: str = Field(
         min_length=1,

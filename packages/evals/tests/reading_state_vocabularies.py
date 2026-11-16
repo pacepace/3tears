@@ -201,7 +201,8 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "Criterion.scope",
         "Criterion.statistic",
         "FamilyComparison.basis",
-        "FamilyComparison.interval_basis",
+        "analysis/significance.py:SeparationTest",
+        "analysis/significance.py:Unquoted",
         "FamilyComparison.margin_source",
         "InterJudgeDimension.kappa_weighting",
         "LeverCoverageInput.cohort_scope",
@@ -239,6 +240,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
     ),
     _DESIGN: (
         "analysis/bundle/measures.py:_Verdict",
+        "MembershipChange.change",
         "analysis/reporting.py:SentSettingsState",
         "schema/judge_attribution.py:JudgeAttributionState",
         "Confound.status",

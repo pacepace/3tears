@@ -6,6 +6,49 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: looks are counted from stored facts, a plan of looks tightens every claim, and a reading past it says how often that errs (judges D1)
+
+**Added:** a look is an occasion on which a contrast's test could have been read again on more or different evidence.
+An aspect's reading scope carries `looks` (`planned`, `taken`; `plannable`, `lower_bound` and `late_plan` where they
+say more), the most any contrast there has had, counted from stored facts at read time: the first once both arms hold
+a result; then each launch whose results changed what the test reads (more cases run on one arm and then the other are
+one look), each membership write (a run joined after its results were scored is a look when it joins; a run removed
+or deleted keeps the look it made, and its leaving is another), each re-measure and each re-judge. Judge repeats, a
+second judge's pass and a measure attestation change no value the test reads and are not counted. Where a fact the
+count needs is not stored (a deleted run, an archived member, an untimed result, re-judges stored per result), the
+count is a lower bound and says so. Where a member joined before membership was recorded (durable 17.3), looks were
+not recorded: no count of looks is given (`Looks.recorded` false, `taken` none), since the stored occasions can be too
+many as well as too few, and `evidence_changes` gives the count as what it is. Where looks were recorded since (an
+existing campaign joined or extended after 17.3), `taken` is the first comparison and those, a lower count: at least
+that many looks since looks were recorded, earlier ones not recorded. `Looks.launched` and `largest_step` give the
+cases the first look read and the most one later look added. Each aspect records its runs joining
+and leaving, append-only (`Aspect.membership`), and a new campaign is stamped `EvalCampaign.looks_rule`. `Looks.tests`
+names the tests the aspect's readings are read by (`bounded`, `t`).
+
+**Changed:** under `AspectDesign.planned_looks` = L, declared before the first look, each look of the aspect's family
+reads at α/L (`ComparisonFamily.look_alpha`), and a floor's and a guardrail's `held`, a campaign row's
+`within_margin` and the cases an unclear row projects are read at 1 − (1 − level)/L. `ComparisonFamily.alpha` and
+`CampaignReadings.alpha` are the level the plan is for, which pages print: it holds over looks whose sizes were fixed
+before their data, and over extends sized by the planner only where the simulation shows it (on pass-rate aspects in
+the simulated setting; not shown on t-test aspects); the per-look level is `look_alpha`. A plan declared after the first look is no plan (`late_plan`). With no plan nothing moves. Past its plan
+(past the first look with none), under a plan a lower-bound count cannot show was kept, or within a plan whose keeping
+is not shown for a test the aspect uses (extends sized by the planner from the reading before are shown to hold α only
+where the measured rate's 97.5% upper bound is at most α: today on the bounded test, not on the t test), the caveat
+list carries one `looks` entry per aspect, class D, naming every claim of the aspect and carrying the looks and, per
+test, a reference false-separation rate: what a seeded simulation of that test, plan and count measured, in the
+setting it states (a single contrast, the launch sizes, the extend cap), with the simulation's own uncertainty and its
+named row (`significance.FALSE_SEPARATION`; the larger of batches fixed in advance and planner-sized extends, since
+which added the looks is not stored). It is never the campaign's own rate, which can be higher. None is quoted where no
+row measured that situation, where the aspect's own launch or largest step falls outside the setting, or where the
+count is a lower count, which is shown alone (`CaveatEntry.looks`, `false_separation`). At method reach where the
+aspect claims nothing or the campaign was created before looks were counted and every member's joining is recorded;
+looks recorded since 17.3 on an older campaign reach the report. An aspect whose looks were not recorded carries one method-reach entry saying so, with no rate, where its
+evidence changed more than once. An aspect's `looks` is outside the report input's digest: a look taken re-keys no
+input and no snapshot.
+
+**For hosts:** nothing to do. A campaign whose author will add cases and read again can declare how many looks it plans
+on the aspect's design before its first result.
+
 ### evals: a newcomer's wiring mistakes are refused with the fix named, not scored as 0%
 
 **Changed:** a field grader that no answer of any arm carries is refused once the arms have run (exit 2 at the file
