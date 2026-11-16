@@ -1112,12 +1112,12 @@ class CallableKind:
         return None
 
 
-#: Why each reserved case key (:data:`RESERVED_CASE_KEYS`) is withheld from the runner and every grader, said where a
-#: function raised ``KeyError`` looking one up in a case that held it.
+#: What each reserved case key (:data:`RESERVED_CASE_KEYS`) is and that it is withheld, said where a function raised
+#: ``KeyError`` looking one up in a case that held it. ``id`` gives no reason beyond what it is: the remedy is enough.
 _WITHHELD_WHY: dict[str, str] = {
     "id": (
-        "names the case, and a renamed case keeps its history, so it is withheld from the runner and every grader; "
-        "if your function needs the value, copy it into the case under another key as well"
+        "names the case: the package reads it and withholds it from the runner and every grader; if your function "
+        "needs the value, copy it into the case under another key as well"
     ),
     STRATUM_KEY: "is the kind of case, which the runner must not be told, so it is withheld from the runner and every grader",
     WORLD_KEY: (

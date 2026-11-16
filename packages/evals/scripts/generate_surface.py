@@ -543,13 +543,14 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     yield ""
     yield "YOUR APP'S CASES"
     yield from _wrapped(
-        "Start from the cases the app already has: its tests' fixtures (tests/fixtures/*.jsonl, *.json, *.csv), its "
-        "parametrized test tables, or the examples its README names; pass that file as the eval's cases. Take each "
-        "expected value from the app's documentation, docstrings or specification, never by running the app or "
-        "reading its code and copying what it gives: a case that expects what the app does today cannot catch what "
-        'it does wrong. One case, whole: {"id": "double-charge", "email": "I was billed twice this month.", '
-        '"category": "billing"}. The package keeps a case\'s id, stratum and world keys: it reads them and hands '
-        "the runner and every grader the case without them."
+        "Start from the cases the app already has: the data files its tests read, the tables of inputs and expected "
+        "outputs in its test code, the examples its README or docs give. A .jsonl file (an object a line), a .json "
+        "list of objects, a .csv with a header row or a .toml [[cases]] table loads as the eval's cases. Take each "
+        "expected value from the app's documentation or specification, never by running the app or reading its code "
+        "and copying what it gives: a case that expects what the app does today cannot catch what it does wrong. One "
+        'case, whole: {"id": "double-charge", "email": "I was billed twice this month.", "category": "billing"}. The '
+        "package keeps a case's id, stratum and world keys: it reads them and hands the runner and every grader the "
+        "case without them."
     )
     yield ""
     relative = FIRST_EXAMPLE.relative_to(PACKAGE_ROOT / "examples")
@@ -561,9 +562,8 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     yield "GETTING THE EXAMPLES: they are not in the installed package; fetch them from the repository"
     yield from (f"  {line}" for line in fetch_commands())
     yield from _wrapped(
-        "Then run one from that fetched directory (no example is in the installed package): python -m "
-        "threetears.evals 1-triage/triage.py. Each rung reads its cases and replays its recordings from beside "
-        "itself, so keep its directory together."
+        "Then run one from that fetched directory: python -m threetears.evals 1-triage/triage.py. Each rung reads "
+        "its cases and replays its recordings from beside itself, so keep its directory together."
     )
     yield ""
     yield "READING WHAT COMES BACK"
@@ -611,7 +611,8 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     for workflow, each in actions:
         yield from _wrapped(f"{workflow}: {', '.join(name for name, _ in each)}", "  ")
     yield ""
-    yield from _wrapped(f"KINDS: every declared name is one; {at_tag('docs/surface.md')} lists each under its kind")
+    # The surface page's address is given once, under EMBEDDING IT IN AN APP.
+    yield from _wrapped("KINDS: every declared name is one; the surface page named above lists each under its kind")
     for kind in KINDS:
         yield from _wrapped(f"{kind}: {KIND_MEANINGS[kind]}.", "  ")
 

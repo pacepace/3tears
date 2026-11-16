@@ -30,24 +30,29 @@ entry below.
 ### evals: a runner that raised on every case says so on the first line; a withheld case key is named in the error; llms.txt says where cases come from
 
 **Fixed:** an eval whose runner raised on every case printed `cases: runner ran 4 of 4 cases; no grader here says pass
-or fail.` over a grader declared `-> bool`: whether an eval holds a check was read off the measures that scored, and
-none had. It is now read off what the aspect's design declares it grades (`AspectDesign.measure_order`); a declared
-reading no trial scored is never taken to be no check. Where the candidate failed every graded trial without answering,
-the first line, the page's lead and every other surface that states a pass count (`passed_clause`, from `pass_count`)
-say how many it failed on and the first error, once: `gloss failed on all 4 cases, so no answer was graded: the
-candidate raised KeyError: 'word'.` Two arms that both failed every case each say so, and nothing is compared.
+or fail.` over a grader declared `-> bool`. Where the candidate failed every graded trial without answering, the first
+line, the page's lead and every other surface that states a pass count (`passed_clause`, from `pass_count`) now say
+how many it failed on and the first error, once: `gloss failed on all 4 cases, so no answer was graded: the runner
+raised KeyError: 'word'.` Such an arm is compared with nothing: beside other arms it is named in that sentence and
+`Nothing is compared with gloss.`, and no pass share or contrast is stated against it.
+
+**Changed:** whether a line states a pass count is read off each reading's declared kind (a goal check, a classifier's
+accuracy, a host measure declared pass/fail or a boolean with a better end, a judged dimension that counts), over the
+readings the design lists (`AspectDesign.measure_order`) and those the catalog describes. A declared reading no trial
+scored has no stated kind there: it is read as no check, and the line says so (`fields_stripped scored on no trial, so
+it is read as no check`), never guessed to be one.
 
 **Changed:** a runner or grader that raises `KeyError` on a reserved case key the case held (`id`, `stratum`, `world`)
-has its error say the key is withheld from the runner and every grader, and why: `the candidate raised KeyError: 'id';
-the case's 'id' names the case, and a renamed case keeps its history, so it is withheld from the runner and every
+has its error say the key is withheld from the runner and every grader, and what to do: `the candidate raised
+KeyError: 'id'; the case's 'id' names the case: the package reads it and withholds it from the runner and every
 grader; if your function needs the value, copy it into the case under another key as well`. Every reserved key stays
-withheld, as `EvalTestCase.name` and `stratum` declare them: never stimulus, so renaming or re-labelling a case keeps
-it the same case. Nothing stored moves: the stored case, its template id and every recording key are as before.
+withheld. Nothing stored moves: the stored case, its template id and every recording key are as before.
 
-**Docs:** `llms.txt` gains a short `YOUR APP'S CASES` passage: start from the app's own test fixtures or examples,
-take expected values from its documentation, never from running it, and the package keeps a case's `id`, `stratum`
-and `world`. It now says an app that calls no model needs `Eval` alone, and that the examples' command runs from the
-fetched directory, since no example is in the installed package.
+**Docs:** `llms.txt` gains a short `YOUR APP'S CASES` passage: start from the cases the app already has (the data
+files its tests read, tables in its test code, examples in its README or docs), which file shapes load as cases, take
+expected values from its documentation or specification, never from running it, and the package keeps a case's `id`,
+`stratum` and `world`. It says an app that calls no model needs `Eval` alone. The examples' command says it runs from
+the fetched directory, and the KINDS heading points at the surface page named above instead of repeating its address.
 
 ### evals: looks are counted from stored facts, a plan of looks tightens every claim, and a reading past it says how often that errs (judges D1)
 

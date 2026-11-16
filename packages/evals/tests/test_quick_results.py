@@ -126,9 +126,9 @@ async def test_a_runner_reading_a_withheld_id_is_told_the_key_is_withheld_and_wh
     # The case is handed over less the keys the package keeps: an author's id names the case and is never stimulus.
     assert all("id" not in case for case in seen)
     assert summary.errors[0] == (
-        "case refund: the candidate raised KeyError: 'id'; the case's 'id' names the case, and a renamed case keeps its "
-        "history, so it is withheld from the runner and every grader; if your function needs the value, copy it into "
-        "the case under another key as well"
+        "case refund: the candidate raised KeyError: 'id'; the case's 'id' names the case: the package reads it and "
+        "withholds it from the runner and every grader; if your function needs the value, copy it into the case under "
+        "another key as well"
     )
     # A case the author gave no id lacks one as written: its KeyError is the function's own, said as it was raised.
     assert summary.errors[1] == "case 1: the candidate raised KeyError: 'id'"

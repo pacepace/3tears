@@ -125,7 +125,7 @@ async def test_a_bool_grader_over_a_runner_that_raised_on_every_case_says_the_ru
     # grader declared -> bool, since the catalog of measures that scored was empty. What failed is the runner, and its
     # error is said once, on the line, though it runs over two.
     assert lines[0] == (
-        "gloss: gloss failed on all 3 cases, so no answer was graded: the candidate raised LookupError: no entry for x."
+        "gloss: gloss failed on all 3 cases, so no answer was graded: the runner raised LookupError: no entry for x."
     )
 
 
@@ -149,6 +149,23 @@ async def test_a_runner_that_raised_on_some_cases_is_counted_against_the_bool_gr
     lines, _ = await _lines(fails_on("q"), [right_annotated])
 
     assert lines[0] == "gloss: gloss passed 2 of 3 cases. Cases that failed a trial: b."
+
+
+@pytest.mark.parametrize("silent", ["a", "b"], ids=["the control", "the candidate"])
+@pytest.mark.parametrize("cases", [3, 12], ids=["under the case floor", "over it"])
+async def test_one_arm_of_two_that_raised_on_every_case_is_named_and_compared_with_nothing(
+    silent: str, cases: int
+) -> None:
+    many = [{"id": f"c{index}", "text": f"t{index}", "want": "p"} for index in range(cases)]
+    raising, answering = fails_on("p"), fails_on()
+    runners = {"a": raising, "b": answering} if silent == "a" else {"a": answering, "b": raising}
+    result = await Eval(many, runners, [right_annotated], k=1, name="one").run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert first.startswith(f"one: Exploratory: {silent} failed on all {cases} cases, so no answer was graded: ")
+    assert first.endswith(f". Nothing is compared with {silent}.")
+    # Never a pass share compared with an arm that answered nothing, nor a count of cases "ran" beside it.
+    assert "often" not in first and "ran " not in first and "cannot tell" not in first
 
 
 async def test_two_arms_whose_runners_raised_on_every_case_each_say_so_and_compare_nothing() -> None:
