@@ -266,8 +266,10 @@ def _bare_write(directory: Path, tables: list[pa.Table]) -> float:
     return time.perf_counter() - started
 
 
-#: rounds of each measure, after one to warm
-ROUNDS = 9
+#: rounds of each measure, after one to warm: each side is judged on its fastest (a few ms each, about 0.1 s for all).
+#: Nine left a whole loop_timing session (2026-11-16, 1 of 19) with every publish round stretched half again (fastest
+#: 2.2-2.4 ms against 1.5) on a host busy for the whole window; more rounds spread over a longer one leave fewer such
+ROUNDS = 19
 
 #: the most a publish at ten times the parts may take against one at the parts
 FLAT = 1.5
@@ -279,6 +281,11 @@ BARE_MULTIPLE = 2.0
 #: the most the host's own idle loop may be late over the rounds for them to judge the store: a host busier than that
 #: stretches the sizes and the bare write unevenly (:func:`~threetears.core.testing.loop_lateness.quietly`)
 HOST_MAY_BE_LATE = 0.020
+
+#: the rounds run on one thread, judged only when a performance core was free for it before and after them
+#: (``quietly(threads=)``): a host whose fast cores are taken runs it on a slow one, every round alike, while a 1 ms
+#: idle loop stays on time
+ROUND_THREADS = 1
 
 
 def _timed_rounds(small: _Copy, large: _Copy, bare_dir: Path) -> dict[str, list[float]]:
@@ -316,7 +323,9 @@ class TestAPublishTakesAsLongAsWhatItChanges:
         small, large = copies
         bare_dir = tmp_path / "bare"
         bare_dir.mkdir()
-        times = quietly(lambda: _timed_rounds(small, large, bare_dir), host_may_be_late=HOST_MAY_BE_LATE)
+        times = quietly(
+            lambda: _timed_rounds(small, large, bare_dir), host_may_be_late=HOST_MAY_BE_LATE, threads=ROUND_THREADS
+        )
         # each side's fastest round, as best_seconds_interleaved judges a path against its bare: the host only ever
         # adds time to a round (a thread taken off its core for a few ms, which a 20 ms idle-loop limit does not see),
         # and adds it unevenly; the fastest round is the closest each side comes to its own cost. Measured 2026-11-16
