@@ -278,6 +278,9 @@ async def test_close_returns_before_the_worker_exits_and_the_exit_still_ends() -
 _WORKER_START_BUDGET = 0.63
 
 
+# a wall-clock budget: run apart, on the exclusive runner it was measured on (in the parallel suite a loaded pool
+# runner, brooks-5950x, started it in 884-1077 ms, 2026-11-15)
+@pytest.mark.loop_timing
 async def test_a_restore_worker_starts_within_its_budget() -> None:
     """Flips if a restore's worker takes longer than its budget to start and give its first answer (the best of
     three): the start every restore pays beside its reads."""
