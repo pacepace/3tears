@@ -248,9 +248,10 @@ async def test_a_nearest_read_orders_by_the_distance_alone_under_its_limit() -> 
 
 
 async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit() -> None:
-    """Flips if ``read_nearest`` given a ``TextRank`` does not send its pins and guards, the rank under its name after
-    the columns, the order by that rank descending (best first, as ``ORDER BY fts_rank DESC`` read it) with the query
-    text bound once past them, and its LIMIT last."""
+    """Flips if ``read_nearest`` given a ``TextRank`` does not send its pins and guards, the rank under its name, the
+    order by that rank descending (best first, as ``ORDER BY fts_rank DESC`` read it) with the query text bound once
+    past them and its LIMIT last, or evaluates the columns before that LIMIT rather than over the kept rows alone,
+    re-sorted by the rank (WHY at ``read_nearest_statement``)."""
     conn = _Sent()
     await read_nearest(
         conn,
@@ -264,9 +265,9 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
     [(sql, params)] = conn.calls
     rank = "ts_rank_cd(t.\"search_vector\", websearch_to_tsquery('english', $4))"
     assert sql == (
-        f'SELECT t."memory_id", {rank} AS "fts_rank" FROM "memories" AS t WHERE t."agent_id" = $1 AND '
-        "t.\"user_id\" = $2 AND ((t.search_vector @@ websearch_to_tsquery('english', $3)) IS TRUE) "
-        f"ORDER BY {rank} DESC LIMIT $5"
+        f'SELECT t."memory_id", t."fts_rank" FROM (SELECT t.*, {rank} AS "fts_rank" FROM "memories" AS t WHERE '
+        't."agent_id" = $1 AND t."user_id" = $2 AND ((t.search_vector @@ websearch_to_tsquery(\'english\', $3)) IS '
+        f'TRUE) ORDER BY {rank} DESC LIMIT $5) AS t ORDER BY t."fts_rank" DESC'
     )
     assert params == ("a", "u", "red apples", "red apples", 3)
 
@@ -312,9 +313,8 @@ async def test_a_text_ranked_read_breaks_rank_ties_by_its_then_terms() -> None:
     )
     [(sql, params)] = conn.calls
     rank = "ts_rank_cd(t.\"search_vector\", websearch_to_tsquery('english', $2))"
-    assert sql.endswith(
-        f'ORDER BY {rank} DESC, t."last_used_at" DESC NULLS FIRST, t."date_created" DESC, t."skill_id" DESC LIMIT $3'
-    ), sql
+    ties = 't."last_used_at" DESC NULLS FIRST, t."date_created" DESC, t."skill_id" DESC'
+    assert sql.endswith(f'ORDER BY {rank} DESC, {ties} LIMIT $3) AS t ORDER BY t."fts_rank" DESC, {ties}'), sql
     assert params == ("a", "red", 3)
 
 

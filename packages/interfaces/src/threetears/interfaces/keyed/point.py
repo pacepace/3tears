@@ -473,12 +473,28 @@ def read_nearest_statement(
         # the best match first, as the hand-written ``ORDER BY fts_rank DESC LIMIT $k`` read it; ties on the rank in
         # the ``then`` order (a listing's recency, its key last), as ``ORDER BY fts_rank DESC, <then>`` read them
         also = f"{distance} AS {quote_identifier(nearest.rank)}"
-        sql, params = _sql(table, by, columns, limit=False, where=where, also=also)
-        return f"{sql} ORDER BY {distance} DESC{then_terms(nearest.then)} LIMIT ${place + 1}", [
-            *params,
-            nearest.text,
-            limit,
-        ]
+        ties = then_terms(nearest.then)
+        if columns is None:
+            sql, params = _sql(table, by, columns, limit=False, where=where, also=also)
+            return f"{sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}", [*params, nearest.text, limit]
+        # WHY the columns are selected outside the ranked rows (MS1, 2026-11-15): no index serves a text rank, so the
+        # read ranks every row its pins and match leave, and a select list written beside the rank is evaluated for
+        # each of those rows, not for the ``limit`` kept. Memory's ambient keyword arm selects ``t.embedding::text``:
+        # for an owner of 20,000 memories (1024-dim) all matching the query, PostgreSQL spent 330 of its 357 ms turning
+        # every embedding into text (26 ms with that one column left out). Here the ranked rows are read whole
+        # (``t.*``; the planner keeps only the columns the outer list names), ranked and cut to ``limit`` inside, and
+        # the select list, Selected expressions included (each names the row ``t``, as the derived table is named),
+        # runs on the kept rows alone, re-sorted by the rank, ties in the same ``then`` order. Same rows, same order.
+        # Measured: scratchpad ms1/m3-pg.log, m3-yb.log, m4-*.log; held by
+        # packages/agent/memory/tests/integration/test_keyword_arm_plans.py.
+        rank = quote_identifier(nearest.rank)
+        sql, params = _sql(table, by, None, limit=False, where=where, also=also)
+        outer = ", ".join([*(selected_column(column) for column in columns), f"t.{rank}"])
+        return (
+            f"SELECT {outer} FROM ({sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}) AS t"
+            f" ORDER BY t.{rank} DESC{ties}",
+            [*params, nearest.text, limit],
+        )
     # WHY the read is wrapped (``SELECT ... FROM (<the read> LIMIT k) AS n ORDER BY distance``), measured 2026-11-14:
     # every vector reader pins an owner (agent_id + user_id). At a heavy owner the planner walks the HNSW index and then
     # filters it to the owner; pgvector's HNSW scan stops at ``hnsw.ef_search`` (40) candidates, so a small owner among a

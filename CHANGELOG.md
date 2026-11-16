@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### interfaces / agent-memory: a text-ranked read evaluates its columns on the rows it keeps
+
+**Changed:** `read_nearest_statement` given a `TextRank` and a column list ranks the rows whole inside a derived
+table (`SELECT <columns>, t."<rank>" FROM (SELECT t.*, <rank> ... ORDER BY <rank> DESC <then> LIMIT $k) AS t ORDER BY
+t."<rank>" DESC <then>`), so its columns, `Selected` expressions included, run on the `limit` rows kept, not on every
+row the pins and the match leave. Same rows, same order. Memory's hybrid keyword arms (memories, file contents,
+chunks) select `embedding::text`: for a 20,000-memory owner all matching the query, PostgreSQL's arm took 357 ms, 330
+of them casting every embedding to text. A `Selected` expression names the row `t`, as before.
+
 ### core: shared memory evicts what is only cached before it refuses; one eviction vocabulary; shared-memory autosize
 
 **Added:** `threetears.core.eviction`, the one vocabulary of the cache tiers (L1, shared memory, L2): `Policy`
