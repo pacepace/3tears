@@ -67,7 +67,10 @@ from threetears.core.testing.plans import (
 
 pytestmark = pytest.mark.integration
 
-_TABLE = "results"
+#: a name no other test registers: the table keys and indexes a keyed helper looks up are one process-wide registry
+#: (threetears.interfaces.keyed.keys), and other test files register a ``results`` whose keys this table does not hold
+#: (test_keyset_scales_live among them): a session running one first refused this file's keyset reads (YB2, 2026-11-16)
+_TABLE = "keyed_results"
 _STATES = 50
 _GEOS = 200
 _IDS = 30
@@ -92,7 +95,7 @@ async def seeded(db_container: str) -> AsyncIterator[_Seeded]:
             f"CREATE TABLE {_TABLE} (state TEXT NOT NULL, geo TEXT NOT NULL, id BIGINT NOT NULL, votes BIGINT, "
             "stamp TIMESTAMPTZ NOT NULL, pad TEXT, PRIMARY KEY (state, geo, id))"
         )
-        await conn.execute(f"CREATE INDEX results_by_stamp ON {_TABLE} (stamp ASC)")
+        await conn.execute(f"CREATE INDEX {_TABLE}_by_stamp ON {_TABLE} (stamp ASC)")
         await conn.execute(
             f"""INSERT INTO {_TABLE}
             SELECT 'S' || lpad(s::text, 2, '0'), lpad(g::text, 3, '0'), i, s * g * i,
@@ -208,7 +211,7 @@ class TestReadKeyed:
         _plans_ok(recorder, seeded)
         # the keys found by the key's index, about one row read a key, on PostgreSQL and YugabyteDB alike
         (plan,) = recorder.plans
-        assert plan_uses_index(plan, "results_pkey"), plan.plan
+        assert plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
         assert plan.rows_scanned <= 1.1 * len(keys), plan
         _batched_on_yugabyte(plan, seeded)
         bare_sql = (
@@ -274,7 +277,7 @@ class TestKeysetPage:
             # the pinned state is bound by equality beside the comparison of the sort's columns, never inside it:
             # one range of the key's index, sought by both
             assert 't."state" = $1 AND (t."geo", t."id") > ($2::text, $3::text::bigint)' in plan.sql, plan.sql
-            assert plan_uses_index(plan, "results_pkey"), plan.plan
+            assert plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
             nodes = set(_node_types(plan))
             assert not nodes & {"Sort", "Bitmap Heap Scan", "Bitmap Index Scan", "Incremental Sort"}, nodes
         last = first.rows[-1]
@@ -499,7 +502,7 @@ class TestDeleteBefore:
             ),
         )
         plan = planned.plans[0]
-        assert plan_uses_index(plan, "results_by_stamp") and plan_uses_index(plan, "results_pkey"), plan.plan
+        assert plan_uses_index(plan, f"{_TABLE}_by_stamp") and plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
         _batched_on_yugabyte(plan, seeded)
         bare_page = (
             f"DELETE FROM {_TABLE} AS t WHERE (t.state, t.geo, t.id) IN (SELECT state, geo, id FROM {_TABLE} "
@@ -555,7 +558,7 @@ class TestUpdateBefore:
         planned = _WritePlans(seeded.conn)
         await _rolled_back(seeded.conn, lambda: page(planned))
         plan = planned.plans[0]
-        assert plan_uses_index(plan, "results_by_stamp") and plan_uses_index(plan, "results_pkey"), plan.plan
+        assert plan_uses_index(plan, f"{_TABLE}_by_stamp") and plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
         _batched_on_yugabyte(plan, seeded)
         baseline = await _rolled_back(
             seeded.conn,
@@ -599,7 +602,7 @@ class TestKeyedWrites:
         """Flips if an update or a delete by a (state, geo) prefix plans other than through the key's index, writes
         other than its 30 rows, or is over 2x the bare statement.
 
-        The bare is the same write hand-written on the same table: ``UPDATE results SET votes = $3 WHERE state = $1
+        The bare is the same write hand-written on the same table: ``UPDATE keyed_results SET votes = $3 WHERE state = $1
         AND geo = $2`` (and the ``DELETE``), natively bound; the helper writes exactly that statement, quoted."""
         by = {"state": "S11", "geo": "017"}
         recorder = _Executes(seeded.conn)
@@ -613,7 +616,7 @@ class TestKeyedWrites:
         assert (updated.count, deleted.count, len(deleted.rows)) == (_IDS, _IDS, _IDS)
         for sql, args in recorder.asked:
             plan = await explain_write(seeded.conn, sql, *args)
-            assert plan_uses_index(plan, "results_pkey"), plan.plan
+            assert plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
             assert plan.rows_scanned <= 1.1 * _IDS, plan
         bare_update = await _rolled_back(
             seeded.conn,
@@ -701,7 +704,7 @@ class TestKeyedWritesByBatchAndStage:
         assert (updated.count, deleted.count) == (len(keys), len(keys))
         for sql, args in recorder.asked:
             plan = await explain_write(seeded.conn, sql, *args)
-            assert plan_uses_index(plan, "results_pkey"), plan.plan
+            assert plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
             assert plan.rows_scanned <= 1.1 * len(keys), plan
         source = Derived(
             f"SELECT state, geo, id, -votes AS votes FROM {_TABLE} WHERE state = 'S05' AND geo IN ('001', '002', '003')"
@@ -799,7 +802,7 @@ class TestReadJoined:
         assert sum(len(rows) for rows in joined.values()) == len(page) * _IDS
         _plans_ok(recorder, seeded)
         (plan,) = recorder.plans
-        assert plan_uses_index(plan, "results_pkey"), plan.plan
+        assert plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
         assert plan.rows_scanned <= 1.1 * len(page) * _IDS, plan
         _batched_on_yugabyte(plan, seeded)
         baseline = await _bare(
@@ -828,11 +831,11 @@ class TestCountsByRelations:
         relation's GROUP BY count by the key. Never a read of a plain copy holding only the counted rows."""
         # a second relation as large as the first, its rows clustered by state (the key's rows together at one end of
         # the heap): a count reads its keys' rows by the key on each, however the rows lie
-        await seeded.conn.execute(f"CREATE TABLE results_b AS SELECT * FROM {_TABLE} ORDER BY state")
-        await seeded.conn.execute("ALTER TABLE results_b ADD PRIMARY KEY (state, geo, id)")
-        await seeded.conn.execute("ANALYZE results_b")
+        await seeded.conn.execute(f"CREATE TABLE keyed_results_b AS SELECT * FROM {_TABLE} ORDER BY state")
+        await seeded.conn.execute("ALTER TABLE keyed_results_b ADD PRIMARY KEY (state, geo, id)")
+        await seeded.conn.execute("ANALYZE keyed_results_b")
         geos = [f"{g:03d}" for g in range(5, 200, 20)]
-        tables = {"a": _TABLE, "b": "results_b"}
+        tables = {"a": _TABLE, "b": "keyed_results_b"}
         recorder = PlanRecorder(seeded.conn)
         counted = await counts_by_relations(recorder, tables, column="geo", values=AnyOf(geos), by={"state": "S50"})
         assert counted == {"a": dict.fromkeys(geos, _IDS), "b": dict.fromkeys(geos, _IDS)}
@@ -841,7 +844,7 @@ class TestCountsByRelations:
             seeded.conn,
             f"SELECT 0 AS relation, geo, count(*) FROM {_TABLE} "  # noqa: S608
             "WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo "
-            "UNION ALL SELECT 1, geo, count(*) FROM results_b WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo",
+            "UNION ALL SELECT 1, geo, count(*) FROM keyed_results_b WHERE state = $1 AND geo = ANY($2::text[]) GROUP BY geo",
             "S50",
             geos,
         )
@@ -854,10 +857,10 @@ class TestCountsByRelations:
     async def test_a_relations_own_pins_count_the_same_rows_in_the_one_statement(self, seeded: _Seeded) -> None:
         """Flips if ``pins=`` changes what a relation counts when every row holds a pinned value, narrows another
         relation, or a narrower pin miscounts, on PostgreSQL (the per-key seek) and YugabyteDB (``= ANY``) alike."""
-        await seeded.conn.execute(f"CREATE TABLE results_p AS SELECT *, id % 3 AS slot FROM {_TABLE}")
-        await seeded.conn.execute("ALTER TABLE results_p ADD PRIMARY KEY (state, geo, id)")
+        await seeded.conn.execute(f"CREATE TABLE keyed_results_p AS SELECT *, id % 3 AS slot FROM {_TABLE}")
+        await seeded.conn.execute("ALTER TABLE keyed_results_p ADD PRIMARY KEY (state, geo, id)")
         geos = [f"{g:03d}" for g in range(5, 200, 20)]
-        tables = {"a": _TABLE, "p": "results_p"}
+        tables = {"a": _TABLE, "p": "keyed_results_p"}
         try:
             whole = await counts_by_relations(
                 seeded.conn, tables, column="geo", values=AnyOf(geos, "text"), by={"state": "S50"}
@@ -879,7 +882,7 @@ class TestCountsByRelations:
                 pins={"p": {"slot": 0}},
             )
         finally:
-            await seeded.conn.execute("DROP TABLE results_p")
+            await seeded.conn.execute("DROP TABLE keyed_results_p")
         assert pinned == whole == {"a": dict.fromkeys(geos, _IDS), "p": dict.fromkeys(geos, _IDS)}
         assert narrowed == {"a": dict.fromkeys(geos, _IDS), "p": dict.fromkeys(geos, _IDS // 3)}
 
