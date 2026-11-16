@@ -1071,7 +1071,8 @@ class TestAReconciledWriteTooLargeToRecordReachesAFollower:
         self, ring: tuple[asyncpg.Pool, str, str]
     ) -> None:
         """Flips if a whole-table note inside a window of more rows than one record names is dropped: the truncate's
-        own advance was lost too, so the bracket's keys alone leave every row the truncate removed in a follower."""
+        own advance was lost too, so the bracket's keys alone leave every row the truncate removed in a follower (red on
+        3d221b26e: only the bracket was recorded)."""
         pool, schema, table = ring
         bus = FakeNatsClient()
         source = EpochGenerationSource(bus)
@@ -1108,11 +1109,11 @@ class TestAReconciledWriteTooLargeToRecordReachesAFollower:
         assert token is not None and seen is not None
         walk = await reader.changes_after(table, seen, token)
         kinds = sorted("whole" if change.whole_table else "bracket" for change in walk.changes)
-        assert kinds == ["bracket", "whole"], "the bracket's keys and the truncate's whole table, each recorded"
+        # the truncate's whole table (a platform table's: _all, every row) covers the bracket's keys, so it alone
+        assert kinds == ["whole"], "the truncate recorded whole, and no bracket under the tenant it covers"
         await registry.catch_up_generation(table, token, changes=reader)
         assert registry.behind_reason(table) is None
         assert dropped, "the truncate reaches the follower: 'seed' is gone from it"
-        assert heard >= {f"many-{g}" for g in range(1, many + 1)}
 
 
 class TestAFollowerOnADirectPoolReadsTheNotesItself:

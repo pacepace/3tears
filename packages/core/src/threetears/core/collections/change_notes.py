@@ -406,7 +406,10 @@ async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime
         )
         for slot in slots
     ]
-    found = await read_step(pool, distinct(union(*legs, keep_all=True), ("tenant", "reach")))
+    # the current slot alone once the previous one can hold no note from the reach on: a union names two or more
+    found = await read_step(
+        pool, distinct(legs[0] if len(legs) == 1 else union(*legs, keep_all=True), ("tenant", "reach"))
+    )
     reaches: dict[str | None, list[Any]] = {}
     for note in found:
         reaches.setdefault(None if note["tenant"] is None else str(note["tenant"]), []).append(note["reach"])
