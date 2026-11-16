@@ -6,6 +6,28 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a runner that raised on every case says so on the first line; a withheld case key is named in the error; llms.txt says where cases come from
+
+**Fixed:** an eval whose runner raised on every case printed `cases: runner ran 4 of 4 cases; no grader here says pass
+or fail.` over a grader declared `-> bool`: whether an eval holds a check was read off the measures that scored, and
+none had. It is now read off what the aspect's design declares it grades (`AspectDesign.measure_order`); a declared
+reading no trial scored is never taken to be no check. Where the candidate failed every graded trial without answering,
+the first line, the page's lead and every other surface that states a pass count (`passed_clause`, from `pass_count`)
+say how many it failed on and the first error, once: `gloss failed on all 4 cases, so no answer was graded: the
+candidate raised KeyError: 'word'.` Two arms that both failed every case each say so, and nothing is compared.
+
+**Changed:** a runner or grader that raises `KeyError` on a reserved case key the case held (`id`, `stratum`, `world`)
+has its error say the key is withheld from the runner and every grader, and why: `the candidate raised KeyError: 'id';
+the case's 'id' names the case, and a renamed case keeps its history, so it is withheld from the runner and every
+grader; if your function needs the value, copy it into the case under another key as well`. Every reserved key stays
+withheld, as `EvalTestCase.name` and `stratum` declare them: never stimulus, so renaming or re-labelling a case keeps
+it the same case. Nothing stored moves: the stored case, its template id and every recording key are as before.
+
+**Docs:** `llms.txt` gains a short `YOUR APP'S CASES` passage: start from the app's own test fixtures or examples,
+take expected values from its documentation, never from running it, and the package keeps a case's `id`, `stratum`
+and `world`. It now says an app that calls no model needs `Eval` alone, and that the examples' command runs from the
+fetched directory, since no example is in the installed package.
+
 ### evals: looks are counted from stored facts, a plan of looks tightens every claim, and a reading past it says how often that errs (judges D1)
 
 **Added:** a look is an occasion on which a contrast's test could have been read again on more or different evidence.

@@ -12,9 +12,19 @@ Evals for LLM features, from a classifier to a tool-using agent: it runs each ve
   a `Judge`) — and `await ev.run()` runs it, returning a `Result` that prints quietly and writes its
   report. `python -m threetears.evals FILE` runs every eval a `.py` or `.toml` file declares.
 
-A FIRST EVAL NEEDS 2 NAMES
+A FIRST EVAL NEEDS AT MOST 2 NAMES
   Eval: What is evaluated: the cases, the runner under test, and what counts as right.
   Model: One model, as the engine's completion client and as three helpers for a runner of your own.
+  An app that calls no model needs Eval alone: its runner is the app's own function.
+
+YOUR APP'S CASES
+Start from the cases the app already has: its tests' fixtures (tests/fixtures/*.jsonl, *.json,
+  *.csv), its parametrized test tables, or the examples its README names; pass that file as the
+  eval's cases. Take each expected value from the app's documentation, docstrings or specification,
+  never by running the app or reading its code and copying what it gives: a case that expects what
+  the app does today cannot catch what it does wrong. One case, whole: {"id": "double-charge",
+  "email": "I was billed twice this month.", "category": "billing"}. The package keeps a case's id,
+  stratum and world keys: it reads them and hands the runner and every grader the case without them.
 
 THE FIRST EXAMPLE, WHOLE (1-triage/triage.py of the examples fetched below; its docstring left out)
   from typing import Literal
@@ -51,8 +61,9 @@ Each email is triaged k=3 times; it replays `recordings/triage.jsonl` offline, a
 GETTING THE EXAMPLES: they are not in the installed package; fetch them from the repository
   git clone --depth 1 --branch <tag> --filter=blob:none --sparse https://github.com/pacepace/3tears
   cd 3tears && git sparse-checkout set packages/evals/examples && cd packages/evals/examples
-Then run one from that directory: python -m threetears.evals 1-triage/triage.py. Each rung reads its
-  cases and replays its recordings from beside itself, so keep its directory together.
+Then run one from that fetched directory (no example is in the installed package): python -m
+  threetears.evals 1-triage/triage.py. Each rung reads its cases and replays its recordings from
+  beside itself, so keep its directory together.
 
 READING WHAT COMES BACK
 The first line printed is the answer. Rung 1 prints:
