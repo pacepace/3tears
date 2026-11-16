@@ -42,7 +42,7 @@ is a new comparison (`continuation.UNKEPT_SENTENCE`). Seeded simulations driving
 50% each, k = 1: run again as cases are added (adds sized from the data, up to five runs), 32 of 1,000 newcomers
 separate (3.2%, 95% upper bound 4.5%) at α = 5%, where re-running every case on each run, read by the same bet,
 separates 36 of 400 (9.0%, lower bound 6.4%); cancelling a run as soon as the running count favours an arm, then
-continuing, CANCEL_FIGURES. A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
+continuing, separates 5 of 600 (0.8%, 95% upper bound 1.9%). A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
 the time where the reading it replaces did 43.6%. A quick-path comparison is one the quick path filed
 (`EvalCampaign.created_by` is `kernel.candidate_kind.QUICK_PATH_FILER`) over runs of kinds only it launches
 (`QUICK_PATH_KINDS`), no arm observing a case in two runs, with no plan of looks (`trials.bet_places`): a campaign a host

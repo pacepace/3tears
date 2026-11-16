@@ -954,8 +954,9 @@ async def test_under_the_null_a_comparison_cancelled_when_the_data_look_good_and
     Clopper-Pearson 95% upper bound on the false-separation rate is below α.
 
     Its count is not pinned (the product orders a launch's cells by its launch's id, so a cancel finds a different set
-    recorded on each run of the test); as run for this change, 9 of 600 separated (1.5%, 95% interval 0.7% to 2.8%).
-    The test fails only where the upper bound reaches α, which needs a count of 20 or more."""
+    recorded on each run of the test). As run for this change, 5 of 600 separated (0.8%, 95% interval 0.3% to 1.9%),
+    and 2,940 of their 2,997 runs were cancelled. The test fails only where the upper bound reaches α, which needs a
+    count of 20 or more."""
     separated = 0
     for index in range(_CANCELLERS):
         separated += await _canceller(f"cancelled-{index}")
