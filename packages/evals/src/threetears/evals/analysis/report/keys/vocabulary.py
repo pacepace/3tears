@@ -308,25 +308,21 @@ def joint_guarantee(alpha: float | None, size: int, *, corrected: bool = True) -
     return (1.0 - float(alpha), size)
 
 
-#: Why a plan of looks is not shown to hold the level it is for: within the plan, a test a reading uses is not shown to
-#: keep it where a look's cases were sized from an earlier reading (``sized``); more looks were taken than planned
-#: (``past``); or the count of looks is a lower one, or was not recorded, so more may have been (``uncounted``).
-PlanUnkept = Literal["sized", "past", "uncounted"]
-
-
 class UnkeptPlan(NamedTuple):
     """A plan of looks not shown to hold the level it is for (:func:`unkept_plan`).
 
     :ivar planned: The looks the plan allows.
     :ivar taken: The looks taken; None where they were not recorded.
-    :ivar why: Why it is not shown.
+    :ivar why: Why it is not shown: within the plan, a test a reading uses is not shown to keep it where a look's cases
+        were sized from an earlier reading (``sized``); more looks were taken than planned (``past``); or the count of
+        looks is a lower one, or was not recorded, so more may have been (``uncounted``).
     :ivar tests: The tests it is not shown on: for ``sized`` those
         :func:`~threetears.evals.analysis.significance.plan_kept` does not show, otherwise every test given.
     """
 
     planned: int
     taken: int | None
-    why: PlanUnkept
+    why: Literal["sized", "past", "uncounted"]
     tests: tuple[SeparationTest, ...]
 
 
@@ -496,7 +492,6 @@ def _printed_stratum(report_input: ReportInput, stratum: Stratum) -> str:
 
 
 __all__ = [
-    "PlanUnkept",
     "UnkeptPlan",
     "looks_of",
     "joint_guarantee",

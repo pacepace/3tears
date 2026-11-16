@@ -1029,14 +1029,19 @@ def _level_lines(
 
 
 def _unkept(readings: CampaignReadings, reports: Mapping[str, Report]) -> list[tuple[str, UnkeptPlan]]:
-    """Each aspect on which the plan of looks a campaign's readings are read under (the largest among its aspects:
-    ``look_alpha`` is alpha over it) is not shown to hold the level it is for over that aspect's looks, on the bounded
+    """Each aspect on which the plan of looks a campaign's readings are read under (the largest among its aspects, as
+    :func:`~threetears.evals.analysis.campaign_readings.campaign_readings` reads it) is not shown to hold the level it is for over that aspect's looks, on the bounded
     test every pass rate here is read by (:func:`~threetears.evals.analysis.report.keys.vocabulary.unkept_plan`),
     with why; empty where it is on every aspect, or no plan is in force. A candidate's family runs across its aspects,
     so one aspect not shown is its family's level not shown."""
-    if readings.look_alpha is None:
+    plans = [
+        looks.planned
+        for report in reports.values()
+        if (looks := report.bundle.reading_scope.looks) is not None and looks.planned is not None
+    ]
+    planned = max((plan for plan in plans if plan > 1), default=None)
+    if readings.look_alpha is None or planned is None:
         return []
-    planned = round(readings.alpha / readings.look_alpha)
     found = []
     for aspect in readings.aspects:
         report = reports.get(aspect)
