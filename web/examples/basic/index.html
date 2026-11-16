@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Example</title>
+<link rel="manifest" href="/app/manifest.webmanifest">
+<meta name="theme-color" content="#14161a">
+<meta name="apple-mobile-web-app-title" content="Example">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" sizes="180x180" href="/app/apple-touch-icon.png">
+<link rel="stylesheet" href="/app/pwa/safe-area.css">
+<link rel="stylesheet" href="/app/app.css">
+</head>
+<body class="safe-area-pad safe-area-fill">
+<h1>Example</h1>
+<p id="mode"></p>
+<p id="version"></p>
+<div id="update" role="alert" hidden>A new version is available. <button id="reload" type="button">Reload</button></div>
+<button id="play" type="button">Play</button>
+<script type="module" src="/app/app.js"></script>
+</body>
+</html>

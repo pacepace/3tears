@@ -1,0 +1,56 @@
+name: Web
+
+# The browser packages in web/ (@3tears/*): their types are current, their unit tests pass under
+# Node, and the example app's tests pass in headless Chromium against the real service worker.
+# Runs only when web/ or this file changes; ci.yml's `check` stays the required status for the
+# Python suite. Publishing is release.yml's `npm-publish`, on the same tag as PyPI.
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+  push:
+    branches: [develop, main]
+    paths:
+      - "web/**"
+      - ".github/workflows/web.yml"
+
+concurrency:
+  group: web-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Types are generated from the current sources
+        run: npm run types && git diff --exit-code -- packages/*/types
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Install headless Chromium (browser tests)
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Browser tests
+        env:
+          THREETEARS_REQUIRE_CHROMIUM: "1"
+        run: npm run test:browser

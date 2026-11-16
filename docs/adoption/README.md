@@ -153,6 +153,7 @@ at commit time.
 | **Agent framework** | `agent-tools`, `agent-memory`, `agent-skills`, `agent-workspace`, `agent-acl`, `agent-audit`, `agent-wake`, `agent-identity`, `agent-intention`, `agent-knowledge` | Everything an LLM agent needs to act, remember, and evolve safely at scale |
 | **Models, channels, LangGraph** | `models`, `channels`, `langgraph` | The surface that connects an agent to LLM providers, chat channels, and LangGraph orchestration |
 | **Evaluation** | `evals` | Finding out whether a change to an LLM-backed feature made it better |
+| **Web** (JavaScript, `web/`) | `@3tears/pwa` | Browser packages for the family's web apps, published to GitHub Packages at the family's version |
 
 ## Module index
 
@@ -182,6 +183,12 @@ at commit time.
 | [`object-store`](object-store.md) | Streaming S3-compatible storage for large binary artifacts. |
 | [`geo`](geo.md) | Slippy-map vector tiles built in application code, for a database with no PostGIS: tile addressing, zoom bands, MVT encoding, and a durable tile cache. |
 | [`scrape`](scrape.md) | Self-healing web scraping: LLM-proposed extraction validated against the real page, a circuit that stops paying for a walled target, and a human-handover surface for the pages no unattended fetch will pass. |
+
+### Web (JavaScript)
+
+| Module | Solves |
+|---|---|
+| [`@3tears/pwa`](pwa.md) | Installable web apps: install metadata, a shell-only service worker with an update prompt, push, notification taps, lock-screen media, wake lock, safe areas. |
 
 ### Agent framework
 

@@ -380,6 +380,47 @@ jobs:
           packages-dir: dist/
           skip-existing: true
 
+  # The browser packages (web/, @3tears/*) at the same version, to GitHub Packages. After PyPI, so
+  # the `pypi` approval gate holds both: one tag, one approval, one version everywhere. The lockstep
+  # verify in `build` already held every web/ package.json to the tag.
+  #
+  # Idempotent like `skip-existing`: a version already in the registry is skipped, so a republish
+  # dispatch publishes only what is missing.
+  npm-publish:
+    needs: pypi-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://npm.pkg.github.com
+
+      - name: Install
+        run: npm ci
+
+      - name: Publish every web/ package not yet published at this version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for manifest in packages/*/package.json; do
+            dir="$(dirname "$manifest")"
+            name="$(node -p "require('./${manifest}').name")"
+            version="$(node -p "require('./${manifest}').version")"
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "${name}@${version} is already published; skipping."
+              continue
+            fi
+            npm publish --workspace "$dir"
+          done
+
   github-release:
     needs: pypi-publish
     # Tag pushes only, keyed on the EVENT and not on the ref shape.

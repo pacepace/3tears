@@ -8,6 +8,7 @@ that slipped past v0.10.2's first bump, a bake file, intra-family bounds, and a
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ lockstep-files = ["packages/*/pyproject.toml", "packages/agent/*/pyproject.toml"
 smoke-tests = ["packages/*/tests/test_smoke.py", "packages/agent/*/tests/test_smoke.py"]
 bake-file = "docker-bake.hcl"
 family-prefix = "fam"
+npm-lockstep-files = ["web/packages/*/package.json", "web/package-lock.json"]
 notes = "CHANGELOG.md"
 notes-style = "3tears"
 """
@@ -37,6 +39,39 @@ target "base" {
   }
 }
 """
+
+
+def _npm(data: dict[str, object]) -> str:
+    """an npm file as npm writes it.
+
+    :param data: the JSON
+    :ptype data: dict[str, object]
+    :return: the file
+    :rtype: str
+    """
+    return json.dumps(data, indent=2) + "\n"
+
+
+_NPM_FILES = {
+    "web/packages/ui/package.json": _npm(
+        {"name": "@fam/ui", "version": "0.1.0", "dependencies": {"@fam/base": "0.1.0", "react": "^19.0.0"}}
+    ),
+    "web/packages/base/package.json": _npm({"name": "@fam/base", "version": "0.1.0"}),
+    "web/package.json": _npm({"name": "@fam/web", "private": True, "workspaces": ["packages/*"]}),
+    "web/package-lock.json": _npm(
+        {
+            "name": "@fam/web",
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "@fam/web", "workspaces": ["packages/*"]},
+                "node_modules/@fam/ui": {"resolved": "packages/ui", "link": True},
+                "node_modules/react": {"version": "19.0.0"},
+                "packages/base": {"name": "@fam/base", "version": "0.1.0"},
+                "packages/ui": {"name": "@fam/ui", "version": "0.1.0", "dependencies": {"@fam/base": "0.1.0"}},
+            },
+        }
+    ),
+}
 
 
 def _member(name: str, version: str = "0.1.0", requires: str = "") -> str:
@@ -78,6 +113,7 @@ def workspace(scratch: Path) -> Path:
         "docker-bake.hcl": _BAKE,
         "CHANGELOG.md": "# Changelog\n\n## Unreleased\n\n### A new thing\n\n- it\n\n## v0.1.0 -- 2026-01-01\n\n- first\n",
         "uv.lock": 'version = 1\n\n[[package]]\nname = "fam"\nversion = "0.1.0"\nsource = { editable = "packages/core" }\n',
+        **_NPM_FILES,
     }
     for path, text in files.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +137,8 @@ def _drift(root: Path) -> None:
         "packages/agent/tools/pyproject.toml": [(">=0.1.0,<0.2.0", ">=0.0.0,<0.1.0")],
         "packages/core/tests/test_smoke.py": [('core_version == "0.1.0"', 'core_version == "0.0.99"')],
         "docker-bake.hcl": [('"v0.1.0"', '"v0.0.99"'), (":v0.1.0", ":v0.0.99")],
+        "web/packages/ui/package.json": [('"version": "0.1.0"', '"version": "0.0.99"')],
+        "web/package-lock.json": [('"@fam/base": "0.1.0"', '"@fam/base": "0.0.99"')],
     }
     for path, pairs in replacements.items():
         text = (root / path).read_text()
@@ -143,6 +181,9 @@ class TestVerify:
         assert 'packages/core/tests/test_smoke.py: core_version == "0.0.99"' in err
         assert "docker-bake.hcl VERSION: 0.0.99" in err
         assert "docker-bake.hcl image-tag :v0.0.99" in err
+        assert "web/packages/ui/package.json: version 0.0.99, expected 0.1.0" in err
+        assert "web/package-lock.json packages/ui dependencies: @fam/base 0.0.99, expected 0.1.0" in err
+        assert "react" not in err
         assert "sidecar" not in err
 
     def test_a_local_label_is_named_against_a_plain_release(self, workspace: Path) -> None:
@@ -204,6 +245,13 @@ class TestBumpAndSync:
         assert "from fam import __version__ as core_version" in smoke
         assert '"fam[x]>=0.2.0,<0.3.0"' in (workspace / "packages/extra/pyproject.toml").read_text()
         assert 'version = "9.9.9"' in (workspace / "packages/extra/sidecar/pyproject.toml").read_text()
+        ui = json.loads((workspace / "web/packages/ui/package.json").read_text())
+        assert ui["version"] == "0.2.0" and ui["dependencies"] == {"@fam/base": "0.2.0", "react": "^19.0.0"}
+        lock = json.loads((workspace / "web/package-lock.json").read_text())["packages"]
+        assert (lock["packages/ui"]["version"], lock["packages/base"]["version"]) == ("0.2.0", "0.2.0")
+        assert lock["node_modules/react"]["version"] == "19.0.0"
+        assert "version" not in lock[""]
+        assert (workspace / "web/package-lock.json").read_text().endswith("}\n")
         changelog = (workspace / "CHANGELOG.md").read_text()
         assert (
             f"## Unreleased\n\n## v0.2.0 -- {TODAY}\n\n### A new thing\n\n- it\n\n## v0.1.0 -- 2026-01-01" in changelog
