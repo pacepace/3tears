@@ -1004,6 +1004,7 @@ def _instant(stamp: str) -> datetime | None:
     try:
         instant = datetime.fromisoformat(stamp)
     except ValueError:
+        # NOSILENT: a stamp that is not ISO-8601 is an expected input, not a fault: the caller compares it as written
         return None
     return instant if instant.tzinfo is not None else None
 
