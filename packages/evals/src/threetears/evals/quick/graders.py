@@ -11,8 +11,9 @@ An :class:`~threetears.evals.quick.contract.Eval`'s ``grader`` is one grader or 
   falls off its end, a numpy bool, 0.25) fails the run, naming the case and the fix; so does anything from a grader of
   a number that is not a finite number on its declared range (a bool, ``None``, NaN, a score off its scale). A grader
   that raises leaves its case ungraded: the run goes on, and every count says how many were not graded, and which.
-- **A field name** (``"category"``): the answer's ``category`` (``out.category`` on a pydantic model,
-  ``out["category"]`` on a mapping, the answer itself when it is a plain value) against the case's ``category``. A
+- **A field name** (``"category"``): the answer's ``category`` (``out["category"]`` on a mapping, the answer itself
+  when it is a plain value, ``out.category`` on anything else: a pydantic model, a dataclass) against the case's
+  ``category``. A
   field is graded as a label: the first field listed is the run's classifier, so the run carries its confusion
   matrix, each label's precision, recall and F1, and ``accuracy``
   (:attr:`~threetears.evals.analysis.EvalSummary.confusion`); every other field is a pass/fail of its own name, and
@@ -36,6 +37,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, overload
 
 from pydantic import BaseModel
@@ -55,6 +57,12 @@ UNUSABLE_ANSWER = "(unusable answer)"
 
 #: What :func:`field_value` returns for an answer that has no such field.
 _MISSING = object()
+
+
+class _CannotTell(Enum):
+    """What reading a grader's signature finds when it has none. Cannot tell means do not refuse: it is called."""
+
+    NO_SIGNATURE = "no signature to read"
 
 
 def _a_number(value: object) -> bool:
@@ -171,7 +179,8 @@ def grader(
 
 
 def field_value(out: Any, name: str) -> Any:
-    """The answer's value of one field: an attribute of a pydantic model, a key of a mapping, or the answer itself.
+    """The answer's value of one field: a key of a mapping, the answer itself when it is a plain value, else the
+    answer's attribute of that name (a pydantic model's field, a dataclass's).
 
     :param out: The runner's answer; a world runner's is read through its ``answer``.
     :ptype out: Any
@@ -189,7 +198,8 @@ def field_value(out: Any, name: str) -> Any:
         return out.get(name, _MISSING)
     if out is None or isinstance(out, str | int | float | bool):
         return out
-    return _MISSING
+    # Any other object is read as out.<name> is: a dataclass's field, a named tuple's, an attribute.
+    return getattr(out, name, _MISSING)
 
 
 def label_text(value: Any) -> str | None:
@@ -410,6 +420,54 @@ class GraderPlan:
         return None if self.classifier_margin is None else {ACCURACY_MEASURE: self.classifier_margin}
 
 
+def _bare(signature: inspect.Signature) -> inspect.Signature:
+    """A signature as its parameters' names and defaults, the annotations left out: what the author wrote to call it."""
+    return signature.replace(
+        parameters=[
+            parameter.replace(annotation=inspect.Parameter.empty) for parameter in signature.parameters.values()
+        ],
+        return_annotation=inspect.Signature.empty,
+    )
+
+
+def _refuse_a_grader_that_cannot_take_its_arguments(target: Callable[..., Any], name: str) -> None:
+    """Refuse a function grader that cannot be called as ``name(case, out)``: it would raise on every answer, after the
+    runner had answered (and spent on) every case.
+
+    A grader's signature is read for two questions, and both read its annotations as the text they were written as
+    (``annotationlib.Format.STRING``), never evaluated, so a name imported only for type checking is no error. Its
+    arity, here, is read off the outermost signature, what is called (a decorator's wrapper, not the function it wraps:
+    ``follow_wrapped=False``). Its kind, in :func:`declares_a_check`, is read off its declaration, the function a
+    decorator wraps (followed through ``__wrapped__``).
+
+    :raises ValueError: Its signature cannot bind two positional arguments.
+    """
+    signature = _signature_as_called(target)
+    if isinstance(signature, _CannotTell):
+        return
+    try:
+        signature.bind("case", "out")
+    except TypeError:
+        raise ValueError(
+            f"the grader {name}{_bare(signature)} cannot be called as {name}(case, out), which is how each answer is handed to "
+            f"it; declare it to take exactly that: def {name}(case, out): ..."
+        ) from None
+
+
+def _signature_as_called(target: Callable[..., Any]) -> inspect.Signature | _CannotTell:
+    """The outermost signature, what is called (a decorator's wrapper, not the function it wraps), or
+    :attr:`_CannotTell.NO_SIGNATURE` when it has none to read.
+
+    Its annotations are read as the text they were written as, never evaluated: a name imported only for type checking
+    is no error.
+    """
+    try:
+        return inspect.signature(target, follow_wrapped=False, annotation_format=annotationlib.Format.STRING)
+    except TypeError, ValueError:
+        # inspect.signature's own refusal: a builtin or a C wrapper (functools.cache) shows no signature to read.
+        return _CannotTell.NO_SIGNATURE
+
+
 def plan_graders(graders: Any) -> GraderPlan:
     """Sort an eval's ``grader`` slot into what reads each grader.
 
@@ -418,9 +476,9 @@ def plan_graders(graders: Any) -> GraderPlan:
     :ptype graders: Any
     :return: The plan.
     :rtype: GraderPlan
-    :raises ValueError: No grader; two judges; a grader of no known form; a function whose return annotation is read
-        as both kinds or neither (:func:`declares_a_check`); a field named after an engine core measure; or a name
-        graded twice.
+    :raises ValueError: No grader; two judges; a grader of no known form; a function that cannot take ``(case,
+        out)``; a function written ``async def`` or whose return annotation is read as both kinds, neither, or names
+        ``None`` (:func:`declares_a_check`); a field named after an engine core measure; or a name graded twice.
     """
     listed: Sequence[Any] = graders if isinstance(graders, list | tuple) else [graders]
     if not listed:
@@ -475,6 +533,7 @@ def plan_graders(graders: Any) -> GraderPlan:
                     f"a grader's __name__ names its measure, and {target!r} has none a measure can carry; write each "
                     "grader as a def"
                 )
+            _refuse_a_grader_that_cannot_take_its_arguments(target, name)
             seen.append(name)
             if not isinstance(target, Measure):
                 # Read now, so an annotation read as both kinds or neither is refused before anything runs.

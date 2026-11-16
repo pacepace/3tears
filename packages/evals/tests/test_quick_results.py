@@ -296,13 +296,16 @@ async def test_a_guardrail_field_listed_first_leaves_the_classifier_s_miss_line_
 class Routing:
     """An app's own answer that JSON cannot hold, so the run stores its repr."""
 
-    queue: str
+    queue: str | None
     note: str
 
 
 async def test_an_answer_json_cannot_hold_prints_cut_never_whole() -> None:
+    # The refund is routed; every other ticket comes back with no queue, which no label can be read from. (Had no
+    # answer routed one, the eval would be refused as wired to a field its answers lack.)
     async def as_dataclass(case: Mapping[str, Any]) -> Routing:
-        return Routing(queue="billing", note="routed after reading " + "the whole ticket " * 20)
+        queue = "billing" if case["text"] == "refund please" else None
+        return Routing(queue=queue, note="routed after reading " + "the whole ticket " * 20)
 
     result = await Eval(CASES, as_dataclass, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     (miss, *_) = result.misses()
@@ -310,17 +313,18 @@ async def test_an_answer_json_cannot_hold_prints_cut_never_whole() -> None:
     line = _miss_lines(result.render())[0]
     said = line.split("): ", 1)[1]
     shown = said.removeprefix("answered no queue it can be graded on: ").rsplit(", expected ", 1)[0]
-    assert said.startswith("answered no queue it can be graded on: Routing(queue='billing'")
+    assert said.startswith("answered no queue it can be graded on: Routing(queue=None")
     assert len(shown) == 120 and shown.endswith("…")
 
 
 async def test_an_answer_without_the_graded_field_prints_a_short_compact_answer_without_its_id() -> None:
+    # The refund carries its queue; the other two answers carry none.
     async def unlabelled(case: Mapping[str, Any]) -> dict[str, Any]:
-        return {"id": "row-1", "note": "x" * 300}
+        return {"queue": "billing"} if case["text"] == "refund please" else {"id": "row-1", "note": "x" * 300}
 
     result = await Eval(CASES, unlabelled, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     lines = _miss_lines(result.render())
-    assert len(lines) == 3
+    assert len(lines) == 2
     said = lines[0].split("): ", 1)[1]
     assert said.startswith('answered no queue it can be graded on: {"note":"xxx')
     shown = said.split("graded on: ", 1)[1].rsplit(", expected ", 1)[0]
