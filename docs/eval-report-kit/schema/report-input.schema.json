@@ -334,7 +334,7 @@
        "type": "null"
       }
      ],
-     "description": "How often the aspect's test was looked at, against how often it planned to be."
+     "description": "How often the aspect's test was looked at, against how often it planned to be. Derived from stored facts about the campaign (its launches, membership, re-judges), never an input the author gave, so never part of the input's digest; the plan it is read against (`AspectDesign.planned_looks`) is."
     }
    },
    "additionalProperties": false,
@@ -2042,6 +2042,25 @@
      "default": null,
      "description": "The cases the readings it names rest on, where one count says it.",
      "title": "Cases"
+    },
+    "looks": {
+     "anyOf": [
+      {
+       "$ref": "#/$defs/Looks"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "For a caveat on looks: the aspect's looks, planned and taken, or that they were not recorded (`Aspect.looks`)."
+    },
+    "false_separation": {
+     "description": "For a caveat on looks: per test the aspect's readings are read by, a reference false-separation rate from a simulation of that test, plan and count, with the setting it was simulated in, or why none is quoted. A reference figure, never this campaign's own rate, which is not known and can be higher. Empty where the looks counted are a lower count (more may have been taken, so no row is the situation's: the count is shown alone), or were not recorded.",
+     "items": {
+      "$ref": "#/$defs/FalseSeparation"
+     },
+     "type": "array"
     }
    },
    "required": [
@@ -2050,6 +2069,113 @@
     "reach"
    ],
    "title": "CaveatEntry",
+   "type": "object"
+  },
+  "FalseSeparation": {
+   "additionalProperties": false,
+   "description": "A reference figure for one test the aspect's readings are read by: how often a test with no true difference\nseparated at some look in a simulation of that test, plan and count, in the setting stated beside it\n(:func:`~threetears.evals.analysis.significance.looks_false_separation`). It is never this campaign's own rate,\nwhich is not known, and it is no limit on it: a campaign launched smaller, extended by more cases a step, or\nreading several claims at once can err more. For a claim of held (one tail) it is the two-sided separation rate.",
+   "properties": {
+    "test": {
+     "description": "The test the reference simulates: bounded or t.",
+     "enum": [
+      "bounded",
+      "t"
+     ],
+     "type": "string"
+    },
+    "rate": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The rate a reference simulation of this test, plan and count measured, as a share, in the setting beside it; never this campaign's rate. None where none is quoted (``unquoted`` says why)."
+    },
+    "upper": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The reference simulation's own uncertainty about ``rate``: the one-sided 97.5% Wilson upper confidence limit from its replicates. Nothing about this campaign's error. None with no rate."
+    },
+    "row": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The row of `significance.FALSE_SEPARATION` the rate is read from; None with no rate."
+    },
+    "looks": {
+     "description": "The looks the reference rate is for.",
+     "minimum": 1,
+     "type": "integer"
+    },
+    "setting": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "What the reference simulated, in one line: a single contrast, the test, the per-case values, the launch and the extends. None where no row measured the situation."
+    },
+    "launched": {
+     "description": "The cases the simulated first looks read; empty where no row measured it.",
+     "items": {
+      "type": "integer"
+     },
+     "type": "array"
+    },
+    "largest_step": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The most cases one later look added in the simulation; None where no row did."
+    },
+    "unquoted": {
+     "anyOf": [
+      {
+       "enum": [
+        "not_measured",
+        "outside_setting"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Why no rate is quoted: not_measured (no row for this test, plan and count) or outside_setting (the aspect's own first-look cases or largest step, from stored facts, fall outside the simulated setting, so the reference does not cover it). None with a rate."
+    }
+   },
+   "required": [
+    "test",
+    "rate",
+    "looks"
+   ],
    "type": "object"
   },
   "Check": {
@@ -2711,7 +2837,7 @@
   },
   "Looks": {
    "additionalProperties": false,
-   "description": "How often a reading's test was looked at, against how often it planned to be.",
+   "description": "How often a reading's test was looked at, against how often it planned to be.\n\nA look is an occasion on which the contrast's test could have been read again on more or different evidence\n(:func:`~threetears.evals.analysis.significance.looks_taken`): the first, once both arms held a result; then each\nlaunch whose results changed what the test reads, each run that joined or left, each re-measure and each re-judge\nmade after it. ``taken`` is the most any one contrast of the aspect has had. It is exact where every such fact is\nstored, and a lower bound (``lower_bound``) where one is not: a run that left with no result recorded, an archived\nor unresolved member, a result with no ordered time, or re-judges, which are stored per result, so passes over\ndifferent results cannot be told apart.\n\n**Looks were not recorded** (``recorded`` false) where a member run's joining was never recorded: it joined before\ndurable 17.3 recorded membership. The occasions its stored results give are then artifacts of how the runs were\nstored (each arm launched alone, one group of cases after another), not occasions on which a reading could have\nbeen taken, and runs joined in one write are dated each by its own launch: the count could be too high or too low,\nso it is neither a bound above nor a bound below, and it is not given as looks. ``evidence_changes`` gives that\ncount as what it is: how many times the stored evidence changed. Where looks were recorded since (a run joined,\nleft, was launched after it joined, re-measured or re-judged after the first comparison), ``taken`` is the first\ncomparison plus those, a true lower count (``lower_bound``): at least that many looks since looks were recorded,\nand earlier ones not recorded. Where none were, ``taken`` is None.",
    "properties": {
     "planned": {
      "anyOf": [
@@ -2722,17 +2848,100 @@
        "type": "null"
       }
      ],
-     "description": "The looks declared; none where none were."
+     "default": null,
+     "description": "The looks the design plans, where the plan was declared before the first look; None where none was, or where it was declared after (``late_plan``)."
     },
     "taken": {
-     "description": "The looks taken.",
-     "minimum": 1,
-     "type": "integer"
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The looks taken. Where looks were not recorded (``recorded`` false): the looks recorded since, counting the first comparison, a lower count; None where none were."
+    },
+    "plannable": {
+     "default": true,
+     "description": "Whether the campaign was created once looks were counted, so its design could have declared them. False for an earlier campaign: its stored verdicts do not move, and its looks qualify the method only.",
+     "type": "boolean"
+    },
+    "lower_bound": {
+     "default": false,
+     "description": "Whether ``taken`` is a lower bound: a fact a look is counted by is not stored, so more were taken.",
+     "type": "boolean"
+    },
+    "recorded": {
+     "default": true,
+     "description": "Whether looks were recorded: false where a member run joined before durable 17.3 recorded membership, so the looks before are not counted; ``taken`` is then only the looks recorded since, a lower count, or None.",
+     "type": "boolean"
+    },
+    "evidence_changes": {
+     "anyOf": [
+      {
+       "minimum": 1,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Where looks were not recorded: how many times the stored evidence of a contrast changed (its runs' launches, re-measures and re-judges as stored), context and not a count of looks. None where they were."
+    },
+    "launched": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The fewest cases any contrast of the aspect read at its first look. None where not counted."
+    },
+    "largest_step": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The most cases one later occasion added to any contrast of the aspect. None where not counted."
+    },
+    "tests": {
+     "description": "The tests the aspect's readings are read by, sorted: ``bounded`` (a pass rate, a judged score, a guardrail) and ``t`` (a mean, a measure's score, a cost per reply). What a caveat on looks quotes a measured rate for.",
+     "items": {
+      "enum": [
+       "bounded",
+       "t"
+      ],
+      "type": "string"
+     },
+     "type": "array"
+    },
+    "late_plan": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "The looks a plan declared after the first look named (or over runs that held results before it was declared): read as no plan, since the looks it would count were already taken. None where no plan was declared late."
     }
    },
-   "required": [
-    "taken"
-   ],
    "type": "object"
   },
   "NextExperiment": {
@@ -2986,7 +3195,7 @@
     },
     "declared_look": {
      "default": false,
-     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it were the first, so adding cases and reading again even once errs more often than that level says.",
+     "description": "Whether taking it reads the same readings again with the cases it adds: one more look at them, stated before it is taken. The looks are counted: past the aspect's plan (past the first with none), or within it where keeping the plan is not shown, the reading after it carries a caveat on looks, with a reference false-separation rate from a simulated setting.",
      "title": "Declared Look",
      "type": "boolean"
     },

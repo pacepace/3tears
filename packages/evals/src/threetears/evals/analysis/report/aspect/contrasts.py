@@ -21,7 +21,7 @@ from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report.aspect.common import (
     _arm_names,
     _at,
-    _case_namer,
+    case_namer,
     _cell_namer,
     _ChartLedger,
     _control_key,
@@ -95,7 +95,7 @@ def aspect_verdict(
     return verdict_line(
         bundle,
         _namer(_arm_names(bundle, labels=arm_labels)),
-        case_name=_case_namer(bundle),
+        case_name=case_namer(bundle),
         verdicts=_typed_verdicts(bundle, forms, arm_labels=arm_labels),
         order=measure_order,
         evidence=contrast_evidence(bundle, forms=forms),
