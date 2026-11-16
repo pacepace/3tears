@@ -21,22 +21,37 @@ never answered. They stand beside the row's spend and never inside it. Contracts
   its cell states the calls answered and unanswered in the options table's words, never a sum, a zero included; a bar
   of them is refused, so a page draws the table;
 - **not counted is never zero**: where a role counted only one kind, the bare count and the share are refused as not
-  counted, and the kind it counted reads alone.
+  counted, and the kind it counted reads alone; where some trials counted none, every count the cell and the flag
+  state reads "at least";
+- **a row standing for no answer** (``RoleUsage.answers_nothing``, read off a stored row or a reading alike through
+  ``usage_answers_nothing``) is never read as an answer: it names no model that served a call, no model a judge
+  shares, no request settings left unverified, no token count left unreported, and no model a role's lever ran on.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from packages.evals.tests.factories import DEFAULT_KIND, make_eval_run, make_template, make_test_case
+from packages.evals.tests.bundle_support import one_batch_bundle
+from packages.evals.tests.factories import (
+    DEFAULT_KIND,
+    make_eval_result,
+    make_eval_run,
+    make_template,
+    make_test_case,
+)
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.run_facts_support import ASPECT, CASES, aspect_bundle, campaign_over, result_of, run_of
 from threetears.evals.analysis.analyst.blocks import block_render
+from threetears.evals.analysis.bundle.config import effective_config, exercised
+from threetears.evals.analysis.reporting import pooled_served_models, request_settings_readings, self_judging_models
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
@@ -49,11 +64,17 @@ from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
-from threetears.evals.kernel import RoleUsageLedger
+from threetears.evals.kernel import EvalStorage, RoleUsageLedger, UsageReading, usage_answers_nothing
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.kernel.host.sweepables import SHARED_CORE
+from threetears.evals.kernel.result_reading import SharedValues
 from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 from threetears.evals.kernel.usage_capture import blended_cost
+from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
+from threetears.evals.run.remeasure import attest_served_model
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import EvalResult, EvalRun, JudgedArtifact, RoleUsage
+from threetears.evals.storage import InMemoryDocumentStore
 
 FAST = "fast"
 BASE = "base"
@@ -466,8 +487,9 @@ def _flag_changes(unanswered: Unanswered) -> list[tuple[str | None, str | None]]
         (Unanswered(retried=0, lost=3, calls=297, share=0.01), "3 calls unanswered"),
         (Unanswered(retried=0, lost=1, calls=299, share=1 / 300), "1 call unanswered"),
         (Unanswered(retried=None, lost=2, calls=298), "2 calls lost unanswered"),
+        (Unanswered(retried=0, lost=3, calls=297, share=0.01, uncounted=4), "at least 3 calls unanswered"),
     ],
-    ids=["several", "one", "lost-only"],
+    ids=["several", "one", "lost-only", "trials-uncounted"],
 )
 def test_the_options_table_flags_them_on_the_cost_cell(unanswered: Unanswered, said: str) -> None:
     ((old, new),) = _flag_changes(unanswered)
@@ -543,14 +565,65 @@ def test_the_scoreboard_block_states_the_calls_answered_and_unanswered_and_never
             },
             "30 calls answered; 4 calls unanswered",
         ),
+        (
+            {"candidate": Unanswered(retried=1, lost=1, calls=10, share=2 / 12, uncounted=2)},
+            "at least 10 calls answered; at least 2 calls unanswered",
+        ),
+        (
+            {
+                "candidate": Unanswered(retried=1, lost=1, calls=10, share=2 / 12),
+                "inner_agent": Unanswered(retried=None, lost=1, calls=20, uncounted=1),
+            },
+            "at least 30 calls answered; at least 2 calls lost unanswered; at least 1 call retried unanswered",
+        ),
     ],
-    ids=["none-unanswered", "one-kind-counted", "answered-uncounted", "two-roles"],
+    ids=[
+        "none-unanswered",
+        "one-kind-counted",
+        "answered-uncounted",
+        "two-roles",
+        "trials-uncounted",
+        "one-role-uncounted",
+    ],
 )
 def test_the_scoreboard_cell_reads_each_count_its_key_reads(unanswered: dict[str, Unanswered], said: str) -> None:
     held = _counted_input()
     counted = held.scoreboard[FAST].model_copy(update={"unanswered": unanswered})
     cells = _unanswered_cells(held.model_copy(update={"scoreboard": {**held.scoreboard, FAST: counted}}))
     assert list(cells.values()) == [said]
+
+
+def test_a_cell_over_trials_that_counted_none_reads_each_count_as_at_least() -> None:
+    """One trial lost two calls and five counted none (``calls.unanswered.<arm>.uncounted``): each count is a lower
+    bound, as the keys' rule says, so the cell reads "at least" where it stated whole counts."""
+    usage = [[_counting(retried=None, lost=2)], *([[_counting(retried=None, lost=None)]] * (CASES - 1))]
+    cells = _unanswered_cells(report_input(campaign_over(_trials(usage))))
+    assert list(cells.values()) == ["at least 3 calls answered; at least 2 calls lost unanswered"]
+
+
+#: The second aspect's id, whose own scoreboard holds counts the lead's do not.
+_SECOND = "speed"
+
+
+def _two_aspects(second: Unanswered) -> ReportInput:
+    """The counted input with a second aspect after the lead, whose scoreboard holds the candidate's ``second``
+    counts, where the lead's (the input's own) hold its six trials'."""
+    held = _counted_input()
+    lead = held.aspects[0]
+    board = {
+        arm: row.model_copy(update={"unanswered": {"candidate": second}}) if arm == FAST else row
+        for arm, row in held.scoreboard.items()
+    }
+    return held.model_copy(update={"aspects": [lead, lead.model_copy(update={"id": _SECOND, "scoreboard": board})]})
+
+
+def test_each_aspects_scoreboard_cell_reads_its_own_aspects_counts() -> None:
+    """A cell of an aspect other than the lead reads its own keys (``aspects.<id>.calls.unanswered.<arm>``): a wrong
+    prefix printed the lead's counts under its scoreboard."""
+    held = _two_aspects(Unanswered(retried=1, lost=0, calls=7, share=1 / 8))
+    assert list(_unanswered_cells(held, aspect=_SECOND).values()) == ["7 calls answered; 1 call unanswered"]
+    lead = [f"{3 * CASES} calls answered; {CASES + 2} calls unanswered"]
+    assert list(_unanswered_cells(held, aspect=ASPECT).values()) == lead
 
 
 def test_a_bar_of_the_calls_answered_and_unanswered_is_refused_so_the_page_draws_its_table() -> None:
@@ -565,3 +638,111 @@ def test_a_bar_of_the_calls_answered_and_unanswered_is_refused_so_the_page_draws
     assert not faults
     with pytest.raises(UnresolvableReference, match="'unanswered' holds no one number per arm"):
         resolve_chart(spec, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held))
+
+
+# --- a row standing for no answer (#1238's class) -------------------------------------------------------------------
+
+#: A candidate call to a fallback model, sent and never answered: a row no answered call reached.
+_FALLBACK = "m-fallback"
+_UNANSWERED_CANDIDATE = RoleUsage(role="candidate", model=_FALLBACK, unanswered_lost=1)
+_ANSWERED_CANDIDATE = RoleUsage(
+    role="candidate",
+    model=FAST,
+    served_model=f"{FAST}-2026",
+    cost_usd=0.002,
+    call_count=1,
+    prompt_tokens=10,
+    completion_tokens=5,
+)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        _UNANSWERED_CANDIDATE,
+        RoleUsage(role="judge", model="j", unanswered_retried=0, unanswered_lost=2),
+        RoleUsage(role="judge", model="j", unanswered_lost=1, call_count=1, cost_usd=0.001),
+        RoleUsage(role="external", provider="p", provider_unit="credits", provider_units=3, unanswered_lost=1),
+        RoleUsage(role="judge", model="j"),
+        _ANSWERED_CANDIDATE,
+    ],
+    ids=["lost", "retried-and-lost", "answered-beside", "units-beside", "counted-nothing", "answered"],
+)
+def test_a_reading_of_a_row_answers_nothing_exactly_where_the_stored_row_does(row: RoleUsage) -> None:
+    """One rule read off either row: a reader of readings reads a row as no answer exactly where the stored row says."""
+    assert usage_answers_nothing(row) is row.answers_nothing
+    assert usage_answers_nothing(UsageReading.of(row, SharedValues())) is row.answers_nothing
+
+
+def test_a_row_that_answered_nothing_names_no_call_whose_served_model_went_unrecorded() -> None:
+    """It names no served model because no model served it: read as a call whose response named none, it made a
+    contestant answered by one named model read ``unrecorded``, and a cell split on it apart."""
+    reading = pooled_served_models([make_eval_result(usage=[_ANSWERED_CANDIDATE, _UNANSWERED_CANDIDATE])])
+    assert reading is not None
+    assert (reading.served_models, reading.n_unrecorded, reading.state) == ([f"{FAST}-2026"], 0, "one")
+    assert pooled_served_models([make_eval_result(usage=[_UNANSWERED_CANDIDATE])]) is None
+
+
+def test_a_model_that_answered_nothing_is_no_candidate_a_judge_shares() -> None:
+    run = make_eval_run(candidate_model=FAST, judge_model=_FALLBACK)
+    result = make_eval_result(usage=[_ANSWERED_CANDIDATE, _UNANSWERED_CANDIDATE])
+    assert self_judging_models(run, [result]) == []
+
+
+def test_a_simulator_row_that_answered_nothing_leaves_its_results_settings_verified() -> None:
+    """It sent no request a reply came back under, so it carries no settings: read as a row that did not report
+    them, it made the result's settings unverified."""
+    run = make_eval_run(simulator_model="vendor/sim", simulator_asked_settings=JUDGE_REQUEST_SETTINGS)
+    answered = RoleUsage(role="simulator", model="vendor/sim", call_count=1, sent_settings=[JUDGE_REQUEST_SETTINGS])
+    unanswered = RoleUsage(role="simulator", model="vendor/sim", unanswered_lost=1)
+    result = make_eval_result(eval_run_id=run.id, rubric_scores=[], usage=[answered, unanswered])
+    readings = request_settings_readings([run], [result])
+    assert [(reading.role, reading.state) for reading in readings] == [("simulator", "as_asked")]
+    # The rig a run's results fall in reads the same rows by the same rule: the settings it sent, never undecidable.
+    alone = make_eval_result(eval_run_id=run.id, rubric_scores=[], usage=[answered])
+    sent = SHARED_CORE.read_all(run, [result])["simulator_sent_settings"]
+    assert sent is not None and sent == SHARED_CORE.read_all(run, [alone])["simulator_sent_settings"]
+
+
+def test_a_row_that_answered_nothing_leaves_no_token_count_unreported() -> None:
+    """No call it counts was answered, so no token was spent to report: read as an unreported count, it made the
+    run's token sums read "at least"."""
+    unanswered = RoleUsage(role="judge", model="j", unanswered_lost=1)
+    tokens = one_batch_bundle(
+        [make_eval_result(usage=[_ANSWERED_CANDIDATE, unanswered])], profile=toyhost_profile()
+    ).telemetry.tokens
+    assert tokens is not None
+    assert (tokens.prompt_tokens, tokens.completion_tokens, tokens.n_results_tokens_unreported) == (10, 5, 0)
+
+
+#: A lever read off the model a role ran on, as a host's research model is.
+_OBSERVED = "retrieval.rerank_depth"
+
+
+def test_a_model_that_answered_nothing_is_no_level_of_the_lever_its_role_is_read_on() -> None:
+    """A lever recovered from a role is read off the models the role spent tokens on: a call to a model that never
+    answered is no observation of it, so the run neither exercises the lever nor inherits that model as its level."""
+    profile = replace(toyhost_profile(tunable_retrieval=True), observed_model_levers={_OBSERVED: "inner_agent"})
+    run = make_eval_run()
+    lost = RoleUsage(role="inner_agent", model="research-model-1", unanswered_lost=1)
+    results = [make_eval_result(eval_run_id=run.id, usage=[_ANSWERED_CANDIDATE, lost])]
+    assert exercised([run], {run.id: results}, profile=profile) == {_OBSERVED: {run.id: 0}}
+    assert _OBSERVED not in effective_config(run, results, profile=profile)
+
+
+async def test_a_row_that_answered_nothing_is_no_silent_row_a_statement_of_the_served_model_covers() -> None:
+    """A statement of the model that answered covers the candidate rows whose responses named none: a row no model
+    answered names none for that reason, so a run whose every answered row named its model holds nothing to state."""
+    run = run_of(FAST)
+
+    def stored() -> EvalStorage:
+        storage = EvalStorage(InMemoryDocumentStore())
+        storage.save_eval_run(run)
+        storage.save_eval_result(result_of(run, 0, usage=[_ANSWERED_CANDIDATE, _UNANSWERED_CANDIDATE]))
+        return storage
+
+    storage = off_loop(stored)
+    with pytest.raises(ValidationFailedError, match="holds no candidate usage row that names no served model"):
+        await attest_served_model(
+            toyhost_host(storage=storage), [run.id], run.scope_id, f"{FAST}-2026", attested_by="person:host"
+        )

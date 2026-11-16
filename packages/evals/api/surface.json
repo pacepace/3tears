@@ -3501,6 +3501,11 @@
       "signature": "UnreadableRunError(message: str, *, run_ids: Sequence[str])",
       "tier": "host-contract"
     },
+    "threetears.evals.kernel.usage_answers_nothing": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.UsageReading": {
       "kind": "dataclass",
       "signature": "",

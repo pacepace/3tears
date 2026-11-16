@@ -82,6 +82,7 @@ __all__ = [
     "SharedValues",
     "UsageReading",
     "UsageView",
+    "usage_answers_nothing",
 ]
 
 
@@ -180,6 +181,34 @@ class UsageView(Protocol):
     def unanswered_reasons(self) -> Mapping[str, int] | None: ...
     @property
     def maybe_billed_sends(self) -> int | None: ...
+
+
+def usage_answers_nothing(row: UsageView) -> bool:
+    """Whether a usage row, stored or read (:class:`UsageView`), holds only unanswered calls: it counts no answered
+    call, no token, no dollar and no unit, and counts calls that went unanswered. The rule of
+    :attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`, read off either row, so a reader of a
+    :class:`UsageReading` reads it as a reader of the stored row does.
+
+    Such a row stands for no answer: no model served it, it sent no settings a reply came back under, and it reported
+    no token because none was spent, so a reader that reads a row as an answer (who served it, what it was sent with,
+    which models a role ran on, whether its tokens were reported) skips it (#1238).
+
+    :param row: The usage row.
+    :ptype row: UsageView
+    :return: True where the row holds only unanswered calls.
+    :rtype: bool
+    """
+    # The dollars first: the field every reader of a row reads, so a row that spent some is decided without reading
+    # a field its reader never otherwise reads.
+    return (
+        row.cost_usd is None
+        and row.call_count is None
+        and row.prompt_tokens is None
+        and row.completion_tokens is None
+        and row.reasoning_tokens is None
+        and row.provider_units is None
+        and (row.unanswered_retried is not None or row.unanswered_lost is not None)
+    )
 
 
 class LatencyView(Protocol):

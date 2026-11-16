@@ -377,8 +377,9 @@ def _board_value(context: ChartContext, arm: str, held: object) -> CellValue:
     if not isinstance(held, dict):
         return None
     counts = list(held.values())
-    if all(isinstance(count, int) for count in counts):
-        return sum(counts)
+    whole = [count for count in counts if isinstance(count, int)]
+    if len(whole) == len(counts):
+        return sum(whole)
     if all(isinstance(count, Unanswered) for count in counts):
         return unanswered_calls_said(arm, context.report_input, context.forms, _board_where(context))
     return None

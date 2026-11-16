@@ -12,11 +12,25 @@ packages (bumped in lock-step).
 whose calls went unanswered holds them by role (`ScoreboardRow.unanswered`), so the block raised
 `TypeError: int + Unanswered` and ended a production report (#1250). Its cell now states the calls answered and
 unanswered in the options table's words (`18 calls answered; 8 calls unanswered`; `2 calls lost unanswered` where a
-role counted one kind), each count its `calls.unanswered.<arm>` key's, a zero included, and never a sum. A bars block
-over that figure is refused, so a page draws its table. `run_get` raised `KeyError` on a run where a result's rows for
-a role held only unanswered calls and no earlier result had answered for it (#1238); a role whose calls all went
-unanswered now has a spend line stating `no spend, over no answered call`, never unpriced, and a run none of whose
-calls were answered states no total, as a run with no spend does.
+role counted one kind), each count its `calls.unanswered.<arm>` key's, a zero included, and never a sum. Where some
+trials counted none (`calls.unanswered.<arm>.uncounted`), every count in the cell and in the options table's cost
+flag is a lower bound and reads `at least` (`at least 3 calls answered; at least 2 calls lost unanswered`), as the
+keys' rule says. A bars block over that figure is refused, so a page draws its table.
+
+`run_get` raised `KeyError` on a run where a result's rows for a role held only unanswered calls and no earlier result
+had answered for it (#1238). A role whose every row held only unanswered calls now has a spend line stating
+`no spend, over no answered call`, never unpriced; whether it answered nothing is read off its rows
+(`RoleSpend.answers_nothing`, a new field, default false), so an external row metering units over no counted call
+still reads as unpriced spend. A run none of whose calls were answered prints two lines as a run with no usage row
+does: no `total spend` line, and the same `spend cap` line (none for a run with no cap and no judge; `; it counts
+only spend a result reports, and no result reported any` after a cap).
+
+A usage row holding only unanswered calls is no longer read as an answer anywhere a reader reads one
+(`usage_answers_nothing`, new in `threetears.evals.kernel`, the rule of `RoleUsage.answers_nothing` read off a stored
+row or a reading): it is no call whose served model went unrecorded (a contestant's served-model reading, and a
+`runs_attest` statement, which it no longer admits), no candidate model a judge shares, no simulator call whose
+request settings went unverified (the disclosure and the rig's `simulator_sent_settings`), no token count left
+unreported (the bundle's token rollup), and no model a role ran on (a lever read off what ran).
 
 **For hosts:** nothing to do.
 

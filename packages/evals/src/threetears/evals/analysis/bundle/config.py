@@ -17,7 +17,7 @@ from threetears.evals.analysis.reporting import (
 )
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER, HostProfile
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
-from threetears.evals.kernel.result_reading import ResultView
+from threetears.evals.kernel.result_reading import ResultView, usage_answers_nothing
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.declaration import AspectDesign
@@ -85,8 +85,15 @@ class EffectiveLever:
 
 
 def _observed_models(results: list[ResultView], role: str) -> set[str]:
-    """Every distinct model the given usage role spent tokens on across ``results``."""
-    return {usage.model for result in results for usage in result.usage if usage.role == role and usage.model}
+    """Every distinct model the given usage role spent tokens on across ``results``: a row holding only unanswered
+    calls (:func:`~threetears.evals.kernel.result_reading.usage_answers_nothing`) names a model that answered nothing,
+    so it is no observation of it."""
+    return {
+        usage.model
+        for result in results
+        for usage in result.usage
+        if usage.role == role and usage.model and not usage_answers_nothing(usage)
+    }
 
 
 #: How many ARMS (variants) must have observed a recovered lever's role for the lever to be a level at all. A role one

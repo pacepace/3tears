@@ -701,6 +701,7 @@
 "threetears.evals.kernel.UnreadableRecordError": "provisional",
 "threetears.evals.kernel.UnreadableResultKey": "provisional",
 "threetears.evals.kernel.UnreadableRunError": "host-contract",
+"threetears.evals.kernel.usage_answers_nothing": "provisional",
 "threetears.evals.kernel.UsageReading": "provisional",
 "threetears.evals.kernel.UsageView": "provisional",
 "threetears.evals.kernel.ValidationFailedError": "host-contract",

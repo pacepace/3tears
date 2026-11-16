@@ -57,6 +57,7 @@ __all__ = [
     "BASIS_NOTE",
     "APPENDIX_TITLE",
     "ALL_PRICED_TEMPLATE",
+    "AT_LEAST_COUNT_TEMPLATE",
     "ARM_HEADERS",
     "ASPECT_HEADER_TEMPLATE",
     "ASPECTS_TABLE_ORDER",
@@ -214,6 +215,10 @@ TOOL_SPEND_TEMPLATE = "tool spend at {providers}"
 #: An arm's priced share of the calls its cost counts, beside its cost: all of them, or how many of how many. A partly
 #: priced arm says the second in place of its cost, which would be a smaller total read as whole.
 ALL_PRICED_TEMPLATE = "all {calls} calls priced"
+
+#: A count of an arm's calls some of its trials counted none of (``calls.unanswered.<arm>.uncounted``): a lower bound,
+#: as the unanswered keys' own rule reads it, never a whole count.
+AT_LEAST_COUNT_TEMPLATE = "at least {count}"
 
 #: Code's line under a chart whose money is drawn per more of what it counts than its figures state: money per reply
 #: drawn per 1,000 replies, a price per 1,000 drawn per 1,000,000 where one is under a cent (#993).
