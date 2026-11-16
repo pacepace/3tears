@@ -126,7 +126,7 @@ from threetears.observe import contain, get_logger
 from threetears.observe.background import cancel_and_wait
 from threetears.observe.metrics import counter, gauge, histogram
 
-from threetears.core.change_note_fold import FOLDER
+from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.epoch_change import (
     RESET_REASON,
     ChangedRow,
@@ -1190,13 +1190,16 @@ class ChangeNoteKeeper:
                 result.started = await self._log.start_log()
                 await self._update(ring, log_incarnation=result.started)
             else:
-                result.restored = await self._restore(ring)
+                # the restore's worker exits when it ends (RestoreFolder): a restore is rare, the worker 193 MiB
+                async with RestoreFolder() as folder:
+                    result.restored = await self._restore(ring, folder)
             _KEEPER_LAST_PASS.set(time.time())
             return result
         if state.restoring is not None and state.restoring == ring.log_incarnation and state.continues is None:
             # a restore of the ring's lost log was declared and never labelled whole (a failed append, a lost
             # lease, a crash): it is finished, or done again, before anything else
-            result.restored = await self._restore(ring, incarnation=state.incarnation)
+            async with RestoreFolder() as folder:
+                result.restored = await self._restore(ring, folder, incarnation=state.incarnation)
             _KEEPER_LAST_PASS.set(time.time())
             return result
         if ring.log_incarnation != state.incarnation:
@@ -1681,7 +1684,9 @@ class ChangeNoteKeeper:
             read_at,
         )
 
-    async def _restore(self, ring: NoteRingState, *, incarnation: str | None = None) -> str | None:
+    async def _restore(
+        self, ring: NoteRingState, folder: RestoreFolder, *, incarnation: str | None = None
+    ) -> str | None:
         """put the lost log back from the notes of the current and the previous tables, or their newest part.
 
         In order: declare the new log first (so writers waiting for it append at once), then read the notes,
@@ -1699,6 +1704,8 @@ class ChangeNoteKeeper:
 
         :param ring: the ring
         :ptype ring: NoteRingState
+        :param folder: the restore's worker, spawned here once the restore is this keeper's, beside its sizing
+        :ptype folder: RestoreFolder
         :param incarnation: the restoring log to finish; ``None`` declares one
         :ptype incarnation: str | None
         :return: the new log's incarnation; ``None`` when a log was there and it was not this restore's, or
@@ -1712,6 +1719,7 @@ class ChangeNoteKeeper:
             incarnation = await self._log.begin_restore(lost)
             if incarnation is None:
                 return None
+        folder.start()
         covered = _seq_under(ring.floor, lost)
         if covered is None:
             covered = _seq_under(ring.fence_seq, lost)
@@ -1743,7 +1751,7 @@ class ChangeNoteKeeper:
         changes: _StreamedChanges | None = None
         try:
             if verdict is not None:
-                changes = self._changes_since(ring, None)
+                changes = self._changes_since(ring, None, folder)
                 try:
                     appended = await self._log.finish_restore(
                         _Gated(changes, verdict), incarnation=incarnation, lost=lost, covered_from=covered
@@ -1776,7 +1784,7 @@ class ChangeNoteKeeper:
         if changes is None:
             # streamed a page at a time, so the keeper's memory follows one change, not the coverage; should the log
             # have grown past the estimate meanwhile, finish_restore stops unlabelled and the next pass sizes again
-            changes = self._changes_since(ring, since)
+            changes = self._changes_since(ring, since, folder)
             appended = await self._log.finish_restore(changes, incarnation=incarnation, lost=lost, covered_from=floor)
         tables = changes.tables
         if kept < total:
@@ -1972,17 +1980,19 @@ class ChangeNoteKeeper:
                 low = middle + 1
         return None if low == len(marks) else marks[low]
 
-    def _changes_since(self, ring: NoteRingState, since: datetime | None) -> _StreamedChanges:
+    def _changes_since(self, ring: NoteRingState, since: datetime | None, folder: RestoreFolder) -> _StreamedChanges:
         """the coverage's notes since ``since``, folded per table and streamed a page at a time.
 
         :param ring: the ring
         :ptype ring: NoteRingState
         :param since: the cut; ``None`` the whole coverage
         :ptype since: datetime | None
+        :param folder: the restore's worker
+        :ptype folder: RestoreFolder
         :return: the changes, as an async iterable
         :rtype: _StreamedChanges
         """
-        return _StreamedChanges(self._pool, self._owner, (ring.current, ring.previous), since)
+        return _StreamedChanges(self._pool, self._owner, (ring.current, ring.previous), since, folder)
 
     async def _scrub(self, ring: NoteRingState, state: ChangeLogState) -> ScrubPass:
         """check that the epochs after the floor, up to the log's head one pass ago, have their notes.
@@ -2194,8 +2204,11 @@ class _StreamedChanges:
     :ivar tables: the tables streamed so far
     """
 
-    def __init__(self, pool: _Pool, owner: str, slots: tuple[int, int], since: datetime | None) -> None:
+    def __init__(
+        self, pool: _Pool, owner: str, slots: tuple[int, int], since: datetime | None, folder: RestoreFolder
+    ) -> None:
         self._pool = pool
+        self._folder = folder
         self._owner = owner
         self._current, self._previous = slots
         self._since = since
@@ -2275,7 +2288,7 @@ class _StreamedChanges:
 
         The ``COPY`` streams into a buffer while the worker folds the page before: the loop moves bytes only. A
         page's last chunk may go on in the next page, so the worker answers the bytes it folded and the rest is
-        handed again at the next page's front (:func:`~threetears.core.change_note_fold._fold_page`).
+        handed again at the next page's front (:func:`~threetears.core.change_note_fold_job._fold_page`).
 
         :param conn: the connection, inside the restore's transaction
         :ptype conn: Any
@@ -2365,7 +2378,7 @@ class _StreamedChanges:
                 room.set()
                 if not page:
                     return
-                folded, records = await FOLDER.fold(
+                folded, records = await self._folder.fold(
                     page, final=final, form=form, chunk_rows=_RESTORE_CHUNK_ROWS, max_bytes=_KEYED_FORM.max_bytes
                 )
                 carried = page[folded:]

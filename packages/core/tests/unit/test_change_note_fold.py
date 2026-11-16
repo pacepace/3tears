@@ -1,18 +1,22 @@
 """change_note_fold: a restore's keyed notes, as the keeper's ``COPY`` writes them, folded into the records the old fold
 on the event loop made (each distinct row of a table and tenant, in chunks cut where the key changes, each chunk's
-rows split into records within the bound), off the loop: through the front door (``FOLDER.fold``), the page handed to
+rows split into records within the bound), off the loop: through the front door (``RestoreFolder.fold``), the page handed to
 the spawned worker and its records claimed back over shared Arrow."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Sequence
+import multiprocessing
+import tempfile
+from collections.abc import Iterator, Sequence
 from itertools import groupby
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from threetears.core.change_note_fold import FOLDER
+from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.epoch_change import (
     ChangedRow,
     changed_row_runs,
@@ -44,11 +48,26 @@ def _csv(notes: Sequence[_Note]) -> bytes:
 
 _Record = tuple[int, str, str | None, bytes]
 
+#: one folder for the module's fold tests, so its worker spawns once; closed at the module's end
+_FOLDER: RestoreFolder | None = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _module_folder() -> Iterator[None]:
+    global _FOLDER  # noqa: PLW0603 -- the module's one folder, set and closed here
+    _FOLDER = RestoreFolder()
+    try:
+        yield
+    finally:
+        asyncio.run(_FOLDER.close())
+        _FOLDER = None
+
 
 async def _fold(
     page: bytes, *, final: bool, chunk_rows: int, max_bytes: int = _FORM.max_bytes
 ) -> tuple[int, list[_Record]]:
-    return await FOLDER.fold(page, final=final, form=_PIECES, chunk_rows=chunk_rows, max_bytes=max_bytes)
+    assert _FOLDER is not None
+    return await _FOLDER.fold(page, final=final, form=_PIECES, chunk_rows=chunk_rows, max_bytes=max_bytes)
 
 
 def _changes(records: list[_Record]) -> list[tuple[str, str | None, list[list[ChangedRow]]]]:
@@ -190,3 +209,41 @@ async def test_a_page_that_is_not_whole_lines_is_refused() -> None:
 async def test_an_empty_final_page_folds_into_nothing() -> None:
     folded, records = await _fold(b"", final=True, chunk_rows=5000)
     assert folded == 0 and records == []
+
+
+def _stores() -> set[Path]:
+    """the restore stores' directories there are now, where a folder makes them (``/dev/shm``, else the temp dir)."""
+    shm = Path("/dev/shm")
+    parent = shm if shm.is_dir() else Path(tempfile.gettempdir())
+    return set(parent.glob("change-note-restore-*"))
+
+
+async def test_a_closed_folder_leaves_no_worker_and_no_store() -> None:
+    """Flips if a restore's worker outlives its restore, or its shared-memory store stays: after ``close`` no child
+    process of the folder's is alive and its store's directory is gone (R4, 2026-11-15: kept, the worker held 193 MiB
+    for the process's life)."""
+    before = {child.pid for child in multiprocessing.active_children()}
+    stores_before = _stores()
+    folder = RestoreFolder()
+    folder.start()
+    folded, _records = await folder.fold(
+        _csv(_notes()), final=True, form=_PIECES, chunk_rows=3, max_bytes=_FORM.max_bytes
+    )
+    assert folded == len(_csv(_notes()))
+    stores = _stores() - stores_before
+    spawned = {child.pid for child in multiprocessing.active_children()} - before
+    assert len(stores) == 1 and spawned
+    await folder.close()
+    assert not any(store.exists() for store in stores)
+    assert not ({child.pid for child in multiprocessing.active_children()} & spawned)
+
+
+async def test_a_folder_never_started_spawns_nothing() -> None:
+    """Flips if a folder spawns a worker or makes a store before a restore of this keeper's starts it: another
+    keeper's restore (``begin_restore`` answered None) costs no process."""
+    before = {child.pid for child in multiprocessing.active_children()}
+    stores_before = _stores()
+    async with RestoreFolder():
+        pass
+    assert _stores() == stores_before
+    assert {child.pid for child in multiprocessing.active_children()} == before
