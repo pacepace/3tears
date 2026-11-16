@@ -80,6 +80,7 @@ from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE
+from threetears.evals.quick.continuation import MEMORY_WHERE, UNKEPT_SENTENCE
 from threetears.evals.analysis.bundle.trials import pass_count, trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
@@ -804,9 +805,13 @@ class Result:
     def _reread_line(self) -> list[str]:
         """What a reader may do with the comparison the first line reads, one line under it: read it again as cases are
         added (:data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE`), where the mixture bet read its
-        family; empty for one arm, or a family no bet read."""
+        family and its runs are kept in a store a later run continues it from; where they were kept in memory, that
+        running it again is a new comparison (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`). Empty for
+        one arm, or a family no bet read."""
         families = self.report.bundle.multiple_comparisons.families
-        return [REREAD_SENTENCE] if any(family.rereadable for family in families) else []
+        if not any(family.rereadable for family in families):
+            return []
+        return [UNKEPT_SENTENCE if self.store == MEMORY_WHERE else REREAD_SENTENCE]
 
     def _stopped_lines(self) -> list[str]:
         """The first lines of the print of a run that did not finish, in place of its verdict; empty when every arm's

@@ -43,7 +43,7 @@ from threetears.evals.analysis.stats import (
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_KINDS
 from threetears.evals.kernel.declaration import AspectDesign
-from threetears.evals.quick.continuation import continued_sentence, new_comparison_sentence
+from threetears.evals.quick.continuation import UNKEPT_SENTENCE, continued_sentence, new_comparison_sentence
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -238,12 +238,13 @@ def test_a_single_read_gives_up_some_power_against_the_reading_it_replaces() -> 
 async def test_rung_3_s_comparison_is_read_by_the_bet_and_says_so_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Rung 3a, replayed offline: the print says the one sentence under its first line; every paired reading on a range
-    is the bet's, and cost is read by its t test, once; a bet reading's adjusted p is Holm's over the family with the t
-    reading's p held at 1, so no t p lets a bet reading step down."""
+    """Rung 3a, replayed offline into its store: the print says the one sentence under its first line; every paired
+    reading on a range is the bet's, and cost is read by its t test, once; a bet reading's adjusted p is Holm's over the
+    family with the t reading's p held at 1, so no t p lets a bet reading step down. Kept in memory, the line under the
+    first says instead that running it again is a new comparison (:func:`test_kept_in_memory_a_comparison_says_running_it_again_is_a_new_one`)."""
     offline_copy("3-invoices", tmp_path, monkeypatch)
     module = load(Path("compare.py"), "compare", monkeypatch)
-    result = await module.compare.run(store=":memory:")
+    result = await module.compare.run(store=tmp_path / "kept.sqlite")
 
     printed = str(result).splitlines()
     assert printed[1] == REREAD_SENTENCE and str(result).count(REREAD_SENTENCE) == 1
@@ -404,6 +405,15 @@ async def test_what_changed_starts_a_new_comparison_that_runs_every_case_and_say
     assert sum(calls.values()) - ran_first == 2 * cases * second.get("k", 1)
     assert _how_it_ran(result) == [new_comparison_sentence(changed)]
     assert all(len(summary.case_results) == cases * second.get("k", 1) for summary in result.arms.values())
+
+
+async def test_kept_in_memory_a_comparison_says_running_it_again_is_a_new_one() -> None:
+    """A store kept in memory is gone when its run ends, so the line under the first line says running it again is a
+    new comparison, never that cases may be added and read again."""
+    calls: Counter[tuple[int, str]] = Counter()
+    arms = {"a": _coin("unkept", "a", 0.5, calls), "b": _coin("unkept", "b", 0.5, calls)}
+    printed = str(await Eval(_cases(20), arms, [_correct], k=1, name="unkept").run(store=":memory:")).splitlines()
+    assert printed[1] == UNKEPT_SENTENCE and REREAD_SENTENCE not in printed
 
 
 async def test_a_new_name_or_scope_is_a_fresh_comparison_and_says_nothing_of_the_one_before() -> None:

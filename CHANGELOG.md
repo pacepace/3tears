@@ -26,7 +26,9 @@ never runs a case of the comparison twice, so a newcomer may add cases and run i
 each such verdict, p and interval keeps its error over every reading. Holm stays the correction: a bet reading's
 adjusted p holds every t reading's p at 1. The print says so in one sentence under its first line, which names what it
 does not cover: guardrails, floors, each arm's own rate, cost, latency and the exit status, still read at the cases
-run so far (`comparisons.REREAD_SENTENCE`, `ComparisonFamily.rereadable`). Seeded simulations driving `Eval.run`
+run so far (`comparisons.REREAD_SENTENCE`, `ComparisonFamily.rereadable`). Kept in memory (`store=":memory:"`), where
+nothing is left to continue, the line says instead that running it again is a new comparison
+(`continuation.UNKEPT_SENTENCE`). Seeded simulations driving `Eval.run`
 itself: re-running as cases are added (adds sized from the data, up to five runs) separates under the null within its
 bound at α = 5%, where re-running every case on each run exceeds it (the figures are in `tests/test_rereadable_bet.py`).
 A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of the time where the reading it replaces did

@@ -216,6 +216,18 @@ def earlier_comparison(host: EvalHost, scope_id: str, name: str) -> EarlierCompa
     )
 
 
+#: What a result's footer calls a store kept in memory for one run (``store=":memory:"``): it is gone when the run ends.
+MEMORY_WHERE = "memory (this process only)"
+
+#: What the print says under a comparison's first line in place of
+#: :data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE` when its runs were kept in memory: nothing is
+#: there to continue, so running it again is a new comparison. The one owner of the sentence.
+UNKEPT_SENTENCE = (
+    "Kept in memory, so running it again re-runs every case as a new comparison: to add cases and read it again "
+    "with its error kept, keep its runs in a store (store= a file)."
+)
+
+
 def continued_sentence(already: int, added: int) -> str:
     """What a continued comparison's print says of how it ran: the cases read again as they ran, the cases that ran
     now, and how to start a new comparison instead. The one owner of the sentence."""
@@ -241,6 +253,8 @@ def new_comparison_sentence(changed: str) -> str:
 
 
 __all__ = [
+    "MEMORY_WHERE",
+    "UNKEPT_SENTENCE",
     "EarlierArm",
     "EarlierComparison",
     "canonical_json",

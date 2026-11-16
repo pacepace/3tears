@@ -63,7 +63,7 @@ from threetears.evals.quick.one_call import (
     launch_arms,
     refuse_an_unusable_cap,
 )
-from threetears.evals.quick.continuation import design_facts, earlier_comparison, new_comparison_sentence
+from threetears.evals.quick.continuation import MEMORY_WHERE, design_facts, earlier_comparison, new_comparison_sentence
 from threetears.evals.quick.result import (
     CREATED_BY,
     Result,
@@ -177,7 +177,7 @@ def open_store(store: StoreSpec) -> tuple[DocumentStore, str]:
         DEFAULT_STORE.parent.mkdir(parents=True, exist_ok=True)
         return SqliteDocumentStore(DEFAULT_STORE), str(DEFAULT_STORE)
     if isinstance(store, str) and store == MEMORY_STORE:
-        return InMemoryDocumentStore(), "memory (this process only)"
+        return InMemoryDocumentStore(), MEMORY_WHERE
     if isinstance(store, str | os.PathLike):
         path = Path(store)
         path.parent.mkdir(parents=True, exist_ok=True)
