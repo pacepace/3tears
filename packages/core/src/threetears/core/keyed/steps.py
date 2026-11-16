@@ -271,8 +271,20 @@ def joined(
     )
 
 
-def distinct(rel: Rel, columns: Sequence[str | Selected], *, where: Sequence[Fragment] = ()) -> Step:
+def distinct(
+    rel: Rel, columns: Sequence[str | Selected], *, where: Sequence[Fragment] = (), fenced: bool = False
+) -> Step:
     """the distinct rows of ``columns`` of ``rel``.
+
+    ``fenced`` ends the select ``OFFSET 0``, which changes no row and bars the engine from pushing a reading
+    statement's conditions below the ``DISTINCT`` into the scan, so a costly condition on these rows runs once a
+    distinct row, never once a row of ``rel``. Unfenced, DuckDB pushes them: a filter's options over the distinct
+    candidates of a reports page (``PROPER("candidate") IS NOT NULL``, a call into Python) ran over all 181k rows, 30
+    ms of a 37 ms statement on every Overview page; fenced, 15 ms (2026-11-16; at 30,000 rows of three values the call
+    was handed 30,003 values unfenced, 6 fenced, ``tests/unit/test_keyed_steps.py``). Only for such a condition:
+    pushdown is what keeps a cheap condition (a key's equality, a join's filter) from reading every row, so a step is
+    unfenced unless it asks. The fence means the same on PostgreSQL and YugabyteDB (a subquery with ``OFFSET`` is
+    neither pulled up nor handed the outer conditions); an unfenced step's text is as it was.
 
     :param rel: the relation
     :ptype rel: str | Derived | Step
@@ -280,13 +292,16 @@ def distinct(rel: Rel, columns: Sequence[str | Selected], *, where: Sequence[Fra
     :ptype columns: Sequence[str | Selected]
     :param where: conditions on ``t``, each written from ``$1``
     :ptype where: Sequence[Fragment]
+    :param fenced: end the select ``OFFSET 0``, keeping a reading statement's conditions above it
+    :ptype fenced: bool
     :return: the step
     :rtype: Step
     """
     statement = _Statement()
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
-    return statement.step(f"SELECT DISTINCT {_columns(columns)} FROM {source}{_where(conditions)}")
+    fence = " OFFSET 0" if fenced else ""
+    return statement.step(f"SELECT DISTINCT {_columns(columns)} FROM {source}{_where(conditions)}{fence}")
 
 
 def largest(column: str, *, cast: str | None = None, default: str | None = None, alias: str | None = None) -> Selected:

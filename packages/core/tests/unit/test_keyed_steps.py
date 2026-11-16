@@ -14,6 +14,7 @@ from typing import Any
 
 import duckdb
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pytest
 
 from threetears.core.keyed import (
@@ -675,3 +676,28 @@ def test_a_sort_places_its_nulls_where_it_says_in_an_order_and_a_page_refuses_an
         ranked_order("held", [])
     with pytest.raises(ValueError, match="names the order"):
         value_ranks("held", "office", " ")
+
+
+def test_a_fenced_distinct_step_keeps_a_reader_s_costly_test_above_it(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if ``distinct(..., fenced=True)`` lets DuckDB push the reading statement's conditions below its
+    ``DISTINCT`` into the scan (a call into Python once a row again, not once a distinct value), changes the answer, or
+    if an unfenced distinct step's text changes (PostgreSQL and YugabyteDB statements are byte for byte as before)."""
+    handed: list[int] = []
+
+    def title_of(values: pa.Array) -> pa.Array:
+        handed.append(len(values))
+        return pc.utf8_capitalize(values)
+
+    conn.create_function("title_of", title_of, [duckdb.sqltype("VARCHAR")], duckdb.sqltype("VARCHAR"), type="arrow")
+    rows = 30_000
+    conn.execute(f"CREATE TABLE names AS SELECT ['ann', 'bob', 'cy'][(i % 3) + 1] AS name FROM range({rows}) AS r(i)")
+    label = [Selected("title_of(t.name)", "label")]
+    named = [Fragment("title_of(t.name) IS NOT NULL")]
+    unfenced = distinct("names", ["name"])
+    assert unfenced.sql == 'SELECT DISTINCT t."name" FROM "names" AS t'
+    fenced = distinct("names", ["name"], fenced=True)
+    assert fenced.sql == 'SELECT DISTINCT t."name" FROM "names" AS t OFFSET 0'
+    answer = run_inline(read_step(InlineDuckDB(conn), distinct(fenced, label, where=named)))
+    assert sorted(row["label"] for row in answer) == ["Ann", "Bob", "Cy"]
+    # unfenced, DuckDB 1.5 hands the UDF all 30,003 values (the test pushed into the scan, the select list's own 3)
+    assert 0 < sum(handed) <= 2 * 3, f"title_of worked out {sum(handed):,} values over {rows:,} rows"
