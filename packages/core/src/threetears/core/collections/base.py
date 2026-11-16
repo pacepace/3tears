@@ -178,7 +178,7 @@ def _note_undeclared_tenancy(table: str) -> None:
 
 EntityT = TypeVar("EntityT", bound=BaseEntity)
 
-#: the L2 kind every collection's entries are held under (:class:`threetears.core.l2_sizes.L2Kind`)
+#: the L2 kind every collection's entries are held under (declared in :mod:`threetears.core.l2_sizes`)
 _L2_KIND: Final = "collections"
 
 #: the JetStream KV key grammar enforced by ``nats-server`` (``kv.go``).

@@ -15,7 +15,7 @@ import pytest
 from prometheus_client import REGISTRY
 
 from threetears.core.eviction import Policy, Tier, policies_declared
-from threetears.core.l2_sizes import AGENT_COORDINATION, L2Kind, L2Sizes, kind_of
+from threetears.core.l2_sizes import L2Sizes, kind_of
 from threetears.nats.errors import RequestTimeoutError
 from threetears.nats.subjects import Subject
 
@@ -43,7 +43,9 @@ class _Lister:
         self.asked: list[int] = []
         self.fail = False
 
-    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta = timedelta(seconds=1)) -> bytes:
+    async def request_raw(
+        self, *, subject: Subject, payload: bytes, timeout: timedelta = timedelta(seconds=1)
+    ) -> bytes:
         assert subject.path == "$JS.API.STREAM.LIST"
         if self.fail:
             raise RequestTimeoutError("no answer")
@@ -79,8 +81,8 @@ def _sizing_failures(name: str) -> float:
         ("KV_tool_catalog", "tool_catalog"),
         ("KV_aibots_agent_config", "agent_config"),
         (f"KV_aibots-{_AGENT}-workspace-locks", "workspace-locks"),
-        (f"KV_aibots-{_AGENT}-run_claims", AGENT_COORDINATION),
-        (f"KV_aibots-{_AGENT}-survey-quota-cells", AGENT_COORDINATION),
+        (f"KV_aibots-{_AGENT}-run_claims", "agent-coordination"),
+        (f"KV_aibots-{_AGENT}-survey-quota-cells", "agent-coordination"),
         (f"OBJ_aibots-{_TOOL}-objects", "objects"),
         (f"KV_aibots-{_TOOL}-pointers", "pointers"),
         ("KV_aibots-identity-dpop-nonces", "identity-dpop-nonces"),
@@ -90,13 +92,42 @@ def test_a_streams_kind_is_its_name_without_prefix_namespace_or_pod_scope(stream
     assert kind_of(stream, namespace=_NS) == kind
 
 
+#: the buckets a 3tears package names, as their declarers pass them
+_3TEARS_KINDS = (
+    "collections",
+    "leases",
+    "epochs",
+    "epoch-changes",
+    "data-versions",
+    "pop_nonces",
+    "proxy_assertion_nonces",
+    "gateway-door-proof-nonces",
+    "ratelimits",
+    "scheduler-locks",
+    "derived-build-locks",
+    "geo-tile-build-locks",
+    "workspace-locks",
+    "objects",
+    "pointers",
+    "tools-results",
+    "tool_catalog",
+    "agent_router_catalog",
+    "agent_config",
+    "agents-turn",
+    "channels-deliver",
+    "audit",
+    "checkpoints",
+    "agent-coordination",
+)
+
+
 def test_every_3tears_kind_declares_a_policy_with_its_reason() -> None:
     declared = policies_declared(Tier.L2)
-    for kind in L2Kind:
-        assert declared[kind.value].why.strip(), kind
+    for kind in _3TEARS_KINDS:
+        assert declared[kind].why.strip(), kind
     # the one cache among them: everything else is state that must stay whole
-    evictable = {kind for kind in L2Kind if declared[kind.value].policy is Policy.EVICTABLE}
-    assert evictable == {L2Kind.COLLECTIONS}
+    evictable = {kind for kind in _3TEARS_KINDS if declared[kind].policy is Policy.EVICTABLE}
+    assert evictable == {"collections"}
 
 
 def test_a_sample_sets_each_kinds_bytes_keys_and_budget_and_the_tiers() -> None:

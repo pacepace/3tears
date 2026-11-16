@@ -16,8 +16,8 @@ the NATS exporter's (``nats_varz_jetstream_stats_memory``, ``..._reserved_memory
 already scraped beside these; it is not measured again here. Metrics only: alerting is configured in Grafana.
 
 **The kinds.** A bucket's kind is its name without the ``KV_``/``OBJ_`` stream prefix, the namespace and a pod's
-scope (:func:`kind_of`): ``KV_aibots-agent_pod-<hex>-workspace-locks`` is ``workspace-locks``. Each kind declares its
-eviction policy with its reason (:func:`threetears.core.eviction.policy_declare`, :class:`L2Kind` for the buckets a
+scope (:func:`kind_of`): ``KV_aibots-agent_pod-<hex>-workspace-locks`` is ``workspace-locks``. Each kind declares
+its eviction policy with its reason (:func:`threetears.core.eviction.policy_declare`: this module for the buckets a
 3tears package names; a product declares its own the same way). A live stream whose kind is undeclared is not
 exported, since the family has no "no policy" label, and is logged once; a product's test refuses one (the hub's
 ``test_nats_buckets_declare_their_eviction_policy``).
@@ -57,7 +57,7 @@ from threetears.nats.subjects import Subject
 from threetears.observe import contain, get_logger
 from threetears.observe.background import cancel_and_wait, spawn_background
 
-__all__ = ["AGENT_COORDINATION", "L2Kind", "L2Sizes", "StreamSize", "kind_of"]
+__all__ = ["L2Sizes", "kind_of"]
 
 log = get_logger(__name__)
 
@@ -76,10 +76,10 @@ _STREAM_PREFIXES: Final = ("KV_", "OBJ_")
 
 #: the kind of an agent's own coordination bucket whose suffix the agent chose (a run claim, a quota cell): the hub
 #: declares each from the agent's grant (``AgentBucketGrant``), so its suffix is the agent's, not the platform's
-AGENT_COORDINATION: Final = "agent-coordination"
+_AGENT_COORDINATION: Final = "agent-coordination"
 
 
-class L2Kind(enum.StrEnum):
+class _L2Kind(enum.StrEnum):
     """the L2 buckets and streams a 3tears package names, by kind (the name a declarer passes, unprefixed)."""
 
     COLLECTIONS = "collections"
@@ -105,7 +105,7 @@ class L2Kind(enum.StrEnum):
     CHANNELS_DELIVER = "channels-deliver"
     AUDIT = "audit"
     CHECKPOINTS = "checkpoints"
-    AGENT_COORDINATION = AGENT_COORDINATION
+    AGENT_COORDINATION = _AGENT_COORDINATION
 
 
 #: why each must be kept whole, said once for the shapes several kinds share
@@ -116,38 +116,42 @@ _IN_FLIGHT: Final = "a message in flight: dropping it loses an answer or a deliv
 
 policy_declare(
     Tier.L2,
-    L2Kind,
+    _L2Kind,
     {
-        L2Kind.COLLECTIONS: Declared(
+        _L2Kind.COLLECTIONS: Declared(
             Policy.EVICTABLE, "the platform's entity cache: a dropped entry is a miss read from L3 and written back"
         ),
-        L2Kind.LEASES: Declared(Policy.KEEP, "holds and leases: a dropped one releases a hold early (2026-11-02)"),
-        L2Kind.EPOCHS: Declared(Policy.KEEP, "each table's epoch: readers trust it to say what changed"),
-        L2Kind.EPOCH_CHANGES: Declared(Policy.KEEP, "the epoch change log: a follower that missed a broadcast reads it"),
-        L2Kind.DATA_VERSIONS: Declared(Policy.KEEP, "each dataset's published version: readers flip on it"),
-        L2Kind.POP_NONCES: Declared(Policy.KEEP, _REPLAY),
-        L2Kind.PROXY_ASSERTION_NONCES: Declared(Policy.KEEP, _REPLAY),
-        L2Kind.GATEWAY_DOOR_PROOF_NONCES: Declared(Policy.KEEP, _REPLAY),
-        L2Kind.RATELIMITS: Declared(Policy.KEEP, "rate counts: a dropped count lets a caller past its limit"),
-        L2Kind.SCHEDULER_LOCKS: Declared(Policy.KEEP, _LOCK),
-        L2Kind.DERIVED_BUILD_LOCKS: Declared(Policy.KEEP, _LOCK),
-        L2Kind.GEO_TILE_BUILD_LOCKS: Declared(Policy.KEEP, _LOCK),
-        L2Kind.WORKSPACE_LOCKS: Declared(Policy.KEEP, _LOCK),
-        L2Kind.POD_OBJECTS: Declared(
+        _L2Kind.LEASES: Declared(Policy.KEEP, "holds and leases: a dropped one releases a hold early (2026-11-02)"),
+        _L2Kind.EPOCHS: Declared(Policy.KEEP, "each table's epoch: readers trust it to say what changed"),
+        _L2Kind.EPOCH_CHANGES: Declared(
+            Policy.KEEP, "the epoch change log: a follower that missed a broadcast reads it"
+        ),
+        _L2Kind.DATA_VERSIONS: Declared(Policy.KEEP, "each dataset's published version: readers flip on it"),
+        _L2Kind.POP_NONCES: Declared(Policy.KEEP, _REPLAY),
+        _L2Kind.PROXY_ASSERTION_NONCES: Declared(Policy.KEEP, _REPLAY),
+        _L2Kind.GATEWAY_DOOR_PROOF_NONCES: Declared(Policy.KEEP, _REPLAY),
+        _L2Kind.RATELIMITS: Declared(Policy.KEEP, "rate counts: a dropped count lets a caller past its limit"),
+        _L2Kind.SCHEDULER_LOCKS: Declared(Policy.KEEP, _LOCK),
+        _L2Kind.DERIVED_BUILD_LOCKS: Declared(Policy.KEEP, _LOCK),
+        _L2Kind.GEO_TILE_BUILD_LOCKS: Declared(Policy.KEEP, _LOCK),
+        _L2Kind.WORKSPACE_LOCKS: Declared(Policy.KEEP, _LOCK),
+        _L2Kind.POD_OBJECTS: Declared(
             Policy.KEEP,
             "a tool pod's own Object Store, what it serves: the pod retires whole objects itself; a dropped chunk "
             "breaks an object",
         ),
-        L2Kind.POD_POINTERS: Declared(Policy.KEEP, "a tool pod's pointers to the objects it serves"),
-        L2Kind.TOOLS_RESULTS: Declared(Policy.KEEP, _IN_FLIGHT),
-        L2Kind.TOOL_CATALOG: Declared(Policy.KEEP, _REGISTRY),
-        L2Kind.AGENT_ROUTER_CATALOG: Declared(Policy.KEEP, _REGISTRY),
-        L2Kind.AGENT_CONFIG: Declared(Policy.KEEP, "each agent's turn settings: the router reads them on every turn"),
-        L2Kind.AGENTS_TURN: Declared(Policy.KEEP, _IN_FLIGHT),
-        L2Kind.CHANNELS_DELIVER: Declared(Policy.KEEP, _IN_FLIGHT),
-        L2Kind.AUDIT: Declared(Policy.KEEP, "the audit trail: a dropped record is a gap in it"),
-        L2Kind.CHECKPOINTS: Declared(Policy.KEEP, "a conversation's graph state: a dropped one loses the conversation"),
-        L2Kind.AGENT_COORDINATION: Declared(
+        _L2Kind.POD_POINTERS: Declared(Policy.KEEP, "a tool pod's pointers to the objects it serves"),
+        _L2Kind.TOOLS_RESULTS: Declared(Policy.KEEP, _IN_FLIGHT),
+        _L2Kind.TOOL_CATALOG: Declared(Policy.KEEP, _REGISTRY),
+        _L2Kind.AGENT_ROUTER_CATALOG: Declared(Policy.KEEP, _REGISTRY),
+        _L2Kind.AGENT_CONFIG: Declared(Policy.KEEP, "each agent's turn settings: the router reads them on every turn"),
+        _L2Kind.AGENTS_TURN: Declared(Policy.KEEP, _IN_FLIGHT),
+        _L2Kind.CHANNELS_DELIVER: Declared(Policy.KEEP, _IN_FLIGHT),
+        _L2Kind.AUDIT: Declared(Policy.KEEP, "the audit trail: a dropped record is a gap in it"),
+        _L2Kind.CHECKPOINTS: Declared(
+            Policy.KEEP, "a conversation's graph state: a dropped one loses the conversation"
+        ),
+        _L2Kind.AGENT_COORDINATION: Declared(
             Policy.KEEP, "an agent's own coordination state (claims, tickets, quota cells, nonces), declared by the hub"
         ),
     },
@@ -157,7 +161,7 @@ policy_declare(
 def kind_of(stream: str, *, namespace: str) -> str:
     """the kind of the bucket or stream named ``stream``: its name without the KV/Object Store prefix, the
     ``namespace`` and a pod's scope. An agent pod's bucket whose suffix is no declared kind is the agent's own
-    coordination bucket (:data:`AGENT_COORDINATION`).
+    coordination bucket (``agent-coordination``).
 
     :param stream: the JetStream stream's name (``KV_aibots-leases``, ``aibots-audit``, ``KV_tool_catalog``)
     :ptype stream: str
@@ -180,12 +184,12 @@ def kind_of(stream: str, *, namespace: str) -> str:
         return name
     suffix = name[scope.end() :]
     if scope.group(1) == "agent_pod" and suffix not in policies_declared(Tier.L2):
-        return AGENT_COORDINATION
+        return _AGENT_COORDINATION
     return suffix
 
 
 @dataclass(frozen=True)
-class StreamSize:
+class _StreamSize:
     """one live stream as the sampler read it.
 
     :ivar stream: its name
@@ -210,22 +214,22 @@ class _Requester(Protocol):
     async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta = ...) -> bytes: ...
 
 
-def _stream_size(info: Mapping[str, Any], *, namespace: str) -> StreamSize:
-    """one ``STREAM.LIST`` entry as a :class:`StreamSize`.
+def _stream_size(info: Mapping[str, Any], *, namespace: str) -> _StreamSize:
+    """one ``STREAM.LIST`` entry as a :class:`_StreamSize`.
 
     :param info: the entry (``config`` and ``state``)
     :ptype info: Mapping[str, Any]
     :param namespace: the deployment's namespace
     :ptype namespace: str
     :return: its size
-    :rtype: StreamSize
+    :rtype: _StreamSize
     """
     config, state = info["config"], info["state"]
     name = str(config["name"])
     max_bytes = int(config.get("max_bytes", -1))
     # a KV bucket keeps one revision per key, so its subjects are its keys; any other stream counts messages
     entries = int(state.get("num_subjects", 0)) if name.startswith("KV_") else int(state.get("messages", 0))
-    return StreamSize(
+    return _StreamSize(
         stream=name,
         kind=kind_of(name, namespace=namespace),
         memory=config.get("storage") == "memory",
@@ -266,15 +270,15 @@ class L2Sizes:
         #: the budgets KEEP alone has reached, counted once on reaching rather than every sample after
         self._failing: set[str] = set()
 
-    async def read(self) -> list[StreamSize]:
+    async def read(self) -> list[_StreamSize]:
         """every stream of the account, one ``STREAM.LIST`` page at a time.
 
         :return: each stream's size
-        :rtype: list[StreamSize]
+        :rtype: list[_StreamSize]
         :raises NatsClientError: a page was not answered
         :raises ValueError: a page did not decode, or answered an error
         """
-        found: list[StreamSize] = []
+        found: list[_StreamSize] = []
         while True:
             raw = await self._client.request_raw(
                 subject=Subject.raw("$JS.API.STREAM.LIST"),
@@ -289,11 +293,11 @@ class L2Sizes:
             if not streams or len(found) >= int(page.get("total", 0)):
                 return found
 
-    async def sample_once(self) -> list[StreamSize]:
+    async def sample_once(self) -> list[_StreamSize]:
         """read every stream now and set the gauges.
 
         :return: each stream's size, declared or not
-        :rtype: list[StreamSize]
+        :rtype: list[_StreamSize]
         :raises NatsClientError: a page was not answered
         :raises ValueError: a page did not decode, or answered an error
         """
@@ -301,12 +305,12 @@ class L2Sizes:
         self._export(sizes)
         return sizes
 
-    def _export(self, sizes: list[StreamSize]) -> None:
+    def _export(self, sizes: list[_StreamSize]) -> None:
         """set each declared kind's gauges and the tier's, zero kinds gone since the last sample, log what is not
         exported once, and count a budget KEEP alone reached.
 
         :param sizes: each stream's size
-        :ptype sizes: list[StreamSize]
+        :ptype sizes: list[_StreamSize]
         :return: nothing
         :rtype: None
         """

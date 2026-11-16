@@ -316,6 +316,7 @@ class TestTheCacheFamilyCountsTheL2:
         bucket.get_latest = AsyncMock(side_effect=get_latest)
         bucket.put = AsyncMock(side_effect=put)
         bucket.create = AsyncMock(side_effect=put)
+
         async def update(*, key: str, value: bytes, revision: int, ttl: object = None) -> int:
             return await put(key=key, value=value)
 
@@ -327,6 +328,8 @@ class TestTheCacheFamilyCountsTheL2:
 
         assert await coll.get("e1") is not None  # not in L2: a miss, read from L3 and written back
         assert _family("threetears_cache_misses_total") == misses + 1
-        coll._l1 = None  # the next read reaches L2 rather than this process's L1
-        assert await coll.get("e1") is not None
+        # another process, with no L1 of its own: its read reaches L2 and finds the row the first wrote back
+        elsewhere = CollectionRegistry()
+        elsewhere.configure(kv_key_scope=_SCOPE)
+        assert await _Rows(elsewhere, nats, l3_rows={}).get("e1") is not None
         assert _family("threetears_cache_hits_total") == hits + 1

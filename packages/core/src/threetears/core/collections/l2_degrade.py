@@ -37,7 +37,7 @@ log = get_logger(__name__)
 #: the kinds of L2 failure, the counter's ``reason`` label
 type _Reason = Literal["full", "exhausted", "too_large", "transport", "other"]
 
-#: the L2 kind every collection's entries are held under (:class:`threetears.core.l2_sizes.L2Kind`)
+#: the L2 kind every collection's entries are held under (declared in :mod:`threetears.core.l2_sizes`)
 _COLLECTIONS_KIND: Final = "collections"
 
 #: the fewest seconds between two WARNINGs for one table, operation and reason
