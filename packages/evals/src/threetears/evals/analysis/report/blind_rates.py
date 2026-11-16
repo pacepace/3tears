@@ -90,7 +90,11 @@ def blind_rates(table: BlindVerdictTable, *, reader: str, judge: str) -> BlindRa
         return BlindRates(None, None, _ORDINAL, None, single)
     failed = cells.both_fail + cells.reader_fail_judge_pass
     passed = cells.both_pass + cells.reader_pass_judge_fail
-    catch = _stated_rate(cells.both_fail, failed, f"caught {cells.both_fail} of {failed}") if failed else None
+    catch = (
+        _stated_rate(cells.both_fail, failed, f"caught {cells.both_fail} of the {failed} {reader} failed")
+        if failed
+        else None
+    )
     false_fail = (
         _stated_rate(
             cells.reader_pass_judge_fail,

@@ -47,7 +47,10 @@ from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, pub
 RUNG = EXAMPLES / "2-replies"
 
 #: Whose the reference is, with its limit, as its rows name it and the print says it.
-REFERENCE = "Brooks (adjudicated by the person reader; no independent adjudicator)"
+REFERENCE = (
+    "Brooks (adjudicated by the person reader; no independent adjudicator; 3 grounded items re-checked after the "
+    "judges were read)"
+)
 
 #: The reference's labels, said once, for each judge's print.
 REFERENCE_LINE = (
@@ -65,10 +68,10 @@ SAFE = (
 #: What the run prints about its judge against the reference: counts, the catch and false-fail rates, exact intervals.
 JUDGE_READ = [
     REFERENCE_LINE,
-    "  answer answers (judged)   20 results from 20 cases: the judge caught 0 of 1 "
+    "  answer answers (judged)   20 results from 20 cases: the judge caught 0 of the 1 the reader failed "
     "(exact 95% interval 0% to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); "
     "the judge gave every answer one verdict, pass",
-    "  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of 2 "
+    "  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of the 2 the reader failed "
     "(exact 95% interval 1% to 99%); the judge failed 0 of the 14 the reader passed (exact 95% interval 0% to 23%)",
     SAFE,
 ]
@@ -76,9 +79,9 @@ JUDGE_READ = [
 #: The stronger judge, on the same replies, words and reference.
 STRONGER_READ = [
     REFERENCE_LINE,
-    "  answer answers (judged)   20 results from 20 cases: the judge caught 0 of 1 "
+    "  answer answers (judged)   20 results from 20 cases: the judge caught 0 of the 1 the reader failed "
     "(exact 95% interval 0% to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3% to 40%)",
-    "  answer grounded (judged)  16 results from 16 cases: the judge caught 2 of 2 "
+    "  answer grounded (judged)  16 results from 16 cases: the judge caught 2 of the 2 the reader failed "
     "(exact 95% interval 16% to 100%); the judge failed 4 of the 14 the reader passed (exact 95% interval 8% to 58%)",
     SAFE,
 ]
@@ -221,10 +224,11 @@ def test_the_reference_binds_to_the_grounded_wording_ruled_on_and_the_earlier_re
 #: The grounded lines each judge printed against the reference as it stood before the owner's re-checks of 2026-11-17:
 #: the re-checks were chosen after both judges were read, and one moved the reference toward both.
 GROUNDED_BEFORE = {
-    "replies": "  answer grounded (judged)  16 results from 16 cases: the judge caught 0 of 1 (exact 95% interval 0% to "
-    "97%); the judge failed 1 of the 15 the reader passed (exact 95% interval 0% to 32%)",
-    "replies-stronger": "  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of 1 (exact 95% "
-    "interval 3% to 100%); the judge failed 5 of the 15 the reader passed (exact 95% interval 12% to 62%)",
+    "replies": "  answer grounded (judged)  16 results from 16 cases: the judge caught 0 of the 1 the reader failed "
+    "(exact 95% interval 0% to 97%); the judge failed 1 of the 15 the reader passed (exact 95% interval 0% to 32%)",
+    "replies-stronger": "  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of the 1 the reader "
+    "failed (exact 95% interval 3% to 100%); the judge failed 5 of the 15 the reader passed (exact 95% interval 12% "
+    "to 62%)",
 }
 
 #: The same rows after the re-checks, as the shipped reference prints them.
@@ -290,12 +294,17 @@ def test_the_re_checks_were_chosen_after_the_judges_and_the_reference_before_the
     # The rows the pages show are these lines' counts, before and after, for each judge.
     for name in JUDGE_NAMES:
         for when, line in (("before", GROUNDED_BEFORE[name]), ("after", GROUNDED_AFTER[name])):
-            caught = re.search(r"caught (\d+ of \d+) \(exact 95% interval (\d+% to \d+%)\)", line)
+            caught = re.search(
+                r"caught (\d+) of the (\d+) the reader failed \(exact 95% interval (\d+% to \d+%)\)", line
+            )
             false_fail = re.search(
                 r"failed (\d+) of the (\d+) the reader passed \(exact 95% interval (\d+% to \d+%)\)", line
             )
             assert caught is not None and false_fail is not None, line
-            shown = [f"{caught[1]} ({caught[2]})", f"{false_fail[1]} of {false_fail[2]} ({false_fail[3]})"]
+            shown = [
+                f"{caught[1]} of {caught[2]} ({caught[3]})",
+                f"{false_fail[1]} of {false_fail[2]} ({false_fail[3]})",
+            ]
             for page in (EXAMPLES.parent / "docs" / "ladder.md", EXAMPLES / "README.md"):
                 rows = [
                     [cell.strip() for cell in row.strip().strip("|").split("|")]

@@ -651,7 +651,7 @@ async def test_a_pass_fail_check_is_served_as_counts_and_exact_rates_with_a_plai
     catch = constant["catch"]
     assert (catch["count"], catch["of"]) == (0, 2)
     assert catch["interval"] == [0.0, pytest.approx(0.8419, abs=1e-4)], "exact, not Wilson's 0.66"
-    assert catch["said"] == "caught 0 of 2 (exact 95% interval 0% to 84%)"
+    assert catch["said"] == "caught 0 of the 2 the reader failed (exact 95% interval 0% to 84%)"
     assert constant["false_fail"]["said"] == "failed 0 of the 18 the reader passed (exact 95% interval 0% to 19%)"
     assert constant["said"] == ["the judge gave every answer one verdict, pass"]
     assert nothing_failed["catch"] is None
@@ -664,7 +664,7 @@ async def test_a_pass_fail_check_is_served_as_counts_and_exact_rates_with_a_plai
     assert disagreeing["said"] == [], "both sides gave both verdicts, and both rates exist"
     (reviewer,) = got.structured["reviewer_checks"]
     assert (reviewer["served_model"], reviewer["agreed"], reviewer["outputs"]) == ("reviewer/served-1", 19, 20)
-    assert reviewer["catch"]["said"].startswith("caught 1 of 2 (exact 95% interval")
+    assert reviewer["catch"]["said"].startswith("caught 1 of the 2 people failed (exact 95% interval")
     assert _served_keys(got.structured) == set(), "no kappa, bar, tier or results-needed figure is served"
 
 

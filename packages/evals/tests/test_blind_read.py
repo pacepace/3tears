@@ -509,7 +509,7 @@ def test_a_judge_that_passes_everything_is_shown_by_the_table_where_kappa_says_n
     assert lines[0] == "judge: 30 of 30 cases read blind by owner, in the drawn order (a random sample)"
     # #1208: counts, the catch rate and the false-fail rate with exact intervals, and the one verdict the judge gave.
     assert lines[1].endswith(
-        "30 results from 30 cases: the judge caught 0 of 3 (exact 95% interval 0% to "
+        "30 results from 30 cases: the judge caught 0 of the 3 the reader failed (exact 95% interval 0% to "
         "71%); the judge failed 0 of the 27 the reader passed (exact 95% interval 0% to 13%); the judge gave every "
         "answer one verdict, pass"
     )
@@ -691,7 +691,8 @@ def test_a_1_5_criterion_stores_its_full_rating_cross_table() -> None:
         )
         for item in read.items
     ]
-    report = close_blind_read(_with(read, answers), results).read.report
+    closed = close_blind_read(_with(read, answers), results)
+    report = closed.read.report
     assert report is not None
     (agreement,) = report.agreement
     assert agreement.table.scores == [1, 2, 3, 4, 5]
@@ -705,6 +706,13 @@ def test_a_1_5_criterion_stores_its_full_rating_cross_table() -> None:
     ]
     assert core.pass_fail_counts(agreement.table) is None, "a 1-5 criterion has no fixed pass"
     assert (core.agreed_pairs(agreement.table), sum(map(sum, agreement.table.counts))) == (2, 10)
+    # The console's 1-5 line: why neither rate exists, in the owner's words, then the agreed count and the cross-table.
+    lines = judge_lines(closed, labels_name="labels.csv", labels_there=True)
+    assert lines[1] == (
+        "  answer tone (judged)  10 results from 10 cases: a 1-5 criterion has no fixed pass, so no catch rate: the "
+        "table counts every pair; the same score on 2 of 10; by the reader's score, the judge's 1 to 5: 1: 0 0 0 0 0; "
+        "2: 2 0 0 0 0; 3: 0 2 0 0 0; 4: 0 0 2 0 0; 5: 0 0 0 2 2"
+    )
 
 
 def test_a_result_judged_on_other_wording_of_a_criterion_is_never_shown_under_the_new_wording() -> None:
@@ -793,7 +801,7 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
     assert lines[1] == f"  checked against a model ({reviewer}), not yet against people:"
     # A pair read: two results of each case, so the exact intervals' independence is said not to hold.
     assert lines[2].endswith(
-        "48 results from 24 cases: the judge caught 8 of 8 (exact 95% interval 63% to "
+        "48 results from 24 cases: the judge caught 8 of the 8 the model failed (exact 95% interval 63% to "
         "100%); the judge failed 0 of the 40 the model passed (exact 95% interval 0% to 9%); the intervals count "
         "each answer as independent, which answers on one case are not"
     )

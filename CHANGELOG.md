@@ -33,11 +33,17 @@ and a label bound to other wording of its criterion is said as such, not as an o
 `analysis.blind_read.table_kappa`, whose one caller was the console, is removed.
 The console reads its rate statements from the one owner the host's response reads,
 `analysis.report.blind_rates.blind_rates`, so both say a rate in the same words: the catch rate is now `the judge
-caught 1 of 2 (exact 95% interval ...)` (was `the judge failed 1 of the 2 answers the reader failed (...)`), a missing
-rate `the reader failed no answer: no catch rate` (was `..., so no catch rate`), and a 1-5 line opens with `a 1-5
-criterion has no fixed pass, so no catch rate: the table counts every pair`. The host's response is unchanged.
+caught 1 of the 2 the reader failed (exact 95% interval ...)` (was `the judge failed 1 of the 2 answers the reader
+failed (...)`), a missing rate `the reader failed no answer: no catch rate` (was `..., so no catch rate`), and a 1-5
+line opens with `a 1-5 criterion has no fixed pass, so no catch rate: the table counts every pair`. Rung 2's reference
+names its re-checks on every row's rater: `Brooks (adjudicated by the person reader; no independent adjudicator; 3
+grounded items re-checked after the judges were read)`.
 A judged miss names its dimension as every surface does (`the judge failed it on answer grounded (judged)`), not
 by its stored id (a one-line fix in `analysis/summary.py`, `_judged_missed`).
+
+**For hosts:** a closed blind read's `catch.said` now names what it counts: `caught 0 of the 2 the reader failed
+(exact 95% interval 0% to 84%)` (was `caught 0 of 2 (...)`), and on a reviewer check `caught 1 of the 2 people failed
+(...)`. `count`, `of` and `interval` are unchanged; a host that matches on `said` moves to the new words.
 
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 
@@ -129,7 +135,7 @@ uses too), never as a third kind of rater.
 confusion counts (on 1-5, the full rating cross-table) per criterion and per reader, one per model that served a
 reviewer's answers; no kappa, bar verdict, tier or "more results" figure is stored. A closed read's `checks` serve the
 agreed count, the table, and on pass/fail the catch rate and the false-fail rate, each with its exact 95% interval and
-count (`caught 0 of 2 (exact 95% interval 0% to 84%)`), and say so plainly where one side gave a single verdict or the
+count (`caught 0 of the 2 the reader failed (exact 95% interval 0% to 84%)`), and say so plainly where one side gave a single verdict or the
 reader failed nothing, so no catch rate exists. A draw leaves out results judged on other wording of a criterion than
 it shows, and counts them, so every rating is bound to what its reader was shown. The quick path's console lines are
 unchanged for now.

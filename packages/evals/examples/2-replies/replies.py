@@ -2,14 +2,16 @@
 
 Run ``python -m threetears.evals examples/2-replies/replies.py``. A model drafts a reply to each email from
 ``policy.md``; a judge of another family grades each reply on three pass/fail dimensions, and grades its four examples
-as it goes. ``labels.csv`` is the reference: Brooks's blind read of 20 replies, adjudicated by the person reader where
-claude-fable-5-2's blind read disagreed, with no independent adjudicator. It holds 55 labels; 5 are left out, as the
-file says: 4 the adjudication found unclear, and 1 the owner found borderline under this ``grounded`` wording. Items 1
-and 3 of the owner's re-checks (``adjudication/rechecks.csv``) were re-ruled on 2026-11-17 under this wording.
-``adjudication/`` holds both reads, the rulings and the re-checks. ``stronger_eval`` judges the same replies
-on the same words, one tier up, against the same reference. Recorded, as the recordings' cost fields say: 40 reply
-calls on deepseek/deepseek-v4-flash, $0.0017; 128 judge calls on google/gemini-2.5-flash-lite, $0.0148 (8 of them on
-the examples); 128 judge calls on claude-sonnet-5-5, $0.6568, at Anthropic's published rates.
+as it goes. ``labels.csv`` is the reference: Brooks's blind read of 20 replies on the page as read
+(``adjudication/blind_read_as_read.html``), adjudicated by the person reader where claude-fable-5-2's blind read
+disagreed, with no independent adjudicator. It holds 55 labels; 5 are left out, as the file says: 4 the adjudication
+found unclear, and 1 the owner found borderline under this ``grounded`` wording. Items 1 and 3 of the owner's re-checks
+(``adjudication/rechecks.csv``) were re-ruled on 2026-11-17 under this wording; all three were chosen after the judges
+were read. ``adjudication/`` holds both reads, the rulings and the re-checks.
+``stronger_eval`` judges the same replies on the same words, one tier up, against the same reference. Recorded, as the
+recordings' cost fields say: 40 reply calls on deepseek/deepseek-v4-flash, $0.0017; 128 judge calls on
+google/gemini-2.5-flash-lite, $0.0148 (8 of them on the examples); 128 judge calls on claude-sonnet-5-5, $0.6568, at
+Anthropic's published rates.
 """
 
 from pathlib import Path
@@ -49,7 +51,7 @@ judge = Judge(
     judge_model,  # another family; Judge(drafter, ...) would print the self-judging warning under the scores
     CRITERIA,
     examples=EXAMPLES,
-    labels="labels.csv",  # the reference: a person's read, adjudicated; read blind from blind_read.html
+    labels="labels.csv",  # read blind on adjudication/blind_read_as_read.html; adjudicated; re-checked 2026-11-17
     case_material=policy_and_email,
 )
 replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="replies")
