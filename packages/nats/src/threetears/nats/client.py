@@ -6320,12 +6320,12 @@ class NatsClient:
                 # a stream a NATS restart lost comes back on the declared storage.
                 log.warning(
                     "jetstream stream is live on %s storage and declared on %s; left as it is until it is migrated",
-                    _storage_name(live.storage),
+                    _storage_word(live.storage),
                     storage,
                     extra={
                         "extra_data": {
                             "stream": full_name,
-                            "live_storage": _storage_name(live.storage),
+                            "live_storage": _storage_word(live.storage),
                             "declared_storage": storage,
                         }
                     },
@@ -7210,7 +7210,7 @@ async def _on_disconnected() -> None:
     log.warning("NATS disconnected")
 
 
-def _storage_name(storage: Any) -> str:
+def _storage_word(storage: Any) -> str:
     """a JetStream storage type as its word (``file``, ``memory``).
 
     :param storage: nats-py's ``StorageType``, or its string value

@@ -192,6 +192,7 @@ default_selection = [
     # nats' modules; the Docker lame-duck module drives containers itself and stays local (its scenarios run
     # here as test_lame_duck_handover_process_live.py)
     "packages/nats/tests/integration/test_a_large_request_round_trips_live.py",
+    "packages/nats/tests/integration/test_a_file_stream_moves_onto_memory_live.py",
     "packages/nats/tests/integration/test_a_lost_file_stream_comes_back_live.py",
     "packages/nats/tests/integration/test_a_persisted_copy_is_refilled_live.py",
     "packages/nats/tests/integration/test_a_pod_can_bounce_its_bytes_to_any_subject_residual_live.py",

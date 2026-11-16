@@ -65,6 +65,9 @@ _DROPPED_HEADER_PREFIXES: Final = ("Nats-Expected-", "Nats-Msg-Id")
 #: the stream-get filter matching every subject a stream holds
 _ANY_SUBJECT: Final = ">"
 
+#: how far a plan's detail lines sit under its first
+_INDENT: Final = "  "
+
 
 class StreamMoveRefused(Exception):
     """the move would lose something a consumer still owes, or the stream is not on file storage."""
@@ -168,18 +171,18 @@ class StreamMove:
         """
         verdict = "moved" if self.moved else ("REFUSED: " + self.refused if self.refused else "would move")
         skipped = ", ".join(f"{why} {n}" for why, n in sorted(self.skipped.items())) or "none"
-        return "\n".join(
-            [
-                f"{self.stream}: {verdict}",
-                f"  now                {self.storage}, {self.messages} messages, {self.bytes} bytes",
-                f"  onto               memory on {self.replicas} servers, max_age {self.max_age_seconds:g}s, "
-                f"max_bytes {self.max_bytes}",
-                f"  copied             {self.copied} ({'latest value of each key' if self.kv else 'messages no consumer reads'})",
-                f"  not copied         {skipped}",
-                f"  consumers kept     {', '.join(self.consumers) or 'none'}",
-                f"  watchers ended     {', '.join(self.ephemeral_consumers) or 'none'}",
-            ]
+        rows = (
+            ("now", f"{self.storage}, {self.messages} messages, {self.bytes} bytes"),
+            (
+                "onto",
+                f"memory on {self.replicas} servers, max_age {self.max_age_seconds:g}s, max_bytes {self.max_bytes}",
+            ),
+            ("copied", f"{self.copied} ({'latest value of each key' if self.kv else 'messages no consumer reads'})"),
+            ("not copied", skipped),
+            ("consumers kept", ", ".join(self.consumers) or "none"),
+            ("watchers ended", ", ".join(self.ephemeral_consumers) or "none"),
         )
+        return "\n".join([f"{self.stream}: {verdict}", *(f"{_INDENT}{label:<18} {value}" for label, value in rows)])
 
 
 def _storage_name(storage: Any) -> str:
