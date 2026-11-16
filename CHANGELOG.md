@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a ring beside the change log's owner scrubs its own tables
+
+The owner's scrub skips another database's epochs, so a missing note on one of identity-core's tables was reported by
+no one. A `ChangeNoteKeeper(keeps_log=False)` ring now runs the same scrub on its own interval and reports on the same
+metric and log line (`threetears_change_notes_missing_total{table}`), so one alert covers every ring. It judges only
+tables whose note trigger writes into its ring, never a plain table of its schema: the log names a record's table by
+its bare name, and identity-core's schema holds an `api_keys` table while the hub's `api_keys` is on epochs. It still
+never declares, labels or marks the log.
+
 ### core: a ring beside the change log's owner puts its own notes back after a loss, and the owner's scrub judges only its own tables
 
 A lost change log was put back from the owner's ring alone (the hub's), so the epochs of identity-core's tables since

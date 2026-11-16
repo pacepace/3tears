@@ -96,7 +96,8 @@ ERROR and counted (``threetears_change_notes_missing_total``), for an alert. It 
 its own database notes: a table whose note trigger writes into this ring, or any table of the ring's own schema (so a
 table refused a trigger, or one that lost it, is still reported). The log is shared with other databases' writers
 (identity-core's), whose notes are in their own rings; their epochs are skipped (``ScrubPass.others``), never read as
-missing (RC5, 2026-11-16). It reads up to ``scrub_batch``
+missing (RC5, 2026-11-16). A ring beside the log (below) scrubs its own tables the same way. It reads up to
+``scrub_batch``
 records from the log, a few dozen at a time, and looks their notes up through the note tables'
 ``(key_text, table_name)`` index, so its cost follows the epochs checked, not the coverage's size. It only
 checks and reports; it never writes a note, reloads anything or repairs.
@@ -109,7 +110,7 @@ inside that database: its write-mark reconciler names a lost write's rows from t
 (:func:`~threetears.core.collections.change_notes.noted_rows_since`) instead of recording keys unknown, and its
 followers page a bracketed keys-unknown record's keys from them
 (:class:`~threetears.core.collections.change_notes.PoolNotedKeysReader`). Its keeper is built ``keeps_log=False``:
-it installs, switches, fences and empties its ring as the owner does, and never declares, labels, marks or scrubs the
+it installs, switches, fences, empties and scrubs its ring as the owner does, and never declares, labels or marks the
 log. While the log is absent its passes do nothing: the owner declares the restore.
 
 What it does do is **put its own notes back**. Only this database's ring holds the notes of this database's writes;
@@ -126,6 +127,19 @@ have no note here, and a follower whose mark lies between may have missed it: sa
 back (``reason=too_large``; such a ring writes no marks to cut it by, and its notes are a small database's). The
 owner's scrub, for its part, judges only the epochs of the tables its own database notes (below), so another
 database's epochs are never read as missing notes.
+
+And it **scrubs its own tables** (RC8, 2026-11-16), through the owner's scrub, on the owner's metric
+(``threetears_change_notes_missing_total{table}``), so one alert covers every ring. Why: the owner skips this
+database's epochs, so before it a missing note on one of its tables (a write whose trigger was lost, a writer that
+stalled past the fence) was reported by no one, and a restore would have silently left it out. Which tables are its
+own is narrower than for the owner: only those whose note trigger writes into this ring, never merely a table of its
+schema. The log names a record's table by its bare name, and a second database shares names with the owner's
+(identity-core's schema holds an ``api_keys`` table, and the hub's ``api_keys`` is on epochs): judged by schema, every hub
+api-key write would be a missing note here. The owner keeps the schema rule because its database is written by
+processes whose classes its keeper does not import (it cannot know every noted table from its own process); a ring
+beside is its own service's, whose process gives every table it notes its trigger and backs that install up, and a
+table refused one is said at ERROR when it is refused. A table of the same name noted in both databases cannot be told
+apart by either scrub: the shared log's tables need unique names across its databases.
 
 **Which columns can be noted.** A note carries its key and invalidation columns as text, and a restore
 names rows by that text, as an epoch record does. Only uuid, text, varchar and integer columns spell a
@@ -777,17 +791,24 @@ FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.
 WHERE g.tgname::text = ANY($1::text[])
 """
 
-#: which of the named tables this ring's database notes into this ring (the scrub judges only their epochs): a table
-#: whose note trigger runs a function of the ring's schema, or any table of the ring's schema, triggered or not
-_OWN_TABLES_SQL: Final = """
+#: which of the named tables this ring's database notes into this ring: a table whose note trigger runs a function of
+#: the ring's schema. What a ring beside the log judges (module docstring: never a plain table of its schema, whose
+#: name the owner's database may also hold)
+_TRIGGERED_TABLES_SQL: Final = """
 SELECT c.relname::text AS table_name
 FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_proc p ON p.oid = g.tgfoid
 JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE g.tgname::text = $2 AND n.nspname::text = $1 AND c.relname::text = ANY($3::text[])
-UNION
+"""
+
+#: what the log's owner judges: those, or any table of the ring's schema, triggered or not
+_OWN_TABLES_SQL: Final = (
+    _TRIGGERED_TABLES_SQL
+    + """UNION
 SELECT t.table_name::text AS table_name FROM information_schema.tables t
 WHERE t.table_schema::text = $1 AND t.table_type = 'BASE TABLE' AND t.table_name::text = ANY($3::text[])
 """
+)
 
 _COLUMN_TYPES_SQL: Final = """
 SELECT c.table_schema::text AS table_schema, c.table_name::text AS table_name, c.column_name::text AS column_name,
@@ -875,9 +896,10 @@ class ChangeNoteKeeper:
         :param empty_budget: how long one pass keeps emptying; it always deletes at least one batch
         :ptype empty_budget: timedelta
         :param keeps_log: this keeper owns the change log: it declares it where no ring has seen one, puts a lost
-            one back from its notes, marks its position and scrubs it. ``False`` for a ring in a second database
-            beside a log another keeper owns (module docstring): it keeps its ring, and puts its own notes back into
-            a restore of the log the owner declared
+            one back from its notes and marks its position. ``False`` for a ring in a second database beside a log
+            another keeper owns (module docstring): it keeps its ring, puts its own notes back into a restore of the
+            log the owner declared, and scrubs only the tables it gives a note trigger.
+            Either scrubs on the same metric
         :ptype keeps_log: bool
         :return: nothing
         :rtype: None
@@ -1270,9 +1292,9 @@ class ChangeNoteKeeper:
             self._held_since = None
             _SWITCH_HELD_SINCE.set(0)
         now = time.monotonic()
-        if self._keeps_log and (
-            self._scrubbed_at is None or now - self._scrubbed_at >= self._scrub_every.total_seconds()
-        ):
+        # every ring scrubs, the ring beside the log too (RC8, 2026-11-16): the owner's scrub skips this database's
+        # tables, so without it a missing note on one of them was reported by no one
+        if self._scrubbed_at is None or now - self._scrubbed_at >= self._scrub_every.total_seconds():
             self._scrubbed_at = now
             result.scrub = await self._scrub(ring, state)
         _KEEPER_LAST_PASS.set(time.time())
@@ -2199,7 +2221,8 @@ class ChangeNoteKeeper:
         return result
 
     async def _own_tables(self, tables: set[str]) -> set[str]:
-        """which of ``tables`` this ring's database notes into this ring (:data:`_OWN_TABLES_SQL`).
+        """which of ``tables`` this ring's database notes into this ring: for the log's owner :data:`_OWN_TABLES_SQL`,
+        for a ring beside it :data:`_TRIGGERED_TABLES_SQL` (module docstring).
 
         :param tables: the tables the scrub's epochs name
         :ptype tables: set[str]
@@ -2208,7 +2231,8 @@ class ChangeNoteKeeper:
         """
         if not tables:
             return set()
-        rows = await self._pool.fetch(_OWN_TABLES_SQL, self._schema, NOTE_TRIGGER, sorted(tables))
+        sql = _OWN_TABLES_SQL if self._keeps_log else _TRIGGERED_TABLES_SQL
+        rows = await self._pool.fetch(sql, self._schema, NOTE_TRIGGER, sorted(tables))
         return {str(row["table_name"]) for row in rows}
 
     async def _epochs_between(self, start: int, end: int) -> list[EpochChange]:
@@ -2651,8 +2675,8 @@ _KEEPER_LEASE_RENEW: Final = timedelta(seconds=10)
 class ChangeNoteKeeping:
     """a keeper and the lease it runs under, for a process's lifespan: what every database's keeping process runs.
 
-    The hub keeps the platform database's ring (and the change log); identity-core keeps its own database's ring
-    beside it (``ChangeNoteKeeper(keeps_log=False)``). Each runs :meth:`start` once before it writes, then
+    The hub keeps the platform database's ring (and the change log); identity-core keeps (and scrubs) its own
+    database's ring beside it (``ChangeNoteKeeper(keeps_log=False)``). Each runs :meth:`start` once before it writes, then
     :meth:`claim_and_keep` every :data:`CHANGE_NOTE_KEEPER_CLAIM_EVERY` and :meth:`install_triggers` beside it, so one
     replica at a time keeps the ring and every replica backs up the triggers.
 

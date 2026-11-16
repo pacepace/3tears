@@ -1412,11 +1412,11 @@ class TestAWholeNoteNamesItsReachAndTheRestoreKeepsIt:
 class TestARingBesideALogAnotherKeeperKeeps:
     """a second database's ring (identity-core's) beside the change log the hub's keeper owns (RC3, 2026-11-16)."""
 
-    async def test_it_never_declares_restores_marks_or_scrubs_the_log_and_still_switches(
+    async def test_it_never_declares_restores_or_marks_the_log_and_still_switches(
         self, ring: tuple[asyncpg.Pool, str, str]
     ) -> None:
-        """Flips if a ring beside another keeper's log declares the log, marks it, or scrubs it: it would race the
-        owner's restore, and its scrub would read every other database's epochs as missing notes."""
+        """Flips if a ring beside another keeper's log declares the log or marks it (it would race the owner's
+        restore), or if its scrub reads another database's epochs as missing notes."""
         pool, schema, table = ring
         source = EpochGenerationSource(FakeNatsClient())
         keeper = ChangeNoteKeeper(
@@ -1437,11 +1437,12 @@ class TestARingBesideALogAnotherKeeperKeeps:
         await keeper.run_pass()
         assert (await keeper.ring()).fence_seq is not None, "the ring's fence passes as the owner's does"
 
-        # an epoch of another database's write: no note of it here, and nothing says it is missing
-        await source.advance_with_change(table, [ChangedRow(ids=["another-database"])])
+        # an epoch of another database's table: no note of it here, and nothing says it is missing (its own scrub
+        # skips it; RC8 gave the ring beside a scrub of its own tables, below)
+        await source.advance_with_change(f"{table}_theirs", [ChangedRow(ids=["another-database"])])
         await keeper.run_pass()
         scrub = (await keeper.run_pass()).scrub
-        assert (scrub.checked, scrub.missing) == (0, 0), "a ring beside another keeper's log never scrubs it"
+        assert (scrub.checked, scrub.missing, scrub.others) == (0, 0, 1), "another database's epoch is skipped"
         assert await pool.fetchval(f"SELECT count(*) FROM {schema}.threetears_change_note_marks") == 0
 
         # its notes name its own writes, and the ring switches on the log's bytes as the owner's does
@@ -1450,6 +1451,50 @@ class TestARingBesideALogAnotherKeeperKeeps:
         side = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, switch_bytes=1, keeps_log=False)
         before = (await keeper.ring()).current
         assert (await side.run_pass()).switched_to == (before + 1) % NOTE_RING_SIZE
+
+    async def test_its_scrub_reports_a_missing_note_of_its_own_tables_and_skips_every_other(
+        self, ring: tuple[asyncpg.Pool, str, str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Flips if nobody scrubs the ring beside's tables (RC8: a missing note on an identity-core table was never
+        reported, the owner's scrub skipping it as another database's), if its scrub reports under another metric
+        than the owner's, or if it judges a table it does not note: another database's, or a plain table of its own
+        schema whose name the owner's database also holds (identity's ``api_keys`` beside the hub's, on epochs)."""
+        pool, schema, table = ring
+        plain = f"{table}_plain"
+        await pool.execute(f"CREATE TABLE {schema}.{plain} (id TEXT PRIMARY KEY)")
+        source = EpochGenerationSource(FakeNatsClient())
+        await source.start_log()  # the owner declares it
+        side = ChangeNoteKeeper(
+            pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0), keeps_log=False
+        )
+        await side.install()
+        await side.install_triggers([NotedTable(table=table, keys=("id",), columns=("owner",))])
+        await side.run_pass()
+        await pool.execute(f"UPDATE {schema}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'")
+        await side.run_pass()
+        assert (await side.ring()).fence_seq is not None
+
+        await pool.execute(f"INSERT INTO {table} VALUES ('noted', 'o', '1')")
+        await source.advance_with_change(table, [ChangedRow(ids=["noted"])])
+        # an epoch of its own table whose write left no note: appended with no L3 write behind it
+        await source.advance_with_change(table, [ChangedRow(ids=["unnoted"])])
+        # the owner database's table of the same name as a plain table here, and one this database has not at all
+        await source.advance_with_change(plain, [ChangedRow(ids=["the-owners"])])
+        await source.advance_with_change(f"{table}_owners", [ChangedRow(ids=["the-owners"])])
+        await side.run_pass()  # the scrub checks up to the head one pass ago
+        counted = REGISTRY.get_sample_value("threetears_change_notes_missing_total", {"table": table}) or 0.0
+
+        with caplog.at_level(logging.ERROR):
+            scrub = (await side.run_pass()).scrub
+        said = [r.__dict__["extra_data"]["missing"] for r in caplog.records if "no change note" in r.getMessage()]
+        assert said == ["unnoted"], "its own table's missing note is said; no other table's epoch is"
+        assert (scrub.checked, scrub.missing, scrub.others) == (2, 1, 2)
+        assert REGISTRY.get_sample_value("threetears_change_notes_missing_total", {"table": table}) == counted + 1, (
+            "counted on the owner's metric, so one alert covers every ring"
+        )
+        assert await pool.fetchval(f"SELECT count(*) FROM {schema}.threetears_change_note_marks") == 0, (
+            "it scrubs, and still never marks the log"
+        )
 
     @pytest.mark.parametrize("order", ["after_the_label", "before_the_label"])
     async def test_a_lost_log_gets_the_ring_besides_notes_back_and_its_follower_converges(
