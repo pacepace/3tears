@@ -334,12 +334,19 @@ def _unit_on(text: str, ruler: MeasureRuler) -> str:
 
 
 def _case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
-    """Each case's number: its place in the order the cases were given, from 1, as the Trials table lists them
-    (:func:`~threetears.evals.analysis.bundle.trials.trial_order`). An ``Eval``'s case is stored as
-    ``<template>-<position>``, so the first case in its list, the first line of its cases file, is ``case 1`` here,
-    on its console and in its listing alike; never a place in the order of the cases' labels, which a reader cannot
-    count to."""
-    cases = dict.fromkeys(trial.case_id for trial in bundle.trials)
+    """Each case's number: its place in the list given, from 1.
+
+    A generated case id is ``<template>-<position>``, its position counted from 0 (an ``Eval``'s, and what
+    :func:`~threetears.evals.analysis.bundle.trials.trial_order` sorts by), so its number is that position plus one,
+    read off the id itself: the first case in the list, the first line of a cases file, is ``case 1`` here, on its
+    console and in its listing alike, however many of the run's trials the bundle holds past its cap. Where an id
+    ends in no number, or two ids would read as one number, the place is not in the ids, and each case is numbered by
+    its place among the cases the bundle holds, in the Trials table's order; never a place in the order of the cases'
+    labels, which a reader cannot count to."""
+    cases = list(dict.fromkeys(trial.case_id for trial in bundle.trials))
+    positions = {case: trial_order(case, 0, 0)[1] for case in cases}
+    if all(position >= 0 for position in positions.values()) and len(set(positions.values())) == len(cases):
+        return {case: position + 1 for case, position in positions.items()}
     ordered = sorted(cases, key=lambda case: trial_order(case, 0, 0))
     return {case: index for index, case in enumerate(ordered, start=1)}
 

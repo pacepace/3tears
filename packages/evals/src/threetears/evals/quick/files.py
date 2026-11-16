@@ -97,7 +97,8 @@ class RunResult(Protocol):
         ...
 
     def exit_code(self) -> int:
-        """What the command line exits with for it: 0 done, 1 a run did not complete, 4 a gate failed."""
+        """What the command line exits with for it: 0 done, 1 a run did not complete or no arm had an answer graded
+        (its first line says which), 4 a gate failed."""
         ...
 
     def why_failed(self) -> str | None:

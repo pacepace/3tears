@@ -724,11 +724,11 @@ The host bridge: an eval's host, the command line, and a measure declared on the
   <br>`= 3`
 - **`EXIT_GATE_FAILED`** · constant (int) · Exit code: `gate` read a verdict its `--fail-on` names.
   <br>`= 4`
-- **`EXIT_OK`** · constant (int) · Exit code: every run completed, or the command read what it was asked for.
+- **`EXIT_OK`** · constant (int) · Exit code: every run completed (from an eval file, with an answer graded), or the command read what it was asked for.
   <br>`= 0`
 - **`EXIT_REFUSED`** · constant (int) · Exit code: the command was refused before it could do anything.
   <br>`= 2`
-- **`EXIT_RUN_DID_NOT_COMPLETE`** · constant (int) · Exit code: a launched run did not complete.
+- **`EXIT_RUN_DID_NOT_COMPLETE`** · constant (int) · Exit code: a launched run did not complete, or, from an eval file, every run completed but no arm had an answer graded, so nothing was measured.
   <br>`= 1`
 
 <a id="api-harness"></a>
@@ -1694,7 +1694,7 @@ A product mounting the commands under its own CLI (`run_cli(host_factory=...)`) 
 
 `python -m threetears.evals FILE.py|FILE.toml [--verbose]` runs every eval the file declares instead: each prints its result, writes its report to `.evals/reports/<name>/` and exits with the codes below.
 
-Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an unanticipated error; 4 the gate failed.
+Exit codes, in full: 0 done; 1 a launched run did not complete, or, from an eval file, every run completed but no arm had an answer graded, so nothing was measured; 2 refused; 3 failed with an unanticipated error; 4 the gate failed. The first line an eval prints says which 1 it is: a run that did not complete is named with what stopped it, and an eval that measured nothing says no answer was graded, or that every trial was lost, and why. A runner that raised on every case raises again on a rerun; a rerun helps only where that line names a provider that declined its calls.
 
 Each command's options, as its `--help` prints them:
 

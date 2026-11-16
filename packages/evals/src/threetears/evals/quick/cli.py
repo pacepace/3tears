@@ -86,8 +86,11 @@ the engine did not anticipate, or the engine failing itself — prints its trace
 3, never 1: a script branching on the exit code must not read a broken host as runs that finished and
 did not complete.
 
-Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an
-unanticipated error; 4 the gate failed.
+Exit codes, in full: 0 done; 1 a launched run did not complete, or, from an eval file, every run completed but no
+arm had an answer graded, so nothing was measured; 2 refused; 3 failed with an unanticipated error; 4 the gate failed.
+The first line an eval prints says which 1 it is: a run that did not complete is named with what stopped it, and an
+eval that measured nothing says no answer was graded, or that every trial was lost, and why. A runner that raised on
+every case raises again on a rerun; a rerun helps only where that line names a provider that declined its calls.
 """
 
 from __future__ import annotations
@@ -203,9 +206,12 @@ def _refuse_colliding_commands(commands: Sequence[HostCommand]) -> None:
 #: The program name the command line prints when it is run as ``python -m threetears.evals``.
 DEFAULT_PROG = "python -m threetears.evals"
 
-#: Exit code: every run completed, or the command read what it was asked for.
+#: Exit code: every run completed (from an eval file, with an answer graded), or the command read what it was asked
+#: for.
 EXIT_OK = 0
-#: Exit code: a launched run did not complete.
+#: Exit code: a launched run did not complete, or, from an eval file, every run completed but no arm had an answer
+#: graded, so nothing was measured. The eval's first line says which: what stopped the run, or that no answer was
+#: graded and why.
 EXIT_RUN_DID_NOT_COMPLETE = 1
 #: Exit code: the command was refused before it could do anything.
 EXIT_REFUSED = 2

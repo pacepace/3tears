@@ -691,9 +691,9 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `storage.ROUTING_RECORD_DOC_TYPE`: The `doc_type` of the placement record the router writes into every store, inside the routing scope its host names.
 - `quick.EXIT_FAILED`: Exit code: the command failed on an error nothing anticipated — a host factory, a launcher or a handler raising, or the engine's own fault.
 - `quick.EXIT_GATE_FAILED`: Exit code: `gate` read a verdict its `--fail-on` names.
-- `quick.EXIT_OK`: Exit code: every run completed, or the command read what it was asked for.
+- `quick.EXIT_OK`: Exit code: every run completed (from an eval file, with an answer graded), or the command read what it was asked for.
 - `quick.EXIT_REFUSED`: Exit code: the command was refused before it could do anything.
-- `quick.EXIT_RUN_DID_NOT_COMPLETE`: Exit code: a launched run did not complete.
+- `quick.EXIT_RUN_DID_NOT_COMPLETE`: Exit code: a launched run did not complete, or, from an eval file, every run completed but no arm had an answer graded, so nothing was measured.
 - `ops.ANALYSIS_PREPARATION_BUDGET_S`: The default wall-clock ceiling on a generation job's preparation, used when a host supplies none (`AnalysisGeneration.preparation_budget_s`, read on every call): building the `analyst` client, holding it to the host's allowed writers and asking whether its turns can be priced — in seconds.
 - `ops.LIST_PAGE_MAX`: The most rows one listing page reads; a caller wanting more reads the next page.
 - `ops.LIST_PAGE_SIZE`: How many rows a listing page reads when its caller names no `limit`.

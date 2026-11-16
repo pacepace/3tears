@@ -2,15 +2,16 @@
 
 - **One name per case, on every surface of one result.** A case is called by its own ``id`` where it has one, else by
   its place in the list given, from 1: the line of the cases file it is on. The first line, the top misses, the
-  ``error:`` lines, ``results()`` and the report page's tables all call it that; the first line once numbered the
-  failed cases from 1 and the misses under it from 0, and the page numbered them by the order of their labels.
+  ``error:`` lines, ``results()`` and the report page's tables all call it that, past the 500 trials a report's
+  bundle holds as well; the first line once numbered the failed cases from 1 and the misses under it from 0, and the
+  page numbered them by the order of their labels, then by their place among the cases its bundle held.
 - **No rate over nothing graded.** An arm whose runner raised on every case had no answer graded, so every measure of
   it reads ``none (no answer was graded)``, a classifier's accuracy as much as a function grader's, and no label's
   precision or recall is printed: never ``Accuracy: 0%, 0 of 3 trials`` beside another measure left unshown. The
   stored results are as before (a raise is landed as the classifier's miss, which a partly answering arm is counted
   against); only the reading changes, so a result stored before reads the same way.
 - **Exit 1 when nothing was measured.** An eval in which no arm had an answer graded exits 1 from the file door, its
-  first line the reason; one with some answers graded, and a comparison with one arm that answered nothing, keep
+  first line the reason, whether its runner raised on every case or every trial was lost; one with some answers graded, and a comparison with one arm that answered nothing, keep
   their codes, and a refused build still exits 2.
 """
 
@@ -72,6 +73,43 @@ async def test_one_result_calls_each_case_one_name_on_every_surface() -> None:
     cases_table = page.split("## Cases", 1)[1].split("\n## ", 1)[0]
     rows = [row.split("|")[1].strip() for row in cases_table.splitlines() if row.startswith("| ") and "✗" in row]
     assert rows == missed, "the page's Cases table calls each failed case as the console does"
+
+
+#: Two hundred tickets, each answered ``p``; at three repeats, 600 trials, past the 500 a report's bundle holds.
+TWO_HUNDRED = [{"text": f"ticket {place}", "want": "p"} for place in range(1, 201)]
+
+
+async def late_miss(case: Mapping[str, Any]) -> str:
+    """Answer ``p``, but ``q`` on the ticket at place 195."""
+    return "q" if case["text"] == "ticket 195" else "p"
+
+
+def raises_on_190(case: Mapping[str, Any], out: Any) -> bool:
+    """Grade ``out`` against ``want``; raise on the ticket at place 190, so its trials are not graded."""
+    if case["text"] == "ticket 190":
+        raise ValueError("no")
+    return bool(out == case["want"])
+
+
+async def test_past_the_bundle_cap_a_case_keeps_its_place_in_the_list() -> None:
+    result = await Eval(TWO_HUNDRED, late_miss, [raises_on_190], k=3, name="capped").run(store=":memory:")
+    lines = result.render().splitlines()
+    page = campaign_report_markdown(result.page)
+
+    # The bundle holds 500 of the 600 trials, the lost and failed ones among them: the cases at places 190 and 195
+    # are held with fewer than 190 cases before them, and are called by their place in the list all the same.
+    assert result.page.aspects[0].report.bundle.trials_omitted == 100
+    assert lines[0].endswith("Not graded: case 190 (`the grader raises_on_190 raised ValueError: no`).")
+    assert "  error: case 190: the grader raises_on_190 raised ValueError: no" in lines
+    assert [line.split(":")[0] for line in lines if line.startswith("  case 195 (")] == [
+        f"  case 195 (repeat {repeat})" for repeat in (1, 2, 3)
+    ]
+    assert [miss.case for miss in result.summary.misses()] == ["195", "195", "195"]
+    cases_table = page.split("## Cases", 1)[1].split("\n## ", 1)[0]
+    rows = [row for row in cases_table.splitlines() if row.startswith("| ")]
+    flagged = [row.split("|")[1].strip() for row in rows if "✗" in row or "(lost" in row]
+    assert flagged == ["case 190", "case 195"], "the page's Cases table calls each as the console does"
+    assert "| case 1 | — | ✓ ✓ ✓ |" in cases_table, "the first case in the list is case 1 here too"
 
 
 async def test_an_error_line_calls_the_case_by_its_place_from_1() -> None:
@@ -213,3 +251,76 @@ def test_a_refused_build_still_exits_2(capsys: pytest.CaptureFixture[str]) -> No
 
     assert main(["refused.py"]) == EXIT_REFUSED
     assert "at least one case" in capsys.readouterr().err
+
+
+_GRADER_LOST = """\
+def broken(case, out) -> bool:
+    \"\"\"Raise on every answer.\"\"\"
+    raise ValueError("no")
+
+lost = Eval(CASES, steady, [broken], k=1, name="lost")
+"""
+
+_JUDGE_LOST = """\
+from threetears.evals import Judge
+from threetears.evals.schema import RubricDim
+
+class Reply:
+    \"\"\"A judge reply that is not the JSON a verdict is read from.\"\"\"
+    content = "no json here"
+    input_tokens = 10
+    output_tokens = 3
+    cost_usd = None
+    price_source = None
+    model = "scripted/judge"
+    served_model = None
+    reasoning_tokens = None
+    stop_reason = "end_turn"
+    temperature = None
+
+class Mute:
+    \"\"\"A judge client whose every reply fails to parse.\"\"\"
+    model_name = "scripted/judge"
+
+    async def generate(self, *, system, user, response_format=None):
+        return Reply()
+
+    async def aclose(self):
+        return None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.aclose()
+
+lost = Eval(CASES, steady, [Judge(Mute(), [RubricDim(name="answer.right", description="Right.", scale="pass_fail")])],
+            k=1, name="lost")
+"""
+
+
+@pytest.mark.usefixtures("_in_tmp")
+@pytest.mark.parametrize(
+    ("grading", "reason"),
+    [
+        # The grader's raise is a fault the harness recorded on every cell: the run fails, having measured nothing.
+        (_GRADER_LOST, "lost: the run failed, so there is no verdict: the run measured nothing: "),
+        # The judge's call is recovered by a re-judge, so the run completes; its first line says every trial was lost.
+        (_JUDGE_LOST, "lost: The test setup failed: it measured the setup instead of the models. steady lost 2 of 2 "),
+    ],
+    ids=["the grader raised on every answer", "the judge's call failed on every answer"],
+)
+def test_the_file_door_exits_1_where_every_trial_was_lost(
+    grading: str, reason: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The runner answered every case, but no answer was graded: a grader that raised on each fails the run (it
+    # measured nothing), while a judge's call failing on each leaves it completed, since a re-judge recovers those
+    # trials. Either way nothing was measured, which exits 1 as a runner that raised on every case does.
+    head = (
+        'from threetears.evals import Eval\n\nCASES = [{"id": name, "text": name, "want": "p"} for name in ("a", "b")]'
+        '\n\nasync def steady(case):\n    """Answer p."""\n    return "p"\n\n'
+    )
+    Path("lost.py").write_text(head + grading, encoding="utf-8")
+
+    assert main(["lost.py"]) == EXIT_RUN_DID_NOT_COMPLETE
+    assert capsys.readouterr().out.startswith(reason), "the first line is the reason"

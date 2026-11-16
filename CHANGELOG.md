@@ -10,11 +10,19 @@ packages (bumped in lock-step).
 
 **Fixed:** one result numbered the same cases two ways: the first line from 1 (`Cases that failed a trial: case 2,
 case 4.`) and the top misses under it from 0 (`case 1 (repeat 1)`, `case 3 (repeat 1)`), while the report page
-numbered them by the order of their labels. A case is now called by its own `id` where it has one, else by its place
-in the list given, from 1, the line of the cases file it is on: on the first line, the top misses, the `error:` lines,
-`results()` and `misses()` (`CaseResult.case` is `"1"` for the first case, was `"0"`), every refusal that names a case,
-and the page's Cases and Trials tables, which now number every host's unnamed cases in the order they were given, not
-by label. A case's stored id and every recording key are as before.
+numbered them by the order of their labels. A case with no `id` is now called by its place in the list given, from 1,
+the line of the cases file it is on: on the first line, the top misses, the `error:` lines, `results()` and `misses()`
+(`CaseResult.case` is `"1"` for the first case, was `"0"`), every refusal that names a case, and the page's Cases and
+Trials tables, past the 500 trials a report holds too. A case with an `id` is called by it, with one exception: the
+first line and the page will not print an id that does not read as a name, a bare number (`1042`), one holding
+whitespace (`ticket 7`) or a long hex string, and call that case by its place (`case 12`) where the console and
+`results()` call it by its id (`case 1042`). A case's stored id and every recording key are as before.
+
+The page reads a case's place off its stored id, `<template>-<position>` for every `Eval` case. A host whose case ids
+end in no number (a UUID) gets its cases numbered by their place among the cases the page holds, in the order of the
+ids' text, not the order it gave them, and past 500 trials that place is among the cases the page holds, not all
+of them. A host whose ids end in a number counted from 1 (`ticket-1`) sees a case the page numbers one higher than
+that number. Both are the subject of a follow-up issue.
 
 **Fixed:** an arm whose runner raised on every case printed `Accuracy: 0%, 0 of 3 trials` beside another measure
 `not shown, carried by no result`. No answer was graded, so every measure of such an arm now reads one way,
@@ -28,8 +36,12 @@ had an answer graded: its runner raised on every case, or every trial was lost. 
 some answers graded, and a comparison in which one arm answered nothing, keep their codes.
 
 **For hosts:** a CI step that gates on the file door's exit code now fails on an eval that measured nothing, where it
-passed before. Code that reads `CaseResult.case` or an error line's case number for a case with no `id` reads it one
-higher.
+passed before. A caller that retries on 1 (`EXIT_RUN_DID_NOT_COMPLETE`), reading it as a run that did not finish, now
+also gets 1 from a run that finished and graded nothing, which a retry repeats: a runner that raised on every case
+raises again. Tell the two apart by the eval's first line (a run that did not complete names what stopped it; one that
+measured nothing says `so no answer was graded` or that every trial was lost, and why), or in code by
+`Result.arms`, whose every summary reads `status == "completed"` only in the second. Code that reads
+`CaseResult.case` or an error line's case number for a case with no `id` reads it one higher.
 
 ### evals: `schema.check_after` is public again, and the host's recorded import list is re-taken
 
