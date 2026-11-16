@@ -37,7 +37,8 @@ Usage::
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from itertools import repeat
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from types import TracebackType
@@ -45,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.exceptions import GenerationUnavailableError
+from threetears.core.loop_turns import LoopTurns, emptied, stepped
 from threetears.observe import get_logger
 
 if TYPE_CHECKING:
@@ -149,19 +151,16 @@ def _grouped(
     return by_collection, shared
 
 
-#: how many enrollments :func:`_released` frees at a time: a slice's rows are freed in one C call that keeps the GIL
-#: throughout, so a slice is small enough for the loop to take the GIL back between two (about a millisecond for
-#: rows of 179 columns)
-_RELEASE_SLICE: Final = 1024
-
-
 def _released(
     enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
     by_collection: _ByCollection,
     shared: Mapping[str, SharedAdvance],
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> None:
     """empty a settled transaction's enrollments, their grouping and its shared advances' change records a slice at a
-    time; for a thread.
+    time, taking turns with the caller's loop (:func:`~threetears.core.loop_turns.emptied`); for a thread. A slice's
+    rows are freed in one C call that keeps the GIL throughout: 1,024 rows of 179 columns a slice, with no turns
+    between, held the loop 4-5 ms a slice (the WD2 bench, 2026-11-16).
 
     The grouping's lists were lent to each collection's ``invalidate_cache_many`` for the call, which keeps none of
     them; emptying them in place frees their rows here rather than wherever the last reference happens to drop.
@@ -172,6 +171,8 @@ def _released(
     :ptype by_collection: dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]]
     :param shared: the advances its tables' instances shared (:func:`_grouped`)
     :ptype shared: Mapping[str, SharedAdvance]
+    :param loop: the caller's event loop, handed the thread's turns; None off any loop
+    :ptype loop: asyncio.AbstractEventLoop | None
     :return: nothing
     :rtype: None
     """
@@ -180,11 +181,7 @@ def _released(
     held: list[list[Any]] = [advance.changed for advance in shared.values() if advance.bump is None]
     for _, keys, rows in by_collection.values():
         held += (rows, keys)
-    for each in held:
-        while each:
-            del each[-_RELEASE_SLICE:]
-    while enrolled:
-        del enrolled[-_RELEASE_SLICE:]
+    emptied([*held, enrolled], loop)
 
 
 class CallerTransaction:
@@ -273,6 +270,46 @@ class CallerTransaction:
         :rtype: None
         """
         self._enrolled.append((collection, entity_id, row))
+
+    @staticmethod
+    def enrollments(
+        collection: BaseCollection[Any],
+        entity_ids: Sequence[Any],
+        rows: Sequence[dict[str, Any] | None],
+        turns: LoopTurns | None = None,
+    ) -> list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]:
+        """the enrollments :meth:`enroll` makes for each of ``entity_ids`` with its row, in order, for
+        :meth:`enroll_all`; pure, so a thread may make them.
+
+        A write of many rows makes them on a worker thread and hands them to :meth:`enroll_all` on the loop: one
+        enrollment a key, 33,786 of them made on the loop, set off the collector there too (CPython 3.14 walks its
+        old generation in increments a young collection starts), the loop held with them.
+
+        :param collection: the collection that wrote the rows
+        :ptype collection: BaseCollection
+        :param entity_ids: each row's pk value (single-pk) or tuple of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :param rows: each row as the write sent it, or None, as :meth:`enroll`'s ``row``; as many as ``entity_ids``
+        :ptype rows: Sequence[dict[str, Any] | None]
+        :param turns: the making thread's turns with the caller's loop (:func:`~threetears.core.loop_turns.stepped`);
+            None to make them in one call
+        :ptype turns: LoopTurns | None
+        :return: the enrollments
+        :rtype: list[tuple[BaseCollection, Any, dict[str, Any] | None]]
+        :raises ValueError: when ``rows`` and ``entity_ids`` differ in length
+        """
+        made = zip(repeat(collection, len(entity_ids)), entity_ids, rows, strict=True)
+        return list(made if turns is None else stepped(made, turns))
+
+    def enroll_all(self, enrollments: Sequence[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]) -> None:
+        """record every one of ``enrollments`` (:meth:`enrollments`), in order, as :meth:`enroll` records one.
+
+        :param enrollments: the enrollments
+        :ptype enrollments: Sequence[tuple[BaseCollection, Any, dict[str, Any] | None]]
+        :return: nothing
+        :rtype: None
+        """
+        self._enrolled.extend(enrollments)
 
     def restate(self, collection: BaseCollection[Any], entity_id: Any, *, row: dict[str, Any]) -> None:
         """replace the row ``collection``'s latest enrollment of ``entity_id`` carries, once the write knows it as stored.
@@ -401,7 +438,7 @@ class CallerTransaction:
         if count >= _SETTLE_OFF_LOOP_ROWS:
             # the enrollments often hold the only reference to the rows a write sent: freeing 33,786 rows of 179
             # columns at once held the loop 25 ms (save_rows, the WD2 bench); freed a slice at a time on a thread
-            await asyncio.to_thread(_released, enrolled, by_collection, shared)
+            await asyncio.to_thread(_released, enrolled, by_collection, shared, asyncio.get_running_loop())
         if count:
             log.debug(
                 "caller transaction ended; the rows its writes touched were evicted from every cache",

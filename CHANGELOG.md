@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a bulk write of many rows holds the event loop a few milliseconds at most
+
+A 33,786-row write (179 columns, a hub answering at once) held the serving loop, before its commit, 6-7 ms through
+`save_arrow` and 87-103 ms through `save_rows` with the collector held and a 1 ms switch interval (a serving pod's
+settings), and 55 ms and 134-156 ms with them at CPython's defaults: every key read, checked for a twin, enrolled and
+fenced on the loop a call a key; every row checked, stamped and keyed there; each statement's text and flattened
+parameters built there (7-8 ms a statement, 187 statements); the statements' parameters freed there as the write
+returned; and the thread work beside it (the keys' fence forms, each statement's parameters converted and measured,
+the settled rows freed) held the interpreter lock a whole switch interval at a time. All of it now runs on worker
+threads that hand the loop a turn every half millisecond: 0.7-1.7 ms (`save_arrow`) and 2.8-3.3 ms (`save_rows`) with
+the pod's settings; the commit 1.6-3.3 ms (was 3-15). `delete_arrow`'s keys are read and enrolled the same way.
+**Added:** `threetears.core.loop_turns` (`LoopTurns`, `stepped`, `emptied`: work on a thread that takes turns with the
+caller's loop, moved out of the Arrow copy's build), `CallerTransaction.enrollments` / `enroll_all` (many enrollments
+made on a thread, recorded at once), `_L1Fence.changed_many`. loop_timing budget at 33,786 rows for both paths, red
+on the old code (11.6 ms against a 5 ms bound, 48.5 ms against 11.7 ms).
+
 ### core: a caller transaction of many rows settles them off the event loop
 
 `CallerTransaction`'s settle grouped its enrollments and built a change record a key on the loop, for every table,

@@ -65,6 +65,7 @@ from threetears.interfaces.keyed.keys import (
 )
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.arrow_copy import arrow_python_columns, arrow_python_rows, with_constant_columns
+from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, stepped
 from threetears.core.backends.protocol import (
     ANALYZE_AFTER_ROWS,
     AnalyzingStore,
@@ -2652,22 +2653,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             )
         now = datetime.now(UTC)
         stamps = {name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None}
-        stamped: list[dict[str, Any]] = []
-        keys: list[Any] = []
-        for index, row in enumerate(rows):
-            missing = [name for name in self.schema.pk_columns if name not in row]
-            if missing:
-                raise KeyError(f"{self.table_name}.save_rows: row {index} has no key column {missing[0]!r}")
-            _refuse_misfit_vectors(self.schema, row)
-            data = {**row, **stamps}
-            stamped.append(data)
-            key = tuple(data[name] for name in self.schema.pk_columns)
-            keys.append(key if len(key) > 1 else key[0])
-        if len(set(keys)) != len(keys):
-            raise ValueError(f"{type(self).__name__}.save_rows: two rows share a key; one statement upserts a key once")
-        for key, data in zip(keys, stamped, strict=True):
-            # enrolled before the write, so a write whose outcome is unknown is settled with the rest
-            transaction.enroll(self, key, row=data)
+        # each row checked, stamped and keyed, and its enrollment made, on a worker thread taking turns with the loop,
+        # from the count where a thread costs less than the work: on the loop, 33,786 rows of 179 columns held it 87-103 ms with the
+        # collector held (the WD2 bench, 2026-11-16)
+        stamped, keys, enrollments = (
+            await asyncio.to_thread(self._stamped_rows, rows, stamps, asyncio.get_running_loop())
+            if len(rows) >= self.L1_EVICT_OFF_LOOP_KEYS
+            else self._stamped_rows(rows, stamps)
+        )
+        # enrolled before the write, so a write whose outcome is unknown is settled with the rest
+        transaction.enroll_all(enrollments)
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
         written = 0
@@ -2695,6 +2690,49 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             extra={"extra_data": {"table": self.table_name, "rows": written}},
         )
         return written
+
+    def _stamped_rows(
+        self,
+        rows: Sequence[dict[str, Any]],
+        stamps: Mapping[str, datetime],
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> tuple[list[dict[str, Any]], list[Any], list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]]:
+        """:meth:`save_rows`' rows checked and stamped, each one's key, and their enrollments; pure, for a thread.
+
+        :param rows: the rows, each keyed by column
+        :ptype rows: Sequence[dict[str, Any]]
+        :param stamps: the write's stamp columns and their value
+        :ptype stamps: Mapping[str, datetime]
+        :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+            or off any loop (a few rows: no turn taken)
+        :ptype loop: asyncio.AbstractEventLoop | None
+        :return: the stamped rows, their keys (a value, or a tuple for a key of many columns) and their enrollments
+            (:meth:`CallerTransaction.enrollments`), in row order
+        :rtype: tuple[list[dict[str, Any]], list[Any], list[tuple[BaseCollection, Any, dict[str, Any] | None]]]
+        :raises KeyError: when a row lacks a key column, naming the table and the column
+        :raises ValueError: when a row's vector is not its column's width, or two rows share a key
+        """
+        key_columns = self.schema.pk_columns
+        # the vector check reads every column of every row; a table with no vector column has nothing to check
+        vectors = any(col.column_type == VECTOR_TYPE and col.vector_dim is not None for col in self.schema.columns)
+        turns = LoopTurns(loop) if loop is not None else None
+        stamped: list[dict[str, Any]] = []
+        keys: list[Any] = []
+        for index, row in enumerate(rows):
+            if turns is not None and index % STEP_ITEMS == 0:
+                turns.take()
+            missing = [name for name in key_columns if name not in row]
+            if missing:
+                raise KeyError(f"{self.table_name}.save_rows: row {index} has no key column {missing[0]!r}")
+            if vectors:
+                _refuse_misfit_vectors(self.schema, row)
+            data = {**row, **stamps}
+            stamped.append(data)
+            key = tuple(data[name] for name in key_columns)
+            keys.append(key if len(key) > 1 else key[0])
+        if _shares_a_key(keys, turns):
+            raise ValueError(f"{type(self).__name__}.save_rows: two rows share a key; one statement upserts a key once")
+        return stamped, keys, CallerTransaction.enrollments(self, keys, stamped, turns)
 
     async def save_arrow(self, rows: Any, *, conn: Any, copy: bool = False) -> int:
         """:meth:`save_rows` for rows already in an Arrow table: upserted (or, with ``copy``, inserted) as they are,
@@ -2759,14 +2797,12 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if arrow_store is None or plan is None:
             # no door for these rows: today's write, the rows read into Python off the loop
             return await self.save_rows(await asyncio.to_thread(arrow_python_rows, rows), conn=conn, copy=copy)
-        keys, seen = await self._arrow_keys(stamped)
-        if len(set(keys)) != len(keys):
-            raise ValueError(
-                f"{type(self).__name__}.save_arrow: two rows share a key; one statement upserts a key once"
-            )
-        for key, row in zip(keys, seen, strict=True):
-            # enrolled before the write, so a write whose outcome is unknown is settled with the rest
-            transaction.enroll(self, key, row=row)
+        # the keys read, checked and enrolled from a worker thread taking turns with the loop: on the loop, 33,786 of
+        # them held it 6-7 ms with the collector held and 50-55 ms with it running (the WD2 bench, 179 columns,
+        # 2026-11-16)
+        keys, enrollments = await asyncio.to_thread(self._arrow_enrollments, stamped, asyncio.get_running_loop())
+        # enrolled before the write, so a write whose outcome is unknown is settled with the rest
+        transaction.enroll_all(enrollments)
         # every key leaves L1 in one write before the store's, not one write a key
         await self._evict_l1_many_off_loop(keys)
         await arrow_store.write_arrow(self.table_name, stamped, plan, conn=conn)
@@ -2778,28 +2814,42 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         return int(stamped.num_rows)
 
-    async def _arrow_keys(self, rows: Any) -> tuple[list[Any], list[dict[str, Any] | None]]:
-        """each row's key, as :meth:`save_rows` enrols it, and the row its settling message reads its
-        :attr:`invalidation_columns` from (None for a collection that declares none): the only columns of an Arrow
-        write that become Python, read on a thread a slice at a time.
+    def _arrow_enrollments(
+        self, rows: Any, loop: asyncio.AbstractEventLoop | None = None
+    ) -> tuple[list[Any], list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]]:
+        """each row's key, as :meth:`save_rows` enrols it, and its enrollment with the row its settling message reads
+        its :attr:`invalidation_columns` from (None for a collection that declares none): the only columns of an Arrow
+        write that become Python, read a slice at a time. Blocking: run it on a thread.
 
         :param rows: the rows
         :ptype rows: pyarrow.Table
-        :return: the keys (a value, or a tuple for a key of many columns) and the rows, in row order
-        :rtype: tuple[list[Any], list[dict[str, Any] | None]]
+        :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None off any loop
+        :ptype loop: asyncio.AbstractEventLoop | None
+        :return: the keys (a value, or a tuple for a key of many columns), in row order, and their enrollments
+            (:meth:`CallerTransaction.enrollments`)
+        :rtype: tuple[list[Any], list[tuple[BaseCollection, Any, dict[str, Any] | None]]]
+        :raises ValueError: when two rows share a key
         """
+        turns = LoopTurns(loop)
         key_columns = list(self.schema.pk_columns)
         named = [name for name in self.invalidation_columns if name in rows.column_names]
         read = [*key_columns, *(name for name in named if name not in key_columns)]
-        columns = dict(zip(read, await asyncio.to_thread(arrow_python_columns, rows, read), strict=True))
+        columns = dict(zip(read, arrow_python_columns(rows, read, turns), strict=True))
         values = [columns[name] for name in key_columns]
-        keys: list[Any] = list(zip(*values, strict=True)) if len(values) > 1 else values[0]
+        keys: list[Any] = list(stepped(zip(*values, strict=True), turns)) if len(values) > 1 else values[0]
+        if _shares_a_key(keys, turns):
+            raise ValueError(
+                f"{type(self).__name__}.save_arrow: two rows share a key; one statement upserts a key once"
+            )
         seen: list[dict[str, Any] | None] = (
-            [dict(zip(named, each, strict=True)) for each in zip(*(columns[name] for name in named), strict=True)]
+            [
+                dict(zip(named, each, strict=True))
+                for each in stepped(zip(*(columns[name] for name in named), strict=True), turns)
+            ]
             if named
             else [None] * len(keys)
         )
-        return keys, seen
+        return keys, CallerTransaction.enrollments(self, keys, seen, turns)
 
     async def _copy_rows(
         self,
@@ -3359,8 +3409,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             raise ValueError(f"{self.table_name}.delete_arrow: the keys have no key column {missing[0]!r}")
         if not keys.num_rows:
             return 0
-        values = await asyncio.to_thread(arrow_python_columns, keys, key_columns)
-        named = list(zip(*values, strict=True))
+        # the keys read and their enrollments made on a worker thread, as save_arrow's (_arrow_enrollments)
+        named, entity_keys, enrollments = await asyncio.to_thread(
+            self._arrow_delete_enrollments, keys, asyncio.get_running_loop()
+        )
         arrow_store = store if isinstance(store, ArrowWritingStore) and not self.invalidation_columns else None
         plan = (
             arrow_store.arrow_write_plan(
@@ -3372,10 +3424,8 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if arrow_store is None or plan is None:
             # no door for these keys, or messages that carry each row's columns: today's delete
             return await self.delete_rows(named, conn=conn)
-        entity_keys = [key if len(key) > 1 else key[0] for key in named]
-        for entity_key in entity_keys:
-            # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
-            transaction.enroll(self, entity_key, row=None)
+        # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
+        transaction.enroll_all(enrollments)
         # every key leaves L1 in one write before the store's delete, not one write a key
         await self._evict_l1_many_off_loop(entity_keys)
         await arrow_store.write_arrow(self.table_name, keys, plan, conn=conn)
@@ -3384,6 +3434,25 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             extra={"extra_data": {"table": self.table_name, "rows": len(named)}},
         )
         return len(named)
+
+    def _arrow_delete_enrollments(
+        self, keys: Any, loop: asyncio.AbstractEventLoop | None = None
+    ) -> tuple[list[tuple[Any, ...]], list[Any], list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]]:
+        """:meth:`delete_arrow`'s keys as Python, a slice at a time: each a tuple in key order, each as a key is
+        enrolled (a value, or a tuple for a key of many columns), and their enrollments with no row. Blocking: run it on
+        a thread.
+
+        :param keys: the keys, a column for each of the table's key columns
+        :ptype keys: pyarrow.Table
+        :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None off any loop
+        :ptype loop: asyncio.AbstractEventLoop | None
+        :return: the keys as tuples, as entity keys, and their enrollments (:meth:`CallerTransaction.enrollments`)
+        :rtype: tuple[list[tuple[Any, ...]], list[Any], list[tuple[BaseCollection, Any, dict[str, Any] | None]]]
+        """
+        turns = LoopTurns(loop)
+        named = list(stepped(zip(*arrow_python_columns(keys, list(self.schema.pk_columns), turns), strict=True), turns))
+        entity_keys = [key if len(key) > 1 else key[0] for key in stepped(named, turns)]
+        return named, entity_keys, CallerTransaction.enrollments(self, entity_keys, [None] * len(entity_keys), turns)
 
     async def _delete_rows_returning(
         self,
@@ -3677,6 +3746,26 @@ def _text_vector_width(text: str) -> int | None:
     except ValueError:  # json.JSONDecodeError is a ValueError: text that is not a vector
         decoded = None
     return None if decoded is None else len(decoded)
+
+
+def _shares_a_key(keys: Sequence[Any], turns: LoopTurns | None) -> bool:
+    """whether two of ``keys`` are equal, read with the thread's turns between slices (a set of 33,786 keys of seven
+    texts made in one call held the lock 3-5 ms).
+
+    :param keys: the keys
+    :ptype keys: Sequence[Any]
+    :param turns: the thread's turns with the caller's loop; None to read them in one call
+    :ptype turns: LoopTurns | None
+    :return: whether a key repeats
+    :rtype: bool
+    """
+    if turns is None:
+        return len(set(keys)) != len(keys)
+    held: set[Any] = set()
+    for start in range(0, len(keys), STEP_ITEMS):
+        held.update(keys[start : start + STEP_ITEMS])
+        turns.take()
+    return len(held) != len(keys)
 
 
 def _refuse_misfit_vectors(schema: TableSchema, row: Mapping[str, Any]) -> None:

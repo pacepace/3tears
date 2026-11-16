@@ -28,6 +28,7 @@ from typing import Annotated, Any, TYPE_CHECKING
 from uuid import UUID
 
 from threetears.interfaces.keyed.rows import DeclaredKey, KeyColumn
+from threetears.core.loop_turns import LoopTurns
 from threetears.core.serialization import json_datetime
 from threetears.core.sql_fragments import as_written, equality_conditions
 
@@ -1044,6 +1045,7 @@ def bulk_batches(
     max_params: int = MAX_STATEMENT_PARAMS,
     base_bytes: int = 0,
     position_bytes: Callable[[int], int] | None = None,
+    turns: LoopTurns | None = None,
 ) -> list[list[list[Any]]]:
     """split rows' parameters into consecutive batches, each one statement's worth.
 
@@ -1068,6 +1070,8 @@ def bulk_batches(
     :ptype base_bytes: int
     :param position_bytes: what a row adds besides its parameters, by its place in its batch
     :ptype position_bytes: Callable[[int], int] | None
+    :param turns: the building thread's turns with the caller's loop, taken a row at a time; None on the loop
+    :ptype turns: LoopTurns | None
     :return: the batches, in order, covering every row once
     :rtype: list[list[list[Any]]]
     """
@@ -1076,6 +1080,8 @@ def bulk_batches(
     size = base_bytes
     params = 0
     for row in rows:
+        if turns is not None:
+            turns.take()
         values = transport_params_bytes(row)
         row_bytes = values + (position_bytes(len(batch)) if position_bytes is not None else 0)
         if batch and (len(batch) >= max_rows or size + row_bytes > max_bytes or params + len(row) > max_params):
@@ -1098,6 +1104,7 @@ def bulk_insert_batches(
     max_rows: int,
     max_bytes: int,
     request_bytes: Callable[[str, list[Any]], int | None] | None = None,
+    turns: LoopTurns | None = None,
 ) -> list[list[list[Any]]]:
     """split rows into :func:`build_bulk_insert_sql` statements whose whole request fits ``max_bytes``.
 
@@ -1121,6 +1128,8 @@ def bulk_insert_batches(
     :ptype max_bytes: int
     :param request_bytes: the transport's size of the request for a statement and its parameters
     :ptype request_bytes: Callable[[str, list[Any]], int | None] | None
+    :param turns: the building thread's turns with the caller's loop (:func:`bulk_batches`); None on the loop
+    :ptype turns: LoopTurns | None
     :return: the batches, in order, covering every row once
     :rtype: list[list[list[Any]]]
     """
@@ -1142,6 +1151,7 @@ def bulk_insert_batches(
         max_params=MAX_STATEMENT_PARAMS,
         base_bytes=base,
         position_bytes=position_bytes,
+        turns=turns,
     )
 
 

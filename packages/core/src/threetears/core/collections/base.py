@@ -32,6 +32,7 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core._bridge import fire_and_forget, sync_await
+from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, stepped
 from threetears.core.backends.broker_generation import naming_changed_rows
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
 from threetears.core.cache import MISSING
@@ -558,6 +559,25 @@ class _L1Fence:
         activity = self._keys.get(key)
         if activity is not None:
             activity.changes += 1
+
+    def changed_many(self, keys: Sequence[tuple[str, ...]], among: set[tuple[str, ...]]) -> None:
+        """:meth:`changed` of each of ``keys``, at once: only the keys with work in flight are touched, so it costs
+        the keys watched, not the keys changed.
+
+        A commit's eviction of 33,786 keys called :meth:`changed` a key on the event loop: 33,786 calls, 3-5 ms with
+        the loop held, against none when nothing reads those keys at the time (the WD2 bench, 2026-11-16).
+
+        :param keys: the keys, as the pk values' string forms
+        :ptype keys: Sequence[tuple[str, ...]]
+        :param among: the same keys as a set, made where ``keys`` were (off the loop)
+        :ptype among: set[tuple[str, ...]]
+        :return: nothing
+        :rtype: None
+        """
+        self._changes += len(keys)
+        for key, activity in self._keys.items():
+            if key in among:
+                activity.changes += 1
 
     def changed_all(self) -> None:
         """record that every key was evicted, so no ticket taken before now may cache what it read.
@@ -2780,17 +2800,19 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: nothing
         :rtype: None
         """
-        fence_keys = await asyncio.to_thread(self._fence_keys, entity_ids)
-        fence = self._l1_fence
-        for fence_key in fence_keys:
-            fence.changed(fence_key)
+        fence_keys = await asyncio.to_thread(self._fence_keys_and_set, entity_ids, asyncio.get_running_loop())
+        # every key fenced at once (no await): the fence's work is the keys in flight, not these
+        self._l1_fence.changed_many(*fence_keys)
         try:
             l1 = self._l1_holding_table()
             if l1 is not None:
                 await asyncio.to_thread(self._delete_l1_rows, l1, entity_ids)
         finally:
-            for entity_id in entity_ids:
-                self._l1_changed(entity_id)
+            # a call a key only when something listens: with none, 33,786 keys held the loop 2-3 ms for nothing
+            listeners = tuple(getattr(self, "_l1_change_listeners", ()))
+            if listeners:
+                for entity_id in entity_ids:
+                    self._l1_changed(entity_id)
 
     async def _changed_rows_off_loop(
         self, entity_ids: Sequence[Any], rows: Sequence[dict[str, Any] | None]
@@ -2823,15 +2845,27 @@ class BaseCollection(ABC, Generic[EntityT]):
         """
         return [self.changed_row(entity_id, row) for entity_id, row in zip(entity_ids, rows, strict=True)]
 
-    def _fence_keys(self, entity_ids: Sequence[Any]) -> list[tuple[str, ...]]:
-        """every key's :meth:`_fence_key`, in order; pure, so a thread may make them.
+    def _fence_keys_and_set(
+        self, entity_ids: Sequence[Any], loop: asyncio.AbstractEventLoop | None = None
+    ) -> tuple[list[tuple[str, ...]], set[tuple[str, ...]]]:
+        """every key's :meth:`_fence_key`, in order, and the same keys as a set, for :meth:`_L1Fence.changed_many`;
+        pure, for a thread, which takes turns with the caller's loop (33,786 keys' texts made at once held it 15 ms at
+        a time under the default switch interval, the WD2 bench, 2026-11-16).
 
         :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
         :ptype entity_ids: Sequence[Any]
-        :return: the fence keys
-        :rtype: list[tuple[str, ...]]
+        :param loop: the caller's event loop, handed the thread's turns; None off any loop
+        :ptype loop: asyncio.AbstractEventLoop | None
+        :return: the fence keys, in order, and as a set
+        :rtype: tuple[list[tuple[str, ...]], set[tuple[str, ...]]]
         """
-        return [self._fence_key(entity_id) for entity_id in entity_ids]
+        turns = LoopTurns(loop)
+        keys = [self._fence_key(entity_id) for entity_id in stepped(entity_ids, turns)]
+        held: set[tuple[str, ...]] = set()
+        for start in range(0, len(keys), STEP_ITEMS):
+            held.update(keys[start : start + STEP_ITEMS])
+            turns.take()
+        return keys, held
 
     def _delete_l1_rows(self, l1: Any, entity_ids: Sequence[Any]) -> None:
         """delete ``entity_ids``' rows from ``l1`` in one backend write; blocking (:meth:`_evict_l1_many_off_loop`).

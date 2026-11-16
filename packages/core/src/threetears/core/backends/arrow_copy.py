@@ -31,13 +31,12 @@ import hashlib
 import json
 import operator
 import struct
-import threading
-import time
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Final
 
 from threetears.core.backends.schema_sql import json_default, transport_param
+from threetears.core.loop_turns import LoopTurns as _Turns
 
 try:
     import pyarrow as pa
@@ -164,23 +163,8 @@ def rows_digest(ipc: Any) -> str:
     return str(base64.urlsafe_b64encode(digest).rstrip(b"="), "ascii")
 
 
-#: the longest the build holds the interpreter lock before it lets the caller's event loop run: measured, a 12 MB copy's
-#: build held the caller's loop 31 ms behind on a thread that never blocked (a waiting thread is not handed the lock
-#: while the holder keeps releasing and taking it back in pyarrow's calls). With one slice past it (:data:`_SLICE_VALUES`)
-#: a stretch stays under 1 ms: on a loaded host the OS can stop the build while it holds the lock, and the caller's
-#: loop is late by that stop only when its tick falls inside a stretch, so the shorter the stretches the rarer that is
-#: (1 ms stretches: 47.5 ms worst, p99 4.7 ms of added lateness on a Linux container with every CPU busy)
-_HOLD_SECONDS: Final = 0.0005
-
-#: how long the build blocks when it lets the loop run and has no loop to hand the turn to
-_TURN_SECONDS: Final = 0.0002
-
-#: the longest the build waits for the caller's loop to take a turn it was handed: a loop that has not run by then is
-#: busy with work of its own, not waiting for the interpreter lock, and the build goes on
-_TURN_WAIT_SECONDS: Final = 0.05
-
 #: the values read or converted in Python between two of the build's turns: few enough that no stretch nears
-#: :data:`_HOLD_SECONDS` (4096 held the caller's loop a whole switch interval, 5 ms, on a loaded host; 256 still ran
+#: :data:`~threetears.core.loop_turns.HOLD_SECONDS` (4096 held the caller's loop a whole switch interval, 5 ms, on a loaded host; 256 still ran
 #: 0.6 ms a slice on an oversubscribed test host)
 _SLICE_VALUES: Final = 128
 
@@ -189,49 +173,6 @@ _SLICE_VALUES: Final = 128
 #: threshold for mapping fresh pages: a 1 MiB piece was a fresh mapping each time, 256 page faults taken with the lock
 #: held (up to 4 ms of the kernel's time on a loaded host)
 _PIECE_BYTES: Final = 1 << 16
-
-
-class _Turns:
-    """the build's turns with the caller's event loop: past :data:`_HOLD_SECONDS` of holding the interpreter lock, the
-    build hands the loop a turn and blocks until the loop has run.
-
-    A turn is handed, not offered: the build schedules a callback on the loop and waits for it to run. A sleep offered
-    the lock for :data:`_TURN_SECONDS` only, and on a loaded host the loop's thread was often not scheduled within it:
-    the build took the lock back, and the loop waited for CPython's 5 ms switch interval, turn after turn (pool
-    diagnostics: the loop 8-20 ms late in ``select`` while the build ran ``_sliced_array`` / ``_column_of``). With no
-    loop (a build called off any loop), the turn is the sleep.
-    """
-
-    __slots__ = ("_handed", "_loop", "_since")
-
-    def __init__(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
-        self._since = time.monotonic()
-        self._loop = loop
-        self._handed = threading.Event()
-
-    def take(self) -> None:
-        """let the caller's loop run, when the build has held the lock its share.
-
-        :return: nothing
-        :rtype: None
-        """
-        if time.monotonic() - self._since >= _HOLD_SECONDS:
-            self.hand()
-
-    def hand(self) -> None:
-        """let the caller's loop run now.
-
-        :return: nothing
-        :rtype: None
-        """
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            time.sleep(_TURN_SECONDS)
-        else:
-            self._handed.clear()
-            loop.call_soon_threadsafe(self._handed.set)
-            self._handed.wait(_TURN_WAIT_SECONDS)
-        self._since = time.monotonic()
 
 
 def _converted(convert: Any, values: Sequence[Any], turns: _Turns) -> list[Any]:
@@ -378,7 +319,7 @@ def copy_rows_arrow(
     Blocking, and CPU for as long as the rows are many: run it on a thread, as the JSON request is encoded. The rows
     are the caller's Python objects, so reading them holds the interpreter lock wherever it runs (handing them to a
     process would hold it as long, to pickle them); the build takes turns with the caller's event loop instead
-    (:class:`_Turns`), holding the lock at most a few milliseconds at a time.
+    (:class:`~threetears.core.loop_turns.LoopTurns`), holding the lock at most a few milliseconds at a time.
 
     :param columns: the columns each row supplies, in order
     :ptype columns: Sequence[str]
@@ -652,7 +593,7 @@ def write_request_rows(
     return ArrowCopyRows(ipc, rows_digest(ipc), []), int(piece.num_rows)
 
 
-def arrow_python_columns(table: Any, names: Sequence[str]) -> list[list[Any]]:
+def arrow_python_columns(table: Any, names: Sequence[str], turns: _Turns | None = None) -> list[list[Any]]:
     """the values of ``names`` in ``table`` as Python objects, a column each, read a slice at a time
     (:data:`_PYTHON_VALUES`) so the caller's loop runs between them. Run it on a thread.
 
@@ -660,6 +601,9 @@ def arrow_python_columns(table: Any, names: Sequence[str]) -> list[list[Any]]:
     :ptype table: pyarrow.Table
     :param names: the columns
     :ptype names: Sequence[str]
+    :param turns: the thread's turns with the caller's loop, handed one between slices; None to let the switch
+        interval share the lock
+    :ptype turns: LoopTurns | None
     :return: each column's values, in row order
     :rtype: list[list[Any]]
     """
@@ -669,6 +613,8 @@ def arrow_python_columns(table: Any, names: Sequence[str]) -> list[list[Any]]:
         values: list[Any] = []
         for start in range(0, len(column), _PYTHON_VALUES):
             values.extend(column.slice(start, _PYTHON_VALUES).to_pylist())
+            if turns is not None:
+                turns.take()
         columns.append(values)
     return columns
 

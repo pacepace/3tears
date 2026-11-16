@@ -36,7 +36,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Any, Literal, TYPE_CHECKING
+from typing import Annotated, Any, Final, Literal, TYPE_CHECKING
 from urllib.parse import urlparse, urlsplit
 from urllib.request import url2pathname
 
@@ -60,6 +60,7 @@ from threetears.core.backends.protocol import (
     parse_rowcount,
 )
 from threetears.core.declared import whole_read
+from threetears.core.loop_turns import LoopTurns, emptied, stepped
 from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING, WHOLE_COPY_ROWS, note_reach_text
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
@@ -330,7 +331,7 @@ def _request_measure(transport: Any) -> Callable[[str, list[Any]], int | None] |
 
 
 def _bulk_params(
-    schema: TableSchema, table: str, rows: Sequence[Mapping[str, Any]], form: str
+    schema: TableSchema, table: str, rows: Sequence[Mapping[str, Any]], form: str, turns: LoopTurns | None = None
 ) -> tuple[list[Any], list[list[Any]]]:
     """the columns a bulk write names, and every row's parameters for them, in the rows' order.
 
@@ -342,6 +343,8 @@ def _bulk_params(
     :ptype rows: Sequence[Mapping[str, Any]]
     :param form: ``upsert`` or ``copy``, for the refusal
     :ptype form: str
+    :param turns: the building thread's turns with the caller's loop, taken a row at a time; None to take none
+    :ptype turns: LoopTurns | None
     :return: the columns, and each row's parameters
     :rtype: tuple[list[Any], list[list[Any]]]
     :raises ValueError: when the rows disagree on which columns they supply
@@ -350,6 +353,8 @@ def _bulk_params(
     names = [c.name for c in columns]
     params: list[list[Any]] = []
     for row in rows:
+        if turns is not None:
+            turns.take()
         data = dict(row)
         if [c.name for c in schema_sql.insert_columns_for_data(schema, data)] != names:
             raise ValueError(
@@ -368,6 +373,7 @@ def _upsert_batches(
     max_rows: int,
     max_bytes: int,
     measure: Callable[[str, list[Any]], int | None] | None,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> tuple[list[Any], list[list[list[Any]]]]:
     """:meth:`SqlBackend.upsert_many`'s columns and statement batches: the CPU half of the write, run off the loop.
 
@@ -387,15 +393,54 @@ def _upsert_batches(
     :ptype max_bytes: int
     :param measure: the transport's measure of a statement's request, or None
     :ptype measure: Callable[[str, list[Any]], int | None] | None
+    :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`): every row's parameters
+        built and measured a row at a time, 33,786 rows of 179 columns a second of Python that held the loop 15 ms at
+        a time under the default switch interval (the WD2 bench, 2026-11-16); None off any loop
+    :ptype loop: asyncio.AbstractEventLoop | None
     :return: the columns, and the batches of rows' parameters
     :rtype: tuple[list[Any], list[list[list[Any]]]]
     :raises ValueError: when the rows disagree on which columns they supply
     """
-    columns, params = _bulk_params(schema, table, rows, "upsert")
+    turns = LoopTurns(loop)
+    columns, params = _bulk_params(schema, table, rows, "upsert", turns)
     batches = schema_sql.bulk_insert_batches(
-        schema, columns, params, max_rows=max_rows, max_bytes=max_bytes, request_bytes=measure
+        schema, columns, params, max_rows=max_rows, max_bytes=max_bytes, request_bytes=measure, turns=turns
     )
     return columns, list(batches)
+
+
+#: a bulk statement binding more parameters than this has its text and parameters laid out on a thread
+#: (:func:`_bulk_statement`), as the rail's connection builds and encodes its request (``_OFFLOAD_PARAMS``)
+_STATEMENT_ON_THREAD_PARAMS: Final = 256
+
+
+def _bulk_statement(
+    schema: TableSchema,
+    columns: list[Any],
+    batch: Sequence[Sequence[Any]],
+    texts: dict[int, str],
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> tuple[str, tuple[Any, ...]]:
+    """one batch's bulk INSERT (:func:`schema_sql.build_bulk_insert_sql`) and its parameters, flattened in row order.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param columns: the columns every row supplies
+    :ptype columns: list[Any]
+    :param batch: each row's parameters, in the order of ``columns``
+    :ptype batch: Sequence[Sequence[Any]]
+    :param texts: the statements' texts made so far, by their row count; this one's added when new
+    :ptype texts: dict[int, str]
+    :param loop: the caller's event loop, handed the thread's turns a row at a time; None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: the statement's text and its parameters
+    :rtype: tuple[str, tuple[Any, ...]]
+    """
+    sql = texts.get(len(batch))
+    if sql is None:
+        sql = texts[len(batch)] = schema_sql.build_bulk_insert_sql(schema, rows=len(batch), columns=columns)
+    rows = batch if loop is None else stepped(batch, LoopTurns(loop), every=1)
+    return sql, tuple(value for row in rows for value in row)
 
 
 def _copy_batches(
@@ -406,6 +451,7 @@ def _copy_batches(
     max_rows: int,
     max_bytes: int,
     conn: Any,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> tuple[list[str], list[list[tuple[Any, ...]]]]:
     """:meth:`SqlBackend.copy_many`'s column names and copy batches: the CPU half of the copy, run off the loop.
 
@@ -424,12 +470,16 @@ def _copy_batches(
     :ptype max_bytes: int
     :param conn: the connection the copies go to, whose ``copy_request_bytes`` measures a request
     :ptype conn: Any
+    :param loop: the caller's event loop, handed the thread's turns as :func:`_upsert_batches` hands them; None off
+        any loop
+    :ptype loop: asyncio.AbstractEventLoop | None
     :return: the column names, and the batches of records
     :rtype: tuple[list[str], list[list[tuple[Any, ...]]]]
     :raises ValueError: when the rows disagree on which columns they supply, or a column is one a
         copy cannot write
     """
-    columns, params = _bulk_params(schema, table, rows, "copy")
+    turns = LoopTurns(loop)
+    columns, params = _bulk_params(schema, table, rows, "copy", turns)
     names = [c.name for c in columns]
     unwritable = [c for c in columns if not schema_sql.copy_writes(c)]
     if unwritable:
@@ -457,6 +507,7 @@ def _copy_batches(
         base_bytes=base,
         # each row after the first follows a ", " in the request's list of rows
         position_bytes=lambda position: 2 if position else 0,
+        turns=turns,
     )
     return names, [[tuple(values) for values in batch] for batch in batches]
 
@@ -943,11 +994,23 @@ class SqlL3Backend:
                 max_rows=max_rows,
                 max_bytes=max_bytes,
                 measure=_request_measure(conn if conn is not None else self._pool),
+                loop=asyncio.get_running_loop(),
             )
+            # each statement's text and parameters laid out on a thread too: a page's text names every parameter
+            # (32,000 of them at 179 columns) and its parameters are flattened a value at a time, 7-8 ms a statement
+            # on the loop, 187 statements a 33,786-row write (the WD2 bench, 2026-11-16). One text a statement size
+            texts: dict[int, str] = {}
             for batch in batches:
-                sql = schema_sql.build_bulk_insert_sql(schema, rows=len(batch), columns=columns)
-                await self._execute(sql, *(value for row in batch for value in row), conn=conn)
+                sql, params = (
+                    await asyncio.to_thread(_bulk_statement, schema, columns, batch, texts, asyncio.get_running_loop())
+                    if len(batch) * len(columns) > _STATEMENT_ON_THREAD_PARAMS
+                    else _bulk_statement(schema, columns, batch, texts)
+                )
+                await self._execute(sql, *params, conn=conn)
                 written += len(batch)
+            # the rows' parameters are this call's alone: freed as it returned, 33,786 rows of 179 held the loop
+            # 10-15 ms (the WD2 bench, 2026-11-16), so they are freed on a thread, taking turns with the loop
+            await asyncio.to_thread(emptied, [*batches, batches], asyncio.get_running_loop())
         return written
 
     async def copy_many(
@@ -1002,7 +1065,14 @@ class SqlL3Backend:
             return 0
         # the rows' values built, ordered and sized on a thread, as an upsert's are (_copy_batches)
         names, batches = await asyncio.to_thread(
-            _copy_batches, schema, table, rows, max_rows=max_rows, max_bytes=max_bytes, conn=conn
+            _copy_batches,
+            schema,
+            table,
+            rows,
+            max_rows=max_rows,
+            max_bytes=max_bytes,
+            conn=conn,
+            loop=asyncio.get_running_loop(),
         )
         if len(rows) >= WHOLE_COPY_ROWS and getattr(conn, "copy_request_bytes", None) is None:
             await conn.execute("SELECT set_config($1, '1', true)", NOTE_WHOLE_SETTING)
@@ -1010,6 +1080,8 @@ class SqlL3Backend:
         for batch in batches:
             await conn.copy_records_to_table(table, records=batch, columns=names)
             written += len(batch)
+        # the records are this call's alone, freed on a thread as an upsert's parameters are (upsert_many)
+        await asyncio.to_thread(emptied, [*batches, batches], asyncio.get_running_loop())
         _logger.debug("bulk copy", extra={"extra_data": {"table": table, "rows": written}})
         return written
 

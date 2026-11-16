@@ -34,6 +34,7 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
+from threetears.core.loop_turns import LoopTurns, stepped
 from threetears.core.backends.arrow_copy import (
     CONFLICT_COLUMNS_FIELD,
     COPY_ARROW_FIELD,
@@ -2125,13 +2126,19 @@ class _ProxyConnection:
         """
         return _ProxyTransaction(self, self._backend, namespace)
 
-    def _tx_payload(self, query: str, params: Sequence[Any]) -> dict[str, Any]:
+    def _tx_payload(
+        self, query: str, params: Sequence[Any], loop: asyncio.AbstractEventLoop | None = None
+    ) -> dict[str, Any]:
         """the ``l3.tx.*`` request for one statement in the open transaction.
 
         :param query: parameterized SQL
         :ptype query: str
         :param params: query parameters
         :ptype params: Sequence[Any]
+        :param loop: the caller's event loop when this runs on a thread, handed the thread's turns while each
+            parameter is converted (a page's 32,000 held the loop 5-15 ms a statement under the default switch
+            interval, the WD2 bench, 2026-11-16); None on the loop
+        :ptype loop: asyncio.AbstractEventLoop | None
         :return: the request payload
         :rtype: dict[str, Any]
         """
@@ -2144,7 +2151,7 @@ class _ProxyConnection:
             "identity_token": self._backend.forwarded_identity_token(),
             "tx_id": str(self.tx_id),
             "query": query,
-            "params": [transport_param(p) for p in params],
+            "params": [transport_param(p) for p in (params if loop is None else stepped(params, LoopTurns(loop)))],
         }
 
     def statement_request_bytes(self, query: str, params: Sequence[Any]) -> int:
@@ -2213,7 +2220,9 @@ class _ProxyConnection:
             )
         offload = _offloaded(params)
         payload = (
-            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+            await asyncio.to_thread(self._tx_payload, query, params, asyncio.get_running_loop())
+            if offload
+            else self._tx_payload(query, params)
         )
         subject = Subjects.l3_tx("execute", namespace=self._backend.ns).path
         response = await self._backend.nats_request(subject, payload, offload_encode=offload)
@@ -2261,7 +2270,9 @@ class _ProxyConnection:
             )
         offload = _offloaded(params)
         payload = (
-            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+            await asyncio.to_thread(self._tx_payload, query, params, asyncio.get_running_loop())
+            if offload
+            else self._tx_payload(query, params)
         )
         subject = Subjects.l3_tx("fetchrow", namespace=self._backend.ns).path
         response = await self._backend.nats_request(subject, payload, offload_encode=offload)
@@ -2353,7 +2364,9 @@ class _ProxyConnection:
             )
         offload = _offloaded(params)
         payload = (
-            await asyncio.to_thread(self._tx_payload, query, params) if offload else self._tx_payload(query, params)
+            await asyncio.to_thread(self._tx_payload, query, params, asyncio.get_running_loop())
+            if offload
+            else self._tx_payload(query, params)
         )
         subject = Subjects.l3_tx("fetch", namespace=self._backend.ns).path
         response = await self._backend.nats_request(subject, payload, offload_encode=offload)
