@@ -120,6 +120,29 @@ test("a new version waits for the person, then the page reloads into it", async 
   await context.close();
 });
 
+test("an open page learns of a deploy without navigating: on return to view, and when the app asks", async (t) => {
+  if (skip) return t.skip(skip);
+  for (const how of ["visible", "check"]) {
+    app.setVersion("1");
+    const { context, page } = await openApp();
+    await page.evaluate(() => { window.sameDocument = true; });
+    app.setVersion(how === "visible" ? "2" : "3"); // a deploy; the page has no reason to navigate
+    await page.waitForTimeout(1500);
+    assert.equal(await page.evaluate(() => document.getElementById("update").hidden), true, `${how}: nothing looked yet`);
+    if (how === "visible") {
+      // an installed app brought back from the background (headless pages are always visible)
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    } else {
+      // the app knows a deploy is likely (its server said it restarted)
+      assert.equal(await page.evaluate(() => window.exampleWorker.then((w) => w.check())), true);
+    }
+    await page.waitForFunction(() => !document.getElementById("update").hidden);
+    assert.equal(await page.evaluate(() => window.sameDocument), true, `${how}: no navigation`);
+    assert.equal(await page.textContent("#version"), "version 1", `${how}: the running page was not replaced`);
+    await context.close();
+  }
+});
+
 test("the lock screen gets the app's now playing, and the page its display mode", async (t) => {
   if (skip) return t.skip(skip);
   const { context, page } = await openApp();
