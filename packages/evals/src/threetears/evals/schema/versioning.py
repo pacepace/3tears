@@ -189,6 +189,13 @@ the document, so extending one is a major. Each, and why:
   only from a random draw, so a new kind of sample changes what an older build may claim from it.
 - ``StopReason`` — the normalized provider contract, which already has a catch-all for output cut short by a
   cause it does not name (``truncated``), kept apart from a call that failed (``error``).
+- On a blind read: ``BlindSlot``, ``BlindAsk``, ``BlindPreferenceAnswer`` — what an item showed and asked, and
+  what an answer gave, which its ratings are read from (who made an answer is a ``Maker``, above: a person's is read
+  as people's and a model's apart, never pooled); ``BlindPreferenceTest`` and ``BlindPreference.verdict`` — which
+  test a preference was read by, and what it read.
+- The reading states a stored preference carries (``ReadingState``, ``SetAsideReason``, ``WithheldReason``,
+  ``NotAvailableReason``, ``Coordinate``) — the one closed set every reader shares; a new member is made in one
+  module, for every reader at once.
 - Every ``doc_type`` — a new type is a new model, never a new value.
 
 **A minor's ledger entry asserts its additivity in words**, and review holds it there, because a schema diff
@@ -659,6 +666,7 @@ DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyTyp
         "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
         # Listed newest first by its time, a bounded read (``EvalStorage.list_analyst_gaps``).
         "eval_analyst_gap": _ADDRESSED_EVERYWHERE | {"created_at"},
+        "blind_read": _ADDRESSED_EVERYWHERE | {"campaign_id", "created_at"},
     }
 )
 
@@ -936,7 +944,19 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   looks as not recorded (no count of looks, as neither bound). Neither is in a variant key, measurement context, declaration snapshot or fingerprint. An older build
 #:   reading a campaign at this minor keeps both opaquely and writes them back.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 3
+#: - **v17.4** — a new durable type, the blind read: ``blind_read`` (``BlindRead``), a seeded random order of a
+#:   campaign's judged outputs, the answers given to it (a person's, relayed by a caller the host attests for them, or
+#:   the declared reviewer model's, taken only from its own review job), and its close. Stored by the host door's
+#:   actions (``blind_read_create`` and its siblings); the quick path still recomputes its read and stores none. Its
+#:   report stores the judge's scores against each reader as counts only (``BlindVerdictTable``: the confusion counts
+#:   on pass/fail, the full cross-table on 1-5; one reading per model that served a reviewer's answers), never a
+#:   kappa, bar verdict, tier or results-needed figure (#1208), so retiring a statistic never moves this shape. Its
+#:   optional fields ``reviewer``, ``review_job_id`` and ``closed_early`` are written only when set. No other durable
+#:   shape moves, so every document v17.3 stored is stored byte for byte as before. An older build never reads the
+#:   type (every read selects by ``doc_type``); its operator wipe of durable documents leaves these in place, and its
+#:   deletes never reach them (a new doc type's two disclosed costs, above).
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 4
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

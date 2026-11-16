@@ -7,13 +7,17 @@ actions) calls these four and re-implements none of them:
   same answers under the same criteria and seed draw the same order, whichever order the store lists them in, so a
   door that keeps no document recomputes the draw.
 - :func:`blind_sheet` is the blinded view: content and criteria, no arm, run or result, no judge score.
-- :func:`sample_standing` says whether a rater's answered items are the first ``m`` of the order (a random sample)
+- :func:`read_sample` says whether a rater's answered items are the first ``m`` of the order (a random sample)
   or any other set (``selected``).
-- :func:`close_blind_read` turns the answers into ratings and reads them: agreement per criterion with its tier, a
-  pass/fail criterion's two-by-two, the preference with its test, and each rater's standing.
+- :func:`close_blind_read` turns the answers into ratings and reads them: the judge's scores against each reader
+  configuration per criterion, stored as counts (on pass/fail the confusion counts, on 1-5 the full cross-table), the
+  preference with its test, and each rater's standing. Nothing derived from those counts is stored (#1208): a host's
+  door reads its catch rates off them, and the kappa and tier the quick path's print still states are computed at the
+  close beside them (:class:`BlindAgreementReading`).
 
 **Who answered is never mixed.** A person's answers are read against the judge as agreement with people. A reference
-reviewer's (a model's) are read apart, as agreement with that model, and decide a criterion's tier only where no
+reviewer's (a model's) are read apart, as agreement with that model, once per model that served its answers (two
+served models under one reviewer id are two readings, never pooled), and decide a criterion's tier only where no
 person has answered on it. A reference reviewer that is the judge's own model is refused as calibration: its
 answers repeat the judge and check nothing. Where a person and a reference reviewer answered the same outputs, their
 agreement with each other is reported, since the anchor is itself a measurement.
@@ -27,9 +31,11 @@ which treats the raters as fixed.
 first that-many items of the order and no others, and only from a rater who has answered all of them. Before that it
 is ``withheld``: no direction, count or p. A sign test re-read after every item and stopped when it separates is
 falsely separated about 18% of the time at a 5% level, and a running count tells the rater which arm is ahead.
-Answers past the planned length never enter it, so reading on is not a second look.
-``tests/test_simulated_blind_read.py`` holds the sign test's level, a rater who stops when it looks good, the
-prefix's lack of bias and the slot balance.
+Answers past the planned length never enter it, so reading on is not a second look. **A read closed early** (before
+any rater answered every planned item) is the one exception, and it is read once, at the close: by the anytime test,
+the bounded test on shares in the drawn order with its stakes fixed for the planned pair items, whose p holds at any
+stop. ``tests/test_simulated_blind_read.py`` holds the sign test's level, a rater who stops when it looks good (and one
+who closes early when it looks good), the prefix's lack of bias and the slot balance.
 
 This module computes numbers and prints nothing. It imports the stored shapes, the tier rules and the agreement and
 statistics code, and no page, form or quick-path module.
@@ -40,6 +46,7 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Final, Literal, NamedTuple
 
 from threetears.evals.analysis.agreement import (
@@ -52,7 +59,7 @@ from threetears.evals.analysis.agreement import (
     judge_self_agreement,
     person_scores_by_result,
 )
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, bounded_separation_p, cohen_kappa, wilson_interval
+from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, bounded_separation_p, cohen_kappa
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier, agreement_statistic, calibration_criterion
 from threetears.evals.schema.blind_read import (
     BlindAgreement,
@@ -65,7 +72,6 @@ from threetears.evals.schema.blind_read import (
     BlindOutput,
     BlindPreference,
     BlindPreferenceTest,
-    BlindRaterKind,
     BlindRead,
     BlindReadReport,
     BlindSheet,
@@ -79,7 +85,7 @@ from threetears.evals.schema.blind_read import (
     SheetOutput,
 )
 from threetears.evals.schema.hashing import canonical_digest
-from threetears.evals.schema.reading_states import SampleKind, StateOf
+from threetears.evals.schema.reading_states import Maker, SampleKind, StateOf
 from threetears.evals.schema.models import (
     SCALES,
     CalibrationRating,
@@ -87,6 +93,9 @@ from threetears.evals.schema.models import (
     JudgeEvidence,
     RaterKind,
     RubricDim,
+    RubricScale,
+    fingerprint_criterion,
+    fingerprint_judged_output,
     utc_now_iso,
 )
 
@@ -105,6 +114,15 @@ EXCLUDED_NO_ANSWER: Final = "an arm gave no judged answer"
 
 #: Why a case is left out of the order: an arm's answers on it were judged, and none has stored evidence to show.
 EXCLUDED_NO_EVIDENCE: Final = "no stored evidence"
+
+#: Why a case is left out of the order: an arm's answers on it were judged on other wording of a criterion than the
+#: read asks (the template was edited since), so a rating given on the read would be bound to a question its rater
+#: was not shown.
+EXCLUDED_REWORDED: Final = "judged on other wording of a criterion"
+
+#: Why a case is left out of the order: an arm's stored evidence is not the output its judge score was given on, so a
+#: rater would be shown other text than the judge read.
+EXCLUDED_OTHER_TEXT: Final = "stored evidence differs from what was judged"
 
 #: Why a case is shown once, as a single, with no preference asked: both arms gave byte-identical outputs.
 EXCLUDED_IDENTICAL: Final = "identical outputs"
@@ -127,7 +145,9 @@ class BlindClose(NamedTuple):
     ``ratings`` are the read's own answers as ratings, a person's as a person's (``source`` naming the read) and a
     model's as an agent's: never a person's. ``random`` holds the ids of those given by a rater whose answered items
     are a random sample, which is what a reading that needs a random sample admits. ``reviewed`` says which ratings
-    are a model reviewer's, by rating id, with the reviewer's model id: read off the answer each came from. No code
+    are a model reviewer's, by rating id, with the reviewer's model id: read off the answer each came from. ``agreement``
+    is each stored agreement (``read.report.agreement``, counts only) beside the kappa and tier the quick path's print
+    still reads, computed here and never stored. No code
     reads that out of a rater's name. It stands in for the typed ``made_by`` a rating is to carry: when a rating
     records who made it (a person, or a model with its id, served model and the read it answered), this map and the
     ``agent`` kind it qualifies are what that field replaces.
@@ -137,6 +157,7 @@ class BlindClose(NamedTuple):
     ratings: list[CalibrationRating]
     random: frozenset[str]
     reviewed: Mapping[str, str]
+    agreement: tuple[BlindAgreementReading, ...] = ()
 
 
 def _sha(*parts: object) -> str:
@@ -162,6 +183,17 @@ def _usable(result: EvalResult, criteria: Sequence[RubricDim]) -> dict[str, str]
     return fingerprints if len(output) == 1 else None
 
 
+def _judged_as_asked(fingerprints: Mapping[str, str], criteria: Sequence[RubricDim]) -> bool:
+    """Whether the judge read every criterion in the words the read asks it in.
+
+    A rating is bound to the criterion the judge read (its fingerprint, which the rating carries), and a rater is shown
+    the criterion as the read words it. Templates are edited in place, so the two can differ: a result judged before
+    an edit would have a person answer the new question and the answer be stored, and read, as a label of the old one.
+    Such a result is left out of the draw, and counted, so what a rater is shown is what each rating is bound to.
+    """
+    return all(fingerprints[dim.name] == fingerprint_criterion(dim) for dim in criteria)
+
+
 def draw_blind_read(
     results: Iterable[EvalResult],
     evidence: Mapping[str, JudgeEvidence],
@@ -179,8 +211,11 @@ def draw_blind_read(
 ) -> BlindRead:
     """Draw a blind read: the population, one seeded order over it, and the items.
 
-    The population is every case on which each arm has a result judged on every criterion with stored evidence. One
-    result per arm per case is drawn among the case's repeats. The order is one seeded permutation of the cases.
+    The population is every case on which each arm has a result judged on every criterion, in the words ``criteria``
+    gives them, with stored evidence that is the output judged. A result judged on other wording (a template edited
+    since) or whose stored evidence is other text is left out and counted, so every rating a rater gives on the read
+    is bound to the criterion and the output the rater was shown. One result per arm per case is drawn among the
+    case's repeats. The order is one seeded permutation of the cases.
     With two arms, each item's slots are a seeded coin in blocks of two pair items, so any prefix of ``2m`` pairs
     holds ``m`` with the control in slot A. Two byte-identical outputs cannot be told apart, so such a case is shown
     once, as a single with no preference asked, and counted.
@@ -232,6 +267,8 @@ def draw_blind_read(
     # Each arm's usable results per case, and the cases an arm answered with no usable result.
     usable: dict[str, dict[str, list[tuple[EvalResult, dict[str, str]]]]] = {arm.key: {} for arm in arms}
     unshown: dict[str, set[str]] = {arm.key: set() for arm in arms}
+    # The cases an arm's judged answer was set aside on, with why: judged on other wording, or other text stored.
+    set_aside: dict[str, dict[str, str]] = {arm.key: {} for arm in arms}
     cases: set[str] = set()
     for result in results:
         arm_key = arm_of_run.get(result.eval_run_id)
@@ -241,8 +278,14 @@ def draw_blind_read(
         fingerprints = _usable(result, criteria)
         if fingerprints is None:
             continue
+        if not _judged_as_asked(fingerprints, criteria):
+            set_aside[arm_key].setdefault(result.test_case_id, EXCLUDED_REWORDED)
+            continue
         if result.id not in evidence:
             unshown[arm_key].add(result.test_case_id)
+            continue
+        if fingerprint_judged_output(evidence[result.id]) != _output_fingerprint(result, criteria):
+            set_aside[arm_key].setdefault(result.test_case_id, EXCLUDED_OTHER_TEXT)
             continue
         usable[arm_key].setdefault(result.test_case_id, []).append((result, fingerprints))
     excluded: dict[str, int] = {}
@@ -250,10 +293,13 @@ def draw_blind_read(
     for case in sorted(cases):
         if all(case in usable[arm.key] for arm in arms):
             population.append(case)
-        elif any(case in unshown[arm.key] and case not in usable[arm.key] for arm in arms):
-            excluded[EXCLUDED_NO_EVIDENCE] = excluded.get(EXCLUDED_NO_EVIDENCE, 0) + 1
-        else:
-            excluded[EXCLUDED_NO_ANSWER] = excluded.get(EXCLUDED_NO_ANSWER, 0) + 1
+            continue
+        missing = [arm.key for arm in arms if case not in usable[arm.key]]
+        reason = next(
+            (set_aside[key][case] for key in missing if case in set_aside[key]),
+            EXCLUDED_NO_EVIDENCE if any(case in unshown[key] for key in missing) else EXCLUDED_NO_ANSWER,
+        )
+        excluded[reason] = excluded.get(reason, 0) + 1
     digest = canonical_digest(
         {
             "blind_read_population": sorted(
@@ -357,13 +403,18 @@ def _pick(
     )
 
 
-def blind_sheet(read: BlindRead, *, rater: str | None = None) -> BlindSheet:
+def blind_sheet(read: BlindRead, *, rater: str | None = None, label_keys: bool = True) -> BlindSheet:
     """The blinded view of ``read``: what a rater is shown, and nothing else.
 
     :param read: The read.
     :ptype read: BlindRead
     :param rater: Whose progress to report (``answered`` and ``next``); None reports none.
     :ptype rater: str | None
+    :param label_keys: Whether each output carries its label key (its fingerprint and each criterion's), which a
+        labels file needs to pair a label with its output away from the read. A host's door answers by item and slot
+        and leaves them out: a fingerprint is also what a judge score carries, so a rater who can read the scores
+        could pair it with its arm.
+    :ptype label_keys: bool
     :return: The sheet: no arm, run, result or case id, and no judge score.
     :rtype: BlindSheet
     """
@@ -393,8 +444,8 @@ def blind_sheet(read: BlindRead, *, rater: str | None = None) -> BlindSheet:
                     SheetOutput(
                         slot=output.slot,
                         text=output.evidence.artifact,
-                        output_fingerprint=output.output_fingerprint,
-                        criterion_fingerprints=output.criterion_fingerprints,
+                        output_fingerprint=output.output_fingerprint if label_keys else None,
+                        criterion_fingerprints=output.criterion_fingerprints if label_keys else {},
                     )
                     for output in item.outputs
                 ],
@@ -417,7 +468,7 @@ def _answered_in_full(read: BlindRead, item: BlindItem, answer: BlindAnswer) -> 
     return not ("preference" in read.ask and len(item.outputs) == 2 and answer.prefer is None)
 
 
-def sample_standing(read: BlindRead, rater: str, kind: BlindRaterKind = "person") -> BlindSample:
+def read_sample(read: BlindRead, rater: str, kind: Maker = "person") -> BlindSample:
     """Whether ``rater``'s answered items are a random sample: the first ``m`` of the order, or not.
 
     A skip is an answer, so a skipped item keeps a prefix a prefix; so is an item answered in part. Both follow
@@ -429,18 +480,18 @@ def sample_standing(read: BlindRead, rater: str, kind: BlindRaterKind = "person"
     :param rater: The rater, as their answers name them.
     :ptype rater: str
     :param kind: Whether the rater is a person or a model: the two never share a sample, whatever they are named.
-    :ptype kind: BlindRaterKind
+    :ptype kind: Maker
     :return: The sample: ``random`` with its counts, ``selected``, or ``none``.
     :rtype: BlindSample
     """
-    own = [answer for answer in read.answers if (answer.rater, answer.rater_kind) == (rater, kind)]
+    own = [answer for answer in read.answers if (answer.rater, answer.made_by) == (rater, kind)]
     answered = {answer.item for answer in own}
     order = [item.item for item in read.items]
     items = {item.item: item for item in read.items}
     sample: SampleKind = "none" if not answered else "random" if answered == set(order[: len(answered)]) else "selected"
     return BlindSample(
         rater=rater,
-        rater_kind=kind,
+        made_by=kind,
         sample=sample,
         answered=len(answered),
         skipped=len({answer.item for answer in own if answer.skipped}),
@@ -480,6 +531,45 @@ def exact_sign_test_p(successes: int, trials: int) -> float | None:
     return min(1.0, float(2 * tail / 2**trials))
 
 
+def check_answer(read: BlindRead, answer: BlindAnswer) -> None:
+    """Refuse an answer ``read`` does not ask: to no item of it, a verdict on a slot the item does not show or on no
+    criterion of the read, a score its criterion's scale cannot hold, or a preference of an item that asks none.
+
+    Every door checks an answer here before it keeps one, so a close never meets an answer it cannot read.
+
+    :param read: The read.
+    :ptype read: BlindRead
+    :param answer: The answer offered.
+    :ptype answer: BlindAnswer
+    :raises ValueError: Naming what the read does not ask.
+    """
+    item = next((each for each in read.items if each.item == answer.item), None)
+    if item is None:
+        raise ValueError(f"an answer names item {answer.item!r}, which is no item of blind read {read.id!r}")
+    _refuse_unasked_verdicts(read, item, answer)
+    if answer.prefer is not None and not ("preference" in read.ask and len(item.outputs) == 2):
+        raise ValueError(f"item {answer.item!r} asks no preference, and the answer gives one")
+
+
+def _refuse_unasked_verdicts(read: BlindRead, item: BlindItem, answer: BlindAnswer) -> None:
+    """Refuse a verdict on a slot ``item`` does not show or on no criterion of ``read``, or off its scale.
+
+    :raises ValueError: Naming the verdict.
+    """
+    slots = {output.slot for output in item.outputs}
+    scales = {dim.name: dim.scale for dim in read.criteria}
+    for verdict in answer.verdicts:
+        scale = scales.get(verdict.dim)
+        if verdict.slot not in slots or scale is None:
+            raise ValueError(
+                f"the answer to item {answer.item!r} gives a verdict on slot {verdict.slot} and {verdict.dim!r}, "
+                "which the item does not ask"
+            )
+        low, high = SCALES[scale].scores
+        if not low <= verdict.score <= high:
+            raise ValueError(f"{verdict.score!r} is not on the {scale} scale of {verdict.dim!r}")
+
+
 def _ratings_of(read: BlindRead) -> list[tuple[CalibrationRating, BlindAnswer]]:
     """The read's answers as ratings, each bound to the output and criterion it was given on, beside the answer it
     came from: who gave a rating is read off that answer, never off the rating's rater name.
@@ -495,18 +585,11 @@ def _ratings_of(read: BlindRead) -> list[tuple[CalibrationRating, BlindAnswer]]:
         if item is None:
             raise ValueError(f"an answer names item {answer.item!r}, which is no item of blind read {read.id!r}")
         outputs = {output.slot: output for output in item.outputs}
-        person = answer.rater_kind == "person"
+        person = answer.made_by == "person"
+        _refuse_unasked_verdicts(read, item, answer)
         for verdict in answer.verdicts:
-            output = outputs.get(verdict.slot)
-            scale = scales.get(verdict.dim)
-            if output is None or scale is None:
-                raise ValueError(
-                    f"the answer to item {answer.item!r} gives a verdict on slot {verdict.slot} and {verdict.dim!r}, "
-                    "which the item does not ask"
-                )
-            low, high = SCALES[scale].scores
-            if not low <= verdict.score <= high:
-                raise ValueError(f"{verdict.score!r} is not on the {scale} scale of {verdict.dim!r}")
+            output = outputs[verdict.slot]
+            scale = scales[verdict.dim]
             rating = CalibrationRating(
                 scope_id=read.scope_id,
                 run_id=output.run_id,
@@ -530,18 +613,106 @@ def _ratings_of(read: BlindRead) -> list[tuple[CalibrationRating, BlindAnswer]]:
     return list(ratings.values())
 
 
-def _same_family(reviewer: str, judge_model: str | None) -> bool:
-    """Whether two model ids name one provider: the part before the first ``/``, where both have one."""
+def shares_family(reviewer: str, judge_model: str | None) -> bool:
+    """Whether two model ids name one provider: the part before the first ``/``, where both have one.
+
+    :param reviewer: A reviewer model's id.
+    :ptype reviewer: str
+    :param judge_model: The judge's served model, or None where unrecorded.
+    :ptype judge_model: str | None
+    :return: Whether the two may share a lean their agreement cannot show.
+    :rtype: bool
+    """
     if judge_model is None or "/" not in reviewer or "/" not in judge_model:
         return False
     return reviewer.split("/", 1)[0] == judge_model.split("/", 1)[0]
 
 
+# --- what is read off a stored table of counts --------------------------------------------------------------------
+
+
+class PassFailCounts(NamedTuple):
+    """A pass/fail table's four counts, named: the reader down, the judge across."""
+
+    both_fail: int
+    reader_fail_judge_pass: int
+    reader_pass_judge_fail: int
+    both_pass: int
+
+
+def pass_fail_counts(table: BlindVerdictTable) -> PassFailCounts | None:
+    """The four confusion counts of a pass/fail table; None for a 1-5 one, which has no fixed pass.
+
+    :param table: A stored table.
+    :ptype table: BlindVerdictTable
+    :return: The counts, or None.
+    :rtype: PassFailCounts | None
+    """
+    if table.scores != list(SCALES["pass_fail"].scores):
+        return None
+    (both_fail, fail_pass), (pass_fail, both_pass) = table.counts
+    return PassFailCounts(both_fail, fail_pass, pass_fail, both_pass)
+
+
+def agreed_pairs(table: BlindVerdictTable) -> int:
+    """How many pairs the reader and the judge gave the same score.
+
+    :param table: A stored table.
+    :ptype table: BlindVerdictTable
+    :return: The count on the table's diagonal.
+    :rtype: int
+    """
+    return sum(table.counts[index][index] for index in range(len(table.scores)))
+
+
+def single_verdicts(table: BlindVerdictTable) -> tuple[int | None, int | None]:
+    """The one score each side gave every pair, where it gave only one: the reader's, then the judge's.
+
+    Where one side gave a single verdict, chance alone accounts for every agreement, so kappa is 0 or undefined at
+    any agreement; the counts say what was seen.
+
+    :param table: A stored table.
+    :ptype table: BlindVerdictTable
+    :return: ``(reader's one score or None, judge's one score or None)``; both None on an empty table.
+    :rtype: tuple[int | None, int | None]
+    """
+    rows = [score for score, row in zip(table.scores, table.counts, strict=True) if sum(row)]
+    columns = [score for index, score in enumerate(table.scores) if sum(row[index] for row in table.counts)]
+    return (rows[0] if len(rows) == 1 else None, columns[0] if len(columns) == 1 else None)
+
+
+def table_kappa(table: BlindVerdictTable, scale: RubricScale) -> float | None:
+    """Cohen's kappa over a table's pairs, quadratic-weighted on 1-5, read at load from the stored counts. Only the
+    quick path's print still states it; no host surface serves it (#1208).
+
+    :param table: A stored table.
+    :ptype table: BlindVerdictTable
+    :param scale: The criterion's scale.
+    :ptype scale: RubricScale
+    :return: The kappa; None where undefined.
+    :rtype: float | None
+    """
+    pairs = [
+        (reader, judge)
+        for reader, row in zip(table.scores, table.counts, strict=True)
+        for judge, count in zip(table.scores, row, strict=True)
+        for _ in range(count)
+    ]
+    return cohen_kappa(pairs, list(table.scores), weights="quadratic" if scale == "ordinal" else "none")
+
+
 def _table(
-    scores: Mapping[tuple[str, str], Sequence[int]], by_id: Mapping[str, EvalResult], dim: str, judge: JudgeKey
+    scores: Mapping[tuple[str, str], Sequence[int]],
+    by_id: Mapping[str, EvalResult],
+    dim: str,
+    judge: JudgeKey,
+    scale: RubricScale,
 ) -> BlindVerdictTable:
-    """A pass/fail criterion's two-by-two over the pairs one judge's agreement read."""
-    cells = {(1, 1): 0, (1, 0): 0, (0, 1): 0, (0, 0): 0}
+    """Every pair one judge's agreement read on ``dim``, counted by the reader's score and the judge's."""
+    low, high = SCALES[scale].scores
+    values = list(range(low, high + 1))
+    at = {value: index for index, value in enumerate(values)}
+    counts = [[0] * len(values) for _ in values]
     for (result_id, rated_dim), given in scores.items():
         result = by_id.get(result_id)
         if rated_dim != dim or result is None or judge_key(result, dim) != judge:
@@ -549,29 +720,108 @@ def _table(
         score = result.judge_score(dim)
         assert score is not None  # its judge key was read off it
         for rater_score in given:
-            cells[(rater_score, score.score)] += 1
-    failed = cells[(0, 0)] + cells[(0, 1)]
-    return BlindVerdictTable(
-        both_pass=cells[(1, 1)],
-        rater_pass_judge_fail=cells[(1, 0)],
-        rater_fail_judge_pass=cells[(0, 1)],
-        both_fail=cells[(0, 0)],
-        detection=cells[(0, 0)] / failed if failed else None,
-        detection_interval=wilson_interval(cells[(0, 0)], failed) if failed else None,
-    )
+            counts[at[rater_score]][at[score.score]] += 1
+    return BlindVerdictTable(scores=values, counts=counts)
+
+
+@dataclass(frozen=True)
+class BlindAgreementReading:
+    """One stored agreement (its counts) beside what the quick path's print still reads at close: kappa with its
+    bounds against the bar, and the tier.
+
+    Computed when a read is closed, from its answers and the results, and never stored or served by a host's door
+    (#1208: a judge's agreement is stated as counts). The figures are kept here only for the quick path's console
+    lines, which a later change converts; the stored document holds :attr:`counts` alone.
+
+    :ivar counts: The stored agreement: who read, how many pairs, and the table.
+    :ivar exact_agreement: The share of pairs where both sides gave the same score.
+    :ivar kappa: Kappa on pass/fail, quadratic-weighted on 1-5, per person and pooled by result; None where undefined.
+    :ivar lower: Its one-sided 95% lower bound.
+    :ivar upper: Its one-sided 97.5% upper bound.
+    :ivar calibration: How the calibration criterion reads: met, not_met, undecided or insufficient.
+    :ivar results_needed: About how many more results would decide it; None once decided.
+    :ivar tier_before: The tier the judge's readings bore before these answers.
+    :ivar tier: The tier they bear with them, on this anchor.
+    :ivar decides: Whether this reading decides the criterion's tier.
+    :ivar shares_family: A model's reading only: the reviewer and the judge name one provider.
+    """
+
+    counts: BlindAgreement
+    exact_agreement: float
+    kappa: float | None
+    lower: float | None
+    upper: float | None
+    calibration: str
+    results_needed: int | None
+    tier_before: str
+    tier: str
+    decides: bool
+    shares_family: bool
+
+    @property
+    def dim(self) -> str:
+        """The criterion."""
+        return self.counts.dim
+
+    @property
+    def anchor(self) -> Maker:
+        """Whose answers the judge is read against."""
+        return self.counts.anchor
+
+    @property
+    def anchor_names(self) -> list[str]:
+        """The people, or the one reviewer."""
+        return self.counts.anchor_names
+
+    @property
+    def judge_model(self) -> str | None:
+        """The model that served the judge's scores."""
+        return self.counts.judge_model
+
+    @property
+    def pairs(self) -> int:
+        """The pairs read."""
+        return self.counts.pairs
+
+    @property
+    def results(self) -> int:
+        """The distinct results the pairs are of."""
+        return self.counts.results
+
+    @property
+    def blind_pairs(self) -> int:
+        """The pairs given on this blind read."""
+        return self.counts.blind_pairs
+
+    @property
+    def random_pairs(self) -> int:
+        """The pairs from a rater whose sample is random."""
+        return self.counts.random_pairs
+
+    @property
+    def cases(self) -> int:
+        """The distinct cases the pairs' results answer."""
+        return self.counts.cases
+
+    @property
+    def table(self) -> BlindVerdictTable:
+        """Every pair, counted."""
+        return self.counts.table
 
 
 def _agreements(
     ratings: Sequence[CalibrationRating],
     results: Sequence[EvalResult],
     *,
-    anchor: BlindRaterKind,
+    anchor: Maker,
     names: list[str] | None,
+    served_model: str | None,
     before: Mapping[JudgeKey, str],
     own: frozenset[str],
     random_ids: frozenset[str],
-) -> list[tuple[DimensionAgreement, BlindAgreement]]:
-    """One anchor's agreement with each judge on each criterion, with the tier it bears on that anchor."""
+) -> list[tuple[DimensionAgreement, BlindAgreementReading]]:
+    """One reader configuration's agreement with each judge on each criterion: the counts stored, and beside them
+    the tier it bears on that anchor, read at close and kept off the document."""
     if not ratings:
         return []
     rated_by: RaterKind = "person" if anchor == "person" else "agent"
@@ -582,38 +832,40 @@ def _agreements(
     }
     scores = person_scores_by_result(ratings, results, rated_by=rated_by)
     by_id = {result.id: result for result in results}
-    read: list[tuple[DimensionAgreement, BlindAgreement]] = []
+    read: list[tuple[DimensionAgreement, BlindAgreementReading]] = []
     for entry in agreement.dimensions:
         key = judge_key_of(entry)
         statistic = agreement_statistic(entry.scale, entry.kappa, entry.weighted_kappa)
         criterion = calibration_criterion(entry.n, entry.results, statistic, entry.agreement_interval)
         on_dim = [rating for rating in ratings if rating.rubric_dim == entry.rubric_dim]
+        anchor_names = names if names is not None else entry.raters
+        counts = BlindAgreement(
+            dim=entry.rubric_dim,
+            scale=entry.scale,
+            judge_model=entry.judge_model,
+            anchor=anchor,
+            anchor_names=anchor_names,
+            served_model=served_model,
+            pairs=entry.n,
+            results=entry.results,
+            cases=len(
+                {
+                    by_id[result_id].test_case_id
+                    for (result_id, rated_dim) in scores
+                    if rated_dim == entry.rubric_dim
+                    and result_id in by_id
+                    and judge_key(by_id[result_id], rated_dim) == key
+                }
+            ),
+            blind_pairs=sum(1 for rating in on_dim if rating.id in own),
+            random_pairs=sum(1 for rating in on_dim if rating.id in random_ids),
+            table=_table(scores, by_id, entry.rubric_dim, key, entry.scale),
+        )
         read.append(
             (
                 entry,
-                BlindAgreement(
-                    dim=entry.rubric_dim,
-                    scale=entry.scale,
-                    judge_model=entry.judge_model,
-                    anchor=anchor,
-                    anchor_names=names if names is not None else entry.raters,
-                    decides=anchor == "person",
-                    shares_family=anchor == "reference"
-                    and names is not None
-                    and _same_family(names[0], entry.judge_model),
-                    pairs=entry.n,
-                    results=entry.results,
-                    cases=len(
-                        {
-                            by_id[result_id].test_case_id
-                            for (result_id, rated_dim) in scores
-                            if rated_dim == entry.rubric_dim
-                            and result_id in by_id
-                            and judge_key(by_id[result_id], rated_dim) == key
-                        }
-                    ),
-                    blind_pairs=sum(1 for rating in on_dim if rating.id in own),
-                    random_pairs=sum(1 for rating in on_dim if rating.id in random_ids),
+                BlindAgreementReading(
+                    counts=counts,
                     exact_agreement=entry.exact_agreement,
                     kappa=statistic,
                     lower=None if entry.agreement_interval is None else entry.agreement_interval[0],
@@ -622,7 +874,8 @@ def _agreements(
                     results_needed=criterion.results_needed,
                     tier_before=before.get(key, "undetermined"),
                     tier=tiers[key].tier,
-                    table=_table(scores, by_id, entry.rubric_dim, key) if entry.scale == "pass_fail" else None,
+                    decides=anchor == "person",
+                    shares_family=anchor == "model" and shares_family(anchor_names[0], entry.judge_model),
                 ),
             )
         )
@@ -630,10 +883,17 @@ def _agreements(
 
 
 def _preference(
-    read: BlindRead, answers: Sequence[BlindAnswer], samples: Mapping[tuple[str, BlindRaterKind], BlindSample]
+    read: BlindRead,
+    answers: Sequence[BlindAnswer],
+    samples: Mapping[tuple[str, Maker], BlindSample],
+    *,
+    closing: bool = False,
+    served_model: str | None = None,
 ) -> BlindPreference:
     """One kind of rater's preference over the planned items, per case, with its test; withheld until a rater has
-    answered every planned item."""
+    answered every planned item, unless the read is being closed (``closing``), when an unfinished one is read by the
+    anytime test (:func:`_anytime_preference`). ``served_model`` is the model that served a model's ``answers``,
+    stated on the preference; None for people."""
     control = next(arm.key for arm in read.arms if arm.role == "control")
     candidate = next(arm.key for arm in read.arms if arm.role == "candidate")
     planned = read.items[: read.draw.planned_items]
@@ -644,10 +904,13 @@ def _preference(
         if answer.item in planned_ids:
             by_rater.setdefault(answer.rater, []).append(answer)
     done = sorted(rater for rater, own in by_rater.items() if {answer.item for answer in own} == planned_ids)
-    kind = answers[0].rater_kind
+    kind = answers[0].made_by
+    if not done and planned and closing:
+        return _anytime_preference(read, answers, samples, by_rater, served_model=served_model)
     if not done or not planned:
         return BlindPreference(
             anchor=kind,
+            served_model=served_model,
             anchor_names=sorted({answer.rater for answer in answers}),
             random=False,
             control=control,
@@ -707,6 +970,7 @@ def _preference(
             verdict = "improved" if for_candidate > for_control else "regressed"
     return BlindPreference(
         anchor=kind,
+        served_model=served_model,
         anchor_names=done,
         random=all(samples[(rater, kind)].sample == "random" for rater in done),
         control=control,
@@ -728,41 +992,118 @@ def _preference(
     )
 
 
+def _anytime_preference(
+    read: BlindRead,
+    answers: Sequence[BlindAnswer],
+    samples: Mapping[tuple[str, Maker], BlindSample],
+    by_rater: Mapping[str, Sequence[BlindAnswer]],
+    *,
+    served_model: str | None = None,
+) -> BlindPreference:
+    """The preference of a read closed before any rater answered every planned item: read once, at the close, by the
+    bounded test on shares in the drawn order with its stakes fixed for the planned pair items before the first
+    answer (:func:`~threetears.evals.analysis.stats.bounded_separation_p` with ``planned_n``). Its p holds its level
+    at whatever item the read was stopped, so a rater who closes the read when it looks good gains nothing
+    (``tests/test_simulated_blind_read.py``). Items with no preference given are left out and counted."""
+    control = next(arm.key for arm in read.arms if arm.role == "control")
+    candidate = next(arm.key for arm in read.arms if arm.role == "candidate")
+    kind = answers[0].made_by
+    planned = read.items[: read.draw.planned_items]
+    pairs = [item for item in planned if len(item.outputs) == 2]
+    shares: dict[str, list[float]] = {}
+    slot_a = slot_choices = missing = 0
+    for item in pairs:
+        for answer in (answer for own in by_rater.values() for answer in own if answer.item == item.item):
+            if answer.prefer is None:
+                missing += 1
+                continue
+            if answer.prefer == "tie":
+                share = 0.5
+            else:
+                preferred = next(output for output in item.outputs if output.slot == answer.prefer)
+                share = 1.0 if preferred.arm == candidate else 0.0
+                slot_choices += 1
+                slot_a += answer.prefer == "A"
+            shares.setdefault(item.item, []).append(share)
+    # In the drawn order: the order the stakes were fixed for.
+    means = [sum(shares[item.item]) / len(shares[item.item]) for item in pairs if item.item in shares]
+    for_candidate = sum(1 for mean in means if mean > 0.5)
+    for_control = sum(1 for mean in means if mean < 0.5)
+    decided = for_candidate + for_control
+    verdict: Literal["improved", "regressed", "not_separated"] | None = None
+    state: StateOf | None = None
+    p: float | None = None
+    if decided < PREFERENCE_MIN_ITEMS:
+        state = StateOf(state="not_available", reason="too_few")
+    else:
+        p = bounded_separation_p([0.5] * len(means), means, paired=True, value_range=(0.0, 1.0), planned_n=len(pairs))
+        if p is None or p >= SIGNIFICANCE_ALPHA or for_candidate == for_control:
+            verdict = "not_separated"
+        else:
+            verdict = "improved" if for_candidate > for_control else "regressed"
+    raters = sorted(by_rater)
+    return BlindPreference(
+        anchor=kind,
+        served_model=served_model,
+        anchor_names=raters or sorted({answer.rater for answer in answers}),
+        random=bool(raters) and all(samples[(rater, kind)].sample == "random" for rater in raters),
+        control=control,
+        candidate=candidate,
+        planned=len(planned),
+        answered=max((len({answer.item for answer in own}) for own in by_rater.values()), default=0),
+        missing=missing,
+        items=len(means),
+        prefer_candidate=for_candidate,
+        prefer_control=for_control,
+        ties=len(means) - decided,
+        test="anytime",
+        p=p,
+        verdict=verdict,
+        state=state,
+        slot_a_share=slot_a / slot_choices if slot_choices else None,
+        slot_a=slot_a,
+        slot_choices=slot_choices,
+    )
+
+
 def _reviewer_checks(
     people: Sequence[CalibrationRating],
-    reviewed: Mapping[str, Sequence[CalibrationRating]],
+    reviewed: Mapping[tuple[str, str | None], Sequence[CalibrationRating]],
     criteria: Sequence[RubricDim],
 ) -> list[BlindReviewerCheck]:
-    """Each model reviewer's agreement with people on the outputs both answered, per criterion.
+    """Each model reviewer's answers against people's on the outputs both answered, per criterion, as counts.
 
-    ``reviewed`` is each reviewer's ratings as the read's own answers gave them, by its model id.
+    ``reviewed`` is each reviewer's ratings as the read's own answers gave them, by its model id and the model that
+    served them: answers two models served are counted apart, never pooled under the reviewer's name.
     """
     by_people: dict[tuple[str, str, str], list[int]] = {}
     for rating in people:
         if rating.label_key is not None:
             by_people.setdefault((rating.rubric_dim, *rating.label_key), []).append(rating.score)
     checks: list[BlindReviewerCheck] = []
-    for reviewer in sorted(reviewed):
+    for reviewer, served in sorted(reviewed, key=lambda key: (key[0], key[1] or "")):
         for dim in criteria:
             pairs = [
                 (score, rating.score)
-                for rating in reviewed[reviewer]
+                for rating in reviewed[(reviewer, served)]
                 if rating.rubric_dim == dim.name and rating.label_key is not None
                 for score in by_people.get((rating.rubric_dim, *rating.label_key), ())
             ]
             if not pairs:
                 continue
             low, high = SCALES[dim.scale].scores
+            values = list(range(low, high + 1))
             checks.append(
                 BlindReviewerCheck(
                     dim=dim.name,
                     reviewer=reviewer,
+                    served_model=served,
                     outputs=len(pairs),
-                    exact_agreement=sum(1 for person, model in pairs if person == model) / len(pairs),
-                    kappa=cohen_kappa(
-                        pairs,
-                        list(range(low, high + 1)),
-                        weights="quadratic" if dim.scale == "ordinal" else "none",
+                    table=BlindVerdictTable(
+                        scores=values,
+                        counts=[
+                            [sum(1 for pair in pairs if pair == (row, column)) for column in values] for row in values
+                        ],
                     ),
                 )
             )
@@ -813,7 +1154,9 @@ def close_blind_read(
     :param judge_models: The ids the judge was asked as, beside the served model each score records: a reviewer
         named or served as any of them is the judge's own model.
     :ptype judge_models: Collection[str]
-    :param closed_by: Who closed it; None leaves the read open, its report computed.
+    :param closed_by: Who closed it; None leaves the read open, its report computed. A read closed before any rater
+        answered every planned item is closed early (``BlindRead.closed_early``): an unfinished preference is then
+        read once, by the anytime test, where an open read withholds it.
     :ptype closed_by: str | None
     :param closed_at: When; None for now, where ``closed_by`` is given.
     :ptype closed_at: str | None
@@ -824,51 +1167,57 @@ def close_blind_read(
     results = list(results)
     given = _ratings_of(read)
     ratings = [rating for rating, _ in given]
-    keys = list(dict.fromkeys((answer.rater, answer.rater_kind) for answer in read.answers))
-    samples = {key: sample_standing(read, *key) for key in keys}
+    keys = list(dict.fromkeys((answer.rater, answer.made_by) for answer in read.answers))
+    samples = {key: read_sample(read, *key) for key in keys}
     own = frozenset(rating.id for rating in ratings)
     random_ids = frozenset(
-        rating.id for rating, answer in given if samples[(answer.rater, answer.rater_kind)].sample == "random"
+        rating.id for rating, answer in given if samples[(answer.rater, answer.made_by)].sample == "random"
     )
     if tiers_before is None:
         judged = {key for result in results for score in result.judge_scores() if (key := judge_key(result, score.dim))}
         tiers_before = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), judged)
     before = {judge_key_of(tier): tier.tier for tier in tiers_before}
     people = [
-        *(rating for rating, answer in given if answer.rater_kind == "person"),
+        *(rating for rating, answer in given if answer.made_by == "person"),
         *(rating for rating in other_ratings if rating.rater_kind == "person"),
     ]
     agreement = [
         reading
         for _, reading in _agreements(
-            people, results, anchor="person", names=None, before=before, own=own, random_ids=random_ids
+            people,
+            results,
+            anchor="person",
+            names=None,
+            served_model=None,
+            before=before,
+            own=own,
+            random_ids=random_ids,
         )
     ]
-    # A model's answers, by the model: read off the answers themselves, every one of them.
-    reviewed: dict[str, list[CalibrationRating]] = {}
+    # A model's answers, by the model and by the model that served each: read off the answers themselves, every one
+    # of them. A reviewer is one model id; the answers two served models gave under it are read apart, never pooled.
+    reviewed: dict[tuple[str, str | None], list[CalibrationRating]] = {}
     served: dict[str, set[str]] = {}
     unrecorded: set[str] = set()
     for answer in read.answers:
-        if answer.rater_kind != "reference":
-            continue
-        reviewed.setdefault(answer.rater, [])
-        if answer.skipped:
+        if answer.made_by != "model" or answer.skipped:
             continue
         if answer.reviewer_served_model is None:
             unrecorded.add(answer.rater)
         else:
             served.setdefault(answer.rater, set()).add(answer.reviewer_served_model)
     for rating, answer in given:
-        if answer.rater_kind == "reference":
-            reviewed[answer.rater].append(rating)
+        if answer.made_by == "model":
+            reviewed.setdefault((answer.rater, answer.reviewer_served_model), []).append(rating)
     asked = set(judge_models)
     refused: dict[str, list[str]] = {}
-    for reviewer in sorted(reviewed):
+    for reviewer, by in sorted(reviewed, key=lambda key: (key[0], key[1] or "")):
         for entry, reading in _agreements(
-            reviewed[reviewer],
+            reviewed[(reviewer, by)],
             results,
-            anchor="reference",
+            anchor="model",
             names=[reviewer],
+            served_model=by,
             before=before,
             own=own,
             random_ids=random_ids,
@@ -887,17 +1236,23 @@ def close_blind_read(
                 continue
             agreement.append(reading)
     agreement = _with_the_deciding_anchor(agreement)
+    closing = closed_by is not None
+    planned_ids = {item.item for item in read.items[: read.draw.planned_items]}
+    finished = any(
+        planned_ids <= {answer.item for answer in read.answers if (answer.rater, answer.made_by) == key} for key in keys
+    )
     preferences: list[BlindPreference] = []
     if "preference" in read.ask:
-        for kind in ("person", "reference"):
-            for group in _preference_groups(read, kind):
+        makers: tuple[Maker, ...] = ("person", "model")
+        for kind in makers:
+            for served_model, group in _preference_groups(read, kind):
                 if group:
-                    preferences.append(_preference(read, group, samples))
+                    preferences.append(_preference(read, group, samples, closing=closing, served_model=served_model))
     report = BlindReadReport(
         cases=len(read.items),
         reviews=list(read.reviews),
         samples=list(samples.values()),
-        agreement=agreement,
+        agreement=[reading.counts for reading in agreement],
         reviewer_checks=_reviewer_checks(people, reviewed, read.criteria),
         not_checked=refused,
         preferences=preferences,
@@ -909,52 +1264,79 @@ def close_blind_read(
             "report": report,
             "closed_by": closed_by,
             "closed_at": (closed_at or utc_now_iso()) if closed_by is not None else None,
+            "closed_early": closing and bool(planned_ids) and not finished,
         }
     )
     return BlindClose(
         read=closed,
         ratings=ratings,
         random=random_ids,
-        reviewed={rating.id: answer.rater for rating, answer in given if answer.rater_kind == "reference"},
+        reviewed={rating.id: answer.rater for rating, answer in given if answer.made_by == "model"},
+        agreement=tuple(agreement),
     )
 
 
-def _with_the_deciding_anchor(agreement: Sequence[BlindAgreement]) -> list[BlindAgreement]:
+def _with_the_deciding_anchor(agreement: Sequence[BlindAgreementReading]) -> list[BlindAgreementReading]:
     """Mark which reading decides each criterion's tier for each judge.
 
     A person reading decides once it is itself decided (met or not met), or where no reference reading stands beside
     it. Until then the first reference reading decides, so a few person labels never remove a standing a reference
     reviewer earned; the person reading is shown beside it.
     """
-    marked: list[BlindAgreement] = []
+    marked: list[BlindAgreementReading] = []
     for reading in agreement:
         beside = [other for other in agreement if (other.dim, other.judge_model) == (reading.dim, reading.judge_model)]
         person = next((other for other in beside if other.anchor == "person"), None)
-        references = [other for other in beside if other.anchor == "reference"]
+        references = [other for other in beside if other.anchor == "model"]
         person_decides = person is not None and (person.calibration in ("met", "not_met") or not references)
         if reading.anchor == "person":
             decides = person_decides
         else:
             decides = not person_decides and reading is references[0]
-        marked.append(reading.model_copy(update={"decides": decides}))
+        marked.append(replace(reading, decides=decides))
     return marked
 
 
-def _preference_groups(read: BlindRead, kind: str) -> list[list[BlindAnswer]]:
-    """The answers a preference is read over: every person's together, and each reference reviewer's alone."""
-    answers = [answer for answer in read.answers if answer.rater_kind == kind]
+def _preference_groups(read: BlindRead, kind: Maker) -> list[tuple[str | None, list[BlindAnswer]]]:
+    """The answers a preference is read over, each beside the model that served them: every person's together (no
+    served model), and each reference reviewer's alone, once per model that served its answers, never pooled.
+
+    A skipped answer names no served model, since no reply was used: it goes with every served model the reviewer's
+    answers name, where it counts toward how far the read is and as a planned item with no preference given.
+    """
+    answers = [answer for answer in read.answers if answer.made_by == kind]
     if kind == "person":
-        return [answers] if answers else []
-    return [[answer for answer in answers if answer.rater == rater] for rater in sorted({a.rater for a in answers})]
+        return [(None, answers)] if answers else []
+    groups: list[tuple[str | None, list[BlindAnswer]]] = []
+    for rater in sorted({answer.rater for answer in answers}):
+        own = [answer for answer in answers if answer.rater == rater]
+        served = sorted(
+            {answer.reviewer_served_model for answer in own if not answer.skipped}, key=lambda name: name or ""
+        )
+        if not served:
+            groups.append((None, own))
+            continue
+        for model in served:
+            groups.append(
+                (model, [answer for answer in own if answer.skipped or answer.reviewer_served_model == model])
+            )
+    return groups
 
 
-#: What another module calls today. :func:`sample_standing` is the core's fourth function and joins these when the
-#: host door calls it; until then it is read through a closed read's report.
+#: What another module calls: the quick path's files and the host's door (:mod:`threetears.evals.ops.blind_reads`).
 __all__ = [
     "PREFERENCE_MIN_ITEMS",
+    "BlindAgreementReading",
     "BlindClose",
+    "agreed_pairs",
     "blind_sheet",
+    "check_answer",
     "close_blind_read",
     "draw_blind_read",
     "exact_sign_test_p",
+    "pass_fail_counts",
+    "read_sample",
+    "shares_family",
+    "single_verdicts",
+    "table_kappa",
 ]

@@ -76,6 +76,7 @@ from threetears.evals.kernel.remedies import (
 from threetears.evals.kernel.judge_profiles import EvalJudgeProfile, JudgeProfileStore
 from threetears.evals.schema.versioning import CORE_RESET_DOC_TYPES, DURABLE_DOC_TYPES
 from threetears.evals.schema.doc_types import DOC_TYPE_FACTS
+from threetears.evals.schema.blind_read import BlindRead
 from threetears.evals.schema.models import (
     EVAL_DOC_TYPES,
     NON_TERMINAL_RUN_STATUSES,
@@ -2064,6 +2065,54 @@ class EvalStorage:
     def delete_insight(self, insight_id: str, scope_id: str) -> bool:
         """Delete an insight by id within a scope."""
         return self._store.delete(insight_id, scope_id)
+
+    # =========================================================================
+    # BlindRead — a drawn order of judged outputs and the answers given to it (durable v17.4)
+    # =========================================================================
+
+    def save_blind_read(self, read: BlindRead, *, if_match: str | None = None, create_only: bool = False) -> None:
+        """Persist a blind read in the scope it names.
+
+        :param read: The read.
+        :ptype read: BlindRead
+        :param if_match: The etag the read was loaded with: the write lands only if nothing wrote since. None for none.
+        :ptype if_match: str | None
+        :param create_only: Land only if nothing is stored under its id: a draw is written once.
+        :ptype create_only: bool
+        :raises ConflictError: The read moved since it was loaded, or (``create_only``) one is already stored.
+        :raises StorageError: Any other write failure.
+        """
+        self._save(read.to_dict(), if_match=if_match, create_only=create_only)
+
+    def load_blind_read_with_etag(self, read_id: str, scope_id: str) -> tuple[BlindRead | None, str | None]:
+        """Load a blind read plus the token a conditional write of it must present (:meth:`save_blind_read`).
+
+        :param read_id: The read's id.
+        :ptype read_id: str
+        :param scope_id: The scope it lives in.
+        :ptype scope_id: str
+        :return: ``(read, etag)``, or ``(None, None)`` when no blind read resolves there.
+        :rtype: tuple[BlindRead | None, str | None]
+        """
+        data, etag = self._store.get_with_etag(read_id, scope_id)
+        data = self._of_type(BlindRead, data)
+        if data is None:
+            return None, None
+        return self._hydrate(BlindRead, data), etag
+
+    def query_blind_reads(self, scope_id: str, *, campaign_id: str | None = None) -> list[BlindRead]:
+        """The blind reads in a scope, oldest first, optionally those drawn over one campaign.
+
+        :param scope_id: The scope to read.
+        :ptype scope_id: str
+        :param campaign_id: Optional equality filter on the campaign a read was drawn over.
+        :ptype campaign_id: str | None
+        :return: The reads, by when they were drawn.
+        :rtype: list[BlindRead]
+        """
+        field_eq: dict[str, Any] = {} if campaign_id is None else {"campaign_id": campaign_id}
+        items = self._store.by_doc_type("blind_read", scope_id, order_by="created_at", descending=False, **field_eq)
+        return self._hydrate_all(BlindRead, items)
 
     # =========================================================================
     # CalibrationRating

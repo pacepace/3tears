@@ -362,6 +362,36 @@ def wilson_interval(n_true: int, n: int) -> tuple[float, float] | None:
     return _wilson_bounds(n_true / n, n, z)
 
 
+def exact_rate_interval(n_true: int, n: int) -> tuple[float, float] | None:
+    """The exact (Clopper-Pearson) interval at :data:`INTERVAL_LEVEL` on a proportion over ``n`` independent trials.
+
+    Each bound is the rate at which the count seen sits at the edge of a two-sided test: the lower is the
+    ``(1 - level) / 2`` quantile of a Beta(``n_true``, ``n - n_true + 1``), the upper the ``(1 + level) / 2``
+    quantile of a Beta(``n_true + 1``, ``n - n_true``), with 0 and 1 where the count is none or all. It covers the
+    true rate at least ``level`` of the time at every ``n`` and every rate (its coverage never falls below nominal,
+    which Wilson's does on a few trials near 0 or 1), at the price of some width: 0 of 2 reads ``[0, 0.84]`` where
+    Wilson reads ``[0, 0.66]``. A judge's catch rate on a blind read is a count of a few failures, which is where
+    that matters; ``tests/test_simulated_blind_read.py`` checks the coverage by seeded simulation.
+
+    :param n_true: Trials that held.
+    :ptype n_true: int
+    :param n: Trials.
+    :ptype n: int
+    :return: ``(low, high)``, containing ``n_true / n``; ``None`` with no trials.
+    :rtype: tuple[float, float] | None
+    :raises ValueError: ``n_true`` is negative or above ``n``.
+    """
+    if not 0 <= n_true <= n:
+        raise ValueError(f"a proportion needs 0 <= n_true <= n; got n_true={n_true}, n={n}")
+    if n == 0:
+        return None
+    tail = (1 - INTERVAL_LEVEL) / 2
+    rate = n_true / n
+    low = 0.0 if n_true == 0 else _beta_quantile(tail, n_true, n - n_true + 1)
+    high = 1.0 if n_true == n else _beta_quantile(1 - tail, n_true + 1, n - n_true)
+    return min(rate, low), max(rate, high)
+
+
 def pooled_rate_interval(passed: int, trials: int, *, cases: int) -> tuple[float, float] | None:
     """The Wilson score interval at :data:`INTERVAL_LEVEL` on ``passed`` of ``trials``, with the cases as the
     independent draws: the rate is the trials', the effective size the cases'.

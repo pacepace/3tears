@@ -175,7 +175,8 @@ pass it to every entrypoint. It holds:
   call `admit_template(template, profile=, checks=, active_judge_config=)` (from `threetears.evals.run`), the one list
   of create-time gates `create_template` and the seed both admit through, with your `TemplateChecks`: it takes no
   store, and returns the admitted template or raises the refusal;
-- if callers relay people's ratings (an agent carrying a person's blind-read verdicts), your word on who may:
+- if callers relay people's ratings, blind-read answers or campaign calls (an agent carrying a person's verdicts),
+  your word on who may (it is the one check every such action asks; see "Blind reads through your host" below):
   `attests_person=<check>`, called as `check(scope_id=, caller=, person=)` (`AttestsPerson`, from
   `threetears.evals.kernel.host`). It returns your own name for that person when that caller relays their ratings,
   and `None` otherwise. The `result_rate_person` action asks it before it reads anything, and stores the rating under
@@ -1000,7 +1001,8 @@ types the engine stores, and says three things about each:
   documents: analyses, insights, judge profiles).
 - **lifecycle**: `kept` (the evidence core: read from the core baseline on, and deleted by a core baseline reset),
   `durable` (what people author: templates, rubric dims, judge configs and their tombstones, case sets, test cases,
-  calibration ratings and campaigns, and the analyst's capability gaps; never wiped by a core baseline, read forever
+  calibration ratings, blind reads and campaigns, and the analyst's capability gaps; never wiped by a core baseline,
+  read forever
   from durable v15, changed only additively or through an upgrader) or `regenerable` (refused after a format change,
   and made again: an analysis, insight or judge profile is regenerated, a cassette re-captured).
 - **suppresses**: for a tombstone, the type it suppresses (`rubric_dim_tombstone` holds a `rubric_dim`'s
@@ -1019,8 +1021,8 @@ a host action's job (its result). `CORE_DOC_TYPES` lists them. The core is basel
 and deleted with `reset_core` (below).
 
 **What people author is durable, and no core baseline ever touches it.** Templates, rubric dims, judge configs
-(with their tombstones), case sets, test cases, calibration ratings and campaigns, and the analyst's capability gaps
-(`DURABLE_DOC_TYPES`), have a version space
+(with their tombstones), case sets, test cases, calibration ratings, blind reads and campaigns, and the analyst's
+capability gaps (`DURABLE_DOC_TYPES`), have a version space
 of their own, forked from core v15 at `.26` (`DURABLE_SCHEMA_VERSION`, `DURABLE_SCHEMA_MINOR`). Its baseline,
 `DURABLE_BASELINE_VERSION`, is 15 forever, and a durable shape changes only additively (a minor) or with an
 upgrader (`DURABLE_UPGRADERS`); a durable major never resets. No durable document needs a core one to be read: a
@@ -1795,6 +1797,52 @@ its label or its variant key and recorded by key, since a derived arm's label ca
 call replaces the earlier one, and the page's last line states whichever the campaign holds, with how many runs
 joined since it was made. In a choice, an arm shown behind another on some aspect is never refused: the page warns
 beside the call.
+
+**Who made the call.** A call says whether a person or a model decided (`made_by`, the same word a rating's maker
+uses). A model's call names its model, and whom it acted for where it did (`made_by="model"`, `model=`,
+`on_behalf_of=`; the action's parameters are `made_by`, `call_model` and `on_behalf_of`); it needs no attestation. A
+person's call (`made_by="person"`, `person=`) is recorded only when your `attests_person` vouches that the caller
+relays that person's call, under the name you return, and is refused (403) with nothing written otherwise. A call
+that says neither is stored as every call before the field was, and reads as made by nobody recorded: never as a
+person's. The call, a campaign's listing (`CampaignLineCall`) and the command line's JSON carry all three.
+
+### Blind reads through your host
+
+A blind read is a seeded random order of a campaign's judged outputs that a person (or a declared model) answers
+without knowing which arm wrote what. Your host runs one through seven actions, each the door onto the same core the
+quick path's `blind_read.html` uses:
+
+| Action | Who | What |
+|---|---|---|
+| `blind_read_create` | a writer | Draw a read over a campaign's control and one `candidate` (pairs), or `run_ids` of one arm (singles); optional `criteria`, `planned_items`, `reviewer`. No seed: it is derived from the outputs, the arms and `earlier_reads`, the reads drawn over them before |
+| `blind_read_sheet` | a reader | What a rater sees: content, criteria and slots, from `next`. No arm, run, result or case id, no judge score, no label key, no count of answers |
+| `blind_read_answer` | a writer you attest | One person's answer to one item: `verdicts` keyed `<slot>/<criterion>`, `prefer`, or `skip`. Refused (403) unless your `attests_person` vouches for the caller relaying that person |
+| `blind_read_review` | a writer | The declared reviewer model answers what it has not, priced against your out-of-run cap first, as a job; its answers enter the read only from inside that job |
+| `blind_read_close` | a writer | Every answer becomes a rating (a person's as theirs, naming the read and the caller who relayed it; a model's as an agent's), and later answers are refused. A close whose ratings were not all written (the store refused one, a 503 naming this remedy) is completed by closing again, which writes the ones missing |
+| `blind_read_get`, `blind_reads_list` | a reader | A read's line: who answered how far (each with their `sample`: random or not); once closed, the judge's checks (counts, below) and the preferences |
+
+**A check is counts.** Each of a closed read's `checks` is one criterion against one reader (the people together, or
+the reviewer as one served model): `agreed` of `pairs`, the `table` of every pair by the reader's score (rows) and the
+judge's (columns), and on a pass/fail criterion `catch` (of the answers the reader failed, how many the judge failed
+too) and `false_fail` (of those the reader passed, how many the judge failed), each a count with its exact 95%
+interval and a sentence, `caught 0 of 2 (exact 95% interval 0% to 84%)`. `said` states plainly where one side gave
+every answer one verdict, and where the reader failed (or passed) nothing, so that rate does not exist. No kappa, bar
+or tier is served: where one side gives a single verdict, kappa is 0 or undefined at any agreement. A result judged on
+other wording of a criterion than the read shows (a template edited since) is left out of the draw and counted in
+`excluded`; a read with none left is refused, naming the edit.
+
+A read closed before anyone answered every planned item is closed early, and its preference is read by the anytime
+test, which holds its level wherever the read stopped; while a read is open no preference is shown at all. A model
+reviewer's preference is read once per model that served its answers, and each names that model in `served_model`
+(people's names none): two served models under one reviewer are never pooled into one preference. A reviewer
+is declared when the read is drawn, never after, and one that is the judge's own model is refused there.
+
+**For hosts.** To take a person's answers through an action, supply `attests_person`; without it every answer is
+refused. If you show the sheet on a page of your own, keep its four rules: the items in the drawn order, `next`
+first; nothing but what the sheet carries; the slots A and B as given, never re-sorted; a skip is an answer. The
+courier host's `courier_sheet_page` and `courier_attests` (in `packages/evals/tests/fixtures/courierhost`) are the
+smallest example of both, and the engine's own sheet check proves that page and the quick path's. The reads are
+durable documents (`blind_read`), carried by a campaign's export.
 
 
 ## Campaign reports: what your host supplies

@@ -169,6 +169,7 @@ def test_every_engine_spend_action_has_a_happy_path_case() -> None:
         "judge_drift_check",
         "judge_temperature",
         "writer_pairwise",
+        "blind_read_review",
     }
     assert {f"{name}.happy_path" for name in spend} <= names
     assert all(action.long_running for action in eval_catalogue().actions if action.permission == "spend")

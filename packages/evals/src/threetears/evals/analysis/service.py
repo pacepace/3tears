@@ -34,6 +34,7 @@ from threetears.evals.analysis.campaign_bundle import (
 )
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.analysis.caveats import call_read
+from threetears.evals.schema.reading_states import Maker
 from threetears.evals.analysis.campaigns import campaign_arms_spelled
 from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.bundle.schema import BundleInspection, known_fingerprint
@@ -1694,8 +1695,12 @@ def record_campaign_call(
     floors_overridden: Sequence[str] = (),
     bars_overridden: Sequence[OverriddenBar] = (),
     analysis_id: str | None = None,
+    made_by: Maker | None = None,
+    model: str | None = None,
+    on_behalf_of: str | None = None,
 ) -> EvalCampaign:
-    """Record a person's call on a campaign: the arm decided, why, and every broken floor and missed bar it overrides.
+    """Record a call on a campaign: the arm decided, why, who made it, and every broken floor and missed bar it
+    overrides.
 
     Code reports, the writer recommends, a person decides. The call is read against the readings of the page it will
     appear on — never against a memo's words: with ``analysis_id``, the readings frozen with that analysis, which must
@@ -1729,6 +1734,14 @@ def record_campaign_call(
     :param analysis_id: The analysis whose memo the call was made over — the campaign's report; None for code's
         readings alone.
     :ptype analysis_id: str | None
+    :param made_by: Whether a person or a model made the call; None records neither, and the call reads as not
+        recorded, never as a person's. Whoever calls this vouches for a person's: an action reaches it only through
+        :func:`~threetears.evals.ops.campaign_record`, which asks the host first.
+    :ptype made_by: Maker | None
+    :param model: The model that made a model's call, by id; set exactly when ``made_by`` is ``model``.
+    :ptype model: str | None
+    :param on_behalf_of: Who a model made its call for; a model's call only.
+    :ptype on_behalf_of: str | None
     :return: The campaign as persisted, holding the call.
     :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope, or no analysis ``analysis_id`` in it.
@@ -1738,6 +1751,12 @@ def record_campaign_call(
         arm did not break or miss; or a floor or bar is named twice.
     :raises ConflictError: The campaign changed while its readings were read.
     """
+    if (made_by == "model") != (model is not None) or (on_behalf_of is not None and made_by != "model"):
+        raise ValidationFailedError(
+            "a model's call names its model, and only a model's call names a model or whom it was made for",
+            remedy="record a model's call with its model (and on_behalf_of where it acted for someone), or a "
+            "person's with neither",
+        )
     campaign = _load_campaign(host.storage, campaign_id, scope_id)
     if analysis_id is None:
         bundle = _assembled_campaign_bundle(campaign, storage=host.storage, profile=host.profile)
@@ -1796,6 +1815,9 @@ def record_campaign_call(
             analysis_id=analysis_id,
             run_ids=list(campaign.run_ids),
             called_by=called_by,
+            made_by=made_by,
+            model=model,
+            on_behalf_of=on_behalf_of,
         )
     except ValueError as invalid:
         raise ValidationFailedError(str(invalid), remedy="name each floor and each bar once") from invalid

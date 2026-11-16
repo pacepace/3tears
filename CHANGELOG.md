@@ -27,6 +27,49 @@ print that level; that was the defect, and it is corrected there.
 
 **For hosts:** nothing to do.
 
+### evals: a host's door onto the blind read, and a recorded call says whether a person or a model made it (#1178)
+
+**Added:** seven actions draw and run a blind read in a host. `blind_read_create` draws a seeded random order over a
+campaign's control and one candidate (or over runs of one arm) and stores it; it takes no seed, which is derived from
+the outputs, the arms and how many reads were drawn over them before (`earlier_reads`). `blind_read_sheet` serves what a
+rater sees: content, criteria and slots, and no arm, run, result or case id, judge score, label key or count of answers.
+`blind_read_answer` records a person's answer only when the host attests the caller relaying it for that person (403
+otherwise, nothing written). `blind_read_review` has the reviewer model the read declared when it was drawn answer the
+sheet, priced and admitted first, as a job; its answers enter the read only from inside that job, and a job that fails
+to start leaves the read free for the next review. `blind_read_close` stores the closed read first, so an answer landing
+meanwhile refuses the close (409) and no rating exists for a read still open; it then writes every answer as a rating
+(a person's as theirs, a model's as an agent's) and refuses later answers. A rating write that fails reaches the caller
+with the read closed, as a 503 whose remedy is to close it again, which writes the ratings still missing; a closed read
+whose missing ratings are each refused (their result gone) says so, rating by rating. A read closed before anyone answered every
+planned item reads its preference by the anytime test, valid wherever it stopped. A model reviewer's preference is
+read once per model that served its answers, never pooled, and each one names that model (`served_model`).
+`blind_read_get` and `blind_reads_list` read them back. A read is a new durable document (durable minor 17.4), carried
+by a campaign's export. Who made each answer is stored as `made_by` (`person` or `model`, the one `Maker` a recorded call
+uses too), never as a third kind of rater.
+
+**Changed (#1208):** a judge's agreement with a blind read's reader is stated as counts. The stored read keeps the
+confusion counts (on 1-5, the full rating cross-table) per criterion and per reader, one per model that served a
+reviewer's answers; no kappa, bar verdict, tier or "more results" figure is stored. A closed read's `checks` serve the
+agreed count, the table, and on pass/fail the catch rate and the false-fail rate, each with its exact 95% interval and
+count (`caught 0 of 2 (exact 95% interval 0% to 84%)`), and say so plainly where one side gave a single verdict or the
+reader failed nothing, so no catch rate exists. A draw leaves out results judged on other wording of a criterion than
+it shows, and counts them, so every rating is bound to what its reader was shown. The quick path's console lines are
+unchanged for now.
+
+**Changed:** a blind read's report says who answered as `person` or `model`: `BlindSample.made_by` replaces
+`rater_kind`, and `BlindAgreement.anchor` and `BlindPreference.anchor` read `model` where they read `reference`.
+`BlindRaterKind` is removed. A labels file's `rater_kind` column is unchanged, and `reference` there still names a
+model.
+
+**Added:** `campaign_record` takes `made_by` (`person` or `model`), `person`, `call_model` and `on_behalf_of`. A model's
+call stores the model and whom it acted for and reads back with both, in the call and in a campaign's listing; a
+person's call needs the host's attestation, as a person's answer does. A call that says neither is never read as a
+person's.
+
+**For hosts:** to record a person's blind-read answer or a person's call through an action, build the host with
+`attests_person`. A host that renders the sheet on its own page keeps its order from `next` on and its slots as drawn;
+the courier example's `courier_sheet_page` and `courier_attests` show both.
+
 ### evals: `schema.check_after` is public again, and the host's recorded import list is re-taken
 
 **Fixed:** `threetears.evals.schema.check_after` is exported again, `host-contract`, kind `invoked`. The entry
