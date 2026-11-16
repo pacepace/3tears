@@ -35,13 +35,20 @@ from uuid import UUID, uuid7
 import asyncpg
 
 from threetears.core.backends.arrow_copy import (
+    CONFLICT_COLUMNS_FIELD,
     COPY_ARROW_FIELD,
+    DELETE_FIELD,
     JSON_COLUMNS_FIELD,
+    ON_CONFLICT_FIELD,
     ROWS_DIGEST_FIELD,
+    UPDATE_COLUMNS_FIELD,
+    WRITE_ARROW_FIELD,
     ArrowCopyRows,
     arrow_copy_available,
     copy_rows_arrow,
+    first_request_rows,
     framed_copy_request,
+    write_request_rows,
 )
 from threetears.core.backends.arrow_reply import arrow_schema_text, read_reply, reply_rows
 from threetears.core.backends.broker_generation import (
@@ -2083,6 +2090,10 @@ class _ProxyConnection:
         #: whether the hub holding the open transaction announced, at its ``tx.begin``, that it reads a copy's rows
         #: as Arrow (:data:`~threetears.core.backends.arrow_copy.COPY_ARROW_FIELD`); set at each begin
         self.copy_arrow = False
+        #: whether that hub also announced its Arrow write door (:data:`~threetears.core.backends.arrow_copy.
+        #: WRITE_ARROW_FIELD`): an Arrow table upserted, copied or deleted as it is (:meth:`write_arrow_rows`); set at
+        #: each begin
+        self.write_arrow = False
 
     def transaction(
         self,
@@ -2524,6 +2535,82 @@ class _ProxyConnection:
         copied = row_count if isinstance(row_count, int) and not isinstance(row_count, bool) else len(records)
         return f"COPY {copied}"
 
+    async def write_arrow_rows(
+        self,
+        table_name: str,
+        rows: Any,
+        *,
+        conflict_columns: Sequence[str] = (),
+        update_columns: Sequence[str] = (),
+        delete: bool = False,
+    ) -> int:
+        """write an Arrow table's rows to ``table_name`` in the open transaction, through the hub's Arrow write door.
+
+        The door (:data:`~threetears.core.backends.arrow_copy.WRITE_ARROW_FIELD`, ``WIRE.md``) is an Arrow
+        ``l3.tx.copy`` whose envelope says what the rows are: new rows (neither ``conflict_columns`` nor
+        ``delete``), an upsert (``conflict_columns``, the table's key, and ``update_columns``, the ``DO UPDATE``'s;
+        none makes it ``DO NOTHING``) or keys to delete (``delete``: the rows' columns are exactly the table's key).
+        The hub stages the rows and merges them in one statement, so the table's row triggers fire as for the same
+        statement sent with ``VALUES``.
+
+        The rows are cut into requests by Arrow slices, each request within the copy budget
+        (:meth:`copy_budget_bytes`, else the ceiling and the server's ``max_payload``) with room for the envelope, and
+        each slice's IPC stream is written on the copy build thread, taking turns with this loop: the rows never become
+        Python values.
+
+        :param table_name: the table
+        :ptype table_name: str
+        :param rows: the rows, each column of a type the door carries
+            (:func:`~threetears.core.backends.arrow_copy.planned_write_table`)
+        :ptype rows: pyarrow.Table
+        :param conflict_columns: an upsert's conflict target, the table's primary key
+        :ptype conflict_columns: Sequence[str]
+        :param update_columns: the columns an upsert's ``DO UPDATE`` sets
+        :ptype update_columns: Sequence[str]
+        :param delete: the rows are keys to delete
+        :ptype delete: bool
+        :return: the rows the hub's statements counted: inserted, upserted or deleted
+        :rtype: int
+        :raises ValueError: when no transaction is open, the hub announced no write door, or one row alone is past the
+            budget
+        :raises DataLayerUnavailableError: on broker error
+        """
+        if self.tx_id is None:
+            raise ValueError("write_arrow_rows runs only inside an open transaction (l3.tx.copy)")
+        if not self.write_arrow:
+            raise ValueError(
+                "the hub holding this transaction announced no Arrow write door (write_arrow): it would insert the rows"
+            )
+        fields: dict[str, Any] = {}
+        if delete:
+            fields[DELETE_FIELD] = True
+        elif conflict_columns:
+            fields[ON_CONFLICT_FIELD] = "update"
+            fields[CONFLICT_COLUMNS_FIELD] = list(conflict_columns)
+            fields[UPDATE_COLUMNS_FIELD] = list(update_columns)
+        budget = (
+            self.copy_budget_bytes()
+            or _copy_request_budget(_COPY_REQUEST_CEILING_BYTES, self._backend.broker_max_payload)
+            or _COPY_REQUEST_CEILING_BYTES
+        )
+        limit = max(1, budget - _COPY_ENVELOPE_ALLOWANCE_BYTES)
+        subject = Subjects.l3_tx("copy", namespace=self._backend.ns).path
+        loop = asyncio.get_running_loop()
+        total = int(rows.num_rows)
+        start = 0
+        count = first_request_rows(rows, limit) if total else 0
+        written = 0
+        while start < total:
+            sent, count = await _on_copy_thread(write_request_rows, rows, start, count, limit, loop)
+            envelope = {**self._copy_envelope(table_name, rows.column_names, sent), **fields}
+            response = await self._backend.nats_request(subject, envelope, offload_encode="copy", rows_ipc=sent.ipc)
+            if not response.get("success", False):
+                self._backend.raise_for_failed_reply(response, "tx.copy")
+            row_count = response.get("row_count")
+            written += row_count if isinstance(row_count, int) and not isinstance(row_count, bool) else count
+            start += count
+        return written
+
     async def abort_tx(self) -> None:
         """send ``tx.rollback`` and clear the local tx_id.
 
@@ -2635,6 +2722,8 @@ class _ProxyTransaction:
             self._backend.raise_for_failed_reply(response, "tx.begin")
         # a hub that reads a copy's rows as Arrow says so here; one that does not is sent JSON
         self._connection.copy_arrow = response.get(COPY_ARROW_FIELD) is True
+        # and one with the Arrow write door says so too; one without it is sent no Arrow upsert or delete
+        self._connection.write_arrow = response.get(WRITE_ARROW_FIELD) is True
         # a hub that announces its caps here sizes the session's copies from its first request
         self._backend.remember_reply_cap(response.get("max_reply_bytes"))
         request_cap = response.get("max_request_bytes")

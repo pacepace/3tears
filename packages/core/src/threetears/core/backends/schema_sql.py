@@ -66,6 +66,7 @@ __all__ = [
     "bulk_batches",
     "bulk_insert_batches",
     "bulk_insert_row_sql",
+    "bulk_update_columns",
     "cas_mutable_columns_for_data",
     "coerce_datetime_for_read_tz",
     "coerce_datetime_for_write_tz",
@@ -621,6 +622,41 @@ def _update_set_clause(schema: TableSchema, mutable: Sequence[Column], named: Co
     return result
 
 
+def _mutable_emitted(schema: TableSchema, cols: Sequence[Column]) -> list[Column]:
+    """the mutable columns an upsert's ``DO UPDATE SET`` may reference: those the INSERT emits, in declared order. An
+    ``EXCLUDED`` reference to a column not in the column list would be an SQL error.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param cols: the columns the INSERT emits
+    :ptype cols: Sequence[Column]
+    :return: the columns
+    :rtype: list[Column]
+    """
+    emitted = {c.name for c in cols}
+    return [c for c in schema.mutable_columns() if c.name in emitted]
+
+
+def bulk_update_columns(schema: TableSchema, cols: Sequence[Column]) -> list[str] | None:
+    """the columns a bulk upsert of ``cols`` sets in its ``DO UPDATE`` (:func:`build_bulk_insert_sql`'s ``SET`` list,
+    every mutable column emitted): empty where it does nothing on a conflict (``on_conflict="ignore"``, or no mutable
+    column emitted); None where it has no conflict clause (``on_conflict="raise"``). The list an Arrow upsert names
+    (``update_columns``), so it writes what the statement with ``VALUES`` writes.
+
+    :param schema: table schema
+    :ptype schema: TableSchema
+    :param cols: the columns every row supplies (:func:`insert_columns_for_data`)
+    :ptype cols: Sequence[Column]
+    :return: the columns' names, or None
+    :rtype: list[str] | None
+    """
+    if schema.on_conflict == "raise":
+        return None
+    if schema.on_conflict == "ignore":
+        return []
+    return [c.name for c in _mutable_emitted(schema, cols)]
+
+
 def _with_conflict_clause(
     schema: TableSchema, cols: list[Column], sql: str, *, named: Collection[str] | None = None
 ) -> str:
@@ -644,12 +680,7 @@ def _with_conflict_clause(
     elif schema.on_conflict == "ignore":
         result = f"{sql} ON CONFLICT ({pk_cols}) DO NOTHING"
     else:
-        # DO UPDATE SET references EXCLUDED.<col> for each mutable
-        # column. Intersect with the columns ACTUALLY emitted in
-        # the INSERT -- an EXCLUDED reference to a column that
-        # was not in the column list would be a SQL error.
-        emitted = {c.name for c in cols}
-        mutable_emitted = [c for c in schema.mutable_columns() if c.name in emitted]
+        mutable_emitted = _mutable_emitted(schema, cols)
         if mutable_emitted:
             set_clause = _update_set_clause(schema, mutable_emitted, named)
             result = f"{sql} ON CONFLICT ({pk_cols}) DO UPDATE SET {set_clause}"

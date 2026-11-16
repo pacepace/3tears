@@ -27,11 +27,13 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final, Protocol, runtime_checkable
+from typing import Any, Final, Literal, Protocol, runtime_checkable
 from uuid import UUID
 
 __all__ = [
     "ArrowL3Reader",
+    "ArrowWritePlan",
+    "ArrowWritingStore",
     "L3_RAIL_ROW_CAP",
     "L3Page",
     "ManyKeyReadingStore",
@@ -353,6 +355,81 @@ class CopyingStore(Protocol):
             transaction whole
         :ptype conn: Any
         :return: rows written
+        :rtype: int
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ArrowWritePlan:
+    """how one Arrow table's rows are written through a store's Arrow write door (:class:`ArrowWritingStore`), decided
+    from the table's schema and the rows' column types before any row is read.
+
+    :ivar kind: ``"upsert"``, ``"copy"`` (new rows, insert-only) or ``"delete"`` (the rows are keys)
+    :ivar columns: each column the request carries, in order: its name, the rows' column it is read from (None: every
+        value null, a nullable column the rows leave out) and the Arrow type it is carried as (None with no column)
+    :ivar conflict_columns: an upsert's conflict target, the table's primary key; empty for a copy or a delete
+    :ivar update_columns: the columns an upsert's ``DO UPDATE`` sets (the bulk upsert's ``SET`` list); empty for
+        ``DO NOTHING``, a copy or a delete
+    :ivar sort_by: the columns the rows are ordered by before they are sent (a copy's key); empty keeps their order
+    """
+
+    kind: Literal["upsert", "copy", "delete"]
+    columns: tuple[tuple[str, str | None, Any], ...]
+    conflict_columns: tuple[str, ...] = ()
+    update_columns: tuple[str, ...] = ()
+    sort_by: tuple[str, ...] = ()
+
+
+@runtime_checkable
+class ArrowWritingStore(Protocol):
+    """A durable store that writes an Arrow table's rows as they are, the rows never Python values a row.
+
+    The seam :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.save_arrow` and
+    :meth:`~threetears.core.collections.schema_backed.SchemaBackedCollection.delete_arrow` write through. A store may
+    have it and still decline a write (:meth:`arrow_write_plan` answers None): its connection has no Arrow door, or a
+    column is of a type the door does not carry. The collection then writes the rows as Python values. No method takes
+    SQL.
+    """
+
+    def arrow_write_plan(
+        self,
+        table: str,
+        columns: Sequence[str],
+        types: Sequence[Any],
+        *,
+        kind: Literal["upsert", "copy", "delete"],
+        conn: Any,
+    ) -> ArrowWritePlan | None:
+        """how rows of these columns are written to ``table`` on ``conn``; None when this store cannot write them so.
+
+        :param table: the table; its schema must be registered
+        :ptype table: str
+        :param columns: the rows' columns
+        :ptype columns: Sequence[str]
+        :param types: each column's Arrow type, in the order of ``columns``
+        :ptype types: Sequence[pyarrow.DataType]
+        :param kind: an upsert, a copy of new rows, or a delete of keys
+        :ptype kind: Literal["upsert", "copy", "delete"]
+        :param conn: the caller's connection, its transaction open
+        :ptype conn: Any
+        :return: the plan, or None
+        :rtype: ArrowWritePlan | None
+        """
+        ...
+
+    async def write_arrow(self, table: str, rows: Any, plan: ArrowWritePlan, *, conn: Any) -> int:
+        """write ``rows`` to ``table`` as ``plan`` says, on the caller's transaction; a failing write fails it.
+
+        :param table: the table
+        :ptype table: str
+        :param rows: the rows, of the columns and types the plan was made for
+        :ptype rows: pyarrow.Table
+        :param plan: :meth:`arrow_write_plan`'s answer for them
+        :ptype plan: ArrowWritePlan
+        :param conn: the caller's connection
+        :ptype conn: Any
+        :return: the rows the database counted: inserted, upserted or deleted
         :rtype: int
         """
         ...
