@@ -211,7 +211,19 @@ class _StreamSize:
 class _Requester(Protocol):
     """the slice of :class:`~threetears.nats.NatsClient` the sampler asks through."""
 
-    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta = ...) -> bytes: ...
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta = ...) -> bytes:
+        """ask ``subject`` with ``payload`` and answer the reply's bytes.
+
+        :param subject: the subject asked (``$JS.API.STREAM.LIST``)
+        :ptype subject: Subject
+        :param payload: the request's body
+        :ptype payload: bytes
+        :param timeout: how long to wait for the reply
+        :ptype timeout: timedelta
+        :return: the reply's body
+        :rtype: bytes
+        """
+        ...
 
 
 def _stream_size(info: Mapping[str, Any], *, namespace: str) -> _StreamSize:
