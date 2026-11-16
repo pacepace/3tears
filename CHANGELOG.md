@@ -371,7 +371,11 @@ Its first package, `@3tears/web-pwa`, is plain ES modules usable with or without
 complete service worker for apps with no build step that keeps only the app's shell (network-first,
 never the API, sign-in or media, never a redirect) and waits for the person before a new version
 takes over; `appShell` (`/workbox`) and `vitePwa` (`/vite`) for Workbox apps; the update prompt
-(`registerWorker`, `watchVersion`, `updatePrompt`, `forceReload`; `useUpdatePrompt` in `/react`); Web
+(`registerWorker`, `watchForUpdates`, `watchVersion`, `updatePrompt`, `forceReload`; `useUpdatePrompt` in `/react`:
+`registerWorker` asks the browser to look for a new worker on a timer, when the page comes back into view and on its
+handle's `check()`, which an app calls when it knows a deploy is likely, so an open page learns of one without
+navigating; WebKit compares only a worker's own bytes, so the README says to serve `shell-worker.js` with the release
+appended); Web
 Push on the page (`subscribePush`, `unsubscribePush`) and in the worker (`showPushes`,
 `openOnNotificationClick`, `/worker`); `MediaSessionControl`, `ScreenWakeLock`, display mode and
 `safe-area.css`. An example app in `web/examples` is tested in headless Chromium against the real

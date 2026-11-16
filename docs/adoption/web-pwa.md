@@ -17,7 +17,8 @@ revoked. metallm, scriob and the station each solved part of this on their own.
 
 Plain ES modules, each feature opt-in, configured by the app: `appManifest`, `installId` and
 `headTags`; `shell-worker.js` for apps with no build step and `appShell` for Workbox apps;
-`registerWorker`, `watchVersion`, `updatePrompt` and `forceReload` for updates; the page and worker
+`registerWorker` (which looks for a new version on a timer, on return to view and on demand:
+`watchForUpdates`), `watchVersion`, `updatePrompt` and `forceReload` for updates; the page and worker
 halves of Web Push and notification taps; `MediaSessionControl`; `ScreenWakeLock`; display mode;
 `safe-area.css`. React hooks (`/react`) and a Vite helper (`/vite`) are separate entries. The package
 README has the full table and how metallm, scriob and the station use it.

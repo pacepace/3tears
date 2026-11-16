@@ -46,5 +46,9 @@ discussed the station PWA) and the rulings relayed on 2026-11-16 say what this i
 - [DECISION: npm-publish is gated by NPM_PUBLISH and publishes by OIDC trusted publishing, falling
   back to the NPM_TOKEN secret only while it is set | a package's trusted publisher can be set only
   once it exists, so a new package's first version bootstraps with a short-lived token]
+- [DECISION: `registerWorker` asks for updates through `watchForUpdates` (timer, return to view,
+  `check()` on demand), with a 2 s gap for bursts and none for the timer | an open page never
+  navigates, so a browser alone never looked; the station's open installed app missed the v0.8.1
+  rollout. WebKit compares only the worker's own bytes: documented, the server appends the release]
 
 Critic mode: final
