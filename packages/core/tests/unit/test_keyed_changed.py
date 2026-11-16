@@ -13,6 +13,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import duckdb
+import pyarrow as pa
 import pytest
 
 from threetears.core.keyed import (
@@ -1146,3 +1147,39 @@ def test_a_warehouse_s_text_kind_key_of_no_text_type_keeps_the_tuple_list() -> N
     )
     (_, (keyed, _)) = warehouse.asked
     assert '(t."state", t."geo") IN (($1, $2), ($3, $4))' in keyed and "LENGTH" not in keyed
+
+
+_ARROW_TYPES = {
+    "state": pa.string(),
+    "geo": pa.int64(),
+    "name": pa.string(),
+    "votes": pa.int64(),
+    "share": pa.decimal128(9, 4),
+    "called": pa.bool_(),
+    "day": pa.date32(),
+    "stamp": pa.timestamp("us"),
+}
+
+
+def test_an_arrow_read_answers_the_rows_and_hashes_the_dict_read_does(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if read_changed given types answers other changed rows, other values or other hashes than its dict read,
+    or answers them as Python rows: one table, each row's hash read beside it by the database."""
+    held = _held(conn, "PA")
+    conn.execute("UPDATE results SET votes = votes + 1 WHERE geo IN (3, 6)")
+    conn.execute("DELETE FROM results WHERE geo = 12")
+    conn.execute("INSERT INTO results VALUES ('PA', 900, NULL, NULL, NULL, NULL, NULL, NULL)")
+
+    as_dicts = _changed(InlineDuckDB(conn), held)
+    as_arrow = _changed(InlineDuckDB(conn), held, types=_ARROW_TYPES)
+
+    assert as_arrow.rows == []
+    assert as_arrow.table.schema.names == [*_COLUMNS, ROW_HASH_COLUMN]
+    assert sorted(as_arrow.table.to_pylist(), key=lambda row: row["geo"]) == sorted(
+        as_dicts.rows, key=lambda row: row["geo"]
+    )
+    assert (as_arrow.gone_keys, as_arrow.changed_keys) == (as_dicts.gone_keys, as_dicts.changed_keys)
+
+
+def test_an_arrow_read_of_no_change_is_an_empty_table(conn: duckdb.DuckDBPyConnection) -> None:
+    changed = _changed(InlineDuckDB(conn), _held(conn, "PA"), types=_ARROW_TYPES)
+    assert (changed.rows, changed.table.num_rows) == ([], 0)

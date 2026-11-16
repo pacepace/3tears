@@ -253,6 +253,8 @@ async def read_keyed_arrow(
     by: Mapping[str, Any] | None = None,
     batch: int | None = None,
     row_cap: int | None = None,
+    columns: Sequence[str | Selected] | None = None,
+    where: Sequence[Fragment] = (),
 ) -> list[Any]:
     """:func:`read_keyed`, each statement's answer one Arrow table: the same statements, the rows never Python
     objects (the rail's proxy parses its reply off the interpreter lock).
@@ -271,12 +273,17 @@ async def read_keyed_arrow(
     :ptype batch: int | None
     :param row_cap: the most rows the transport answers a statement without saying it cut
     :ptype row_cap: int | None
+    :param columns: the select list, as :func:`read_keyed` takes it (a :class:`~threetears.core.keyed.Selected`
+        expression under its name); None selects the columns ``types`` names. Its names are ``types``' keys, in order
+    :ptype columns: Sequence[str | Selected] | None
+    :param where: filters beside the key, as :func:`read_keyed` takes them
+    :ptype where: Sequence[Fragment]
     :return: one ``pyarrow.Table`` a statement, in the order read
     :rtype: list[pyarrow.Table]
     :raises ValueError: as :func:`read_keyed`
     :raises KeyTooWide: when one key alone reaches ``row_cap``
     """
-    statement = keyed_read_statement(table, list(types), keys, by or {})
+    statement = keyed_read_statement(table, list(types) if columns is None else columns, keys, by or {}, None, where)
     natively = binds_native_arrays(conn)
 
     async def fetch(chunk: Sequence[tuple[Any, ...]]) -> Any:
