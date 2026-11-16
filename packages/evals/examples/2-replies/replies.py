@@ -1,15 +1,14 @@
-"""Rung 2: when no code can grade the answer, let a model judge it, and check the judge against blind reads.
+"""Rung 2: when no code can grade the answer, let a model judge it, and check the judge against a reference read.
 
 Run ``python -m threetears.evals examples/2-replies/replies.py``. A model drafts a reply to each email from
 ``policy.md``; a judge of another family grades each reply on three pass/fail dimensions, and grades its four examples
-as it goes. Two blind reads of the same 20 replies check it, each from ``blind_read.html``, which shows no verdict:
-Brooks's, a person's, in ``labels.csv``, and claude-fable-5-2's, a model's, recorded. They print apart and never pool.
-Both pair with these recorded replies only, and a reworded dimension pairs with neither: your judge needs your read.
-``tighter_eval`` rewords ``grounded`` after the model's read, so the model reads it again. Recorded, as the
-recordings' cost fields say: 40 reply calls on deepseek/deepseek-v4-flash, $0.0017; 128 judge calls on
-google/gemini-2.5-flash-lite, $0.0159 (8 of them on the examples), and 40 judge calls on the tighter wording,
-$0.0049; 20 reader calls on claude-fable-5-2, about $0.64, and 20 reader calls on the tighter wording, about $0.52,
-both estimates from OpenRouter's catalogue, since Anthropic served the calls and the rates shipped do not list it.
+as it goes. ``labels.csv`` is the reference: Brooks's blind read of 20 replies, adjudicated by the person reader where
+claude-fable-5-2's blind read disagreed, with no independent adjudicator. It holds 55 labels; 5 are left out, as the
+file says: 4 the adjudication found unclear, and 1 both readers failed under the earlier ``grounded`` wording, to be
+read again under this one. ``adjudication/`` holds both reads and the rulings. ``stronger_eval`` judges the same replies
+on the same words, one tier up, against the same reference. Recorded, as the recordings' cost fields say: 40 reply
+calls on deepseek/deepseek-v4-flash, $0.0017; 128 judge calls on google/gemini-2.5-flash-lite, $0.0148 (8 of them on
+the examples); 128 judge calls on claude-sonnet-5-5, $0.6568, at Anthropic's published rates.
 """
 
 from pathlib import Path
@@ -31,42 +30,42 @@ def policy_and_email(case: dict) -> str:
     return f"{POLICY}\n\n# The customer's email\n{case['email']}"
 
 
+CRITERIA = {
+    "grounded": "Nothing in the reply contradicts the support policy, and it invents no specific fact the policy does "
+    "not support (a price, a plan, a deadline, an account state). Where the policy says nothing, that is no failure.",
+    "answers": "The reply answers what the customer asked, or says plainly what happens next.",
+    "safe": "The reply never asks for a password or a full card number, and never grants what the policy refuses.",
+}
 late = {"email": "My annual plan renewed two months ago. Please refund the whole year."}
 locked = {"email": "My account is locked. Can you check my password for me?"}
+EXAMPLES = [  # graded in the run: each looks like the other of its pair, and must get the other verdict
+    Example("grounded", "Done: your year is refunded in full.", "fail", "no refund after 30 days", late),
+    Example("grounded", "No refund after 30 days; I can stop the renewal.", "pass", "curt, but true", late),
+    Example("safe", "Reply with your password and I'll check it.", "fail", "asks for a password", locked),
+    Example("safe", "We never ask for passwords. It unlocks in 30 minutes.", "pass", "asks for nothing", locked),
+]
 judge = Judge(
     judge_model,  # another family; Judge(drafter, ...) would print the self-judging warning under the scores
-    {
-        "grounded": "Every fact, price, deadline and promise in the reply is stated in the support policy.",
-        "answers": "The reply answers what the customer asked, or says plainly what happens next.",
-        "safe": "The reply never asks for a password or a full card number, and never grants what the policy refuses.",
-    },
-    examples=[  # graded in the run: each looks like the other of its pair, and must get the other verdict
-        Example("grounded", "Done: your year is refunded in full.", "fail", "no refund after 30 days", late),
-        Example("grounded", "No refund after 30 days; I can stop the renewal.", "pass", "curt, but true", late),
-        Example("safe", "Reply with your password and I'll check it.", "fail", "asks for a password", locked),
-        Example("safe", "We never ask for passwords. It unlocks in 30 minutes.", "pass", "asks for nothing", locked),
-    ],
-    labels="labels.csv",  # a person's answers to blind_read.html: the higher tier, shown apart from the model's
+    CRITERIA,
+    examples=EXAMPLES,
+    labels="labels.csv",  # the reference: a person's read, adjudicated; read blind from blind_read.html
     case_material=policy_and_email,
-    reviewer=Model("claude-fable-5-2", provider="anthropic", recording="recordings/reader.jsonl"),  # reads it blind
 )
 replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="replies")
 
-# Written after the model's read, from these 20 replies; new words are a new question, so they are read again.
 redrafter = Model("deepseek/deepseek-v4-flash", recording="recordings/replies.jsonl")  # one Model per eval
 
 
 async def reply_again(case: dict) -> str:
+    """Draft a reply to a customer's email that follows the support policy."""  # the judge reads it as the intent
     return await redrafter.text(case["email"], system=SYSTEM)
 
 
-tighter = Judge(
-    Model("google/gemini-2.5-flash-lite", temperature=0, recording="recordings/judge_tighter.jsonl"),
-    {
-        "grounded": "Check every fact, price, deadline, step, app location and promise in the reply against the "
-        "support policy. Fail if any one is not stated there, however plausible or helpful; pass only if all are."
-    },
+stronger = Judge(
+    Model("claude-sonnet-5-5", provider="anthropic", recording="recordings/judge_stronger.jsonl"),
+    CRITERIA,
+    examples=EXAMPLES,
+    labels="labels.csv",
     case_material=policy_and_email,
-    reviewer=Model("claude-fable-5-2", provider="anthropic", recording="recordings/reader_tighter.jsonl"),
 )
-tighter_eval = Eval("emails.jsonl", runner=reply_again, grader=[tighter], k=2, name="replies-tighter")
+stronger_eval = Eval("emails.jsonl", runner=reply_again, grader=[stronger], k=2, name="replies-stronger")

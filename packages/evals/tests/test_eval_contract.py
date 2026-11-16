@@ -526,9 +526,8 @@ async def test_a_judge_is_a_grader_its_answers_written_to_read_blind_and_read_ba
 
     first = await ev.run(store=tmp_path / "evals.sqlite")
     assert first.calibration_lines() == [
-        f"judge: 0 of 4 cases read blind: judge uncalibrated ({labels.name} is not there yet); next step: open the "
-        f"blind_read.html the report writes, answer its cases from the top, and save its labels as {labels.name}; "
-        "the calibrated tier's floor is 20 judged answers per dimension and the read holds 4, so it needs 16 more"
+        f"judge: 0 of 4 cases read blind: judge not checked ({labels.name} is not there yet); next step: open the "
+        f"blind_read.html the report writes, answer its cases from the top, and save its labels as {labels.name}"
     ]
     written = first.write(tmp_path / "report")
     assert (written["blind_read"].name, written["blind_read_csv"].name) == ("blind_read.html", "blind_read.csv")
@@ -561,8 +560,11 @@ async def test_a_judge_is_a_grader_its_answers_written_to_read_blind_and_read_ba
     ]
     lines = again.calibration_lines()
     assert lines[0] == "judge: 4 of 4 cases read blind by owner, in the drawn order (a random sample)"
-    assert lines[1].startswith("  answer billing (judged)  4 results from 4 cases  kappa 1.00")
-    assert "undetermined: needs " in lines[1] and lines[1].endswith("the judge failed 2 of the 2 answers owner failed")
+    # Counts and exact rates (#1208): no kappa, tier word or count of results still needed.
+    assert lines[1] == (
+        "  answer billing (judged)  4 results from 4 cases: the judge failed 2 of the 2 answers the reader failed "
+        "(exact 95% interval 16% to 100%); the judge failed 0 of the 2 the reader passed (exact 95% interval 0% to 84%)"
+    )
     assert len(lines) == 2
 
     # Answered out of order, the same labels read as not drawn at random.
@@ -608,8 +610,8 @@ async def test_an_older_to_label_sheet_still_reads_and_counts_as_not_drawn_at_ra
     (reading,) = read.report.agreement
     assert (reading.pairs, reading.blind_pairs, reading.random_pairs) == (4, 0, 0)
     assert again.calibration_lines()[0] == (
-        f"judge: 4 label(s) in {labels.name} are not on this run's draw (the answers changed since, or it is an older "
-        "sheet): kept, each paired with the same output, and not drawn at random"
+        f"judge: 4 label(s) in {labels.name} by owner are not on this run's draw (the answers changed since, or it is "
+        "an older sheet): kept, each paired with the same output, and not drawn at random"
     )
 
 
@@ -730,7 +732,7 @@ async def test_a_model_answers_the_blind_read_and_is_read_as_a_model_never_as_a_
         ("scripted/reviewer", 8, 0, pytest.approx(0.0008))
     ]
     # No person has read, so the person's first step leads, never dropped beside a model's read.
-    assert result.calibration_lines()[0].startswith("judge: 0 of 8 cases read blind by a person: judge uncalibrated (")
+    assert result.calibration_lines()[0].startswith("judge: 0 of 8 cases read blind by a person: judge not checked (")
     lines = result.calibration_lines()[1:]
     assert lines[0] == (
         "judge: 8 of 8 cases read blind by a model (scripted/reviewer), in the drawn order (a random sample)"

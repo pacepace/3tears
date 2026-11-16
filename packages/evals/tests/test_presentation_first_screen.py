@@ -123,7 +123,8 @@ def test_the_writer_eval_s_page_has_one_lead_its_own_answer_directly_under_the_q
 
 def test_one_arm_measured_leads_on_its_pass_rate_as_a_count(rungs: dict[str, _Rung]) -> None:
     (lead,) = [block for block in _said(rungs["rung2"].page.blocks) if block.source == "verdict"]
-    assert lead.text == "reply passed 40 of 40 trials on 20 cases."
+    # Rung 2's judge, re-recorded under the grounded wording ruled on 2026-11-16, fails one trial.
+    assert lead.text == "reply passed 39 of 40 trials on 20 cases."
 
 
 async def test_both_g2_fixtures_have_an_answer_block() -> None:

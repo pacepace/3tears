@@ -1,13 +1,15 @@
-"""Rung 2, ``examples/2-replies/``: a judge as a grader, checked on its examples and against two blind reads.
+"""Rung 2, ``examples/2-replies/``: a judge as a grader, checked on its examples and against a reference read.
 
 The run grades the judge's four examples as it grades the replies and says how many it got right, from the recording.
-Two reads of the same 20 replies ship beside it and are printed apart, never pooled: a person's labels in
-``labels.csv`` and a model's read (``Judge(reviewer=...)``), recorded. A second eval rewords one dimension after the
-model's read, and the model reads it again, since a reworded dimension pairs with no earlier label. The
-``blind_read.html`` and ``blind_read.csv`` beside it are what the recorded run wrote: the replies in one seeded random
-order, with no run, result or judge score on them, and a run replayed from the recordings writes the same bytes, since
-the draw depends on the answers alone. Two tests overwrite the labels to show ``Judge(labels=...)`` reading a partial
-sheet back, from the top and out of order: their labels are a test's and say nothing about how good the judge is.
+The reference is ``labels.csv``: a person's blind read of 20 replies, adjudicated by the person reader where a model's
+blind read disagreed, with no independent adjudicator (owner rulings, 2026-11-16). Its construction from
+``adjudication/`` (both reads and the rulings) is checked here with every exclusion counted, and it binds to the
+``grounded`` wording the owner ruled under: the person's own read, bound to the earlier wording, does not pair on it.
+A second eval judges the same replies on the same words one tier up, against the same reference. The judge's agreement
+is printed as counts with exact intervals (#1208). The ``blind_read.html`` and ``blind_read.csv`` beside it are what
+the recorded run writes; the reference was read on an earlier draw of the same replies, so its labels pair by the
+reply they were given on, as not drawn at random. Two tests overwrite the labels to show ``Judge(labels=...)`` reading
+a partial sheet back, from the top and out of order: their labels are a test's and say nothing about the judge.
 """
 
 from __future__ import annotations
@@ -16,12 +18,13 @@ import ast
 import csv
 import importlib.util
 import json
+from collections import Counter
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-from threetears.evals import Example, Judge, Model
+from threetears.evals import Example, Judge
 from threetears.evals.quick.files import main
 from threetears.evals.quick.result import read_blind
 from packages.evals.tests.off_loop import off_loop
@@ -40,46 +43,45 @@ from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, pub
 
 RUNG = EXAMPLES / "2-replies"
 
-#: What the run prints about its judge against the person's read, then against the model's, apart.
+#: Whose the reference is, with its limit, as its rows name it and the print says it.
+REFERENCE = "Brooks (adjudicated by the person reader; no independent adjudicator)"
+
+#: The reference's labels, said once, for each judge's print.
+REFERENCE_LINE = (
+    f"judge: 55 label(s) in labels.csv by {REFERENCE} are not on this run's draw (the answers changed since, or it is "
+    "an older sheet): kept, each paired with the same output, and not drawn at random"
+)
+
+#: The safe line, the same for both judges: the reference failed no reply on it.
+SAFE = (
+    "  answer safe (judged)      19 results from 19 cases: the reader failed no answer, so no catch rate; the judge "
+    "failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); the reader gave every answer one verdict, "
+    "pass; the judge gave every answer one verdict, pass"
+)
+
+#: What the run prints about its judge against the reference: counts, the catch and false-fail rates, exact intervals.
 JUDGE_READ = [
-    "judge: 20 of 20 cases read blind by Brooks, in the drawn order (a random sample)",
-    "  answer answers (judged)   20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more "
-    "results would decide it, from more cases than the run has; the judge failed 0 of the 2 answers Brooks failed",
-    "  answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-1.00, 0.74]  undetermined: about 11 more "
-    "results would decide it, from more cases than the run has; the judge failed 0 of the 2 answers Brooks failed",
-    "  answer safe (judged)      20 results from 20 cases  kappa undefined: Brooks and the judge gave every answer the "
-    "same verdict",
-    "judge: 20 of 20 cases read blind by a model (claude-fable-5-2), in the drawn order (a random sample)",
-    "  beside it, checked against a model (claude-fable-5-2):",
-    "    answer answers (judged)   20 results from 20 cases  kappa undefined: the model and the judge gave every "
-    "answer the same verdict",
-    "    answer grounded (judged)  20 results from 20 cases  kappa 0.00 [-0.36, 0.42]  agreement is shown below the "
-    "bar of 0.60; the judge failed 0 of the 10 answers the model failed",
-    "    answer safe (judged)      20 results from 20 cases  kappa 0.00 [-1.00, 0.84]  about 20 more results would "
-    "decide it, from more cases than the run has; the judge failed 0 of the 1 answers the model failed",
-    "    claude-fable-5-2 against people on answer grounded (judged): 20 outputs, kappa 0.00",
-    "    claude-fable-5-2 against people on answer answers (judged): 20 outputs, kappa 0.00",
-    "    claude-fable-5-2 against people on answer safe (judged): 20 outputs, kappa 0.00",
-    "reviewer: a model (claude-fable-5-2) read the blind read for $0.64 over 20 call(s); the cost of checking the "
-    "judge, in no candidate's cost",
+    REFERENCE_LINE,
+    "  answer answers (judged)   20 results from 20 cases: the judge failed 0 of the 1 answers the reader failed "
+    "(exact 95% interval 0% to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); "
+    "the judge gave every answer one verdict, pass",
+    "  answer grounded (judged)  16 results from 16 cases: the judge failed 0 of the 1 answers the reader failed "
+    "(exact 95% interval 0% to 97%); the judge failed 1 of the 15 the reader passed (exact 95% interval 0% to 32%)",
+    SAFE,
 ]
 
-#: What the run prints about the tighter wording: no person has read these words, which it says with the next step, and
-#: the model's read of them below.
-TIGHTER_READ = [
-    "judge: 0 of 20 cases read blind by a person: judge uncalibrated (Judge(labels=...) names the labels file); next "
-    "step: open the blind_read.html the report writes, answer its cases from the top, and save its labels where "
-    "Judge(labels=...) names",
-    "judge: 20 of 20 cases read blind by a model (claude-fable-5-2), in the drawn order (a random sample)",
-    "  checked against a model (claude-fable-5-2), not yet against people:",
-    "    answer grounded (judged)  20 results from 20 cases  kappa 0.08 [-0.25, 0.47]  agreement is shown below the "
-    "bar of 0.60; the judge failed 1 of the 11 answers the model failed",
-    "reviewer: a model (claude-fable-5-2) read the blind read for $0.52 over 20 call(s); the cost of checking the "
-    "judge, in no candidate's cost",
+#: The stronger judge, on the same replies, words and reference.
+STRONGER_READ = [
+    REFERENCE_LINE,
+    "  answer answers (judged)   20 results from 20 cases: the judge failed 0 of the 1 answers the reader failed "
+    "(exact 95% interval 0% to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3% to 40%)",
+    "  answer grounded (judged)  16 results from 16 cases: the judge failed 1 of the 1 answers the reader failed "
+    "(exact 95% interval 3% to 100%); the judge failed 5 of the 15 the reader passed (exact 95% interval 12% to 62%)",
+    SAFE,
 ]
 
 #: What the run prints about the judge's examples: each graded twice, as the recording holds it.
-EXAMPLES_GRADED = "judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))"
+EXAMPLES_GRADED = "judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00090 over 8 call(s))"
 
 
 @pytest.fixture
@@ -101,18 +103,100 @@ def _rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(read))
 
 
-def test_a_person_s_whole_read_ships_beside_the_blank_sheet() -> None:
-    sheet = _rows(RUNG / "blind_read.csv")
-    assert {row["label"] for row in sheet} == {""} and {row["rater"] for row in sheet} == {""}, "the sheet stays blank"
-    assert {row["prefer"] for row in sheet} == {""} and {row["rater_kind"] for row in sheet} == {""}
-    assert not (RUNG / "to_label.csv").exists(), "the sheet in store order is retired"
-    labels = _rows(RUNG / "labels.csv")
-    # Every case on the sheet, on every dimension, once: a whole read, a person's, by name.
-    assert sorted((row["item"], row["dimension"]) for row in labels) == sorted(
-        (row["item"], row["dimension"]) for row in sheet
+def _reference(
+    person: list[dict[str, str]], model: list[dict[str, str]], rulings: list[dict[str, str]]
+) -> Counter[str]:
+    """How each of the 60 (reply, dimension) pairs comes into the reference, by the owner's rulings of 2026-11-16."""
+    said = {(row["item"], row["dimension"]): row["label"] for row in model}
+    ruled = {(row["item"], row["dimension"]): row["ruling"] for row in rulings}
+    how: Counter[str] = Counter()
+    for row in person:
+        key = (row["item"], row["dimension"])
+        if row["label"] == said[key]:
+            # Agreed, except a both-fail on grounded: failed under the exhaustive wording, read again under this one.
+            failed = row["dimension"] == "answer.grounded" and row["label"] == "fail"
+            how["agreed, re-check" if failed else "agreed"] += 1
+        else:
+            how[f"ruled {ruled[key]}"] += 1
+    return how
+
+
+def test_the_reference_is_the_agreed_labels_and_the_rulings_with_every_exclusion_counted() -> None:
+    person, model = _rows(RUNG / "adjudication" / "person.csv"), _rows(RUNG / "adjudication" / "model.csv")
+    rulings = _rows(RUNG / "adjudication" / "rulings.csv")
+    assert {row["rater"] for row in person} == {"Brooks"} and {row["rater"] for row in model} == {"claude-fable-5-2"}
+    # 13 disagreements, each ruled blind to who said what: 9 decided, 4 unclear; one agreed fail set aside.
+    assert len(rulings) == 13 and _reference(person, model, rulings) == {
+        "agreed": 46,
+        "agreed, re-check": 1,
+        "ruled pass": 7,
+        "ruled fail": 2,
+        "ruled unclear": 4,
+    }
+    sided = Counter(
+        "person" if ruling["ruling"] == by_person else "model"
+        for ruling in rulings
+        if ruling["ruling"] != "unclear"
+        for by_person in [
+            next(r["label"] for r in person if (r["item"], r["dimension"]) == (ruling["item"], ruling["dimension"]))
+        ]
     )
-    assert {row["rater"] for row in labels} == {"Brooks"} and {row["rater_kind"] for row in labels} == {"person"}
-    assert {row["label"] for row in labels} <= {"pass", "fail"}
+    assert sided == {"person": 7, "model": 2}, "the rulings sided with the person on 7 and the model on 2"
+    labels = _rows(RUNG / "labels.csv")
+    assert {row["rater"] for row in labels} == {REFERENCE} and {row["rater_kind"] for row in labels} == {"person"}
+    # Every reply the person read, on every dimension, once; the reference is each pair's label as ruled.
+    assert sorted((row["item"], row["dimension"]) for row in labels) == sorted(
+        (row["item"], row["dimension"]) for row in person
+    )
+    said = {(row["item"], row["dimension"]): row for row in labels}
+    ruled = {(row["item"], row["dimension"]): row["ruling"] for row in rulings}
+    for row in person:
+        key = (row["item"], row["dimension"])
+        agreed = next(r["label"] for r in model if (r["item"], r["dimension"]) == key) == row["label"]
+        expected = row["label"] if agreed else ruled[key]
+        if expected == "unclear" or (agreed and key[1] == "answer.grounded" and expected == "fail"):
+            expected = ""
+        assert said[key]["label"] == expected, key
+        assert said[key]["output_fingerprint"] == row["output_fingerprint"], "each label is bound to the reply read"
+    # 55 labels, 5 excluded, each with why on its row: none is counted, since a row with no label pairs with nothing.
+    counted = Counter((row["dimension"], row["label"]) for row in labels if row["label"])
+    assert counted == {
+        ("answer.grounded", "pass"): 15,
+        ("answer.grounded", "fail"): 1,
+        ("answer.answers", "pass"): 19,
+        ("answer.answers", "fail"): 1,
+        ("answer.safe", "pass"): 19,
+    }
+    assert Counter(row["reason"] for row in labels if not row["label"]) == {
+        "excluded: unclear on adjudication": 4,
+        "excluded: both readers failed it under the earlier grounded wording; to re-check under this one": 1,
+    }
+
+
+def test_the_reference_binds_to_the_grounded_wording_ruled_on_and_the_earlier_read_does_not_pair_on_it(
+    replies_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sheet = {row["dimension"]: row["criterion_fingerprint"] for row in _rows(RUNG / "blind_read.csv")}
+    person = {row["dimension"]: row["criterion_fingerprint"] for row in _rows(RUNG / "adjudication" / "person.csv")}
+    labels = {row["dimension"]: row["criterion_fingerprint"] for row in _rows(RUNG / "labels.csv")}
+    assert labels == sheet, "the reference is bound to the words the judge is asked now"
+    assert person["answer.grounded"] != sheet["answer.grounded"], "the person's read answered the earlier words"
+    assert {dim: person[dim] for dim in ("answer.answers", "answer.safe")} == {
+        dim: sheet[dim] for dim in ("answer.answers", "answer.safe")
+    }
+    # The person's read as it was saved, bound to the earlier grounded wording: it pairs on answers and safe only.
+    (replies_dir / "labels.csv").write_bytes((RUNG / "adjudication" / "person.csv").read_bytes())
+
+    assert main(["replies.py"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].startswith("judge: 40 label(s) in labels.csv by Brooks are not on this run's draw")
+    # Its 20 grounded labels answered other words: not read, and said, never counted.
+    assert lines[2].startswith("  20 label(s) in labels.csv not read: line 2: it answered other wording of ")
+    assert lines[2].endswith("than the judge is asked now; and 17 more")
+    # The check reads answers and safe alone, and the line after them is the examples'.
+    assert [line.split("  ")[1] for line in lines[3:5]] == ["answer answers (judged)", "answer safe (judged)"]
+    assert lines[5] == EXAMPLES_GRADED
 
 
 def test_the_judge_is_three_pass_fail_dimensions_four_hard_negatives_and_another_family(replies_dir: Path) -> None:
@@ -124,6 +208,11 @@ def test_the_judge_is_three_pass_fail_dimensions_four_hard_negatives_and_another
         ("answer.answers", "pass_fail"),
         ("answer.safe", "pass_fail"),
     ]
+    # Owner ruling, 2026-11-16: grounded is consistent with the policy, not exhaustive of it.
+    grounded = judge.dims[0].description
+    assert (
+        "contradicts the support policy" in grounded and "Where the policy says nothing, that is no failure" in grounded
+    )
     assert len(judge.examples) == 4 and all(isinstance(example, Example) for example in judge.examples)
     # Each hard negative pairs with one that looks like it and must get the other verdict.
     assert sorted((example.dimension, example.expected) for example in judge.examples) == [
@@ -132,19 +221,14 @@ def test_the_judge_is_three_pass_fail_dimensions_four_hard_negatives_and_another
         ("safe", "fail"),
         ("safe", "pass"),
     ]
-    assert judge.labels == Path("labels.csv")
+    assert judge.labels == Path("labels.csv") and judge.reviewer is None
     drafter_family, judge_family = module.drafter.model_name.split("/")[0], judge.model.split("/")[0]
     assert (drafter_family, judge_family) == ("deepseek", "google")
-    # The model that reads blind is named, goes to Anthropic directly, and is neither the judge's family nor the drafter's.
-    tighter = module.tighter
-    for reviewer in (judge.reviewer, tighter.reviewer):
-        assert isinstance(reviewer, Model) and (reviewer.model_name, reviewer.provider) == (
-            "claude-fable-5-2",
-            "anthropic",
-        )
-    # The tighter wording is the same judge model on one dimension, under the same name and new words.
-    assert tighter.model == judge.model and [dim.name for dim in tighter.dims] == ["answer.grounded"]
-    assert tighter.dims[0].description != judge.dims[0].description
+    # The stronger judge: one tier up, sent to Anthropic directly, on the same words, examples and reference.
+    stronger = module.stronger
+    assert stronger.model == "claude-sonnet-5-5"
+    assert [(dim.name, dim.description) for dim in stronger.dims] == [(dim.name, dim.description) for dim in judge.dims]
+    assert stronger.examples == judge.examples and stronger.labels == judge.labels and stronger.reviewer is None
 
 
 def test_the_runner_s_recording_covers_every_reply(replies_dir: Path) -> None:
@@ -161,16 +245,18 @@ def test_the_runner_s_recording_covers_every_reply(replies_dir: Path) -> None:
     assert len(judged) == 20 * 2 * 3 + 4 * 2, "every reply on every dimension, and every example, each twice"
     assert {line["result"]["model"] for line in judged} == {"google/gemini-2.5-flash-lite"}  # type: ignore[index]
     assert {line["result"]["temperature"] for line in judged} == {0.0}  # type: ignore[index]
-    tighter = recorded(replies_dir / "recordings" / "judge_tighter.jsonl")
-    assert len(tighter) == 20 * 2 and {line["result"]["temperature"] for line in tighter} == {0.0}  # type: ignore[index]
-    for read in ("reader.jsonl", "reader_tighter.jsonl"):
-        lines = recorded(replies_dir / "recordings" / read)
-        assert len(lines) == 20, "one call per case on the sheet"
-        assert {line["result"]["served_model"] for line in lines} == {"claude-fable-5-2"}  # type: ignore[index]
-        assert {line["result"]["temperature"] for line in lines} == {None}, "no temperature is sent to Claude"  # type: ignore[index]
+    stronger = recorded(replies_dir / "recordings" / "judge_stronger.jsonl")
+    assert len(stronger) == 20 * 2 * 3 + 4 * 2
+    assert {line["result"]["served_model"] for line in stronger} == {"claude-sonnet-5-5"}  # type: ignore[index]
+    assert {line["result"]["temperature"] for line in stronger} == {None}, "no temperature is sent to Claude"  # type: ignore[index]
+    assert sorted(path.name for path in (replies_dir / "recordings").iterdir()) == [
+        "judge.jsonl",
+        "judge_stronger.jsonl",
+        "replies.jsonl",
+    ]
 
 
-def test_the_run_replays_offline_and_prints_the_judge_against_each_read_apart(
+def test_the_run_replays_offline_and_prints_each_judge_against_the_reference(
     replies_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["replies.py"]) == 0
@@ -178,26 +264,29 @@ def test_the_run_replays_offline_and_prints_the_judge_against_each_read_apart(
     printed = capsys.readouterr().out
     lines = printed.splitlines()
     assert "40 result(s): 40 scored, 0 excluded" in printed
-    for dimension in ("grounded", "answers", "safe"):
-        assert f"answer {dimension} (judged), scored pass/fail: 100%, 40 of 40 trials" in printed
-    # The person's read, then the model's, each with its own counts: the judge passed every reply either failed.
-    at = lines.index(JUDGE_READ[0])
-    assert lines[at : at + len(JUDGE_READ)] == JUDGE_READ
+    assert lines[0] == "replies: reply passed 39 of 40 trials on 20 cases. Cases that failed a trial: locked-out."
+    # The judge against the reference: the one reply the reference failed on grounded, and on answers, it passed.
+    assert lines[1 : 1 + len(JUDGE_READ)] == JUDGE_READ
     # Read right under it: the judge on the answers it must grade a known way, each twice, every one as it must be.
-    assert lines[at + len(JUDGE_READ)] == EXAMPLES_GRADED
+    assert lines[1 + len(JUDGE_READ)] == EXAMPLES_GRADED
     assert "  missed: " not in printed
-    # The tighter wording, re-judged by the same model on the same replies, against the model's read of its words.
-    tighter = lines.index(
-        "replies-tighter: reply_again passed 38 of 40 trials on 20 cases. Cases that failed a trial: "
-        "locked-out, unlock-sooner."
+    # One tier up, the same replies, words and reference: it caught the one grounded failure, and failed 5 of the 15
+    # grounded replies the reference passed.
+    stronger = lines.index(
+        "replies-stronger: reply_again passed 30 of 40 trials on 20 cases. Cases that failed a trial: monthly-refund, "
+        "annual-late-refund, annual-early-refund, locked-out, send-password, and 5 more."
     )
-    assert lines[tighter + 1 : tighter + 1 + len(TIGHTER_READ)] == TIGHTER_READ
+    assert lines[stronger + 1 : stronger + 1 + len(STRONGER_READ)] == STRONGER_READ
+    # No kappa, bar, tier word or count of results still needed (#1208).
+    for line in [*lines[1 : 1 + len(JUDGE_READ)], *lines[stronger + 1 : stronger + 1 + len(STRONGER_READ)]]:
+        for word in ("kappa", "calibrated", "undetermined", "bar of", "more results"):
+            assert word not in line, line
     page = (replies_dir / ".evals" / "reports" / "replies" / "report.md").read_text(encoding="utf-8")
     assert (
-        "The judge graded 4 of 4 of its examples as they must be on every one of 2 repeats ($0.00086 over 8 call(s))."
+        "The judge graded 4 of 4 of its examples as they must be on every one of 2 repeats ($0.00090 over 8 call(s))."
         in page.splitlines()
     ), "the page states what the examples cost, as the print does"
-    # The judge is another family, so nothing warns that a model judged its own answers.
+    # Neither judge is the drafter's family, so nothing warns that a model judged its own answers.
     assert "self-judging:" not in printed
 
     report_dir = replies_dir / ".evals" / "reports" / "replies"
@@ -243,7 +332,7 @@ async def test_the_judge_s_spend_is_its_own_and_its_model_judged_none_of_its_own
 
 
 def _label(replies_dir: Path, positions: set[int]) -> None:
-    """Save ``labels.csv``: the shipped sheet with every reply at ``positions`` marked as the judge marked it."""
+    """Save ``labels.csv``: the shipped sheet with every reply at ``positions`` marked pass, in the reference's place."""
     rows = _rows(replies_dir / "blind_read.csv")
     for row in rows:
         if int(row["position"]) in positions:
@@ -257,22 +346,17 @@ def _label(replies_dir: Path, positions: set[int]) -> None:
 def test_a_sheet_answered_from_the_top_is_read_back_as_a_random_sample_and_the_judge_s_agreement(
     replies_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The mechanics only: a test's labels (every reply marked as the judge marked it) in place of the person's."""
+    """The mechanics only: a test's labels (every reply marked pass) in place of the reference."""
     _label(replies_dir, set(range(1, 15)))
 
     assert main(["replies.py"]) == 0
 
     lines = capsys.readouterr().out.splitlines()
     at = lines.index("judge: 14 of 20 cases read blind by a test, in the drawn order (a random sample)")
-    # The judge passed every reply and so did the labels, so kappa has nothing to measure: said, with what to do.
-    undefined = "14 results from 14 cases  kappa undefined: a test and the judge gave every answer the same verdict; read further"
-    assert lines[at + 1 : at + 4] == [
-        f"  answer answers (judged)   {undefined}",
-        f"  answer grounded (judged)  {undefined}",
-        f"  answer safe (judged)      {undefined}",
-    ]
-    # The model's read is printed below it, apart; the next step is the person's.
-    assert lines[at + 4] == JUDGE_READ[4]
+    # The labels failed nothing, so no catch rate exists: said, with the one verdict each side gave, and no kappa.
+    for line in lines[at + 1 : at + 4]:
+        assert "14 results from 14 cases: the reader failed no answer, so no catch rate; " in line, line
+        assert "the reader gave every answer one verdict, pass" in line and "kappa" not in line, line
     assert "next: keep going from case 15 in blind_read.html" in lines
     assert not any(line.startswith("preference") for line in lines), "one arm has no pair to prefer between"
 
@@ -306,10 +390,10 @@ async def test_the_result_carries_the_read_and_each_standing(replies_dir: Path) 
     assert [arm.role for arm in read.arms] == ["control"] and read.ask == ["verdicts"]
     (standing,) = [sample for sample in read.report.samples if sample.made_by == "person"]
     assert (standing.sample, standing.answered, standing.items) == ("random", 20, 20)
-    assert [(c.dimension, c.labels, c.kappa) for c in result.calibrations] == [
-        ("answer.answers", 20, None),
-        ("answer.grounded", 20, None),
-        ("answer.safe", 20, None),
+    assert [(c.dimension, c.labels) for c in result.calibrations] == [
+        ("answer.answers", 20),
+        ("answer.grounded", 20),
+        ("answer.safe", 20),
     ]
     assert not any(line.startswith("next:") for line in result.calibration_lines())
 
@@ -320,18 +404,14 @@ def test_the_docstring_states_the_cost_its_recordings_record() -> None:
     said = " ".join(docstring.split())
     for recording, calls_word in (
         ("replies.jsonl", "reply calls"),
-        ("judge.jsonl", "judge calls"),
-        ("judge_tighter.jsonl", "judge calls on the tighter wording"),
-        ("reader.jsonl", "reader calls on claude-fable-5-2"),
-        ("reader_tighter.jsonl", "reader calls on the tighter wording"),
+        ("judge.jsonl", "judge calls on google/gemini-2.5-flash-lite"),
+        ("judge_stronger.jsonl", "judge calls on claude-sonnet-5-5"),
     ):
         path = RUNG / "recordings" / recording
         calls, cost = recorded_cost(path)
         sources = {line["result"]["price_source"] for line in recorded(path)}  # type: ignore[index]
-        if any(str(source).startswith("openrouter-catalogue:") for source in sources):
-            # A catalogue's rate is a third party's listing, not the bill: stated as an estimate, to the cent.
-            cost = f"about ${float(cost[1:]):.2f}"
-            assert "estimates from OpenRouter's catalogue" in said, f"replies.py states {recording}'s cost as billed"
+        # Every rate is a published or a provider-reported one: none is a catalogue's estimate.
+        assert not any(str(source).startswith("openrouter-catalogue:") for source in sources), recording
         assert f"{calls} {calls_word}" in said and cost in said, f"replies.py does not state {recording}'s {cost}"
 
 

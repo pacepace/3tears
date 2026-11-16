@@ -6,21 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### evals: rung 2 ships calibrated, against a person's read and a model's
+### evals: rung 2's judges checked against an adjudicated reference, and the console states a judge's agreement as counts
 
-**Changed:** `examples/2-replies/` no longer ships a judge nobody checked (owner ruling, 2026-11-15: every shipped
-example with a judge ships calibrated). Two blind reads of its 20 recorded replies ship beside it and print apart,
-never pooled: a person's labels (`labels.csv`, Brooks's whole read) and a model's (`Judge(reviewer=...)` on
-`claude-fable-5-2`, recorded). The recorded judge failed none of the replies either reader failed. A second eval,
-`tighter_eval`, rewords `grounded` and is measured against the model's read of the new words only: still below the
-bar.
+**Changed:** `examples/2-replies/` checks its judge against a reference (owner rulings, 2026-11-16): `labels.csv`
+holds a person's blind read of 20 replies, adjudicated by the person reader where a model's blind read disagreed, with
+no independent adjudicator; 55 labels, 5 left out and said on their rows (4 unclear on adjudication, 1 to re-check
+under the new wording). Both reads and the rulings are in `adjudication/`. `grounded` now asks for consistency with the
+policy, not that the policy states everything: silence in the policy is no failure. A second eval, `stronger_eval`,
+judges the same replies with `claude-sonnet-5-5`. With at most one reference failure per dimension, neither judge is
+shown to catch failures; the ladder states each judge's counts. The model reviewer and `tighter_eval` are gone.
 
-The quick print's judge lines changed with it. A person's read is named by the `rater` its labels give, else `a
-person`, never "you", which the package cannot know. "read further" and "more results" are decided by the cases left
-on the sheet, not by who read it. Once a model has read and no person has, the person's `0 of N cases read blind by a
-person: judge uncalibrated` line and its next step still print. Each model's read heads its own block below the
-people's, and an agreement line names a dimension as every surface does (`answer grounded (judged)`), never by its
-stored id.
+**Changed:** the quick print's judge lines state agreement as counts (#1208): of the answers the reader failed, how
+many the judge failed (the catch rate), and of those it passed, how many the judge failed (the false-fail rate), each
+with its exact 95% interval; a side that gave one verdict, and a rate that cannot exist, are said. No kappa, bar, tier
+word or count of results still needed is printed: `judge uncalibrated` is now `judge not checked`, and the floor's
+"needs N more" is gone. Where a line holds more answers than cases (a pair read, or several readers), it says the
+intervals count each answer as independent, which answers on one case are not. A reviewer whose answers two models
+served prints one block per served model, each naming it (#1231). Labels off the draw are said with whose they are,
+and a label bound to other wording of its criterion is said as such, not as an output no longer among the answers.
+`analysis.blind_read.table_kappa`, whose one caller was the console, is removed.
+A judged miss names its dimension as every surface does (`the judge failed it on answer grounded (judged)`), not
+by its stored id.
 
 ### evals: a host's door onto the blind read, and a recorded call says whether a person or a model made it (#1178)
 

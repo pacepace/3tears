@@ -37,23 +37,27 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
   from the top, stops anywhere, and saves the labels as the file `labels=` names (`blind_read.csv` is the same
   order as rows, for a spreadsheet). The next run pairs each label with the judge's score of the same answer (by a
   fingerprint of what was read and of the criterion's wording, so a replayed run pairs, and a reworded dimension
-  does not) and prints how far the person read and, per dimension, the results paired with their cases, κ with its
-  bounds, and the [evidence tier](#step-7-evidence-tiers-and-how-many-ratings-they-take) it earns.
+  does not) and prints how far the person read and, per dimension, the results paired with their cases as counts
+  (#1208): of the answers the person failed, how many the judge failed too (the catch rate), and of those they
+  passed, how many it failed (the false-fail rate), each with its exact (Clopper-Pearson) 95% interval. The print
+  states no κ, bar, tier word or count of results still needed.
   - **Answered from the top, it is a random sample.** A prefix of a random order is a simple random sample, so
     nobody picks a sample size first: 12 answered cases and 60 are both random. Answers out of order are not drawn
-    at random: they still count toward κ and the tier, and the line says so. A skipped case, and one answered in
+    at random: they still count, and the line says so. A skipped case, and one answered in
     part, are counted and said, since a rater skips by content.
   - **Two results of one case raise the tier's error.** The tier is awarded on a bound that claims a judge exactly
     at the bar earns it at most 5% of the time. That holds with one result a case. A read of pairs rates two results
     of every case, and where the judge's errors on the two coincide the measured rate is about 7% (5.3% at 20 cases,
     6.7% at 60, 7.0% at 120, pass/fail): see
     [open problems](open-problems.md#two-results-of-one-case-count-as-two). Each line states its cases beside its
-    results for that reason.
+    results for that reason, and where it holds more answers than cases it says the exact intervals count each
+    answer as independent, which answers on one case are not.
   - **One result per case.** One answer is drawn per case among its repeats; with two arms an item is a pair in
     slots A and B, assigned by a seeded coin in blocks of two, and the control is the first arm against the first
     candidate.
-  - **A pass/fail dimension also says what κ cannot.** Where the person failed some answers, the line ends with how
-    many of those the judge failed too: a judge that passes everything agrees on most answers and catches none.
+  - **Counts say what κ cannot.** A judge that passes everything agrees on most answers and catches none: the
+    catch rate shows it, where κ is 0 or undefined whenever one side gives every answer one verdict. The line says
+    so where a side did, and says where the person failed (or passed) nothing, so no rate exists.
   - **With two arms, the person's preference is read once.** Each pair asks which output is better. The verdict
     (the exact two-sided sign test over the non-tie cases, ties counted and never split, a blank preference
     counted and said, fewer than 6 too few to test) is given when the first 30 cases, or all of them where there are
@@ -93,11 +97,11 @@ path: `Judge(model, rubric, *, examples=(), labels=None, case_material=None, gua
 - **`guard`** puts dimensions on the boundary axis with their margins: `guard={"safe": 0.02}`
   ([Step 3](#step-3-guardrails-are-not-capabilities)).
 
-Until a person's labels exist, the printed result says `judge: 0 of N cases read blind: judge uncalibrated` (`read
+Until a person's labels exist, the printed result says `judge: 0 of N cases read blind: judge not checked` (`read
 blind by a person` once a model has read) and the next step, a line no quiet print drops. Each line names whose read
-it is: the `rater` the labels give, else `a person`. The package provides the mechanism (the page to read, the pairing, κ, the tiers); collecting the labels
-is each app's own work, and no label is ever authored for you. The calibrated tier's floor is 20 person-rated
-results; about 50 is a realistic plan for a good judge.
+it is: the `rater` the labels give, else `a person`. The package provides the mechanism (the page to read, the pairing, the counts); collecting the labels
+is each app's own work, and no label is ever authored for you. A catch rate over a few failures is wide: 0 of 2
+reads 0% to 84%, so a judge is checked on enough cases that the reader fails some.
 
 **The rest of this page is the judge in full,** on the engine's own terms. The snippets run top to bottom as one
 script, in one async context (`python -m asyncio`, or inside `async def main()`). A store call blocks, so a snippet makes it off the event loop with

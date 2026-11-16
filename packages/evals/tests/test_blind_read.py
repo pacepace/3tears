@@ -8,7 +8,8 @@ Held here on small made-up campaigns, through the pure core (``analysis/blind_re
 - answers from the top are a ``random`` sample and any other set is not drawn at random;
 - closing gives person ratings that name the read, the judge's scores against each reader stored as counts (no kappa,
   bar or tier on the document), and a preference with its exact test, withheld until the read reaches the length
-  fixed when it was drawn;
+  fixed when it was drawn; the print states each check as counts, the catch and false-fail rates with exact
+  intervals, and no kappa, bar, tier word or count of results still needed;
 - a result judged on other wording of a criterion, or whose stored evidence is other text, is never shown: a rating
   is bound to what its rater read;
 - a model that answers the sheet is read apart from people, never as one, never when it is the judge's own model
@@ -505,9 +506,15 @@ def test_a_judge_that_passes_everything_is_shown_by_the_table_where_kappa_says_n
     assert core.single_verdicts(reading.table) == (None, 1), "the judge gave every answer one verdict: pass"
     lines = judge_lines(closed, labels_name="labels.csv", labels_there=True)
     assert lines[0] == "judge: 30 of 30 cases read blind by owner, in the drawn order (a random sample)"
-    assert "30 results from 30 cases" in lines[1] and lines[1].endswith(
-        "the judge failed 0 of the 3 answers owner failed"
+    # #1208: counts, the catch rate and the false-fail rate with exact intervals, and the one verdict the judge gave.
+    assert lines[1].endswith(
+        "30 results from 30 cases: the judge failed 0 of the 3 answers the reader failed (exact 95% interval 0% to "
+        "71%); the judge failed 0 of the 27 the reader passed (exact 95% interval 0% to 13%); the judge gave every "
+        "answer one verdict, pass"
     )
+    # No kappa, bar, tier word or estimate of results still needed is printed.
+    for word in ("kappa", "calibrated", "undetermined", "bar of", "more results", "read further"):
+        assert not any(word in line for line in lines), word
 
 
 def test_the_preference_is_withheld_until_the_planned_length_and_reads_only_those_items() -> None:
@@ -756,15 +763,20 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
     assert (preference.anchor, preference.anchor_names) == ("model", [reviewer])
     lines = judge_lines(closed, labels_name=None, labels_there=False, shown={})
     # No person has read, so the person's first step leads, never dropped beside a model's read.
-    assert lines[0].startswith("judge: 0 of 24 cases read blind by a person: judge uncalibrated (")
+    assert lines[0].startswith("judge: 0 of 24 cases read blind by a person: judge not checked (")
     lines = lines[1:]
     assert lines[0] == (
         f"judge: 24 of 24 cases read blind by a model ({reviewer}), in the drawn order (a random sample)"
     )
     assert lines[1] == f"  checked against a model ({reviewer}), not yet against people:"
-    assert "  kappa 1.00 [0.80, 1.00]  agrees with the model, above the bar of 0.60; " in lines[2]
-    # No tier value is printed for a judge checked against a model: the line says what it was checked against.
-    assert not any("calibrated" in line for line in lines)
+    # A pair read: two results of each case, so the exact intervals' independence is said not to hold.
+    assert lines[2].endswith(
+        "48 results from 24 cases: the judge failed 8 of the 8 answers the model failed (exact 95% interval 63% to "
+        "100%); the judge failed 0 of the 40 the model passed (exact 95% interval 0% to 9%); the intervals count "
+        "each answer as independent, which answers on one case are not"
+    )
+    # No tier value or kappa is printed for a judge checked against a model: the line says what it was checked against.
+    assert not any("calibrated" in line or "kappa" in line for line in lines)
     assert lines[3].startswith(f"preference of a model ({reviewer}), not a person: v2 over v1 on 24 of 24")
     assert not any(line.startswith("next:") for line in lines)
 
@@ -904,6 +916,20 @@ def test_a_reviewer_s_answers_two_served_models_gave_are_read_apart_and_never_po
     b_cells = core.pass_fail_counts(checks["other/b-2"].table)
     assert b_cells is not None and b_cells.reader_fail_judge_pass > 0, "the second's misses are its own"
     assert all(entry.served_model is None for entry in report.agreement if entry.anchor == "person")
+    # #1231: printed, each served model heads its own block, with its own reading and its own check against people,
+    # so no two lines on one criterion stand unlabelled.
+    lines = judge_lines(closed, labels_name="labels.csv", labels_there=True)
+    headings = [line for line in lines if "checked against a model" in line]
+    assert headings == [
+        f"  beside it, checked against a model ({reviewer}), served by other/a-1:",
+        f"  beside it, checked against a model ({reviewer}), served by other/b-2:",
+    ]
+    for heading, cases in zip(headings, ("0 to 11", "12 to 23"), strict=True):
+        block = lines[lines.index(heading) + 1 : lines.index(heading) + 3]
+        assert block[0].startswith("    answer grounded (judged)  24 results from 12 cases: "), cases
+        assert block[1].startswith(f"    {reviewer} against people on answer grounded (judged): 24 outputs: "), cases
+    served = [line for line in lines if line.startswith("    answer grounded (judged)")]
+    assert len(served) == len(set(served)) == 2, "the two served models' readings differ and each is printed once"
 
 
 def test_a_reviewer_s_preference_is_read_once_per_served_model_and_never_pooled() -> None:
@@ -1062,7 +1088,7 @@ async def test_a_reply_that_cannot_be_used_leaves_its_case_not_answered_and_the_
     (sample,) = closed.report.samples
     assert (sample.sample, sample.answered, sample.skipped) == ("random", 6, 2)
     lines = judge_lines(closing, labels_name=None, labels_there=False)
-    assert lines[0].startswith("judge: 0 of 6 cases read blind by a person: judge uncalibrated (")
+    assert lines[0].startswith("judge: 0 of 6 cases read blind by a person: judge not checked (")
     assert lines[1] == (
         "judge: 6 of 6 cases read blind by a model (scripted/reviewer), in the drawn order (a random sample of the "
         "cases answered; 2 skipped)"
@@ -1242,8 +1268,9 @@ def test_an_older_to_label_sheet_and_another_draw_s_labels_still_read_as_not_dra
     assert (reading.pairs, reading.blind_pairs, reading.random_pairs) == (24, 0, 0), "paired, and none of it random"
     lines = judge_lines(closing, labels_name="labels.csv", labels_there=True, loose=24)
     assert lines[0] == (
-        "judge: 24 label(s) in labels.csv are not on this run's draw (the answers changed since, or it is an older "
-        "sheet): kept, each paired with the same output, and not drawn at random"
+        # Whose they are, as a sample line says it: a file with no rater column is a person's, unnamed.
+        "judge: 24 label(s) in labels.csv by a person are not on this run's draw (the answers changed since, or it is "
+        "an older sheet): kept, each paired with the same output, and not drawn at random"
     )
     # A label for another draw that carries no fingerprint cannot be paired, and is said.
     other = tmp_path / "other.csv"
@@ -1301,7 +1328,7 @@ def test_labels_saved_from_the_page_survive_a_change_to_the_answers_as_not_drawn
     closed = closing.read
     assert closed.report is not None and closed.report.agreement[0].random_pairs == 0
     lines = judge_lines(closing, labels_name="labels.csv", labels_there=True, loose=11, unread=got.unread)
-    assert lines[0].startswith("judge: 11 label(s) in labels.csv are not on this run's draw")
+    assert lines[0].startswith("judge: 11 label(s) in labels.csv by owner are not on this run's draw")
     assert lines[1].startswith("  7 label(s) in labels.csv not read: line 2: a preference given on another draw")
     assert lines[1].endswith("; and 4 more") and len([line for line in lines if "not read" in line]) == 1
 
@@ -1339,16 +1366,16 @@ def test_a_case_answered_in_part_is_counted_and_a_missing_preference_is_said(tmp
     assert read_sample(_with(read, [_answer(read, 0)]), "owner").partial == 0
 
 
-def test_with_no_labels_the_line_says_the_judge_is_uncalibrated_and_the_one_next_step() -> None:
+def test_with_no_labels_the_line_says_the_judge_is_not_checked_and_the_one_next_step() -> None:
+    """No tier word and no count of answers still needed (#1208): the line says the judge is not checked, and how."""
     results, evidence = _campaign(4, arms=1)
     closed = close_blind_read(_draw(results, evidence, arms=1), results)
     assert judge_lines(closed, labels_name="labels.csv", labels_there=False) == [
-        "judge: 0 of 4 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the "
-        "blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv; the "
-        "calibrated tier's floor is 20 judged answers per dimension and the read holds 4, so it needs 16 more"
+        "judge: 0 of 4 cases read blind: judge not checked (labels.csv is not there yet); next step: open the "
+        "blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv"
     ]
     assert judge_lines(None, labels_name=None, labels_there=False) == [
-        "judge: no judged answer to read blind: judge uncalibrated"
+        "judge: no judged answer to read blind: judge not checked"
     ]
 
 
