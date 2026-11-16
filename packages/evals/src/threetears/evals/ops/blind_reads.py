@@ -41,12 +41,18 @@ from pydantic import Field
 
 from threetears.evals.analysis.blind_read import (
     BLIND_READ_SEED,
+    agreed_pairs,
     blind_sheet,
     check_answer,
     close_blind_read,
     draw_blind_read,
+    pass_fail_counts,
     read_sample,
+    shares_family,
+    single_verdicts,
 )
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.stats import exact_rate_interval
 from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.errors import (
@@ -70,6 +76,7 @@ from threetears.evals.run.job_work import DEFAULT_ACTION_JOB_BUDGET_S, action_jo
 from threetears.evals.run.ratings import rate_result
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.blind_read import (
+    BlindAgreement,
     BlindAnswer,
     BlindArm,
     BlindAsk,
@@ -82,7 +89,14 @@ from threetears.evals.schema.blind_read import (
     BlindVerdictTable,
 )
 from threetears.evals.schema.logs import get_logger
-from threetears.evals.schema.models import RESERVED_DIM_IDS, CalibrationRating, EvalResult, EvalRun, RubricDim
+from threetears.evals.schema.models import (
+    RESERVED_DIM_IDS,
+    CalibrationRating,
+    EvalResult,
+    EvalRun,
+    RubricDim,
+    RubricScale,
+)
 from threetears.evals.schema.reading_states import Maker, SampleKind, StateOf
 
 log = get_logger(__name__)
@@ -126,26 +140,78 @@ class BlindReadRater(EvalBaseModel):
     partial: int = Field(ge=0, description="How many were answered in part.")
 
 
+class BlindReadRate(EvalBaseModel):
+    """A rate read off a check's counts: of ``of`` answers, ``count``, with its exact 95% interval.
+
+    Exact (Clopper-Pearson): it covers the true rate at least 95% of the time at any count, the few answers a reader
+    fails included. The answers are counted as independent; two results of one pair item share a case, which
+    ``cases`` on the check states.
+    """
+
+    count: int = Field(ge=0)
+    of: int = Field(ge=1)
+    interval: tuple[float, float] = Field(description="The exact (Clopper-Pearson) 95% interval on count / of.")
+    said: str = Field(description="The rate in words, with its count and interval.")
+
+
 class BlindReadCheck(EvalBaseModel):
-    """How the judge agrees, on one criterion, with the people who answered a closed read, or with its model."""
+    """How the judge's scores stood, on one criterion, against the people who answered a closed read, or against its
+    model as one served model: counts, and the rates read off them.
+
+    No kappa, bar, tier or estimate of results still needed (#1208): where one side gave a single verdict a kappa is
+    0 or undefined at any agreement, and a read's population is fixed. ``said`` states, in words, where one side gave
+    a single verdict and where no rate exists.
+    """
 
     dim: str = Field(description="The criterion.")
+    scale: RubricScale = Field(description="pass_fail, or ordinal (1-5).")
     judge_model: str | None = Field(description="The model that served the judge's scores; None where unrecorded.")
     made_by: Maker = Field(description="Whose answers the judge was read against: people's, or a model's.")
     raters: list[str] = Field(description="The people, sorted; or the one model, by id.")
+    served_model: str | None = Field(
+        description="A model's check: the model that served every answer counted here. None for people."
+    )
     results: int = Field(ge=0, description="The distinct results read.")
     cases: int = Field(ge=0, description="The distinct cases those results answer.")
     random_results: int = Field(ge=0, description="How many of the pairs read came from a random sample.")
-    exact_agreement: float = Field(ge=0.0, le=1.0)
-    kappa: float | None = Field(description="Kappa on pass/fail, quadratic-weighted on 1-5; None where undefined.")
-    lower: float | None = Field(description="Its one-sided 95% lower bound.")
-    upper: float | None = Field(description="Its one-sided 97.5% upper bound.")
-    result: Literal["met", "not_met", "undecided", "insufficient"] = Field(
-        description="How the check reads against its bar."
+    agreed: int = Field(ge=0, description="The pairs where the reader and the judge gave the same score.")
+    pairs: int = Field(ge=1, description="The (answer, judge score) pairs read.")
+    table: BlindVerdictTable = Field(
+        description="Every pair, counted by the reader's score (rows) and the judge's (columns): the confusion counts "
+        "on pass/fail, the full cross-table on 1-5."
     )
-    results_needed: int | None = Field(description="About how many more results would decide it; None once decided.")
+    catch: BlindReadRate | None = Field(
+        description="Pass/fail: of the answers the reader failed, how many the judge failed too. None where the reader "
+        "failed none, or on 1-5."
+    )
+    false_fail: BlindReadRate | None = Field(
+        description="Pass/fail: of the answers the reader passed, how many the judge failed (the miss the other way). "
+        "None where the reader passed none, or on 1-5."
+    )
     shares_family: bool = Field(description="A model's check only: the model and the judge name one provider.")
-    table: BlindVerdictTable | None = Field(description="On a pass/fail criterion, the two-by-two.")
+    said: list[str] = Field(
+        default_factory=list,
+        description="Plain statements: a side that gave a single verdict, and a rate that does not exist, with why.",
+    )
+
+
+class BlindReadReviewerCheck(EvalBaseModel):
+    """How the read's reviewer model stood against people on the outputs both answered, as counts: the people are the
+    reader, the reviewer sits where the judge would."""
+
+    dim: str = Field(description="The criterion.")
+    reviewer: str = Field(description="The reviewer model's id.")
+    served_model: str | None = Field(description="The model that served the answers counted; None where unrecorded.")
+    agreed: int = Field(ge=0, description="The outputs where the person and the reviewer gave the same score.")
+    outputs: int = Field(ge=1, description="The outputs both answered on this criterion.")
+    table: BlindVerdictTable = Field(description="Every pair, by the person's score (rows) and the reviewer's.")
+    catch: BlindReadRate | None = Field(
+        description="Pass/fail: of the answers people failed, how many the reviewer failed too; None where none."
+    )
+    false_fail: BlindReadRate | None = Field(
+        description="Pass/fail: of the answers people passed, how many the reviewer failed; None where none."
+    )
+    said: list[str] = Field(default_factory=list, description="Plain statements, as a check's.")
 
 
 class BlindReadPreference(EvalBaseModel):
@@ -199,7 +265,7 @@ class BlindReadLine(EvalBaseModel):
     closed_by: str | None
     closed_early: bool = Field(description="Closed before any rater answered every planned item.")
     checks: list[BlindReadCheck] = Field(default_factory=list, description="Once closed: the judge's checks.")
-    reviewer_checks: list[BlindReviewerCheck] = Field(
+    reviewer_checks: list[BlindReadReviewerCheck] = Field(
         default_factory=list, description="Once closed: the reviewer model against people, on what both answered."
     )
     not_checked: dict[str, list[str]] = Field(
@@ -273,26 +339,7 @@ def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
             )
         )
     report = read.report if read.closed_at is not None else None
-    checks = [
-        BlindReadCheck(
-            dim=entry.dim,
-            judge_model=entry.judge_model,
-            made_by=entry.anchor,
-            raters=list(entry.anchor_names),
-            results=entry.results,
-            cases=entry.cases,
-            random_results=entry.random_pairs,
-            exact_agreement=entry.exact_agreement,
-            kappa=entry.kappa,
-            lower=entry.lower,
-            upper=entry.upper,
-            result=_criterion_state(entry.calibration),
-            results_needed=entry.results_needed,
-            shares_family=entry.shares_family,
-            table=entry.table,
-        )
-        for entry in (report.agreement if report is not None else [])
-    ]
+    checks = [_check(entry) for entry in (report.agreement if report is not None else [])]
     preferences = [
         BlindReadPreference(
             made_by=entry.anchor,
@@ -332,7 +379,7 @@ def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
         closed_by=read.closed_by,
         closed_early=read.closed_early,
         checks=checks,
-        reviewer_checks=list(report.reviewer_checks) if report is not None else [],
+        reviewer_checks=[_reviewer_check(check) for check in (report.reviewer_checks if report is not None else [])],
         not_checked=dict(report.not_checked) if report is not None else {},
         preferences=preferences,
         reviews=list(read.reviews),
@@ -340,20 +387,96 @@ def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
     )
 
 
-def _criterion_state(value: str) -> Literal["met", "not_met", "undecided", "insufficient"]:
-    """A stored check result, as the four criterion states.
+#: The words a pass/fail score is said in.
+_VERDICT_WORDS: Final = {0: "fail", 1: "pass"}
 
-    :raises ValueError: A value none of the four: a defect in the core, never a reader's.
+
+def _rate(count: int, of: int, said: str) -> BlindReadRate:
+    """``count`` of ``of`` with its exact interval, said as ``said`` followed by the interval."""
+    interval = exact_rate_interval(count, of)
+    assert interval is not None  # of is at least 1
+    forms = PageForms.off_page()
+    low, high = forms.share(interval[0]).text, forms.share(interval[1]).text
+    return BlindReadRate(count=count, of=of, interval=interval, said=f"{said} (exact 95% interval {low} to {high})")
+
+
+def _rates(
+    table: BlindVerdictTable, reader: str, judge: str
+) -> tuple[BlindReadRate | None, BlindReadRate | None, list[str]]:
+    """The catch rate and the false-fail rate read off a stored table, and the plain statements beside them.
+
+    ``reader`` and ``judge`` are how the statements name the two sides.
     """
-    states: dict[str, Literal["met", "not_met", "undecided", "insufficient"]] = {
-        "met": "met",
-        "not_met": "not_met",
-        "undecided": "undecided",
-        "insufficient": "insufficient",
-    }
-    if value in states:
-        return states[value]
-    raise ValueError(f"a check result is met, not_met, undecided or insufficient, not {value!r}")
+    said: list[str] = []
+    one_reader, one_judge = single_verdicts(table)
+    cells = pass_fail_counts(table)
+
+    def verdict(score: int) -> str:
+        return _VERDICT_WORDS[score] if cells is not None else f"a {score}"
+
+    if one_reader is not None:
+        said.append(f"{reader} gave every answer one verdict, {verdict(one_reader)}")
+    if one_judge is not None:
+        said.append(f"{judge} gave every answer one verdict, {verdict(one_judge)}")
+    if cells is None:
+        said.append("a 1-5 criterion has no fixed pass, so no catch rate: the table counts every pair")
+        return None, None, said
+    failed = cells.both_fail + cells.reader_fail_judge_pass
+    passed = cells.both_pass + cells.reader_pass_judge_fail
+    catch = _rate(cells.both_fail, failed, f"caught {cells.both_fail} of {failed}") if failed else None
+    false_fail = (
+        _rate(
+            cells.reader_pass_judge_fail,
+            passed,
+            f"failed {cells.reader_pass_judge_fail} of the {passed} {reader} passed",
+        )
+        if passed
+        else None
+    )
+    if catch is None:
+        said.append(f"{reader} failed no answer: no catch rate")
+    if false_fail is None:
+        said.append(f"{reader} passed no answer: no false-fail rate")
+    return catch, false_fail, said
+
+
+def _check(entry: BlindAgreement) -> BlindReadCheck:
+    """A stored agreement as the door serves it: its counts, and the rates read off them on load."""
+    catch, false_fail, said = _rates(entry.table, "the reader", "the judge")
+    return BlindReadCheck(
+        dim=entry.dim,
+        scale=entry.scale,
+        judge_model=entry.judge_model,
+        made_by=entry.anchor,
+        raters=list(entry.anchor_names),
+        served_model=entry.served_model,
+        results=entry.results,
+        cases=entry.cases,
+        random_results=entry.random_pairs,
+        agreed=agreed_pairs(entry.table),
+        pairs=entry.pairs,
+        table=entry.table,
+        catch=catch,
+        false_fail=false_fail,
+        shares_family=entry.anchor == "model" and shares_family(entry.anchor_names[0], entry.judge_model),
+        said=said,
+    )
+
+
+def _reviewer_check(check: BlindReviewerCheck) -> BlindReadReviewerCheck:
+    """A stored reviewer check as the door serves it: counts, and the rates read off them on load."""
+    catch, false_fail, said = _rates(check.table, "people", "the reviewer")
+    return BlindReadReviewerCheck(
+        dim=check.dim,
+        reviewer=check.reviewer,
+        served_model=check.served_model,
+        agreed=agreed_pairs(check.table),
+        outputs=check.outputs,
+        table=check.table,
+        catch=catch,
+        false_fail=false_fail,
+        said=said,
+    )
 
 
 def _line_of(host: EvalHost, read: BlindRead, **close: object) -> BlindReadLine:

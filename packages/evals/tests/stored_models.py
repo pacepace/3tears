@@ -49,6 +49,7 @@ from threetears.evals.analysis.analyst.snapshot import report_snapshot
 from threetears.evals.run import EvalActionJob, EvalJudgeTemperatureCheck, EvalLaunch, EvalSecondJudgePass
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.blind_read import (
+    BlindAgreement,
     BlindAnswer,
     BlindArm,
     BlindDraw,
@@ -58,7 +59,9 @@ from threetears.evals.schema.blind_read import (
     BlindRead,
     BlindReadReport,
     BlindReview,
+    BlindReviewerCheck,
     BlindVerdict,
+    BlindVerdictTable,
 )
 from threetears.evals.schema.reading_states import StateOf
 from threetears.evals.schema.models import (
@@ -329,7 +332,9 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         generation={"turns": [{"role": "analyst", "round": 1, "cost_usd": None}], "bounces": 0},
         created_by="agent:test",
     ),
-    # A pair read closed early: one person's answer, a declared reviewer's review, and a preference too few to read.
+    # A pair read closed early: one person's answer, a declared reviewer's review, the judge's scores against the person
+    # and against the reviewer as one served model (counts only), the reviewer against the person, and a preference
+    # too few to read.
     "BlindRead": lambda: BlindRead(
         id="blind-0b5b9abb32a0",
         scope_id="uni-1",
@@ -383,6 +388,53 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
         closed_early=True,
         report=BlindReadReport(
             cases=1,
+            agreement=[
+                BlindAgreement(
+                    dim="conversation.tone",
+                    scale="ordinal",
+                    judge_model="judge/served-1",
+                    anchor="person",
+                    anchor_names=["ana@example.com"],
+                    pairs=1,
+                    results=1,
+                    cases=1,
+                    blind_pairs=1,
+                    random_pairs=1,
+                    table=BlindVerdictTable(
+                        scores=[1, 2, 3, 4, 5],
+                        counts=[[0] * 5, [0] * 5, [0] * 5, [0, 0, 1, 0, 0], [0] * 5],
+                    ),
+                ),
+                BlindAgreement(
+                    dim="conversation.tone",
+                    scale="ordinal",
+                    judge_model="judge/served-1",
+                    anchor="model",
+                    anchor_names=["reviewer/model"],
+                    served_model="reviewer/model-0613",
+                    pairs=1,
+                    results=1,
+                    cases=1,
+                    blind_pairs=1,
+                    random_pairs=1,
+                    table=BlindVerdictTable(
+                        scores=[1, 2, 3, 4, 5],
+                        counts=[[0] * 5, [0] * 5, [0, 0, 1, 0, 0], [0] * 5, [0] * 5],
+                    ),
+                ),
+            ],
+            reviewer_checks=[
+                BlindReviewerCheck(
+                    dim="conversation.tone",
+                    reviewer="reviewer/model",
+                    served_model="reviewer/model-0613",
+                    outputs=1,
+                    table=BlindVerdictTable(
+                        scores=[1, 2, 3, 4, 5],
+                        counts=[[0] * 5, [0] * 5, [0] * 5, [0, 0, 1, 0, 0], [0] * 5],
+                    ),
+                )
+            ],
             preferences=[
                 BlindPreference(
                     anchor="person",

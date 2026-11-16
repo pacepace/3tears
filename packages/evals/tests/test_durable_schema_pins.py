@@ -60,7 +60,9 @@ PINNED_DURABLE_SCHEMA_MINOR = 4
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "blind_read": "7dbb62b53b0d44057e77d838181299b9d2fefbb5d10807031594806b1deb7818",
+    # Re-taken under 17.4 (unshipped) when the blind read's report moved to counts only (#1208): no kappa, bar,
+    # tier or results-needed figure is stored; a reading is per served model.
+    "blind_read": "52d1fe45bd599c1a8e57e925f1fc726905607c3ca01c667786ffeeeab3502d04",
     "calibration_rating": "645e9cdeadda3272d71454ae5913cf214e58bb58daa90607f2838228e3db2f2f",
     "case_set": "529d8a007683e49bd5e8f7a388036561a589994bac0e7e0aec61c5971c7fe3ba",
     "eval_analyst_gap": "3ef9cddea0af1ef4cbac0eda27ee1059adc448d44e3eb5f60b636442ce0148c8",
@@ -130,7 +132,9 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v16/judge_config_tombstone.json": "4831dcf1c41fa3725f578d2119d046473c832cec7fb25a3ab04fa57d5b26eea7",
     "v16/rubric_dim.json": "34a340255217cbafb3b9be7c6517d3b200b77aa07aedf77c32f06b372db3bc45",
     "v16/rubric_dim_tombstone.json": "374d32a4b7497c976dec064095209bffd224d861dac6f17b492366e60034ad09",
-    "v17/blind_read.json": "945c246ca48c47e3a3af3b4340c444e907e9b3336f248f76b21fcc4e85b4c437",
+    # Re-written from its stored sample (unshipped 17.4, #1208): the report now holds agreement counts for a person and
+    # a served model and a reviewer check, where it held none.
+    "v17/blind_read.json": "b14382bedd772600c1057798f2d3c300b5079c32a1340012a6197065029854fa",
     "v17/calibration_rating.json": "64213ddc7847462b483759ce1ee07928b2245c1c6572deabaebe1801d3044370",
     "v17/eval_analyst_gap.json": "a3a45b37c6417984f079bc78856bfd29a852bd62a8b2971eabe91ea202220258",
     "v17/case_set.json": "60fa982745ed59772ca13d6a5637efd2abf6d8226fe101635370e0fae4a08129",

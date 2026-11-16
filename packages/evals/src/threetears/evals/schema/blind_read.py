@@ -84,7 +84,9 @@ class BlindDraw(EvalDocumentModel, CoreShapeModel):
         default_factory=dict,
         description=(
             "Cases left out of the order or of its pairs, counted by reason: an arm gave no judged answer; no stored "
-            "evidence; identical outputs (shown once, as a single, with no preference asked)."
+            "evidence; judged on other wording of a criterion than the read asks (a template edited since); stored "
+            "evidence differs from what was judged; identical outputs (shown once, as a single, with no preference "
+            "asked)."
         ),
     )
 
@@ -189,23 +191,46 @@ class BlindSample(EvalDocumentModel, CoreShapeModel):
 
 
 class BlindVerdictTable(EvalDocumentModel, CoreShapeModel):
-    """A pass/fail criterion's two-by-two: the rater against the judge, and how many rater-failed answers the judge
-    failed too."""
+    """Every (reader's score, judge's score) pair one check read, counted: on pass/fail the confusion counts, on 1-5 the
+    full cross-table. Only the counts are kept; an agreement share, a catch rate and its interval are read off them
+    when the check is read, never stored."""
 
-    both_pass: int = Field(ge=0)
-    rater_pass_judge_fail: int = Field(ge=0)
-    rater_fail_judge_pass: int = Field(ge=0)
-    both_fail: int = Field(ge=0)
-    detection: float | None = Field(
-        description="The share of rater-failed answers the judge failed too; None where the rater failed none."
+    scores: list[int] = Field(
+        min_length=2,
+        description=(
+            "The criterion's scores, low to high, which name both the rows and the columns: 0 (fail) and 1 (pass) on "
+            "pass/fail, 1 to 5 on 1-5."
+        ),
     )
-    detection_interval: tuple[float, float] | None = Field(
-        default=None, description="Its Wilson interval; None where the rater failed none."
+    counts: list[list[int]] = Field(
+        description=(
+            "One row per score the reader gave, in `scores` order; in each, one count per score the judge gave, in "
+            "the same order. On pass/fail: [[both failed, the reader failed and the judge passed], [the reader "
+            "passed and the judge failed, both passed]]."
+        )
     )
+
+    @model_validator(mode="after")
+    def _a_count_per_pair_of_scores(self) -> BlindVerdictTable:
+        """Refuse a table that is not square over its scores, or holds a negative count.
+
+        :raises ValueError: Naming which.
+        """
+        width = len(self.scores)
+        if len(self.counts) != width or any(len(row) != width for row in self.counts):
+            raise ValueError(f"a verdict table holds one count per pair of its {width} scores")
+        if any(count < 0 for row in self.counts for count in row):
+            raise ValueError("a verdict table's counts are none below 0")
+        return self
 
 
 class BlindAgreement(EvalDocumentModel, CoreShapeModel):
-    """How one judge's scores on one criterion agree with one anchor's answers, and the tier that bears."""
+    """How one judge's scores on one criterion stood against one reader configuration's answers, as counts.
+
+    A reader configuration is the people (together), or one model reviewer as one served model. Nothing derived is
+    stored: no kappa, no bar, no tier and no estimate of results still needed. What a reading of the judge says is
+    read off these counts when it is read.
+    """
 
     dim: DimName = Field(description="The criterion.")
     scale: RubricScale
@@ -214,22 +239,16 @@ class BlindAgreement(EvalDocumentModel, CoreShapeModel):
     anchor_names: list[str] = Field(
         min_length=1, description="The people, sorted; or the one reference reviewer's model id."
     )
-    decides: bool = Field(
+    served_model: str | None = Field(
+        default=None,
+        min_length=1,
         description=(
-            "Whether this reading decides the criterion's tier. A person reading does once it is itself decided (met "
-            "or not met at the tier's floor), or where no model's reading exists; until then a model's reading "
-            "stands and the person reading is shown beside it."
-        )
-    )
-    shares_family: bool = Field(
-        default=False,
-        description=(
-            "A reference reading only: the reviewer's model id and the judge's name one provider, so the two may "
-            "share a lean their agreement cannot show."
+            "A model's reading only: the model that served every answer counted here, as the provider named it. A "
+            "reviewer whose answers two models served is read once per served model, never pooled. None for people."
         ),
     )
     pairs: int = Field(ge=1, description="The (answer, judge score) pairs read.")
-    results: int = Field(ge=0, description="The distinct results behind the kappa: what the tier's floor counts.")
+    results: int = Field(ge=0, description="The distinct results those pairs are of.")
     cases: int = Field(
         ge=0,
         description=(
@@ -239,27 +258,26 @@ class BlindAgreement(EvalDocumentModel, CoreShapeModel):
     )
     blind_pairs: int = Field(ge=0, description="How many of the pairs were given on this blind read.")
     random_pairs: int = Field(ge=0, description="How many of those came from a rater whose sample is random.")
-    exact_agreement: float = Field(ge=0.0, le=1.0)
-    kappa: float | None = Field(description="Kappa on pass/fail, quadratic-weighted on 1-5; None where undefined.")
-    lower: float | None = Field(default=None, description="Its one-sided 95% lower bound.")
-    upper: float | None = Field(default=None, description="Its one-sided 97.5% upper bound.")
-    calibration: str = Field(description="How the calibration criterion reads: met, not_met, undecided, insufficient.")
-    results_needed: int | None = Field(
-        default=None, description="About how many more results would decide the criterion; None once decided."
-    )
-    tier_before: str = Field(description="The tier the judge's readings bore before these answers.")
-    tier: str = Field(description="The tier they bear with them, on this anchor.")
-    table: BlindVerdictTable | None = Field(default=None, description="The two-by-two, on a pass/fail criterion.")
+    table: BlindVerdictTable = Field(description="Every pair, counted by the reader's score and the judge's.")
 
 
 class BlindReviewerCheck(EvalDocumentModel, CoreShapeModel):
-    """How a reference reviewer agrees with people on the outputs both answered: the anchor, itself measured."""
+    """How a reference reviewer stood against people on the outputs both answered, as counts: the anchor, itself
+    measured. People are the reader here, and the reviewer sits where a judge would."""
 
     dim: DimName
     reviewer: str = Field(min_length=1, description="The reference reviewer's model id.")
-    outputs: int = Field(ge=1, description="The outputs both a person and the reviewer answered on this criterion.")
-    exact_agreement: float = Field(ge=0.0, le=1.0)
-    kappa: float | None = Field(description="Kappa on pass/fail, quadratic-weighted on 1-5; None where undefined.")
+    served_model: str | None = Field(
+        min_length=1,
+        description=(
+            "The model that served every reviewer answer counted here, as the provider named it; None for the answers "
+            "whose served model was not recorded. Answers two models served are counted apart, never pooled."
+        ),
+    )
+    outputs: int = Field(ge=1, description="The (person's answer, reviewer's answer) pairs on this criterion.")
+    table: BlindVerdictTable = Field(
+        description="Every pair, counted by the person's score (rows) and the reviewer's (columns)."
+    )
 
 
 class BlindPreference(EvalDocumentModel, CoreShapeModel):
@@ -368,8 +386,8 @@ class BlindReview(EvalDocumentModel, CoreShapeModel):
 
 
 class BlindReadReport(EvalDocumentModel, CoreShapeModel):
-    """What a blind read found, as its close computed it: how much was read and how it was sampled, how the judge
-    agrees with whoever read, what was preferred, and what a model's reading cost."""
+    """What a blind read found, as its close counted it: how much was read and how it was sampled, how the judge's
+    scores stood against whoever read (counts only), what was preferred, and what a model's reading cost."""
 
     cases: int = Field(default=0, ge=0, description="The cases in the read's drawn order.")
     reviews: list[BlindReview] = Field(

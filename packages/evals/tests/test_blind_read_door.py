@@ -16,6 +16,11 @@ Pinned here, each as the refusal it is and not only as a happy path:
   exists for a read still open; a rating write that fails reaches the caller, and closing again writes the rest;
 - close writes each answer as a rating (a person's as theirs, naming the read and the relaying caller), refuses
   later answers, and a read closed before its planned length reads its preference by the anytime test;
+- a closed read's checks are served as counts (#1208): the confusion counts or the 1-5 cross-table, the agreed count,
+  on pass/fail the catch rate and the false-fail rate each with its exact interval, and a plain word where one side
+  gave a single verdict or a rate cannot exist; no kappa, bar, tier or results-needed figure;
+- a criterion reworded since it was judged is never shown under its new wording: the draw leaves such results out,
+  and with none left refuses, naming the edit;
 - no response field is named with a word kept internal (anchor, standing, tier, ordinal), read off every response
   populated at every depth and off every field its model declares.
 """
@@ -45,7 +50,17 @@ from threetears.evals.ops.blind_reads import (
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobsStarted
 from threetears.evals.schema import CalibrationRating, JudgedArtifact, JudgeEvidence, RubricDim, label_key_of
-from threetears.evals.schema.blind_read import BlindAnswer, BlindRead, BlindReview, BlindSheet, BlindVerdict
+from threetears.evals.schema.blind_read import (
+    BlindAgreement,
+    BlindAnswer,
+    BlindRead,
+    BlindReadReport,
+    BlindReview,
+    BlindReviewerCheck,
+    BlindSheet,
+    BlindVerdict,
+    BlindVerdictTable,
+)
 from threetears.evals.quick.blind import blind_read_html
 from packages.evals.tests.sheet_conformance_support import SheetConformanceFailure, check_sheet_renderer
 from packages.evals.tests.factories import make_eval_trace, make_rubric_dim
@@ -548,6 +563,124 @@ async def test_close_writes_each_answer_as_the_person_s_rating_and_refuses_later
     assert {(r.rater, r.rater_kind, r.source, r.collected_by) for r in ratings} == {
         (PERSON, "person", f"blind_read:{read.id}", CALLER.identity)
     }
+
+
+#: A key no check a host is served carries (#1208): no kappa, bar verdict, tier or "more results" figure.
+UNSERVED = ("kappa", "tier", "results_needed", "lower", "upper", "exact_agreement", "calibration", "decides")
+
+
+def _served_keys(value: Any) -> set[str]:
+    return {key for key in _keys(value) if any(word in key for word in UNSERVED)} | ({"result"} & _keys(value))
+
+
+async def test_a_1_5_check_is_served_as_its_cross_table_and_agreed_count_with_no_kappa() -> None:
+    host, fixture, _ = _world()
+    line = await _pair_read(host, fixture)
+    read, _ = _stored(host, line["read_id"])
+    for item in read.items[:6]:
+        answered = await _call(
+            host,
+            "blind_read_answer",
+            read_id=read.id,
+            item=item.item,
+            person=PERSON,
+            verdicts={f"{output.slot}/{DIM.name}": "4" for output in item.outputs},
+        )
+        assert not answered.is_error, answered.text
+
+    closed = await _call(host, "blind_read_close", read_id=read.id)
+
+    assert not closed.is_error, closed.text
+    (check,) = closed.structured["checks"]
+    table = check["table"]
+    assert (check["scale"], table["scores"]) == ("ordinal", [1, 2, 3, 4, 5])
+    assert sum(map(sum, table["counts"])) == check["pairs"] == 12
+    assert table["counts"][3] == [sum(column) for column in zip(*table["counts"])], "the person gave every answer a 4"
+    assert check["agreed"] == table["counts"][3][3]
+    assert (check["catch"], check["false_fail"]) == (None, None)
+    assert "a 1-5 criterion has no fixed pass, so no catch rate: the table counts every pair" in check["said"]
+    assert "the reader gave every answer one verdict, a 4" in check["said"]
+    assert _served_keys(closed.structured) == set(), "no kappa, bar, tier or results-needed figure is served"
+
+
+async def test_a_pass_fail_check_is_served_as_counts_and_exact_rates_with_a_plain_word_where_a_rate_cannot_exist() -> (
+    None
+):
+    """#1208's cases, as a host is served them from the counts a closed read stores: a judge that passed everything
+    while the reader failed two; a reader that failed nothing; and a real disagreement."""
+    host, fixture, _ = _world()
+    line = await _pair_read(host, fixture)
+    read, etag = _stored(host, line["read_id"])
+
+    def agreement(counts: list[list[int]]) -> BlindAgreement:
+        return BlindAgreement(
+            dim="answer.grounded",
+            scale="pass_fail",
+            judge_model=JUDGE_SERVED,
+            anchor="person",
+            anchor_names=[PERSON],
+            pairs=sum(map(sum, counts)),
+            results=sum(map(sum, counts)),
+            cases=sum(map(sum, counts)),
+            blind_pairs=sum(map(sum, counts)),
+            random_pairs=sum(map(sum, counts)),
+            table=BlindVerdictTable(scores=[0, 1], counts=counts),
+        )
+
+    report = BlindReadReport(
+        cases=20,
+        agreement=[agreement([[0, 2], [0, 18]]), agreement([[0, 0], [3, 17]]), agreement([[6, 2], [3, 9]])],
+        reviewer_checks=[
+            BlindReviewerCheck(
+                dim="answer.grounded",
+                reviewer=REVIEWER,
+                served_model="reviewer/served-1",
+                outputs=20,
+                table=BlindVerdictTable(scores=[0, 1], counts=[[1, 1], [0, 18]]),
+            )
+        ],
+    )
+    closed = read.model_copy(update={"report": report, "closed_at": "2026-11-16T00:00:00+00:00", "closed_by": "x"})
+    off_loop(host.eval_host.storage.save_blind_read, closed, if_match=etag)
+
+    got = await _call(host, "blind_read_get", read_id=read.id)
+
+    assert not got.is_error, got.text
+    constant, nothing_failed, disagreeing = got.structured["checks"]
+    assert (constant["agreed"], constant["pairs"]) == (18, 20)
+    catch = constant["catch"]
+    assert (catch["count"], catch["of"]) == (0, 2)
+    assert catch["interval"] == [0.0, pytest.approx(0.8419, abs=1e-4)], "exact, not Wilson's 0.66"
+    assert catch["said"] == "caught 0 of 2 (exact 95% interval 0% to 84%)"
+    assert constant["false_fail"]["said"] == "failed 0 of the 18 the reader passed (exact 95% interval 0% to 19%)"
+    assert constant["said"] == ["the judge gave every answer one verdict, pass"]
+    assert nothing_failed["catch"] is None
+    assert nothing_failed["said"] == [
+        "the reader gave every answer one verdict, pass",
+        "the reader failed no answer: no catch rate",
+    ]
+    assert (disagreeing["catch"]["count"], disagreeing["catch"]["of"]) == (6, 8)
+    assert (disagreeing["false_fail"]["count"], disagreeing["false_fail"]["of"]) == (3, 12)
+    assert disagreeing["said"] == [], "both sides gave both verdicts, and both rates exist"
+    (reviewer,) = got.structured["reviewer_checks"]
+    assert (reviewer["served_model"], reviewer["agreed"], reviewer["outputs"]) == ("reviewer/served-1", 19, 20)
+    assert reviewer["catch"]["said"].startswith("caught 1 of 2 (exact 95% interval")
+    assert _served_keys(got.structured) == set(), "no kappa, bar, tier or results-needed figure is served"
+
+
+async def test_a_criterion_reworded_since_it_was_judged_is_refused_at_the_draw_and_the_edit_named() -> None:
+    """The sheet words a criterion as the scope words it now, and a rating is bound to the wording the judge read. A
+    criterion edited after the judging would have the person answer the new question and the answer stored as a label
+    of the old one; the draw leaves such a result out, and with none left it refuses, naming the edit."""
+    host, fixture, _ = _world()
+    edited = DIM.model_copy(update={"description": "The extracted fields keep the invoice's layout and its totals."})
+    off_loop(host.eval_host.storage.save_rubric_dim, make_rubric_dim(scope_id=TOYHOST_SCOPE, key=DIM.name, dim=edited))
+
+    outcome = await _call(host, "blind_read_create", run_ids=[fixture.campaign.run_ids[0]])
+
+    assert outcome.is_error, "a read whose every result was judged on other wording has nothing honest to show"
+    assert "judged on other wording of a criterion" in outcome.text, outcome.text
+    assert off_loop(host.eval_host.storage.query_blind_reads, TOYHOST_SCOPE) == []
 
 
 async def test_an_answer_landing_as_the_read_closes_refuses_the_close_and_no_rating_exists_for_the_open_read(

@@ -9,6 +9,7 @@
 | A prefix is a random sample | 120 cases valued by their position in the store; prefixes of 10 to 40 over 600 seeds | The prefix mean is within four standard errors of the population's; every case is in the first 10 at the rate 10/120 within 4.5 standard errors. The first rows in store order miss the mean by 40 or more |
 | A skip that follows content biases what is read | The same population; a rater who skips the upper half of the values | The answered prefix's mean misses the population's by more than 25: which is why a standing carries its skips |
 | Slot balance | Every prefix of ``2m`` pair items, 200 seeds | Exactly ``m`` with the control in slot A |
+| A catch rate's exact interval covers the truth | A judge that catches a reader's failures at a true rate of 0.02 to 0.98, over 2 to 40 failures; 2,000 reads a cell | The exact (Clopper-Pearson) 95% interval served beside the rate misses the true rate at most 5% (plus four standard errors) in every cell |
 
 Every draw is through :func:`~threetears.evals.analysis.blind_read.draw_blind_read`. The stopping row reads its
 verdicts through :func:`~threetears.evals.analysis.blind_read.close_blind_read`, so the gate it holds is the one that
@@ -22,6 +23,7 @@ import random
 
 import pytest
 
+from threetears.evals.analysis.stats import exact_rate_interval
 from threetears.evals.analysis.blind_read import (
     PREFERENCE_MIN_ITEMS,
     close_blind_read,
@@ -251,3 +253,36 @@ def test_every_prefix_of_two_m_pairs_holds_m_with_the_control_in_slot_a() -> Non
         lean += control_in_a[0]
     # The first slot of a block is a fair coin across seeds: within four standard errors of a half.
     assert abs(lean / 200 - 0.5) <= 4 * math.sqrt(0.25 / 200)
+
+
+@pytest.mark.parametrize("rate", [0.02, 0.1, 0.3, 0.5, 0.8, 0.98])
+def test_a_catch_rate_s_exact_interval_misses_the_true_rate_at_most_five_percent_of_the_time(rate: float) -> None:
+    """The interval a host is served beside a catch rate (``caught k of n``), at the counts a blind read gives: a
+    reader fails a few answers, and the judge catches each at a true rate. At every count from 2 to 40 the exact
+    interval misses the truth at most 5% of the time; it never relies on a large count."""
+    rng = random.Random(f"blind-read-catch|{rate}")
+    replicates = 2_000
+    for failed in (2, 3, 5, 8, 12, 20, 40):
+        bounds = [exact_rate_interval(caught, failed) for caught in range(failed + 1)]
+        missed = 0
+        for _ in range(replicates):
+            caught = sum(1 for _ in range(failed) if rng.random() < rate)
+            interval = bounds[caught]
+            assert interval is not None
+            missed += not interval[0] <= rate <= interval[1]
+        assert missed / replicates <= at_most(ALPHA, replicates), (failed, missed / replicates)
+
+
+def test_the_exact_interval_is_clopper_pearson_s_at_its_known_values() -> None:
+    """Reference values (the beta quantiles, as any statistics package gives them), the issue's case among them: a
+    judge that caught 0 of the 2 failures a reader gave reads up to 84%, where Wilson read 66%."""
+    for (caught, failed), (low, high) in {
+        (0, 2): (0.0, 0.8419),
+        (2, 20): (0.0123, 0.3170),
+        (6, 8): (0.3491, 0.9681),
+        (20, 20): (0.8316, 1.0),
+    }.items():
+        interval = exact_rate_interval(caught, failed)
+        assert interval is not None
+        assert interval == (pytest.approx(low, abs=1e-4), pytest.approx(high, abs=1e-4)), (caught, failed)
+    assert exact_rate_interval(0, 0) is None

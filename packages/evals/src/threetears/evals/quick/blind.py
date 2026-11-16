@@ -30,7 +30,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple, assert_never
 
-from threetears.evals.analysis.blind_read import PREFERENCE_MIN_ITEMS, blind_sheet, exact_sign_test_p
+from threetears.evals.analysis.blind_read import (
+    PREFERENCE_MIN_ITEMS,
+    BlindAgreementReading,
+    BlindClose,
+    blind_sheet,
+    exact_sign_test_p,
+    pass_fail_counts,
+    table_kappa,
+)
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel import CALIBRATION_MIN_AGREEMENT, CALIBRATION_MIN_RESULTS
@@ -47,7 +55,6 @@ from threetears.evals.schema import (
     EvalResult,
 )
 from threetears.evals.schema.blind_read import (
-    BlindAgreement,
     BlindAnswer,
     BlindPreference,
     BlindPreferenceAnswer,
@@ -672,14 +679,14 @@ def _sample_words(sample: BlindSample, *, several: bool) -> str:
     return f"{read}, out of the drawn order (not drawn at random{aside})"
 
 
-def _agreement_clause(reading: BlindAgreement) -> str:
+def _agreement_clause(reading: BlindAgreementReading) -> str:
     person = reading.anchor == "person"
     who = "you" if person else "the model"
     counted = f"{reading.pairs} results from {reading.cases} cases"
-    table = reading.table
+    cells = pass_fail_counts(reading.table)
     caught = ""
-    if table is not None and (failed := table.both_fail + table.rater_fail_judge_pass):
-        caught = f"; the judge failed {table.both_fail} of the {failed} answers {who} failed"
+    if cells is not None and (failed := cells.both_fail + cells.reader_fail_judge_pass):
+        caught = f"; the judge failed {cells.both_fail} of the {failed} answers {who} failed"
     if reading.kappa is None:
         return (
             f"{counted}  kappa undefined: {who} and the judge gave every answer the same verdict; read further{caught}"
@@ -781,7 +788,7 @@ def _review_lines(review: BlindReview, kept: str | None) -> list[str]:
 
 
 def judge_lines(
-    read: BlindRead | None,
+    closed: BlindClose | None,
     *,
     labels_name: str | None,
     labels_there: bool,
@@ -792,8 +799,9 @@ def judge_lines(
 ) -> list[str]:
     """How the judge reads against whoever read it blind, as the quiet print says it.
 
-    :param read: The run's blind read, closed over its labels; None where the run has no judged answer to show.
-    :ptype read: BlindRead | None
+    :param closed: The run's blind read, closed over its labels, with the readings its close computed; None where the
+        run has no judged answer to show.
+    :ptype closed: BlindClose | None
     :param labels_name: The labels file's name, or None where the judge names none.
     :ptype labels_name: str | None
     :param labels_there: Whether that file exists.
@@ -809,8 +817,9 @@ def judge_lines(
     :return: The lines.
     :rtype: list[str]
     """
-    if read is None:
+    if closed is None:
         return ["judge: no judged answer to read blind: judge uncalibrated"]
+    read = closed.read
     report = read.report
     samples = [sample for sample in (report.samples if report else []) if sample.sample != "none"]
     reviews = [line for review in read.reviews for line in _review_lines(review, kept)]
@@ -837,12 +846,13 @@ def judge_lines(
             "an older sheet): kept, each paired with the same output, and not drawn at random"
         )
     lines += not_read
-    width = max((len(reading.dim) for reading in report.agreement), default=0)
-    by_person = [reading for reading in report.agreement if reading.anchor == "person"]
+    width = max((len(reading.dim) for reading in closed.agreement), default=0)
+    by_person = [reading for reading in closed.agreement if reading.anchor == "person"]
     lines += [f"  {reading.dim.ljust(width)}  {_agreement_clause(reading)}" for reading in by_person]
-    reviewers = dict.fromkeys(reading.anchor_names[0] for reading in report.agreement if reading.anchor == "model")
+    reviewers = dict.fromkeys(reading.anchor_names[0] for reading in closed.agreement if reading.anchor == "model")
+    scales = {dim.name: dim.scale for dim in read.criteria}
     for reviewer in reviewers:
-        own = [r for r in report.agreement if r.anchor == "model" and r.anchor_names[0] == reviewer]
+        own = [r for r in closed.agreement if r.anchor == "model" and r.anchor_names[0] == reviewer]
         checked = [check for check in report.reviewer_checks if check.reviewer == reviewer]
         against = "" if checked else ", not yet against people"
         lines += under(f"{'beside it, ' if by_person else ''}checked against {_who('model', reviewer)}{against}:", "  ")
@@ -852,7 +862,8 @@ def judge_lines(
                 f"{reviewer} and the judge are one provider's models: a lean they share would not show here", "    "
             )
         for check in checked:
-            kappa = "kappa undefined" if check.kappa is None else f"kappa {_figure(check.kappa)}"
+            figure = table_kappa(check.table, scales[check.dim])
+            kappa = "kappa undefined" if figure is None else f"kappa {_figure(figure)}"
             lines += under(f"{reviewer} against people on {check.dim}: {check.outputs} outputs, {kappa}", "    ")
     for reviewer, reason in ((reviewer, reason) for reviewer, why in report.not_checked.items() for reason in why):
         lines += under(f"not checked against {_who('model', reviewer)}: {reason}", "  ")

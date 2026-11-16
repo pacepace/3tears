@@ -498,11 +498,11 @@ class FakeJudge:
 def _blind(result: Result) -> tuple[BlindRead, tuple[CalibrationRating, ...]]:
     """The result's blind read as the engine draws it: the read, closed over the labels as they are now, and the
     labels that are not on its draw. The result itself carries only the files and the lines."""
-    read, loose = off_loop(
+    closed, loose = off_loop(
         read_blind, result.judge, result.host, result.arms, result.control, result.scope_id, result.name
     )
-    assert read is not None and read.report is not None
-    return read, loose
+    assert closed is not None and closed.read.report is not None
+    return closed.read, loose
 
 
 def _sheet_rows(path: Path) -> list[dict[str, str]]:

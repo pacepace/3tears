@@ -25,6 +25,15 @@ planned item reads its preference by the anytime test, valid wherever it stopped
 by a campaign's export. Who made each answer is stored as `made_by` (`person` or `model`, the one `Maker` a recorded call
 uses too), never as a third kind of rater.
 
+**Changed (#1208):** a judge's agreement with a blind read's reader is stated as counts. The stored read keeps the
+confusion counts (on 1-5, the full rating cross-table) per criterion and per reader, one per model that served a
+reviewer's answers; no kappa, bar verdict, tier or "more results" figure is stored. A closed read's `checks` serve the
+agreed count, the table, and on pass/fail the catch rate and the false-fail rate, each with its exact 95% interval and
+count (`caught 0 of 2 (exact 95% interval 0% to 84%)`), and say so plainly where one side gave a single verdict or the
+reader failed nothing, so no catch rate exists. A draw leaves out results judged on other wording of a criterion than
+it shows, and counts them, so every rating is bound to what its reader was shown. The quick path's console lines are
+unchanged for now.
+
 **Changed:** a blind read's report says who answered as `person` or `model`: `BlindSample.made_by` replaces
 `rater_kind`, and `BlindAgreement.anchor` and `BlindPreference.anchor` read `model` where they read `reference`.
 `BlindRaterKind` is removed. A labels file's `rater_kind` column is unchanged, and `reference` there still names a

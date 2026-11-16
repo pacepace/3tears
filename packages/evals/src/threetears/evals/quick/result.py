@@ -450,9 +450,10 @@ class Result:
         kept_at = None if kept is None else Path(kept)
 
         def recorded() -> tuple[BlindRead, tuple[CalibrationRating, ...], list[EvalResult], list[BlindAnswer]]:
-            drawn, outside = read_blind(judge, self.host, self.arms, self.control, self.scope_id, self.name)
-            if drawn is None:
+            closed, outside = read_blind(judge, self.host, self.arms, self.control, self.scope_id, self.name)
+            if closed is None:
                 raise ValueError("the stored answers no longer hold a judged answer to read blind")
+            drawn = closed.read
             results = _results_of(self.host, self.arms, self.scope_id)
             if kept_at is None or not kept_at.is_file():
                 return drawn, outside, results, []
@@ -511,9 +512,9 @@ class Result:
                 other_ratings=loose,
                 unread=report.unread if report is not None else (),
                 judge_models=[judge.model],
-            ).read
+            )
             if kept_at is not None:
-                keep_reviewed(kept_at, again, name)
+                keep_reviewed(kept_at, again.read, name)
             return replace(self, reviews_kept=kept_at, **blind_reading(judge, again, self.arms, kept_at))
 
         return await run_blocking(self.host.blocking_executor, closed)
@@ -1339,7 +1340,7 @@ def _results_of(host: EvalHost, arms: Mapping[str, EvalSummary], scope_id: str) 
 
 def read_blind(
     judge: Judge | None, host: EvalHost, arms: Mapping[str, EvalSummary], control: str, scope_id: str, name: str
-) -> tuple[BlindRead | None, tuple[CalibrationRating, ...]]:
+) -> tuple[BlindClose | None, tuple[CalibrationRating, ...]]:
     """Draw the run's blind read and read the labels ``judge`` names against it. Reads the store.
 
     One arm is read as singles; several as the control against the first candidate, in pairs. The draw is not
@@ -1347,9 +1348,9 @@ def read_blind(
     an earlier run's page as answers to its own draw. A label that is not on this draw (an older ``to_label.csv``,
     another run's answers) pairs with the judge's score of the byte-identical answer and counts as not drawn at random.
 
-    :return: The read, closed over the labels, and the people's labels that are not on its draw; ``(None, ())`` with
-        no judge or no judged answer to show.
-    :rtype: tuple[BlindRead | None, tuple[CalibrationRating, ...]]
+    :return: The read's close over the labels (the read with its report, and the readings the print states), and the
+        people's labels that are not on its draw; ``(None, ())`` with no judge or no judged answer to show.
+    :rtype: tuple[BlindClose | None, tuple[CalibrationRating, ...]]
     :raises ValueError: A labels file with a missing column, or a label not on its dimension's scale.
     """
     if judge is None:
@@ -1387,7 +1388,7 @@ def read_blind(
         unread=labels.unread if labels is not None else (),
         judge_models=[judge.model],
     )
-    return closed.read, loose
+    return closed, loose
 
 
 def model_slug(model: str | CompletionClient) -> str:
@@ -1397,15 +1398,15 @@ def model_slug(model: str | CompletionClient) -> str:
 
 
 def blind_reading(
-    judge: Judge | None, read: BlindRead | None, arms: Mapping[str, EvalSummary], kept: Path | None = None
+    judge: Judge | None, closed: BlindClose | None, arms: Mapping[str, EvalSummary], kept: Path | None = None
 ) -> dict[str, Any]:
     """What a result carries of its blind read, as plain values: the files it writes, the lines it prints, and the
     judge's agreement with people. The read itself stays the engine's.
 
     :param judge: The eval's judge, or ``None``.
     :ptype judge: Judge | None
-    :param read: The run's blind read, closed over its labels, or ``None`` where there is no judged answer to show.
-    :ptype read: BlindRead | None
+    :param closed: The run's blind read's close over its labels, or ``None`` where there is no judged answer to show.
+    :ptype closed: BlindClose | None
     :param arms: Each arm's summary, by name: an arm is printed by the name every surface prints it by.
     :ptype arms: Mapping[str, EvalSummary]
     :param kept: The file a model reviewer's answers are kept in, or ``None``.
@@ -1415,9 +1416,10 @@ def blind_reading(
     """
     if judge is None:
         return {"blind_read": None, "blind_read_files": {}, "judge_read": (), "calibrations": ()}
+    read = closed.read if closed is not None else None
     report = read.report if read is not None else None
     lines = judge_lines(
-        read,
+        closed,
         # The file by its name, never the path it was read from: a path is the machine's, not the reading's.
         labels_name=None if judge.labels is None else judge.labels.name,
         labels_there=judge.labels is not None and judge.labels.is_file(),
@@ -1435,21 +1437,21 @@ def blind_reading(
         "blind_read": report,
         "blind_read_files": files,
         "judge_read": tuple(lines),
-        "calibrations": calibrations_of(read),
+        "calibrations": calibrations_of(closed),
     }
 
 
-def calibrations_of(read: BlindRead | None) -> tuple[JudgeCalibration, ...]:
-    """How the judge agrees with people's labels, per dimension, off a closed blind read's report.
+def calibrations_of(closed: BlindClose | None) -> tuple[JudgeCalibration, ...]:
+    """How the judge agrees with people's labels, per dimension, off a blind read's close.
 
     A model's answers are never here: this is agreement with people.
 
-    :param read: The read, or ``None``.
-    :ptype read: BlindRead | None
+    :param closed: The close, or ``None``.
+    :ptype closed: BlindClose | None
     :return: One per dimension a person's label pairs with.
     :rtype: tuple[JudgeCalibration, ...]
     """
-    if read is None or read.report is None:
+    if closed is None:
         return ()
     return tuple(
         JudgeCalibration(
@@ -1461,7 +1463,7 @@ def calibrations_of(read: BlindRead | None) -> tuple[JudgeCalibration, ...]:
             calibration=reading.calibration,
             tier=reading.tier,
         )
-        for reading in read.report.agreement
+        for reading in closed.agreement
         if reading.anchor == "person"
     )
 

@@ -107,7 +107,130 @@
   ],
   "name": "tone, blind",
   "report": {
-    "agreement": [],
+    "agreement": [
+      {
+        "anchor": "person",
+        "anchor_names": [
+          "ana@example.com"
+        ],
+        "blind_pairs": 1,
+        "cases": 1,
+        "dim": "conversation.tone",
+        "judge_model": "judge/served-1",
+        "pairs": 1,
+        "random_pairs": 1,
+        "results": 1,
+        "scale": "ordinal",
+        "served_model": null,
+        "table": {
+          "counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "scores": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      },
+      {
+        "anchor": "model",
+        "anchor_names": [
+          "reviewer/model"
+        ],
+        "blind_pairs": 1,
+        "cases": 1,
+        "dim": "conversation.tone",
+        "judge_model": "judge/served-1",
+        "pairs": 1,
+        "random_pairs": 1,
+        "results": 1,
+        "scale": "ordinal",
+        "served_model": "reviewer/model-0613",
+        "table": {
+          "counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "scores": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      }
+    ],
     "cases": 1,
     "not_checked": {},
     "other_ratings": 0,
@@ -139,7 +262,60 @@
         "verdict": null
       }
     ],
-    "reviewer_checks": [],
+    "reviewer_checks": [
+      {
+        "dim": "conversation.tone",
+        "outputs": 1,
+        "reviewer": "reviewer/model",
+        "served_model": "reviewer/model-0613",
+        "table": {
+          "counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "scores": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      }
+    ],
     "reviews": [],
     "samples": [],
     "unread": []

@@ -948,6 +948,9 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   campaign's judged outputs, the answers given to it (a person's, relayed by a caller the host attests for them, or
 #:   the declared reviewer model's, taken only from its own review job), and its close. Stored by the host door's
 #:   actions (``blind_read_create`` and its siblings); the quick path still recomputes its read and stores none. Its
+#:   report stores the judge's scores against each reader as counts only (``BlindVerdictTable``: the confusion counts
+#:   on pass/fail, the full cross-table on 1-5; one reading per model that served a reviewer's answers), never a
+#:   kappa, bar verdict, tier or results-needed figure (#1208), so retiring a statistic never moves this shape. Its
 #:   optional fields ``reviewer``, ``review_job_id`` and ``closed_early`` are written only when set. No other durable
 #:   shape moves, so every document v17.3 stored is stored byte for byte as before. An older build never reads the
 #:   type (every read selects by ``doc_type``); its operator wipe of durable documents leaves these in place, and its
