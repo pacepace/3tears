@@ -60,7 +60,7 @@ from threetears.core.backends.protocol import (
     parse_rowcount,
 )
 from threetears.core.declared import whole_read
-from threetears.core.loop_turns import LoopTurns, emptied, stepped
+from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, emptied, stepped
 from threetears.core.ddl.change_notes import NOTE_REACH_SETTING, NOTE_WHOLE_SETTING, WHOLE_COPY_ROWS, note_reach_text
 from threetears.core.ddl.ddl_lock import database_ddl_lock
 from threetears.core.ddl.session import ConnectionSession
@@ -551,6 +551,60 @@ def _key_led_deletes(
         for fixed, values in (groups if turns is None else stepped(groups, turns))
         for start in range(0, len(values), max_rows)
     ]
+
+
+def _callers_by_bound(
+    named: Sequence[tuple[Any, ...]], keys: Sequence[Sequence[Any]], loop: asyncio.AbstractEventLoop | None = None
+) -> dict[tuple[Any, ...], tuple[Any, ...]]:
+    """each key as the caller named it, under the key as the delete bound it (:meth:`SqlL3Backend._keys_to_delete`);
+    pure, for a thread.
+
+    :param named: each key as bound, in ``keys``' order
+    :ptype named: Sequence[tuple[Any, ...]]
+    :param keys: each key as the caller named it
+    :ptype keys: Sequence[Sequence[Any]]
+    :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: the caller's keys by their bound keys
+    :rtype: dict[tuple[Any, ...], tuple[Any, ...]]
+    """
+    pairs = zip(named, keys, strict=True)
+    return {bound: tuple(key) for bound, key in (pairs if loop is None else stepped(pairs, LoopTurns(loop)))}
+
+
+def _returned_rows(
+    schema: TableSchema,
+    rows: Sequence[Mapping[str, Any]],
+    callers: Mapping[tuple[Any, ...], tuple[Any, ...]],
+    found: dict[tuple[Any, ...], dict[str, Any]],
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    """read the rows a ``DELETE ... RETURNING`` returned into ``found``, each under its key as the caller named it and
+    read as :meth:`SqlL3Backend.fetch_many` reads it; a row whose key the caller did not name left out. Pure but for
+    ``found``, for a thread.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param rows: the returned rows, in the order returned
+    :ptype rows: Sequence[Mapping[str, Any]]
+    :param callers: each key as the caller named it, under the key as bound (:func:`_callers_by_bound`)
+    :ptype callers: Mapping[tuple[Any, ...], tuple[Any, ...]]
+    :param found: the rows read so far, by the caller's key; added to in order
+    :ptype found: dict[tuple[Any, ...], dict[str, Any]]
+    :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: nothing
+    :rtype: None
+    """
+    key_columns = [schema.column(name) for name in schema.pk_columns]
+    # a turn looked at every STEP_ITEMS values, not rows: a row of 49 columns read in 10 us here, 128 of them past
+    # the half millisecond a turn allows
+    every = max(1, STEP_ITEMS // max(1, len(schema.columns)))
+    for row in rows if loop is None else stepped(rows, LoopTurns(loop), every):
+        read = dict(row)
+        bound = tuple(schema_sql.normalize_write_value(column, read[column.name]) for column in key_columns)
+        if bound in callers:
+            found[callers[bound]] = schema_sql.coerce_row(schema, read)
 
 
 def _key_led_groups(
@@ -1556,15 +1610,22 @@ class SqlL3Backend:
             not as wide as the table's key, or no key column has an array form
         """
         schema, named, statements = await self._planned_delete(table, keys, max_rows=max_rows)
-        callers = {bound: tuple(key) for bound, key in zip(named, keys, strict=True)}
-        key_columns = [schema.column(name) for name in schema.pk_columns]
+        # each key as the caller named it under the key bound, and each statement's returned rows read, on a worker
+        # thread taking turns with the loop past _STATEMENT_ON_THREAD_PARAMS values: on the loop a statement's 1,000
+        # rows of 49 columns read in one stretch, 33,786 keys' rows held it 10 ms a statement (2026-11-16)
+        loop = asyncio.get_running_loop() if len(named) * len(schema.pk_columns) > _STATEMENT_ON_THREAD_PARAMS else None
+        callers = (
+            await asyncio.to_thread(_callers_by_bound, named, keys, loop)
+            if loop is not None
+            else _callers_by_bound(named, keys)
+        )
         found: dict[tuple[Any, ...], dict[str, Any]] = {}
         for sql, args in statements:
-            for row in await self._fetch(schema_sql.returning_rows_sql(schema, sql), *args, conn=conn):
-                read = dict(row)
-                bound = tuple(schema_sql.normalize_write_value(column, read[column.name]) for column in key_columns)
-                if bound in callers:
-                    found[callers[bound]] = schema_sql.coerce_row(schema, read)
+            rows = await self._fetch(schema_sql.returning_rows_sql(schema, sql), *args, conn=conn)
+            if len(rows) * len(schema.columns) > _STATEMENT_ON_THREAD_PARAMS:
+                await asyncio.to_thread(_returned_rows, schema, rows, callers, found, asyncio.get_running_loop())
+            else:
+                _returned_rows(schema, rows, callers, found)
         _logger.debug(
             "key-led delete returning its rows",
             extra={"extra_data": {"table": table, "keys": len(named), "statements": len(statements)}},

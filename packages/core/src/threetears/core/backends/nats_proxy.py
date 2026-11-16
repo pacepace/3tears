@@ -34,7 +34,7 @@ from uuid import UUID, uuid7
 
 import asyncpg
 
-from threetears.core.loop_turns import LoopTurns, stepped
+from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, stepped
 from threetears.core.backends.arrow_copy import (
     CONFLICT_COLUMNS_FIELD,
     COPY_ARROW_FIELD,
@@ -445,6 +445,54 @@ def _with_proof(encoded: bytes, body: Mapping[str, Any], sent: Mapping[str, Any]
     # the field encoded as ``_encode_request`` encodes a one-key object, braces dropped
     field = _encode_request({DOOR_PROOF_FIELD: sent[DOOR_PROOF_FIELD]})[1:-1]
     return encoded[:-1] + b", " + field + b"}"
+
+
+#: a reply longer than this has its JSON decoded and its rows read (:func:`_rows_reply`) on a worker thread taking turns
+#: with the loop: a ``DELETE ... RETURNING`` of 1,000 rows of 49 columns (a megabyte) decoded in 3.5 ms and its rows
+#: read in 3.1 ms more, on the loop for each statement of a 33,786-key delete (2026-11-16); this many bytes decode in
+#: about a quarter of a millisecond
+_READ_ON_THREAD_BYTES: Final = 64 * 1024
+
+
+def _rows_reply(
+    subject: str, reply: bytes, loop: asyncio.AbstractEventLoop | None = None
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """a reply's JSON and, when it succeeded, its rows each read as :func:`_deserialize_row` reads it; pure, for a
+    thread, the thread's turns taken between rows as they are decoded and as they are read.
+
+    The decode is one C call: on a thread, a megabyte's 3.5 ms held the loop as long, under load 8.5 ms (2026-11-16).
+    An ``object_hook`` brings each decoded object back to Python, the object itself unchanged, where the thread takes
+    its turn.
+
+    :param subject: the request's subject, named in the error
+    :ptype subject: str
+    :param reply: the reply's body
+    :ptype reply: bytes
+    :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: the reply, and its rows read (none for a reply that did not succeed)
+    :rtype: tuple[dict[str, Any], list[dict[str, Any]]]
+    :raises DataLayerUnavailableError: when the reply is not JSON
+    """
+    turns = LoopTurns(loop) if loop is not None else None
+
+    def decoded(value: dict[str, Any]) -> dict[str, Any]:
+        if turns is not None:
+            turns.take()
+        return value
+
+    try:
+        response: dict[str, Any] = json.loads(reply) if turns is None else json.loads(reply, object_hook=decoded)
+    except ValueError as exc:
+        raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
+    if not response.get("success", False):
+        return response, []
+    raw: list[dict[str, Any]] = response.get("rows", [])
+    if turns is None:
+        return response, [_deserialize_row(row) for row in raw]
+    # a turn looked at every STEP_ITEMS values, not rows: a row of 49 values read in 3 us
+    every = max(1, STEP_ITEMS // max(1, len(raw[0]) if raw else 1))
+    return response, [_deserialize_row(row) for row in stepped(raw, turns, every)]
 
 
 def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -2369,12 +2417,16 @@ class _ProxyConnection:
             else self._tx_payload(query, params)
         )
         subject = Subjects.l3_tx("fetch", namespace=self._backend.ns).path
-        response = await self._backend.nats_request(subject, payload, offload_encode=offload)
+        reply = await self._backend.nats_request_bytes(subject, payload, offload_encode=offload)
+        response, rows = (
+            await asyncio.to_thread(_rows_reply, subject, reply, asyncio.get_running_loop())
+            if len(reply) > _READ_ON_THREAD_BYTES
+            else _rows_reply(subject, reply)
+        )
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetch")
         _uncut(response, query, "tx.fetch")
-        raw_rows: list[dict[str, Any]] = response.get("rows", [])
-        return [_deserialize_row(r) for r in raw_rows]
+        return rows
 
     def _copy_payload(self, table: str, columns: Sequence[str], records: Sequence[Sequence[Any]]) -> dict[str, Any]:
         """the ``l3.tx.copy`` request for rows of ``table`` in the open transaction.

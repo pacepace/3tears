@@ -24,13 +24,14 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pyarrow as pa
 import pytest
 from threetears.nats import Subject
 
+import threetears.core.backends.schema_sql as schema_sql
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.collections.caller_transaction import CallerTransaction
 from threetears.core.collections.registry import CollectionRegistry
@@ -91,6 +92,12 @@ class _Candidate(BaseEntity):
 
 
 _Candidates = collection_for_schema(_SCHEMA, entity_class=_Candidate)
+
+
+class _Kept(_Candidates):  # type: ignore[misc, valid-type]
+    """candidates whose row messages carry a column of each row: a delete returns the rows it removes."""
+
+    invalidation_columns: ClassVar[tuple[str, ...]] = ("c0", "c1")
 
 
 def _value(kind: str, row: int, column: int) -> Any:
@@ -156,8 +163,51 @@ class _Hub:
         )
 
 
+def _wire(value: Any) -> Any:
+    """a value as the broker's JSON carries it."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
+
+
+class _ReturningHub(_Hub):
+    """:class:`_Hub` whose ``tx.fetch`` answers each ``DELETE ... RETURNING`` with the next batch of ``rows``, encoded
+    before the write starts, as the broker would serialize them."""
+
+    def __init__(self, rows: list[dict[str, Any]], *, batch: int = 1000) -> None:
+        super().__init__(door=False)
+        stamped = [{**row, "date_created": _AT, "date_updated": _AT} for row in rows]
+        self.replies = [
+            json.dumps(
+                {
+                    "success": True,
+                    "rows": [
+                        {name: _wire(value) for name, value in row.items()} for row in stamped[start : start + batch]
+                    ],
+                }
+            ).encode()
+            for start in range(0, len(stamped), batch)
+        ]
+        self.fetched = 0
+
+    async def request_raw(self, *, subject: Subject, payload: bytes, timeout: timedelta | None = None) -> bytes:
+        if not subject.path.endswith("tx.fetch"):
+            return await super().request_raw(subject=subject, payload=payload, timeout=timeout)
+        await asyncio.sleep(0)
+        reply = self.replies[self.fetched]
+        self.fetched += 1
+        return reply
+
+
 async def _written(
-    save: Callable[[Any, Any], Any], *, door: bool, listeners: tuple[Callable[[], None], ...] = ()
+    save: Callable[[Any, Any], Any],
+    *,
+    door: bool,
+    listeners: tuple[Callable[[], None], ...] = (),
+    hub: _Hub | None = None,
+    kind: type[Any] = _Candidates,
 ) -> tuple[list[Tick], list[Tick]]:
     """the loop's ticks and the host's idle loop's while one transaction writes :data:`_REAL` rows with ``save``.
 
@@ -165,8 +215,8 @@ async def _written(
     ``collector_held``): a collection the write's allocations set off walks the heap with the GIL held, wherever the
     allocation runs, 4-6 ms at a time here and 40-50 ms beside a heap of rows as Python values; that walk is the
     runtime's, sized by the process's heap. What this measures is the write's own hold."""
-    backend = _Hub(door=door).proxy()
-    collection = _Candidates(CollectionRegistry(), DefaultCoreConfig(), None)
+    backend = (hub or _Hub(door=door)).proxy()
+    collection = kind(CollectionRegistry(), DefaultCoreConfig(), None)
     collection.l3_pool = backend
     for listener in listeners:
         # as a scope snapshot's ``on_change`` adds its holders' (scope_epochs)
@@ -225,6 +275,40 @@ def _delete_steps(rows: list[dict[str, Any]]) -> float:
         assert not [key for key in named if len(key) != len(_KEY)]
         for key in named:
             transaction.enroll(MagicMock, key if len(key) > 1 else key[0], row=None)
+        return time.perf_counter() - started
+    finally:
+        gc.enable()
+
+
+def _rehydrated(row: dict[str, Any]) -> dict[str, Any]:
+    """a row as the hub's connection reads it off the wire, each ``date_`` text a datetime again, a value a value."""
+    return {
+        name: datetime.fromisoformat(value) if name.startswith("date_") and isinstance(value, str) else value
+        for name, value in row.items()
+    }
+
+
+def _returned_steps(rows: list[dict[str, Any]]) -> float:
+    """what a returning delete's per-row steps alone take here, done as the loop once did them: each row the delete
+    returned read from the broker's JSON, its key bound, its values coerced as read, and its key enrolled then restated
+    with it."""
+    hub = _ReturningHub(rows)
+    replies = [json.loads(reply)["rows"] for reply in hub.replies]
+    transaction = CallerTransaction(MagicMock())
+    key_columns = [_SCHEMA.column(name) for name in _KEY]
+    gc.disable()
+    try:
+        started = time.perf_counter()
+        named = [tuple(row[name] for name in _KEY) for row in rows]
+        for key in named:
+            transaction.enroll(MagicMock, key, row=None)
+        found: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for reply in replies:
+            for row in reply:
+                read = _rehydrated(row)
+                bound = tuple(schema_sql.normalize_write_value(column, read[column.name]) for column in key_columns)
+                found[bound] = schema_sql.coerce_row(_SCHEMA, read)
+        transaction.restate_many(MagicMock, found)
         return time.perf_counter() - started
     finally:
         gc.enable()
@@ -367,6 +451,86 @@ class TestABulkDeletesKeysLeaveTheLoop:
         assert settled == [], "a refused delete enrolled keys"
 
 
+class TestADeleteReturningItsRowsLeavesTheLoop:
+    async def test_every_key_is_settled_with_the_row_its_delete_returned_in_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rows = _rows_of(2500)
+        hub = _ReturningHub(rows)
+        backend = hub.proxy()
+        collection = _Kept(CollectionRegistry(), DefaultCoreConfig(), None)
+        collection.l3_pool = backend
+        coerced: list[int] = []
+        original = schema_sql.coerce_row
+
+        def recording(*args: Any, **kwargs: Any) -> Any:
+            coerced.append(threading.get_ident())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(schema_sql, "coerce_row", recording)
+        settled: list[tuple[list[Any], list[dict[str, Any] | None]]] = []
+
+        async def settle(keys: list[Any], *, rows: list[dict[str, Any] | None] | None = None) -> None:
+            settled.append((list(keys), list(rows or [])))
+
+        collection.invalidate_cache_many = settle
+        keys = [_key(index) for index in range(2500)]
+        async with backend.acquire() as conn, CallerTransaction(conn):
+            assert await collection.delete_rows([*keys, _key(9999)], conn=conn) == 2501
+        assert hub.fetched == 3, "the delete did not return its rows a statement a batch"
+        assert len(coerced) == 2500 and threading.get_ident() not in coerced, "the returned rows were read on the loop"
+        assert len(settled) == 1
+        assert settled[0][0] == [*keys, _key(9999)], "a key was settled out of order"
+        assert settled[0][1][-1] is None, "a key no row held was settled with a row"
+        for index, row in enumerate(settled[0][1][:-1]):
+            assert row is not None and (row["k6"], row["c0"], row["c1"]) == (
+                keys[index][6],
+                rows[index]["c0"],
+                rows[index]["c1"],
+            ), f"key {index} was settled without the row its delete returned"
+            assert row["date_updated"] == _AT, "a returned row was not read as fetch_many reads it"
+
+    async def test_the_loop_runs_between_stretches_of_33786_rows_returned(self) -> None:
+        # what the timing budget below bounds by the clock, counted: the loop's other work runs while the returned
+        # rows are read and restated, not once they all are (the old delete read each statement's 1,000 rows and
+        # restated all 33,786 in stretches the ticker never ran inside)
+        rows = _rows()
+        hub = _ReturningHub(rows)
+        backend = hub.proxy()
+        collection = _Kept(CollectionRegistry(), DefaultCoreConfig(), None)
+        collection.l3_pool = backend
+        turns = 0
+        seen: list[int] = []
+        original = schema_sql.coerce_row
+
+        def counting(*args: Any, **kwargs: Any) -> Any:
+            seen.append(turns)
+            return original(*args, **kwargs)
+
+        async def ticker() -> None:
+            nonlocal turns
+            while True:
+                turns += 1
+                await asyncio.sleep(0)
+
+        keys = [_key(index) for index in range(_REAL)]
+        ticking = asyncio.get_running_loop().create_task(ticker())
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(schema_sql, "coerce_row", counting)
+            try:
+                async with backend.acquire() as conn, CallerTransaction(conn):
+                    await collection.delete_rows(keys, conn=conn)
+            finally:
+                ticking.cancel()
+        assert len(seen) == _REAL
+        # a statement's rows read in one stretch is 1,000 rows a stretch: 34 stretches for 34 statements
+        stretches = sum(1 for before, after in zip(seen, seen[1:]) if after != before) + 1
+        assert stretches > 2 * len(hub.replies), (
+            f"the {_REAL:,} returned rows were read in {stretches} stretches over {len(hub.replies)} statements, "
+            f"the loop held through each statement's rows"
+        )
+
+
 class TestAListenerHearsEveryKeyOnTheLoop:
     @pytest.mark.parametrize("how", ["save_arrow", "save_rows", "delete_rows"])
     async def test_every_key_is_heard_in_order_on_the_loop_as_written_and_as_settled(self, how: str) -> None:
@@ -502,5 +666,31 @@ class TestTheLoopRunsWhileARealSizeWriteIsSaved:
         assert worst < bound, (
             f"the loop was held {worst * 1000:.1f} ms past the host's idle loop while a listened collection wrote "
             f"{_REAL:,} rows ({latest(ticks, every=_TICK) * 1000:.1f} ms in all; hearing the keys takes "
+            f"{one_pass * 1000:.1f} ms here)"
+        )
+
+    async def test_a_ticker_is_never_held_while_33786_keys_are_deleted_returning_their_rows(self) -> None:
+        rows = _rows()
+        keys = [_key(row) for row in range(_REAL)]
+        one_pass = _returned_steps(rows)
+        # the old delete ran these steps on the loop, each statement's 1,000 rows (its reply decoded, its rows read) in
+        # one stretch and every key enrolled and restated in one more: held 35.6 ms (a 10-core Apple host, 2026-11-16).
+        # Half of one statement's share of the steps is a step back; 5 ms at the least, a GIL switch interval. What is
+        # left is each reply's JSON decode, one C call no turn interrupts (3.5 ms for a megabyte here)
+        statements = -(-_REAL // _Kept.BULK_MAX_ROWS)
+        bound = max(0.005, one_pass / statements / 2)
+
+        async def delete(collection: Any, conn: Any) -> None:
+            await collection.delete_rows(keys, conn=conn)
+
+        ticks, host = await trusted(
+            lambda: _written(delete, door=False, hub=_ReturningHub(rows), kind=_Kept),
+            lambda measured: measured,
+            host_may_be_late=bound,
+        )
+        worst = added_lateness(ticks, host, every=_TICK)
+        assert worst < bound, (
+            f"the loop was held {worst * 1000:.1f} ms past the host's idle loop while {_REAL:,} keys were deleted "
+            f"returning their rows ({latest(ticks, every=_TICK) * 1000:.1f} ms in all; the per-row steps take "
             f"{one_pass * 1000:.1f} ms here)"
         )
