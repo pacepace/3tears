@@ -136,6 +136,36 @@ TableSchema(
     l1_eviction=TEST_L1_TABLE,
 )
 
+#: one agent's skills, as agent-skills declares them (v001): the primary key (agent_id, skill_id), a unique name per
+#: user and an index of the user's enabled ones; none of them holds the listing's recency order
+_SKILLS = "yb1_hint_skills"
+
+TableSchema(
+    name=_SKILLS,
+    primary_key=("agent_id", "skill_id"),
+    columns=[
+        Column("agent_id", UUID_TYPE),
+        Column("skill_id", UUID_TYPE),
+        Column("user_id", UUID_TYPE),
+        Column("name", STRING_TYPE),
+        Column("enabled", STRING_TYPE),
+        Column("last_used_at", STRING_TYPE, nullable=True),
+        Column("date_created", STRING_TYPE),
+    ],
+    indexes=(
+        Index("yb1_skills_agent_user_name", "agent_id", "user_id", "name", unique=True),
+        Index("yb1_skills_agent_user_enabled", "agent_id", "user_id", "enabled"),
+    ),
+    l1_eviction=TEST_L1_TABLE,
+)
+
+#: the skills listing's order (agent-skills' _RECENT_FIRST_PAGE): an expression, then columns no index holds
+_RECENT_FIRST = [
+    Sort("last_used_or_never", descending=True, expression="COALESCE(t.\"last_used_at\", '-infinity'::timestamptz)"),
+    Sort("date_created", descending=True),
+    Sort("skill_id", cast="uuid", descending=True),
+]
+
 _BY_STATUS = [Sort("status", descending=True), Sort("conversation_id", cast="uuid", descending=True)]
 _BY_ID = [Sort("conversation_id", cast="uuid", descending=True)]
 
@@ -219,8 +249,11 @@ class TestServingIndex:
         served = serving_index(_CONV, {"agent_id": 1, "status": "open"}, [Sort("name"), Sort("conversation_id")])
         assert served is not None and served.name == "o88_conv_open_named", served
         assert served.stated == frozenset({("status", "open")})
-        for by in ({"agent_id": 1, "status": "closed"}, {"agent_id": 1, "status": AnyOf(["open"])}, {"agent_id": 1}):
+        for by in ({"agent_id": 1, "status": AnyOf(["open"])}, {"agent_id": 1}):
             assert serving_index(_CONV, by, [Sort("name"), Sort("conversation_id")]) is None, by
+        # another text: no index holds the order, so the index binding the most pins serves it (never the partial one)
+        other = serving_index(_CONV, {"agent_id": 1, "status": "closed"}, [Sort("name"), Sort("conversation_id")])
+        assert other is not None and other.name == "o88_conv_agent_status", other
         unordered = serving_index(_CONV, {"agent_id": 1, "user_id": 2, "status": "open", "name": "n"}, [])
         assert unordered is not None and unordered.name == "o88_conv_agent_user_status", unordered
 
@@ -244,6 +277,20 @@ class TestServingIndex:
         ):
             served = serving_index(_SCHED, by, [])
             assert served is not None and served.primary, (by, served)
+
+    def test_an_ordered_read_no_index_serves_takes_the_index_binding_most_pins(self) -> None:
+        """Flips if an ordered read whose order no declared index holds (an expression, or columns no index has after
+        the pins) is not served by the index binding most of its pins, as an unordered read is: YugabyteDB read a
+        user's enabled skills, recency first, through the user's prefix of the unique name index, the disabled ones
+        too, when the read named no index (D5, 2026-11-15). Where only the primary key binds the pins, none is named
+        (the planner's own choice, as for an unordered read)."""
+        by = {"agent_id": 1, "user_id": 2, "enabled": "t"}
+        for order in (_RECENT_FIRST, _RECENT_FIRST[1:]):
+            served = serving_index(_SKILLS, by, order)
+            assert served is not None and served.name == "yb1_skills_agent_user_enabled", (order, served)
+            assert index_hint(served) == "/*+ IndexOnlyScan(t yb1_skills_agent_user_enabled) */ "
+        assert serving_index(_SKILLS, {"agent_id": 1}, _RECENT_FIRST) is None
+        assert serving_index(_SKILLS, {"user_id": 2}, _RECENT_FIRST) is None
 
     def test_a_declared_index_names_plain_identifiers(self) -> None:
         """Flips if an index a hint could not name unquoted, or one sorting a column it lacks, is accepted."""
@@ -346,7 +393,8 @@ class TestTheHintOnYugabyteOnly:
 
     async def test_a_read_by_stating_a_partial_index_names_it_on_yugabyte(self) -> None:
         """Flips if an ordered read_by pinning a partial index's text does not start with the hint naming it on
-        YugabyteDB (its literal written as the predicate's), or one pinning another text names it."""
+        YugabyteDB (its literal written as the predicate's), or one pinning another text names it rather than the
+        index binding its pins (no index holds its order)."""
         reader = _yugabyte()
         await read_by(
             reader, _CONV, by={"agent_id": 1, "status": "open"}, order=[Sort("name"), Sort("conversation_id")]
@@ -355,7 +403,8 @@ class TestTheHintOnYugabyteOnly:
         stated, other = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
         assert stated.startswith("/*+ IndexOnlyScan(t o88_conv_open_named) */ "), stated
         assert "t.\"status\" = 'open'" in stated, stated
-        assert "/*+" not in other, other
+        assert other.startswith("/*+ IndexOnlyScan(t o88_conv_agent_status) */ "), other
+        assert "o88_conv_open_named" not in other, other
 
     async def test_an_unordered_read_by_names_the_index_on_yugabyte_only(self) -> None:
         """Flips if an unordered read_by pinning the agent and a status does not start with the hint naming

@@ -533,7 +533,8 @@ def serving_index(
     """the declared index that serves a keyed read of ``table`` pinning ``by``, in ``order``; None when none does.
 
     An unordered read (no sort, or one sorting only pinned columns) is served by the index binding most of its pins
-    (:func:`_unordered_serving`).
+    (:func:`_unordered_serving`); so is an ordered read whose order no declared index holds after its pins (a sort by
+    an expression among them), unless only the primary key binds them (None: the planner's own choice).
 
     :param table: the relation read (a derived relation, or a name no declaration registers, has none)
     :ptype table: Any
@@ -552,19 +553,27 @@ def serving_index(
         return None
     pinned = {column for column, value in by.items() if isinstance(column, str) and not isinstance(value, AnyOf)}
     sorts = [sort for sort in order if sort.expression is not None or sort.column not in pinned]
+    sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
     if not sorts:
-        sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
         return _unordered_serving(relation, pinned, by, guarded, sets)
-    if any(sort.expression is not None for sort in sorts):
-        return None
-    ranked = [
-        (rank, index)
-        for named, index in _INDEXES
-        if named == relation and _states(index, by, guarded) and (rank := _rank(index, pinned, sorts)) is not None
-    ]
-    if not ranked:
-        return None
-    return max(ranked, key=lambda pair: pair[0])[1]
+    ranked = (
+        []
+        if any(sort.expression is not None for sort in sorts)
+        else [
+            (rank, index)
+            for named, index in _INDEXES
+            if named == relation and _states(index, by, guarded) and (rank := _rank(index, pinned, sorts)) is not None
+        ]
+    )
+    if ranked:
+        return max(ranked, key=lambda pair: pair[0])[1]
+    # WHY an order no index holds still names the index binding most pins (D5 via the coordinator, 2026-11-15): with
+    # none named, YugabyteDB read a user's enabled skills, recency first (an expression and columns no index holds),
+    # through the user's prefix of uq_skills_agent_user_name, every disabled skill beside them too, rather than
+    # idx_skills_agent_user_enabled, which binds all three pins. The read sorts whatever rows it reads, so the fewest
+    # rows is the best it can do: the unordered read's choice. The primary key stays unnamed (the planner's own)
+    fallback = _unordered_serving(relation, pinned, by, guarded, sets)
+    return None if fallback is None or fallback.primary else fallback
 
 
 def index_hint(index: DeclaredIndex | None, alias: str = "t") -> str:
