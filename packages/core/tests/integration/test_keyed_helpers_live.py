@@ -178,6 +178,29 @@ async def _rolled_back(conn: asyncpg.Connection, run: Any) -> float:
     return await best_seconds(once)
 
 
+async def _rolled_back_turn_about(conn: asyncpg.Connection, bare: Any, helper: Any) -> tuple[float, float]:
+    """the best seconds of ``bare()`` and of ``helper()``, each inside a transaction rolled back after each run, the
+    two run turn about (:func:`best_seconds_interleaved`, judged only while the host keeps time).
+
+    WHY turn about (YB2, 2026-11-16): timed one side after the other, a load that came and went landed on one side
+    only. update_from's 90-row source read 13.0 ms against its bare's 5.9 ms in a YugabyteDB plan session beside other
+    suites, and passed alone; on the same lane its bare then read 2.4, 6.1, 4.7 and 22.3 ms from run to run, the
+    helper 0.66-1.02x of it each time. Turn about, a load lands on both sides alike."""
+
+    def rolled(run: Any) -> Any:
+        async def once() -> None:
+            transaction = conn.transaction()
+            await transaction.start()
+            try:
+                await run()
+            finally:
+                await transaction.rollback()
+
+        return once
+
+    return await best_seconds_interleaved(rolled(bare), rolled(helper))
+
+
 def _budget(what: str, took: float, baseline: float, *, factor: float = DEFAULT_BUDGET_FACTOR) -> str | None:
     """the budget's verdict, its numbers printed (``-s``) for the run's record."""
     print(f"BUDGET {what} | baseline {baseline * 1000:.2f} ms | took {took * 1000:.2f} ms | {took / baseline:.2f}x")
@@ -508,9 +531,9 @@ class TestDeleteBefore:
             f"DELETE FROM {_TABLE} AS t WHERE (t.state, t.geo, t.id) IN (SELECT state, geo, id FROM {_TABLE} "
             "WHERE stamp < $1 ORDER BY stamp LIMIT 500) RETURNING t.state, t.geo, t.id"
         )
-        baseline = await _rolled_back(seeded.conn, lambda: seeded.conn.fetch(bare_page, before))
-        took = await _rolled_back(
+        baseline, took = await _rolled_back_turn_about(
             seeded.conn,
+            lambda: seeded.conn.fetch(bare_page, before),
             lambda: delete_before(
                 _TABLE,
                 collection=None,
@@ -560,11 +583,11 @@ class TestUpdateBefore:
         plan = planned.plans[0]
         assert plan_uses_index(plan, f"{_TABLE}_by_stamp") and plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
         _batched_on_yugabyte(plan, seeded)
-        baseline = await _rolled_back(
+        baseline, took = await _rolled_back_turn_about(
             seeded.conn,
             lambda: seeded.conn.execute(f"UPDATE {_TABLE} SET stamp = $2 WHERE stamp < $1", page_end, moved),
+            lambda: page(seeded.conn),
         )
-        took = await _rolled_back(seeded.conn, lambda: page(seeded.conn))
         swept = await update_before(
             _TABLE,
             collection=cast(Any, _Settling(seeded.conn)),
@@ -618,21 +641,17 @@ class TestKeyedWrites:
             plan = await explain_write(seeded.conn, sql, *args)
             assert plan_uses_index(plan, f"{_TABLE}_pkey"), plan.plan
             assert plan.rows_scanned <= 1.1 * _IDS, plan
-        bare_update = await _rolled_back(
+        bare_update, took_update = await _rolled_back_turn_about(
             seeded.conn,
             lambda: seeded.conn.execute(
                 f"UPDATE {_TABLE} SET votes = $3 WHERE state = $1 AND geo = $2", "S11", "017", -1
             ),
+            lambda: update_keyed(seeded.conn, _TABLE, values={"votes": -1}, by=by),
         )
-        took_update = await _rolled_back(
-            seeded.conn, lambda: update_keyed(seeded.conn, _TABLE, values={"votes": -1}, by=by)
-        )
-        bare_delete = await _rolled_back(
+        bare_delete, took_delete = await _rolled_back_turn_about(
             seeded.conn,
             lambda: seeded.conn.fetch(f"DELETE FROM {_TABLE} WHERE state = $1 AND geo = $2 RETURNING id", "S11", "017"),
-        )
-        took_delete = await _rolled_back(
-            seeded.conn, lambda: delete_keyed(seeded.conn, _TABLE, by=by, returning=["id"])
+            lambda: delete_keyed(seeded.conn, _TABLE, by=by, returning=["id"]),
         )
         problems = [
             _budget("update_keyed of a key's 30 rows", took_update, bare_update),
@@ -737,8 +756,7 @@ class TestKeyedWritesByBatchAndStage:
         }
         problems = []
         for what, (bare, helper) in timings.items():
-            baseline = await _rolled_back(seeded.conn, bare)
-            took = await _rolled_back(seeded.conn, helper)
+            baseline, took = await _rolled_back_turn_about(seeded.conn, bare, helper)
             problems.append(_budget(what, took, baseline))
         assert problems == [None] * len(timings), problems
 
