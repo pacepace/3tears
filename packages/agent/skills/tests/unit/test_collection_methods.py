@@ -24,13 +24,11 @@ import pytest
 from uuid_utils import uuid7
 
 from threetears.agent.skills.collections import (
-    _EITHER_ENABLED,
-    _RECENT_FIRST_PAGE,
     AgentSkillCollection,
     AgentSkillInvocationCollection,
     SkillShapeError,
 )
-from threetears.core.keyed import serving_index
+from threetears.core.keyed import AnyOf, Sort, serving_index
 
 
 def _new_uuid() -> UUID:
@@ -462,6 +460,20 @@ class TestSkillSaveShape:
             written.columns
         )
         assert {"tool", "arguments"} <= set(written.columns)
+
+
+#: the listing's order and its either-state pin, as AgentSkillCollection.list_for_user's keyset page writes them
+_RECENT_FIRST_PAGE = (
+    Sort(
+        "last_used_or_never",
+        cast="timestamptz",
+        descending=True,
+        expression="COALESCE(t.\"last_used_at\", '-infinity'::timestamptz)",
+    ),
+    Sort("date_created", cast="timestamptz", descending=True),
+    Sort("skill_id", cast="uuid", descending=True),
+)
+_EITHER_ENABLED = AnyOf((True, False), cast="boolean")
 
 
 def test_the_user_s_listing_reads_the_enabled_index_on_yugabyte() -> None:

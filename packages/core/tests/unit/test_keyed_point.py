@@ -253,9 +253,12 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
     past them and its LIMIT last, or evaluates the columns before that LIMIT rather than over the kept rows alone,
     re-sorted by the rank (WHY at ``read_nearest_statement``)."""
     conn = _Sent()
+    # a relation no declaration registers (an unkeyed one): agent-memory registers "memories" with its primary key
+    # when imported (test_schema_backed's backward-compat test does), and a keyed table's ranked read is another
+    # statement (the next test's), so this one failed whenever it ran after that import in one process (YB1)
     await read_nearest(
         conn,
-        "memories",
+        "ranked_unkeyed_probe",
         by={"agent_id": "a", "user_id": "u"},
         nearest=TextRank("search_vector", "red apples"),
         limit=3,
@@ -265,7 +268,7 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
     [(sql, params)] = conn.calls
     rank = "ts_rank_cd(t.\"search_vector\", websearch_to_tsquery('english', $4))"
     assert sql == (
-        f'SELECT t."memory_id", t."fts_rank" FROM (SELECT t.*, {rank} AS "fts_rank" FROM "memories" AS t WHERE '
+        f'SELECT t."memory_id", t."fts_rank" FROM (SELECT t.*, {rank} AS "fts_rank" FROM "ranked_unkeyed_probe" AS t WHERE '
         't."agent_id" = $1 AND t."user_id" = $2 AND ((t.search_vector @@ websearch_to_tsquery(\'english\', $3)) IS '
         f'TRUE) ORDER BY {rank} DESC LIMIT $5) AS t ORDER BY t."fts_rank" DESC'
     )
