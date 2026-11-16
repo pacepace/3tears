@@ -19,6 +19,18 @@ packages (bumped in lock-step).
 - A collection's L2 read counts `threetears_cache_hits_total`/`_misses_total{tier="l2", name="collections"}`, and a
   write refused for room (`full`, `exhausted`) `threetears_cache_refusals_total{tier="l2"}`.
 
+### interfaces / agent-memory: a text-ranked read evaluates its columns on the rows it keeps
+
+**Changed:** `read_nearest_statement` given a `TextRank` and a column list ranks only the table's declared primary
+key (with the rank) under its order and `LIMIT`, then reads each kept row again by that key (`CROSS JOIN LATERAL`)
+for its columns, `Selected` expressions included, re-sorted by the rank with the same ties. A relation with no
+declared primary key ranks its rows whole in a derived table instead. Same rows, same order. Before, the columns were
+read and evaluated for every row the pins and the match left. Memory's hybrid keyword arms (memories, file contents,
+chunks) select `embedding::text`. For a 20,000-memory owner whose rows all match the query, the ambient arm took
+357 ms on PostgreSQL (330 of them casting embeddings to text) and 662-699 ms on YugabyteDB (fetching every
+embedding). A `Selected` expression names the row `t`, as before.
+**Added:** `threetears.interfaces.keyed.keys.primary_key(table)`, a registered table's primary key columns.
+
 ### core: shared memory evicts what is only cached before it refuses; one eviction vocabulary; shared-memory autosize
 
 **Added:** `threetears.core.eviction`, the one vocabulary of the cache tiers (L1, shared memory, L2): `Policy`
