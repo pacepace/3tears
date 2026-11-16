@@ -65,7 +65,7 @@ from threetears.interfaces.keyed.keys import (
 )
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.arrow_copy import arrow_python_columns, arrow_python_rows, with_constant_columns
-from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, stepped
+from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, emptied, stepped
 from threetears.core.backends.protocol import (
     ANALYZE_AFTER_ROWS,
     AnalyzingStore,
@@ -159,6 +159,44 @@ __all__ = [
 OnConflict = Literal["raise", "ignore", "update"]
 
 log = get_logger(__name__)
+
+
+#: a page of more values than this (rows times the schema's columns) is read-coerced on a worker thread taking turns
+#: with the loop (:func:`_coerced_page`), a smaller one on the loop. A refill's page at the production reply cap is
+#: about 10,000 rows: of 49 columns, coerced in 55-59 ms and its rows as read freed in 3 ms more, in one stretch on
+#: the loop (a 10-core Apple host, 2026-11-16). 100 rows of 49 columns (4,900 values) coerce in about half a
+#: millisecond, under a thread's round trip (0.72 ms, the proxy's ``READ_ON_THREAD_BYTES``), so a page this small
+#: stays on the loop
+_COERCE_ON_THREAD_VALUES: Final = 4096
+
+
+def _coerced_page(
+    schema: TableSchema, page: list[dict[str, Any]], loop: asyncio.AbstractEventLoop | None
+) -> list[dict[str, Any]]:
+    """``page``'s rows each read-coerced (``coerce_row``), in order. On a worker thread (``loop`` named) the thread
+    takes its turns with the loop between rows, then empties ``page`` a slice a turn (:func:`emptied`), so the rows as
+    read are freed there and not where the page is next dropped; with no loop, the rows are coerced on the caller's
+    thread and ``page`` is left as it was.
+
+    The page is the reader's own (:func:`~threetears.core.keyset.keyset_pages` reads nothing of a page after handing it
+    over), so emptying it frees what it alone holds.
+
+    :param schema: the table's schema
+    :ptype schema: TableSchema
+    :param page: a page of rows as L3 answered them; emptied on a thread
+    :ptype page: list[dict[str, Any]]
+    :param loop: the caller's event loop, handed the thread's turns; None on the loop itself
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: the rows coerced
+    :rtype: list[dict[str, Any]]
+    """
+    if loop is None:
+        return [_coerce_row_fn(schema, row) for row in page]
+    # a turn looked at every STEP_ITEMS values, not rows: a row of 49 values coerced in 5.5 us
+    every = max(1, STEP_ITEMS // max(1, len(schema.columns)))
+    rows = [_coerce_row_fn(schema, row) for row in stepped(page, LoopTurns(loop), every)]
+    emptied([page], loop)
+    return rows
 
 
 def _deletes_settled_by_key() -> Any:
@@ -2531,7 +2569,10 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
 
         async def coerced() -> AsyncIterator[list[dict[str, Any]]]:
             async for page in pages:
-                yield [_coerce_row_fn(schema, row) for row in page]
+                if len(page) * len(schema.columns) > _COERCE_ON_THREAD_VALUES:
+                    yield await asyncio.to_thread(_coerced_page, schema, page, asyncio.get_running_loop())
+                else:
+                    yield _coerced_page(schema, page, None)
 
         return coerced()
 

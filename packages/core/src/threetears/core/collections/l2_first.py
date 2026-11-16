@@ -61,6 +61,7 @@ from threetears.core.collections.generation import split_generation_token
 from threetears.core.collections.l2_degrade import degrade_l2
 from threetears.core.declared import whole_read
 from threetears.core.exceptions import GenerationUnavailableError, L2LostError, L2ScopeNotConfiguredError
+from threetears.core.loop_turns import emptied_off_loop
 from threetears.nats.errors import KvError
 
 if TYPE_CHECKING:
@@ -96,6 +97,12 @@ def _worker_last_pass() -> Any:
 
 #: rows the refiller reads from L3 per statement, under the L3 rail's row cap.
 _REFILL_PAGE_ROWS: Final = 500
+
+#: a refill's page of more rows than this is emptied on a worker thread taking turns with the loop once its rows are
+#: put (:func:`~threetears.core.loop_turns.emptied_off_loop`), a smaller one dropped on the loop: a page at the
+#: production reply cap (about 10,000 rows of 49 columns) freed as the next page replaced it held the loop 6.5 ms (a
+#: 10-core Apple host, 2026-11-16); this many rows free in about 0.65 ms, a thread's round trip
+_FREE_ON_THREAD_ROWS: Final = 1000
 
 #: the SQLSTATE class of an integrity constraint violation (unique, foreign key, not null, check).
 _INTEGRITY_SQLSTATE_CLASS: Final = "23"
@@ -793,7 +800,8 @@ class L2FirstSupport:
         :ptype save: Callable[..., Awaitable[int]]
         :param delete: the collection's L3 delete
         :ptype delete: Callable[[Any], Awaitable[None]]
-        :param pages: the collection's L3 rows, a page at a time
+        :param pages: the collection's L3 rows, a page at a time, each page a list of the refill's own (it empties a
+            long one)
         :ptype pages: Callable[..., AsyncIterator[list[dict[str, Any]]]]
         :param id_of_changed: a changed row's key
         :ptype id_of_changed: Callable[[ChangedRow], Any]
@@ -1056,6 +1064,11 @@ class L2FirstSupport:
                     raise
                 if landed is not None:
                     written += 1
+            if len(page) > _FREE_ON_THREAD_ROWS:
+                # the page is the refill's own (L2FirstSupport's ``pages``): its rows freed off the loop, the last one
+                # let go of here first, or it is freed on the loop as the next page's first row takes its name
+                del row
+                await emptied_off_loop([page])
         return written
 
 

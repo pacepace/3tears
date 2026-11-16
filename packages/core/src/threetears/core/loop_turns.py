@@ -23,7 +23,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import Any, Final, TypeVar
 
-__all__ = ["STEP_ITEMS", "LoopTurns", "called_in_turns", "emptied", "stepped"]
+__all__ = ["STEP_ITEMS", "LoopTurns", "called_in_turns", "emptied", "emptied_off_loop", "stepped"]
 
 _Item = TypeVar("_Item")
 
@@ -127,6 +127,23 @@ def emptied(lists: Iterable[list[Any]], loop: asyncio.AbstractEventLoop | None =
         while each:
             del each[-STEP_ITEMS:]
             turns.take()
+
+
+async def emptied_off_loop(lists: Iterable[list[Any]]) -> None:
+    """:func:`emptied` on a worker thread taking turns with the running loop: for a reader done with rows it alone
+    holds, whose last reference dropped on the loop would free them there in one stretch.
+
+    A list of rows read from L3 is freed slowly for its size: 33,786 rows of 49 columns (``read_l3_rows`` of one
+    state's candidates) held the loop 17-22 ms as their reader dropped them, and a refill's page of about 10,000 rows
+    6.5 ms (a 10-core Apple host, 2026-11-16). A thread's round trip is about 0.7 ms, so a list of fewer than about a
+    thousand such rows is cheaper dropped where it is.
+
+    :param lists: the lists, each emptied in place; what else holds their items keeps them
+    :ptype lists: Iterable[list[Any]]
+    :return: nothing
+    :rtype: None
+    """
+    await asyncio.to_thread(emptied, list(lists), asyncio.get_running_loop())
 
 
 async def called_in_turns(items: Sequence[_Item], call: Callable[[_Item], None], every: int = STEP_ITEMS) -> None:

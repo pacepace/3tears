@@ -225,7 +225,9 @@ async def keyset_pages(
     """the rows ``select_from`` names (within ``where``), in ``key`` order, one page a statement as each is read.
 
     For a reader that must not hold every row at once: each page is handed over before the next is
-    asked for, so what it keeps of a page is up to it. One page per statement, in order; the last
+    asked for, so what it keeps of a page is up to it. A page handed over is the reader's own: nothing here reads it
+    again, so a reader may empty it where it frees best (a refill's pages are emptied on a worker thread, their rows
+    freed there and not on the loop: ``SchemaBackedCollection._l3_pages``). One page per statement, in order; the last
     may be empty (the rows ended on a page boundary), and a read of no rows is one empty page. A read
     that walks a hashed lead (the module's "A hashed lead") hands over no empty page but that one.
 
@@ -655,18 +657,20 @@ async def _set_pages(
     """
     statement = shape.statement(row_seek=True)
     kept, more, rows = await reads.page(statement, None if after is None else tuple(after), statement.page_size)
-    yield kept
     if not more:
+        yield kept
         return
     lead = shape.key[0]
     quoted = shape.quote(lead)
+    # read off the page before it is handed over: a reader may empty it (keyset_pages)
     cursor: tuple[Any, ...] = reads.last(kept, shape.key)
+    held, filled = reads.leads(kept, lead), reads.count(kept)
+    yield kept
     leads = _GivenLeads(reads, shape, array, values, cursor)
     # each window's statement pins the lead itself; the set filter naming it stays on the first statement alone
     windowed = replace(
         shape, where_any={column: held for column, held in (shape.where_any or {}).items() if column != lead} or None
     )
-    held, filled = reads.leads(kept, lead), reads.count(kept)
     while window := await leads.take(_window(held, filled, shape.page_size)):
         statement = windowed.statement(
             conditions=[Fragment(sql=f"{quoted} = ANY($1::{array})", params=(list(window),))], row_seek=True

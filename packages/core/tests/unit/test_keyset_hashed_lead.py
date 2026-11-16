@@ -16,7 +16,7 @@ import pytest
 from threetears.core.backends.dialect import l3_on_yugabyte
 from threetears.core.backends.protocol import L3Page
 from threetears.core.keyed import ThreadedDuckDB
-from threetears.core.keyset import read_keyset_pages
+from threetears.core.keyset import keyset_pages, read_keyset_pages
 
 
 class _Rail:
@@ -369,6 +369,43 @@ class TestAWalkCarriesItsPageSize:
         # the cap holds: one statement each group, never a second page
         assert len(reads) <= 5, reads
         assert all(sql.endswith("LIMIT 6") is (index == 0) for index, sql in enumerate(reads)), reads
+
+
+class TestAReaderMayEmptyEachPage:
+    """a page handed over is the reader's own: the pager reads nothing of it again, so a reader may empty it where its
+    rows free best (an L2 refill empties its pages on a worker thread, ``SchemaBackedCollection``'s pages)."""
+
+    @pytest.mark.parametrize(
+        ("form", "values"),
+        [
+            ("cursor", None),
+            ("set pinned, Postgres", ["r11", "r03", "r07", "r02", "r09"]),
+            ("set walked, YugabyteDB", ["r11", "r03", "r07", "r02", "r09"]),
+            ("lead walked, YugabyteDB", None),
+        ],
+    )
+    async def test_every_row_comes_once_in_key_order(
+        self, races: duckdb.DuckDBPyConnection, form: str, values: list[str] | None
+    ) -> None:
+        """Flips if the pager reads a page after handing it over (the set-pinned read took its cursor off its first
+        page once the reader had it), so a reader that empties each page loses, repeats or fails on a row."""
+        on_yugabyte = form.endswith("YugabyteDB")
+        l3 = _RecordedOnYugabyte(races) if on_yugabyte else _Recorded(races)
+        rows: list[tuple[Any, ...]] = []
+        async for page in keyset_pages(
+            l3,
+            "SELECT * FROM t",
+            ("race", "geo"),
+            where_any=None if values is None else {"race": ("text[]", values)},
+            page_size=5,
+            lead_array="text[]" if on_yugabyte else None,
+        ):
+            rows += [tuple(row.values()) for row in page]
+            page.clear()
+
+        expected = sorted(tuple(row) for row in races.execute("SELECT * FROM t").fetchall())
+        assert rows == (expected if values is None else _pinned(races, values)), form
+        assert len(l3.statements) > 2, "the read was not paged"
 
 
 class TestWhichDatabaseAnL3Is:

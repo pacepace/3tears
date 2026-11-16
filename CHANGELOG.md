@@ -6,6 +6,23 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: an L2 refill's pages are read-coerced and freed off the event loop
+
+`L2FirstSupport.refill_from_l3` reads its table a keyset page at a time (`SchemaBackedCollection`'s L3 pages,
+read-coerced as `fetch_from_store` reads a row). At the production reply cap a page of a 49-column table is about 10,000
+rows, and each was coerced on the loop in one stretch (55-59 ms), its rows as read freed there as the pager read the next
+page (3 ms), and the coerced rows freed as the refill took the next page (6.5 ms): one state's 33,786 rows held the loop
+70-75 ms a turn. A page of more than 4,096 values is now coerced on a worker thread taking turns with the loop and its
+rows as read emptied there; the refill empties a page of more than 1,000 rows off the loop once its rows are put. The
+longest turn is 0.3-0.4 ms (a 10-core Apple host, 2026-11-16). A loop_timing budget at 33,786 rows refilled at the
+production cap (5 ms; the old refill held it 46.5 ms past the host's idle loop) and counted checks that the loop runs
+between stretches of rows coerced and that a long page's rows are freed off it.
+
+`keyset_pages` reads nothing of a page after handing it over, so a reader may empty it: the set-pinned read took its
+cursor off its first page once the reader had it, and now takes it before. `loop_turns.emptied_off_loop(lists)` empties
+lists on a worker thread taking turns with the loop, for a reader done with rows it alone holds (33,786 rows of
+`read_l3_rows` held the loop 17-22 ms as their reader dropped them).
+
 ### core: a read's long reply is decoded and its rows read off the event loop
 
 `fetch`, `fetchrow` and `fetch_page` on the L3 rail (`NatsProxyL3Backend`) decoded each reply's JSON and read its rows

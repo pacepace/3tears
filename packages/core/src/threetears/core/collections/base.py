@@ -4545,7 +4545,7 @@ class BaseCollection(ABC, Generic[EntityT]):
 
         :param page_size: rows per page
         :ptype page_size: int
-        :return: the pages
+        :return: the pages, each a list of the refiller's own: it empties a long one off the loop once its rows are put
         :rtype: AsyncIterator[list[dict[str, Any]]]
         :raises NotImplementedError: when this collection cannot read its table in pages
         """
