@@ -29,8 +29,9 @@ does not cover: guardrails, floors, each arm's own rate, cost, latency and the e
 run so far (`comparisons.REREAD_SENTENCE`, `ComparisonFamily.rereadable`). Kept in memory (`store=":memory:"`), where
 nothing is left to continue, the line says instead that running it again is a new comparison
 (`continuation.UNKEPT_SENTENCE`). Seeded simulations driving `Eval.run`
-itself: re-running as cases are added (adds sized from the data, up to five runs) separates under the null within its
-bound at α = 5%, where re-running every case on each run exceeds it (the figures are in `tests/test_rereadable_bet.py`).
+itself, two arms passing 50% each, k = 1: run again as cases are added (adds sized from the data, up to five runs),
+32 of 1,000 newcomers separate (3.2%, 95% upper bound 4.5%) at α = 5%, where re-running every case on each run, as
+the quick path did before, separates 36 of 400 (9.0%, lower bound 6.4%).
 A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of the time where the reading it replaces did
 43.6%. A quick-path comparison is one whose every result is of a kind only the quick path launches
 (`kernel.candidate_kind.QUICK_PATH_KINDS`), so no host's declaration opts an engine campaign in; engine campaigns read

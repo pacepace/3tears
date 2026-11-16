@@ -1,16 +1,22 @@
-"""The quick path's re-readable comparison: a newcomer adds cases and reads again, as often as they like, and the error
-each reading states still holds (owner ruling, 2026-11-17).
+"""The quick path's re-readable comparison: a newcomer adds cases and runs it again, as often as they like, and the
+error each reading states still holds (owner ruling, 2026-11-17).
 
-The quick path files its comparison ``rereadable`` (``AspectDesign.rereadable``), and each paired contrast on a
-declared range is read by the mixture bet (:func:`~threetears.evals.analysis.stats.bounded_separation_p` and
+A quick-path comparison (every result of a kind only the quick path launches) reads each paired contrast on a declared
+range by the mixture bet (:func:`~threetears.evals.analysis.stats.bounded_separation_p` and
 :func:`~threetears.evals.analysis.stats.bounded_difference_interval` with ``mixture``): the mean of ten bets, each
 staking a fixed share ``j / 10`` of the cap on every pair, over the pairs in the order the cases were added, hedged
-over the two directions. No stake depends on a declared count, so every reading is one capital read again. Held here:
+over the two directions. No stake depends on a declared count, and the quick path continues one comparison by running
+only the cases appended to it (:mod:`threetears.evals.quick.continuation`), so every reading is one capital read again.
+Held here:
 
 - the decisions are the simulated construction's (``looks-bet-simulation-1116.md``, "Mixture stakes"), decision for
   decision on fixed seeds, and the interval excludes zero exactly where the test separates;
-- under the null, re-reading as cases are added (adds sized from what the reading showed, up to five reads)
-  separates at most α of the time, for two arms and for three arms under Holm's correction;
+- the bet alone, over rows appended and kept: re-reading separates at most α under the null;
+- the product: a comparison run again runs only the cases appended and reads the rest as they ran; anything else is a
+  new comparison that runs every case and says what changed; the case order is append-only;
+- the product under the null, ``Eval.run`` itself over a scripted runner whose arms are equal in distribution: run
+  again as cases are added it separates at most α, and re-running every case on each run (as the quick path did
+  before) exceeds α;
 - at one stated alternative, a single read's power against the reading it replaces;
 - the rung 3 comparison prints the one sentence that says so, and reads cost by its t test, once.
 
@@ -195,7 +201,9 @@ def _reread_until_separated(rng: random.Random, k: int, rate: float, arms: int) 
 def test_re_reading_as_cases_are_added_separates_under_the_null_at_most_alpha(
     k: int, rate: float, arms: int, seeded_at: int
 ) -> None:
-    """2,000 seeded newcomers a cell, each reading up to five times with adds sized from the data, separate no more
+    """The bet alone, over rows appended and kept (the reference construction, not the product: the product's own
+    re-runs are simulated below, through ``Eval.run``). 2,000 seeded newcomers a cell, each reading up to five times
+    with adds sized from the data, separate no more
     often than α = 5%: the Clopper-Pearson 95% upper bound on the rate is below α. The seeded draw gives 66 of 2,000
     at k = 1, base 0.5 (3.3%, upper bound 4.2%); 24 at k = 3, base 0.8 (1.2%, upper 1.8%); and 53 for three arms at
     k = 1, base 0.8 under Holm (2.7%, upper 3.5%). The counts are pinned to two either side, so a change to the bet
@@ -538,12 +546,13 @@ _PER_SHARD = 50
 
 #: How many of each continued shard's fifty newcomers separated, as seeded (shard by shard). Each shard test reproduces
 #: its count exactly, so their sum is the product's count; the bound below is read on that sum.
-_CONTINUED_SEPARATED: tuple[int, ...] = ()
+_CONTINUED_SEPARATED: tuple[int, ...] = (1, 2, 1, 1, 2, 1, 1, 2, 1, 3, 3, 1, 2, 1, 3, 3, 1, 1, 2, 0)
 
 #: How many of each re-run-everything shard's fifty newcomers separated, as seeded.
-_RERUN_SEPARATED: tuple[int, ...] = ()
+_RERUN_SEPARATED: tuple[int, ...] = (5, 3, 3, 5, 3, 3, 6, 8)
 
 
+@pytest.mark.timeout(1200)
 @pytest.mark.parametrize("shard", range(len(_CONTINUED_SEPARATED)))
 async def test_a_continued_comparison_s_newcomers_separate_as_seeded(shard: int) -> None:
     """Fifty seeded newcomers (:func:`_newcomer`), each running ``Eval.run`` into one store, so the quick path continues
@@ -554,6 +563,7 @@ async def test_a_continued_comparison_s_newcomers_separate_as_seeded(shard: int)
     assert separated == _CONTINUED_SEPARATED[shard]
 
 
+@pytest.mark.timeout(1200)
 @pytest.mark.parametrize("shard", range(len(_RERUN_SEPARATED)))
 async def test_a_comparison_re_run_whole_each_time_separates_as_seeded(shard: int) -> None:
     """Fifty seeded newcomers (:func:`_newcomer`), each run into a store of its own, so every case runs again on each
@@ -572,7 +582,8 @@ def test_under_the_null_a_continued_comparison_separates_at_most_alpha_and_re_ru
     - re-run whole each time (the quick path before it continued a comparison): the 95% lower bound is above α, so
       re-drawing every case on each run is not one bet and loses the bound.
 
-    The figures are in this test's assertion message and the chunk report."""
+    As seeded: continued, 32 of 1,000 newcomers separate (3.2%, 95% interval 2.2% to 4.5%); re-run whole each time,
+    36 of 400 (9.0%, 6.4% to 12.2%)."""
     replicates = _PER_SHARD * len(_CONTINUED_SEPARATED)
     rerun_replicates = _PER_SHARD * len(_RERUN_SEPARATED)
     continued, rerun = sum(_CONTINUED_SEPARATED), sum(_RERUN_SEPARATED)
