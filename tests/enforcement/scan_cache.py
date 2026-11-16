@@ -22,7 +22,9 @@ interpreter's audit events report them (``open``, ``os.scandir``, ``os.listdir``
 ``subprocess.Popen`` and the ``os`` spawn calls), and when its inputs hash the same afterwards as
 before. A scan that starts reading something its key does not cover is answered and not stored,
 with a :class:`ScanCacheWarning`, so a key list that drifts from its scan costs speed, never a
-stale verdict. What the audit cannot see: a bare ``stat`` (a scan that decides by whether a path
+stale verdict. The import system's listing of a ``sys.path`` entry while it finds a module the
+computation imports for the first time is code loading, not a read, and is not counted (opening
+the module it finds still is, outside the interpreter's prefix). What the audit cannot see: a bare ``stat`` (a scan that decides by whether a path
 exists, outside the files and directories it declares); a read on another thread than the one
 computing (recording is per thread, and the scans start none); sockets and other non-file reads; a
 name learned from listing a declared directory, which is not keyed unless the file it names is
@@ -51,6 +53,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import inspect
 import os
 import pickle
 import subprocess
@@ -61,6 +64,7 @@ import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from threetears.enforcement.common import clear_parse_cache, find_local_src_roots
@@ -114,13 +118,29 @@ _WATCHED_EVENTS = frozenset({"open", "os.scandir", "os.listdir"}) | _PROCESS_EVE
 #: per thread, the audit events seen while a computation runs; absent while none does
 _RECORDING = threading.local()
 
+#: the import system's own directory listing: a path finder filling its cache of one ``sys.path``
+#: entry (``FileFinder._fill_cache``), as the code object names it. A computation that imports a
+#: module for the first time in its process lists every entry whose cache is stale; a cache is
+#: stale after anything calls ``importlib.invalidate_caches()`` (pytester and pytest's in-process
+#: runs do) or an entry's mtime moves. That listing finds code, not data, so it is not a read: on
+#: Python 3.14 ``ast.unparse`` imports ``_ast_unparse`` on its first call, and a surface scan that
+#: made that call after another test in its xdist worker had invalidated the caches was refused
+#: for listing the runner's ``sys.path`` (``/tr/plugin``, ``.venv/bin``, the stdlib).
+_IMPORT_LISTING = ("<frozen importlib._bootstrap_external>", "FileFinder._fill_cache")
+
 
 def _audit(event: str, args: tuple[Any, ...]) -> None:
     """keep a watched event for the computation running on this thread, if one is."""
     if event in _WATCHED_EVENTS:
         log = getattr(_RECORDING, "log", None)
-        if log is not None:
+        if log is not None and not _import_listing(inspect.currentframe()):
             log.append((event, args))
+
+
+def _import_listing(hook: FrameType | None) -> bool:
+    """whether the event the hook running in *hook* reports was raised by the import system listing a path entry."""
+    raised_in = hook.f_back if hook is not None else None
+    return raised_in is not None and (raised_in.f_code.co_filename, raised_in.f_code.co_qualname) == _IMPORT_LISTING
 
 
 def _install_audit() -> bool:

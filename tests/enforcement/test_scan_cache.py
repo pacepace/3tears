@@ -11,8 +11,10 @@ and not stored, a damaged or unwritable store to a recompute, and concurrent wri
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -422,6 +424,51 @@ def test_a_computation_that_starts_an_undeclared_program_is_not_stored_and_a_dec
     calls.clear()
     _undeclared(tmp_path / "declared", runs_git, commands=frozenset({"git"}))
     assert calls == ["a"]
+
+
+_FIRST_IMPORT = """
+import ast, importlib, json, sys
+from pathlib import Path
+from tests.enforcement.scan_cache import ScanCache, ScanInputs
+directory, inputs = Path(sys.argv[1]), Path(sys.argv[2])
+assert "_ast_unparse" not in sys.modules, "the module this imports for the first time is already loaded"
+# what pytester and pytest's in-process runs do in a worker before a scan: every path finder's cache goes stale
+importlib.invalidate_caches()
+cache = ScanCache(directory, "code")
+declared = lambda item: ScanInputs(root=inputs, files=(inputs / item,))
+unparsed = lambda item: ast.unparse(ast.parse((inputs / item).read_text()))
+print(json.dumps({"value": cache.memoised("s", ["a"], declared, unparsed), "unstored": cache.unstored}))
+"""
+
+
+def test_a_computation_whose_first_import_lists_the_path_is_stored(tmp_path: Path) -> None:
+    """the import system listing ``sys.path`` to find a module is code loading, not a read of the scan's.
+
+    The warm surface scan flaked on a pool runner this way: ``ast.unparse`` imports ``_ast_unparse``
+    on its first call, and another test in the worker had invalidated the finders' caches.
+    """
+    inputs = _inputs(tmp_path, a="x = 1")
+    ran = subprocess.run(
+        [sys.executable, "-c", _FIRST_IMPORT, str(tmp_path / "cache"), str(inputs)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert json.loads(ran.stdout) == {"value": {"a": "x = 1"}, "unstored": []}
+
+
+def test_a_computation_that_lists_a_path_entry_itself_is_not_stored(tmp_path: Path) -> None:
+    """only the import system's own listing is allowed; a scan listing the same directory is a read."""
+    stdlib = Path(ast.__file__).parent
+
+    def lists_the_stdlib(item: str) -> str:
+        os.listdir(stdlib)
+        return (tmp_path / "inputs" / item).read_text().upper()
+
+    with pytest.warns(ScanCacheWarning, match=f"read outside its key: os.listdir {re.escape(str(stdlib))}"):
+        _undeclared(tmp_path, lists_the_stdlib)
 
 
 # -- the private-binding gate's key, against every route its answer moves by -------------------
