@@ -8,10 +8,12 @@ caveat list, the first-screen value, the shapes of a check), all unset. Contract
   it) is the document it was before the fields existed, by the digest of the whole document with its floats rounded as
   a fingerprint rounds them (``fixtures/shape_move/input_digests.json``, written from the tree before the move), once
   what the builder now fills is set apart: the caveat list and the first-screen value, both derived and outside the
-  input's own digest, and each judged dimension's checks (judges R1), read off the judges' stored tiers. What the list holds is held by ``test_caveat_list.py``. The bundles' own
+  input's own digest; each aspect's looks, which judges D1 fills on the bundle's reading scope and the input's aspect
+  (held by ``test_looks.py``); and each judged dimension's checks (judges R1), read off the judges' stored tiers. What
+  the list holds is held by ``test_caveat_list.py``. The bundles' own
   fingerprints and every page are held by the hot-path oracle.
-- **A document with no new field set holds no new key.** No built input, but for those two keys, and no assembled
-  bundle, on any hot-path campaign, dumps a key the move added, at any depth.
+- **A document with no new field set holds no new key.** No built input, but for those keys, and no assembled
+  bundle, but for its looks, on any hot-path campaign, dumps a key the move added, at any depth.
 - **A stored document reads as before.** Every stored report input fixture validates, carries none of the new
   fields, and digests as the model before the move digested it, whatever order its keys come in.
 - **The first-screen value is outside the digest**, set or not.
@@ -109,6 +111,25 @@ def _digests(name: str) -> dict[str, str]:
 #: The keys of a built input the builder fills since the move: the one caveat list and the first-screen value.
 FILLED = frozenset({"caveat_list", "first_screen"})
 
+#: What a chunk after the move fills where the move put it: each aspect's looks (judges D1), on the input's aspect and
+#: on the bundle's reading scope. Set apart as the list is, and for the same reason: it is derived from stored facts
+#: about the campaign, so it is outside ``report_input_digest`` (no input's digest or snapshot id moves with it) and,
+#: on the bundle, outside the v2 fingerprint; ``test_looks.py`` holds both and what it holds.
+FILLED_LOOKS = "looks"
+
+
+def _without_looks(document: dict[str, Any]) -> dict[str, Any]:
+    """An input's or a bundle's document with each aspect's filled looks set apart."""
+    if "aspects" in document:
+        aspects = [
+            {key: value for key, value in aspect.items() if key != FILLED_LOOKS} for aspect in document["aspects"]
+        ]
+        return {**document, "aspects": aspects}
+    if "reading_scope" in document:
+        scope = {key: value for key, value in document["reading_scope"].items() if key != FILLED_LOOKS}
+        return {**document, "reading_scope": scope}
+    return document
+
 
 def _rounded_digest(built: ReportInput) -> str:
     """The digest of an input's whole document as a bundle's fingerprint reads one, the keys the builder fills since
@@ -116,7 +137,7 @@ def _rounded_digest(built: ReportInput) -> str:
     bits of a computed float differ between the platforms the suite runs on, and the pins are one file."""
     document = built.model_dump(mode="json", by_alias=True)
     assert FILLED <= set(document), "the builder fills the caveat list and the first screen"
-    document = {key: value for key, value in document.items() if key not in FILLED}
+    document = _without_looks({key: value for key, value in document.items() if key not in FILLED})
     document["judged"] = {
         name: {key: value for key, value in judged.items() if key != "checks"}
         for name, judged in document["judged"].items()
@@ -168,16 +189,16 @@ def test_each_stored_input_s_digest_is_what_it_was_before_the_move() -> None:
 def test_a_built_input_and_bundle_hold_no_key_the_move_added(name: str) -> None:
     bundle = _campaign(name)
     for built in (report_input(bundle), report_input(bundle, counted=True)):
-        document = {
-            key: value for key, value in built.model_dump(mode="json", by_alias=True).items() if key not in FILLED
-        }
+        document = _without_looks(
+            {key: value for key, value in built.model_dump(mode="json", by_alias=True).items() if key not in FILLED}
+        )
         assert not _keys(document) & INPUT_KEYS, sorted(_keys(document) & INPUT_KEYS)
         # A judged dimension's checks are the bundle's, as the builder copies them: against people and itself only.
         for judged in document["judged"].values():
             assert {check["against"] for check in judged.get("checks", [])} <= {"people", "itself"}
     assert not set(bundle.frame()) & FILLED, "the campaign bundle holds its list in memory and dumps none of it"
     for aspect in bundle.aspects:
-        held = _keys(aspect.to_dict())
+        held = _keys(_without_looks(aspect.to_dict()))
         assert not held & BUNDLE_KEYS, sorted(held & BUNDLE_KEYS)
         assert "checks" not in aspect.to_dict()
         # A judged dimension's checks are filled (judges R1): its judges' checks against people and against itself,

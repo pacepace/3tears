@@ -198,8 +198,10 @@ class TestAScorerGuardrail:
         rude = {"current": _answers(misses=0, leaks=0), "please": _answers(misses=0, leaks=0, tail=" please")}
         comparison = await _compare(rude, polite)
         summary = comparison.arms["please"]
-        assert summary.n_excluded == len(CASES) and summary.n_scored == 0
-        assert "outside the range 0 to 1" in summary.errors[0]
+        # Re-pinned deliberately (T1, coordinator ruling): every cell was excluded, one by one; a score off its declared
+        # scale is the rig's defect, so the run fails at the first such answer, naming it, and nothing is scored.
+        assert summary.status == "failed" and summary.n_scored == 0
+        assert "outside the range 0 to 1 declared for it" in summary.errors[0]
 
     async def test_with_no_range_a_reading_is_never_held_and_the_reason_names_ranges(self) -> None:
         arms = {"current": _answers(misses=0, leaks=0), "same": _answers(misses=0, leaks=0)}

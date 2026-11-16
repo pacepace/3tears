@@ -26,7 +26,9 @@ surface = load_script("public_surface.py")
 HOST_IMPORTS = Path(__file__).resolve().parent / "fixtures" / "host_imports"
 
 #: Names removed from the package that a host's recorded list still carries, by host file, each with the date and the
-#: host's word. None: Discodon's list, re-recorded from its develop on 2026-11-15, carries none of the names removed.
+#: host's word. None: Discodon's list, re-recorded on 2026-11-16 at the commit its header names, carries none of the
+#: names removed. (The list recorded on 2026-11-15 was taken at a78b15b66, two days stale, and missed the host's
+#: production use of ``schema.check_after``, which was removed on it and is restored.)
 REMOVED_BEFORE_REPIN: dict[str, frozenset[str]] = {}
 
 
@@ -61,6 +63,27 @@ def test_each_host_list_is_generated() -> None:
             f"{path.name} was not written by scripts/record_host_imports.py: re-record it from the host's checkout"
         )
         assert any(line.startswith(f"# From {path.stem} ") for line in head), f"{path.name} names no host commit"
+
+
+def test_each_name_a_host_imports_imports_from_its_root() -> None:
+    """Each listed name imports from the root the host names it on, as the host's ``from root import name`` does.
+
+    Driven by the recorded list alone, so it holds wherever the package's tests run, the host's checkout absent: a
+    name a host's production code imports cannot leave its root while the host's recorded list still carries it.
+    """
+    missing: list[str] = []
+    for host_file, line in host_imports():
+        if line in REMOVED_BEFORE_REPIN.get(host_file, frozenset()) or _is_module(line):
+            continue
+        root, _, name = line.rpartition(".")
+        module = importlib.import_module(root)
+        if not hasattr(module, name) or name not in getattr(module, "__all__", ()):
+            missing.append(f"{host_file}: from {root} import {name}")
+    assert not missing, (
+        "a host's production code imports these and they do not import from that root: restore each to its root's "
+        "__all__, or list it in REMOVED_BEFORE_REPIN with the host's word that it drops the import\n  "
+        + "\n  ".join(missing)
+    )
 
 
 def test_no_name_a_host_imports_is_provisional_or_missing() -> None:

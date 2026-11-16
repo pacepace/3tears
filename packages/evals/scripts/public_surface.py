@@ -759,6 +759,10 @@ HOST_CONTRACT: frozenset[str] = frozenset(
         # A recording that cannot serve the run (#1162): what a host's own replay raises on a miss so the run fails
         # naming the call rather than excluding one cell, and the base of RecordingRefused and the cassette misses.
         "threetears.evals.kernel.host.ReplayMiss",
+        # A store adapter that declares by_doc_type's `after` calls it to refuse a cursor its order cannot honour
+        # (#1145): the host guide tells such a store to, every store the package ships calls it, and Discodon's
+        # production store does (discodon/evals/storage.py), so it is the host's to bind.
+        "threetears.evals.schema.check_after",
         # What a host-contract kind's LaunchableKind.price_subject_call_floor and price_largest_call return for a call
         # they cannot price: a provisional type inside a host-contract signature would leave the host's own kind
         # binding to a name that may move.

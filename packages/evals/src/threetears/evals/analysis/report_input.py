@@ -62,6 +62,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.evals.analysis.checks import Check, Corrected, Looks, RigCheck
+from threetears.evals.analysis.significance import SeparationTest, Unquoted
 from threetears.evals.schema.reading_states import (
     ArmIdentity,
     CaveatClass,
@@ -439,7 +440,11 @@ class Aspect(_Part):
     looks: Looks | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="How often the aspect's test was looked at, against how often it planned to be.",
+        description=(
+            "How often the aspect's test was looked at, against how often it planned to be. Derived from stored facts "
+            "about the campaign (its launches, membership, re-judges), never an input the author gave, so never part "
+            "of the input's digest; the plan it is read against (`AspectDesign.planned_looks`) is."
+        ),
     )
 
 
@@ -1001,6 +1006,54 @@ class HumanPreference(_Part):
 _CHANGES_THE_ANSWER = frozenset({"set_aside", "withheld"})
 
 
+class FalseSeparation(_Part):
+    """A reference figure for one test the aspect's readings are read by: how often a test with no true difference
+    separated at some look in a simulation of that test, plan and count, in the setting stated beside it
+    (:func:`~threetears.evals.analysis.significance.looks_false_separation`). It is never this campaign's own rate,
+    which is not known, and it is no limit on it: a campaign launched smaller, extended by more cases a step, or
+    reading several claims at once can err more. For a claim of held (one tail) it is the two-sided separation rate."""
+
+    test: SeparationTest = Field(description="The test the reference simulates: bounded or t.")
+    rate: float | None = Field(
+        description=(
+            "The rate a reference simulation of this test, plan and count measured, as a share, in the setting beside "
+            "it; never this campaign's rate. None where none is quoted (``unquoted`` says why)."
+        )
+    )
+    upper: float | None = Field(
+        default=None,
+        description=(
+            "The reference simulation's own uncertainty about ``rate``: the one-sided 97.5% Wilson upper confidence "
+            "limit from its replicates. Nothing about this campaign's error. None with no rate."
+        ),
+    )
+    row: str | None = Field(
+        default=None, description="The row of `significance.FALSE_SEPARATION` the rate is read from; None with no rate."
+    )
+    looks: int = Field(ge=1, description="The looks the reference rate is for.")
+    setting: str | None = Field(
+        default=None,
+        description=(
+            "What the reference simulated, in one line: a single contrast, the test, the per-case values, the launch "
+            "and the extends. None where no row measured the situation."
+        ),
+    )
+    launched: list[int] = Field(
+        default_factory=list, description="The cases the simulated first looks read; empty where no row measured it."
+    )
+    largest_step: int | None = Field(
+        default=None, description="The most cases one later look added in the simulation; None where no row did."
+    )
+    unquoted: Unquoted | None = Field(
+        default=None,
+        description=(
+            "Why no rate is quoted: not_measured (no row for this test, plan and count) or outside_setting (the "
+            "aspect's own first-look cases or largest step, from stored facts, fall outside the simulated setting, "
+            "so the reference does not cover it). None with a rate."
+        ),
+    )
+
+
 class CaveatEntry(_Part):
     """One row of the one caveat list: a qualification of the answer, typed so code ranks it without reading a word.
 
@@ -1058,6 +1111,26 @@ class CaveatEntry(_Part):
     runs: list[str] = Field(default_factory=list, description="The runs it is about, by id; empty for none named.")
     cases: int | None = Field(
         default=None, description="The cases the readings it names rest on, where one count says it."
+    )
+    # The two below are left out when unset, so an entry of every other kind dumps as it did.
+    looks: Looks | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "For a caveat on looks: the aspect's looks, planned and taken, or that they were not recorded "
+            "(`Aspect.looks`)."
+        ),
+    )
+    false_separation: list[FalseSeparation] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "For a caveat on looks: per test the aspect's readings are read by, a reference false-separation rate from "
+            "a simulation of that test, plan and count, with the setting it was simulated in, or why none is quoted. "
+            "A reference figure, never this campaign's own rate, which is not known and can be higher. Empty where "
+            "the looks counted are a lower count (more may have been taken, so no row is the situation's: the count "
+            "is shown alone), or were not recorded."
+        ),
     )
 
     model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
@@ -1250,8 +1323,9 @@ class RemedyStep(_Part):
     declared_look: bool = Field(
         default=False,
         description="Whether taking it reads the same readings again with the cases it adds: one more look at them, "
-        "stated before it is taken. Nothing counts looks yet: the reading after it is read at its full level as if it "
-        "were the first, so adding cases and reading again even once errs more often than that level says.",
+        "stated before it is taken. The looks are counted: past the aspect's plan (past the first with none), or "
+        "within it where keeping the plan is not shown, the reading after it carries a caveat on looks, with a "
+        "reference false-separation rate from a simulated setting.",
     )
     results_needed: int | None = Field(
         default=None, ge=1, description="For a check: how many more results it needs before it can decide."
@@ -1436,6 +1510,10 @@ class ReportInput(_Part):
 #: change to how caveats are raised or ranked re-keys no snapshot and moves no recording.
 _OUTSIDE_THE_DIGEST = frozenset({"caveat_list", "first_screen"})
 
+#: The keys of each aspect no digest reads, for the same reason: its looks are counted from stored facts about the
+#: campaign at read time (a run joining, a re-judge), which move no input the author gave.
+_ASPECT_OUTSIDE_THE_DIGEST = frozenset({"looks"})
+
 
 def report_input_digest(report_input: ReportInput) -> str:
     """The digest of a report input: sha256 of its canonical JSON (keys sorted, by alias).
@@ -1460,5 +1538,12 @@ def report_input_document_digest(document: Mapping[str, Any]) -> str:
     :rtype: str
     """
     document = {key: value for key, value in document.items() if key not in _OUTSIDE_THE_DIGEST}
+    if isinstance(aspects := document.get("aspects"), list):
+        document["aspects"] = [
+            {key: value for key, value in aspect.items() if key not in _ASPECT_OUTSIDE_THE_DIGEST}
+            if isinstance(aspect, Mapping)
+            else aspect
+            for aspect in aspects
+        ]
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return bytes_digest(canonical.encode("utf-8"))

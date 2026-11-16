@@ -696,6 +696,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "VariationAxis.generator": frozenset({"enum", "sample", "llm"}),
         "ConversationSpec.turn_scheduler": frozenset({"round_robin", "llm_decided"}),
         "BudgetStop.currency": frozenset({"cost_usd", "metered_calls"}),
+        "MembershipChange.change": frozenset({"joined", "left"}),
         "RaterKind": values(models.RaterKind),
         "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),

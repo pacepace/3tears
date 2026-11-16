@@ -25,6 +25,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.fixtures.report_inputs.build_inputs import REFERENCES, build_inputs
+from packages.evals.tests.report_input_schema_support import looks_description_drift
 from packages.evals.tests.report_kit_support import KIT
 from threetears.evals.analysis.report_input import ReportInput
 
@@ -93,6 +94,12 @@ def test_the_docs_schema_and_the_model_agree() -> None:
     )
     differ = {path: {"docs": docs[path], "model": model[path]} for path in docs if docs[path] != model[path]}
     assert not differ, json.dumps(differ, indent=1)
+
+
+def test_the_looks_parts_of_the_kit_schema_are_the_model_s_own_words() -> None:
+    """What a writer reads of looks and of the reference rate is the model's, field by field: every field of
+    ``FalseSeparation`` and ``Looks``, and the fields that carry them."""
+    assert looks_description_drift() == []
 
 
 def test_the_parity_check_sees_a_field_the_docs_schema_lacks() -> None:

@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.trials import pass_count
 from threetears.evals.analysis.campaign_readings import CampaignReadings
 from threetears.evals.analysis.campaign_title import arms_line, title_arm_names
 from threetears.evals.analysis.depth_reading import PAIRING_METHOD
@@ -81,7 +82,13 @@ from threetears.evals.kernel.declaration import Aspect, CampaignArm, CampaignCal
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.analysis.report.blocks import TableBlock, bare_columns
 from threetears.evals.analysis.report.aspect.contrasts import contrast_evidence
-from threetears.evals.analysis.report.verdict import led_sentences, unfinished_line
+from threetears.evals.analysis.report.aspect.common import case_namer
+from threetears.evals.analysis.report.verdict import (
+    led_sentences,
+    unfinished_line,
+    ungraded_sentence,
+    ungraded_sentences,
+)
 from threetears.evals.analysis.report.words import heading_case
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.analysis.completeness import bundle_stopped_short
@@ -259,7 +266,7 @@ def build_campaign_report_in_aspect_forms(
         CampaignAspectFold(
             aspect=aspect.label,
             name=_fold_heading(aspect, names, _title(campaign)),
-            shows=aspect_shows(readings, aspect.label),
+            shows=aspect_shows(readings, aspect.label, bundle=reports[aspect.label].bundle),
             # What the campaign states once for every aspect, its fold does not say again.
             report=for_the_campaign(reports[aspect.label], alone=folds_alone),
         )
@@ -397,15 +404,23 @@ def _lead_blocks(
             decision = f"On {names(aspect.label)}, {paired}" if several else opened
             sentences.append(f"{decision}.")
             decisions.append(decision)
-        elif measured := _measured_lead(aspect, readings):
-            # One arm measured: its count, a figure, nothing decided, so nothing is set in bold.
+        elif measured := _measured_lead(aspect, readings, report.bundle):
+            # One arm measured: its count, a figure, nothing decided, so nothing is set in bold; the cases nothing
+            # graded after it, as the quick print says them.
             prefix = f"On {names(aspect.label)}, " if several else ""
-            sentences += [f"{prefix}{said}." for said in measured]
+            sentences += [f"{prefix}{said}.{after}" for said, after in measured]
+            continue
         else:
             undecided = undecided or reads_undecided(readings, aspect.label)
-            decision = f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label)}"
+            decision = f"On {names(aspect.label)}, {aspect_shows(readings, aspect.label, bundle=report.bundle)}"
             sentences.append(f"{decision}.")
             decisions.append(decision)
+        # Every count above is over the graded trials: an arm with trials nothing graded says so beside them, as the
+        # quick print's comparison line does (one owner, :func:`~threetears.evals.analysis.report.verdict.passed_clause`).
+        labels = readings.arm_labels()
+        if ungraded := ungraded_sentences(report.bundle, lambda key: labels.get(key, key), case_namer(report.bundle)):
+            sentences.append(ungraded.strip())
+
     if not sentences:
         # Every aspect has a run that did not finish, so the page's opening is all there is to lead with.
         return []
@@ -435,16 +450,19 @@ def _check_lead(lead: Sequence[ReportBlock]) -> None:
         )
 
 
-def _measured_lead(aspect: Aspect, readings: CampaignReadings) -> list[str]:
-    """Each measured arm's pass rate on an aspect, as the count it is computed over
-    (:func:`~.scorecard.measured_figure`): the figure every grader's reading makes together, as the aspect's printed
-    line leads on its cases passed; none where no arm was measured there."""
+def _measured_lead(aspect: Aspect, readings: CampaignReadings, bundle: AnalysisContextBundle) -> list[tuple[str, str]]:
+    """Each measured arm's pass count on an aspect (:func:`~.scorecard.measured_figure`), with the sentence naming
+    the cases nothing graded after it (:func:`~threetears.evals.analysis.report.verdict.ungraded_sentence`): the
+    figure every grader's reading makes together, as the aspect's printed line leads on its cases passed; none where
+    no arm was measured there."""
+    boards = {board.variant_key: board for board in bundle.scoreboard}
+    namer = case_namer(bundle)
     return [
-        figure
+        (figure, ungraded_sentence(pass_count(bundle, boards[reading.arm]), namer))
         for reading in readings.measures
         # ``passed``: the trials' own pass rate, as the readings key it.
         if reading.aspect == aspect.label and reading.measure == "passed"
-        if (figure := measured_figure(reading)) is not None
+        if (figure := measured_figure(reading, bundle)) is not None
     ]
 
 

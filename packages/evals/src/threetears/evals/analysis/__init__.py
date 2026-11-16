@@ -106,6 +106,7 @@ from threetears.evals.analysis.checks import Check, Corrected, JudgeCheck, Looks
 from threetears.evals.analysis.report_input import (
     CallRead,
     CaveatEntry,
+    FalseSeparation,
     FirstScreen,
     Gate,
     GateRun,
@@ -185,7 +186,12 @@ from threetears.evals.analysis.lenses.cost_estimate import (
 )
 from threetears.evals.analysis.lenses.pivot import CELL_MEASURED, CELL_NOT_RUN, CELL_WITHHELD
 from threetears.evals.analysis.lenses.history import HISTORY_METRICS
-from threetears.evals.analysis.significance import format_significance, significance_disclosure
+from threetears.evals.analysis.significance import (
+    SeparationTest,
+    Unquoted,
+    format_significance,
+    significance_disclosure,
+)
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.gate import (
     DEFAULT_FAIL_ON,
@@ -468,9 +474,14 @@ __all__ = [
     "Rescore",
     "ReviewerCheck",
     "RigCheck",
+    # The test a reading's claims are read by, which a caveat on looks quotes a measured rate for.
+    "SeparationTest",
+    # Why a caveat on looks quotes no reference rate.
+    "Unquoted",
     # The one caveat list and the first screen read off it, which the campaign bundle holds.
     "CallRead",
     "CaveatEntry",
+    "FalseSeparation",
     "FirstScreen",
     "Gate",
     "GateRun",

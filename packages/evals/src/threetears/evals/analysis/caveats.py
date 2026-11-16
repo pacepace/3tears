@@ -73,8 +73,11 @@ launch generates. Where no size can be read, the step says why and makes no
 call, so it is never taken open-ended; where no added case can close the caveat (a percentile's point estimate),
 the step says that instead of offering an act that cannot work. A criterion set or a pick made on these results is
 closed by no case added to this campaign, so its step is the confirmation in a new one.
-Taking a step that adds cases is one more look at the readings it names, and says so; nothing counts looks yet, so a
-reading after it is read at its full level as if it were the first.
+Taking a step that adds cases is one more look at the readings it names, and says so; the looks are counted
+(:func:`~threetears.evals.analysis.significance.looks_taken`), and a reading past its plan carries a caveat on looks
+that quotes a reference false-separation rate simulated for its test, plan and that many looks, with its setting,
+never the campaign's own rate (none where no row covers it, or the count is a lower count); an aspect whose looks were
+not recorded says so, with no rate.
 
 Nothing here reads an eval's kind, a campaign's shape or a measure's name.
 """
@@ -113,6 +116,7 @@ from threetears.evals.analysis.report_input import (
     CallRead,
     CaveatEntry,
     Criterion,
+    FalseSeparation,
     FirstScreen,
     Gate,
     GateRun,
@@ -140,6 +144,7 @@ from threetears.evals.analysis.separation import (
     level_share,
     stat_spread,
 )
+from threetears.evals.analysis.significance import MeasuredRate, looks_false_separation, plan_kept
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
@@ -923,15 +928,120 @@ def _checks(report_input: ReportInput) -> Iterator[CaveatEntry]:
         )
 
 
+#: The verdicts that claim something of a reading (a gain, a drop, a change within the margin, an equivalence): what a
+#: look past the plan loosens. Not separated, unclear and untested claim nothing.
+_CLAIMS: Final = frozenset({"better", "worse", "improved", "regressed", "within_margin", "equivalent"})
+
+
+def _aspect_claims(report_input: ReportInput, aspect: Aspect) -> list[str]:
+    """Every claim the aspect's tests make, by reading: a row's change, a contrast's verdict, a floor or guardrail read
+    held. A claim of no worse or of safety is read at every look as a gain is, so a look past the plan loosens it too."""
+    found: list[str] = []
+    for reading in (
+        *(f"{aspect.id}/{_PASSED}" for row in aspect.readings if row.reading in _CLAIMS),
+        *(
+            f"{aspect.id}/{contrast.measure}"
+            for contrast in report_input.contrasts
+            if contrast.aspect == aspect.id and contrast.verdict in _CLAIMS
+        ),
+        *(
+            f"{aspect.id}/{_PASSED}"
+            for floor in report_input.floors
+            if floor.aspect == aspect.id and floor.status == "held"
+        ),
+        *(
+            f"{aspect.id}/{check.get('name')}"
+            for check in report_input.guardrails
+            if check.get("aspect") == aspect.id and check.get("decision") == "held"
+        ),
+    ):
+        if reading not in found:
+            found.append(reading)
+    return found
+
+
 def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
-    """A caveat per aspect whose test was looked at more often than it planned: more than once with no plan, or more
-    often than the plan said. Looks within the plan qualify nothing and raise none."""
+    """A caveat per aspect whose test was looked at more often than its plan allows, whose plan's keeping is not shown,
+    or whose looks were not recorded.
+
+    **Counted looks** (recorded, or recorded since durable 17.3 where earlier ones were not: ``Looks.taken``) raise it
+    where more were taken than planned (more than one with no plan in force; a plan declared after the first look is
+    none, ``Looks.late_plan``); where a plan is in force and the count is a lower bound, so looks past it cannot be
+    ruled out; and where looks within the plan are not shown to hold α for a test the aspect's readings use
+    (:func:`~threetears.evals.analysis.significance.plan_kept`: batches fixed in advance by the union bound, extends
+    sized by the planner only where the reference rate's upper bound is at most α).
+
+    It carries, per test the aspect's readings are read by (``Looks.tests``), a reference false-separation rate with
+    the setting it was simulated in (:func:`~threetears.evals.analysis.significance.looks_false_separation`), for
+    exactly that many looks; none where no row measured the situation or the aspect's own launch or extend sizes fall
+    outside the setting. It is never the campaign's own rate. Where the count is a lower count (a deleted run, a
+    re-judge, looks recorded only since 17.3), the count is shown alone, with no rate: more looks may have been taken,
+    and no row is a floor.
+
+    **Looks not recorded** and none recorded since (``Looks.recorded`` false, ``taken`` None) raise one entry at method
+    reach saying so, where the stored evidence changed more than once, with no rate: the count is neither a lower nor an
+    upper bound on looks. A single launch stays silent.
+
+    It names every claim of the aspect (:func:`_aspect_claims`). Its reach is the report's (scoped for an unasked aspect
+    beside asked ones), and the method's where the aspect makes no claim, where its looks were not recorded and none
+    were since, or where the campaign was created before looks were counted (``Looks.plannable`` false) and every
+    member's joining is recorded: its looks could not have been planned. Looks recorded since 17.3 on a campaign
+    whose earlier looks were not (an existing campaign extended or joined since) reach the report: they were taken
+    under the record, as a remedy's extend is.
+    """
+    asked = asked_aspects(report_input)
     for aspect in report_input.aspects:
         looks = aspect.looks
-        if looks is None or looks.taken <= (looks.planned or 1):
+        if looks is None:
             continue
-        reach: CaveatReach = "report" if aspect.asked or not asked_aspects(report_input) else "scoped"
-        yield _entry(report_input, f"looks:{aspect.id}", "looks", reach, readings=[f"{aspect.id}/{_PASSED}"])
+        claims = _aspect_claims(report_input, aspect)
+        readings = claims or [f"{aspect.id}/{_PASSED}"]
+        if looks.taken is None:
+            if (looks.evidence_changes or 0) > 1:
+                yield _entry(report_input, f"looks:{aspect.id}", "looks", "method", readings=readings, looks=looks)
+            continue
+        planned, taken = looks.planned, looks.taken
+        past = taken > (planned or 1)
+        unshown = looks.lower_bound and planned is not None
+        unkept = planned is not None and not past and any(not plan_kept(test, planned, taken) for test in looks.tests)
+        if not (past or unshown or unkept):
+            continue
+        reach: CaveatReach
+        if not claims or (not looks.plannable and looks.recorded):
+            reach = "method"
+        else:
+            reach = "report" if aspect.asked or not asked else "scoped"
+        # A lower count is shown alone: more looks may have been taken, so no row is the situation's.
+        quoted = (
+            []
+            if looks.lower_bound
+            else [
+                _reference(
+                    looks_false_separation(
+                        test, planned, taken, launched=looks.launched, largest_step=looks.largest_step
+                    )
+                )
+                for test in looks.tests
+            ]
+        )
+        yield _entry(
+            report_input, f"looks:{aspect.id}", "looks", reach, readings=readings, looks=looks, false_separation=quoted
+        )
+
+
+def _reference(measured: MeasuredRate) -> FalseSeparation:
+    """The reference rate as the caveat carries it, with its setting."""
+    return FalseSeparation(
+        test=measured.test,
+        rate=measured.rate,
+        upper=measured.upper,
+        row=measured.row,
+        looks=measured.looks,
+        setting=measured.setting,
+        launched=list(measured.launched),
+        largest_step=measured.largest_step,
+        unquoted=measured.unquoted,
+    )
 
 
 def from_states(report_input: ReportInput, bundle: CampaignBundle | None = None) -> list[CaveatEntry]:
