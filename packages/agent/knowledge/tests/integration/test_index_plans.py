@@ -147,17 +147,31 @@ async def test_draft_owner_indexes(conn: asyncpg.Connection) -> None:
 
 class _GrantedPool:
     """the rbac-read proxy pool a visible listing reads through, its caller's grants answered as ``customers`` (the
-    grant tables are not this schema's); every listing statement recorded, unrun."""
+    grant tables are not this schema's); every listing statement recorded, unrun.
+
+    The grants are one statement (:func:`threetears.agent.acl.visible_customers`: the caller's groups walked from
+    ``group_members`` with each group's ``role_assignments`` beside it), answered here as one group holding a
+    ``type_customer`` grant on each customer; every other statement is a listing page."""
 
     def __init__(self, customers: list[uuid.UUID]) -> None:
         self._customers = customers
         self.asked: list[tuple[str, tuple[Any, ...]]] = []
 
-    async def fetchrow(self, sql: str, *params: Any, customer_scope: Any) -> dict[str, Any]:
-        assert "role_assignments" in sql, sql
-        return {"is_all": False, "customer_ids": self._customers}
-
     async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[Any]:
+        if "group_members" in sql:
+            assert "role_assignments" in sql, sql
+            group = uuid.uuid4()
+            return [
+                {
+                    "group_id": group,
+                    "scope_type": "type_customer",
+                    "scope_customer_id": customer,
+                    "scope_namespace_type": "knowledge",
+                    "scope_namespace_id": None,
+                    "namespace_customer_id": None,
+                }
+                for customer in self._customers
+            ]
         self.asked.append((sql, params))
         return []
 

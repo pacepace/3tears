@@ -186,16 +186,11 @@ async def test_skills_agent_user_enabled(applied_schema: tuple[str, str]) -> Non
         assert len(listed) == _PAGE and all(skill.enabled for skill in listed)
         assert await skills.count_for_user(agent_id, user_id) == _SKILLS_OF_USER // 10
         assert len(captured.asked) == 2, captured.asked
-        yugabyte = await on_yugabyte(conn)
         for sql, args in captured.asked:
             plan = await explain_statement(conn, sql, *args)
-            if yugabyte and "count(" not in sql.lower():
-                # YugabyteDB's planner reads the ordered listing through the user's prefix of
-                # uq_skills_agent_user_name (no declared index serves its recency order, so the keyed read names
-                # none, and it does not pick the enabled one): the user's skills, never another user's
-                assert "Seq Scan" not in set(_node_types(plan.plan)), plan.plan
-                assert plan.rows_scanned <= _SKILLS_OF_USER, plan
-                continue
+            # on YugabyteDB too: no declared index holds the listing's recency order, so the keyed read names the one
+            # binding its three pins (keys.serving_index); unnamed, YugabyteDB read the user's prefix of
+            # uq_skills_agent_user_name, all 2,000 of the user's skills (D5, 2026-11-15)
             assert plan_uses_index(plan, "idx_skills_agent_user_enabled"), plan.plan
             # the user's enabled skills (200), never the disabled 1,800 beside them
             assert plan.rows_scanned <= 2 * (_SKILLS_OF_USER // 10), plan

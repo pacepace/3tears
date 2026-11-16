@@ -136,6 +136,36 @@ TableSchema(
     l1_eviction=TEST_L1_TABLE,
 )
 
+#: one agent's skills, as agent-skills declares them (v001): the primary key (agent_id, skill_id), a unique name per
+#: user and an index of the user's enabled ones; none of them holds the listing's recency order
+_SKILLS = "yb1_hint_skills"
+
+TableSchema(
+    name=_SKILLS,
+    primary_key=("agent_id", "skill_id"),
+    columns=[
+        Column("agent_id", UUID_TYPE),
+        Column("skill_id", UUID_TYPE),
+        Column("user_id", UUID_TYPE),
+        Column("name", STRING_TYPE),
+        Column("enabled", STRING_TYPE),
+        Column("last_used_at", STRING_TYPE, nullable=True),
+        Column("date_created", STRING_TYPE),
+    ],
+    indexes=(
+        Index("yb1_skills_agent_user_name", "agent_id", "user_id", "name", unique=True),
+        Index("yb1_skills_agent_user_enabled", "agent_id", "user_id", "enabled"),
+    ),
+    l1_eviction=TEST_L1_TABLE,
+)
+
+#: the skills listing's order (agent-skills' _RECENT_FIRST_PAGE): an expression, then columns no index holds
+_RECENT_FIRST = [
+    Sort("last_used_or_never", descending=True, expression="COALESCE(t.\"last_used_at\", '-infinity'::timestamptz)"),
+    Sort("date_created", descending=True),
+    Sort("skill_id", cast="uuid", descending=True),
+]
+
 _BY_STATUS = [Sort("status", descending=True), Sort("conversation_id", cast="uuid", descending=True)]
 _BY_ID = [Sort("conversation_id", cast="uuid", descending=True)]
 
@@ -244,6 +274,24 @@ class TestServingIndex:
         ):
             served = serving_index(_SCHED, by, [])
             assert served is not None and served.primary, (by, served)
+
+    def test_a_read_sorted_by_an_expression_takes_the_index_binding_most_pins(self) -> None:
+        """Flips if a read sorting by an expression (no plain index holds its order) is not served by the index binding
+        most of its pins, as an unordered read is: YugabyteDB read a user's enabled skills, recency first, through the
+        user's prefix of the unique name index, the disabled ones too, when the read named no index (D5, 2026-11-15).
+        Where only the primary key binds the pins, none is named (the planner's own choice)."""
+        served = serving_index(_SKILLS, {"agent_id": 1, "user_id": 2, "enabled": "t"}, _RECENT_FIRST)
+        assert served is not None and served.name == "yb1_skills_agent_user_enabled", served
+        assert index_hint(served) == "/*+ IndexOnlyScan(t yb1_skills_agent_user_enabled) */ "
+        assert serving_index(_SKILLS, {"agent_id": 1}, _RECENT_FIRST) is None
+        assert serving_index(_SKILLS, {"user_id": 2}, _RECENT_FIRST) is None
+
+    def test_a_plain_order_no_declared_index_holds_names_none(self) -> None:
+        """Flips if a read sorting by plain columns that no declared index holds after its pins is handed the index
+        binding most of them: an index the declarations do not name may hold that order, and the hint would override
+        it (the hub's provider model pages read v160's undeclared (provider_id, status, id) indexes; named the declared
+        (provider_id, model_name) instead, YugabyteDB read 333 and 1,021 rows for a page of 21; YB1, 2026-11-16)."""
+        assert serving_index(_SKILLS, {"agent_id": 1, "user_id": 2, "enabled": "t"}, _RECENT_FIRST[1:]) is None
 
     def test_a_declared_index_names_plain_identifiers(self) -> None:
         """Flips if an index a hint could not name unquoted, or one sorting a column it lacks, is accepted."""
