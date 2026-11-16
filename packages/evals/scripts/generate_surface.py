@@ -524,9 +524,6 @@ def _names(names: list[str]) -> str:
 
 
 def _agent_lines(surface: Surface) -> Iterator[str]:
-    # What re-reading a comparison allows, in the one sentence the print says it in.
-    from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE
-
     by_rung = surface.typed_by_rung()
     first = surface.first_eval()
     yield "3tears-evals: read this first"
@@ -575,16 +572,9 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     yield from _wrapped("A comparison's first line says whether the evidence tells the arms apart. Rung 3a prints:")
     yield from _wrapped(printed_first_line("Rung 3a: two prompts, compared"), "  ")
     yield from _wrapped(
-        f"The line under a comparison's first line says what reading it again allows: {REREAD_SENTENCE}"
-    )
-    yield from _wrapped(
-        "Run into the same store, the comparison continues: the cases already run are read as they ran and only the "
-        "cases appended run, so each reading is one bet read later. Changing an arm's name, model or levers, a "
-        "grader's name or declaration, a judge's model or criteria, the question, the repeats, or a case already run "
-        "starts a new comparison, which the print names. An arm is known by its name, model and levers, and a grader "
-        "by its name and declaration (a judge by its model and criteria), never by its code: a runner or a grader "
-        "edited under the same name is pooled with the cases run before, so give the eval a new name to compare an "
-        "edit afresh."
+        "Run again into its store with cases appended, a comparison continues (only new cases run) and its pass-rate "
+        "and ranged-score verdicts keep their error at every reading; a runner or grader is known by its name (a "
+        "judge by model and criteria), not its code: rename the eval to compare an edit."
     )
     yield from _wrapped(
         "Below it: each measure's rate, the top misses with why each missed, and where the report page is. A "
