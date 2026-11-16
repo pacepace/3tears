@@ -109,6 +109,7 @@ from threetears.enforcement.no_whole_reads.sql import (
 
 __all__ = [
     "DECLARED_KINDS",
+    "DECLARED_L1_KINDS",
     "DECLARED_OUTSIDE_KINDS",
     "DECLARED_RING_KINDS",
     "DECLARED_SPEED_KINDS",
@@ -582,6 +583,11 @@ DECLARED_KINDS: Final[dict[str, frozenset[str]]] = {
             "calls-whole-read",
         }
     ),
+    # (Pace 2026-11-15) emptying a process's own L1 copy of a table whole when the table is dropped: one DELETE with no
+    # WHERE on the drop's thread (SQLiteBackend.delete_all, reached only from drop_cached_table), never a declared L3
+    # table and never a read (DECLARED_L1_KINDS guards both). Why one DELETE and not the keyed walk: measured at the
+    # declaration (14-17 ms against 645-916 ms at 100k rows)
+    "l1_table_drop": frozenset({"whole-delete"}),
     # a read serving writers older than a rolling upgrade, until the release it names (``until=``): the gate refuses it
     # once the package reaches that release (Pace 2026-11-12: rolling_upgrade until 0.96.0)
     "rolling_upgrade": frozenset(
@@ -610,8 +616,13 @@ DECLARED_SPEED_KINDS: Final[frozenset[str]] = frozenset(
         "rolling_upgrade",
         "ring_empty",
         "restore",
+        "l1_table_drop",
     }
 )
+
+#: the kinds whose every statement is a bare ``DELETE FROM`` (no ``WHERE``) of a relation no declared L3 table is: a
+#: process's own L1 copy of a table, emptied whole when the table is dropped (Pace 2026-11-15)
+DECLARED_L1_KINDS: Final[frozenset[str]] = frozenset({"l1_table_drop"})
 
 #: the kinds whose every statement is over the change-note ring's slots (``threetears_change_notes_<n>``, its template
 #: ``threetears_change_notes_{}``), and nothing else

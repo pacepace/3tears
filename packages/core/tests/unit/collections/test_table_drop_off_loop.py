@@ -5,9 +5,12 @@ announces it, under a "dropping" count that makes every L1 read of the table a m
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import threading
+import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import MetaData
@@ -17,6 +20,7 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.calibrate import budget_problem
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 from threetears.core.testing.loop_lateness import turn_holds
 
@@ -102,3 +106,74 @@ class TestTheDropHoldsNoTurnOfTheLoop:
         longest = max(seconds for seconds, _ in holds)
         assert sorted(heard) == keys
         assert longest < _TURN_MAX_SECONDS, f"a turn held the loop {longest * 1000:.1f} ms during the drop"
+
+
+#: every package's sources, read for where the L1 table drop is reached from
+_PACKAGES = Path(__file__).resolve().parents[4]
+
+
+def _functions_naming(name: str) -> set[str]:
+    """each source function (``<module>:<qualified name>``) naming ``name`` as an attribute or a string, its own
+    definition aside."""
+    found: set[str] = set()
+    for path in _PACKAGES.glob("**/src/**/*.py"):
+        text = path.read_text(encoding="utf-8")
+        if name not in text:
+            continue
+        tree = ast.parse(text)
+
+        def visit(node: ast.AST, scope: str, module: str = path.name) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    visit(child, f"{scope}.{child.name}" if scope else child.name)
+                    continue
+                named = (isinstance(child, ast.Attribute) and child.attr == name) or (
+                    isinstance(child, ast.Constant) and child.value == name
+                )
+                if named:
+                    found.add(f"{module}:{scope}")
+                visit(child, scope)
+
+        visit(tree, "")
+    return found
+
+
+def test_delete_all_is_reached_only_from_a_table_drop() -> None:
+    """Flips if anything but a table drop reaches SQLiteBackend.delete_all, the L1 table's one whole DELETE (declared
+    l1_table_drop, Pace 2026-11-15): only BaseCollection._drop_l1_table_on_a_thread names it, and only
+    BaseCollection.drop_cached_table starts that."""
+    assert SQLiteBackend.delete_all
+    assert _functions_naming("delete_all") == {"base.py:BaseCollection._drop_l1_table_on_a_thread"}
+    assert _functions_naming("_drop_l1_table_on_a_thread") == {"base.py:BaseCollection.drop_cached_table"}
+
+
+def _written(l1: SQLiteBackend, sql: str, rows: list[tuple[str, str]] | None = None) -> float:
+    """one statement in its own immediate transaction on the backend's connection, as the backend writes; its
+    seconds."""
+    conn = l1.get_connection()
+    started = time.perf_counter()
+    conn.execute("BEGIN IMMEDIATE")
+    if rows is None:
+        conn.execute(sql)
+    else:
+        conn.executemany(sql, rows)
+    conn.execute("COMMIT")
+    return time.perf_counter() - started
+
+
+def test_delete_all_of_100k_rows_is_the_bare_delete() -> None:
+    """Flips if SQLiteBackend.delete_all (the l1_table_drop, Pace 2026-11-15) takes over twice a bare DELETE of the
+    same 100k rows in the same database: the declared whole delete must be SQLite's truncate and nothing on top.
+    Measured at 14-17 ms; the keyed walk it replaces took 645-916 ms (scratchpad/sq4/HANDOFF-SQ4.md)."""
+    _collection, l1 = _cached_collection()
+    _written(l1, 'CREATE TABLE "bare_rows" (id TEXT PRIMARY KEY, payload TEXT)')
+    rows = [(f"k{index:07d}", "x" * 200) for index in range(100_000)]
+    took, baseline = [], []
+    for _ in range(3):
+        _cache(l1, 100_000)
+        _written(l1, 'INSERT INTO "bare_rows" VALUES (?, ?)', rows)
+        baseline.append(_written(l1, 'DELETE FROM "bare_rows"'))
+        started = time.perf_counter()
+        assert l1.delete_all("drop_rows") == 100_000
+        took.append(time.perf_counter() - started)
+    assert budget_problem("SQLiteBackend.delete_all of 100k rows", min(took), min(baseline)) is None

@@ -110,6 +110,7 @@ from threetears.enforcement.no_whole_reads.schema import (
 from threetears.enforcement.no_whole_reads.use_the_helper import statement_counts, statement_findings
 from threetears.enforcement.no_whole_reads.walker import (
     DECLARED_KINDS,
+    DECLARED_L1_KINDS,
     DECLARED_OUTSIDE_KINDS,
     DECLARED_RING_KINDS,
     DECLARED_SPEED_KINDS,
@@ -905,6 +906,8 @@ class _Declared:
             return False
         if declared.kind in DECLARED_RING_KINDS and hit.kind != "calls-whole-read":
             return _over_the_ring(declared.kind, hit)
+        if declared.kind in DECLARED_L1_KINDS:
+            return _BARE_DELETE.match(hit.statement) is not None and _declared_relation_outside(hit, schema)
         if declared.kind in DECLARED_OUTSIDE_KINDS and hit.kind != "calls-whole-read":
             return _declared_relation_outside(hit, schema)
         return True
@@ -912,6 +915,10 @@ class _Declared:
 
 #: a statement deleting, past any leading planner hint
 _LEADING_DELETE: Final = re.compile(r"^\s*(?:/\*.*?\*/\s*)?DELETE\b", re.IGNORECASE | re.DOTALL)
+
+#: a ``DELETE FROM`` one relation and nothing after it (no ``WHERE``, no ``RETURNING``): the one statement an
+#: ``l1_table_drop`` may hold
+_BARE_DELETE: Final = re.compile(r"^\s*DELETE\s+FROM\s+[^\s;]+\s*;?\s*$", re.IGNORECASE)
 
 #: a plain ``VACUUM`` (no ``FULL``, no ``ANALYZE``) of one table: the one maintenance a ``ring_empty`` may hold
 _PLAIN_VACUUM: Final = re.compile(r"^\s*VACUUM\s+(?!\(|FULL\b|ANALYZE\b|VERBOSE\b|FREEZE\b)", re.IGNORECASE)

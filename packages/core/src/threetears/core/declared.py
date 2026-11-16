@@ -49,6 +49,9 @@ WholeReadKind = Literal[
     # coverage; the gate admits them over the ring's slots alone
     "ring_empty",
     "restore",
+    # emptying a process's own L1 copy of a table whole when the table is dropped (Pace 2026-11-15); the gate admits
+    # one DELETE with no WHERE of a relation no declared L3 table is
+    "l1_table_drop",
 ]
 
 #: the kinds, for the run-time check
@@ -64,6 +67,7 @@ _KINDS: Final[frozenset[str]] = frozenset(
         "rolling_upgrade",
         "ring_empty",
         "restore",
+        "l1_table_drop",
     }
 )
 
@@ -92,7 +96,7 @@ def whole_read(
         reached only in that situation
     :ptype proof: str
     :param speed: ``<test file>::<test function>``: a speed test at real size calling ``budget_problem``, for
-        ``cold_start``, ``every_state_answer``, ``backup_verification`` and ``schema_change`` (a
+        ``cold_start``, ``every_state_answer``, ``backup_verification``, ``schema_change`` and ``l1_table_drop`` (a
         ``backup_verification`` of a bare ``count(*)`` or row checksum over one table, which the gate checks, needs
         none: it is the bare operation)
     :ptype speed: str

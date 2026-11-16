@@ -69,6 +69,7 @@ from threetears.core.cache.base import (
     stored_instant_text,
     stored_time,
 )
+from threetears.core.declared import whole_read
 from threetears.core.eviction import Declared, Tier, declared, policy_of
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
@@ -770,9 +771,26 @@ class SQLiteBackend:
         :return: how many rows it held
         :rtype: int
         """
+        # Why one DELETE with no WHERE, and not the keyed walk + delete by key the drop takes when a listener must hear
+        # every key (BaseCollection._walk_and_delete_l1_table): at 100k rows this takes 14-17 ms on its thread, the
+        # keyed walk 645-916 ms (SQ4, this laptop under load: scratchpad/sq4/HANDOFF-SQ4.md), and the table's rows
+        # read as misses for as long as either runs. Neither holds a loop turn over 2 ms (test_table_drop_off_loop).
         sql = f"DELETE FROM {quote_identifier(table)}"  # noqa: S608 -- a registered table's quoted name
         deleted: list[int] = []
-        self._in_write_transaction(lambda conn: deleted.append(conn.execute(sql).rowcount))
+        self._in_write_transaction(
+            lambda conn: deleted.append(
+                whole_read(
+                    conn.execute(sql),
+                    kind="l1_table_drop",
+                    reason="a table drop empties this process's own L1 copy of the table whole, on the drop's thread",
+                    ruling="Pace 2026-11-15: L1 table emptying is a new whole_read kind, l1_table_drop (option A)",
+                    proof="packages/core/tests/unit/collections/test_table_drop_off_loop.py"
+                    "::test_delete_all_is_reached_only_from_a_table_drop",
+                    speed="packages/core/tests/unit/collections/test_table_drop_off_loop.py"
+                    "::test_delete_all_of_100k_rows_is_the_bare_delete",
+                ).rowcount
+            )
+        )
         if table in self._evictable:
             self.budget.emptied(self, table)
         return deleted[0]

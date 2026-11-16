@@ -968,3 +968,87 @@ def test_a_cold_start_admits_the_analyze_after_a_reload(tmp_path: Path, kind: st
     declared = [finding for finding in findings if "analyze_bare" not in finding]
     assert (declared == []) is passes, findings
     assert any("analyze_bare" in finding and "whole-maintenance" in finding for finding in findings), findings
+
+
+_L1_DROP = """
+    from threetears.core.collections.schema_backed import TableSchema
+    from threetears.core.declared import whole_read
+
+    ITEMS = TableSchema(name="items", primary_key="id", columns=[])
+
+    def quote_identifier(name):
+        return '"' + name + '"'
+
+    class Backend:
+        def delete_all(self, conn, table):
+            return whole_read(
+                conn.execute(f"DELETE FROM {quote_identifier(table)}"),
+                kind="L1_KIND",
+                reason="a process's own L1 copy of a table is emptied whole when the table is dropped",
+                ruling="RULING",
+                proof="tests/test_backup.py::test_delete_all_entry",
+                speed="tests/test_backup.py::test_delete_all_speed",
+            )
+
+        def delete_items(self, conn):
+            return whole_read(
+                conn.execute("DELETE FROM items"),
+                kind="L1_KIND",
+                reason="a process's own L1 copy of a table is emptied whole when the table is dropped",
+                ruling="RULING",
+                proof="tests/test_backup.py::test_delete_items_entry",
+                speed="tests/test_backup.py::test_delete_items_speed",
+            )
+
+        def read_all(self, conn, table):
+            return whole_read(
+                conn.execute(f"SELECT * FROM {quote_identifier(table)}"),
+                kind="L1_KIND",
+                reason="a process's own L1 copy of a table is emptied whole when the table is dropped",
+                ruling="RULING",
+                proof="tests/test_backup.py::test_read_all_entry",
+                speed="tests/test_backup.py::test_read_all_speed",
+            )
+
+        def delete_bare(self, conn, table):
+            return conn.execute(f"DELETE FROM {quote_identifier(table)}")
+"""
+
+
+@pytest.mark.parametrize(
+    ("kind", "passes"),
+    [("l1_table_drop", True), ("ring_empty", False), ("restore", False), ("every_state_answer", False)],
+)
+def test_an_l1_table_drop_admits_the_whole_delete_of_an_l1_table_alone(tmp_path: Path, kind: str, passes: bool) -> None:
+    """Flips if emptying a process's own L1 copy of a table whole (one DELETE with no WHERE, on its thread, when the
+    table is dropped: Pace 2026-11-15) is still reported once declared l1_table_drop, if another kind lets it through,
+    if l1_table_drop lets through a delete of a declared L3 table or a whole select, or if an undeclared DELETE FROM
+    passes."""
+    proofs = _PROOFS + textwrap.indent(
+        "".join(
+            f"\ndef test_{name}_entry():\n    assert {name}\n\ndef test_{name}_speed():\n    budget_problem({name})\n"
+            for name in ("delete_all", "delete_items", "read_all")
+        ),
+        "    ",
+    )
+    findings = _findings(tmp_path, {"l1.py": _L1_DROP.replace("L1_KIND", kind)}, proofs)
+    dropped = [finding for finding in findings if "Backend.delete_all" in finding]
+    assert (dropped == []) is passes, findings
+    assert any("in Backend.delete_items: whole-delete items" in finding for finding in findings), findings
+    if kind == "l1_table_drop":
+        assert any("in Backend.read_all: whole-select" in finding for finding in findings), findings
+    assert any("in Backend.delete_bare: whole-delete" in finding for finding in findings), findings
+
+
+def test_the_l1_table_drop_kind_is_declared_at_run_time() -> None:
+    """Flips if the run-time check refuses the l1_table_drop kind the gate admits (Pace 2026-11-15)."""
+    assert (
+        whole_read(
+            1,
+            kind="l1_table_drop",
+            reason="a process's own L1 copy of a table is emptied whole when the table is dropped",
+            ruling="Pace 2026-11-15: L1 table emptying, a new kind",
+            proof="tests/x.py::test_y",
+        )
+        == 1
+    )
