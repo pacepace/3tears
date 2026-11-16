@@ -270,10 +270,12 @@ async def test_close_returns_before_the_worker_exits_and_the_exit_still_ends() -
 
 #: one restore worker's start, spawn to its first answer, at most (R4 option 1, Pace 2026-11-15: a restore's speed is
 #: budgeted as twice its bare reads plus one worker start, and the start budgeted here on its own). Measured spawn to
-#: ready 196-211 ms (R4 2026-11-15, macOS arm64, Python 3.14, quiet machine; the job's module imports only Arrow,
-#: NumPy and the shared-Arrow job types: threetears.core.change_note_fold_job); the budget is twice the slowest. A
-#: start past it is the worker importing more, or the spawn path growing: see change_note_fold_job's why first.
-_WORKER_START_BUDGET = 0.42
+#: ready 196-211 ms (R4 2026-11-15, macOS arm64, Python 3.14, quiet machine) and 308-313 ms (LAND1 2026-11-15, the
+#: same laptop under measure-lock at load 2.8, five starts: scratchpad/land1/start_probe.log); the job's module
+#: imports only Arrow, NumPy and the shared-Arrow job types (threetears.core.change_note_fold_job). The budget is
+#: twice the slowest. A start past it is the worker importing more, or the spawn path growing: see
+#: change_note_fold_job's why first. The same probe: close() returns in 0.02 ms, its shutdown ends 63-77 ms later.
+_WORKER_START_BUDGET = 0.63
 
 
 async def test_a_restore_worker_starts_within_its_budget() -> None:
