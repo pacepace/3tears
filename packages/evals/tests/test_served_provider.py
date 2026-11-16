@@ -196,7 +196,23 @@ def test_a_row_holding_only_unanswered_calls_leaves_the_providers_unread(upstrea
     lost = RoleUsage(role="candidate", model=FAST, unanswered_lost=1)
     trials = _trials([[_candidate(upstream=upstream), lost] for _ in range(CASES)])
     _, bundle, _ = aspect_bundle(trials)
-    # The lost row counts no answered call, so the candidate's arm is the one whose calls read uncounted.
-    (board,) = [row for row in bundle.scoreboard if row.pricing is not None and row.pricing.calls is None]
+    # The candidate's arm is the one whose rows counted unanswered calls. The lost row adds no answered call, so the
+    # arm's calls stay counted (RoleUsage.answers_nothing; #1238), and it names no provider.
+    (board,) = [row for row in bundle.scoreboard if row.unanswered]
     assert board.pricing is not None
+    assert (board.pricing.calls, board.pricing.priced_calls) == (2 * CASES, 2 * CASES)
     assert (board.pricing.providers, board.pricing.providers_in_part) == ([upstream] if upstream else [], False)
+
+
+def test_a_row_that_counted_nothing_is_read_as_a_row_whose_provider_went_unrecorded() -> None:
+    """A model row reporting no call, token or dollar and counting no unanswered call did not answer nothing
+    (``RoleUsage.answers_nothing`` is the one rule, and it holds only beside a counted unanswered call): it is read as
+    any answered row is, so beside rows that named an upstream it makes the rest unrecorded, and leaves the calls
+    uncounted."""
+    silent = RoleUsage(role="candidate", model=FAST)
+    trials = _trials([[_candidate(upstream=UPSTREAM), silent] for _ in range(CASES)])
+    _, bundle, _ = aspect_bundle(trials)
+    (board,) = [row for row in bundle.scoreboard if row.pricing is not None and row.pricing.providers]
+    assert board.pricing is not None
+    assert (board.pricing.providers, board.pricing.providers_in_part) == ([UPSTREAM], True)
+    assert (board.pricing.calls, board.pricing.priced_calls) == (None, None)

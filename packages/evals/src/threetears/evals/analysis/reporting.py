@@ -243,11 +243,16 @@ def served_reading(result: ResultView) -> ResultServedReading | None:
 
     :param result: The result.
     :ptype result: ResultView
-    :return: The reading, or ``None`` when the candidate left no usage row: nothing was called, so nothing
-        answered, and no claim is made about it.
+    A row holding only unanswered calls (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) is
+    read as no answer: no model served it, so it names none and is never a call whose served model went unrecorded.
+
+    :param result: The result.
+    :ptype result: ResultView
+    :return: The reading, or ``None`` when the candidate left no usage row of an answered call: nothing answered, and
+        no claim is made about it.
     :rtype: ResultServedReading | None
     """
-    rows = [row for row in result.usage if row.role == "candidate"]
+    rows = [row for row in result.usage if row.role == "candidate" and (row.served_model or not row.answers_nothing)]
     if not rows:
         return None
     return ResultServedReading(
@@ -939,7 +944,12 @@ class RequestSettingsTally:
                 continue
             sent = score.judge_sent_settings
             self._judge.unit(None if run is None else run.judge_asked_settings, None if sent is None else [sent])
-        reported = [row.sent_settings for row in result.usage if row.role == "simulator"]
+        # A row holding only unanswered calls sent no request a reply came back under: no settings to verify.
+        reported = [
+            row.sent_settings
+            for row in result.usage
+            if row.role == "simulator" and (row.sent_settings is not None or not row.answers_nothing)
+        ]
         if reported:
             # One unit per result: unverified when any of its rows is, else every distinct value its rows hold.
             distinct = {
@@ -2068,14 +2078,20 @@ class SelfJudgingTally:
         self._candidates = {run.candidate_model}
 
     def add(self, result: ResultView) -> None:
-        """Read the models one result's scores name as judging it and its candidate rows name as answering.
+        """Read the models one result's scores name as judging it and its candidate rows name as answering; a row
+        holding only unanswered calls (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) names
+        a model that answered nothing.
 
         :param result: The result.
         :ptype result: ResultView
         """
         self._judges |= {score.served_model for score in result.rubric_scores if score.served_model}
         self._candidates |= {
-            model for row in result.usage if row.role == "candidate" for model in (row.model, row.served_model) if model
+            model
+            for row in result.usage
+            if row.role == "candidate" and not row.answers_nothing
+            for model in (row.model, row.served_model)
+            if model
         }
 
     def models(self) -> list[str]:

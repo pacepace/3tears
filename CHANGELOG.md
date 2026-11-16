@@ -6,6 +6,39 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a scoreboard block and a run's summary read an arm's or a role's unanswered calls without raising
+
+**Fixed:** the scoreboard block (`block_render`, a written page's evidence) summed each figure's values, and an arm
+whose calls went unanswered holds them by role (`ScoreboardRow.unanswered`), so the block raised
+`TypeError: int + Unanswered` and ended a production report (#1250). Its cell now states the calls answered and
+unanswered in the options table's words (`18 calls answered; 8 calls unanswered`; `2 calls lost unanswered` where a
+role counted one kind), each count its `calls.unanswered.<arm>` key's, a zero included, and never a sum. Where some
+trials counted none (`calls.unanswered.<arm>.uncounted`), every count in the cell and in the options table's cost
+flag is a lower bound and reads `at least` (`at least 3 calls answered; at least 2 calls lost unanswered`), as the
+keys' rule says. A bars block over that figure is refused, so a page draws its table.
+
+`run_get` raised `KeyError` on a run where a result's rows for a role held only unanswered calls and no earlier result
+had answered for it (#1238). A role whose every row held only unanswered calls now has a spend line stating
+`no spend, over no answered call`, never unpriced; whether it answered nothing is read off its rows
+(`RoleSpend.answers_nothing`, a new field, default false), so an external row metering units over no counted call
+still reads as unpriced spend. A run none of whose calls were answered prints two lines as a run with no usage row
+does: no `total spend` line, and the same `spend cap` line (none for a run with no cap and no judge; `; it counts
+only spend a result reports, and no result reported any` after a cap).
+
+A usage row holding only unanswered calls is no longer read as an answer anywhere a reader reads one
+(`RoleUsage.answers_nothing`, the one statement of the rule, which a reading of the row now carries:
+`UsageReading.answers_nothing` and `UsageView.answers_nothing`, new): it is no call whose served model went unrecorded (a contestant's served-model reading, and a
+`runs_attest` statement, which it no longer admits), no candidate model a judge shares, no simulator call whose
+request settings went unverified (the disclosure and the rig's `simulator_sent_settings`), no token count left
+unreported (the bundle's token rollup), no model a role ran on (a lever read off what ran), and no production row
+that left its calls uncounted: an arm's priced share (`ArmScoreboard.pricing`) and its unanswered census's answered
+calls and share (`RoleUnanswered.calls`, `.share`) stay counted, the row adding no answered call. The census's
+providers read the same rule: a model row that reported no call, token or dollar and counted no unanswered call (a
+row that counted nothing) is read as a row whose provider was or was not recorded, as any answered row is, where it
+was skipped before; an arm with such a row beside rows that named a provider reads `providers_in_part`.
+
+**For hosts:** nothing to do.
+
 ### evals: rung 2's judges checked against an adjudicated reference, and the console states a judge's agreement as counts
 
 **Changed:** `examples/2-replies/` checks its judge against a reference (owner rulings, 2026-11-16): `labels.csv`
