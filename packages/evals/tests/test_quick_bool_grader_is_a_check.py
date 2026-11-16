@@ -105,6 +105,80 @@ async def test_beside_a_numeric_grader_the_bool_grader_alone_decides_the_count()
     assert "  Closeness score: mean 0.3333 (3 trials, min 0.25, max 0.5)" in lines
 
 
+def fails_on(*wants: str) -> Callable[[Mapping[str, Any]], Any]:
+    """A runner that raises on the cases wanting one of ``wants``, as an app's function does on a key it lacks, and
+    answers the rest right."""
+
+    async def runner(case: Mapping[str, Any]) -> str:
+        if case["want"] in wants:
+            raise LookupError(f"no entry for\n{case['text']}")
+        return str(case["want"])
+
+    runner.__name__ = "gloss"
+    return runner
+
+
+async def test_a_bool_grader_over_a_runner_that_raised_on_every_case_says_the_runner_failed_never_the_graders() -> None:
+    lines, _ = await _lines(fails_on("p", "q", "r"), [right_annotated])
+
+    # Re-pinned from the on-ramp run (W4): it read "gloss ran 3 of 3 cases; no grader here says pass or fail." over a
+    # grader declared -> bool, since the catalog of measures that scored was empty. What failed is the runner, and its
+    # error is said once, on the line, though it runs over two.
+    assert lines[0] == (
+        "gloss: gloss failed on all 3 cases, so no answer was graded: the runner raised LookupError: no entry for x."
+    )
+
+
+async def test_the_page_leads_on_the_runner_failing_every_case_as_the_console_does() -> None:
+    result = await Eval(CASES, fails_on("p", "q", "r"), [right_annotated], k=2).run(store=":memory:")
+
+    clause = "gloss failed on all 6 trials on 3 cases, so no answer was graded"
+    assert result.render().splitlines()[0].startswith(f"gloss: {clause}: ")
+    lead = next(line for line in campaign_report_markdown(result.page).splitlines() if "no answer was graded" in line)
+    assert clause in lead
+    assert "says pass or fail" not in campaign_report_markdown(result.page)
+
+
+async def test_a_numeric_grader_over_a_runner_that_raised_on_every_case_says_the_runner_failed() -> None:
+    lines, _ = await _lines(fails_on("p", "q", "r"), [closeness])
+
+    assert lines[0].startswith("gloss: gloss failed on all 3 cases, so no answer was graded: ")
+
+
+async def test_a_runner_that_raised_on_some_cases_is_counted_against_the_bool_grader_s_count() -> None:
+    lines, _ = await _lines(fails_on("q"), [right_annotated])
+
+    assert lines[0] == "gloss: gloss passed 2 of 3 cases. Cases that failed a trial: b."
+
+
+@pytest.mark.parametrize("silent", ["a", "b"], ids=["the control", "the candidate"])
+@pytest.mark.parametrize("cases", [3, 12], ids=["under the case floor", "over it"])
+async def test_one_arm_of_two_that_raised_on_every_case_is_named_and_compared_with_nothing(
+    silent: str, cases: int
+) -> None:
+    many = [{"id": f"c{index}", "text": f"t{index}", "want": "p"} for index in range(cases)]
+    raising, answering = fails_on("p"), fails_on()
+    runners = {"a": raising, "b": answering} if silent == "a" else {"a": answering, "b": raising}
+    result = await Eval(many, runners, [right_annotated], k=1, name="one").run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert first.startswith(f"one: Exploratory: {silent} failed on all {cases} cases, so no answer was graded: ")
+    assert first.endswith(f". Nothing is compared with {silent}.")
+    # Never a pass share compared with an arm that answered nothing, nor a count of cases "ran" beside it.
+    assert "often" not in first and "ran " not in first and "cannot tell" not in first
+
+
+async def test_two_arms_whose_runners_raised_on_every_case_each_say_so_and_compare_nothing() -> None:
+    result = await Eval(
+        CASES, {"a": fails_on("p", "q", "r"), "b": fails_on("p", "q", "r")}, [right_annotated], k=1, name="both"
+    ).run(store=":memory:")
+
+    first = result.render().splitlines()[0]
+    assert first.startswith("both: Exploratory: a failed on all 3 cases, so no answer was graded: ")
+    assert " b failed on all 3 cases, so no answer was graded: " in first
+    assert "says pass or fail" not in first and "passed" not in first
+
+
 def test_an_eval_with_no_grader_is_refused_before_anything_runs() -> None:
     with pytest.raises(ValueError, match="an eval needs at least one grader"):
         Eval(CASES, classify, [])

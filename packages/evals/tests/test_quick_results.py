@@ -115,6 +115,40 @@ async def test_a_failed_runner_is_a_miss_and_its_error_line_names_the_case_by_it
     assert UNUSABLE_ANSWER in str(failed.scores["confusion_cell"])
 
 
+async def test_a_runner_reading_a_withheld_id_is_told_the_key_is_withheld_and_what_to_do() -> None:
+    seen: list[dict[str, Any]] = []
+
+    async def by_id(case: Mapping[str, Any]) -> str:
+        seen.append(dict(case))
+        return str(case["id"])
+
+    summary = await _summary(CASES, by_id, [QUEUE])
+    # The case is handed over less the keys the package keeps: an author's id names the case and is never stimulus.
+    assert all("id" not in case for case in seen)
+    assert summary.errors[0] == (
+        "case refund: the candidate raised KeyError: 'id'; the case's 'id' names the case: the package reads it and "
+        "withholds it from the runner and every grader; if your function needs the value, copy it into the case under "
+        "another key as well"
+    )
+    # A case the author gave no id lacks one as written: its KeyError is the function's own, said as it was raised.
+    assert summary.errors[1] == "case 1: the candidate raised KeyError: 'id'"
+
+
+async def test_a_grader_reading_a_withheld_stratum_is_told_the_key_is_withheld() -> None:
+    def by_kind(case: Mapping[str, Any], out: Any) -> bool:
+        return bool(case["stratum"] == "plain")
+
+    async def bug(case: Mapping[str, Any]) -> str:
+        return "bug"
+
+    stratified = [{**case, "stratum": "plain"} for case in CASES]
+    summary = await _summary(stratified, bug, [by_kind])
+    assert summary.errors[0].startswith(
+        "case refund: the grader by_kind raised KeyError: 'stratum'; the case's 'stratum' is the kind of case, which "
+        "the runner must not be told, so it is withheld from the runner and every grader"
+    )
+
+
 async def test_a_grader_that_gives_zero_marks_a_miss_and_an_excluded_result_is_never_one() -> None:
     def short(case: Mapping[str, Any], answer: Any) -> bool:
         return len(str(answer)) <= 3
@@ -334,9 +368,13 @@ async def test_an_answer_without_the_graded_field_prints_a_short_compact_answer_
 
 async def test_a_miss_s_reasons_print_on_one_line_and_the_first_line_keeps_and_n_more() -> None:
     async def raises_over_lines(case: Mapping[str, Any]) -> str:
+        if case["text"] == "ticket 7":
+            return "billing"
         raise ValueError("first line\nsecond line")
 
-    cases = [{"text": f"ticket {n}", "queue": "billing"} for n in range(7)]
+    # One case answered, so the first line counts passes and names the misses: a runner that raised on every case says
+    # that instead (test_quick_bool_grader_is_a_check), with its error on the same line.
+    cases = [{"text": f"ticket {n}", "queue": "billing"} for n in range(8)]
     result = await Eval(cases, raises_over_lines, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     printed = result.render().splitlines()
     # The first line names the first five cases missed, as the cases table names them, and counts the rest.
