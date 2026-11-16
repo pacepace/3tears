@@ -14,6 +14,7 @@ start that may run without pyarrow, which logs and returns None there). Every to
 (3tears' own server, pentest, the SDK's hub and provider tool pods, datasource_probe), so none needs its own call.
 mimalloc stalled the serving thread 5-15 ms in about a quarter of Arrow builds and kept freed pages in per-thread
 heaps; spawned workers keep mimalloc as before.
+The registry (`python -m threetears.registry`) makes the same switch at its start, after logging.
 
 ### core: pyarrow stays optional -- the change-note keeper moves to its own module, behind the new `arrow` extra
 
