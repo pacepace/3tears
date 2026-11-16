@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a follower on a direct L3 pool reads a keys-unknown epoch's keys from the change notes
+
+`PoolNotedKeysReader` (`threetears.core.collections.change_notes`) is a noted-keys reader over a direct L3 pool: it
+pages a keys-unknown record's bracket from the ring (`noted_keys_page`), of one tenant or of every tenant. A platform
+process wires it on each registry that follows generations on its own pool
+(`registry.set_noted_keys_reader(PoolNotedKeysReader(pool, notes_schema=..., every_tenant=True))`); before, such a
+registry stayed behind on a table at any bracketed keys-unknown record until it restarted. A role that may not read the
+ring is answered `notes_unavailable` (behind, said at WARNING), never a failed catch-up pass.
+
+### core: a truncate or load among more rows than one record names is still recorded whole
+
+`noted_rows_since` answered `"too_many_rows"` past its cap and named none of the whole-table notes in the window, so a
+truncate or load whose own advance was lost too was recorded only as the bracket's keys, and a follower applying them
+kept every row the truncate removed. Past the cap it now answers `NotedRows(too_many_rows=True)`, naming no row and
+every whole-table change (read alone, through the whole-table notes' partial index), and the write-mark reconciler
+records each whole change beside the bracket. **Contract change:** `noted_rows_since` no longer answers the string
+`"too_many_rows"`; check `NotedRows.too_many_rows`.
+
+### enforcement: every switched-on table is noted
+
+The collection census reports `unnoted_switched_tables` (`switched_tables_not_noted()` in
+`threetears.core.collections.generation`): every table with a write generation that no change-note trigger notes (two
+classes naming it with different keys, or no readable key), whose lost writes the reconciler could only answer
+`no_notes`. `find_unnoted_switched_tables(census)` turns it into findings; 3tears' own census runs it.
+
 ### core: a reconciled write of more rows than one record names reaches every follower from its notes
 
 When the write-mark reconciler applied a lost advance whose change notes named more rows than one epoch record holds

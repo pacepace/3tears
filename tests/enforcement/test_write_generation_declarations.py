@@ -30,13 +30,19 @@ while three things stay true across the family, and each is a rule here:
    in :data:`_TABLES_NAMED_PER_INSTANCE` with why; the registry's own refusal
    (``CollectionRegistry.register``) covers those at run time.
 
-**What rule 4 cannot reach from here, stated rather than implied.** Classes in other repositories.
+5. **Every switched-on table is noted.** ``tables_with_write_generation`` is a subset of ``noted_tables``: a
+   switched-on table no change-note trigger notes (two classes naming it with different keys, or no key readable off
+   the class) has its lost advances reconciled as ``no_notes``, keys unknown with no notes bracket, and every follower
+   stays behind on it until it restarts (RC1/RC2, 2026-11-16). Read off the same census as rule 4
+   (:func:`~threetears.enforcement.collection_census.find_unnoted_switched_tables`).
+
+**What rules 4 and 5 cannot reach from here, stated rather than implied.** Classes in other repositories.
 No check in this repository sees them. The census ships in ``threetears.enforcement`` so each
 product repository runs it over its own trees with the framework's classes joined
 (``run_census(roots, framework=True)``), which is where a product's second class for a framework
 table is caught.
 
-Rules 1 to 3 are AST-only; rule 4 imports, in a subprocess.
+Rules 1 to 3 are AST-only; rules 4 and 5 import, in a subprocess.
 """
 
 from __future__ import annotations
@@ -46,7 +52,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from threetears.enforcement.common import parse_python_path
-from threetears.enforcement.collection_census import find_census_problems, run_census
+from threetears.enforcement.collection_census import find_census_problems, find_unnoted_switched_tables, run_census
 
 __all__: list[str] = []
 
@@ -323,6 +329,9 @@ class TestTheFamily:
         assert found["threetears.agent.acl.collections.GroupMemberCollection"] == "group_members"
         problems = find_census_problems(census, _TABLES_NAMED_PER_INSTANCE)
         assert not problems, "\n".join(problems)
+        # rule 5: every switched-on table is noted, so the reconciler can name its missed writes (never no_notes)
+        unnoted = find_unnoted_switched_tables(census)
+        assert not unnoted, "\n".join(unnoted)
 
 
 def _plant(tmp_path: Path, name: str, source: str) -> Path:
@@ -428,6 +437,32 @@ class TestTheWalkersBite:
         assert problems == [
             "table 'group_members' has classes declaring different write generations (on, undeclared): "
             "threetears.planted.split.HubMembers, threetears.planted.split.Members"
+        ]
+
+    def test_a_switched_table_two_keys_name_is_flagged_unnoted(self, tmp_path: Path) -> None:
+        source = (
+            _PLANTED_HEAD
+            + _planted("Members", "group_members").replace(
+                "BaseCollection[Any]):\n", "BaseCollection[Any]):\n    write_generation = WRITE_GENERATION\n", 1
+            )
+            + "\n\nclass PairMembers(Members):\n    primary_key_column = ('group_id', 'member_id')\n"
+        )
+        census = run_census(_source_roots(_plant(tmp_path, "keys.py", source)))
+        assert find_unnoted_switched_tables(census) == [
+            "table 'group_members' has a write generation and no change note: its classes declare different keys: "
+            "threetears.planted.keys.Members ['id'], threetears.planted.keys.PairMembers ['group_id', 'member_id']"
+        ]
+        listed = {"group_members": "two keys, fixed in the next release"}
+        assert find_unnoted_switched_tables(census, listed) == []
+
+    def test_a_switched_table_one_key_names_is_noted(self, tmp_path: Path) -> None:
+        source = _PLANTED_HEAD + _planted("Members", "group_members").replace(
+            "BaseCollection[Any]):\n", "BaseCollection[Any]):\n    write_generation = WRITE_GENERATION\n", 1
+        )
+        census = run_census(_source_roots(_plant(tmp_path, "one.py", source)))
+        assert find_unnoted_switched_tables(census) == []
+        assert find_unnoted_switched_tables(census, {"group_members": "stale"}) == [
+            "listed as unnoted, but 'group_members' is noted now (or no longer switched on): drop it from the list"
         ]
 
     def test_a_concrete_class_whose_table_cannot_be_read_is_flagged_unless_listed(self, tmp_path: Path) -> None:

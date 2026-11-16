@@ -396,10 +396,11 @@ def change_notes_ddl(schema: str, *, fence: timedelta = DEFAULT_NOTE_FENCE) -> t
         statement
         for index in range(NOTE_RING_SIZE)
         for statement in (
-            "-- purpose: packages/core/src/threetears/core/collections/change_note_keeper.py::ChangeNoteKeeper.notes_found\n"
+            "-- purpose: packages/core/src/threetears/core/collections/change_note_keeper.py::ChangeNoteKeeper.notes_found; "
+            "packages/core/src/threetears/core/collections/change_notes.py::_noted_whole_since\n"
             "-- plan_test: packages/core/tests/integration/test_change_note_ring_plans.py::test_threetears_change_notes_0_whole_reads_the_scrubs_whole_table_look\n"
-            "-- reason: partial over the whole-table notes alone, so the scrub's and the restore's look reads those "
-            "and none of the many keyed notes\n"
+            "-- reason: partial over the whole-table notes alone, so the scrub's and the restore's look, and the "
+            "reconciler's past its cap, read those and none of the many keyed notes\n"
             f"CREATE INDEX IF NOT EXISTS {quote_identifier(note_table(index) + '_whole')} "
             f"ON {owner}.{quote_identifier(note_table(index))} (table_name, noted_at) INCLUDE (tenant) "
             "WHERE key_text IS NULL",

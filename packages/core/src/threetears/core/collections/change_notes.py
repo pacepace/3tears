@@ -54,6 +54,7 @@ from threetears.core.keyed import (
     distinct,
     read_row,
     read_row_beside,
+    read_step,
     scan,
     union,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "NotedKeysPage",
     "NotedKeysReader",
     "NotedRows",
+    "PoolNotedKeysReader",
     "noted_keys_page",
     "noted_rows_since",
     "whole_noted_change",
@@ -184,12 +186,16 @@ class NotedRows:
         prefixes, an operator's reset), as a restore folds them (:func:`_whole_change`). A plain or reset change covers
         its tenant's rows (``_all``'s, every tenant's), never another schema's; a load's names only its prefixes, so
         a row beside them is still named
+    :ivar too_many_rows: the notes name more distinct rows than the read's cap: ``rows`` is empty and names none of
+        them (a caller names them by the notes' bracket, a page at a time), while ``whole`` still holds every
+        whole-table note's change, each a write of its own whose advance may have been lost too
     """
 
     rows: tuple[ChangedRow, ...] = ()
     whole_table: bool = False
     whole_tenants: tuple[str | None, ...] = ()
     whole: tuple[NotedChange, ...] = ()
+    too_many_rows: bool = False
 
 
 #: a note's columns :func:`noted_rows_since` reads, each slot's alike
@@ -280,10 +286,11 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     :ptype table: str
     :param since: the oldest write's time, by the database's clock
     :ptype since: datetime
-    :param cap: the most distinct rows to name; more is answered ``"too_many_rows"``
+    :param cap: the most distinct rows to name; more is answered :attr:`NotedRows.too_many_rows`, naming no row
+        and every whole-table change
     :ptype cap: int
     :return: the rows; or ``"notes_unavailable"`` (no ring), ``"not_covered"`` (the coverage starts after
-        ``since``), ``"no_notes"`` (no note of the table since), ``"too_many_rows"``
+        ``since``), ``"no_notes"`` (no note of the table since)
     :rtype: NotedRows | str
     :raises GenerationUnavailableError: when a whole-table note names a reach this module never writes
     """
@@ -321,7 +328,18 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     if not notes:
         return "no_notes"
     if len(notes) > cap:
-        return "too_many_rows"
+        # past the cap the statement stopped at an arbitrary cap + 1 notes, so the whole-table notes among the rest
+        # were never read. Each is a write of its own (a truncate, a load) whose advance may have been lost with the
+        # rest, and the caller's bracket of keys does not carry one: read them alone, from the whole-table notes'
+        # own partial index, so a truncate in the window still reaches every follower whole (RC2, 2026-11-16: before,
+        # this answered "too_many_rows" and the truncate's removed rows stayed in followers).
+        whole = await _noted_whole_since(pool, notes_schema, table, reach, ring)
+        return NotedRows(
+            whole_table=bool(whole),
+            whole_tenants=tuple(change.tenant for change in whole),
+            whole=whole,
+            too_many_rows=True,
+        )
     # the ring holds every schema's notes of the table: each tenant's whole-table notes fold into one change with the
     # reach they name (a whole-table note keeps it as its columns), as a restore folds them
     reaches: dict[str | None, list[Any]] = {}
@@ -350,6 +368,49 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
                 )
             )
     return NotedRows(rows=tuple(rows), whole_table=bool(whole), whole_tenants=tuple(reaches), whole=whole)
+
+
+async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime, ring: Any) -> tuple[NotedChange, ...]:
+    """``table``'s whole-table notes from ``reach`` on, each tenant's folded into one change: :func:`noted_rows_since`'s
+    answer past its cap.
+
+    The slots are the ones its statement read (:data:`_SLOT_READ`, decided here from the ring row it read): the current
+    table, and the previous one while the reach is before the last switch's writes there could end. Each is read
+    through the whole-table notes' partial index (``(table_name, noted_at) WHERE key_text IS NULL``,
+    :func:`~threetears.core.ddl.change_notes.change_notes_ddl`), which holds those notes alone, so the many keyed notes
+    that took the read past its cap are never visited.
+
+    :param pool: the L3 pool
+    :ptype pool: Any
+    :param schema: the schema holding the ring
+    :ptype schema: str
+    :param table: the table
+    :ptype table: str
+    :param reach: the earliest note time read (``since`` less half the ring's wait)
+    :ptype reach: datetime
+    :param ring: the ring row :func:`noted_rows_since` read (its ``_ROWS_RING_COLUMNS``)
+    :ptype ring: Any
+    :return: each tenant's change
+    :rtype: tuple[NotedChange, ...]
+    :raises GenerationUnavailableError: when a whole-table note names a reach this module never writes
+    """
+    current = int(ring["current_ring"])
+    slots = [current]
+    if reach < ring["writes_previous_until"]:
+        slots.append((current - 1 + NOTE_RING_SIZE) % NOTE_RING_SIZE)
+    legs = [
+        scan(
+            f"{schema}.{note_table(slot)}",
+            ("tenant", Selected("t.columns::text", "reach")),
+            where=[Fragment("t.key_text IS NULL AND t.table_name = $1 AND t.noted_at >= $2", (table, reach))],
+        )
+        for slot in slots
+    ]
+    found = await read_step(pool, distinct(union(*legs, keep_all=True), ("tenant", "reach")))
+    reaches: dict[str | None, list[Any]] = {}
+    for note in found:
+        reaches.setdefault(None if note["tenant"] is None else str(note["tenant"]), []).append(note["reach"])
+    return tuple(whole_noted_change(table, tenant, reached) for tenant, reached in reaches.items())
 
 
 #: a note's ``noted_at`` as whole microseconds since the epoch: a page compares its notes' times (where an instant
@@ -599,6 +660,83 @@ async def noted_keys_page(
         return await _noted_keys_page(
             one, notes_schema, owner, table, tenant_token, since, until, cursor, limit, max_bytes, every_tenant
         )
+
+
+class PoolNotedKeysReader:
+    """a :class:`NotedKeysReader` over a direct L3 pool: the notes read in this process, as the broker reads them.
+
+    For a registry on a direct pool (a platform process: the hub's own registries, the gateway's), whose transport is
+    no broker to ask (:meth:`~threetears.core.backends.nats_proxy.NatsProxyL3Backend.noted_keys`). Without one, such a
+    registry stays behind on a table at any keys-unknown record carrying a notes bracket (a writer's commit too large
+    to record, a reconciled lost write of more rows than one record names) until it restarts, the write's rows stale
+    in it (RC1, 2026-11-16). With one it pages the bracket's keys from the ring (:func:`noted_keys_page`, an index range
+    read a page at a time) and evicts exactly them: nothing dropped, nothing read whole.
+
+    Whose notes: a tenant's (``tenant_token``, ``None`` for ``_all``), or every tenant's (``every_tenant``). A platform
+    process caches every tenant's rows of the tables it follows, so it reads every tenant's notes: a key of another
+    tenant the bracket names is evicted too and read again on demand, which is never wrong.
+
+    A database role that may not read the ring is answered ``"notes_unavailable"``, said at WARNING: the registry is
+    then behind on the table, as it was with no reader, and its catch-up pass never fails on it.
+
+    :param pool: the L3 pool (anything :func:`noted_keys_page` takes: a pool, or one connection)
+    :ptype pool: Any
+    :param notes_schema: the schema holding the ring (the platform schema)
+    :ptype notes_schema: str
+    :param tenant_token: whose notes are read, ``None`` for ``_all``; unused with ``every_tenant``
+    :ptype tenant_token: str | None
+    :param every_tenant: read every tenant's notes of the table
+    :ptype every_tenant: bool
+    """
+
+    def __init__(
+        self, pool: Any, *, notes_schema: str, tenant_token: str | None = None, every_tenant: bool = False
+    ) -> None:
+        self._pool = pool
+        self._notes_schema = notes_schema
+        self._tenant_token = tenant_token
+        self._every_tenant = every_tenant
+
+    async def noted_keys(
+        self,
+        table: str,
+        *,
+        noted_between: tuple[datetime, datetime],
+        cursor: NotedKeysCursor | None,
+        limit: int,
+        max_bytes: int,
+    ) -> NotedKeysPage | str:
+        """a page of the keys ``table``'s notes name in ``noted_between`` (:meth:`NotedKeysReader.noted_keys`).
+
+        :param table: the table, as its notes name it
+        :ptype table: str
+        :param noted_between: the commit's bracket, on the database's clock
+        :ptype noted_between: tuple[datetime, datetime]
+        :param cursor: where the last page ended; ``None`` for the first
+        :ptype cursor: NotedKeysCursor | None
+        :param limit: the most notes a page reads
+        :ptype limit: int
+        :param max_bytes: the most bytes of keys a page holds
+        :ptype max_bytes: int
+        :return: the page; or ``"notes_unavailable"`` (no ring, or no grant to read it) or ``"not_covered"``
+        :rtype: NotedKeysPage | str
+        """
+        try:
+            return await noted_keys_page(
+                self._pool,
+                notes_schema=self._notes_schema,
+                table=table,
+                tenant_token=self._tenant_token,
+                noted_between=noted_between,
+                cursor=cursor,
+                limit=limit,
+                max_bytes=max_bytes,
+                every_tenant=self._every_tenant,
+            )
+        except asyncpg.InsufficientPrivilegeError as exc:
+            # NOSILENT: this role may not read the ring: the registry is behind on the table, said here and there
+            contain(exc, log=log, what="a direct pool's role may not read the change notes", extra={"table": table})
+            return "notes_unavailable"
 
 
 async def _noted_keys_page(

@@ -65,6 +65,7 @@ __all__ = [
     "noted_tables",
     "source_reads",
     "split_generation_token",
+    "switched_tables_not_noted",
     "table_named_by_class",
     "tables_with_write_generation",
     "tables_written_l2_first",
@@ -1053,3 +1054,35 @@ def noted_tables() -> tuple[NotedTable, ...]:
         for name, keys in sorted(keys_of.items())
         if len(keys) == 1
     )
+
+
+def switched_tables_not_noted() -> dict[str, str]:
+    """every table with a write generation that :func:`noted_tables` leaves out, with why: the tables whose missed
+    writes the change notes can never name.
+
+    Each switched-on table's lost advance is reconciled from its notes (the write-mark reconciler); one with no note
+    trigger is answered ``no_notes``, recorded keys unknown with no bracket, and every follower is behind on it until
+    it restarts (RC1, 2026-11-16). The enforcement census (``threetears.enforcement.collection_census``) lists these
+    so none ships silently.
+
+    :return: ``table -> why``, in table order: classes naming it with different keys, or no class naming a key readable
+        off the class
+    :rtype: dict[str, str]
+    """
+    noted = {entry.table for entry in noted_tables()}
+    keys_of: dict[str, dict[str, tuple[str, ...] | None]] = {}
+    for cls in [*list(_GENERATION_CLASSES), *list(_L2_FIRST_CLASSES)]:
+        name = table_named_by_class(cls)
+        if name is not None:
+            keys_of.setdefault(name, {})[f"{cls.__module__}.{cls.__qualname__}"] = _declared_key(cls)
+    found: dict[str, str] = {}
+    for table in sorted(tables_with_write_generation() - noted):
+        declared = keys_of.get(table, {})
+        keys = {key for key in declared.values() if key is not None}
+        if len(keys) > 1:
+            found[table] = "its classes declare different keys: " + ", ".join(
+                f"{name} {list(key) if key is not None else None}" for name, key in sorted(declared.items())
+            )
+        else:
+            found[table] = "no class declares a primary key readable off the class: " + ", ".join(sorted(declared))
+    return found

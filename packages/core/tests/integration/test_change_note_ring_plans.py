@@ -22,7 +22,7 @@ import asyncpg
 import pytest
 
 from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
-from threetears.core.collections.change_notes import noted_keys_page, noted_rows_since
+from threetears.core.collections.change_notes import NotedRows, noted_keys_page, noted_rows_since
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.ddl.change_notes import note_table
 from threetears.core.testing.plans import PlanRecorder, plan_uses_index
@@ -164,6 +164,22 @@ async def test_threetears_change_notes_0_table_reads_a_tables_notes_since_a_time
     current = [plan for plan in paged.plans if f'"{note_table(0)}"' in plan.sql]
     assert current and all(plan_uses_index(plan, "threetears_change_notes_0_table") for plan in current), [
         p.plan for p in paged.plans
+    ]
+
+
+async def test_threetears_change_notes_0_whole_reads_the_whole_notes_past_the_reconcilers_cap(ring: _Ring) -> None:
+    """Flips if ``noted_rows_since``'s read of a table's whole-table notes, made when the notes name more rows than
+    its cap (``_noted_whole_since``), stops planning through the partial whole-note index: it would then visit every
+    keyed note that took the read past its cap."""
+    now = await ring.conn.fetchval("SELECT now()")
+    recorded = PlanRecorder(ring.conn)
+    found = await noted_rows_since(
+        _Pool(recorded), notes_schema=ring.schema, table="table_0", since=now - timedelta(hours=1), cap=10
+    )
+    assert isinstance(found, NotedRows) and found.too_many_rows and found.whole_table and not found.rows, found
+    whole = [plan for plan in recorded.plans if "key_text IS NULL" in plan.sql]
+    assert whole and all(plan_uses_index(plan, "threetears_change_notes_0_whole", partial=True) for plan in whole), [
+        p.plan for p in recorded.plans
     ]
 
 

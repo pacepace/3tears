@@ -631,7 +631,8 @@ class WriteMarkReconciler:
         .catch_up_generation`), as for a commit too large to record. Without the bracket every follower stayed
         behind on the table until its next start (RC1, 2026-11-16). When the notes cannot say at all (not covered,
         none, no ring) the advance is keys unknown with no bracket: every follower is behind on the table, never
-        told to drop it. Either is said at WARNING and counted on ``collection_write_marks_keys_unknown_total``. An
+        told to drop it. Either is said at WARNING and counted on ``collection_write_marks_keys_unknown_total``. A
+        whole-table note among more rows than one record names is still recorded whole, beside the bracket. An
         agent-schema table's record goes under each schema it may be in (:meth:`_schema_tenants`), never ``_all``.
 
         :param table: the marked table
@@ -644,30 +645,39 @@ class WriteMarkReconciler:
         noted = await noted_rows_since(
             self._pool, notes_schema=self._notes_schema, table=table, since=since, cap=_MAX_NOTED_ROWS
         )
-        if isinstance(noted, NotedRows):
+        if isinstance(noted, NotedRows) and not noted.too_many_rows:
             advances: list[_Advance] = []
             if noted.rows:
                 advances.append(_Advance(rows=list(noted.rows)))
             advances.extend(_Advance(tenant=change.tenant, whole=change) for change in noted.whole)
             return advances
-        _KEYS_UNKNOWN.labels(table=table, reason=noted).inc()
-        bracket = await self._notes_bracket(since) if noted == "too_many_rows" else None
+        reason = "too_many_rows" if isinstance(noted, NotedRows) else noted
+        _KEYS_UNKNOWN.labels(table=table, reason=reason).inc()
+        whole = noted.whole if isinstance(noted, NotedRows) else ()
+        bracket = await self._notes_bracket(since) if isinstance(noted, NotedRows) else None
         if bracket is not None:
             log.warning(
                 "a marked table's missed writes are advanced as keys unknown with their notes' bracket: more rows "
                 "than one record names, so each follower reads their keys from the change notes",
-                extra={"extra_data": {"table": table, "reason": noted}},
+                extra={"extra_data": {"table": table, "reason": reason, "whole_changes": len(whole)}},
             )
         else:
             log.warning(
                 "a marked table's missed writes are advanced as keys unknown: the change notes cannot name their "
                 "rows, so every follower is behind on the table until its next start",
-                extra={"extra_data": {"table": table, "reason": noted}},
+                extra={"extra_data": {"table": table, "reason": reason}},
             )
-        return [
+        # a whole-table note in the window is a write of its own (a truncate, a load) whose advance may have been lost
+        # too: recorded whole beside the bracket, as the named path records it, since a follower applying the
+        # bracket's keys never acts on a whole note in it (RC2, 2026-11-16). A plain or reset change covers its
+        # tenant's rows (every tenant's, for _all), so no bracket is recorded under a tenant it covers
+        covering = {change.tenant for change in whole if not change.prefixes}
+        unnamed = [
             _Advance(tenant=tenant, keys_unknown=True, noted_between=bracket)
             for tenant in await self._schema_tenants(table)
+            if None not in covering and tenant not in covering
         ]
+        return [*unnamed, *(_Advance(tenant=change.tenant, whole=change) for change in whole)]
 
     async def _notes_bracket(self, since: datetime) -> tuple[datetime, datetime]:
         """the database-clock bracket holding every note of the marked writes since ``since``.
