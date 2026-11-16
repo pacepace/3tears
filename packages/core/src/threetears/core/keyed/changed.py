@@ -46,6 +46,7 @@ from threetears.core.keyed._filters import Derived, Fragment, Selected, by_condi
 from threetears.core.keyed.counts import SQL_DIALECT_ATTRIBUTE, Dialect
 from threetears.core.keyed.held import Held, HeldArrow, HeldMapping
 from threetears.core.keyed.held import hash_bytes as _hash_bytes
+from threetears.core.keyed.held import stamped_hashes
 from threetears.core.keyed.inline import InlineDuckDB
 from threetears.core.keyed.page import Sort, keyset_rows
 from threetears.core.keyed.rows import KeyBatch, read_keyed, read_keyed_arrow
@@ -483,10 +484,11 @@ async def read_changed(
     :ptype group_rows_at_most: int | None
     :param types: each column of ``columns`` (by its name) and its Arrow type as ``conn``'s reply carries it; given,
         the full rows are read as one Arrow table (:attr:`ChangedRows.table`) through ``conn``'s ``fetch_arrow``
-        (:func:`~threetears.core.keyed.read_keyed_arrow`), never one Python object a row, each row's hash read beside
-        it by the database (:func:`row_hash_selected`, the expression phase 1 compared) rather than stamped from phase
-        1's answer: the two are the same hash of the same row, and a row written between the phases carries the hash
-        of what was read. None reads dicts (:attr:`ChangedRows.rows`)
+        (:func:`~threetears.core.keyed.read_keyed_arrow`), never one Python object a row, each row's hash stamped
+        from phase 1's answer by its key as the dict read stamps it, never selected again (the md5 cost about 40 reply
+        bytes a row: :func:`~threetears.core.keyed.held.stamped_hashes`). A row written between the phases is held
+        with phase 1's hash, so the next read finds it moved and reads it again, as the dict read always has. None
+        reads dicts (:attr:`ChangedRows.rows`)
     :ptype types: Mapping[str, pyarrow.DataType] | None
     :return: the changed rows (each key as the warehouse answers it) and the gone keys (as ``held`` names them)
     :rtype: ChangedRows
@@ -671,11 +673,15 @@ async def _read_changed(
     for wanted_key in wanted:
         patterns.setdefault(tuple(value is None for value in wanted_key), []).append(wanted_key)
     rows: list[Mapping[str, Any]] = []
-    # of an Arrow read: the columns asked and the row's hash, read beside it, each statement's table
-    arrow_columns = [*columns, hashed]
+    # of an Arrow read: the columns asked and the row's hash, each statement's table
     arrow_types = (
         None if types is None else {**{name: types[name] for name in _names(columns)}, ROW_HASH_COLUMN: _HASH_TYPE}
     )
+    # read as the Python rows are: the columns and the key, the hash stamped from phase 1's answer, never selected
+    # again (stamped_hashes); a key column neither asked nor typed is read with the hash beside it instead
+    stamps = types is not None and all(column in named or column in types for column in key_columns)
+    read_types = None if not stamps or types is None else {name: types[name] for name in _names(read_columns)}
+    arrow_columns = read_columns if stamps else [*columns, hashed]
     tables: list[Any] = []
     for nulls, pattern_keys in patterns.items():
         present = [at for at, null in enumerate(nulls) if not null]
@@ -683,7 +689,7 @@ async def _read_changed(
         if not present and arrow_types is not None:
             # a key with every part NULL (none of a production key's): its few rows made the table on a thread
             nulled = await keyset_rows(conn, relation, columns=arrow_columns, by=pinned, order=order, where=where)
-            tables.append(await asyncio.to_thread(_rail_arrow_table, nulled, arrow_types))
+            tables.append(await asyncio.to_thread(_rail_arrow_table, nulled, read_types or arrow_types))
             continue
         if not present:
             rows.extend(await keyset_rows(conn, relation, columns=read_columns, by=pinned, order=order, where=where))
@@ -712,7 +718,7 @@ async def _read_changed(
                 conn,
                 relation,
                 keys=keys,
-                types=arrow_types,
+                types=read_types or arrow_types,
                 columns=arrow_columns,
                 by=pinned,
                 batch=batch,
@@ -739,7 +745,13 @@ async def _read_changed(
             changed_keys=wanted,
             moved_groups=moved_groups,
             moved_group_rows=moved_group_rows,
-            table=_joined_tables(tables, arrow_types),
+            table=(
+                await asyncio.to_thread(
+                    _stamped_table, tables, read_types, arrow_types, key_columns, kinds, answered_hashes
+                )
+                if read_types is not None
+                else _joined_tables(tables, arrow_types)
+            ),
         )
     stamped = [
         {
@@ -943,6 +955,24 @@ async def _group_hash_rows(
 def _names(columns: Sequence[str | Selected]) -> list[str]:
     """each select-list item's name: a column's own, an expression's alias."""
     return [column.alias if isinstance(column, Selected) else column for column in columns]
+
+
+def _stamped_table(
+    tables: Sequence[Any],
+    read_types: Mapping[str, Any],
+    types: Mapping[str, Any],
+    key_columns: Sequence[str],
+    kinds: Sequence[HashColumn],
+    hashes: Mapping[tuple[str | None, ...], Any],
+) -> Any:
+    """statements' Arrow tables of the columns and key as one, each row's hash stamped from phase 1's answer
+    (:func:`~threetears.core.keyed.held.stamped_hashes`), laid out as ``types``: the columns asked, then the hash.
+    Run on a thread: 4.6 ms for 10,000 rows of a four-column key (2026-11-15, AR2b), the key texts' Arrow kernels and
+    one string a wanted key."""
+    read = _joined_tables(tables, read_types)
+    stamped = stamped_hashes(read, key_columns, kinds, key_text, hashes)
+    asked = [name for name in types if name != ROW_HASH_COLUMN]
+    return read.select(asked).append_column(pa.field(ROW_HASH_COLUMN, _HASH_TYPE), stamped)
 
 
 def _joined_tables(tables: Sequence[Any], types: Mapping[str, Any]) -> Any:

@@ -3,6 +3,7 @@ phase 2 reads by key only the rows whose hash differs from the held one; on an i
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -1170,7 +1171,7 @@ def test_an_arrow_read_answers_the_rows_and_hashes_the_dict_read_does(conn: duck
     conn.execute("INSERT INTO results VALUES ('PA', 900, NULL, NULL, NULL, NULL, NULL, NULL)")
 
     as_dicts = _changed(InlineDuckDB(conn), held)
-    as_arrow = _changed(InlineDuckDB(conn), held, types=_ARROW_TYPES)
+    as_arrow = _changed_on_a_loop(InlineDuckDB(conn), held, types=_ARROW_TYPES)
 
     assert as_arrow.rows == []
     assert as_arrow.table.schema.names == [*_COLUMNS, ROW_HASH_COLUMN]
@@ -1178,6 +1179,51 @@ def test_an_arrow_read_answers_the_rows_and_hashes_the_dict_read_does(conn: duck
         as_dicts.rows, key=lambda row: row["geo"]
     )
     assert (as_arrow.gone_keys, as_arrow.changed_keys) == (as_dicts.gone_keys, as_dicts.changed_keys)
+
+
+class _CountedArrow(_Counted):
+    """:class:`_Counted`, answering Arrow reads too: each statement counted, and its rows' bytes as the JSON reply
+    would carry them."""
+
+    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any] | None, **_: Any) -> Any:
+        self.statements.append(query)
+        table = await self._db.fetch_arrow(query, *params, types=types)
+        self.bytes += len(json.dumps(table.to_pylist(), default=str, separators=(",", ":")))
+        return table
+
+
+def _changed_on_a_loop(db: Any, held: Mapping[tuple[Any, ...], str], **options: Any) -> ChangedRows:
+    """:func:`_changed` on an event loop: an Arrow read stamps its rows' hashes on a thread."""
+    return asyncio.run(
+        read_changed(
+            db,
+            "results",
+            key=["state", Sort("geo", cast="bigint")],
+            columns=list(_COLUMNS),
+            held=held,
+            hash_columns=_HASHED,
+            by={"state": "PA"},
+            **options,
+        )
+    )
+
+
+def test_an_arrow_read_asks_the_statements_and_reply_bytes_of_the_dict_read(conn: duckdb.DuckDBPyConnection) -> None:
+    """Flips if read_changed given types selects each changed row's hash again in its full-row read, where the dict
+    read stamps the hash phase 1 answered: about 40 reply bytes a row more, which put two of the 2026-11-03 night's
+    uploads over the writer before the hash diff (reports tests/pod/test_reply_bytes_night.py)."""
+    held = _held(conn, "PA")
+    conn.execute("UPDATE results SET votes = votes + 1 WHERE geo IN (3, 6, 9)")
+    conn.execute("INSERT INTO results VALUES ('PA', 901, NULL, NULL, NULL, NULL, NULL, NULL)")
+    as_dicts, as_arrow = _CountedArrow(conn), _CountedArrow(conn)
+
+    rows = _changed_on_a_loop(as_dicts, held).rows
+    table = _changed_on_a_loop(as_arrow, held, types=_ARROW_TYPES).table
+
+    assert as_arrow.statements == as_dicts.statements
+    assert as_arrow.bytes == as_dicts.bytes
+    assert sorted(table.to_pylist(), key=lambda row: row["geo"]) == sorted(rows, key=lambda row: row["geo"])
+    assert table.num_rows == 4 and None not in table.column(ROW_HASH_COLUMN).to_pylist()
 
 
 def test_an_arrow_read_of_no_change_is_an_empty_table(conn: duckdb.DuckDBPyConnection) -> None:
