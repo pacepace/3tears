@@ -46,6 +46,7 @@ own catch-up. ``TRUNCATE`` fires no row trigger and leaves no mark.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
@@ -150,11 +151,16 @@ _MAX_NOTED_ROWS: Final = WHOLE_COPY_ROWS
 
 _KEYS_UNKNOWN = counter(
     "collection_write_marks_keys_unknown_total",
-    description="reconciled tables whose missed writes the change notes could not name, advanced as keys unknown "
-    "(every follower is behind on the table, never told to drop it), by why: not_covered, no_notes, "
-    "too_many_rows, notes_unavailable",
+    description="reconciled tables whose missed writes no one record names, advanced as keys unknown, by why: "
+    "too_many_rows (the record carries the notes' bracket, and each follower reads the keys from the notes), or "
+    "not_covered, no_notes, notes_unavailable (every follower is behind on the table, never told to drop it)",
     label_names=("table", "reason"),
 )
+
+#: how much later than the database clock the reconciler reads a note may be stamped: a note is stamped on its
+#: writer's database node, the bracket's end read on the reconciler's, and YugabyteDB nodes' clocks differ by up to
+#: its max skew (500 ms by default). A wider end only names keys later commits wrote too, read again harmlessly
+_BRACKET_END_SKEW: Final = timedelta(seconds=60)
 
 
 class SqlConnection(Protocol):
@@ -448,6 +454,25 @@ class MarkPass:
     queue: QueueState | None = None
 
 
+@dataclass(frozen=True)
+class _Advance:
+    """one advance a reconciled table's marks are recorded as.
+
+    :ivar rows: the rows the notes name; ``None`` for a rowless record
+    :ivar tenant: a rowless record's tenant, ``None`` for ``_all``
+    :ivar keys_unknown: whether no one record names its rows
+    :ivar noted_between: a keys-unknown record's notes bracket, when the notes name its rows (too many for one record)
+    :ivar whole: a whole-table record's change, with the reach its notes named (a load's key prefixes, a reset's
+        reason), recorded with it as a restore records it
+    """
+
+    rows: list[ChangedRow] | None = None
+    tenant: str | None = None
+    keys_unknown: bool = False
+    noted_between: tuple[datetime, datetime] | None = None
+    whole: NotedChange | None = None
+
+
 class WriteMarkReconciler:
     """drains the write-mark queue: advances each marked table once, deletes exactly the marks it read.
 
@@ -593,45 +618,72 @@ class WriteMarkReconciler:
             )
         return MarkPass(applied=applied, advanced=tuple(sorted(advanced)), failed=tuple(sorted(failed)), behind=behind)
 
-    async def _changes_of(
-        self, table: str, since: Any
-    ) -> list[tuple[list[ChangedRow] | None, str | None, bool, NotedChange | None]]:
+    async def _changes_of(self, table: str, since: datetime) -> list[_Advance]:
         """what the marked writes changed, from the change notes they left: each advance to record.
 
         A mark names its table, not its rows, but every committed write to a noted table also left a note of
         its keys, and the notes carry each row's tenant. The epoch names those rows, so followers evict them
         rather than dropping the table. A whole-table note (a truncate, a file load) is a real whole-table
         change, recorded as one under its own tenant; it covers that tenant's rows only, so another schema's
-        rows in the same window are still named. When the notes cannot say (not covered, none, too many rows,
-        no ring) the advance is keys unknown: every follower is behind on the table, never told to drop it,
-        said at WARNING and counted on ``collection_write_marks_keys_unknown_total``. An agent-schema table's
-        record goes under each schema it may be in (:meth:`_schema_tenants`), never ``_all``.
+        rows in the same window are still named. More rows than one record names are advanced as keys unknown
+        with the notes' bracket (:meth:`_notes_bracket`): each follower reads their keys from the notes a page at a
+        time and evicts exactly them (:meth:`~threetears.core.collections.registry.CollectionRegistry
+        .catch_up_generation`), as for a commit too large to record. Without the bracket every follower stayed
+        behind on the table until its next start (RC1, 2026-11-16). When the notes cannot say at all (not covered,
+        none, no ring) the advance is keys unknown with no bracket: every follower is behind on the table, never
+        told to drop it. Either is said at WARNING and counted on ``collection_write_marks_keys_unknown_total``. An
+        agent-schema table's record goes under each schema it may be in (:meth:`_schema_tenants`), never ``_all``.
 
         :param table: the marked table
         :ptype table: str
         :param since: the oldest mark's time
-        :ptype since: Any
-        :return: ``(rows, tenant, keys_unknown, whole)`` per advance: rows (``None`` for a rowless record), the
-            rowless record's tenant, whether its keys are unknown, and a whole-table record's change with the reach its
-            notes named (a load's key prefixes, a reset's reason), recorded with it as a restore records it
-        :rtype: list[tuple[list[ChangedRow] | None, str | None, bool, NotedChange | None]]
+        :ptype since: datetime
+        :return: each advance to record
+        :rtype: list[_Advance]
         """
         noted = await noted_rows_since(
             self._pool, notes_schema=self._notes_schema, table=table, since=since, cap=_MAX_NOTED_ROWS
         )
         if isinstance(noted, NotedRows):
-            advances: list[tuple[list[ChangedRow] | None, str | None, bool, NotedChange | None]] = []
+            advances: list[_Advance] = []
             if noted.rows:
-                advances.append((list(noted.rows), None, False, None))
-            advances.extend((None, change.tenant, False, change) for change in noted.whole)
+                advances.append(_Advance(rows=list(noted.rows)))
+            advances.extend(_Advance(tenant=change.tenant, whole=change) for change in noted.whole)
             return advances
         _KEYS_UNKNOWN.labels(table=table, reason=noted).inc()
-        log.warning(
-            "a marked table's missed writes are advanced as keys unknown: the change notes cannot name their rows, "
-            "so every follower is behind on the table until its next start",
-            extra={"extra_data": {"table": table, "reason": noted}},
-        )
-        return [(None, tenant, True, None) for tenant in await self._schema_tenants(table)]
+        bracket = await self._notes_bracket(since) if noted == "too_many_rows" else None
+        if bracket is not None:
+            log.warning(
+                "a marked table's missed writes are advanced as keys unknown with their notes' bracket: more rows "
+                "than one record names, so each follower reads their keys from the change notes",
+                extra={"extra_data": {"table": table, "reason": noted}},
+            )
+        else:
+            log.warning(
+                "a marked table's missed writes are advanced as keys unknown: the change notes cannot name their "
+                "rows, so every follower is behind on the table until its next start",
+                extra={"extra_data": {"table": table, "reason": noted}},
+            )
+        return [
+            _Advance(tenant=tenant, keys_unknown=True, noted_between=bracket)
+            for tenant in await self._schema_tenants(table)
+        ]
+
+    async def _notes_bracket(self, since: datetime) -> tuple[datetime, datetime]:
+        """the database-clock bracket holding every note of the marked writes since ``since``.
+
+        Each marked write's notes are stamped (``clock_timestamp()``) on its own node after its transaction began,
+        which is when its mark was (``now()``): no earlier than ``since``, the oldest mark's. Each committed before
+        the marks were read, so before the database clock read here, less the nodes' skew (:data:`_BRACKET_END_SKEW`).
+        The start is ``since`` itself, so the bracket's coverage is what :func:`noted_rows_since` judged.
+
+        :param since: the oldest mark's time
+        :ptype since: datetime
+        :return: ``(from, until)``
+        :rtype: tuple[datetime, datetime]
+        """
+        rows = await self._pool.fetch("SELECT clock_timestamp() AS now")
+        return since, rows[0]["now"] + _BRACKET_END_SKEW
 
     async def _schema_tenants(self, table: str) -> tuple[str | None, ...]:
         """the tenants a rowless advance of ``table`` the notes could not name goes under.
@@ -679,13 +731,15 @@ class WriteMarkReconciler:
                 continue
             try:
                 since = min(row["date_created"] for row in page if str(row["table_name"]) == table)
-                for rows, tenant, keys_unknown, whole in await self._changes_of(table, since):
+                for advance in await self._changes_of(table, since):
+                    whole = advance.whole
                     await advance_recording(
                         self._source,
                         table,
-                        rows,
-                        keys_unknown=keys_unknown,
-                        tenant=tenant,
+                        advance.rows,
+                        keys_unknown=advance.keys_unknown,
+                        tenant=advance.tenant,
+                        noted_between=advance.noted_between,
                         prefixes=list(whole.prefixes) or None if whole is not None else None,
                         reason=whole.reason if whole is not None else None,
                     )

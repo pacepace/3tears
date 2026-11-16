@@ -78,8 +78,9 @@ BEHIND_REASONS: Final[dict[str, str]] = {
     ),
     "record_unreadable": "a record could not be read; the next catch-up pass reads it again",
     "keys_unknown": (
-        "an epoch's writer named no rows, and its record carries no notes bracket (a broker built before it) or "
-        "this registry has no noted-keys reader; ends at a restart (a first sight of the table)"
+        "an epoch's writer named no rows, and its record carries no notes bracket (a broker built before it, or a "
+        "write-mark reconcile whose change notes could not name the rows) or this registry has no noted-keys reader; "
+        "ends at a restart (a first sight of the table)"
     ),
     "notes_not_covered": (
         "an epoch's writer named too many rows to record, and the change notes no longer hold its bracket (or "

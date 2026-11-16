@@ -42,7 +42,12 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, BaseCollection, CollectionRegistry
 from threetears.core.collections.change_note_keeper import ChangeNoteKeeper, ScrubPass
-from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO
+from threetears.core.collections.change_notes import (
+    RESTORE_BUDGET_RATIO,
+    NotedKeysCursor,
+    NotedKeysPage,
+    noted_keys_page,
+)
 from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, key_text, read_epoch_change_body
 from threetears.core.collections.generation import NotedTable, tenancy_of_table
 from threetears.core.collections.l2_first import run_l2_first_worker
@@ -51,6 +56,7 @@ from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, 
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.change_notes import (
+    WHOLE_COPY_ROWS,
     NOTE_REACH_SETTING,
     NOTE_RING_SIZE,
     NOTE_TRIGGER,
@@ -1016,6 +1022,80 @@ class TestTheReconcilerKeysEachSchemasChange:
                 assert read_epoch_change_body(entry.value, table, f"log:{entry.seq}").keys_unknown
         finally:
             await pool.execute(f"DROP SCHEMA IF EXISTS {other} CASCADE")
+
+
+@dataclass
+class _RingNotes:
+    """the broker's ``l3.noted_keys`` door, in process: the table's notes of ``_all`` in a bracket, a page at a time."""
+
+    pool: asyncpg.Pool
+    schema: str
+
+    async def noted_keys(
+        self,
+        table: str,
+        *,
+        noted_between: tuple[datetime, datetime],
+        cursor: NotedKeysCursor | None,
+        limit: int,
+        max_bytes: int,
+    ) -> NotedKeysPage | str:
+        return await noted_keys_page(
+            self.pool,
+            notes_schema=self.schema,
+            table=table,
+            tenant_token=None,
+            noted_between=noted_between,
+            cursor=cursor,
+            limit=limit,
+            max_bytes=max_bytes,
+        )
+
+
+class TestAReconciledWriteTooLargeToRecordReachesAFollower:
+    async def test_the_follower_applies_every_noted_key_and_is_current_without_a_restart(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        """Flips if the reconciler records a lost write of more rows than one record names as keys unknown with no notes
+        bracket: every follower is then behind on the table until it restarts, and the rows stay stale in it."""
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        await _keeper(pool, schema, table, source)
+        for statement in write_marks_ddl(schema):
+            await pool.execute(statement)
+        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
+        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reader = EpochGenerationReader(bus)
+
+        # a follower whose reader names a commit's keys from its notes, as a pod's broker transport does
+        registry = CollectionRegistry()
+        registry.follow_generation(table)
+        registry.set_noted_keys_reader(_RingNotes(pool, schema))
+        heard: set[str] = set()
+        dropped: list[bool] = []
+        registry.register_derived_cache(
+            table, on_row=lambda message: heard.add(str(message.ids[0])), on_table_dropped=lambda: dropped.append(True)
+        )
+        await pool.execute(f"INSERT INTO {table} VALUES ('seed', 'o', '1')")
+        await reconciler.run_pass()
+        await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+        assert registry.behind_reason(table) is None
+
+        # one transaction writes more rows than one record names, and its writer dies before its advance
+        many = WHOLE_COPY_ROWS + 1
+        await pool.execute(
+            f"INSERT INTO {table} SELECT 'many-' || g, 'o', '1' FROM generate_series(1, $1::int) g",  # noqa: S608
+            many,
+        )
+        assert (await reconciler.run_pass()).advanced == (table,)
+        for _ in range(2):
+            # a second pass changes nothing: the follower is current, not behind until its next start
+            await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+            assert registry.behind_reason(table) is None
+        assert heard >= {f"many-{g}" for g in range(1, many + 1)}, "every row the lost advance changed is evicted"
+        assert not dropped, "never by dropping the table"
 
 
 class TestANoteCarriesItsTenant:

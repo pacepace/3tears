@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a reconciled write of more rows than one record names reaches every follower from its notes
+
+When the write-mark reconciler applied a lost advance whose change notes named more rows than one epoch record holds
+(`too_many_rows`, over 10,000), it recorded the epoch as keys unknown with no notes bracket. Every follower then fell
+behind on the table (`keys_unknown`) on every catch-up pass until it restarted, and the rows that write changed stayed
+stale in it. The record now carries the notes' bracket (the oldest mark's time to the database clock at the drain, plus
+60 s for node skew), and a follower with a noted-keys reader (a pod's broker transport) reads the keys from the notes a
+page at a time and evicts exactly those rows, as it does for a commit too large to record. Nothing is dropped and no
+table is read whole. A follower with no noted-keys reader (a registry on a direct L3 pool) is still behind on such a
+record, as on any keys-unknown one. When the notes cannot name the rows at all (no ring, `no_notes`, `not_covered`), the record is
+keys unknown with no bracket, as before, and followers stay behind on the table until they restart.
+
 ### core: an L2 refill's pages are read-coerced and freed off the event loop
 
 `L2FirstSupport.refill_from_l3` reads its table a keyset page at a time (`SchemaBackedCollection`'s L3 pages,
