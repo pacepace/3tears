@@ -6,7 +6,7 @@
 # testament distributes the tests itself. The selection holds the evals render tests (the `browser`
 # marker): the image carries headless Chromium for them, and the env below makes a launch that fails
 # fail those tests rather than skip them. The event loop's wall-clock tests (`loop_timing`) are not in
-# the unit suite: they have a suite of their own (`loop_timing`, one batch a runner), and CI runs them
+# the unit suite: they have a suite of their own (`loop_timing`, alone on a quiet runner), and CI runs them
 # serially on GitHub's runner (scripts/ci-unit-tests.sh --loop-timing). The `docker` tests
 # drive a Docker daemon, which the image has none of, and the `secrets` tests read a credential, which
 # never ships to a runner: both stay off the pool and run on the laptop (`test-integration.sh --here`
@@ -95,15 +95,20 @@ platform = [
     "tests/integration/**",
 ]
 
-# The event loop's wall-clock tests (`loop_timing`), as scripts/ci-unit-tests.sh runs them apart and serially: a
-# runner takes one batch of them at a time, never two beside each other. Their bounds are still calibrated against
-# the load beside them, since a runner runs other suites' and projects' batches meanwhile. A path's loop_timing tests
-# run with `testament run --suite loop_timing -- <path>`.
+# The tests whose wall-clock bounds need a quiet host (`loop_timing`: a loop's lateness, a speed ratio;
+# tests/timing_suite.py), as scripts/ci-unit-tests.sh runs them apart and serially. `exclusive`: each batch runs alone
+# on a runner whose operator offers it (`[runner] labels = ["exclusive"]`), drained of every other testament batch,
+# prepare and collection, and starts only while the host's load from outside testament is under 0.25 per CPU
+# (testament's default ceiling). Beside other batches these tests failed as CouldNotMeasure, the host too busy to judge
+# (brooks-nas, brooks-14th-mbp, brooks-5950x, markpace-mbp, 2026-11-13 to 11-15): a red the code did not earn. With no
+# quiet runner within the coordinator's wait the suite ends `runners_loaded` (verdict unavailable, exit 75, retryable):
+# not measured, never a pass and never a red. It never runs on the submitting machine. Needs testament 0.49.0 or later
+# on the pool and every client. A path's timing tests run with `testament run --suite loop_timing -- <path>`.
 [suites.loop_timing]
 adapter = "pytest"
 command = ["uv", "run", "--frozen", "pytest", "-m", "loop_timing and not integration and not docker and not secrets"]
 default_selection = ["packages/", "tests/"]
-max_batches_per_runner = 1
+exclusive = true
 
 [suites.loop_timing.areas]
 evals = ["packages/evals/**"]

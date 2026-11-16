@@ -249,7 +249,8 @@ if command -v testament >/dev/null 2>&1 && [ -z "${CI:-}" ] && [ "${TESTAMENT:-}
         testament run --suite "$SUITE" ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
             pool_status=$?
         if [ "$SUITE" = "default" ]; then
-            # a package's loop_timing tests run in their own suite (.testament.toml), one batch a runner at a time
+            # a package's loop_timing tests run in their own suite (.testament.toml), alone on a quiet runner; a pool
+            # with none quiet ends it 75, not measured, which this script answers as no verdict (2), never a red
             timing_status=0
             testament run --suite loop_timing ${AREA_ARGS+"${AREA_ARGS[@]}"} -- "$TEST_PATH" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"} ||
                 timing_status=$?
