@@ -2850,7 +2850,7 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :return: whether it does
         :rtype: bool
         """
-        return self._write_generation_on or self.keeps_write_generation_in_l2 or self._negative_cache_writes_advance
+        return self.advances_write_generation or self._negative_cache_writes_advance
 
     async def reset(self) -> None:
         """an operator's reset: empty the table in L3 with ``TRUNCATE``, then drop what every cache holds of it. The one

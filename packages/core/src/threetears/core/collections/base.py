@@ -1870,6 +1870,17 @@ class BaseCollection(ABC, Generic[EntityT]):
         return None
 
     @property
+    def advances_write_generation(self) -> bool:
+        """whether a commit of this collection's rows advances its table's write generation, by a generation source
+        or in L2; only such a commit uses a change record a row (:meth:`changed_row`).
+
+        :return: ``True`` when the collection is switched on (:attr:`write_generation`) or keeps its table's
+            generation in L2 (:attr:`keeps_write_generation_in_l2`)
+        :rtype: bool
+        """
+        return self._write_generation_on or self.keeps_write_generation_in_l2
+
+    @property
     def _write_generation_on(self) -> bool:
         """whether this collection is switched on: every write path advances the table's generation.
 
@@ -2316,7 +2327,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         :return: what the advance came to; for a collection not switched on, at most a failure
         :rtype: _Bump
         """
-        if self._write_generation_on or self.keeps_write_generation_in_l2:
+        if self.advances_write_generation:
             return await self._bump_generation(changed, reach=reach)
         failure = await self._advance_generation(changed, reach=reach)
         return _NO_BUMP if failure is None else _Bump(failure=failure)
@@ -2780,6 +2791,37 @@ class BaseCollection(ABC, Generic[EntityT]):
         finally:
             for entity_id in entity_ids:
                 self._l1_changed(entity_id)
+
+    async def _changed_rows_off_loop(
+        self, entity_ids: Sequence[Any], rows: Sequence[dict[str, Any] | None]
+    ) -> list[ChangedRow]:
+        """every key's :meth:`changed_row`, in order; from :attr:`L1_EVICT_OFF_LOOP_KEYS` keys made on a worker thread.
+
+        One change record a key, with each key value's text: 33,786 of them held the loop for tens of milliseconds
+        at a commit (the WD2 bench, 2026-11-16). Pure, so a thread may make them.
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :param rows: the row each write saw, in the order of ``entity_ids``, or ``None`` in a key's place
+        :ptype rows: Sequence[dict[str, Any] | None]
+        :return: the change records
+        :rtype: list[ChangedRow]
+        """
+        if len(entity_ids) < self.L1_EVICT_OFF_LOOP_KEYS:
+            return self._changed_rows(entity_ids, rows)
+        return await asyncio.to_thread(self._changed_rows, entity_ids, rows)
+
+    def _changed_rows(self, entity_ids: Sequence[Any], rows: Sequence[dict[str, Any] | None]) -> list[ChangedRow]:
+        """every key's :meth:`changed_row`, in order (:meth:`_changed_rows_off_loop`).
+
+        :param entity_ids: pk values (single-pk) or tuples of pk values in declared order
+        :ptype entity_ids: Sequence[Any]
+        :param rows: the row each write saw, in the order of ``entity_ids``, or ``None`` in a key's place
+        :ptype rows: Sequence[dict[str, Any] | None]
+        :return: the change records
+        :rtype: list[ChangedRow]
+        """
+        return [self.changed_row(entity_id, row) for entity_id, row in zip(entity_ids, rows, strict=True)]
 
     def _fence_keys(self, entity_ids: Sequence[Any]) -> list[tuple[str, ...]]:
         """every key's :meth:`_fence_key`, in order; pure, so a thread may make them.
@@ -6261,11 +6303,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         # with or without a bus: the caches this advance tells are other pods'.
         # the rows are an epoch's change only where the call advances a generation: a collection that
         # advances none is handed none, so evicting many keys builds nothing per key on the loop
-        advances = self._write_generation_on or self.keeps_write_generation_in_l2
         bump = await self._bump_generation(
-            [self.changed_row(entity_id, row) for entity_id, row in zip(entity_ids, seen, strict=True)]
-            if advances
-            else []
+            await self._changed_rows_off_loop(entity_ids, seen) if self.advances_write_generation else []
         )
         if self._nats_client is None:
             self._warn_missing_nats_client_once()

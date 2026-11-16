@@ -41,7 +41,7 @@ from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.exceptions import GenerationUnavailableError
@@ -99,6 +99,92 @@ def shared_advance_for(table_name: str) -> SharedAdvance | None:
     :rtype: SharedAdvance | None
     """
     return _SHARED.get().get(table_name)
+
+
+#: from how many enrolled rows a settling transaction groups them and builds their change records on a worker thread,
+#: not the loop: fewer cost less there than the thread does (the count from which L1 evictions leave the loop too)
+_SETTLE_OFF_LOOP_ROWS: Final = 64
+
+_ByCollection = dict[int, tuple["BaseCollection[Any]", list[Any], list[dict[str, Any] | None]]]
+
+
+def _grouped(
+    enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
+) -> tuple[_ByCollection, dict[str, SharedAdvance]]:
+    """a settling transaction's enrollments, by collection, and the advances its tables share; pure, so a thread may
+    make them.
+
+    One call per collection, with every key it wrote, in the order written: a load of many rows settles them together
+    rather than one round trip at a time. Only a table more than one instance wrote, and one of them advances, shares an
+    advance; no change record is built for any other here: an instance that advances alone builds its own, and one
+    that advances nothing needs none. The 33,786 records of a shared advance no instance made cost the commit a
+    garbage collection pass with the GIL held, 12 ms on top (2026-11-16).
+
+    :param enrolled: every key the transaction's writes enrolled, in order
+    :ptype enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]
+    :return: each collection with its keys and the rows its writes saw; each table more than one instance wrote,
+        with the advance they share
+    :rtype: tuple[dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]],
+        dict[str, SharedAdvance]]
+    """
+    by_collection: _ByCollection = {}
+    for collection, entity_id, row in enrolled:
+        _, keys, rows = by_collection.setdefault(id(collection), (collection, [], []))
+        keys.append(entity_id)
+        rows.append(row)
+    instances: dict[str, list[tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]]] = {}
+    for each in by_collection.values():
+        instances.setdefault(each[0].table_name, []).append(each)
+    shared = {
+        table: SharedAdvance(
+            changed=[
+                collection.changed_row(key, row)
+                for collection, keys, rows in written
+                for key, row in zip(keys, rows, strict=True)
+            ]
+        )
+        for table, written in instances.items()
+        if len(written) > 1 and any(collection.advances_write_generation for collection, _, _ in written)
+    }
+    return by_collection, shared
+
+
+#: how many enrollments :func:`_released` frees at a time: a slice's rows are freed in one C call that keeps the GIL
+#: throughout, so a slice is small enough for the loop to take the GIL back between two (about a millisecond for
+#: rows of 179 columns)
+_RELEASE_SLICE: Final = 1024
+
+
+def _released(
+    enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]],
+    by_collection: _ByCollection,
+    shared: Mapping[str, SharedAdvance],
+) -> None:
+    """empty a settled transaction's enrollments, their grouping and its shared advances' change records a slice at a
+    time; for a thread.
+
+    The grouping's lists were lent to each collection's ``invalidate_cache_many`` for the call, which keeps none of
+    them; emptying them in place frees their rows here rather than wherever the last reference happens to drop.
+
+    :param enrolled: the transaction's enrollments, settled
+    :ptype enrolled: list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]
+    :param by_collection: their grouping by collection (:func:`_grouped`)
+    :ptype by_collection: dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]]
+    :param shared: the advances its tables' instances shared (:func:`_grouped`)
+    :ptype shared: Mapping[str, SharedAdvance]
+    :return: nothing
+    :rtype: None
+    """
+    # an advance made handed its records to the generation source, which may keep them: those are only let go of.
+    # One no instance made never left this module
+    held: list[list[Any]] = [advance.changed for advance in shared.values() if advance.bump is None]
+    for _, keys, rows in by_collection.values():
+        held += (rows, keys)
+    for each in held:
+        while each:
+            del each[-_RELEASE_SLICE:]
+    while enrolled:
+        del enrolled[-_RELEASE_SLICE:]
 
 
 class CallerTransaction:
@@ -298,39 +384,33 @@ class CallerTransaction:
         """
         enrolled = list(self._enrolled)
         self._enrolled.clear()
-        # one call per collection, with every key it wrote, in the order written: a load of many
-        # rows settles them together rather than one round trip at a time
-        by_collection: dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]] = {}
-        for collection, entity_id, row in enrolled:
-            _, keys, rows = by_collection.setdefault(id(collection), (collection, [], []))
-            keys.append(entity_id)
-            rows.append(row)
-        per_table: dict[str, list[list[ChangedRow]]] = {}
-        for collection, keys, rows in by_collection.values():
-            per_table.setdefault(collection.table_name, []).append(
-                [collection.changed_row(key, row) for key, row in zip(keys, rows, strict=True)]
-            )
-        shared = {
-            table: SharedAdvance(changed=[row for each in changed for row in each])
-            for table, changed in per_table.items()
-            if len(changed) > 1
-        }
+        count = len(enrolled)
+        if count < _SETTLE_OFF_LOOP_ROWS:
+            by_collection, shared = _grouped(enrolled)
+        else:
+            # a commit of 33,786 rows held the loop 41-71 ms here grouping its keys and building a change record
+            # a key (the WD2 bench, 2026-11-16, 179 columns, save_rows and save_arrow alike); on a thread the loop
+            # is held at most a GIL switch interval at a time. Pure work over this transaction's own list, awaited
+            # before anything is settled, so the order every cache hears its keys in is unchanged
+            by_collection, shared = await asyncio.to_thread(_grouped, enrolled)
         sharing = _SHARED.set(shared)
         try:
             failure = await self._settle_each(by_collection)
         finally:
             _SHARED.reset(sharing)
-        if enrolled:
+        if count >= _SETTLE_OFF_LOOP_ROWS:
+            # the enrollments often hold the only reference to the rows a write sent: freeing 33,786 rows of 179
+            # columns at once held the loop 25 ms (save_rows, the WD2 bench); freed a slice at a time on a thread
+            await asyncio.to_thread(_released, enrolled, by_collection, shared)
+        if count:
             log.debug(
                 "caller transaction ended; the rows its writes touched were evicted from every cache",
-                extra={"extra_data": {"rows": len(enrolled), "body_completed": committed}},
+                extra={"extra_data": {"rows": count, "body_completed": committed}},
             )
         return failure
 
     @staticmethod
-    async def _settle_each(
-        by_collection: dict[int, tuple[BaseCollection[Any], list[Any], list[dict[str, Any] | None]]],
-    ) -> GenerationUnavailableError | None:
+    async def _settle_each(by_collection: _ByCollection) -> GenerationUnavailableError | None:
         """settle each collection's keys, in turn.
 
         :param by_collection: each collection with the keys it wrote and the rows it saw

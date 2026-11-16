@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -93,11 +93,37 @@ def _dict_rows(result: Any) -> list[dict[str, Any]]:
     return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
 
 
+#: how each DuckDB a test opened is closed when it ends (:func:`_close_what_the_test_opened`)
+_OPENED: list[Callable[[], None]] = []
+
+
+def _backend() -> DuckDBBackend:
+    """a DuckDB L1 the test's end closes."""
+    backend = DuckDBBackend()
+    _OPENED.append(backend.reset)
+    return backend
+
+
+@pytest.fixture(autouse=True)
+def _close_what_the_test_opened() -> Iterator[None]:
+    """close every DuckDB the test opened once it ends.
+
+    Each in-memory DuckDB runs a worker thread a core, and a test's L3 and copy are held in cycles (the follower, its
+    registry), so left open they lived until a collection of the old generation: this module alone took one process
+    to 725 threads on a 10-core host, and on a pool runner of many cores the next test to start one failed with
+    "can't start new thread" (test_keyed_writes' TestApplyStageAppend[duckdb], 2026-11-16).
+    """
+    yield
+    while _OPENED:
+        _OPENED.pop()()
+
+
 class _L3:
     """L3 as a DuckDB, answering ``fetch`` with ``$n`` placeholders; counts the rows each statement returned."""
 
     def __init__(self) -> None:
         self.db = duckdb.connect(":memory:")
+        _OPENED.append(self.db.close)
         self.db.execute(
             f"CREATE TABLE {_TABLE} (state VARCHAR, geo_id BIGINT, votes BIGINT, PRIMARY KEY (state, geo_id))"
         )
@@ -202,7 +228,7 @@ def _world(
     retry_waits: tuple[float, float] = (1.0, 60.0),
 ) -> tuple[tuple[_L3, _Log, _Seqlock, DuckDBBackend, CopyFollower], CollectionRegistry]:
     l3, log, lock = _L3(), _Log(), _Seqlock()
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -473,7 +499,7 @@ def _replica(
     part_rows: int = 40,
     **stamps: Any,
 ) -> tuple[DuckDBBackend, CopyFollower, Any]:
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     tables = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
     checkpoints = CopyCheckpoints(
@@ -692,7 +718,7 @@ async def test_a_partition_on_a_column_the_copy_does_not_hold_filters_l3_by_it()
     are read."""
     l3, log, lock = _L3(), _Log(), _Seqlock()
     l3.db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN ver BIGINT DEFAULT 0")
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -940,7 +966,7 @@ def _scoped_world(
     lock: _Scopes, *, checkpoint_from: DuckDBBackend | None = None
 ) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
     l3, log = _L3(), _Log()
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -1077,7 +1103,7 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
     table's own row messages, heard from every replica, ask the pass."""
     lock = _Scopes()
     l3, log = _L3(), _Log()
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -1129,7 +1155,7 @@ async def test_another_replicas_commit_of_a_held_write_wakes_the_follower_by_the
 
 def _stamped(tables: list[FollowedTable], settled: Any, **stamp: Any) -> CopyFollower:
     """a follower of ``tables`` over a fresh copy, its writer's stamp read by ``settled``."""
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -1146,7 +1172,7 @@ def test_a_follower_of_scoped_tables_names_the_stamp_table_it_hears_or_construct
         _stamped(scoped, _Scopes().settled)
     _stamped(scoped, _Scopes().settled, stamp_table="scope_epochs").register()
     epochs = ScopeEpochs(SimpleNamespace(table_name="enr_scope_epochs"))  # type: ignore[arg-type]
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -1320,7 +1346,7 @@ async def test_a_reset_is_read_during_a_long_write_as_a_first_start_is() -> None
 def _office_world(lock: _Scopes) -> tuple[_L3, _Log, DuckDBBackend, CopyFollower]:
     """a table keyed by a column that leads without the scope (an office's key), its scope in the row only."""
     l3, log = _L3(), _Log()
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -1430,7 +1456,7 @@ def _derived_replica(
         SaColumn("total", BigInteger),
         info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(metadata)
     followed = [FollowedTable(name=_TABLE, key=_KEY, columns=_COLUMNS, scope=("state", "state:"))]
     checkpoints = CopyCheckpoints(
@@ -1514,7 +1540,7 @@ async def test_a_key_whose_row_is_of_a_held_scope_is_read_once_across_the_write(
     its scope's write is still held waits on the copy's own row, never read from L3 until the write commits."""
     lock = _Scopes()
     l3, log = _L3(), _Log()
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)
@@ -1768,7 +1794,7 @@ async def test_a_warm_paged_by_its_order_over_one_shared_lead_value_reads_every_
     """Flips if the first warm, paged (50 a page) by an explicit order over 120 rows that all share its lead value,
     holds fewer rows than L3."""
     l3, log, lock = _L3(), _Log(), _Seqlock()
-    backend = DuckDBBackend()
+    backend = _backend()
     backend.initialize(_metadata())
     registry = CollectionRegistry()
     registry.follow_generation(_TABLE)

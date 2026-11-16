@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a caller transaction of many rows settles them off the event loop
+
+`CallerTransaction`'s settle grouped its enrollments and built a change record a key on the loop, for every table,
+and freed the rows its enrollments held there: a 33,786-row commit (179 columns) held the loop 39-51 ms (save_rows)
+and 39-49 ms (save_arrow). From 64 rows the grouping runs on a worker thread and the rows are freed there a slice at a
+time; a change record is built only for a table more than one instance wrote and one of them advances (the shared
+advance), and `invalidate_cache_many` builds a switched-on collection's records on a thread too. The same commit now
+holds the loop 13-17 ms. Settlement is unchanged: the same calls, in the order written, with the same shared advance.
+**Added:** `BaseCollection.advances_write_generation` (whether a commit of the collection's rows advances its table's
+write generation, by a source or in L2).
+
 ### agent-tools: every tool pod allocates Arrow from the system pool from its boot
 
 `ToolServerBootstrap.run` makes the system allocator Arrow's default memory pool right after logging, before the
