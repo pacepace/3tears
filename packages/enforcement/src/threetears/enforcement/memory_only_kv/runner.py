@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from threetears.enforcement.memory_only_kv.config import MemoryOnlyKvConfig
-from threetears.enforcement.memory_only_kv.walkers import scan_for_file_backed_kv
+from threetears.enforcement.memory_only_kv.walkers import MIN_REPLICAS, scan_for_file_backed_kv
 
 __all__ = ["run_memory_only_kv_enforcement", "source_files"]
 
@@ -54,14 +54,14 @@ def run_memory_only_kv_enforcement(config: MemoryOnlyKvConfig) -> None:
         )
 
     violations = [
-        f"{call.path.relative_to(config.repo_root).as_posix()}:{call.lineno} opens a KV bucket "
-        f"with storage='file' via {call.callee}()"
+        f"{call.path.relative_to(config.repo_root).as_posix()}:{call.lineno} declares a NATS store "
+        f"with storage='file' or fewer than {MIN_REPLICAS} replicas via {call.callee}"
         for call in scan_for_file_backed_kv(paths)
     ]
     if violations:
         listed = "\n  ".join(violations)
         pytest.fail(
-            f"NATS is L2 and these ask it to be L3:\n  {listed}\n\n"
+            f"NATS is L2, memory only on {MIN_REPLICAS} servers, and these ask otherwise:\n  {listed}\n\n"
             f"Put the state in a BaseCollection, which composes L1, L2 and L3 rather than making "
             f"anyone choose -- threetears.core.coordination.tables is the worked example. There is "
             f"no exemption file: a file-backed bucket cannot be exempted, only designed out."

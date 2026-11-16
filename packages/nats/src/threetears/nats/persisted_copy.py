@@ -234,7 +234,8 @@ class PersistedCopyBucket:
     :ptype load: Callable[[KvBucketLike], Awaitable[None]]
     :param write_back: writes memory into the bucket
     :ptype write_back: Callable[[KvBucketLike], Awaitable[None]]
-    :param storage: ``"file"`` or ``"memory"``
+    :param storage: ``"memory"`` (the default: NATS is memory only, on three servers; a copy lost
+        with all three is written back from memory by ``on_restored``) or ``"file"``
     :ptype storage: str
     :param ttl: per-entry expiry; ``None`` for none
     :ptype ttl: timedelta | None
@@ -256,7 +257,7 @@ class PersistedCopyBucket:
         bucket: str,
         load: Callable[[KvBucketLike], Awaitable[None]],
         write_back: Callable[[KvBucketLike], Awaitable[None]],
-        storage: str = "file",
+        storage: str = "memory",
         ttl: timedelta | None = None,
         history: int = 1,
         direct: bool = True,
@@ -273,7 +274,7 @@ class PersistedCopyBucket:
         :ptype load: Callable[[KvBucketLike], Awaitable[None]]
         :param write_back: writes memory into the bucket
         :ptype write_back: Callable[[KvBucketLike], Awaitable[None]]
-        :param storage: ``"file"`` or ``"memory"``
+        :param storage: ``"memory"`` (the default) or ``"file"``
         :ptype storage: str
         :param ttl: per-entry expiry; ``None`` for none
         :ptype ttl: timedelta | None

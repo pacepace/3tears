@@ -903,7 +903,7 @@ class TestToolCatalogKVPersistence:
     @pytest.mark.asyncio
     async def test_load_from_an_empty_bucket_starts_empty_and_binds_it(self) -> None:
         """an empty bucket lists no keys; the catalog starts empty and writes to it from then on."""
-        bucket = FakeKvBucket(bucket_name="tool_catalog", storage="file", direct=True)
+        bucket = FakeKvBucket(bucket_name="tool_catalog", storage="memory", direct=True)
         catalog = ToolCatalog()
         await catalog.load_from_kv(bucket)
         assert catalog.search() == []
@@ -913,7 +913,7 @@ class TestToolCatalogKVPersistence:
     @pytest.mark.asyncio
     async def test_a_listing_that_fails_is_raised_not_taken_for_an_empty_bucket(self) -> None:
         """a failed read must not pass for "nothing was persisted": the declaration retries it."""
-        bucket = FakeKvBucket(bucket_name="tool_catalog", storage="file", direct=True)
+        bucket = FakeKvBucket(bucket_name="tool_catalog", storage="memory", direct=True)
         bucket.become_unreachable(KvError("nats: timeout"))
         catalog = ToolCatalog()
         with pytest.raises(KvError, match="nats: timeout"):

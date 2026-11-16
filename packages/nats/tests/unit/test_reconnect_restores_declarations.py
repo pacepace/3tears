@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from nats.js.api import StorageType, StreamConfig
-from nats.js.errors import APIError, NotFoundError
+from nats.js.errors import APIError, BadRequestError, NotFoundError
 
 from threetears.nats import NatsClient, Subjects, set_default_namespace
 from threetears.nats.kv import build_kv_stream_config
@@ -101,6 +101,12 @@ class _ScriptedServer:
 
     async def update_stream(self, config: StreamConfig) -> Any:
         self.updated.append(dataclasses.replace(config))
+        live = self.streams.get(config.name or "")
+        if live is not None and live.storage != config.storage:
+            # JetStream's own refusal: a live stream's storage never changes in place
+            raise BadRequestError(
+                code=500, err_code=10052, description="stream configuration update can not change storage type"
+            )
         self.streams[config.name or ""] = dataclasses.replace(config)
         return object()
 
@@ -1178,4 +1184,82 @@ async def test_an_object_store_live_with_another_bound_and_replicas_is_updated_i
     logged = reconciled[0].extra_data  # type: ignore[attr-defined]
     assert logged["max_bytes"] == {"was": 128 * 1024 * 1024, "now": 1024 * 1024 * 1024}
     assert logged["replicas"] == {"was": 1, "now": 3}
+    await client.shutdown()
+
+
+# ----------------------------------------------------------------------
+# NATS is memory only (2026-11-15). a declaration moved to memory meets streams still live on file
+# storage until an operator migrates them; JetStream refuses to change a live stream's storage, so
+# an update would take the declarer down at every start
+# ----------------------------------------------------------------------
+
+
+def _live_audit_on_file() -> StreamConfig:
+    """the audit stream as it is live before its migration: file storage, no bounds, three servers."""
+    return StreamConfig(name=f"{_NS}-audit", subjects=[f"{_NS}.audit.>"], storage=StorageType.FILE, num_replicas=3)
+
+
+@pytest.mark.asyncio
+async def test_a_stream_live_on_file_declared_on_memory_is_left_as_it_is() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    server.streams[f"{_NS}-audit"] = _live_audit_on_file()
+
+    await client.ensure_jetstream_stream(
+        name="audit",
+        subjects=[f"{_NS}.audit.>"],
+        storage="memory",
+        max_age_seconds=604800.0,
+        max_bytes=1024,
+        replicas=3,
+    )
+
+    assert server.updated == [], "the declaration tried to change the live stream"
+    live = server.streams[f"{_NS}-audit"]
+    assert live.storage == StorageType.FILE
+    # its bounds are not applied either: they would discard a file stream's history before its migration
+    assert (live.max_age, live.max_bytes) == (None, None)
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_stream_left_on_file_comes_back_on_memory_after_a_restart_lost_it() -> None:
+    server = _ScriptedServer()
+    client, reconnected = await _connected(server)
+    server.streams[f"{_NS}-audit"] = _live_audit_on_file()
+    await client.ensure_jetstream_stream(
+        name="audit",
+        subjects=[f"{_NS}.audit.>"],
+        storage="memory",
+        max_age_seconds=604800.0,
+        max_bytes=1024,
+        replicas=3,
+    )
+
+    server.restart()
+    await reconnected()
+    await _until(lambda: f"{_NS}-audit" in server.streams)
+
+    back = server.streams[f"{_NS}-audit"]
+    assert (back.storage, back.max_age, back.max_bytes, back.num_replicas) == (StorageType.MEMORY, 604800.0, 1024, 3)
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_stream_on_its_declared_storage_takes_its_declared_bound() -> None:
+    server = _ScriptedServer()
+    client, _reconnected = await _connected(server)
+    server.streams[f"{_NS}-audit"] = dataclasses.replace(_live_audit_on_file(), storage=StorageType.MEMORY)
+
+    await client.ensure_jetstream_stream(
+        name="audit",
+        subjects=[f"{_NS}.audit.>"],
+        storage="memory",
+        max_age_seconds=604800.0,
+        max_bytes=1024,
+        replicas=3,
+    )
+
+    live = server.streams[f"{_NS}-audit"]
+    assert (live.storage, live.max_age, live.max_bytes) == (StorageType.MEMORY, 604800.0, 1024)
     await client.shutdown()

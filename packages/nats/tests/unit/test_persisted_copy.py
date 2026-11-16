@@ -105,7 +105,7 @@ async def test_start_returns_at_once_and_declares_the_exact_name_in_the_backgrou
     (declared,) = client.declarations
     assert declared["name"] == "tool_catalog"
     assert declared["prefix_namespace"] is False
-    assert declared["storage"] == "file"
+    assert declared["storage"] == "memory"
     assert declared["on_restored"] == catalog.write_back
     await owner.stop()
 
@@ -131,7 +131,7 @@ async def test_a_start_the_broker_did_not_answer_is_retried_with_an_error_each_t
 @pytest.mark.asyncio
 async def test_the_first_declaration_loads_what_an_earlier_process_persisted_and_writes_memory_back() -> None:
     client = _UnansweredClient(unanswered=0)
-    persisted = await client.ensure_kv_bucket(name="tool_catalog", storage="file")
+    persisted = await client.ensure_kv_bucket(name="tool_catalog", storage="memory")
     await persisted.put(key="old", value=b"from-an-earlier-registry")
     catalog = _Catalog({"new": b"registered-before-the-bucket-was-declared"})
     owner = _owner(client, catalog)

@@ -45,11 +45,12 @@ __all__ = [
 #: and declaring one needs ``STREAM.CREATE``/``STREAM.UPDATE``, which a read grant does not carry.
 #:
 #: ``audit`` is DECLARED BY TWO SERVICES, deliberately. identity-core and the hub both call
-#: ``ensure_jetstream_stream(name="audit", ..., storage="file")`` -- the storage matches on both
-#: sides on purpose, because whichever started first won the stream's storage type and the second
-#: crashed outright on ``stream configuration update can not change storage type``. Identity
-#: therefore needs the DECLARING capability, not merely publish: it may genuinely be the process
-#: that creates the stream.
+#: ``ensure_jetstream_stream(name="audit", ...)`` with the same storage -- memory since 2026-11-15
+#: (NATS is memory only), file before -- because whichever starts first creates the stream. A
+#: declaration that meets the stream live on the other storage leaves it as it is (it used to crash
+#: on ``stream configuration update can not change storage type``) until an operator moves it
+#: (:mod:`threetears.nats.stream_storage`). Identity therefore needs the DECLARING capability, not
+#: merely publish: it may genuinely be the process that creates the stream.
 IDENTITY_JS_STREAMS: Final[tuple[str, ...]] = ("audit",)
 
 #: every KV bucket identity-core and identity-edge open, unprefixed, sorted.

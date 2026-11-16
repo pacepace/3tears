@@ -17,6 +17,13 @@ reflex is real and the gate is aimed at the reflex.
 this rule removed carried a specific, honest rationale naming the work that would remove it, and
 that is how they stayed for months. The work is done, so the escape hatch went with it.
 
+**Streams and Object Stores too, and three servers.** Since 2026-11-15 the gate walks every
+JetStream store a repo declares -- plain streams, Object Stores, and KV buckets through every
+opener (``ensure_kv_bucket``, ``NatsKvBucket.open``, ``PersistedCopyBucket``) -- and refuses a
+literal replica count below three as well as file storage. Six stores were found on file storage
+on cobalt dev and prod that day, the audit stream among them, all declared through openers the
+first version of this gate did not look at.
+
 Per-repo configuration goes through :class:`MemoryOnlyKvConfig`;
 :func:`run_memory_only_kv_enforcement` is the pytest-friendly entry point.
 """

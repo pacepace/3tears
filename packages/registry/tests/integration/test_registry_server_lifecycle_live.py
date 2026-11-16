@@ -132,7 +132,7 @@ async def _running_registry(
         if catalog:
             # as the registry declares its catalog bucket (catalog_persistence.catalog_bucket)
             persisted = await declarer.ensure_kv_bucket(
-                name=f"tool_catalog_{namespace}", storage="file", history=1, direct=True, prefix_namespace=False
+                name=f"tool_catalog_{namespace}", storage="memory", history=1, direct=True, prefix_namespace=False
             )
             for key, value in catalog.items():
                 await persisted.put(key=key, value=value)
