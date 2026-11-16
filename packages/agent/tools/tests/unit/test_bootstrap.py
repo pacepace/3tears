@@ -43,6 +43,24 @@ from threetears.observe import HealthCheck, HealthTier
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
+@pytest.fixture(autouse=True)
+def _keep_arrows_default_pool() -> Any:
+    """put back Arrow's default pool after each test: ``run`` switches the process's to the system allocator, and
+    this worker's later tests must not inherit it.
+
+    :return: a generator yielding once
+    :rtype: Any
+    """
+    # the bootstrap imported pyarrow already when it is installed (threetears.core.arrow_pool); without it, no pool
+    pyarrow = sys.modules.get("pyarrow")
+    if pyarrow is None:
+        yield
+        return
+    before = pyarrow.default_memory_pool()
+    yield
+    pyarrow.set_memory_pool(before)
+
+
 def _collection_tables() -> MetaData:
     """one trivial table so a bootstrap can opt into the collection stack.
 
@@ -1341,3 +1359,71 @@ class TestBootSizesTheProcessToItsCpuQuota:
         sized = [r for r in caplog.records if r.getMessage() == "test-pod sized to its CPU quota"]
         assert len(sized) == 1
         assert sized[0].extra_data["effective_cpus"] == 3  # type: ignore[attr-defined]
+
+
+#: a tool pod in a fresh interpreter that boots through ``run`` and stops at its first host step with a config
+#: fault, then reports Arrow's default pool before and after. ``{block}`` runs first, so a case can hide pyarrow.
+_BOOT_AND_REPORT_THE_POOL = """
+import importlib.util, json, sys
+{block}
+from threetears.agent.tools.bootstrap import EX_CONFIG, ToolPodConfigError, ToolServerBootstrap
+
+class _StopsAtBuild(ToolServerBootstrap):
+    async def build_server(self):
+        raise ToolPodConfigError("stop once the boot step ran", variable="TEST_STOP")
+
+    async def register_tools(self, server):
+        raise AssertionError("never reached")
+
+def _backend():
+    if importlib.util.find_spec("pyarrow") is None:
+        return None
+    import pyarrow
+    return str(pyarrow.default_memory_pool().backend_name)
+
+default = _backend()
+try:
+    _StopsAtBuild("pool-pod", health_port=0).run()
+except SystemExit as exc:
+    code = exc.code
+print(json.dumps({{"default": default, "after": _backend(), "code": code, "ex_config": EX_CONFIG}}))
+"""
+
+
+def _boot_in_a_fresh_interpreter(block: str = "") -> dict[str, Any]:
+    """boot a tool pod through ``run`` in its own interpreter: Arrow's default pool is the process's.
+
+    :param block: code run before the bootstrap is imported
+    :ptype block: str
+    :return: the pool's backend before and after the boot (None without pyarrow), and the exit code
+    :rtype: dict[str, Any]
+    """
+    script = _BOOT_AND_REPORT_THE_POOL.format(block=block)
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=120, check=False
+    )
+    assert done.returncode == 0, done.stderr[-3000:]
+    answer: dict[str, Any] = json.loads(done.stdout.strip().splitlines()[-1])
+    return answer
+
+
+class TestBootPutsArrowOnTheSystemPool:
+    """a tool pod's boot makes the system allocator Arrow's default pool before it builds anything to serve.
+
+    mimalloc stalled the serving thread 5-15 ms in about a quarter of Arrow builds (none over 1 ms in 20 on the
+    system allocator, 3tears ``arrow_copy``, 2026-11-15), and its per-thread heaps kept what a reports refresh
+    freed. ``run`` is the one start every tool pod passes through (3tears' own, pentest, the SDK's), so the
+    switch lives there rather than in each pod.
+    """
+
+    def test_run_switches_the_default_pool_before_the_pod_builds_its_server(self) -> None:
+        """Flips if a tool pod booted through ``run`` still allocates Arrow from mimalloc (or jemalloc)."""
+        pytest.importorskip("pyarrow")
+        answer = _boot_in_a_fresh_interpreter()
+        assert answer["code"] == answer["ex_config"], answer
+        assert answer["after"] == "system", answer
+
+    def test_a_pod_without_pyarrow_boots_as_before(self) -> None:
+        """Flips if the boot step refuses, or fails differently, in a pod that has no pyarrow to switch."""
+        answer = _boot_in_a_fresh_interpreter("sys.modules['pyarrow'] = None")
+        assert answer == {"default": None, "after": None, "code": answer["ex_config"], "ex_config": answer["ex_config"]}

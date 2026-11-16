@@ -6,7 +6,8 @@ pools): reports' pod held 946 MiB in it after a refresh against a fresh replica'
 and ``release_unused`` did not reach the other threads' heaps. The system allocator returns freed pages to one place,
 and under glibc ``release_unused`` also runs ``malloc_trim(0)``.
 
-Only the serving process switches (:func:`use_system_pool_in_serving_process`): worker processes started by spawn
+Only the serving process switches (:func:`use_system_pool_in_serving_process`, or
+:func:`use_system_pool_if_installed` where pyarrow is optional; every tool pod's boot calls it): worker processes started by spawn
 import pyarrow afresh and keep mimalloc, which is fastest for their short whole-batch work and is given back when the
 worker ends.
 """
@@ -24,7 +25,7 @@ try:
 except ImportError:  # NOSILENT: the snapshot extra is optional; both calls refuse without it, saying so
     _PYARROW = False
 
-__all__ = ["release_unused", "use_system_pool_in_serving_process"]
+__all__ = ["release_unused", "use_system_pool_if_installed", "use_system_pool_in_serving_process"]
 
 log = get_logger(__name__)
 
@@ -54,6 +55,22 @@ def use_system_pool_in_serving_process() -> str:
         extra={"extra_data": {"before": before, "after": str(pa.default_memory_pool().backend_name)}},
     )
     return before
+
+
+def use_system_pool_if_installed() -> str | None:
+    """:func:`use_system_pool_in_serving_process` for a serving start that runs with or without pyarrow.
+
+    pyarrow is optional (the ``arrow`` and ``snapshot`` extras), and the starts every serving process passes through
+    (:meth:`threetears.agent.tools.bootstrap.ToolServerBootstrap.run`, an agent pod's) serve both kinds. A process
+    without pyarrow allocates no Arrow, so it has no pool to set and says so; one with it is switched.
+
+    :return: the backend the default pool was before the call; None without pyarrow
+    :rtype: str | None
+    """
+    if not _PYARROW:
+        log.info("no pyarrow in this serving process: no Arrow memory pool to set")
+        return None
+    return use_system_pool_in_serving_process()
 
 
 def release_unused() -> int:

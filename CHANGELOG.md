@@ -6,6 +6,15 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### agent-tools: every tool pod allocates Arrow from the system pool from its boot
+
+`ToolServerBootstrap.run` makes the system allocator Arrow's default memory pool right after logging, before the
+pod builds anything (`threetears.core.arrow_pool.use_system_pool_if_installed`, new: the serving-process switch for a
+start that may run without pyarrow, which logs and returns None there). Every tool pod's `main` passes through `run`
+(3tears' own server, pentest, the SDK's hub and provider tool pods, datasource_probe), so none needs its own call.
+mimalloc stalled the serving thread 5-15 ms in about a quarter of Arrow builds and kept freed pages in per-thread
+heaps; spawned workers keep mimalloc as before.
+
 ### core: pyarrow stays optional -- the change-note keeper moves to its own module, behind the new `arrow` extra
 
 **Changed (import path):** `ChangeNoteKeeper`, `run_change_note_keeper`, `KeeperPass`, `ScrubPass` and

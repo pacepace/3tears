@@ -58,6 +58,7 @@ from uuid import UUID
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest
 from prometheus_client.metrics_core import Metric
 from sqlalchemy import MetaData
+from threetears.core.arrow_pool import use_system_pool_if_installed
 from threetears.core.backends import BrokerGenerationSource
 from threetears.core.collections import bind_collections_bucket
 from threetears.core.collections.registry import CollectionRegistry
@@ -714,6 +715,11 @@ class ToolServerBootstrap:
             permanently wrong, or :data:`EX_SOFTWARE` when shutdown failed
         """
         configure_logging(level=self._log_level)
+        # the process is this method's: Arrow allocates from the system pool before the pod builds anything. mimalloc
+        # stalled the serving thread 5-15 ms in about a quarter of Arrow builds, none over 1 ms in 20 on the system
+        # allocator (arrow_copy, 2026-11-15), and its per-thread heaps kept what a refresh freed (reports, 946 MiB
+        # against 456, 2026-10-26). Buffers already allocated stay where they were, so this is the first step.
+        use_system_pool_if_installed()
         executor_workers = self.size_to_cpu_quota()
         try:
             asyncio.run(self._run_on_executor(executor_workers))
