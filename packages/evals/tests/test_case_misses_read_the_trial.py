@@ -77,7 +77,9 @@ def test_a_judged_score_under_the_bar_is_a_miss_with_the_judge_s_reason() -> Non
     read = _read(make_eval_result(rubric_scores=_judged(2), host_measures={SCORE.name: 1.0}))
 
     assert read.state == "failed"
-    assert read.missed_because == ["the judge scored conversation.tone 2 of 5, under the bar of 3: the reply was curt"]
+    assert read.missed_because == [
+        "the judge scored conversation tone (judged) 2 of 5, under the bar of 3: the reply was curt"
+    ]
 
 
 def test_each_check_a_trial_failed_is_a_reason_in_its_pass_rule_s_words() -> None:

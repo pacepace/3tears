@@ -105,41 +105,74 @@ No code can say whether a reply is right, so the grader is a `Judge`: `google/ge
 reply on three pass/fail dimensions, `grounded`, `answers` and `safe`, one call per dimension, reading the policy and
 the email beside the reply (`case_material`). The judge is another family than the runner
 (`deepseek/deepseek-v4-flash`) on purpose: a model tends to rate its own output higher, and judging with the runner's
-own model prints the self-judging warning under the scores, a warning no quiet print drops.
+own model prints the self-judging warning under the scores, a warning no quiet print drops. `grounded` asks whether a
+reply is consistent with the policy, not whether the policy states all of it: a reply fails if it contradicts the
+policy or invents a specific fact (a price, a plan, a deadline, an account state) the policy does not support.
 
-**A judge is a model too, so check that it is right, two ways.** Its four `Example`s are hard negatives in pairs, one
-that must fail and one that looks like it and must pass. The run grades each one twice, through the same call it
-grades the replies with, and the recorded judge gets all four right:
-
-```text
-judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00086 over 8 call(s))
-```
-
-A miss would print under it, with what the judge gave and what it must get. But the judge also passes all 40 replies
-on all three dimensions, and read a few, you will find claims the policy never makes: telling four written pairs
-apart is not grading the run's replies right. That takes a person's labels on the replies, and the run says they are
-missing in the line it never quiets:
+**A judge is a model too, so check that it is right.** Its four `Example`s are hard negatives in pairs, one that must
+fail and one that looks like it and must pass. The run grades each one twice, through the same call it grades the
+replies with, and the recorded judge gets all four right:
 
 ```text
-judge: 0 of 20 cases read blind: judge uncalibrated (labels.csv is not there yet); next step: open the blind_read.html the report writes, answer its cases from the top, and save its labels as labels.csv
+judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00090 over 8 call(s))
 ```
 
-Calibrating it is yours to do; no person's labels ship with the rung.
-1. Run it. The report directory (`.evals/reports/replies/`) holds `blind_read.html`: the replies one at a time in
-   a random order, each with the email it answers, and no judge verdict on the page.
-   [`blind_read.html`](2-replies/blind_read.html) beside the example is that file, as the recorded run wrote it
-   ([`blind_read.csv`](2-replies/blind_read.csv) is the same order as rows, for a spreadsheet).
-2. Open it and answer from the top. Press **Download labels.csv** and save the file beside `replies.py`. What you
-   answered from the top is a random sample; answers out of order are not drawn at random, and the run says so. The
-   page holds one reply per email, 20 in all, which is also the fewest that can check the judge: read them all.
-3. Run it again. `Judge(labels="labels.csv")` reads your labels back, pairs each with the judge's score of the same
-   reply (by its fingerprint, so a replayed run draws the same order and pairs), and prints how far you read and,
-   per dimension, the results paired, κ with its bounds, and the evidence tier it earns. Below 20 results the tier
-   says the judge is not yet calibrated; reword a rubric dimension and its labels no longer pair.
+Telling four written pairs apart is not grading the run's replies right, so the judge is checked against a reference,
+[`labels.csv`](2-replies/labels.csv). Two readers read the 20 replies blind from the page of an earlier draw,
+[`adjudication/blind_read_as_read.html`](2-replies/adjudication/blind_read_as_read.html), under an earlier, exhaustive
+wording of `grounded`: Brooks, a person, and `claude-fable-5-2`, a model. (The
+[`blind_read.html`](2-replies/blind_read.html) beside `replies.py` is what a replay of this run writes: it draws the
+other repeat on 10 of the 20 cases, so it is not the page they read.) Where they disagreed (13 of 60 reply and
+dimension pairs), the person reader ruled, blind to who said what: 9 decided, 4 unclear. On 2026-11-17 the owner re-checked three `grounded` items under the
+new wording and re-ruled two: the locked-out reply is a fail, reversing its pass, and the search-bug reply both readers
+failed is left out as borderline. The reference is 55 labels; the 4 unclear and the borderline one are left out, each
+said on its row. It is adjudicated by the person reader; no independent adjudicator.
+[`adjudication/`](2-replies/adjudication/) holds both reads, the rulings and the re-checks. 9 of the 14 `grounded`
+passes were read only under the earlier wording and are carried to the new one, which is sound because a pass under
+the stricter wording is a pass under the more lenient one; the one reply both readers failed was read again instead.
 
-Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017) and 128 judge calls on
-`google/gemini-2.5-flash-lite` ($0.0159, 8 of them on the examples), the runner's and the judge's in recordings of
-their own (`recordings/replies.jsonl`, `recordings/judge.jsonl`).
+The re-checks were chosen after both judges' verdicts were seen, and two of them, locked-out and annual-late, were put
+to the owner because the stronger judge had failed those replies. One re-ruling, locked-out, moved the reference toward
+both judges, so on those items the reference is not independent of the judges. The `grounded` rows before the
+re-checks, beside those after (`answers` and `safe` were not re-checked):
+
+| Judge | Dimension | Reference failed, of those read | Judge failed of those | Judge failed of the rest |
+|---|---|---|---|---|
+| `gemini-2.5-flash-lite`, before | grounded | 1 of 16 | 0 of 1 (0 to 97%) | 1 of 15 (0 to 32%) |
+| `gemini-2.5-flash-lite`, after | grounded | 2 of 16 | 1 of 2 (1 to 99%) | 0 of 14 (0 to 23%) |
+| `claude-sonnet-5-5`, before | grounded | 1 of 16 | 1 of 1 (3 to 100%) | 5 of 15 (12 to 62%) |
+| `claude-sonnet-5-5`, after | grounded | 2 of 16 | 2 of 2 (16 to 100%) | 4 of 14 (8 to 58%) |
+
+The run prints each judge against the reference as counts, with exact 95% intervals
+([the print](../docs/ladder.md#rung-2-a-judge-checked-against-a-person)). `stronger_eval` judges the same replies on
+the same words with `claude-sonnet-5-5`, one tier up:
+
+| Judge | Dimension | Reference failed, of those read | Judge failed of those | Judge failed of the rest |
+|---|---|---|---|---|
+| `gemini-2.5-flash-lite` | grounded | 2 of 16 | 1 of 2 (1 to 99%) | 0 of 14 (0 to 23%) |
+| | answers | 1 of 20 | 0 of 1 (0 to 97%) | 0 of 19 (0 to 18%) |
+| | safe | 0 of 19 | no catch rate | 0 of 19 (0 to 18%) |
+| `claude-sonnet-5-5` | grounded | 2 of 16 | 2 of 2 (16 to 100%) | 4 of 14 (8 to 58%) |
+| | answers | 1 of 20 | 0 of 1 (0 to 97%) | 3 of 19 (3 to 40%) |
+| | safe | 0 of 19 | no catch rate | 0 of 19 (0 to 18%) |
+
+With at most two reference failures per dimension, no catch rate here says how often either judge catches a bad
+reply, and neither judge is shown to. Both are read on the 20 replies the reference was built from, against one person's
+adjudication. The rubric's wording was not tuned toward either judge, but the reference was revisited after their
+verdicts were read, as said above.
+
+**Your own judge needs your own read.** The reference pairs with these recorded replies and these words only:
+re-record the replies or reword a dimension, and it does not pair. To read your run:
+
+1. Run it. The report directory (`.evals/reports/<name>/`) holds `blind_read.html`, the replies in a random order
+   with no verdict ([`blind_read.csv`](2-replies/blind_read.csv) is the same order as rows, for a spreadsheet).
+2. Answer it from the top, press **Download labels.csv**, and save the file where `Judge(labels=...)` names. What you
+   answered from the top is a random sample; read enough that you fail some, or no catch rate exists.
+3. Run it again. The print shows the judge against your read, and against any `reviewer=` model beside it, apart.
+
+Recorded: 40 reply calls on `deepseek/deepseek-v4-flash` ($0.0017); 128 judge calls on `google/gemini-2.5-flash-lite`
+($0.0148, 8 of them on the examples) and 128 on `claude-sonnet-5-5` ($0.6568, at Anthropic's published rates). Each
+model's calls are in a recording of their own under `recordings/`.
 
 ### Rung 3a: two prompts compared, `3-invoices/compare.py`
 
@@ -388,7 +421,7 @@ A recording is made once, live, with `OPENROUTER_API_KEY` set, and replaces the 
 ```bash
 RECORD=1 python -m threetears.evals 1-triage/triage.toml   # 1-triage/recordings/triage-toml.jsonl
 RECORD=1 python -m threetears.evals 1-triage/triage.py     # 1-triage/recordings/triage.jsonl
-RECORD=1 python -m threetears.evals 2-replies/replies.py   # 2-replies/recordings/replies.jsonl and judge.jsonl
+RECORD=1 python -m threetears.evals 2-replies/replies.py   # 2-replies/recordings/: replies, judge, judge_stronger
 RECORD=1 python -m threetears.evals 3-invoices/compare.py  # 3-invoices/recordings/invoices.jsonl, which 3a to 3e replay
 python -m threetears.evals 3-invoices/grid.py              # 3-invoices/recordings/invoices-high.jsonl, once deleted
 RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recordings/agent.jsonl
@@ -397,6 +430,9 @@ RECORD=1 python -m threetears.evals 4-booking/agent.py     # 4-booking/recording
 The grid's high-effort recording is made without `RECORD=1`: delete `invoices-high.jsonl` and run `grid.py` with the
 key set, and only the missing file is recorded live while the low-effort cells replay. `RECORD=1` would record
 `invoices.jsonl` afresh too, and pay for it again.
+
+Rung 2's stronger judge is recorded the same way: delete `judge_stronger.jsonl` and run with `ANTHROPIC_API_KEY`
+set. `RECORD=1` records the replies afresh, and the reference in `labels.csv` does not pair with new replies.
 
 Rung 5 records differently: with `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` set, and no `RECORD=1`, it
 records whatever is missing and replays the rest ([`5-writer/recordings/README.md`](5-writer/recordings/README.md)).

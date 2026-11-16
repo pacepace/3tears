@@ -6,6 +6,50 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: rung 2's judges checked against an adjudicated reference, and the console states a judge's agreement as counts
+
+**Changed:** `examples/2-replies/` checks its judge against a reference (owner rulings, 2026-11-16): `labels.csv`
+holds a person's blind read of 20 replies, adjudicated by the person reader where a model's blind read disagreed, with
+no independent adjudicator; 55 labels, 5 left out and said on their rows (4 unclear on adjudication, 1 borderline
+under the new wording). Two items were re-ruled by the owner on 2026-11-17 under the new wording. The three re-checks
+were chosen after both judges' verdicts were read, two of them because the stronger judge failed those replies, and
+one re-ruling (locked-out) moved the reference toward both judges: the ladder and the examples README show the
+`grounded` rows before the re-checks beside those after, and `adjudication/rechecks.csv` says why each was chosen.
+Agreed `grounded` passes read only under the earlier wording are carried to the new one (a pass under the stricter
+wording is a pass under the more lenient one). Both reads, the rulings, the re-checks and the page the readers read
+(`adjudication/blind_read_as_read.html`, an earlier draw) are in `adjudication/`. `grounded` now asks for consistency with the
+policy, not that the policy states everything: silence in the policy is no failure. A second eval, `stronger_eval`,
+judges the same replies with `claude-sonnet-5-5`. With at most two reference failures per dimension, neither judge is
+shown to catch failures; the ladder states each judge's counts. The model reviewer and `tighter_eval` are gone.
+
+**Changed:** the quick print's judge lines state agreement as counts (#1208): of the answers the reader failed, how
+many the judge failed (the catch rate), and of those it passed, how many the judge failed (the false-fail rate), each
+with its exact 95% interval; a side that gave one verdict, and a rate that cannot exist, are said. No kappa, bar, tier
+word or count of results still needed is printed: `judge uncalibrated` is now `judge not checked`, and the floor's
+"needs N more" is gone. Where a line holds more answers than cases (a pair read, or several readers), it says the
+intervals count each answer as independent, which answers on one case are not. A reviewer whose answers two models
+served prints one block per served model, each naming it (#1231). Labels off the draw are said with whose they are,
+and a label bound to other wording of its criterion is said as such, not as an output no longer among the answers.
+`analysis.blind_read.table_kappa`, whose one caller was the console, is removed.
+The console reads its rate statements from the one owner the host's response reads,
+`analysis.report.blind_rates.blind_rates`, so both say a rate in the same words: the catch rate is now `the judge
+caught 1 of the 2 the reader failed (exact 95% interval ...)` (was `the judge failed 1 of the 2 answers the reader
+failed (...)`), a missing rate `the reader failed no answer: no catch rate` (was `..., so no catch rate`), and a 1-5
+line opens with `a 1-5 criterion has no fixed pass, so no catch rate: the table counts every pair`. Each rate's
+interval is joined by the package's one interval rule, its `%` once after the high end (`exact 95% interval 0 to 97%`,
+was `0% to 97%`), on the console, the host's response and the ladder's tables alike. Rung 2's reference
+names its re-checks on every row's rater: `Brooks (adjudicated by the person reader; no independent adjudicator; 3
+grounded items re-checked after the judges were read)`.
+A judged miss names its dimension as every surface does (`the judge failed it on answer grounded (judged)`), not
+by its stored id (a one-line fix in `analysis/summary.py`, `_judged_missed`).
+
+**For hosts:** a closed blind read's `catch.said` now names what it counts, and its interval stands alone in the
+package's one interval form (number rule 3, `analysis/report/unit_once`), its `%` written once after the high end:
+`caught 0 of the 2 the reader failed (exact 95% interval 0 to 84%)` (was `caught 0 of 2 (exact 95% interval 0% to
+84%)`), and on a reviewer check `caught 1 of the 2 people failed (...)`. `false_fail.said` takes the same interval
+form: `failed 0 of the 18 the reader passed (exact 95% interval 0 to 19%)` (was `(... 0% to 19%)`). `count`, `of` and
+`interval` are unchanged; a host that matches on `said` moves to the new words.
+
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 
 **Fixed:** under a plan of looks (`AspectDesign.planned_looks`), the aspect page's contrast table head, the change
@@ -96,7 +140,7 @@ uses too), never as a third kind of rater.
 confusion counts (on 1-5, the full rating cross-table) per criterion and per reader, one per model that served a
 reviewer's answers; no kappa, bar verdict, tier or "more results" figure is stored. A closed read's `checks` serve the
 agreed count, the table, and on pass/fail the catch rate and the false-fail rate, each with its exact 95% interval and
-count (`caught 0 of 2 (exact 95% interval 0% to 84%)`), and say so plainly where one side gave a single verdict or the
+count (`caught 0 of the 2 the reader failed (exact 95% interval 0 to 84%)`), and say so plainly where one side gave a single verdict or the
 reader failed nothing, so no catch rate exists. A draw leaves out results judged on other wording of a criterion than
 it shows, and counts them, so every rating is bound to what its reader was shown. The quick path's console lines are
 unchanged for now.
