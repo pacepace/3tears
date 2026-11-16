@@ -37,7 +37,8 @@ from threetears.core.entities.base import BaseEntity
 from threetears.epoch import EpochGenerationSource
 from threetears.nats import NatsClient, set_default_namespace
 from threetears.nats.kv import build_kv_stream_config
-from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+from threetears.core.eviction import Declared
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP, TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -45,7 +46,8 @@ _SCOPE = "live-principal"
 _TABLE = "live_denylist"
 
 
-def _metadata() -> MetaData:
+def _metadata(eviction: Declared = TEST_L1_TABLE) -> MetaData:
+    """the table; ``TEST_L1_KEEP`` for a collection that writes behind (its rows wait in L1 for L3)."""
     metadata = MetaData()
     Table(
         _TABLE,
@@ -55,7 +57,7 @@ def _metadata() -> MetaData:
         Column("expires_at", DateTime(timezone=True)),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
-        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+        info={L1_EVICTION_INFO: eviction},
     )
     return metadata
 
@@ -286,7 +288,8 @@ async def test_listening_peers_in_one_scope_keep_a_compare_and_swap_counter(nats
         pods = []
         for nc in (first_nc, second_nc):
             l1 = SQLiteBackend(db_name=f"live_counter_{uuid.uuid4().hex[:8]}")
-            l1.initialize(_metadata())
+            # written behind: an evicted row would answer the count before its write, so the table is KEEP
+            l1.initialize(_metadata(TEST_L1_KEEP))
             registry = CollectionRegistry()
             registry.configure(l1_backend=l1, l2_client=nc, l3_pool=object(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
             await registry.start_invalidation_listener(nc)
