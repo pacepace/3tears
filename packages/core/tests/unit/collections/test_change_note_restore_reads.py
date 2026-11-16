@@ -15,9 +15,9 @@ from typing import Any, cast
 
 import pytest
 
-import threetears.core.collections.change_notes as change_notes
+import threetears.core.collections.change_note_keeper as change_note_keeper
 
-_SOURCE = Path(change_notes.__file__)
+_SOURCE = Path(change_note_keeper.__file__)
 
 
 def _callers() -> dict[str, set[str]]:
@@ -147,8 +147,8 @@ class _Pool:
         raise AssertionError("an emptying shares no session")
 
 
-def _keeper(pool: _Pool) -> change_notes.ChangeNoteKeeper:
-    return change_notes.ChangeNoteKeeper(pool, notes_schema="ring", log=cast(Any, object()))
+def _keeper(pool: _Pool) -> change_note_keeper.ChangeNoteKeeper:
+    return change_note_keeper.ChangeNoteKeeper(pool, notes_schema="ring", log=cast(Any, object()))
 
 
 @pytest.mark.parametrize(

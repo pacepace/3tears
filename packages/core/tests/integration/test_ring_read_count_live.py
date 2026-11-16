@@ -20,7 +20,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.ddl.change_notes import note_table
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 

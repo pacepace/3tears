@@ -2,7 +2,7 @@
 
 A test that reads or writes change notes wants the ring the platform runs: its tables, the ring row, and indexes
 the planner can use. :func:`install_note_ring` goes through :meth:`ChangeNoteKeeper.install
-<threetears.core.collections.change_notes.ChangeNoteKeeper.install>`, which builds again any ring index a failed
+<threetears.core.collections.change_note_keeper.ChangeNoteKeeper.install>`, which builds again any ring index a failed
 build left invalid (on a shared YugabyteDB, another session's DDL was seen to leave every one so, and every read
 of the notes then scanned its table), rather than running the ring's DDL statements itself.
 """
@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 
 __all__ = ["install_note_ring"]
 

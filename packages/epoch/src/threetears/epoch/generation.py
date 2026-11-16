@@ -731,7 +731,7 @@ class EpochGenerationSource(_ChangeLogReading):
     """advances collection write generations by appending each epoch's change to the change log.
 
     **A lost log has one owner.** In a deployment that runs the change-note keeper
-    (:class:`~threetears.core.collections.change_notes.ChangeNoteKeeper`), the keeper puts a lost log back
+    (:class:`~threetears.core.collections.change_note_keeper.ChangeNoteKeeper`), the keeper puts a lost log back
     from the L3 change notes, so every process's source there is built with ``restored_from_l3=True``: it
     never declares a log. While the log is absent a write waits up to ``restore_wait`` for the keeper, then
     fails (its rows and their notes committed, its epoch not appended, logged and counted as any refused

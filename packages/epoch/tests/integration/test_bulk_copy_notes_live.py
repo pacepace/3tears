@@ -26,7 +26,7 @@ import pytest
 
 from threetears.core.backends.protocol import copy_bounds
 from threetears.core.backends.sql import SqlL3Backend
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.generation import NotedTable
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, TableSchema
 from threetears.core.ddl.change_notes import (

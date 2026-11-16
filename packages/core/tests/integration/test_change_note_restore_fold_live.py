@@ -23,7 +23,8 @@ import asyncpg
 import pytest
 from threetears.nats.change_log import ChangeLogState
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper, NotedChange
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
+from threetears.core.collections.change_notes import NotedChange
 from threetears.core.collections.epoch_change import EpochChange, read_epoch_change_body
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.note_ring import install_note_ring
@@ -33,7 +34,7 @@ pytestmark = pytest.mark.integration
 _LOST = "lost-log"
 _RESTORED = "restored-log"
 
-#: the restore's chunk (change_notes._RESTORE_CHUNK_ROWS)
+#: the restore's chunk (change_note_keeper._RESTORE_CHUNK_ROWS)
 _CHUNK_ROWS = 5000
 
 #: one table's distinct keys: past two chunks

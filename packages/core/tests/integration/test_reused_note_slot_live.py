@@ -10,7 +10,7 @@ A measurement, not a gate: it asserts only that every read answers right, and ru
 ``THREETEARS_MEASURE_REUSED_SLOT=1`` (it fills 393,216 notes, minutes on YugabyteDB). Run it under the measure lock
 through the integration runner; ``R1_OUT`` names a JSON file for the table, ``R1_LATER`` (seconds, comma-separated)
 measures again after each wait, ``R1_FILL`` changes the fill. Its result is recorded at the code, above
-``_CURRENT_COUNT_SECONDS`` in ``threetears.core.collections.change_notes``. Since the keeper vacuums an emptied slot
+``_CURRENT_COUNT_SECONDS`` in ``threetears.core.collections.change_note_keeper``. Since the keeper vacuums an emptied slot
 on Postgres (Pace 2026-11-15), ``vacuum_s`` is that VACUUM's seconds; the result with it is recorded above
 ``ChangeNoteKeeper._vacuum_emptied``.
 """
@@ -30,13 +30,8 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import (
-    ChangeNoteKeeper,
-    NotedKeysPage,
-    NotedRows,
-    noted_keys_page,
-    noted_rows_since,
-)
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
+from threetears.core.collections.change_notes import NotedKeysPage, NotedRows, noted_keys_page, noted_rows_since
 from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.note_ring import install_note_ring

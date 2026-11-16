@@ -21,7 +21,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.ddl.change_notes import note_table
 from threetears.core.testing.calibrate import budget_problem, plain_keyed_delete_seconds
 from threetears.core.testing.note_ring import install_note_ring

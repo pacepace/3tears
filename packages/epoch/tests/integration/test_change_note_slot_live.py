@@ -31,7 +31,7 @@ import pytest
 from prometheus_client import REGISTRY
 
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import NotedTable
 from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, collection_for_schema

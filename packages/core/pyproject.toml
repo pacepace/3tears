@@ -31,10 +31,6 @@ dependencies = [
     "pydantic",
     "pyyaml>=6.0",  # duplicate-key-refusing loader for human-authored files (core.authored_yaml)
     "pydantic-core",  # to_jsonable_python (core.serialization); pydantic pins the release
-    # the change notes' restore folds its notes as Arrow (core.change_note_fold, 067057526), and change_notes imports
-    # it at module top, so every importer of the epoch follow needs it, not only the snapshot extra's: the SDK's suite
-    # against this tree failed 111 tests on ModuleNotFoundError until it was a dependency (SQ4, 2026-11-15)
-    "pyarrow>=17",
 ]
 
 [project.optional-dependencies]
@@ -67,6 +63,15 @@ tracing = ["opentelemetry-api>=1.20,<2"]
 # request" makes a packaging requirement look like a runtime bug.
 socks = ["httpx[socks]"]
 duckdb = ["duckdb>=1.1"]
+# The Arrow-specific modules without DuckDB: a lost change log's restore (threetears.core.collections.change_note_keeper,
+# which folds its notes as Arrow in a worker: core.change_note_fold) and the shared-Arrow store, pool and jobs
+# (threetears.core.shared_arrow). The process that runs the change-note keeper (the hub) names it.
+# WHY an extra, never a base dependency (Pace 2026-11-15): a process that only follows the epoch log, writes or reads
+# (the SDK's agents) imports no Arrow, and pyarrow + NumPy are ~150 MB it would carry for nothing. 26dabec04 made
+# pyarrow a base dependency because change_notes imported the restore's fold at module top; the keeper now lives in a
+# module of its own, and tests/enforcement/test_core_imports_without_arrow.py imports every other core module in a
+# venv holding neither pyarrow nor NumPy.
+arrow = ["pyarrow>=17", "numpy>=1.26"]
 # a pod's whole copy of its tables in a DuckDB L1 read as Arrow (threetears.core.collections.copy_follower,
 # copy_checkpoint): pyarrow reads the rail's Arrow replies and writes the checkpoint's parts; DuckDB reads
 # Arrow without a copy. numpy: a changed-rows read's held Arrow table, its hashes decoded and its groups' lanes

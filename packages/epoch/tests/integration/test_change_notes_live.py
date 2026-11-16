@@ -41,7 +41,8 @@ from threetears.core.backends.protocol import LoadFile
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, BaseCollection, CollectionRegistry
-from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper, ScrubPass
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper, ScrubPass
+from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO
 from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, key_text, read_epoch_change_body
 from threetears.core.collections.generation import NotedTable, tenancy_of_table
 from threetears.core.collections.l2_first import run_l2_first_worker

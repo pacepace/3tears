@@ -21,7 +21,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.epoch_change import EpochChange
 from threetears.core.ddl.change_notes import note_table
 from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems

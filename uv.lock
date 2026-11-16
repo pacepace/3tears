@@ -147,7 +147,6 @@ dependencies = [
     { name = "3tears-nats" },
     { name = "3tears-observe" },
     { name = "asyncpg" },
-    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pydantic-core" },
     { name = "pyyaml" },
@@ -155,6 +154,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+arrow = [
+    { name = "numpy" },
+    { name = "pyarrow" },
+]
 duckdb = [
     { name = "duckdb" },
 ]
@@ -206,10 +209,11 @@ requires-dist = [
     { name = "duckdb", marker = "extra == 'snapshot'", specifier = ">=1.1" },
     { name = "httpx", marker = "extra == 'http'" },
     { name = "httpx", extras = ["socks"], marker = "extra == 'socks'" },
+    { name = "numpy", marker = "extra == 'arrow'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'snapshot'", specifier = ">=1.26" },
     { name = "opentelemetry-api", marker = "extra == 'tracing'", specifier = ">=1.20,<2" },
     { name = "pgvector", marker = "extra == 'pgvector'" },
-    { name = "pyarrow", specifier = ">=17" },
+    { name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=17" },
     { name = "pyarrow", marker = "extra == 'snapshot'", specifier = ">=17" },
     { name = "pydantic" },
     { name = "pydantic-core" },
@@ -220,7 +224,7 @@ requires-dist = [
     { name = "testcontainers", extras = ["nats", "postgres"], marker = "extra == 'testing'", specifier = ">=4.15.0" },
     { name = "uuid-utils", marker = "extra == 'uuid-utils'" },
 ]
-provides-extras = ["security", "http", "nats", "tracing", "socks", "duckdb", "snapshot", "testing", "pgvector", "uuid-utils"]
+provides-extras = ["security", "http", "nats", "tracing", "socks", "duckdb", "arrow", "snapshot", "testing", "pgvector", "uuid-utils"]
 
 [[package]]
 name = "3tears-agent-acl"

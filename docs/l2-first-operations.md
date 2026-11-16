@@ -10,7 +10,8 @@ An **L2-first** collection commits each write in NATS (one epoch record in the c
 row), then a saver makes L3 match. Its L3 writes leave notes like any other table's.
 
 This page is for whoever wires, runs and watches it. The design is in the module docstrings of
-`threetears.core.collections.change_notes` and `threetears.core.collections.l2_first`.
+`threetears.core.collections.change_note_keeper` and `threetears.core.collections.l2_first`. The process that runs
+the keeper installs `3tears[arrow]`: a restore folds its notes as Arrow.
 
 ## Facts every section uses
 
@@ -130,7 +131,7 @@ read of the generation fails at once and its caller asks L3.
 ```python
 from datetime import timedelta
 from threetears.core.coordination.lease import KVLease
-from threetears.core.collections.change_notes import ChangeNoteKeeper, run_change_note_keeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper, run_change_note_keeper
 from threetears.core.collections.generation import noted_tables
 
 keeper = ChangeNoteKeeper(l3_pool, notes_schema="platform", log=source)

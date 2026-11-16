@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.ddl.index_health import rebuild_unusable_indexes
 
 _INDEX_DEF = 'CREATE INDEX "ring_key" ON ring.notes USING lsm (k)'

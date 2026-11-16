@@ -24,7 +24,8 @@ import pytest
 from threetears.nats.change_log import ChangeLogState
 
 from threetears.core.change_note_fold import RestoreFolder
-from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
+from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO
 from threetears.core.collections.epoch_change import EpochChange, keyed_record_form
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem

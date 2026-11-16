@@ -68,7 +68,7 @@ from sqlalchemy import MetaData
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, CollectionRegistry
-from threetears.core.collections.change_notes import ChangeNoteKeeper
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper
 from threetears.core.collections.epoch_change import ChangedRow
 from threetears.core.collections.generation import NotedTable
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, TableSchema, collection_for_schema

@@ -294,11 +294,9 @@ _RECORDED_AS_FOUND: tuple[tuple[str, tuple[str, ...]], ...] = (
             "pydantic",
             "pyyaml",
             "pydantic-core",
-            # (SQ4/LAND1 2026-11-15) a lost change log's restore folds its notes as Arrow in a worker
-            # (core.change_note_fold, imported at module top by core.collections.change_notes), so every importer of
-            # the epoch follow needs pyarrow, not only the snapshot extra's: the SDK's suite failed 111 tests on
-            # ModuleNotFoundError until it was a dependency
-            "pyarrow",
+            # pyarrow is NOT here (Pace 2026-11-15): it is the arrow / snapshot extras' only. A lost change log's
+            # restore folds as Arrow (core.change_note_fold), so the keeper lives in core.collections.change_note_keeper,
+            # apart from the readers every epoch follower imports; test_core_imports_without_arrow.py holds it
         ),
     ),
     (

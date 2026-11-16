@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: pyarrow stays optional -- the change-note keeper moves to its own module, behind the new `arrow` extra
+
+**Changed (import path):** `ChangeNoteKeeper`, `run_change_note_keeper`, `KeeperPass`, `ScrubPass` and
+`NoteRingState` move from `threetears.core.collections.change_notes` to `threetears.core.collections.change_note_keeper`.
+A lost change log's restore folds its notes as Arrow in a worker (`threetears.core.change_note_fold`), so the keeper
+imports pyarrow and NumPy at module top; the readers every epoch follower imports (`NotedChange`, `noted_rows_since`,
+`noted_keys_page`, `RESTORE_BUDGET_RATIO`) stay in `change_notes` and import no Arrow. The process that runs the
+keeper (the hub) installs **`3tears[arrow]`** (pyarrow + NumPy, no DuckDB); `3tears[snapshot]` is unchanged and
+carries them too. pyarrow is no longer a base dependency of `3tears` (it never was in a release).
+`NOTE_KEY_SEPARATOR` (`threetears.core.ddl.change_notes`) and `whole_noted_change` (`change_notes`) are the two pieces
+the keeper and the readers share. `tests/enforcement/test_core_imports_without_arrow.py` installs core from the lock
+without the Arrow extras in a fresh venv and imports every core module but the listed Arrow ones.
+
 ### core: the L2 (NATS) on the cache family -- every bucket declares its eviction policy, and its sizes are gauges
 
 - `threetears.core.l2_sizes`: every bucket a 3tears package names declares EVICTABLE or KEEP with its reason

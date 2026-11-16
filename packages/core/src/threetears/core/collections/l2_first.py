@@ -30,7 +30,7 @@ match in L3.
 refiller's mark), a key L2 does not hold is absent; while it does not, a lookup raises
 :class:`L2LostError` and the pod serves what it holds, reporting itself behind through the epoch catch-up.
 When NATS loses the epoch change log, the change-note keeper
-(:class:`~threetears.core.collections.change_notes.ChangeNoteKeeper`) puts it back from the L3 change notes
+(:class:`~threetears.core.collections.change_note_keeper.ChangeNoteKeeper`) puts it back from the L3 change notes
 under a new incarnation that continues the lost one, as for every other table. The refiller
 (:class:`L2Refiller`) then puts back, from L3, every row (only where L2 holds nothing for the key, so a write
 since the loss is never overwritten), and last the mark that L2 is complete. A pod catches up through the

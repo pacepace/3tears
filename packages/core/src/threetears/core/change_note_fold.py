@@ -1,6 +1,6 @@
 """a restore's keyed change notes folded into their epoch records in a worker process, never on the event loop.
 
-**Why.** A lost change log is put back from the change notes (:class:`~threetears.core.collections.change_notes.
+**Why.** A lost change log is put back from the change notes (:class:`~threetears.core.collections.change_note_keeper.
 ChangeNoteKeeper`) inside a serving process (the hub). The restore read every keyed note as rows (asyncpg records),
 folded them into each table's distinct rows and validated them as :class:`~threetears.core.collections.epoch_change.
 ChangedRow` models on the event loop, and ``finish_restore`` then wrote each chunk's records there too. Measured (L1,
@@ -86,7 +86,7 @@ def _page_table(data: bytes) -> pa.Table:
 _FoldedRecord = tuple[int, str, str | None, bytes]
 
 #: the most the folder's store holds at once (a page handed, its records, the next page): its pages are about
-#: :data:`~threetears.core.collections.change_notes._RESTORE_PAGE_BYTES` and its records about twice that, so this is
+#: :data:`~threetears.core.collections.change_note_keeper._RESTORE_PAGE_BYTES` and its records about twice that, so this is
 #: far above what a restore takes, and below the 64 MiB a container's ``/dev/shm`` has by default
 _STORE_BYTES: Final = 48 << 20
 
