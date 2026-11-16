@@ -39,8 +39,9 @@ export async function startExample(options = {}) {
       res.writeHead(status, { "Content-Type": type, "Cache-Control": "no-cache", ...headers });
       res.end(body);
     };
-    if (path === "/app/shell.json") {
-      return send(200, JSON.stringify({ version, cache: "example", shell: SHELL, never: ["^/app/api/", "^/app/login"] }), TYPES[".json"]);
+    if (path === "/app/shell.js") {
+      const config = { version, cache: "example", shell: SHELL, never: ["^/app/api/", "^/app/login"] };
+      return send(200, `self.SHELL_CONFIG = ${JSON.stringify(config)};\n`, TYPES[".js"]);
     }
     if (path === "/app/version.json") return send(200, JSON.stringify({ version }), TYPES[".json"]);
     if (path.startsWith("/app/api/")) return send(200, JSON.stringify({ at: Date.now(), version }), TYPES[".json"]);
@@ -54,7 +55,6 @@ export async function startExample(options = {}) {
     try {
       let body = await readFile(file);
       if (path === "/app/app.js") body = Buffer.from(body.toString().replace('VERSION = "1"', `VERSION = ${JSON.stringify(version)}`));
-      if (path.endsWith("shell-worker.js")) body = Buffer.concat([body, Buffer.from(`\n// build ${version}\n`)]);
       // the worker lives with the package's files but serves the whole app: allow its scope
       const extra = path.endsWith("shell-worker.js") ? { "Service-Worker-Allowed": "/app/" } : {};
       return send(200, body, TYPES[extname(file)] ?? "application/octet-stream", extra);

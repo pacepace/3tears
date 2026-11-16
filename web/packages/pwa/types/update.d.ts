@@ -31,13 +31,14 @@ export function registerWorker(url: string, options?: {
     stop: () => void;
 }>;
 /**
- * Polls a version file (`{"version": "..."}` or any JSON whose `field` names the build) and calls
- * `onUpdate(newVersion)` once when it differs from `current`. Fetched with `no-store`. Returns a
- * stop function.
+ * Watches a version file (`{"version": "..."}` or any JSON whose `field` names the build) and calls
+ * `onUpdate(newVersion)` once when it differs from `current`. Looks at once, every `everyMs`, and,
+ * given `win`, whenever the page comes back into view or gets focus (when a person returns to an
+ * installed app). Fetched with `no-store` and a `ts` query, so no cache in between answers.
  * @param {string} url
  * @param {string} current
  * @param {(version: string) => void} onUpdate
- * @param {{ everyMs?: number, field?: string, fetch?: typeof fetch,
+ * @param {{ everyMs?: number, field?: string, fetch?: typeof fetch, win?: Window,
  *   timers?: { setInterval: typeof setInterval, clearInterval: typeof clearInterval } }} [options]
  * @returns {{ check: () => Promise<string | null>, stop: () => void }}
  */
@@ -45,6 +46,7 @@ export function watchVersion(url: string, current: string, onUpdate: (version: s
     everyMs?: number;
     field?: string;
     fetch?: typeof fetch;
+    win?: Window;
     timers?: {
         setInterval: typeof setInterval;
         clearInterval: typeof clearInterval;
@@ -66,14 +68,16 @@ export function forceReload(win?: Window & typeof globalThis): Promise<void>;
  * `forceReload`). The React hook in `@3tears/pwa/react` wraps it.
  * @param {() => unknown} apply what activates the update (`applyUpdate`, or Workbox's `updateServiceWorker(true)`)
  * @param {(state: "idle" | "reloading" | "stalled") => void} onState
- * @param {{ timeoutMs?: number, setTimeout?: typeof setTimeout }} [options]
- * @returns {{ reload: () => void, readonly state: "idle" | "reloading" | "stalled" }}
+ * @param {{ timeoutMs?: number, setTimeout?: typeof setTimeout, clearTimeout?: typeof clearTimeout }} [options]
+ * @returns {{ reload: () => void, cancel: () => void, readonly state: "idle" | "reloading" | "stalled" }}
  */
 export function updatePrompt(apply: () => unknown, onState: (state: "idle" | "reloading" | "stalled") => void, options?: {
     timeoutMs?: number;
     setTimeout?: typeof setTimeout;
+    clearTimeout?: typeof clearTimeout;
 }): {
     reload: () => void;
+    cancel: () => void;
     readonly state: "idle" | "reloading" | "stalled";
 };
 /**

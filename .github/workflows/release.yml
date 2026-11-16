@@ -386,8 +386,13 @@ jobs:
   #
   # Idempotent like `skip-existing`: a version already in the registry is skipped, so a republish
   # dispatch publishes only what is missing.
+  #
+  # Off until the repository variable NPM_PUBLISH is "true": GitHub Packages takes `@3tears/*` only
+  # from a GitHub owner named `3tears`, which this repository's owner is not (docs/releasing.md).
+  # Until the scope is settled a release publishes PyPI only, and this job reports skipped.
   npm-publish:
     needs: pypi-publish
+    if: vars.NPM_PUBLISH == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

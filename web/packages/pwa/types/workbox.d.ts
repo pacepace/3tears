@@ -12,14 +12,13 @@
  */
 /**
  * @param {WorkboxModules} wb
- * @param {{ precache: unknown, shell?: string, neverShell?: readonly RegExp[], navigationCache: string,
+ * @param {{ precache: unknown, shell?: string, neverShell?: readonly RegExp[],
  *   networkFirst?: Array<{ path: string, cacheName: string }>, timeoutSeconds?: number }} options
  */
 export function appShell(wb: WorkboxModules, options: {
     precache: unknown;
     shell?: string;
     neverShell?: readonly RegExp[];
-    navigationCache: string;
     networkFirst?: Array<{
         path: string;
         cacheName: string;
@@ -34,11 +33,14 @@ export function appShell(wb: WorkboxModules, options: {
  * 2. precache the build's files (hashed names, so cache-first is safe) and delete precaches of
  *    older builds;
  * 3. navigations get the precached `index.html`, except paths that are never the app's shell
- *    (`neverShell`: the API, sockets, health, sign-in and media);
- * 4. navigations and each `networkFirst` path go to the network first, the cache only when the
- *    network does not answer within `timeoutSeconds`, one entry for a day.
+ *    (`neverShell`: the API, sockets, health, sign-in and media), which go to the network with
+ *    nothing stored;
+ * 4. each `networkFirst` path (a runtime config the server rewrites) goes to the network first,
+ *    the cache only when the network does not answer within `timeoutSeconds`, one entry for a day.
  *
  * Audio, the API and sign-in are never cached: only the precache list and the named paths are.
+ * (A worker that also routes navigations network-first after the shell route, as metallm's did,
+ * only ever reaches the never-shell navigations with it, and stores them: this one does not.)
  * The Workbox modules are passed in, so the app's own Workbox (and its test doubles) are the ones
  * used; this package does not depend on Workbox.
  */

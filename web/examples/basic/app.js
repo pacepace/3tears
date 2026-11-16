@@ -23,7 +23,7 @@ function setPlaying(on) {
 media.setNowPlaying({ title: "Example", album: "Example", artwork: [{ src: "/app/icon-512.png", sizes: "512x512", type: "image/png" }] });
 document.getElementById("play").addEventListener("click", () => setPlaying(!playing));
 
-export const worker = registerWorker("/app/pwa/shell-worker.js?config=/app/shell.json", {
+export const worker = registerWorker("/app/pwa/shell-worker.js?config=/app/shell.js", {
   scope: "/app/",
   checkEveryMs: null,
   onUpdate: () => {

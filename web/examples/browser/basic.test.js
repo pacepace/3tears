@@ -86,11 +86,27 @@ test("online, every load is the server's current file; offline, the shell answer
   await context.close();
 });
 
+test("opening the app offline after the browser stopped its worker still finds the shell", async (t) => {
+  if (skip) return t.skip(skip);
+  app.setVersion("1");
+  const { context, page } = await openApp();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("ServiceWorker.enable");
+  await context.setOffline(true);
+  await cdp.send("ServiceWorker.stopAllWorkers");
+  // a new window, as a launch from the home screen is (reloading the page the DevTools session is
+  // attached to closes it in headless Chromium)
+  const launch = await context.newPage();
+  await launch.goto(`${app.url}/app/`);
+  await launch.waitForFunction(() => document.getElementById("version").textContent === "version 1");
+  await context.close();
+});
+
 test("a new version waits for the person, then the page reloads into it", async (t) => {
   if (skip) return t.skip(skip);
   app.setVersion("1");
   const { context, page } = await openApp();
-  app.setVersion("2"); // a deploy
+  app.setVersion("2"); // a deploy: only the config the worker imports changes, never the worker file
   await page.evaluate(() => window.exampleWorker.then((w) => w.registration.update()));
   await page.waitForFunction(() => !document.getElementById("update").hidden);
   // still the old version: nothing replaced the running page
@@ -130,6 +146,6 @@ test("with no config the worker caches nothing and passes everything through", a
     await fetch("/app/api/now");
     return caches.keys();
   });
-  assert.deepEqual(result.filter((n) => n !== "3tears-shell-config"), []);
+  assert.deepEqual(result, []);
   await context.close();
 });

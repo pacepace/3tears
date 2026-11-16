@@ -90,13 +90,14 @@ export async function registerWorker(url, options = {}) {
 }
 
 /**
- * Polls a version file (`{"version": "..."}` or any JSON whose `field` names the build) and calls
- * `onUpdate(newVersion)` once when it differs from `current`. Fetched with `no-store`. Returns a
- * stop function.
+ * Watches a version file (`{"version": "..."}` or any JSON whose `field` names the build) and calls
+ * `onUpdate(newVersion)` once when it differs from `current`. Looks at once, every `everyMs`, and,
+ * given `win`, whenever the page comes back into view or gets focus (when a person returns to an
+ * installed app). Fetched with `no-store` and a `ts` query, so no cache in between answers.
  * @param {string} url
  * @param {string} current
  * @param {(version: string) => void} onUpdate
- * @param {{ everyMs?: number, field?: string, fetch?: typeof fetch,
+ * @param {{ everyMs?: number, field?: string, fetch?: typeof fetch, win?: Window,
  *   timers?: { setInterval: typeof setInterval, clearInterval: typeof clearInterval } }} [options]
  * @returns {{ check: () => Promise<string | null>, stop: () => void }}
  */
@@ -108,10 +109,12 @@ export function watchVersion(url, current, onUpdate, options = {}) {
   const check = async () => {
     if (done) return null;
     try {
-      const r = await get(url, { cache: "no-store" });
+      const busted = `${url}${url.includes("?") ? "&" : "?"}ts=${Date.now()}`;
+      const r = await get(busted, { cache: "no-store" });
       if (!r.ok) return null;
       const seen = String((await r.json())?.[field] ?? "");
-      if (seen && seen !== current) {
+      // two looks in flight at once (focus while a timer's look runs) report it once
+      if (seen && seen !== current && !done) {
         done = true;
         onUpdate(seen);
       }
@@ -121,11 +124,20 @@ export function watchVersion(url, current, onUpdate, options = {}) {
     }
   };
   const id = timers.setInterval(() => void check(), options.everyMs ?? UPDATE_CHECK_INTERVAL_MS);
+  const win = options.win;
+  const onVisible = () => {
+    if (win?.document?.visibilityState !== "hidden") void check();
+  };
+  win?.addEventListener("focus", onVisible);
+  win?.document?.addEventListener("visibilitychange", onVisible);
+  void check();
   return {
     check,
     stop() {
       done = true;
       timers.clearInterval(id);
+      win?.removeEventListener("focus", onVisible);
+      win?.document?.removeEventListener("visibilitychange", onVisible);
     },
   };
 }
@@ -163,13 +175,16 @@ export async function forceReload(win = /** @type {Window & typeof globalThis} *
  * `forceReload`). The React hook in `@3tears/pwa/react` wraps it.
  * @param {() => unknown} apply what activates the update (`applyUpdate`, or Workbox's `updateServiceWorker(true)`)
  * @param {(state: "idle" | "reloading" | "stalled") => void} onState
- * @param {{ timeoutMs?: number, setTimeout?: typeof setTimeout }} [options]
- * @returns {{ reload: () => void, readonly state: "idle" | "reloading" | "stalled" }}
+ * @param {{ timeoutMs?: number, setTimeout?: typeof setTimeout, clearTimeout?: typeof clearTimeout }} [options]
+ * @returns {{ reload: () => void, cancel: () => void, readonly state: "idle" | "reloading" | "stalled" }}
  */
 export function updatePrompt(apply, onState, options = {}) {
   /** @type {"idle" | "reloading" | "stalled"} */
   let state = "idle";
   const later = options.setTimeout ?? globalThis.setTimeout;
+  const clear = options.clearTimeout ?? globalThis.clearTimeout;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let timer = null;
   const set = (/** @type {"idle" | "reloading" | "stalled"} */ s) => {
     state = s;
     onState(s);
@@ -179,9 +194,14 @@ export function updatePrompt(apply, onState, options = {}) {
       if (state !== "idle") return;
       set("reloading");
       void apply();
-      later(() => {
+      timer = later(() => {
+        timer = null;
         if (state === "reloading") set("stalled");
       }, options.timeoutMs ?? SW_RELOAD_TIMEOUT_MS);
+    },
+    cancel() {
+      if (timer !== null) clear(timer);
+      timer = null;
     },
     get state() {
       return state;

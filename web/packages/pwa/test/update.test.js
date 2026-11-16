@@ -102,9 +102,15 @@ test("watchVersion reports a new version once, and survives a failed fetch", asy
   const t = timers();
   let served = { version: "1" };
   let failing = false;
-  const fetch = async (url, opts) => { assert.equal(opts.cache, "no-store"); if (failing) throw new Error("offline"); return { ok: true, json: async () => served }; };
+  const fetch = async (url, opts) => {
+    assert.equal(opts.cache, "no-store");
+    assert.match(url, /^\/version\.json\?ts=\d+$/);
+    if (failing) throw new Error("offline");
+    return { ok: true, json: async () => served };
+  };
   const seen = [];
   const w = watchVersion("/version.json", "1", (v) => seen.push(v), { fetch, timers: t });
+  await new Promise((r) => setImmediate(r)); // the first look, at once
   assert.equal(await w.check(), "1");
   failing = true;
   assert.equal(await w.check(), null);
@@ -120,6 +126,26 @@ test("watchVersion reports a new version once, and survives a failed fetch", asy
   w.stop(); byField.stop();
 });
 
+test("watchVersion looks at once, and again on focus or when the page comes back into view", async () => {
+  class Win extends Target { constructor() { super(); this.document = new Target(); this.document.visibilityState = "visible"; } }
+  const win = new Win();
+  let looks = 0;
+  const fetch = async () => { looks += 1; return { ok: true, json: async () => ({ version: "1" }) }; };
+  const w = watchVersion("/v.json?x=1", "1", () => {}, { fetch, timers: timers(), win });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(looks, 1);
+  win.emit("focus");
+  win.document.visibilityState = "hidden";
+  win.document.emit("visibilitychange");
+  win.document.visibilityState = "visible";
+  win.document.emit("visibilitychange");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(looks, 3);
+  w.stop();
+  win.emit("focus");
+  assert.equal(looks, 3);
+});
+
 test("the prompt never reloads by itself; it offers the escape hatch when stalled", () => {
   const pending = [];
   const states = [];
@@ -131,6 +157,11 @@ test("the prompt never reloads by itself; it offers the escape hatch when stalle
   assert.equal(pending[0][1], SW_RELOAD_TIMEOUT_MS);
   pending[0][0]();
   assert.deepEqual(states, ["reloading", "stalled"]);
+  const cleared = [];
+  const q = updatePrompt(() => {}, () => {}, { setTimeout: () => 7, clearTimeout: (id) => cleared.push(id) });
+  q.reload();
+  q.cancel();
+  assert.deepEqual(cleared, [7]);
 });
 
 test("forceReload unregisters every worker, deletes every cache and reloads, whatever fails", async () => {

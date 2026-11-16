@@ -2,7 +2,7 @@
  * Thin React hooks over the framework-free core, for React apps. Each is optional: import only
  * `@3tears/pwa/react`'s hooks an app uses. React is a peer dependency of this entry only.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { forceReload, updatePrompt } from "./update.js";
 
 /**
@@ -18,8 +18,13 @@ export function useUpdatePrompt(apply, options = {}) {
   const [state, setState] = useState(/** @type {"idle" | "reloading" | "stalled"} */ ("idle"));
   const applyRef = useRef(apply);
   applyRef.current = apply;
-  const prompt = useMemo(() => updatePrompt(() => applyRef.current(), setState, options), [options.timeoutMs]);
-  const reload = useCallback(() => prompt.reload(), [prompt]);
+  // one prompt for the component's life, so its state never resets under a reload in progress
+  const promptRef = useRef(/** @type {ReturnType<typeof updatePrompt> | null} */ (null));
+  if (promptRef.current === null) {
+    promptRef.current = updatePrompt(() => applyRef.current(), setState, { timeoutMs: options.timeoutMs });
+  }
+  useEffect(() => () => promptRef.current?.cancel(), []);
+  const reload = useCallback(() => promptRef.current?.reload(), []);
   const force = useCallback(() => forceReload(), []);
   return { reload, reloading: state !== "idle", stalled: state === "stalled", forceReload: force };
 }

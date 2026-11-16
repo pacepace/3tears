@@ -18,8 +18,10 @@ player's Media Session, wake lock and safe areas; discodon's iOS install finding
 
 ## Install
 
-Published to GitHub Packages. Point the scope at it in the app's `.npmrc` (with a token that can
-read packages: `NODE_AUTH_TOKEN`, a build secret, never committed):
+Published to GitHub Packages (release.yml's `npm-publish`, once the registry scope is settled:
+GitHub Packages takes `@3tears/*` only from a GitHub owner named `3tears`; docs/releasing.md).
+Point the scope at it in the app's `.npmrc` (with a token that can read packages:
+`NODE_AUTH_TOKEN`, a build secret, never committed):
 
 ```
 @3tears:registry=https://npm.pkg.github.com
@@ -38,7 +40,7 @@ build does it) and imports `./pwa/index.js`.
 | Feature | Entry | What the app configures |
 |---|---|---|
 | Install: manifest, head tags | `appManifest`, `installId`, `headTags`, `VIEWPORT` (`@3tears/pwa`) | identity (`id`, `start_url`, `scope`), names, theme, icons |
-| Service worker, no build step | `shell-worker.js` | its shell list, never-list, version, update mode (a JSON file) |
+| Service worker, no build step | `shell-worker.js` | its shell list, never-list, version, update mode (a small script) |
 | Service worker, Workbox (Vite) | `appShell` (`@3tears/pwa/workbox`), `vitePwa` (`@3tears/pwa/vite`) | precache, never-shell paths, network-first files |
 | Update prompt | `registerWorker`, `watchVersion`, `updatePrompt`, `forceReload`; `useUpdatePrompt` (`/react`) | the banner it draws; how often to check |
 | Web Push, page side | `pushSupported`, `subscribePush`, `unsubscribePush`, `keyBytes`, `workerRegistration` | its key endpoint and device API |
@@ -55,9 +57,9 @@ Guidance for each app's integration (the station's is done; metallm's and scriob
 
 | App | Imports | Configures |
 |---|---|---|
-| **metallm** (React, Vite, vite-plugin-pwa, Workbox, push) | `vitePwa` in `vite.config.ts`; in `src/sw.ts`: `appShell` with its own Workbox modules, `listenForSkipWaiting`, `showPushes`, `openOnNotificationClick`; in the page: `useUpdatePrompt(() => updateServiceWorker(true))` with `checkForUpdates` from `useRegisterSW`'s `onRegisteredSW`, `subscribePush`/`unsubscribePush` around its `/api/v1/push` calls, `isStandalone` | manifest (as today, no `id`), `runtimeFiles: ["config.js"]`, `neverShell: [...NEVER_SHELL, /^\/s3\//]`, `navigationCache: "metallm-navigation"`, `networkFirst: [{ path: "/config.js", cacheName: "metallm-runtime-config" }]`, its payload-to-notification and tap-to-conversation functions, its banner markup |
-| **scriob** (React, Vite, hand-written manifest and worker, online only) | `shell-worker.js` copied to `public/` and registered with no config and `?update=immediate` (caches nothing, as its `sw.js` does); `watchVersion("/version.json", buildId, ..., { field: "buildId" })` for its banner; `appManifest` in its manifest test | `public/manifest.webmanifest` as today; its banner |
-| **station** (plain modules, no build, one app per station) | `src/` served as `/player/pwa/`; `registerWorker` with `shell-worker.js`; `MediaSessionControl`, `ScreenWakeLock`, `markDisplayMode`, `safe-area.css`; the server writes the manifest and head per station following `appManifest`/`headTags` | `/player/shell.json` (its files, never `/api/`, `/auth/`, audio), `Service-Worker-Allowed: /player/`, per-station `id` `/stations/<id>`, its notice for an update |
+| **metallm** (React, Vite, vite-plugin-pwa, Workbox, push) | `vitePwa` in `vite.config.ts`; in `src/sw.ts`: `appShell` with its own Workbox modules, `listenForSkipWaiting`, `showPushes`, `openOnNotificationClick`; in the page: `useUpdatePrompt(() => updateServiceWorker(true))` with `checkForUpdates` from `useRegisterSW`'s `onRegisteredSW`, `subscribePush`/`unsubscribePush` around its `/api/v1/push` calls, `isStandalone` | manifest (as today, no `id`), `runtimeFiles: ["config.js"]`, `neverShell: [...NEVER_SHELL, /^\/s3\//]`, `networkFirst: [{ path: "/config.js", cacheName: "metallm-runtime-config" }]`, its payload-to-notification and tap-to-conversation functions, its banner markup |
+| **scriob** (React, Vite, hand-written manifest and worker, online only) | `shell-worker.js` copied to `public/` and registered with no config and `?update=immediate` (caches nothing, as its `sw.js` does); `watchVersion("/version.json", buildId, ..., { field: "buildId", win: window })` for its banner (at once, on focus and on return to view, as its own check does); `appManifest` in its manifest test | `public/manifest.webmanifest` as today; its banner |
+| **station** (plain modules, no build, one app per station) | `src/` served as `/player/pwa/`; `registerWorker` with `shell-worker.js?config=/player/shell.js`; `MediaSessionControl`, `ScreenWakeLock`, `markDisplayMode`, `safe-area.css`; the server writes the manifest and head per station following `appManifest`/`headTags` | `/player/shell.js` (its files, never `/api/`, `/auth/`, audio), `Service-Worker-Allowed: /player/`, per-station `id` `/stations/<id>`, its notice for an update |
 
 ## Install conventions
 
@@ -84,43 +86,54 @@ Agreed for the family (2026-11-09):
 
 ### `shell-worker.js` (no build step)
 
-A complete classic service worker, configured by its URL:
+A complete classic service worker, served as is from the package's files, configured by a small
+script the app serves (its server or build writes it):
 
 ```js
 import { registerWorker } from "./pwa/index.js";
 
-const worker = await registerWorker("/app/pwa/shell-worker.js?config=/app/shell.json", {
+const worker = await registerWorker("/app/pwa/shell-worker.js?config=/app/shell.js", {
   scope: "/app/",
   onUpdate: () => showBanner(),          // the app draws it
 });
 reloadButton.onclick = () => worker.applyUpdate();
 ```
 
-```json
-{ "version": "1.4.2", "cache": "app", "shell": ["/app/", "/app/app.js"], "never": ["^/app/api/"], "update": "prompt" }
+```js
+// /app/shell.js
+self.SHELL_CONFIG = { version: "1.4.2", cache: "app", shell: ["/app/", "/app/app.js"], never: ["^/app/api/"], update: "prompt" };
 ```
 
+- **The config is part of the worker.** It is loaded with `importScripts`, and browsers compare a
+  worker's imported scripts as well as its own bytes when they look for an update, so a release
+  that changes it (a new `version`, new files) is a new worker, which waits for the person; and a
+  worker the browser stopped and started again has its config at once, even offline.
 - Only the `shell` files are touched; anything else goes to the network untouched, and `never`
   is checked first.
 - The shell is **network-first**: online, every load is the server's current file (a page and its
   scripts never come from two versions); the cache answers only when the network does not. Only a
-  plain 200 is stored, never a redirect to sign-in.
+  plain 200 is stored, never a redirect to sign-in. Shell paths match exactly: a deep link of a
+  single-page app has no offline copy unless it is listed.
 - Served from a path below the scope it serves (`/app/pwa/` for `/app/`), the worker needs the
   response header `Service-Worker-Allowed: /app/`.
-- No config: caches nothing, passes everything through. `?update=immediate` activates a new
-  version at once, for an app with nothing to lose on a reload.
+- No config: caches nothing, passes everything through, deletes nothing. `?update=immediate`
+  activates a new version at once, for an app with nothing to lose on a reload.
 
 ### Workbox (`@3tears/pwa/workbox`)
 
 For a bundled app that precaches hashed build files (vite-plugin-pwa `injectManifest`), `appShell`
 runs the policy in the generated worker's order: claim, precache, clean old precaches, the shell
-for navigations except `neverShell` paths, network-first navigations and runtime files. The app
+for navigations except `neverShell` paths (those go to the network, nothing stored), and
+network-first runtime files. metallm's worker also routed navigations network-first after the
+shell route; that route only ever saw the never-shell navigations and stored them, so `appShell`
+leaves it out: switching metallm drops the `metallm-navigation` cache on purpose. The app
 passes its own Workbox modules in, so this package does not depend on Workbox and the app's test
 doubles keep working.
 
 ## Updates without a worker cache
 
-`watchVersion(url, current, onUpdate, { field })` polls a small JSON file with `no-store` and
+`watchVersion(url, current, onUpdate, { field, win })` looks at a small JSON file at once, every
+five minutes and (with `win`) on focus and on return to view, with `no-store` and a `ts` query, and
 calls `onUpdate` once when it differs. `forceReload()` is the escape hatch when a worker never
 takes over: it unregisters every worker, deletes every cache and reloads.
 

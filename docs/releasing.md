@@ -48,8 +48,9 @@ An intra-family API addition ships in a MINOR bump
      publish to GitHub Packages from `release.yml`'s `npm-publish`, after PyPI, behind the same
      approval. GitHub Packages takes an npm package only under the scope of the repository's owner,
      so `@3tears/*` publishes from a repository owned by a GitHub account or organisation named
-     `3tears`; from `pacepace/3tears` it is refused. Settle that before the first tag that ships a
-     web package. A version already in the registry is skipped, so a republish dispatch is safe.
+     `3tears`; from `pacepace/3tears` it is refused. So the job runs only when the repository
+     variable `NPM_PUBLISH` is `true`; settle the scope, then set it. A version already in the
+     registry is skipped, so a republish dispatch is safe.
    - **`packages/evals/MIGRATIONS.toml`:** in the same PR, rename its `version = "unreleased"`
      section to the version being tagged (keep its `since`). The tag must ship with its section named
      for it: `release_notes.py v<version>` reads it by that name, and the next release starts a new
