@@ -8,24 +8,36 @@ packages (bumped in lock-step).
 
 ### evals: a quick comparison may be read again as cases are added, with nothing declared
 
-**Changed:** a comparison an `Eval` runs (two arms or more) is filed `rereadable` (`AspectDesign.rereadable`, new,
-optional, durable v17.5), and each paired contrast on a declared range (a pass rate, a score on its scale) is read by
-a mixture bet: the mean of ten bets staking fixed shares of the cap, over the cases in the order they were first run,
-hedged over the two directions (`stats.bounded_separation_p`, `bounded_difference_interval`, `bounded_mean_p` and
-`paired_equivalence` gain `mixture`; `separation_test` too). No stake depends on a declared count, so a newcomer may
-add cases and run the comparison again as often as they like, and each verdict, p and interval keeps its error over
-every such read. Holm stays the correction: a bet reading's adjusted p holds every t reading's p at 1, so a cost or
-latency reading cannot let it step down. The print says so in one sentence under its first line, and the family's
-disclosure carries it (`comparisons.REREAD_SENTENCE`, `ComparisonFamily.rereadable`). Seeded simulation: at most 3.3%
-false separations at a nominal 5% over five reads with adds sized from the data; a single read at k = 1, 80% against
-60% on 60 cases separates 37.1% of the time where the reading it replaces did 43.6%. Cost and latency stay t readings,
-read once. Engine campaigns, and every campaign not filed `rereadable`, read exactly as before; a design is
-`rereadable` or plans looks, never both.
-Quick-path readings move: intervals on bounded readings are wider (rung 3a's Accuracy, 20 points worse or 18 better,
-now reads 24 or 22), and rung 3b's `total` no longer reads equivalent within its 20-point margin on 30 cases.
+**Changed:** a comparison an `Eval` runs (two arms or more) into a store that holds the one it filed before under its
+name, in its scope, continues it: every case already run is read as it ran, only the cases appended after them run,
+and the new campaign holds every arm's runs of both. It continues only while it is the same comparison, read from
+stored facts: the same arms (name, model, levers) and control, the same repeats, graders, guardrails, question and
+margin, every case run before still at its place and unedited, and the same rubric, intent and goal checks over them;
+an arm's new run must carry its earlier runs' variant key, measurement context and graders' declarations. Anything
+else runs every case as a new comparison, and the print says which in one sentence (`quick.continuation`). An arm is
+known by its name, not its code, so after changing a runner give the eval a new name (or run it in another scope or
+store) to start afresh, as the continuation's sentence says.
 
-**For hosts:** deploy this build to every reader before filing a campaign at durable v17.5; an older build reads a
-`rereadable` campaign's contrasts at their cases, as before the field.
+Each paired contrast on a declared range (a pass rate, a score on its scale) of a quick-path comparison is read by a
+mixture bet: the mean of ten bets staking fixed shares of the cap, over the cases in the order they were first run,
+hedged over the two directions (`stats.bounded_separation_p`, `bounded_difference_interval`, `bounded_mean_p` and
+`paired_equivalence` gain `mixture`; `separation_test` too). No stake depends on a declared count, and the quick path
+never runs a case of the comparison twice, so a newcomer may add cases and run it again as often as they like, and
+each such verdict, p and interval keeps its error over every reading. Holm stays the correction: a bet reading's
+adjusted p holds every t reading's p at 1. The print says so in one sentence under its first line, which names what it
+does not cover: guardrails, floors, each arm's own rate, cost, latency and the exit status, still read at the cases
+run so far (`comparisons.REREAD_SENTENCE`, `ComparisonFamily.rereadable`). Seeded simulations driving `Eval.run`
+itself: re-running as cases are added (adds sized from the data, up to five runs) separates under the null within its
+bound at α = 5%, where re-running every case on each run exceeds it (the figures are in `tests/test_rereadable_bet.py`).
+A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of the time where the reading it replaces did
+43.6%. A quick-path comparison is one whose every result is of a kind only the quick path launches
+(`kernel.candidate_kind.QUICK_PATH_KINDS`), so no host's declaration opts an engine campaign in; engine campaigns read
+exactly as before.
+
+Quick-path comparisons read differently from this version on; a stored quick campaign reads the new way on upgrade.
+An older build reads the same stored campaign the old way, so two builds can give different verdicts on it. Readings
+move: intervals on bounded readings are wider (rung 3a's Accuracy, 20 points worse or 18 better, now reads 24 or 22),
+and rung 3b's `total` no longer reads equivalent within its 20-point margin on 30 cases.
 
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 

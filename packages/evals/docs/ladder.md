@@ -292,22 +292,29 @@ the corrected interval on that gain reaches below zero. One v2 trial failed on m
 counts against v2, stated, never excluded: a model's unusable answer is the candidate's failure.
 [Reading reports](reading-reports.md#reading-a-comparison) explains each verdict.
 
-**Adding cases and reading again.** When the evidence cannot tell the arms apart, add invoices and run `compare.py`
-again, as often as you like, with nothing declared first. The line under the first line says what that allows:
+**Adding cases and reading again.** When the evidence cannot tell the arms apart, add invoices to the end of
+`invoices.jsonl` and run `compare.py` again, as often as you like, with nothing declared first. The line under the
+first line says what that allows:
 
 ```text
-Each verdict and interval on a pass rate or a score on its declared range stays valid however many times cases are added and the comparison is read again; a single read gives up some power for that, and cost and latency are read once, so they are not covered.
+Add cases to the end and run it again as often as you like: each comparison of the arms on a pass rate, or on a score within its declared range, keeps its error however many times it is read, and a single read gives up some power for that; guardrails, floors, each arm's own rate, cost, latency and the exit status are read at the cases run so far, so reading them again is not covered.
 ```
 
-- **Why it holds.** Each pass rate, and each score on its declared range, is read by a bet whose stakes depend on no
-  count of cases declared ahead: a mixture of fixed betting fractions over the cases in the order they were first
-  run. A reading after you add cases is the same bet read later, so stopping when it first tells the arms apart keeps
-  the error it states. Append new cases to the end of the cases file, so each reading's cases come after the last
-  reading's.
+- **Why it holds.** Run again into the same store, the comparison continues: the invoices already run are read as they
+  ran, and only the ones you added run. The print says so, last: `Continues the comparison run before under this
+  name: ...`. Each pass rate, and each score on its declared range, is read by a bet whose stakes depend on no count
+  of cases declared ahead: a mixture of fixed betting fractions over the cases in the order they were first run. A
+  reading after you add cases is the same bet read later, so stopping when it first tells the arms apart keeps the
+  error it states.
+- **What starts a new comparison.** Change an arm, the control, a grader, a margin, the question or the repeats, or
+  edit, move or remove an invoice already run, and every case runs again as a new comparison; the print names what
+  changed (`A new comparison: ...`). An arm is known by its name, not its code: after changing a prompt, give the eval
+  a new `name=` (or another scope or store) to compare it afresh. A store kept in memory (`store=":memory:"`) keeps
+  nothing between runs, so each run there is a new comparison.
 - **What it costs.** Read once, it tells the arms apart a little later than a test fixed for that many cases would:
   its intervals are somewhat wider. That is the price of reading again freely.
-- **What it does not cover.** Cost and latency are read by a t test on each run's cases alone, so re-reading them as
-  cases are added is not covered; nor is adding an arm or a grader between reads, which asks a new question.
+- **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at
+  the cases run so far, each time, so re-reading them as cases are added is not covered.
 
 ## Rung 3b: a margin, so a reading can be equivalent
 

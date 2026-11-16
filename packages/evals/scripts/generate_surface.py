@@ -578,10 +578,10 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
         f"The line under a comparison's first line says what reading it again allows: {REREAD_SENTENCE}"
     )
     yield from _wrapped(
-        "So add cases and run the comparison again as often as you like, with nothing declared first: append the new "
-        "cases to the end of the cases file, since each reading bets on the cases in the order they were first run. "
-        "What it does not cover: cost and latency, read by a t test on each run's cases alone, and an arm or a "
-        "grader added between reads, which asks a new question."
+        "Run into the same store, the comparison continues: the cases already run are read as they ran and only the "
+        "cases appended run, so each reading is one bet read later. Changing an arm, a grader, the question, the "
+        "repeats, or a case already run starts a new comparison, which the print names. An arm is known by its name, "
+        "not its code: after changing a runner, give the eval a new name to compare it afresh."
     )
     yield from _wrapped(
         "Below it: each measure's rate, the top misses with why each missed, and where the report page is. A "
