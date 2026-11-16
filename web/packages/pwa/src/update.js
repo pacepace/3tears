@@ -9,11 +9,14 @@
  *   it controls the page.
  * - `watchVersion`: an app whose worker caches nothing (or that has none): poll a small version
  *   file and call `onUpdate` when it changes; the app's reload button reloads.
+ * `watchForUpdates` is how `registerWorker` asks: on a timer, on return to view, and on demand.
  * `forceReload` is the escape hatch when a worker never takes over (seen in installed apps).
  */
 
 /** How often to look for a new version. */
 export const UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+/** `watchForUpdates` asks the browser at most this often, however many reasons arrive at once. */
+export const UPDATE_CHECK_MIN_GAP_MS = 2_000;
 /** How long `applyUpdate` waits for the new worker before the app should offer `forceReload`. */
 export const SW_RELOAD_TIMEOUT_MS = 5_000;
 /** The message a page posts a waiting worker to activate it (Workbox's convention). */
@@ -34,19 +37,82 @@ export function checkForUpdates(registration, everyMs = UPDATE_CHECK_INTERVAL_MS
 }
 
 /**
+ * Asks the browser to look for a new version of the registration's worker (`registration.update()`)
+ * on an interval, when the page comes back into view, and whenever the app calls `check()`.
+ *
+ * An open page never navigates, and a browser looks for a new worker only on a navigation (and
+ * then about daily), so a page left open for hours, or an installed app brought back from the
+ * background (where a phone stops the page's timers), would not learn of a deploy. Call `check()`
+ * when the app knows one is likely: its server says it restarted, or runs another version. Nothing
+ * here reloads: a new worker installs and waits, and `registerWorker`'s `onUpdate` fires.
+ * `check()` and returning to view ask at most once per `minGapMs` (several reasons at once are one
+ * look); the timer always asks.
+ * @param {{ update: () => Promise<unknown> }} registration
+ * @param {{ everyMs?: number | null, onVisible?: boolean, minGapMs?: number,
+ *   win?: { document?: { visibilityState?: string, addEventListener: (type: string, listener: () => void) => void,
+ *     removeEventListener: (type: string, listener: () => void) => void } },
+ *   timers?: { setInterval: typeof setInterval, clearInterval: typeof clearInterval },
+ *   now?: () => number }} [options] `everyMs` null: no interval; `onVisible` false: not on return
+ * @returns {{ check: () => boolean, stop: () => void, readonly checks: number }} `check()` says
+ *   whether it asked (false within `minGapMs` of the last ask, or after `stop()`)
+ */
+export function watchForUpdates(registration, options = {}) {
+  const timers = options.timers ?? globalThis;
+  const now = options.now ?? (() => Date.now());
+  const gap = options.minGapMs ?? UPDATE_CHECK_MIN_GAP_MS;
+  const doc = options.onVisible === false ? null : (options.win ?? globalThis).document;
+  let last = -Infinity;
+  let checks = 0;
+  let stopped = false;
+  const ask = () => {
+    last = now();
+    checks++;
+    // a failed look (offline, the server away) is no news: the next reason looks again
+    registration.update().catch(() => {});
+  };
+  const check = () => {
+    if (stopped || now() - last < gap) return false;
+    ask();
+    return true;
+  };
+  const everyMs = options.everyMs === undefined ? UPDATE_CHECK_INTERVAL_MS : options.everyMs;
+  // the timer always asks: it is the floor, minutes apart; the gap only merges bursts of reasons
+  const id = everyMs === null ? null : timers.setInterval(ask, everyMs);
+  const onVisible = () => {
+    if (doc?.visibilityState !== "hidden") check();
+  };
+  doc?.addEventListener("visibilitychange", onVisible);
+  return {
+    check,
+    stop() {
+      stopped = true;
+      if (id !== null) timers.clearInterval(id);
+      doc?.removeEventListener("visibilitychange", onVisible);
+    },
+    get checks() {
+      return checks;
+    },
+  };
+}
+
+/**
  * Registers a service worker and reports a new version waiting.
  *
  * The first install is not an update (nothing to replace). A later one waits until the person
  * agrees: `applyUpdate()` posts SKIP_WAITING to it and reloads the page once it controls it.
+ * The browser is asked to look for one (`watchForUpdates`) every `checkEveryMs` (null: never on a
+ * timer), when the page comes back into view (unless `checkOnVisible` is false), and on
+ * `check()`, which the app calls when it knows a deploy is likely.
  * @param {string} url the worker script
  * @param {{ scope?: string, type?: WorkerType, onUpdate?: () => void, checkEveryMs?: number | null,
- *   win?: Window & typeof globalThis }} [options]
- * @returns {Promise<{ registration: ServiceWorkerRegistration | null, applyUpdate: () => boolean, stop: () => void }>}
+ *   checkOnVisible?: boolean, win?: Window & typeof globalThis }} [options]
+ * @returns {Promise<{ registration: ServiceWorkerRegistration | null, applyUpdate: () => boolean,
+ *   check: () => boolean, stop: () => void }>}
  */
 export async function registerWorker(url, options = {}) {
   const win = options.win ?? /** @type {Window & typeof globalThis} */ (globalThis);
   const container = win.navigator?.serviceWorker;
-  if (!container) return { registration: null, applyUpdate: () => false, stop: () => {} };
+  if (!container) return { registration: null, applyUpdate: () => false, check: () => false, stop: () => {} };
   const registration = await container.register(url, {
     ...(options.scope ? { scope: options.scope } : {}),
     ...(options.type ? { type: options.type } : {}),
@@ -66,8 +132,12 @@ export async function registerWorker(url, options = {}) {
   registration.addEventListener("updatefound", () => watch(registration.installing));
   watch(registration.installing);
   report();
-  const stopChecks =
-    options.checkEveryMs === null ? () => {} : checkForUpdates(registration, options.checkEveryMs ?? UPDATE_CHECK_INTERVAL_MS, win);
+  const checks = watchForUpdates(registration, {
+    everyMs: options.checkEveryMs === null ? null : (options.checkEveryMs ?? UPDATE_CHECK_INTERVAL_MS),
+    onVisible: options.checkOnVisible !== false,
+    win,
+    timers: win,
+  });
   let reloading = false;
   const onControllerChange = () => {
     if (reloading) win.location.reload();
@@ -75,6 +145,7 @@ export async function registerWorker(url, options = {}) {
   container.addEventListener("controllerchange", onControllerChange);
   return {
     registration,
+    check: checks.check,
     applyUpdate() {
       const waiting = registration.waiting;
       if (!waiting) return false;
@@ -83,7 +154,7 @@ export async function registerWorker(url, options = {}) {
       return true;
     },
     stop() {
-      stopChecks();
+      checks.stop();
       container.removeEventListener("controllerchange", onControllerChange);
     },
   };

@@ -10,10 +10,12 @@ export {
   SKIP_WAITING,
   SW_RELOAD_TIMEOUT_MS,
   UPDATE_CHECK_INTERVAL_MS,
+  UPDATE_CHECK_MIN_GAP_MS,
   checkForUpdates,
   forceReload,
   registerWorker,
   updatePrompt,
+  watchForUpdates,
   watchVersion,
 } from "./update.js";
 export { ScreenWakeLock } from "./wake-lock.js";

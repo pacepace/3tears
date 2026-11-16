@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SKIP_WAITING, SW_RELOAD_TIMEOUT_MS, checkForUpdates, forceReload, registerWorker, updatePrompt, watchVersion } from "../src/update.js";
+import { SKIP_WAITING, SW_RELOAD_TIMEOUT_MS, UPDATE_CHECK_MIN_GAP_MS, checkForUpdates, forceReload, registerWorker, updatePrompt, watchForUpdates, watchVersion } from "../src/update.js";
 
 function timers() {
   const t = { fns: new Map(), next: 1,
@@ -177,4 +177,73 @@ test("forceReload unregisters every worker, deletes every cache and reloads, wha
     caches: { keys: async () => { throw new Error("y"); } }, location: { reload: () => log.push("reloaded anyway") } };
   await forceReload(broken);
   assert.equal(log.at(-1), "reloaded anyway");
+});
+
+function fakeDoc() {
+  const d = new Target();
+  d.visibilityState = "visible";
+  return d;
+}
+
+test("watchForUpdates looks on demand, on return to view and on its timer, never reloading", () => {
+  const t = timers();
+  let at = 0;
+  const reg = { n: 0, update: async () => { reg.n += 1; } };
+  const document = fakeDoc();
+  const w = watchForUpdates(reg, { everyMs: 60_000, win: { document }, timers: t, now: () => at });
+  assert.equal(w.check(), true);
+  assert.equal(reg.n, 1);
+  // a burst of reasons (a restart and a new version reported together) is one look
+  assert.equal(w.check(), false);
+  document.emit("visibilitychange");
+  assert.equal(reg.n, 1);
+  at += UPDATE_CHECK_MIN_GAP_MS;
+  document.visibilityState = "hidden";
+  document.emit("visibilitychange"); // going away is no reason
+  assert.equal(reg.n, 1);
+  document.visibilityState = "visible";
+  document.emit("visibilitychange");
+  assert.equal(reg.n, 2);
+  t.tick(); // the timer is the floor: it always asks
+  t.tick();
+  assert.equal(reg.n, 4);
+  assert.equal(w.checks, 4);
+  w.stop();
+  at += 60_000;
+  t.tick();
+  document.emit("visibilitychange");
+  assert.equal(w.check(), false);
+  assert.equal(reg.n, 4);
+  assert.equal(t.fns.size, 0);
+  assert.equal(document.l.visibilitychange.length, 0);
+});
+
+test("watchForUpdates: no timer with everyMs null, nothing on view with onVisible false; a failed look is no error", async () => {
+  const t = timers();
+  const document = fakeDoc();
+  let n = 0;
+  const reg = { update: async () => { n += 1; throw new Error("offline"); } };
+  const w = watchForUpdates(reg, { everyMs: null, onVisible: false, win: { document }, timers: t });
+  assert.equal(t.fns.size, 0);
+  document.emit("visibilitychange");
+  assert.equal(n, 0);
+  assert.equal(w.check(), true);
+  await new Promise((r) => setImmediate(r)); // the rejection is handled
+  assert.equal(n, 1);
+});
+
+test("registerWorker looks on return to view and hands out check()", async () => {
+  const { reg, win, t } = fakeBrowser({ controlled: true });
+  win.document = fakeDoc();
+  const w = await registerWorker("/sw.js", { win, checkEveryMs: null });
+  assert.equal(t.fns.size, 0);
+  assert.equal(w.check(), true);
+  assert.equal(reg.updates, 1);
+  const off = fakeBrowser({ controlled: true });
+  off.win.document = fakeDoc();
+  await registerWorker("/sw.js", { win: off.win, checkOnVisible: false });
+  off.win.document.emit("visibilitychange");
+  assert.equal(off.reg.updates, 0);
+  const none = await registerWorker("/sw.js", { win: { navigator: {} } });
+  assert.equal(none.check(), false);
 });
