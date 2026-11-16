@@ -6,6 +6,37 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an ill-shaped tool argument is a refused call; a writer defect is an internal error, never the provider's
+
+**Fixed (#1249):** a model's call to `evals_analyst` that sent `null` for `arm_filter` (on `readings_list`,
+`contrasts_list`, `measure_read`, `examples_list`, `measure_breakdown`, `price_tradeoff`) or for `price_tradeoff`'s
+`what_if` raised a bare `TypeError` from pydantic, which ended the report writer's loop and the paid run. Every call's
+arguments are now held to the action's parameters in one place (`MountedTool.call`), for every action: `null` for a
+parameter the action does not require is that parameter not given, so the call answers exactly as one that left it out;
+a value that does not fit (a wrong type, a list where a string is expected, `null` for a required parameter) is refused
+`validation_failed` (422) naming the parameter and what it takes, so the model calls again. A value pydantic raises as
+a bare `TypeError` is refused the same way, with one WARNING naming the action. A `TypeError` raised by the package's
+own code (a parameter model's validator, the action's handler) is still a defect and propagates. The tools' published
+schemas are unchanged.
+
+**Fixed (#1248):** the report writer's loop filed any exception in its client-failure slot, so a defect in package
+code (a tool's handler, the submission check, a review's reading) reached the host's failure describer, which withheld
+its text and the job ended refused as `provider_refused` (502). The loop now tells the client's failure from the
+package's own by where it was raised: a failure that escaped the turn client keeps its classification, and any other is
+an internal error (`WritingOutcome.defect`, `EditorOutcome.defect`), never handed to the describer. Its record names the
+exception's type, where it was raised (`module:function`, with the package frame it came through), the session and
+round, and the session's last tool call by the tool, the action and the arguments' names, never their values. The
+sessions stay on the outcome, the turns' spend on the attempt and the ledger, and the loop's log record carries the
+traceback as `exc_info`, as it did. No stored shape changes.
+
+**For hosts:** a written report that fails on a package defect now ends `failed` with no refusal (`JobStatus.refusal`
+and the attempt's `refusal` are `None`, not `provider_refused`/502), and its `detail` reads `the report writer ended
+failed on an internal error, not the provider's: TypeError raised in <module:function> (through <module:function>), in
+session analyst round 1; the last tool call was evals_analyst action <action>, with arguments <names>`. A provider's
+failure reads as before. The loop's log record (logger `threetears.evals.ops.report_writer.loop`) carries the traceback
+as the record's `exc_info`; a formatter or shipper that drops `exc_info` drops it, so keep that field (the defect's own
+message names where it was raised either way). Nothing to change in code.
+
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 
 **Fixed:** under a plan of looks (`AspectDesign.planned_looks`), the aspect page's contrast table head, the change

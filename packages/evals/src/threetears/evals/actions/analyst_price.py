@@ -47,11 +47,10 @@ class PriceParams(EvalBaseModel):
             "the slice's own figures; omitted prices overall.",
         ),
     ] = None
+    # The arm's constraints sit on the string, inside the optional, so a null what_if reads as none (ArmFilter's note).
     what_if: Annotated[
-        str | None,
-        BeforeValidator(written_arm),
+        Annotated[str, BeforeValidator(written_arm), Field(min_length=1)] | None,
         Field(
-            min_length=1,
             description="Also price this option the gates remove or leave undecided, as if it passed, named "
             + ARM_FORMS
             + ": a labelled what-if, never a recommendation; omitted for none.",

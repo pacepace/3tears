@@ -67,10 +67,13 @@ ARM_FORMS = "by its id in the snapshot, or as results print it (arm:<id>, or the
 #: One arm, as any action takes it: read to its id by :func:`written_arm`.
 ArmId = Annotated[str, BeforeValidator(written_arm), Field(min_length=1, description=f"An arm, {ARM_FORMS}.")]
 
+#: An arm a call may leave out: read to its id by :func:`written_arm` where one is given, and ``null`` read as not
+#: given, as every optional parameter reads it. The arm's own constraints sit on the string, inside the optional, so
+#: they are never applied to ``null``: on the optional as a whole, pydantic measured ``null``'s length and raised
+#: TypeError where a refusal was due.
 ArmFilter = Annotated[
-    str | None,
-    BeforeValidator(written_arm),
-    Field(min_length=1, description=f"Read only this arm, {ARM_FORMS}; omitted reads every arm."),
+    Annotated[str, BeforeValidator(written_arm), Field(min_length=1)] | None,
+    Field(description=f"Read only this arm, {ARM_FORMS}; omitted reads every arm."),
 ]
 AspectFilter = Annotated[
     str | None,
