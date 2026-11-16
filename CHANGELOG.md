@@ -6,6 +6,18 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a delete returning its rows holds the event loop a few milliseconds at most
+
+`delete_rows` of 33,786 keys on a collection that declares `invalidation_columns` (its delete returns the rows it
+removes, `DELETE ... RETURNING`, through the hub) held the serving loop 32-36 ms: each statement's reply (1,000 rows of
+49 columns, a megabyte) decoded and its rows rehydrated on the loop, its rows' keys bound and values coerced there
+(`SqlL3Backend.delete_many_returning`), and every key enrolled and restated with its row in one stretch each. All of it
+now runs on worker threads taking turns with the loop (`threetears.core.loop_turns`): 1.1-3.0 ms. A transaction's
+`fetch` decodes a reply over 64 KiB on a thread, its turns taken between the objects decoded (an `object_hook` that
+returns each unchanged) and between the rows read. `CallerTransaction.restate_many` takes a thread's turns. A
+loop_timing budget at 33,786 keys, red on the old code (32.1 ms against 5 ms), plus a counted check that the loop runs
+between stretches of returned rows (34 stretches, one a statement, on the old code).
+
 ### core: a bulk delete and a listened collection's write hold the event loop a few milliseconds at most
 
 `delete_rows` of 33,786 keys (seven key columns, a hub answering at once) held the serving loop 250 ms: every key made

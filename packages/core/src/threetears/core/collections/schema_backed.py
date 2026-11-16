@@ -3545,10 +3545,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         :return: the keys named
         :rtype: int
         """
-        width = len(self.schema.pk_columns)
-        entity_keys = [key if width > 1 else key[0] for key in named]
-        for entity_key in entity_keys:
-            transaction.enroll(self, entity_key, row=None)
+        # each key enrolled, and later restated with its row, from a worker thread taking turns with the loop, from
+        # the count where a thread costs less than the work: 33,786 keys enrolled in 1.3 ms and restated in 3.6 ms, each
+        # in one stretch on the loop (2026-11-16)
+        loop = asyncio.get_running_loop() if len(named) >= self.L1_EVICT_OFF_LOOP_KEYS else None
+        entity_keys, enrollments = (
+            await asyncio.to_thread(self._delete_enrollments, named, None, loop)
+            if loop is not None
+            else self._delete_enrollments(named, None)
+        )
+        transaction.enroll_all(enrollments)
         await self._evict_l1_many_off_loop(entity_keys)
         try:
             deleted = await store.delete_many_returning(
@@ -3562,12 +3568,40 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
                 extra={"extra_data": {"table": self.table_name, "keys": len(named)}},
             )
             raise
-        transaction.restate_many(self, {key if width > 1 else key[0]: row for key, row in deleted.items()})
+        if loop is not None:
+            await asyncio.to_thread(self._restate_deleted, transaction, deleted, loop)
+        else:
+            self._restate_deleted(transaction, deleted)
         log.debug(
             "bulk delete written on the caller's transaction, its rows returned",
             extra={"extra_data": {"table": self.table_name, "rows": len(deleted)}},
         )
         return len(named)
+
+    def _restate_deleted(
+        self,
+        transaction: CallerTransaction,
+        deleted: Mapping[tuple[Any, ...], dict[str, Any]],
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> None:
+        """restate each key :meth:`_delete_rows_returning` enrolled with the row its delete returned
+        (:meth:`CallerTransaction.restate_many`); for a thread.
+
+        :param transaction: the caller's transaction
+        :ptype transaction: CallerTransaction
+        :param deleted: each deleted row, under its key as a tuple in key order
+        :ptype deleted: Mapping[tuple[Any, ...], dict[str, Any]]
+        :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+            or off any loop (a few keys: no turn taken)
+        :ptype loop: asyncio.AbstractEventLoop | None
+        :return: nothing
+        :rtype: None
+        """
+        turns = LoopTurns(loop) if loop is not None else None
+        many = len(self.schema.pk_columns) > 1
+        items = deleted.items()
+        rows = {key if many else key[0]: row for key, row in (items if turns is None else stepped(items, turns))}
+        transaction.restate_many(self, rows, turns)
 
     async def read_rows_led_by(
         self,
