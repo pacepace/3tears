@@ -573,7 +573,8 @@ async def _turns(sandbox: Sandbox, brain: Brain, caps: Caps, system: str, run: A
 #: The newcomer's errors the docs and messages are measured on, each by an id and what its message says, read off what
 #: each run printed: a run met an error when the package said it, whatever caused it. The messages are what is measured,
 #: so they are read as text; a pattern takes every wording a measured build prints (builds from 2026-11-16 on say "the
-#: runner raised" on their first line and "the grader X raised" where earlier ones said "the scorer X raised").
+#: runner raised" on their first line and "the grader X raised" where earlier ones said "the scorer X raised"; builds
+#: after the control, f9ab6f74d, say "name this eval: pass name=" where it says "name this eval (name=").
 ERRORS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("no_key", re.compile(r"no key for \w+")),
     ("cases_missing", re.compile(r"the cases file .+ is not there")),
@@ -582,7 +583,7 @@ ERRORS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("field_not_in_answer", re.compile(r"answered no \S+ it can be graded on")),
     ("runner_raised", re.compile(r"the (?:candidate|runner) raised \w+")),
     ("grader_raised", re.compile(r"the (?:scorer|grader) \w+ raised \w+")),
-    ("eval_unnamed", re.compile(r"name this eval \(name=")),
+    ("eval_unnamed", re.compile(r"name this eval(?: \(name=|: pass name=)")),
     ("recording_refused", re.compile(r"RecordingRefused|recording \S+: .+; ")),
 )
 

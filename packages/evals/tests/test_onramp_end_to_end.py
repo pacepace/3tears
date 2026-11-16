@@ -108,8 +108,11 @@ def test_a_run_where_every_agent_fails_says_so_on_its_first_line_and_in_its_cens
     for name in ("eval_runs", "measures_the_app", "read_right"):
         assert any(line.startswith(f"  {name}: 0 of 1 trials, 95% range 0.00 to ") for line in said), said
     assert any("cannot show" in line for line in said)
-    assert any("compare each check's k of n only: never errors_hit" in line for line in said), "the comparison rule"
+    assert any(
+        "between arms, compare each check app by app, on its tally by app: never an arm's k of n over all apps" in line
+        for line in said
+    ), "the comparison rule"
     (run_dir,) = [path for path in tmp_path.iterdir() if path.is_dir()]
     written = (run_dir / "census.txt").read_text(encoding="utf-8").splitlines()
     start = said.index("what 1 run(s) can say:")
-    assert written == said[start : start + len(written)] and len(written) == 10, "the census, as printed"
+    assert written == said[start : start + len(written)] and len(written) == 11, "the census, as printed"

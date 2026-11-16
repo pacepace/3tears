@@ -522,13 +522,14 @@ def clopper_pearson(passed: int, n: int, level: float = 0.95) -> tuple[float, fl
 
 
 def census(rows: Sequence[Mapping[str, Any]]) -> list[str]:  # Any: a trial's stored row
-    """What this run can and cannot say: each check's tally with its exact 95% range, and the run's limits.
+    """What this run can and cannot say: each check's tally (with its exact 95% range, for one arm), and its limits.
 
     A handful of runs is a census of where agents get stuck and what they cost, not a rate: trials on one app share
     the app, so the ranges are if anything too narrow, and a failure does not say whether the docs or the model failed.
-    Arms are never pooled: with more than one, each check is tallied per arm, its line headed by the arm. With more
-    than one app, each line ends with the tally app by app, since the app, not the trial, is the unit a claim beyond
-    these apps rests on.
+    Arms are never pooled: with more than one, each check is tallied per arm, its line headed by the arm and carrying
+    no range, since an arm's trials pooled over apps, set beside a range over trials, would read as the test between
+    arms that the design cannot support. With more than one app, each line ends with the tally app by app, since the
+    app, not the trial, is the unit a claim beyond these apps rests on, and the footer sends the reader to it.
     """
     arms = list(dict.fromkeys(row.get("arm") for row in rows))
     lines = [f"what {len(rows)} run(s) can say:"]
@@ -540,23 +541,24 @@ def census(rows: Sequence[Mapping[str, Any]]) -> list[str]:  # Any: a trial's st
             n = sum(1 for row in own if name in row["scores"])
             passed = sum(1 for row in own if row["scores"].get(name) == 1.0)
             if n:
-                low, high = clopper_pearson(passed, n)
+                shown = ""
+                if len(arms) == 1:
+                    low, high = clopper_pearson(passed, n)
+                    shown = f", 95% range {low:.2f} to {high:.2f}"
                 causes = [row.get("causes", failure_causes(row)).get(name) for row in own if name in row["scores"]]
                 counted = ", ".join(f"{causes.count(each)} {each}" for each in CAUSES if causes.count(each))
                 harness = causes.count(HARNESS)
                 apart = f"; {n - passed} failed: {counted}" if n > passed else ""
                 apart += f"; {passed} of {n - harness} the harness failed none of" if harness else ""
-                lines.append(
-                    f"  {head}{name}: {passed} of {n} trials, 95% range {low:.2f} to {high:.2f}{apart}"
-                    f"{_by_app(own, name)}"
-                )
+                lines.append(f"  {head}{name}: {passed} of {n} trials{shown}{apart}{_by_app(own, name)}")
     lines += [
         "  it shows: whether the tier ever succeeds, where runs get stuck and on which message, and turns and cost",
         "  per run, on these apps.",
         "  it cannot show: a success rate to rely on, a difference between apps, whether a failure belongs to the",
         "  docs or to the model, or anything beyond these apps: trials on one app are repeats of that app.",
-        "  between arms, compare each check's k of n only: never errors_hit, and never the count of trials the",
-        "  harness failed none of, which differ with how each arm's agents behave, not with what the harness is.",
+        "  between arms, compare each check app by app, on its tally by app: never an arm's k of n over all apps,",
+        "  nor any range over trials, as a test between arms; never errors_hit, nor the count of trials the harness",
+        "  failed none of, which differ with how each arm's agents behave, not with what the harness is.",
     ]
     return lines
 

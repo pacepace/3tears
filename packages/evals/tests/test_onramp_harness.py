@@ -14,7 +14,7 @@ import sys
 import tarfile
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -22,7 +22,7 @@ from typing import Any
 import httpx
 import pytest
 
-from threetears.evals import Model
+from threetears.evals import Eval, Model
 from threetears.evals.negotiation import MAX_RESENDS
 from threetears.evals.providers import Catalogue, DeclinedRetry, ProviderError
 from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S
@@ -958,8 +958,9 @@ def test_the_census_states_each_checks_tally_with_its_exact_range() -> None:
 
 
 def test_the_census_never_pools_arms_and_tallies_each_check_app_by_app() -> None:
-    """Two arms are tallied apart, each line headed by its arm; with more than one app, each line ends with its tally
-    by app, the unit a claim beyond these apps rests on. One arm on one app prints as before."""
+    """Two arms are tallied apart, each line headed by its arm and carrying no range over trials, which beside the
+    other arm's would read as a test between arms; with more than one app, each line ends with its tally by app, the
+    unit a claim beyond these apps rests on, and the footer sends the reader there. One arm prints its range."""
 
     def row(arm: str, app: str, passed: bool) -> dict[str, Any]:
         scores = {"eval_runs": 1.0, "measures_the_app": float(passed), "read_right": 1.0}
@@ -972,11 +973,15 @@ def test_the_census_never_pools_arms_and_tallies_each_check_app_by_app() -> None
     lines = census(rows)
     measured = [line for line in lines if "measures_the_app:" in line]
     assert measured == [
-        "  docs@control measures_the_app: 1 of 3 trials, 95% range 0.01 to 0.91; 2 failed: 2 cannot tell; "
-        "by app: holds 0 of 2, recipes 1 of 1",
-        "  docs@candidate measures_the_app: 3 of 3 trials, 95% range 0.29 to 1.00; by app: holds 1 of 1, recipes 2 of 2",
+        "  docs@control measures_the_app: 1 of 3 trials; 2 failed: 2 cannot tell; by app: holds 0 of 2, recipes 1 of 1",
+        "  docs@candidate measures_the_app: 3 of 3 trials; by app: holds 1 of 1, recipes 2 of 2",
     ], measured
     assert not any(line.startswith("  measures_the_app: ") for line in lines), "no line pools the two arms"
+    assert not any("range" in line for line in lines if line.startswith("  docs@")), "no arm's line carries a range"
+    said = " ".join(line.strip() for line in lines)
+    assert "between arms, compare each check app by app, on its tally by app: never an arm's k of n over all apps" in (
+        said
+    ), said
     one = census([row("docs@control", "holds", False), row("docs@control", "holds", False)])
     assert "  measures_the_app: 0 of 2 trials, 95% range 0.00 to 0.84; 2 failed: 2 cannot tell" in one, one
     assert any("trials on one app are repeats of that app" in line for line in lines)
@@ -1413,6 +1418,35 @@ def test_errors_hit_reads_the_wording_of_every_build_measured() -> None:
     ):  # fmt: skip
         steps = [_door_step(1, f"exit 1\n{runner}", ok=False), _door_step(2, f"exit 1\n{grader}", ok=False)]
         assert errors_hit(steps) == {"runner_raised": 1, "grader_raised": 2}
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        # The control build, f9ab6f74d (quick/contract.py:305).
+        'ValueError: name this eval (name="invoices"): its name is where its runs are kept, and a name built from its '
+        "arms ('a', 'b') would move them every time an arm changes",
+        # evals/main and evals/bp-p1 (quick/contract.py:455 and :456).
+        'ValueError: name this eval: pass name="..." (one that stays as the arms change), or give its cases as a file, '
+        "whose stem names it; its name is where its runs are kept, and a name built from its arms ('a', 'b') would "
+        "move them every time an arm changes",
+    ],
+    ids=["control", "evals-main-and-bp-p1"],
+)
+def test_an_unnamed_eval_is_read_in_every_builds_wording(said: str) -> None:
+    assert errors_hit([_door_step(1, f"exit 1\n{said}", ok=False)]) == {"eval_unnamed": 1}
+
+
+def test_an_unnamed_eval_is_read_in_the_installed_builds_own_wording() -> None:
+    """The refusal raised by the package this harness is installed beside, not a copy of its text: a rewording that
+    the pattern misses fails here rather than reading 0 in every arm."""
+
+    def label(case: Mapping[str, Any]) -> str:
+        return "greet"
+
+    with pytest.raises(ValueError) as refused:
+        Eval([{"id": "1", "text": "hi", "label": "greet"}], {"a": label, "b": label}, ["label"])
+    assert errors_hit([_door_step(1, f"exit 1\nValueError: {refused.value}", ok=False)]) == {"eval_unnamed": 1}
 
 
 def test_the_spend_line_states_the_charged_bound_beside_the_reported_cost() -> None:

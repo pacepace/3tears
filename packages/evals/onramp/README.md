@@ -75,7 +75,8 @@ the agent left it. Built wheels, images and environments are cached in `runs/whe
 
 Compare each check's k of n between arms, app by app, and nothing else. Never compare `errors_hit`, and never the
 count of trials the harness failed none of: both change with how each arm's agents behave. With two arms the census
-tallies each arm apart (arms are never pooled), and with more than one app each line ends with its tally by app.
+tallies each arm apart (arms are never pooled) and prints no range on an arm's line, and with more than one app each
+line ends with its tally by app: those tallies are the comparison, not an arm's k of n over all apps.
 
 ### What N trials on 3 apps can and cannot show
 
@@ -93,14 +94,18 @@ It can show:
 It cannot show:
 
 - That a difference holds for an app nobody looked at, or for another model. Three apps are three draws: if the
-  arms did not differ, one arm would still come out ahead on all three apps one time in eight, so no reading of 3
-  apps reaches the 5% level.
-- A significance level computed over trials. A test that counts 42 trials as 42 independent units (Fisher exact, a
-  chi-square, a pooled proportion) has no term for the app, nor for two runs of the same design that disagree, and
-  states a p-value the design cannot support. The package's own verdict on such a run ("too few cases to call a
-  difference") is the right reading.
-- A rate to rely on. The census's exact 95% range is per arm over trials, and trials on one app share the app, so
-  even that range is too narrow: at 3 of 9 it already runs from 0.07 to 0.70.
+  arms did not differ, an arm named in advance would still come out ahead on all three apps up to one time in eight,
+  and one arm or the other up to one time in four (a tie on an app makes either rarer). So a sign or permutation
+  test over 3 apps cannot reach the 5% level. A paired t-test on the 3 app rates can, but only on assumptions about
+  how the apps' differences are spread that 3 points cannot check.
+- A significance level over trials pooled across apps. A test that counts 42 trials as 42 independent units (Fisher
+  exact, a chi-square, a pooled proportion) has no term for the app, nor for two runs of the same design that
+  disagree, and states a p-value the design cannot support. A test stratified by app (Cochran-Mantel-Haenszel, or an
+  exact conditional test) is valid, but only for "on these apps, with this model", never beyond them. The harness
+  computes none of these tests. The package's own verdict on such a run ("too few cases to call a difference") is
+  the right reading.
+- A rate to rely on. With one arm the census prints an exact 95% range over trials, and trials on one app share the
+  app, so even that range is too narrow: at 3 of 9 it already runs from 0.07 to 0.70.
 - Whether a failure belongs to the docs or to the model.
 
 ### Development set and held-out set
