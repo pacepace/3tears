@@ -141,6 +141,7 @@ class TestTheBudget:
         assert ledger.status()["evictable_bytes"] == estimated
         backend.reset()
 
+    @pytest.mark.loop_timing
     def test_a_read_pays_little_for_its_recency(self, tmp_path: Path) -> None:
         """a hit moves its key in memory, under a lock it never waits for: no write, no file-system call."""
         backend, _ = _backend(tmp_path, 1 << 30)

@@ -64,7 +64,7 @@ def _value(metric: str, table: str, policy: str) -> float | None:
 
 def _declare(monkeypatch: pytest.MonkeyPatch, policies: Mapping[str, Declared]) -> None:
     # the sampler's view of the L1's declarations, kept off the process-wide ones a gate lists
-    monkeypatch.setattr(l1_sizes, "declared", lambda tier: MappingProxyType(dict(policies)) if tier is Tier.L1 else {})
+    monkeypatch.setattr(l1_sizes, "policies_declared", lambda tier: MappingProxyType(dict(policies)) if tier is Tier.L1 else {})
 
 
 def test_rows_are_each_tables_count_and_bytes_hold_its_indexes(l1: SQLiteBackend) -> None:
