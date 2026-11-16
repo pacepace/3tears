@@ -6,7 +6,7 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pacepace/3tears.git",
+    "url": "https://github.com/pacepace/3tears",
     "directory": "web/packages/pwa"
   },
   "exports": {

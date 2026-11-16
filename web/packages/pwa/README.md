@@ -22,8 +22,7 @@ player's Media Session, wake lock and safe areas; discodon's iOS install finding
 npm install @3tears/web-pwa
 ```
 
-Published to npm with the 3tears release (the registry is release.yml's `NPM_REGISTRY`, npmjs.com
-by default). An app with no build step copies `node_modules/@3tears/web-pwa/src/` into its static
+Published to npmjs.com with the 3tears release, with provenance. An app with no build step copies `node_modules/@3tears/web-pwa/src/` into its static
 files (its image build does it) and imports `./pwa/index.js`.
 
 ## Features and where they live

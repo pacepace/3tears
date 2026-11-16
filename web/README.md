@@ -11,7 +11,7 @@ only when at least two apps need it, extracted from code already proven in one o
 **Versioning:** in lockstep with the Python family. Every `@3tears/*` package has the family's
 version; `./scripts/bump-version.sh` moves them with the rest (`npm-lockstep-files` in the root
 `pyproject.toml`), and the release tag publishes them after PyPI (`release.yml`, `npm-publish`;
-the registry is its `NPM_REGISTRY`, npmjs.com by default; docs/releasing.md). `tests/enforcement/test_web_packages_follow_the_family_version.py`
+to npmjs.com by trusted publishing; docs/releasing.md). `tests/enforcement/test_web_packages_follow_the_family_version.py`
 holds them to it.
 
 **Develop** (Node 24, npm 11.10+; the `.npmrc` refuses releases younger than 14 days):

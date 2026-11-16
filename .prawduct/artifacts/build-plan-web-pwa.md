@@ -16,8 +16,8 @@ discussed the station PWA) and the rulings relayed on 2026-11-16 say what this i
 
 - 3tears gets a JavaScript workspace `web/` (not "frontend"), npm scope `@3tears/`; one job per
   package, named `@3tears/web-<name>` (owner, 2026-11-16); `@3tears/web-pwa` first. Agreed 2026-11-09
-  as private on GitHub Packages; on 2026-11-16 the registry became one setting in release.yml,
-  npmjs.com by default (3tears is public, MIT), the owner's choice pending.
+  as private on GitHub Packages; on 2026-11-16 the owner chose public npmjs.com, scope `@3tears`
+  (3tears is public, MIT), published by npm trusted publishing.
 - Versioned in lockstep with the Python family (one version, one tag, one release run), targeting
   0.95.0; the bump tooling and release workflow move and publish it; an enforcement test holds it.
 - General for any 3tears app, validated against metallm (React, Vite, Workbox, push), scriob (React,
@@ -43,8 +43,8 @@ discussed the station PWA) and the rulings relayed on 2026-11-16 say what this i
   versions together; JSON rewrite keeps npm's formatting byte for byte]
 - [DECISION: the web tests run in their own workflow (`web.yml`) | they need Node and Chromium, not
   the Python shards]
-- [DECISION: npm-publish is gated by NPM_PUBLISH, its registry is NPM_REGISTRY (npmjs.com by
-  default, trusted publishing with provenance) | the registry is the owner's call; GitHub Packages
-  would refuse `@3tears/*` from `pacepace/3tears` (the GitHub account `3tears` is someone else's)]
+- [DECISION: npm-publish is gated by NPM_PUBLISH and publishes by OIDC trusted publishing, falling
+  back to the NPM_TOKEN secret only while it is set | a package's trusted publisher can be set only
+  once it exists, so a new package's first version bootstraps with a short-lived token]
 
 Critic mode: final
