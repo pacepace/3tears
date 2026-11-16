@@ -33,6 +33,7 @@ from threetears.evals.schema.models import run_ending_reason
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.schema.models import EvalRun
+    from threetears.evals.schema.reading_states import AttestableCoordinate
 
 
 def _token_rollup(results: list[ResultView]) -> TokenRollup | None:
@@ -139,6 +140,16 @@ def _measured_prod_costs(run_results: list[ResultView]) -> list[float]:
     return measured
 
 
+def _attested_coordinates(run: EvalRun) -> list[AttestableCoordinate]:
+    """The coordinates of the run's identity its host stated after the run: attested, not recorded."""
+    stated: list[AttestableCoordinate] = []
+    if run.served_model_attestation is not None:
+        stated.append("served_model")
+    if run.measure_attestation is not None:
+        stated.append("measure_definition")
+    return stated
+
+
 def digest_run(
     run: EvalRun, run_results: list[ResultView], reportable: set[str], *, profile: HostProfile
 ) -> RunSummary:
@@ -187,6 +198,7 @@ def digest_run(
         apparatus=_run_apparatus(run, run_results),
         # Why a run that did not finish ended, which its page opens on in place of a verdict.
         ended_because=run_ending_reason(run) if run.status != "completed" else None,
+        attested_coordinates=_attested_coordinates(run),
     )
 
 

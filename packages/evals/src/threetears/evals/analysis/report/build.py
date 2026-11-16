@@ -37,7 +37,7 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.aspect.common import (
     NO_STRATUM,
     _arm_names,
-    _case_namer,
+    case_namer,
     _cell_namer,
     _ChartLedger,
     _date,
@@ -340,7 +340,9 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
         ]
         unfinished = {aspect.aspect for aspect in stopped}
         finished = [aspect.label for aspect in analysis.aspects if aspect.label not in unfinished]
-        verdict = " ".join([*opened, *([campaign_verdict(readings, finished, names)] if finished else [])])
+        held = {aspect.aspect: aspect for aspect in campaign.aspects}
+        said = [campaign_verdict(readings, finished, names, bundles=held)] if finished else []
+        verdict = " ".join([*opened, *said])
     else:
         aspect = campaign.aspects[0]
         declared = campaign.declaration.aspects[0]
@@ -406,7 +408,7 @@ def _page(
     verdict = verdict_line(
         bundle,
         arm,
-        case_name=_case_namer(bundle),
+        case_name=case_namer(bundle),
         verdicts=[*guardrails_read, *contrasts_read],
         order=measure_order,
         evidence=contrast_evidence(bundle, forms=forms),

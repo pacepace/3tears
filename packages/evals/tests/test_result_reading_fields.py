@@ -550,6 +550,10 @@ def _where(site: str) -> str:
 #: (``analysis/bundle/measures.py``), so no family reads ``judge_reasoning``, ``world_events`` or ``kind_payload``
 #: through it, and planning reads no score's ``reasoning``.
 #:
+#: ``judge_rescores[].rejudged_at`` (judges D1): when a re-judge was made dates it as a look at the result's contrasts
+#: (``aspect_looks``), which a count of re-judges alone cannot place after the first look. It reaches only the looks
+#: count, outside every digest and fingerprint, so a re-judge's time moves no verdict, interval or figure.
+#:
 #: Every record list a result carries is filled in the enriched campaign, so its items' fields are measured, with
 #: two exceptions: ``judge_rescores[].usage[]`` (no family reads a re-judge's own usage rows, so the reading leaves
 #: them out) and ``judge_cut_short{}`` (carried whole by the reading; no campaign
@@ -604,6 +608,7 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_model",
             "judge_repeats",
             "judge_repeats[].judge_config_ids",
+            "judge_repeats[].sample",
             "judge_repeats[].scores",
             "judge_repeats[].scores[].cannot_tell",
             "judge_repeats[].scores[].dim",
@@ -615,6 +620,7 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_repeats[].scores[].first_served_model",
             "judge_repeats[].scores[].repeat",
             "judge_repeats[].scores[].repeat.judge_sent_settings",
+            "judge_repeats[].scores[].repeat.judge_sent_settings.model_dump()",
             "judge_repeats[].scores[].repeat.judge_sent_settings.==",
             "judge_repeats[].scores[].repeat.judge_temperature",
             "judge_repeats[].scores[].repeat.score",
@@ -622,6 +628,7 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_repeats[].scores[].scale",
             "judge_rescores",
             "judge_rescores[].cost_usd",
+            "judge_rescores[].rejudged_at",
             "judge_score()",
             "judge_scores()",
             "judge_seconds",
@@ -1024,6 +1031,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].summary",
                 "async_deliveries[].tool",
                 "judge_repeats[].judge_config_ids",
+                "judge_repeats[].sample",
                 "judge_repeats[].scores",
                 "judge_repeats[].scores[].cannot_tell",
                 "judge_repeats[].scores[].dim",
@@ -1035,12 +1043,14 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].first_served_model",
                 "judge_repeats[].scores[].repeat",
                 "judge_repeats[].scores[].repeat.judge_sent_settings",
+                "judge_repeats[].scores[].repeat.judge_sent_settings.model_dump()",
                 "judge_repeats[].scores[].repeat.judge_sent_settings.==",
                 "judge_repeats[].scores[].repeat.judge_temperature",
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
                 "judge_rescores[].cost_usd",
+                "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
                 "judge_seconds[].judge.model",
                 "judge_seconds[].judge.temperature",
@@ -1099,6 +1109,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].summary",
                 "async_deliveries[].tool",
                 "judge_repeats[].judge_config_ids",
+                "judge_repeats[].sample",
                 "judge_repeats[].scores",
                 "judge_repeats[].scores[].cannot_tell",
                 "judge_repeats[].scores[].dim",
@@ -1110,12 +1121,14 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].first_served_model",
                 "judge_repeats[].scores[].repeat",
                 "judge_repeats[].scores[].repeat.judge_sent_settings",
+                "judge_repeats[].scores[].repeat.judge_sent_settings.model_dump()",
                 "judge_repeats[].scores[].repeat.judge_sent_settings.==",
                 "judge_repeats[].scores[].repeat.judge_temperature",
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
                 "judge_rescores[].cost_usd",
+                "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
                 "judge_seconds[].judge.model",
                 "judge_seconds[].judge.temperature",
@@ -1175,6 +1188,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "async_deliveries[].tool",
                 "judge_cut_short",
                 "judge_repeats[].judge_config_ids",
+                "judge_repeats[].sample",
                 "judge_repeats[].scores",
                 "judge_repeats[].scores[].cannot_tell",
                 "judge_repeats[].scores[].dim",
@@ -1186,12 +1200,14 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].first_served_model",
                 "judge_repeats[].scores[].repeat",
                 "judge_repeats[].scores[].repeat.judge_sent_settings",
+                "judge_repeats[].scores[].repeat.judge_sent_settings.model_dump()",
                 "judge_repeats[].scores[].repeat.judge_sent_settings.==",
                 "judge_repeats[].scores[].repeat.judge_temperature",
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
                 "judge_rescores[].cost_usd",
+                "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
                 "judge_seconds[].judge.model",
                 "judge_seconds[].judge.temperature",
@@ -1286,6 +1302,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "goal_state_outcomes[].passed",
                 "judge_cut_short",
                 "judge_repeats[].judge_config_ids",
+                "judge_repeats[].sample",
                 "judge_repeats[].scores",
                 "judge_repeats[].scores[].cannot_tell",
                 "judge_repeats[].scores[].dim",
@@ -1297,12 +1314,14 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].first_served_model",
                 "judge_repeats[].scores[].repeat",
                 "judge_repeats[].scores[].repeat.judge_sent_settings",
+                "judge_repeats[].scores[].repeat.judge_sent_settings.model_dump()",
                 "judge_repeats[].scores[].repeat.judge_sent_settings.==",
                 "judge_repeats[].scores[].repeat.judge_temperature",
                 "judge_repeats[].scores[].repeat.score",
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
                 "judge_rescores[].cost_usd",
+                "judge_rescores[].rejudged_at",
                 "judge_score()",
                 "judge_scores()",
                 "judge_seconds[].judge",
@@ -1599,6 +1618,8 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "usage[].cost_usd",
             }
         ),
+        # The regression watch reads host_measures (#1187): a history step between runs read under different definitions,
+        # or none recorded where a result holds a host measure, is a boundary with no verdict across it.
         "regressed": frozenset(
             {
                 "async_deliveries",
@@ -1610,7 +1631,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "goal_state_outcomes",
                 "goal_state_outcomes[].expression",
                 "goal_state_outcomes[].passed",
-                "host_measures",
                 "judge_cut_short",
                 "judge_model",
                 "judge_repeats[].judge_config_ids",

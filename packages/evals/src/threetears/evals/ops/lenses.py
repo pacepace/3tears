@@ -45,6 +45,7 @@ from threetears.evals.analysis.reads import (
 from threetears.evals.analysis.report.forms import PageForms
 
 from threetears.evals.analysis.bundle.comparisons import PlanningReading, planning_readings
+from threetears.evals.analysis.bundle.observations import measure_definition_levels
 
 from threetears.evals.analysis.stats import (
     DETECTABLE_POWER,
@@ -83,7 +84,7 @@ from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 
 from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
 
-from threetears.evals.kernel.metrics import describe_reported_measure, measure_title, reads_as_rate
+from threetears.evals.kernel.metrics import describe_reported_measure, holds_host_measure, measure_title, reads_as_rate
 
 from threetears.evals.schema.models import EvalRun, EvalTemplate
 
@@ -348,7 +349,8 @@ class RunsCompared(EvalBaseModel):
     comparison: dict[str, Any] = Field(
         description=(
             "The two-run lens's answer: `comparison_basis` (whether the runs share a template, not the test's basis), "
-            "`composite_comparability` (why composites are withheld, across subjects), `comparison.arm` (each "
+            "`composite_comparability` (why the deltas are withheld: across subjects, a side split on a coordinate of "
+            "its identity, or the two read under different definitions), `comparison.arm` (each "
             "arm's model and the models its responses named as having answered it, pass^k at one shared depth and mean composite, their deltas, whether the samples were "
             "paired and over how many cases, Hedges' g, p and the verdict), `comparison.per_template` and each "
             "run's `subject_detail_{a,b}`."
@@ -622,6 +624,13 @@ DETECTABLE_EFFECT_ASSUMPTIONS = (
     "variance is an estimate from the earlier runs, whose own error is not in the figure; and the test planned is "
     "the paired t-test alone, where a rate is separated only once its bounded interval excludes zero too, which "
     "takes more cases, so a rate's Δ is the least the launch could detect, not what it will"
+)
+
+#: Added to :data:`DETECTABLE_EFFECT_ASSUMPTIONS` only where the earlier runs read were not all read under one
+#: definition of each host measure, or some recorded none: the variance is pooled over them all the same, so a shift
+#: between definitions widens it. Until the planning read keeps them apart, the block says so.
+_DEFINITIONS_POOLED = (
+    "; and its variance pools earlier runs read under different definitions of a host measure, or under none recorded"
 )
 
 
@@ -922,8 +931,9 @@ def detectable_effects(
     # history read whole held every result of every run at once. The read holds one page of results and their readings
     # at a time, on either path; on the engine's path its key read is one call for every run.
     read_counts: dict[str, int] = {}
+    holding: dict[str, list[ResultView]] = {}
     with host.storage.iter_result_readings([run.id for run in runs], scope_id, in_store_order=True) as read:
-        readings = planning_readings(runs, _counted(read, read_counts), profile=host.profile)
+        readings = planning_readings(runs, _counted(read, read_counts, holding), profile=host.profile)
     hold_to_read_budget(
         _PLANNING_LENS,
         scope_id,
@@ -940,6 +950,9 @@ def detectable_effects(
         family_size=family_size,
         per_comparison_alpha=SIGNIFICANCE_ALPHA / family_size,
         run_ids=[run.id for run in runs],
+        # Read as the cells read the runs (one result holding a host measure says what all of a run's would).
+        assumptions=DETECTABLE_EFFECT_ASSUMPTIONS
+        + (_DEFINITIONS_POOLED if measure_definition_levels(runs, holding) else ""),
     )
     if not runs:
         return block.model_copy(
@@ -978,19 +991,26 @@ def _planned_as_rate(reading: PlanningReading, host: EvalHost) -> bool:
     return reads_as_rate(reading.reading, reading.name, value_range=reading.value_range)
 
 
-def _counted(readings: Iterable[ResultView], counts: dict[str, int]) -> Iterator[ResultView]:
+def _counted(
+    readings: Iterable[ResultView], counts: dict[str, int], holding: dict[str, list[ResultView]]
+) -> Iterator[ResultView]:
     """``readings``, each handed on as it is read, counted per run into ``counts``: which runs the planning read found
-    results of, and how many, known once the walk ends.
+    results of, and how many, known once the walk ends; and the first of each run's that holds a host measure kept in
+    ``holding``, all :func:`~threetears.evals.analysis.bundle.observations.measure_definition_levels` asks of them.
 
     :param readings: The read's readings, walked once.
     :ptype readings: Iterable[ResultView]
     :param counts: Where each run's count is added.
     :ptype counts: dict[str, int]
+    :param holding: Where each run's first result holding a host measure is kept, by run id.
+    :ptype holding: dict[str, list[ResultView]]
     :return: The readings, in their order.
     :rtype: Iterator[ResultView]
     """
     for reading in readings:
         counts[reading.eval_run_id] = counts.get(reading.eval_run_id, 0) + 1
+        if reading.eval_run_id not in holding and holds_host_measure(reading.host_measures):
+            holding[reading.eval_run_id] = [reading]
         yield reading
 
 
@@ -1707,6 +1727,10 @@ def history_text(result: HistoryResult) -> str:
                 else f", {forms.lone(point.delta_from_baseline, signed=True, measure=result.metric).text} from baseline"
             )
             epoch = ", suite changed here" if point.epoch_boundary else ""
+            if point.split_on:
+                # A boundary the series is not read across: no verdict for the step, a fresh baseline after it.
+                apart = " and ".join(word.replace("_", " ") for word in point.split_on)
+                epoch += f", {apart} apart from the previous run here: no step is read across it"
             if point.epoch_boundary and (point.epoch_label or previous_label):
                 epoch += f" ({previous_label or 'no named case set'} to {point.epoch_label or 'no named case set'})"
             previous_label = point.epoch_label

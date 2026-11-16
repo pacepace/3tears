@@ -79,6 +79,11 @@ def test_the_agent_file_is_short_true_and_sufficient() -> None:
         "The first line printed is the answer",
         "refused: and a remedy:",
         "0 Every run completed",
+        # Where an app's cases come from, and that an app calling no model needs Eval alone: what an agent writing
+        # its first eval of an app of its own acts on (the on-ramp measurement's bottleneck, issue #1209).
+        "YOUR APP'S CASES",
+        "never by running the app",
+        "needs Eval alone",
     ):
         assert needed in flat, f"llms.txt does not say {needed!r}"
     assert len(generator.what_it_is()) == 3

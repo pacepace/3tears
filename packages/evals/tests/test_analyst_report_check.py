@@ -481,6 +481,17 @@ def _served(tool: MountedTool) -> list[str]:
 #: its line to the tool's description and its help page; no other action's text moved.
 #: The evals tool moved again when the out-of-run ledger gained the purpose ``reviewer`` (a model's reading of a blind
 #: read's sheet; core v15.19): spend_list's purpose filter lists it. Nothing else it serves moved.
+#: The evals tool moved again when runs_attest replaced runs_attest_definitions (#1187): one action states either
+#: coordinate of stored runs, their measure definitions or their served model, with a ``coordinate`` and a
+#: ``served_model`` parameter and one result shape. No other action's text moved.
+#: The evals tool moved again when runs_attest's ``coordinate`` came to be the closed set of attestable coordinates
+#: (``AttestableCoordinate``: measure_definition, served_model), where its schema had listed template and rig too
+#: (#1187). No other action's text moved.
+#: The evals tool moved again when runs_attest's help came to say what a served-model statement does (#1187): it is
+#: recorded on the run with the results whose candidate rows named no model, read through, and rewrites no row; the
+#: help had said it was written to each such row. No other action's text moved.
+#: The evals tool moved again when a frontier came to store that its contestants' definitions differ (#1187): the
+#: frontier lens's help lists ``definitions_apart`` among the fields ``FrontierResult`` returns. No other text moved.
 #: The evals tool moved again when it gained the blind read's host door (#1178, chunk A2): seven actions
 #: (blind_read_create, _sheet, _answer, _review, _close, _get, blind_reads_list), each a help page and a help-index line
 #: with its parameters in the input schema; and campaign_record says who made the call (made_by, person, call_model,
@@ -488,7 +499,9 @@ def _served(tool: MountedTool) -> list[str]:
 #: The evals tool moved again when blind_read_close's help page gained one sentence, the recovery a caller can find
 #: from the door: "A close whose ratings were not all written (the store refused one) is completed by closing again,
 #: which writes the ones missing." Diffed against the text served before: nothing else moved.
-_EVALS_BYTES = "6c025c638da5fdd21a2caad5a96dbd7c2629a886dec56f95354aa876958c6fbf"
+#: Taken again over runs_attest's text (#1187) when both met: diffed against the text served without the door, the
+#: only lines that moved are the door's and campaign_record's above.
+_EVALS_BYTES = "3d319028771cf338e1500fa725bd63c1d73e62a1df89a6341e87389fbe1db626"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

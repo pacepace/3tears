@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         SecondJudgeScore,
         SecondJudging,
     )
+    from threetears.evals.schema.reading_states import SampleKind
 
 __all__ = [
     "GoalReading",
@@ -197,10 +198,13 @@ class LatencyView(Protocol):
 
 
 class RescoreView(Protocol):
-    """A re-judge's record as the readers read it: its spend."""
+    """A re-judge's record as the readers read it: its spend, and when it was made (a look at the result's
+    contrasts, :func:`~threetears.evals.analysis.significance.looks_taken`)."""
 
     @property
     def cost_usd(self) -> float | None: ...
+    @property
+    def rejudged_at(self) -> str: ...
 
 
 class RepeatedScoreView(Protocol):
@@ -233,6 +237,8 @@ class RepeatView(Protocol):
     def judge_config_ids(self) -> Mapping[str, str]: ...
     @property
     def scores(self) -> Sequence[RepeatedScoreView]: ...
+    @property
+    def sample(self) -> SampleKind | None: ...
 
 
 class SecondScoreView(Protocol):
@@ -613,14 +619,15 @@ class LatencyReading:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RescoreReading:
-    """A re-judge's record: its spend (:class:`RescoreView`)."""
+    """A re-judge's record: its spend and when it was made (:class:`RescoreView`)."""
 
     cost_usd: float | None
+    rejudged_at: str
 
     @classmethod
     def of(cls, rescore: JudgeRescore) -> RescoreReading:
         """The reading of a stored re-judge."""
-        return cls(cost_usd=rescore.cost_usd)
+        return cls(cost_usd=rescore.cost_usd, rejudged_at=rescore.rejudged_at)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -660,6 +667,7 @@ class RepeatReading:
 
     judge_config_ids: Mapping[str, str]
     scores: tuple[RepeatedScoreReading, ...]
+    sample: SampleKind | None = None
 
     @classmethod
     def of(cls, repeat: JudgeRepeat, shared: SharedValues) -> RepeatReading:
@@ -667,6 +675,7 @@ class RepeatReading:
         return cls(
             judge_config_ids=shared.names(repeat.judge_config_ids),
             scores=tuple(RepeatedScoreReading.of(entry, shared) for entry in repeat.scores),
+            sample=repeat.sample,
         )
 
 

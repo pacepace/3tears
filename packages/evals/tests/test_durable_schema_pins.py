@@ -56,21 +56,21 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 17
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 3
+PINNED_DURABLE_SCHEMA_MINOR = 4
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "blind_read": "2264fc6eb68d4bf78e49df1d1a4f5fdc5f803b09fe0211d15b1214830749f8ba",
-    "calibration_rating": "553f2b18a27f7c16d75d15b94991e73eb6b94823d9b64bc0c5e6c947d36668ed",
-    "case_set": "641be25ae259334dc4cc884519019971474be378aa111ecc50ac2a31029fe3f4",
-    "eval_analyst_gap": "68893d3133e251a797ab3287eb0db3fc008cbfb42304a6685bf11767a4b993a6",
-    "eval_campaign": "fadaa076d239fc62ed635760d2d4d58323541f4ddcf3ce06d06387992058e300",
-    "eval_template": "92882ee9aab3260fb2ee5c8855249d68562e8738e55e35da73dc3d31b8b85f76",
-    "eval_test_case": "0ff5df9a81c261be82d7311be419456874000005b5245e78d8367a67b6f774bb",
-    "judge_config": "2c075214eb2eb0e5fd0dba76edc916a0f1f1ea94b1b3791b5554a3b62ca2f62f",
-    "judge_config_tombstone": "156703a1470d260464870fa9c9542da8de97e640d3bcbf24459335126b1c4a04",
-    "rubric_dim": "b5474ed5fdc0ae78b953870a795133b25f79d34217bd7331ca6d046893bab544",
-    "rubric_dim_tombstone": "04724d3b10aac9bcd8cdc703ab9888b9f8cd584d5ca0453bdaf1c6d706ff82fe",
+    "blind_read": "7dbb62b53b0d44057e77d838181299b9d2fefbb5d10807031594806b1deb7818",
+    "calibration_rating": "645e9cdeadda3272d71454ae5913cf214e58bb58daa90607f2838228e3db2f2f",
+    "case_set": "529d8a007683e49bd5e8f7a388036561a589994bac0e7e0aec61c5971c7fe3ba",
+    "eval_analyst_gap": "3ef9cddea0af1ef4cbac0eda27ee1059adc448d44e3eb5f60b636442ce0148c8",
+    "eval_campaign": "ddd54af951b17ecc4b044ec562254f6962b66f8107c36e09dc8e0236f87a08fa",
+    "eval_template": "9a672b9436193f7c82143092d7374d6a631725d180411b86f377b1a2dea36fa7",
+    "eval_test_case": "41f926126d3432d6709ea6166fddc93d29b75cbf53fabdb63e75446ff4715eb7",
+    "judge_config": "b2b74c4a71f72c7eef3cb1639b163376ecf6d6112728909e449bb488c4f1a3be",
+    "judge_config_tombstone": "36280d1c8cc3ffca5900a78b8dab4f25ef6c6924bd5abd43ee1d325101286600",
+    "rubric_dim": "012776dfb62950678db74d29c6bf9353facc10cef750c463b860d267a258836d",
+    "rubric_dim_tombstone": "be3b6281602119b4b232b07b2c5d5c1fd25dcdb07431c4de91e7ef4ddddf9af1",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.
@@ -130,7 +130,7 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v16/judge_config_tombstone.json": "4831dcf1c41fa3725f578d2119d046473c832cec7fb25a3ab04fa57d5b26eea7",
     "v16/rubric_dim.json": "34a340255217cbafb3b9be7c6517d3b200b77aa07aedf77c32f06b372db3bc45",
     "v16/rubric_dim_tombstone.json": "374d32a4b7497c976dec064095209bffd224d861dac6f17b492366e60034ad09",
-    "v17/blind_read.json": "56f5bcbe75a7b9cab3506eedbec5d3cbb775290f44d7a233e50c8cf3b338e510",
+    "v17/blind_read.json": "945c246ca48c47e3a3af3b4340c444e907e9b3336f248f76b21fcc4e85b4c437",
     "v17/calibration_rating.json": "64213ddc7847462b483759ce1ee07928b2245c1c6572deabaebe1801d3044370",
     "v17/eval_analyst_gap.json": "a3a45b37c6417984f079bc78856bfd29a852bd62a8b2971eabe91ea202220258",
     "v17/case_set.json": "60fa982745ed59772ca13d6a5637efd2abf6d8226fe101635370e0fae4a08129",

@@ -55,6 +55,8 @@ from threetears.evals.kernel import (
     CellSpanWindow,
     EvalCampaign,
     EvalStorage,
+    FIND_TEMPLATE,
+    NotFoundError,
     ValidationFailedError,
     MetricDescriptor,
     WorldSession,
@@ -95,6 +97,7 @@ from threetears.evals.run import (
     execute_run,
     launch_run,
     run_blocking,
+    update_template,
 )
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -582,6 +585,52 @@ def courier_launch_host() -> LaunchHost:
     return launch_host
 
 
+# --- 8. an operator's own edits to a stored scenario ------------------------------------------------
+
+
+def rename_stratum(host: EvalHost, template_id: str, stratum: str, name: str) -> EvalTemplate:
+    """Give a stratum of a stored scenario the operator's own name, over the one it already has.
+
+    The seed and a definitions reset only fill a name a template lacks, so ``update_template`` is the one door to a
+    rename. A name is presentation only: the template keeps its id, its revision and its ``updated_at``, and every
+    run of it reads on, named anew.
+
+    :param host: The courier host, with its template checks (``courier_launch_host().eval_host``).
+    :ptype host: EvalHost
+    :param template_id: The stored scenario.
+    :ptype template_id: str
+    :param stratum: The stratum id its cases declare.
+    :ptype stratum: str
+    :param name: What a page prints for it from now on.
+    :ptype name: str
+    :return: The scenario as stored after the rename.
+    :rtype: EvalTemplate
+    :raises NotFoundError: No such scenario in the courier's scope.
+    """
+    stored = host.storage.load_template(template_id, COURIER_SCOPE)
+    if stored is None:
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
+    # update_template is the only door to renaming a name a stored template already holds.
+    return update_template(host, template_id, COURIER_SCOPE, {"stratum_names": {**stored.stratum_names, stratum: name}})
+
+
+def retire_scenario(host: EvalHost, template_id: str) -> EvalTemplate:
+    """Retire a stored scenario: it leaves the active template listing, and every run of it still reads.
+
+    :param host: The courier host, with its template checks (``courier_launch_host().eval_host``).
+    :ptype host: EvalHost
+    :param template_id: The stored scenario.
+    :ptype template_id: str
+    :return: The scenario as stored, archived.
+    :rtype: EvalTemplate
+    :raises NotFoundError: No such scenario in the courier's scope.
+    """
+    # update_template is the only door to archiving a template outright; a reset archives only what it supersedes.
+    # It stamps the template's updated_at, so today no earlier run of it can be re-judged, its run summary drops the
+    # template's intent and its judges' criteria read as unknown; rename_stratum leaves updated_at alone.
+    return update_template(host, template_id, COURIER_SCOPE, {"archived": True})
+
+
 __all__ = [
     "COURIER_DISPATCH_DESK",
     "COURIER_ID",
@@ -604,5 +653,7 @@ __all__ = [
     "courier_template",
     "courier_profile",
     "courier_world",
+    "rename_stratum",
+    "retire_scenario",
     "run_courier_campaign",
 ]

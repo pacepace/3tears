@@ -19,10 +19,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from threetears.evals.schema.reading_states import Coordinate, Reason, SampleKind, StateOf
 from threetears.evals.kernel.evidence_tiers import CriterionState
+from threetears.evals.analysis.significance import SeparationTest
 
 __all__ = ["Check", "Corrected", "Looks", "Rescore"]
 
@@ -96,16 +97,133 @@ class Rescore(_Shape):
 
     state: StateOf | None = Field(default=None, description="Its state where it is not counted.")
     variance: float | None = Field(default=None, description="The variance between scorings of one reply.")
+    variance_interval: tuple[float, float] | None = Field(
+        default=None, exclude_if=lambda value: value is None, description="The interval on it."
+    )
     repeated_results: int | None = Field(default=None, description="Results scored more than once.")
     repeated_cases: int | None = Field(default=None, description="Distinct cases behind them.")
     fail_given_pass: float | None = Field(default=None, description="How often a passed reply fails on a re-score.")
     fail_given_pass_interval: tuple[float, float] | None = Field(default=None, description="The interval on it.")
     ceiling_low: float | None = Field(default=None, description="The low end of the ceiling the noise puts on pass^k.")
     ceiling_high: float | None = Field(default=None, description="Its high end.")
+    k: int | None = Field(default=None, description="The k the ceiling is read at: the most scores one case holds.")
+    ceiling_state: StateOf | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Where the ceiling is read for the dimension and could not be: not available, why.",
+    )
 
 
 class Looks(_Shape):
-    """How often a reading's test was looked at, against how often it planned to be."""
+    """How often a reading's test was looked at, against how often it planned to be.
 
-    planned: int | None = Field(default=None, description="The looks declared; none where none were.")
-    taken: int = Field(ge=1, description="The looks taken.")
+    A look is an occasion on which the contrast's test could have been read again on more or different evidence
+    (:func:`~threetears.evals.analysis.significance.looks_taken`): the first, once both arms held a result; then each
+    launch whose results changed what the test reads, each run that joined or left, each re-measure and each re-judge
+    made after it. ``taken`` is the most any one contrast of the aspect has had. It is exact where every such fact is
+    stored, and a lower bound (``lower_bound``) where one is not: a run that left with no result recorded, an archived
+    or unresolved member, a result with no ordered time, or re-judges, which are stored per result, so passes over
+    different results cannot be told apart.
+
+    **Looks were not recorded** (``recorded`` false) where a member run's joining was never recorded: it joined before
+    durable 17.3 recorded membership. The occasions its stored results give are then artifacts of how the runs were
+    stored (each arm launched alone, one group of cases after another), not occasions on which a reading could have
+    been taken, and runs joined in one write are dated each by its own launch: the count could be too high or too low,
+    so it is neither a bound above nor a bound below, and it is not given as looks. ``evidence_changes`` gives that
+    count as what it is: how many times the stored evidence changed. Where looks were recorded since (a run joined,
+    left, was launched after it joined, re-measured or re-judged after the first comparison), ``taken`` is the first
+    comparison plus those, a true lower count (``lower_bound``): at least that many looks since looks were recorded,
+    and earlier ones not recorded. Where none were, ``taken`` is None.
+    """
+
+    planned: int | None = Field(
+        default=None,
+        description=(
+            "The looks the design plans, where the plan was declared before the first look; None where none was, or "
+            "where it was declared after (``late_plan``)."
+        ),
+    )
+    taken: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "The looks taken. Where looks were not recorded (``recorded`` false): the looks recorded since, counting "
+            "the first comparison, a lower count; None where none were."
+        ),
+    )
+    # Left out where true, so the looks of a campaign created once looks were counted read {planned, taken} alone.
+    plannable: bool = Field(
+        default=True,
+        exclude_if=lambda value: value,
+        description=(
+            "Whether the campaign was created once looks were counted, so its design could have declared them. False "
+            "for an earlier campaign: its stored verdicts do not move, and its looks qualify the method only."
+        ),
+    )
+    # Left out where false, so an exact count reads {planned, taken} alone.
+    lower_bound: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="Whether ``taken`` is a lower bound: a fact a look is counted by is not stored, so more were taken.",
+    )
+    # Left out where true: only an aspect with a member whose joining was never recorded says it.
+    recorded: bool = Field(
+        default=True,
+        exclude_if=lambda value: value,
+        description=(
+            "Whether looks were recorded: false where a member run joined before durable 17.3 recorded membership, so "
+            "the looks before are not counted; ``taken`` is then only the looks recorded since, a lower count, or None."
+        ),
+    )
+    # Left out where none: only an aspect whose looks were not recorded carries it.
+    evidence_changes: int | None = Field(
+        default=None,
+        ge=1,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Where looks were not recorded: how many times the stored evidence of a contrast changed (its runs' "
+            "launches, re-measures and re-judges as stored), context and not a count of looks. None where they were."
+        ),
+    )
+    # Left out where none: the sizes a reference rate's setting is checked against.
+    launched: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="The fewest cases any contrast of the aspect read at its first look. None where not counted.",
+    )
+    largest_step: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="The most cases one later occasion added to any contrast of the aspect. None where not counted.",
+    )
+    # Left out where empty.
+    tests: list[SeparationTest] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+        description=(
+            "The tests the aspect's readings are read by, sorted: ``bounded`` (a pass rate, a judged score, a "
+            "guardrail) and ``t`` (a mean, a measure's score, a cost per reply). What a caveat on looks quotes a "
+            "measured rate for."
+        ),
+    )
+    late_plan: int | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The looks a plan declared after the first look named (or over runs that held results before it was "
+            "declared): read as no plan, since the looks it would count were already taken. None where no plan was "
+            "declared late."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _a_count_or_not_recorded(self) -> Looks:
+        """A count of looks where they were recorded; where they were not, the evidence changes, and the looks
+        recorded since only as a lower count."""
+        if self.recorded and (self.taken is None or self.evidence_changes is not None):
+            raise ValueError("recorded looks carry taken and no evidence_changes")
+        if not self.recorded and (self.evidence_changes is None or self.lower_bound != (self.taken is not None)):
+            raise ValueError("unrecorded looks carry evidence_changes, and a taken only as a lower_bound")
+        return self

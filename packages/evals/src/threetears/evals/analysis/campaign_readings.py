@@ -65,10 +65,11 @@ from typing import Final, Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from threetears.evals.analysis.bundle.schema import FLOOR_COST_MEASURE, AnalysisContextBundle, ArmScoreboard
-from threetears.evals.analysis.cells import answer_split_variants
+from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION, split_arms, unread_arms
 from threetears.evals.analysis.depth import Depth, Precision, precision
 from threetears.evals.analysis.kinds import CampaignKind, campaign_kind
 from threetears.evals.analysis.floors import (
+    definitions_moved,
     FloorDecision,
     FloorOutcome,
     FloorState,
@@ -82,6 +83,7 @@ from threetears.evals.analysis.floors import (
     project_rate,
     read_floor,
 )
+from threetears.evals.analysis.significance import looks_alpha, looks_confidence
 from threetears.evals.analysis.said import Said, SaidFigure
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
@@ -98,6 +100,7 @@ from threetears.evals.kernel.declaration import CampaignArm, Floor, RateDrop
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.metrics import goal_check_of
 from threetears.evals.schema.base import EvalDocumentModel
+from threetears.evals.schema.reading_states import Coordinate
 
 __all__ = [
     "AggregateFigure",
@@ -218,8 +221,9 @@ class AspectReading(EvalDocumentModel):
         default=None,
         description=(
             "The change's interval in points, low then high, at the nominal level (`stats.INTERVAL_LEVEL`) with no "
-            "correction, as a floor reads it: what `within_margin` is read on, and what an unclear row's "
-            "`projection` counts from. None when the arms' cases cannot bound it, or the aspect declares no margin."
+            "correction, as a floor reads it (under a plan of L looks, at 1 − (1 − level)/L, as a floor's held is "
+            "read): what `within_margin` is read on, and what an unclear row's `projection` counts from. None when "
+            "the arms' cases cannot bound it, or the aspect declares no margin."
         ),
     )
     drop_p: float | None = Field(
@@ -252,8 +256,8 @@ class AspectReading(EvalDocumentModel):
     projection: SampleProjection | None = Field(
         description=(
             "For an `unclear` row, the drop side only: the cases that would show the candidate no worse than the "
-            "control by more than the aspect's margin (read `within_margin`), counted at the nominal level from "
-            "`within_interval`, as a floor's are. None for a settled row, for an aspect with no margin, or where "
+            "control by more than the aspect's margin (read `within_margin`), counted at `within_interval`'s level "
+            "from it, as a floor's are. None for a settled row, for an aspect with no margin, or where "
             "nothing can be projected. No gain is projected."
         )
     )
@@ -401,23 +405,43 @@ def _in_side_order(precision: Precision, sides: Sequence[str]) -> Precision:
 
 
 class AnswerSplit(EvalDocumentModel):
-    """One arm whose results on one aspect were answered by more than one candidate model, so it is read per model.
+    """One arm that is not read as an arm on one aspect, because of one coordinate of its identity.
 
-    The arm's cells there hold one answering model each (``Cell.rig_class_id``), and each is compared with the
-    control in the aspect's bundle. Nothing is read for the ARM on that aspect: no row, no floor and no pair names
-    it, since a change or a verdict for the arm would be one model's presented as the arm's, beside counts that pool
-    them. A split control withholds every candidate's row on the aspect.
+    ``coordinate`` says which. ``served_model``: the arm's results there were answered by more than one candidate
+    model, or by one no response named in more than one run, so its cells hold one answering model each
+    (``Cell.rig_class_id``) and each is compared with the control in the aspect's bundle. ``measure_definition``:
+    its runs there were read under more than one definition of a host measure, or under none recorded (``cells`` of
+    two or more), or under another than the control's, or none recorded, so the two share no test setup (``cells`` of
+    one). Nothing is read for the ARM on that aspect: no row, no floor and no pair names it, since a change or a
+    verdict for the arm would be one cell's presented as the arm's, beside counts that pool them. A control so held
+    withholds every candidate's row on the aspect.
     """
 
     aspect: str = Field(min_length=1, description="The aspect's label.")
     arm: str = Field(min_length=1, description="The arm's variant key.")
     arm_label: str = Field(description="What a reader calls the arm.")
-    cells: int = Field(ge=2, description="How many cells the arm holds there, one per answering model.")
+    cells: int = Field(
+        ge=1,
+        description=(
+            "How many cells the arm holds there on the coordinate: two or more where the arm is split, one where "
+            "its one cell shares no test setup with the control's (measure_definition only)."
+        ),
+    )
     served_models: list[str] = Field(
         default_factory=list, description="The models the provider's responses named for the arm there, sorted."
     )
     unrecorded: bool = Field(
-        default=False, description="Whether some of the arm's responses there named no model: a cell of its own."
+        default=False,
+        description=(
+            "Whether the coordinate went unrecorded on some of the arm's runs there: responses that named no model, "
+            "or host measures read under no recorded definition. Each such run is a cell of its own."
+        ),
+    )
+    # Left out of the document where it is the served model, so a split stored before the field reads as it was.
+    coordinate: Coordinate = Field(
+        default="served_model",
+        exclude_if=lambda value: value == "served_model",
+        description="The coordinate of its identity the arm is not read as one arm on.",
     )
 
 
@@ -633,7 +657,23 @@ class CampaignReadings(EvalDocumentModel):
 
     campaign_id: str = Field(description="The campaign read.")
     alpha: float = Field(
-        gt=0.0, lt=1.0, description="The campaign's α, at which each candidate's two Holm families are tested."
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "The campaign's α: the error each candidate's two Holm families are read for, held over every look a plan "
+            "allows whose size was fixed before its data, and over planner-sized extends only where "
+            "`significance.plan_kept` shows it (on the bounded test, not on the t test); under a plan each look is "
+            "tested at `look_alpha`."
+        ),
+    )
+    # Left out with no plan, so readings with none dump as they did.
+    look_alpha: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The level each look's two Holm families are tested at under a plan of L looks (the largest plan among the "
+            "aspects): alpha / L. None with no plan in force, where each look is tested at `alpha`."
+        ),
     )
     control: str | None = Field(description="The control arm's variant key; None when the campaign declares none.")
     control_label: str = Field(description="What a reader calls the control; empty when there is none.")
@@ -831,6 +871,11 @@ class _Row:
             self.levels[confidence] = replace(self.rate, interval=interval, confidence=confidence)
         return self.levels[confidence]
 
+    def within(self, confidence: float) -> RateReading:
+        """The pass rate as a claim of within the margin reads it: its interval at ``confidence``, the level that claim
+        is read at (under a plan of looks, already the tighter one, so it is not tightened again)."""
+        return replace(self.at(confidence), looks=None) if self.rate.looks else self.at(confidence)
+
     def fewest(self) -> int | None:
         """The fewer usable cases of the two arms; None when either was not counted."""
         return self.base.fewest_cases()
@@ -1023,26 +1068,59 @@ def _candidates(campaign: EvalCampaign, arms: Sequence[CampaignArm]) -> list[Cam
 def _answer_splits(
     campaign: EvalCampaign, bundles: Mapping[str, AnalysisContextBundle], arms: Sequence[CampaignArm]
 ) -> list[AnswerSplit]:
-    """Each arm holding a cell per answering model on an aspect, aspect by aspect, in the arms' order."""
+    """Each arm not read as an arm on an aspect, with the coordinate that keeps it from it, aspect by aspect, in the
+    arms' order: an arm split on the answering model or on a host measure's definition
+    (:func:`~threetears.evals.analysis.cells.split_arms`), and, where the aspect's runs were not all read under one
+    definition, an arm whose one cell shares no test setup with the control's."""
     splits: list[AnswerSplit] = []
     for aspect in campaign.aspects:
         bundle = bundles[aspect.label]
-        held = answer_split_variants(bundle.cells)
+        held = split_arms(bundle.cells)
         served = {reading.variant_key: reading for reading in bundle.arm_served_models}
+        unrecorded_definitions = {
+            cell.variant_key for cell in bundle.cells if MEASURE_DEFINITIONS_DIMENSION in cell.unknown_dimensions
+        }
+        control = _bundle_control(bundle)
+        ran = {cell.variant_key for cell in bundle.cells}
         for arm in arms:
-            if arm.variant_key not in held:
-                continue
             answered = served.get(arm.variant_key)
-            splits.append(
-                AnswerSplit(
-                    aspect=aspect.label,
-                    arm=arm.variant_key,
-                    arm_label=arm.label,
-                    cells=held[arm.variant_key],
-                    served_models=sorted(answered.served_models) if answered is not None else [],
-                    unrecorded=answered is not None and answered.n_unrecorded > 0,
+            for coordinate, cells in held.get(arm.variant_key, {}).items():
+                on_served = coordinate == "served_model"
+                splits.append(
+                    AnswerSplit(
+                        aspect=aspect.label,
+                        arm=arm.variant_key,
+                        arm_label=arm.label,
+                        cells=cells,
+                        served_models=sorted(answered.served_models) if on_served and answered is not None else [],
+                        unrecorded=(
+                            answered is not None and answered.n_unrecorded > 0
+                            if on_served
+                            else arm.variant_key in unrecorded_definitions
+                        ),
+                        coordinate=coordinate,
+                    )
                 )
-            )
+            if (
+                arm.variant_key not in held
+                and arm.variant_key in ran
+                and control is not None
+                and arm.variant_key != control
+                and control not in held
+                and unread_arms(bundle.cells, control, arm.variant_key, definitions_moved=definitions_moved(bundle))
+            ):
+                # One cell each, and no test setup in common: read under another definition than the control's, or
+                # under none recorded on either side.
+                splits.append(
+                    AnswerSplit(
+                        aspect=aspect.label,
+                        arm=arm.variant_key,
+                        arm_label=arm.label,
+                        cells=1,
+                        unrecorded=bool({arm.variant_key, control} & unrecorded_definitions),
+                        coordinate="measure_definition",
+                    )
+                )
     return splits
 
 
@@ -1226,10 +1304,12 @@ def campaign_readings(
     **A change.** Per aspect and candidate, the aspect's pass rate
     (:func:`~threetears.evals.analysis.floors.aspect_pass_rate`): the change in points, shown better, shown
     worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
-    at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart; nothing corrects across
-    candidates. An aspect with no margin that a question asks is read against zero both ways (a superiority
+    at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, or at α/L where an aspect's design plans ``L`` looks
+    (the largest plan among them, :func:`~threetears.evals.analysis.significance.looks_alpha`), gains and drops apart;
+    nothing corrects across candidates. An aspect with no margin that a question asks is read against zero both ways (a superiority
     question: shown better, shown worse or unclear); one asked nothing is never shown worse and tests no drop. A row neither shown better nor shown worse reads ``within_margin`` where
-    the floor's own reading of its pass rate against the margin, at the nominal level, is ``held``. An unclear row
+    the floor's own reading of its pass rate against the margin, at the nominal level, is ``held`` (read, as a floor's
+    is, at the level a plan of looks tightens it to). An unclear row
     with a margin carries the cases that would show the candidate within it
     (:func:`~threetears.evals.analysis.floors.project_rate`, at the nominal level, as a floor's are).
     Per floor and candidate, :func:`~threetears.evals.analysis.floors.evaluate_floor`, at the nominal level
@@ -1265,7 +1345,13 @@ def campaign_readings(
     checked = _checked_bundles(campaign, bundles)
     every = _distinct(arms)
     kind = campaign_kind(every)
-    alpha = SIGNIFICANCE_ALPHA
+    # A candidate's gains and drops are one family across its aspects, read again whenever any of them is: under the
+    # largest plan of looks among them each look reads at α/L, so the family's error holds over every planned look
+    # whose size was fixed before its data (over planner-sized extends, only where `plan_kept` shows it).
+    plans = [bundle.reading_scope.looks.planned for bundle in checked.values() if bundle.reading_scope.looks]
+    plan = max((looks for looks in plans if looks is not None and looks > 1), default=None)
+    alpha = looks_alpha(plan)
+    look_alpha = alpha if plan is not None else None
     labels = [aspect.label for aspect in campaign.aspects]
     bars = _bar_statuses(campaign, checked, every)
     control = campaign.control or next((arm for arm in every if arm.role == "control"), None)
@@ -1275,7 +1361,8 @@ def campaign_readings(
         return _aggregated(
             CampaignReadings(
                 campaign_id=campaign.id,
-                alpha=alpha,
+                alpha=SIGNIFICANCE_ALPHA,
+                look_alpha=look_alpha,
                 control=None,
                 control_label="",
                 aspects=labels,
@@ -1352,7 +1439,13 @@ def campaign_readings(
         drop_level = drop.level if drop is not None else None
         gain_rate = row.at(gain_level) if gain_level is not None else None
         drop_rate = row.at(drop_level) if drop_level is not None else None
-        within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) and row.margin is not None else None
+        # Read at the level its held is read at: the nominal one, or under a plan of looks the tighter one, so the
+        # interval shown and the cases projected are the ones the reading rests on.
+        within_rate = (
+            row.within(looks_confidence(INTERVAL_LEVEL, row.rate.looks))
+            if drop_kept(row) and row.margin is not None
+            else None
+        )
         fewest = row.fewest()
         projection = (
             project_rate(within_rate, cases=fewest, margin=row.margin, per_case_usd=row.per_case_usd)
@@ -1401,7 +1494,8 @@ def campaign_readings(
     return _aggregated(
         CampaignReadings(
             campaign_id=campaign.id,
-            alpha=alpha,
+            alpha=SIGNIFICANCE_ALPHA,
+            look_alpha=look_alpha,
             control=control.variant_key,
             control_label=control.label,
             aspects=labels,
@@ -1676,9 +1770,8 @@ def _measure_readings(
     found: list[MeasureReading] = []
     for aspect in campaign.aspects:
         bundle = bundles[aspect.label]
-        split = answer_split_variants(bundle.cells)
         for board in bundle.scoreboard:
-            if board.variant_key in split:
+            if unread_arms(bundle.cells, board.variant_key):
                 continue
             label = labels.get(board.variant_key, f"arm {board.variant_key[:12]}")
             found.append(
@@ -1882,9 +1975,11 @@ def _board(bundle: AnalysisContextBundle, key: str) -> ArmScoreboard | None:
 def _pass_rate_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float] | None:
     """An arm's pass rate on an aspect in percent, its usable trials passed, and its standard error read off the
     Wilson interval with the cases as the draws; None where it ran no usable trial or fewer than two cases, or where
-    its census counts more cases with a usable trial than usable trials, which no interval can be read over."""
+    its census counts more cases with a usable trial than usable trials, which no interval can be read over, and where
+    the cells keep the arm apart on a coordinate of its identity (:func:`~threetears.evals.analysis.cells.unread_arms`):
+    its count pools two models' or two definitions' trials."""
     board = _board(bundle, key)
-    if board is None or not board.usable or board.usable_cases > board.usable:
+    if board is None or unread_arms(bundle.cells, key) or not board.usable or board.usable_cases > board.usable:
         return None
     interval = pooled_rate_interval(board.passed, board.usable, cases=board.usable_cases)
     if interval is None:
@@ -1939,9 +2034,14 @@ def _cost_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float] | N
 def _cost_sides(
     bundles: Mapping[str, AnalysisContextBundle], key: str, control: str | None, *, below: bool
 ) -> list[str]:
-    """The aspects where a candidate's cost per reply is below (or above) the control's, both priced there."""
+    """The aspects where a candidate's cost per reply is below (or above) the control's, both priced there; none where
+    either was answered by more than one model there, so its cost per reply pools theirs
+    (:func:`~threetears.evals.analysis.cells.split_arms`)."""
     sides = []
     for label, bundle in bundles.items():
+        split = split_arms(bundle.cells)
+        if any("served_model" in split.get(arm, {}) for arm in (key, control or "")):
+            continue
         ours, theirs = _board(bundle, control or ""), _board(bundle, key)
         if ours is None or theirs is None or ours.reply_cost_usd is None or theirs.reply_cost_usd is None:
             continue

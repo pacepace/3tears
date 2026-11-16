@@ -2067,7 +2067,7 @@ class EvalStorage:
         return self._store.delete(insight_id, scope_id)
 
     # =========================================================================
-    # BlindRead — a drawn order of judged outputs and the answers given to it (durable v17.3)
+    # BlindRead — a drawn order of judged outputs and the answers given to it (durable v17.4)
     # =========================================================================
 
     def save_blind_read(self, read: BlindRead, *, if_match: str | None = None, create_only: bool = False) -> None:

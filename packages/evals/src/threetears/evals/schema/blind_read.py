@@ -398,7 +398,7 @@ class BlindReadReport(EvalDocumentModel, CoreShapeModel):
 class BlindRead(DurableDocumentModel):
     """A drawn, blinded order of judged outputs, the answers given to it, and its close.
 
-    **Stored, and durable** (durable v17.3): what a person answered is authored, so a read outlives a core baseline
+    **Stored, and durable** (durable v17.4): what a person answered is authored, so a read outlives a core baseline
     reset as the ratings its close writes do; the runs and results it was drawn over are provenance and may dangle.
     The quick path recomputes its read from the eval's files and never stores one; a host's actions store one per
     draw (:mod:`threetears.evals.ops.blind_reads`).

@@ -14,14 +14,14 @@ from threetears.evals.analysis.bundle.schema import (
     FamilyComparison,
 )
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.cells import cell_ref
+from threetears.evals.analysis.cells import cell_ref, unread_arms
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import PERCENT, delta_unit
 from threetears.evals.analysis.references import resolve_reading
 from threetears.evals.analysis.report.aspect.common import (
     _arm_names,
     _at,
-    _case_namer,
+    case_namer,
     _cell_namer,
     _ChartLedger,
     _control_key,
@@ -95,7 +95,7 @@ def aspect_verdict(
     return verdict_line(
         bundle,
         _namer(_arm_names(bundle, labels=arm_labels)),
-        case_name=_case_namer(bundle),
+        case_name=case_namer(bundle),
         verdicts=_typed_verdicts(bundle, forms, arm_labels=arm_labels),
         order=measure_order,
         evidence=contrast_evidence(bundle, forms=forms),
@@ -218,7 +218,10 @@ def _side_reading(
         return text, None, None
     if comparison.reading == "trial":
         board = next((row for row in bundle.scoreboard if row.variant_key == side.variant_key), None)
-        return (text, None, None) if board is None else (text, str(board.passed), board.usable)
+        # An arm the cells keep apart has no one count: its scoreboard's pools the cells this contrast reads one of.
+        if board is None or unread_arms(bundle.cells, side.variant_key):
+            return text, None, None
+        return text, str(board.passed), board.usable
     described = bundle.measure_catalog.get(comparison.name) or METRIC_DESCRIPTORS.get(comparison.name)
     # A share of trials: a pass/fail check, a boolean measure, or a classifier's accuracy (its trials' label match).
     counted = described is not None and (

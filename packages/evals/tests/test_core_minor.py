@@ -656,7 +656,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
     from threetears.evals.schema.completion import StopReason
     from threetears.evals.schema.judge_attribution import JudgeAttributionSource
     from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome
-    from threetears.evals.schema.reading_states import Maker
+    from threetears.evals.schema.reading_states import Maker, SampleKind
     from threetears.evals.schema.world_events import WorldEventCause, WorldEventKind
 
     def values(alias: Any) -> frozenset[Any]:
@@ -696,11 +696,13 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "VariationAxis.generator": frozenset({"enum", "sample", "llm"}),
         "ConversationSpec.turn_scheduler": frozenset({"round_robin", "llm_decided"}),
         "BudgetStop.currency": frozenset({"cost_usd", "metered_calls"}),
+        "MembershipChange.change": frozenset({"joined", "left"}),
         "RaterKind": values(models.RaterKind),
         "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),
         "SecondJudgeAskedBy": values(SecondJudgeAskedBy),
         "StopReason": values(StopReason),
+        "SampleKind": values(SampleKind),
         "rate_drop": frozenset({"rate_drop"}),
         "cost_lower": frozenset({"cost_lower"}),
         "BlindSlot": values(blind_read.BlindSlot),
@@ -708,7 +710,6 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "BlindPreferenceAnswer": values(blind_read.BlindPreferenceAnswer),
         "BlindPreferenceTest": values(blind_read.BlindPreferenceTest),
         "BlindPreference.verdict": frozenset({"improved", "regressed", "not_separated"}),
-        "SampleKind": values(reading_states.SampleKind),
         "ReadingState": values(reading_states.ReadingState),
         "SetAsideReason": values(reading_states.SetAsideReason),
         "WithheldReason": values(reading_states.WithheldReason),

@@ -67,7 +67,7 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
 )
 from threetears.evals.analysis.campaign_bundle import KIND_MEANS, CampaignBundle
-from threetears.evals.analysis.cells import answer_split_variants
+from threetears.evals.analysis.cells import split_arms
 from threetears.evals.analysis.checks import Check
 from threetears.evals.analysis.campaign_readings import AspectReading, PairReading, reading_name
 from threetears.evals.analysis.floors import floor_subject
@@ -75,6 +75,7 @@ from threetears.evals.analysis.depth import REPEATS_FLOOR
 from threetears.evals.analysis.depth import Precision as BundlePrecision
 from threetears.evals.analysis.depth_reading import AspectDepth, aspect_depth
 from threetears.evals.kernel.numbers import format_number
+from threetears.evals.schema.reading_states import Coordinate, StateOf
 from threetears.evals.analysis.completeness import unfinished_opening
 from threetears.evals.analysis.caveats import evidence_of, gate_of, raise_caveats, screen
 from threetears.evals.analysis.report_input import (
@@ -227,6 +228,14 @@ def report_input(
     caveats = raise_caveats(built, bundle)
     value = screen(built, caveats, gate=gate_of(bundle), call=call, evidence=evidence_of(bundle))
     return built.model_copy(update={"caveat_list": caveats, "first_screen": value})
+
+
+def _split_state(on: Mapping[Coordinate, int]) -> StateOf:
+    """A scoreboard row's state where the cells keep its arm apart on ``on``: withheld, split, on the answering model
+    where that is one of the coordinates (the one :meth:`_Builder._split_note` names first), else the first."""
+    return StateOf(
+        state="withheld", reason="split", coordinate="served_model" if "served_model" in on else next(iter(on))
+    )
 
 
 class _Builder:
@@ -617,16 +626,22 @@ class _Builder:
         ]
 
     def scoreboard(self, aspect: AnalysisContextBundle) -> dict[str, ScoreboardRow]:
-        """How each arm's trials came out on one aspect, by label."""
+        """How each arm's trials came out on one aspect, by label. An arm split on a coordinate of its identity
+        (:func:`~threetears.evals.analysis.cells.split_arms`) has no one count of passes or failures, so its row
+        carries none, and, where the answering model splits it, no cost per reply either: its trials are two cells',
+        and ``caveats.unreported`` says why, as for its cell (:meth:`cells`)."""
+        split = split_arms(aspect.cells)
+        for key, on in split.items():
+            self._split_note(aspect, self.arm(key), on)
         return {
             self.arm(row.variant_key): ScoreboardRow(
                 ran=row.ran,
                 lost=row.lost,
                 usable=row.usable,
-                passed=row.passed,
-                failed=row.failed,
+                passed=None if row.variant_key in split else row.passed,
+                failed={} if row.variant_key in split else row.failed,
                 cases=row.cases,
-                reply_cost_usd=row.reply_cost_usd,
+                reply_cost_usd=None if "served_model" in split.get(row.variant_key, {}) else row.reply_cost_usd,
                 test_cost_usd=row.test_cost_usd,
                 # Only where a role counted them: None for an arm none counted for, which its document leaves out.
                 unanswered={
@@ -644,6 +659,9 @@ class _Builder:
                 else None,
                 # None where the census read none, which the row leaves out of its document.
                 pricing=_pricing(row.pricing),
+                # The typed fact a reader withholds the row's counts by: never the counts' absence, which an input
+                # that never stated them shares.
+                state=_split_state(split[row.variant_key]) if row.variant_key in split else None,
             )
             for row in aspect.scoreboard
         }
@@ -705,16 +723,11 @@ class _Builder:
         withheld and ``caveats.unreported`` says why."""
         cells: dict[str, CellFacts] = {}
         rigs: dict[str, int] = {}
-        split = answer_split_variants(aspect.cells)
+        split = split_arms(aspect.cells)
         for cell in aspect.cell_measures:
             label = self.arm(cell.variant_key)
             if cell.variant_key in split:
-                note = (
-                    f"{label}'s results on {aspect.aspect} were answered by more than one candidate model, so they "
-                    f"are read per model in {split[cell.variant_key]} cells and no figure is given for {label} there."
-                )
-                if note not in self.unreported:
-                    self.unreported.append(note)
+                self._split_note(aspect, label, split[cell.variant_key])
                 continue
             cells.setdefault(label, cell)
             rigs[label] = rigs.get(label, 0) + 1
@@ -724,6 +737,23 @@ class _Builder:
                 if note not in self.unreported:
                     self.unreported.append(note)
         return cells
+
+    def _split_note(self, aspect: AnalysisContextBundle, label: str, on: Mapping[Coordinate, int]) -> None:
+        """Say once, in ``caveats.unreported``, why the arm ``label``, split on ``on``, has no figure on ``aspect``."""
+        if "served_model" in on:
+            note = (
+                f"{label}'s results on {aspect.aspect} were answered by more than one candidate model, or "
+                f"by one no response named, so they are read per model in {on['served_model']} cells and no "
+                f"figure is given for {label} there."
+            )
+        else:
+            note = (
+                f"{label}'s runs on {aspect.aspect} were read under more than one definition of a host "
+                f"measure, or under none recorded, so they are read per definition in "
+                f"{on['measure_definition']} cells and no figure is given for {label} there."
+            )
+        if note not in self.unreported:
+            self.unreported.append(note)
 
     def measures(self) -> dict[str, Measure]:
         """Every measure the cells carry: what it is, and each arm's figure on the lead aspect and on every other.
@@ -758,7 +788,7 @@ class _Builder:
                         p95=tail,
                     )
                     facts.setdefault(summary.name, self.measure_facts(aspect, summary.name))
-            split = answer_split_variants(aspect.cells)
+            split = split_arms(aspect.cells)
             for measured in self.bundle.readings.measures:
                 # An arm read per answering model has no figure of its own (`cells`), so none is filled in for it
                 # from readings frozen before they withheld it.
