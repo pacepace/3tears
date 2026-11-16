@@ -1,4 +1,4 @@
-// @3tears/pwa shell worker: a complete service worker for an app with no build step. A classic
+// @3tears/web-pwa shell worker: a complete service worker for an app with no build step. A classic
 // script (no imports of its own), registered as is, configured by a script the app serves:
 //
 //   registerWorker("/app/pwa/shell-worker.js?config=/app/shell.js", { scope: "/app/" })
@@ -27,7 +27,7 @@
 //   its scripts never come from two versions; the cache answers only when the network does not.
 //   A response that is not a plain 200 (a redirect to sign-in, an error) is never stored.
 // - A new version waits ("prompt") until the page posts {type: "SKIP_WAITING"} (the person agreed:
-//   @3tears/pwa's registerWorker + applyUpdate). "immediate" activates at once, for an app with
+//   @3tears/web-pwa's registerWorker + applyUpdate). "immediate" activates at once, for an app with
 //   nothing to lose.
 "use strict";
 

@@ -1,4 +1,4 @@
-# @3tears/pwa
+# @3tears/web-pwa
 
 Installable web apps for the 3tears family: what an app needs to install as a home-screen or
 desktop app, stay current without losing what the person is doing, and behave well installed.
@@ -18,33 +18,24 @@ player's Media Session, wake lock and safe areas; discodon's iOS install finding
 
 ## Install
 
-Published to GitHub Packages (release.yml's `npm-publish`, once the registry scope is settled:
-GitHub Packages takes `@3tears/*` only from a GitHub owner named `3tears`; docs/releasing.md).
-Point the scope at it in the app's `.npmrc` (with a token that can read packages:
-`NODE_AUTH_TOKEN`, a build secret, never committed):
-
-```
-@3tears:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
-```
-
 ```bash
-npm install @3tears/pwa
+npm install @3tears/web-pwa
 ```
 
-An app with no build step copies `node_modules/@3tears/pwa/src/` into its static files (its image
-build does it) and imports `./pwa/index.js`.
+Published to npm with the 3tears release (the registry is release.yml's `NPM_REGISTRY`, npmjs.com
+by default). An app with no build step copies `node_modules/@3tears/web-pwa/src/` into its static
+files (its image build does it) and imports `./pwa/index.js`.
 
 ## Features and where they live
 
 | Feature | Entry | What the app configures |
 |---|---|---|
-| Install: manifest, head tags | `appManifest`, `installId`, `headTags`, `VIEWPORT` (`@3tears/pwa`) | identity (`id`, `start_url`, `scope`), names, theme, icons |
+| Install: manifest, head tags | `appManifest`, `installId`, `headTags`, `VIEWPORT` (`@3tears/web-pwa`) | identity (`id`, `start_url`, `scope`), names, theme, icons |
 | Service worker, no build step | `shell-worker.js` | its shell list, never-list, version, update mode (a small script) |
-| Service worker, Workbox (Vite) | `appShell` (`@3tears/pwa/workbox`), `vitePwa` (`@3tears/pwa/vite`) | precache, never-shell paths, network-first files |
+| Service worker, Workbox (Vite) | `appShell` (`@3tears/web-pwa/workbox`), `vitePwa` (`@3tears/web-pwa/vite`) | precache, never-shell paths, network-first files |
 | Update prompt | `registerWorker`, `watchVersion`, `updatePrompt`, `forceReload`; `useUpdatePrompt` (`/react`) | the banner it draws; how often to check |
 | Web Push, page side | `pushSupported`, `subscribePush`, `unsubscribePush`, `keyBytes`, `workerRegistration` | its key endpoint and device API |
-| Web Push, worker side | `showPushes`, `readPushData` (`@3tears/pwa/worker`) | how a payload becomes a notification |
+| Web Push, worker side | `showPushes`, `readPushData` (`@3tears/web-pwa/worker`) | how a payload becomes a notification |
 | Notification taps | `openOnNotificationClick` (`/worker`); `useServiceWorkerMessage` (`/react`) | where a tap goes, what it tells an open window |
 | Lock screen, media keys | `MediaSessionControl` | now playing, artwork, play/pause/stop handlers, live or not |
 | Screen kept on | `ScreenWakeLock` | when it is wanted |
@@ -119,7 +110,7 @@ self.SHELL_CONFIG = { version: "1.4.2", cache: "app", shell: ["/app/", "/app/app
 - No config: caches nothing, passes everything through, deletes nothing. `?update=immediate`
   activates a new version at once, for an app with nothing to lose on a reload.
 
-### Workbox (`@3tears/pwa/workbox`)
+### Workbox (`@3tears/web-pwa/workbox`)
 
 For a bundled app that precaches hashed build files (vite-plugin-pwa `injectManifest`), `appShell`
 runs the policy in the generated worker's order: claim, precache, clean old precaches, the shell

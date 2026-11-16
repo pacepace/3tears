@@ -5,7 +5,7 @@
  * - `registerType: "prompt"`: a new version waits for the person (`useUpdatePrompt`), never an
  *   automatic reload of a page in use.
  * - `strategies: "injectManifest"`: the app owns its worker (`src/sw.ts`), which uses
- *   `@3tears/pwa/workbox`'s `appShell` and `@3tears/pwa/worker`'s push and tap helpers.
+ *   `@3tears/web-pwa/workbox`'s `appShell` and `@3tears/web-pwa/worker`'s push and tap helpers.
  * - `manifest`: checked by `appManifest`.
  * - `runtimeFiles`: files the server rewrites at run time (a runtime config), kept out of the
  *   precache so a stale copy is never served cache-first.

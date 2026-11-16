@@ -1,4 +1,4 @@
-// A minimal app built on @3tears/pwa with no build step: plain modules served beside the app,
+// A minimal app built on @3tears/web-pwa with no build step: plain modules served beside the app,
 // the shell worker caching only the app's own files, an update prompt it draws itself, the
 // display mode on <html>, and the lock screen's now-playing through Media Session.
 import { MediaSessionControl, markDisplayMode, registerWorker } from "./pwa/index.js";

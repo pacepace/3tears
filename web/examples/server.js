@@ -1,4 +1,4 @@
-// Serves the example app (basic/) under /app/, with @3tears/pwa's files under /app/pwa/ as an app
+// Serves the example app (basic/) under /app/, with @3tears/web-pwa's files under /app/pwa/ as an app
 // with no build step would serve them, plus what a real app has around its shell: an API that
 // must never be cached, a sign-in redirect that must never be stored, and a version that a
 // "deploy" (setVersion) changes.

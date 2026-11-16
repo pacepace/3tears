@@ -380,23 +380,34 @@ jobs:
           packages-dir: dist/
           skip-existing: true
 
-  # The browser packages (web/, @3tears/*) at the same version, to GitHub Packages. After PyPI, so
+  # The browser packages (web/, @3tears/*) at the same version, to the npm registry. After PyPI, so
   # the `pypi` approval gate holds both: one tag, one approval, one version everywhere. The lockstep
   # verify in `build` already held every web/ package.json to the tag.
+  #
+  # The registry is one setting, NPM_REGISTRY below (the repository variable of that name, else the
+  # public npm registry). On registry.npmjs.org it publishes by npm trusted publishing: an OIDC token
+  # from this job (`id-token: write`), no stored secret, with provenance, as PyPI's trusted publisher
+  # does; each package needs its trusted publisher (this repository, release.yml, environment `pypi`)
+  # registered on npmjs.com first (docs/releasing.md). Any other registry (GitHub Packages:
+  # https://npm.pkg.github.com) gets this run's GITHUB_TOKEN.
   #
   # Idempotent like `skip-existing`: a version already in the registry is skipped, so a republish
   # dispatch publishes only what is missing.
   #
-  # Off until the repository variable NPM_PUBLISH is "true": GitHub Packages takes `@3tears/*` only
-  # from a GitHub owner named `3tears`, which this repository's owner is not (docs/releasing.md).
-  # Until the scope is settled a release publishes PyPI only, and this job reports skipped.
+  # Off until the repository variable NPM_PUBLISH is "true", so a release publishes PyPI only until
+  # the registry is chosen and set up; this job then reports skipped.
   npm-publish:
     needs: pypi-publish
     if: vars.NPM_PUBLISH == 'true'
     runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    env:
+      NPM_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
     permissions:
       contents: read
-      packages: write
+      id-token: write  # npm trusted publishing (OIDC) and provenance
+      packages: write  # only used when NPM_REGISTRY is GitHub Packages
     defaults:
       run:
         working-directory: web
@@ -406,24 +417,33 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
-          registry-url: https://npm.pkg.github.com
+          registry-url: ${{ env.NPM_REGISTRY }}
+
+      # trusted publishing needs npm 11.5.1 or later
+      - name: npm with trusted publishing
+        run: npm install -g npm@11 && npm --version
 
       - name: Install
         run: npm ci
 
       - name: Publish every web/ package not yet published at this version
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # registry.npmjs.org: unset, so npm uses the job's OIDC token; elsewhere the run's token
+          NODE_AUTH_TOKEN: ${{ !startsWith(vars.NPM_REGISTRY || 'https://registry.npmjs.org', 'https://registry.npmjs.org') && secrets.GITHUB_TOKEN || '' }}
         run: |
+          case "$NPM_REGISTRY" in
+            https://registry.npmjs.org*) provenance="--provenance" ;;
+            *) provenance="" ;;
+          esac
           for manifest in packages/*/package.json; do
             dir="$(dirname "$manifest")"
             name="$(node -p "require('./${manifest}').name")"
             version="$(node -p "require('./${manifest}').version")"
-            if npm view "${name}@${version}" version >/dev/null 2>&1; then
-              echo "${name}@${version} is already published; skipping."
+            if npm view "${name}@${version}" version --registry "$NPM_REGISTRY" >/dev/null 2>&1; then
+              echo "${name}@${version} is already published to ${NPM_REGISTRY}; skipping."
               continue
             fi
-            npm publish --workspace "$dir"
+            npm publish --workspace "$dir" --registry "$NPM_REGISTRY" --access public $provenance
           done
 
   github-release:

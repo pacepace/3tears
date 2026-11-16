@@ -1,6 +1,6 @@
 """The browser packages (web/, @3tears/*) carry the Python family's version, and the release tool knows them.
 
-One tag releases both (release.yml publishes PyPI, then GitHub Packages), so there is one version to
+One tag releases both (release.yml publishes PyPI, then npm), so there is one version to
 track. The release tool's ``verify`` (the release workflow's pre-flight) checks every file
 ``npm-lockstep-files`` names; this holds the other half, that it names every web/ package, so a new
 package cannot ship at a stale version because nothing listed it.
@@ -49,11 +49,12 @@ def test_web_packages_are_at_the_family_version() -> None:
 
 
 def test_web_packages_are_scoped_to_the_family() -> None:
-    """a web/ package is ``@3tears/<name>``, the scope the release tool moves sibling pins in.
+    """a web/ package is ``@3tears/web-<name>``: the scope the release tool moves sibling pins in, and the
+    ``web-`` prefix that keeps the browser packages apart from anything else under the scope.
 
     :return: nothing
     :rtype: None
     """
     for manifest in _REPO_ROOT.glob("web/packages/*/package.json"):
         name = json.loads(manifest.read_text(encoding="utf-8"))["name"]
-        assert name.startswith("@3tears/"), f"{manifest.relative_to(_REPO_ROOT)}: {name}"
+        assert name.startswith("@3tears/web-"), f"{manifest.relative_to(_REPO_ROOT)}: {name}"

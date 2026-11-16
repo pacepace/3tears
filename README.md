@@ -48,7 +48,7 @@ The [core README](packages/core/README.md) sets up the registry, defines a colle
 
 Every package shares the `threetears.*` import namespace. The `agent-*` packages live under `packages/agent/`.
 
-Browser/frontend packages live in [`web/`](web/): JavaScript, published to GitHub Packages as `@3tears/*` at the family's version. The first is [`@3tears/pwa`](web/packages/pwa/), for installable web apps.
+Browser/frontend packages live in [`web/`](web/): JavaScript, published to npm as `@3tears/web-*` at the family's version. The first is [`@3tears/web-pwa`](web/packages/pwa/), for installable web apps.
 
 ### Core
 

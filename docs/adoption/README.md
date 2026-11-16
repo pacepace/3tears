@@ -153,7 +153,7 @@ at commit time.
 | **Agent framework** | `agent-tools`, `agent-memory`, `agent-skills`, `agent-workspace`, `agent-acl`, `agent-audit`, `agent-wake`, `agent-identity`, `agent-intention`, `agent-knowledge` | Everything an LLM agent needs to act, remember, and evolve safely at scale |
 | **Models, channels, LangGraph** | `models`, `channels`, `langgraph` | The surface that connects an agent to LLM providers, chat channels, and LangGraph orchestration |
 | **Evaluation** | `evals` | Finding out whether a change to an LLM-backed feature made it better |
-| **Web** (JavaScript, `web/`) | `@3tears/pwa` | Browser packages for the family's web apps, published to GitHub Packages at the family's version |
+| **Web** (JavaScript, `web/`) | `@3tears/web-pwa` | Browser packages for the family's web apps (`@3tears/web-*`), published to npm at the family's version |
 
 ## Module index
 
@@ -188,7 +188,7 @@ at commit time.
 
 | Module | Solves |
 |---|---|
-| [`@3tears/pwa`](pwa.md) | Installable web apps: install metadata, a shell-only service worker with an update prompt, push, notification taps, lock-screen media, wake lock, safe areas. |
+| [`@3tears/web-pwa`](web-pwa.md) | Installable web apps: install metadata, a shell-only service worker with an update prompt, push, notification taps, lock-screen media, wake lock, safe areas. |
 
 ### Agent framework
 

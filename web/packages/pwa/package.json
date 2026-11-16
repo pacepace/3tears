@@ -1,5 +1,5 @@
 {
-  "name": "@3tears/pwa",
+  "name": "@3tears/web-pwa",
   "version": "0.95.0",
   "description": "Installable web apps: manifest and head tags, a shell-only service worker, update prompt, Web Push, notification routing, Media Session, wake lock, display mode, safe areas",
   "license": "MIT",
@@ -56,7 +56,7 @@
     "node": ">=24"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "access": "public"
   },
   "scripts": {
     "types": "tsc -p tsconfig.json",

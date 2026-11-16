@@ -6,11 +6,12 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
-### web: a JavaScript workspace, and @3tears/pwa for installable web apps
+### web: a JavaScript workspace, and @3tears/web-pwa for installable web apps
 
-**Added:** `web/`, the family's browser packages, published to GitHub Packages as `@3tears/*` at the
-family's version (one tag: `release.yml`'s new `npm-publish` job runs after PyPI). Its first package,
-`@3tears/pwa`, is plain ES modules usable with or without a bundler, each feature opt-in: the manifest
+**Added:** `web/`, the family's browser packages, published to npm as `@3tears/web-<name>` at the
+family's version (one tag: `release.yml`'s new `npm-publish` job runs after PyPI, to the registry its
+`NPM_REGISTRY` names, npmjs.com by default, by trusted publishing; off until `NPM_PUBLISH` is set).
+Its first package, `@3tears/web-pwa`, is plain ES modules usable with or without a bundler, each feature opt-in: the manifest
 (`appManifest`, `installId`) and head tags iOS reads instead of it (`headTags`); `shell-worker.js`, a
 complete service worker for apps with no build step that keeps only the app's shell (network-first,
 never the API, sign-in or media, never a redirect) and waits for the person before a new version

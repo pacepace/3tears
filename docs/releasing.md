@@ -44,13 +44,24 @@ An intra-family API addition ships in a MINOR bump
      PyPI first. Nothing checks for it -- `verify-dist-complete.sh` only confirms every member
      built -- and a tag pushed without it publishes the members ahead of the new one, then
      fails, leaving a family that cannot install until the version is republished.
-   - **The browser packages (`web/`, `@3tears/*`)** move with the bump (`npm-lockstep-files`) and
-     publish to GitHub Packages from `release.yml`'s `npm-publish`, after PyPI, behind the same
-     approval. GitHub Packages takes an npm package only under the scope of the repository's owner,
-     so `@3tears/*` publishes from a repository owned by a GitHub account or organisation named
-     `3tears`; from `pacepace/3tears` it is refused. So the job runs only when the repository
-     variable `NPM_PUBLISH` is `true`; settle the scope, then set it. A version already in the
-     registry is skipped, so a republish dispatch is safe.
+   - **The browser packages (`web/`, `@3tears/web-*`)** move with the bump (`npm-lockstep-files`)
+     and publish from `release.yml`'s `npm-publish`, after PyPI, behind the same approval, to the
+     registry the repository variable `NPM_REGISTRY` names (default `https://registry.npmjs.org`).
+     The job runs only when the repository variable `NPM_PUBLISH` is `true`. Before the first
+     release that ships a web package:
+     - **npmjs.com (the default):** the `@3tears` scope must belong to an npm organisation or user
+       the owner controls, and each package needs its trusted publisher registered on npmjs.com
+       (repository `pacepace/3tears`, workflow `release.yml`, environment `pypi`), the npm twin of
+       PyPI's. A brand-new package cannot register one before it exists: publish its first version
+       once by hand from a clean checkout of the tag (`npm publish --access public` in its
+       folder), then add the trusted publisher; later releases publish by OIDC with provenance and
+       no token.
+     - **GitHub Packages:** set `NPM_REGISTRY` to `https://npm.pkg.github.com`. It takes a package
+       only under its repository owner's scope, and the GitHub account `3tears` belongs to someone
+       else, so `@3tears/*` would be refused from `pacepace/3tears`; and installing needs a token
+       even for public packages.
+
+     A version already in the registry is skipped, so a republish dispatch is safe.
    - **`packages/evals/MIGRATIONS.toml`:** in the same PR, rename its `version = "unreleased"`
      section to the version being tagged (keep its `since`). The tag must ship with its section named
      for it: `release_notes.py v<version>` reads it by that name, and the next release starts a new

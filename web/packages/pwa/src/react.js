@@ -1,6 +1,6 @@
 /**
  * Thin React hooks over the framework-free core, for React apps. Each is optional: import only
- * `@3tears/pwa/react`'s hooks an app uses. React is a peer dependency of this entry only.
+ * `@3tears/web-pwa/react`'s hooks an app uses. React is a peer dependency of this entry only.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { forceReload, updatePrompt } from "./update.js";

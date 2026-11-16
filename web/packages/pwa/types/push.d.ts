@@ -1,7 +1,7 @@
 /**
  * Web Push, the page's half: whether this browser can take it, subscribing with the server's
  * VAPID public key, and unsubscribing. The server's half (keys, storing subscriptions, sending)
- * and the app's own API calls stay with the app; see the worker half in `@3tears/pwa/worker`.
+ * and the app's own API calls stay with the app; see the worker half in `@3tears/web-pwa/worker`.
  *
  * On iPhone and iPad push works only in an installed (Home Screen) app.
  */

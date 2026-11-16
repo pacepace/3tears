@@ -1,17 +1,17 @@
 # web/: the 3tears browser packages
 
-JavaScript packages for the family's web apps, published to GitHub Packages under the `@3tears/`
-scope. One job per package, the way the Python side has `core`, `nats` and `models`; a package joins
+JavaScript packages for the family's web apps, published to npm as `@3tears/web-<name>`. One job
+per package, the way the Python side has `core`, `nats` and `models`; a package joins
 only when at least two apps need it, extracted from code already proven in one of them.
 
 | Package | What it does |
 |---|---|
-| [`@3tears/pwa`](packages/pwa/) | Installable web apps: manifest and head tags, a shell-only service worker, update prompt, Web Push, notification routing, Media Session, wake lock, display mode, safe areas |
+| [`@3tears/web-pwa`](packages/pwa/) | Installable web apps: manifest and head tags, a shell-only service worker, update prompt, Web Push, notification routing, Media Session, wake lock, display mode, safe areas |
 
 **Versioning:** in lockstep with the Python family. Every `@3tears/*` package has the family's
 version; `./scripts/bump-version.sh` moves them with the rest (`npm-lockstep-files` in the root
-`pyproject.toml`), and the release tag publishes them to GitHub Packages after PyPI
-(`release.yml`, `npm-publish`). `tests/enforcement/test_web_packages_follow_the_family_version.py`
+`pyproject.toml`), and the release tag publishes them after PyPI (`release.yml`, `npm-publish`;
+the registry is its `NPM_REGISTRY`, npmjs.com by default; docs/releasing.md). `tests/enforcement/test_web_packages_follow_the_family_version.py`
 holds them to it.
 
 **Develop** (Node 24, npm 11.10+; the `.npmrc` refuses releases younger than 14 days):

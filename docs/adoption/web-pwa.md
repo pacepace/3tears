@@ -1,6 +1,6 @@
-# @3tears/pwa
+# @3tears/web-pwa
 
-`@3tears/pwa` (JavaScript, `web/packages/pwa`) -- installable web apps: install metadata, a
+`@3tears/web-pwa` (JavaScript, `web/packages/pwa`) -- installable web apps: install metadata, a
 shell-only service worker with an update prompt, Web Push, notification routing, Media Session,
 wake lock, display mode and safe areas.
 
@@ -42,5 +42,5 @@ server half of push is planned as `3tears-webpush`.
 ## Install
 
 ```bash
-npm install @3tears/pwa   # GitHub Packages: @3tears:registry=https://npm.pkg.github.com
+npm install @3tears/web-pwa
 ```

@@ -172,7 +172,7 @@ export async function forceReload(win = /** @type {Window & typeof globalThis} *
 /**
  * The update prompt's state, for an app drawing its own: idle, then `reloading` after the
  * person's click, then `stalled` if the page is still here `SW_RELOAD_TIMEOUT_MS` later (offer
- * `forceReload`). The React hook in `@3tears/pwa/react` wraps it.
+ * `forceReload`). The React hook in `@3tears/web-pwa/react` wraps it.
  * @param {() => unknown} apply what activates the update (`applyUpdate`, or Workbox's `updateServiceWorker(true)`)
  * @param {(state: "idle" | "reloading" | "stalled") => void} onState
  * @param {{ timeoutMs?: number, setTimeout?: typeof setTimeout, clearTimeout?: typeof clearTimeout }} [options]

@@ -1,6 +1,6 @@
-/* @3tears/pwa: safe-area insets for pages that draw edge to edge.
+/* @3tears/web-pwa: safe-area insets for pages that draw edge to edge.
  *
- * Needs viewport-fit=cover in the viewport meta (VIEWPORT from @3tears/pwa); without it every inset
+ * Needs viewport-fit=cover in the viewport meta (VIEWPORT from @3tears/web-pwa); without it every inset
  * is 0 and the browser letterboxes the page instead. On iOS with the status bar style
  * black-translucent, an installed page draws under the status bar, the notch or Dynamic Island,
  * and the home indicator; in landscape also under the sensor housing on one side.

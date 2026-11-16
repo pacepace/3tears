@@ -1,8 +1,8 @@
-// The example's manifest passes @3tears/pwa's install checks, and the shell it caches is its own.
+// The example's manifest passes @3tears/web-pwa's install checks, and the shell it caches is its own.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { appManifest } from "@3tears/pwa";
+import { appManifest } from "@3tears/web-pwa";
 import { SHELL } from "./server.js";
 
 test("the example manifest is installable as written", async () => {

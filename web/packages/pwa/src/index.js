@@ -1,4 +1,4 @@
-// The package @3tears/pwa: installable web apps for the 3tears family. Every feature is its own
+// The package @3tears/web-pwa: installable web apps for the 3tears family. Every feature is its own
 // module and opt-in; this entry re-exports the page-side ones (no framework, no worker code). The
 // README covers each entry point: "/worker", "/workbox", "/react", "/vite", "shell-worker.js" and
 // "safe-area.css".
