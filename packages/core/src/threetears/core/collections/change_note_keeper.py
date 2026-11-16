@@ -97,6 +97,21 @@ records from the log, a few dozen at a time, and looks their notes up through th
 ``(key_text, table_name)`` index, so its cost follows the epochs checked, not the coverage's size. It only
 checks and reports; it never writes a note, reloads anything or repairs.
 
+**A ring beside a log another keeper keeps** (RC3, Pace 2026-11-16). One change log is shared by every database
+whose writers advance through it (the hub's platform database, identity-core's own), and one keeper, the hub's, owns
+it: it alone declares the log and puts a lost one back. A second database still needs its own ring, for what its
+notes name inside that database: its write-mark reconciler names a lost write's rows from them
+(:func:`~threetears.core.collections.change_notes.noted_rows_since`) instead of recording keys unknown, and its
+followers page a bracketed keys-unknown record's keys from them
+(:class:`~threetears.core.collections.change_notes.PoolNotedKeysReader`). Its keeper is built ``keeps_log=False``:
+it installs, switches, fences and empties its ring as the owner does, and never declares, restores or scrubs the log.
+Two keepers restoring one log from two rings would each put back only their own database's notes, and the second to
+label it would decide which half the followers keep; a scrub there would read every other database's epochs as
+missing notes. Its passes, while the log is absent or being put back, do nothing: the owner puts it back, and this
+ring adopts the new incarnation, its floor that log's start, at its next pass. Such a ring writes no position marks
+either (they serve only a restore). A lost log is therefore put back with the owner's database's notes alone; the
+other database's epochs since the floor are not in it, and a follower of its tables continues past them.
+
 **Which columns can be noted.** A note carries its key and invalidation columns as text, and a restore
 names rows by that text, as an epoch record does. Only uuid, text, varchar and integer columns spell a
 value exactly one way; a noted table with any other key or invalidation column gets no trigger, and an
@@ -106,6 +121,7 @@ ERROR names it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import (
     AsyncGenerator,
@@ -138,7 +154,8 @@ from threetears.core.collections.epoch_change import (
     KeyedRecordForm,
     keyed_record_form,
 )
-from threetears.core.collections.generation import NotedTable, split_generation_token
+from threetears.core.collections.generation import NotedTable, noted_tables, split_generation_token
+from threetears.core.coordination.lease import KVLease, LeaseUnavailable
 from threetears.core.ddl.change_notes import (
     DEFAULT_NOTE_FENCE,
     NOTE_KEY_SEPARATOR,
@@ -175,9 +192,12 @@ from threetears.core.sql_fragments import quote_identifier
 
 if TYPE_CHECKING:
     from threetears.core.coordination.lease import HeldLease
+    from threetears.nats.kv import KvCapable
 
 __all__ = [
+    "CHANGE_NOTE_KEEPER_CLAIM_EVERY",
     "ChangeNoteKeeper",
+    "ChangeNoteKeeping",
     "KeeperPass",
     "NoteRingState",
     "ScrubPass",
@@ -758,6 +778,7 @@ class ChangeNoteKeeper:
         empty_batch: int = _EMPTY_BATCH,
         empty_pause: timedelta = _EMPTY_PAUSE,
         empty_budget: timedelta = _EMPTY_BUDGET,
+        keeps_log: bool = True,
     ) -> None:
         """capture what the keeper works between; no I/O.
 
@@ -791,6 +812,10 @@ class ChangeNoteKeeper:
         :ptype empty_pause: timedelta
         :param empty_budget: how long one pass keeps emptying; it always deletes at least one batch
         :ptype empty_budget: timedelta
+        :param keeps_log: this keeper owns the change log: it declares it where no ring has seen one, puts a lost
+            one back from its notes, marks its position and scrubs it. ``False`` for a ring in a second database
+            beside a log another keeper owns (module docstring): it keeps its ring only
+        :ptype keeps_log: bool
         :return: nothing
         :rtype: None
         :raises ValueError: when the fence is not positive, a batch is under one or the switch size is
@@ -809,6 +834,7 @@ class ChangeNoteKeeper:
         self._schema = notes_schema
         self._owner = quote_identifier(notes_schema)
         self._log = log
+        self._keeps_log = keeps_log
         self._fence = fence
         self._scrub_batch = scrub_batch
         #: the noted tables refused a trigger for a column type, so each is said once
@@ -1113,6 +1139,10 @@ class ChangeNoteKeeper:
         # the database's clock read before the log's state: a mark's time must not be later than its position
         read_at = ring.now
         state = await self._log.log_state()
+        if not self._keeps_log and (state is None or (state.restoring is not None and state.continues is None)):
+            # the log's owner declares it, or puts it back; this ring adopts what it finds at a later pass
+            _KEEPER_LAST_PASS.set(time.time())
+            return result
         if state is None:
             if ring.log_incarnation is None:
                 result.started = await self._log.start_log()
@@ -1133,7 +1163,8 @@ class ChangeNoteKeeper:
         if ring.log_incarnation != state.incarnation:
             ring = await self._adopt(ring, state)
             result.adopted = state.incarnation
-        await self._mark(read_at, state)
+        if self._keeps_log:
+            await self._mark(read_at, state)
         if ring.fence_seq is None and ring.now >= ring.switched_at + self._wait(ring):
             # every slot copy read before the last switch has expired and its statements have ended: an epoch
             # appended from here on has its note in the current table or a later one
@@ -1165,7 +1196,9 @@ class ChangeNoteKeeper:
             self._held_since = None
             _SWITCH_HELD_SINCE.set(0)
         now = time.monotonic()
-        if self._scrubbed_at is None or now - self._scrubbed_at >= self._scrub_every.total_seconds():
+        if self._keeps_log and (
+            self._scrubbed_at is None or now - self._scrubbed_at >= self._scrub_every.total_seconds()
+        ):
             self._scrubbed_at = now
             result.scrub = await self._scrub(ring, state)
         _KEEPER_LAST_PASS.set(time.time())
@@ -1196,7 +1229,9 @@ class ChangeNoteKeeper:
                 floor=start,
                 fence_seq=None if ring.fence_seq is None else start,
             )
-        log.warning(
+        # a ring beside a log another keeper owns sees each of the owner's restores this way, which is no surprise
+        log.log(
+            logging.WARNING if self._keeps_log else logging.INFO,
             "the change log is under an incarnation the note keeper did not put back; its notes cover it from its start",
             extra={"extra_data": {"was": ring.log_incarnation, "now": state.incarnation}},
         )
@@ -2404,3 +2439,127 @@ async def run_change_note_keeper(
         except Exception as exc:
             contain(exc, log=log, what="a change-note keeper pass failed; the next pass runs", level="error")
         await asyncio.sleep(every.total_seconds())
+
+
+#: how often a process that does not hold a keeper's lease tries to take it: a lost holder is replaced within this
+#: plus the lease's TTL
+CHANGE_NOTE_KEEPER_CLAIM_EVERY: Final = timedelta(seconds=15)
+
+#: the keeper lease's TTL and renewal: a renewal every 10 s leaves room for two missed renewals
+_KEEPER_LEASE_TTL: Final = timedelta(seconds=30)
+_KEEPER_LEASE_RENEW: Final = timedelta(seconds=10)
+
+
+class ChangeNoteKeeping:
+    """a keeper and the lease it runs under, for a process's lifespan: what every database's keeping process runs.
+
+    The hub keeps the platform database's ring (and the change log); identity-core keeps its own database's ring
+    beside it (``ChangeNoteKeeper(keeps_log=False)``). Each runs :meth:`start` once before it writes, then
+    :meth:`claim_and_keep` every :data:`CHANGE_NOTE_KEEPER_CLAIM_EVERY` and :meth:`install_triggers` beside it, so one
+    replica at a time keeps the ring and every replica backs up the triggers.
+
+    :param keeper: the ring's keeper over the process's L3 pool
+    :ptype keeper: ChangeNoteKeeper
+    :param nats_client: the process's NATS client, for the lease in the ``leases`` bucket
+    :ptype nats_client: KvCapable
+    :param lease: the lease's name: one per ring, since every keeping process shares the ``leases`` bucket
+    :ptype lease: str
+    :param key_scope: the owner scope the lease's key leads with, for a process granted only its own keys of the
+        shared bucket (:class:`~threetears.core.coordination.lease.KVLease`); ``None`` for one granted the bucket
+    :ptype key_scope: str | None
+    :param create_if_missing: declare the ``leases`` bucket where absent; ``False`` for a process that only binds it
+    :ptype create_if_missing: bool
+    """
+
+    def __init__(
+        self,
+        keeper: ChangeNoteKeeper,
+        nats_client: KvCapable,
+        *,
+        lease: str,
+        key_scope: str | None = None,
+        create_if_missing: bool = True,
+    ) -> None:
+        """capture the keeper and the lease's terms; no I/O.
+
+        :param keeper: the ring's keeper
+        :ptype keeper: ChangeNoteKeeper
+        :param nats_client: the process's NATS client
+        :ptype nats_client: KvCapable
+        :param lease: the lease's name
+        :ptype lease: str
+        :param key_scope: the lease key's owner scope, or ``None``
+        :ptype key_scope: str | None
+        :param create_if_missing: declare the ``leases`` bucket where absent
+        :ptype create_if_missing: bool
+        :return: nothing
+        :rtype: None
+        """
+        self.keeper = keeper
+        self._nats = nats_client
+        self._lease = lease
+        self._key_scope = key_scope
+        self._create_if_missing = create_if_missing
+
+    async def start(self) -> KeeperPass:
+        """the start's one pass, before anything of this process writes an epoch: create the ring and the triggers,
+        then one keeper pass (the log's owner declares the log where no ring has seen one, or puts a lost one back).
+
+        Two replicas starting at once are safe: the log is declared or restored once, and the other finds it there.
+
+        :return: what the pass did
+        :rtype: KeeperPass
+        :raises GenerationUnavailableError: when the ring or the log cannot be read, or a restore failed
+        """
+        await self.install()
+        done = await self.keeper.run_pass()
+        if done.started is not None or done.restored is not None:
+            log.info(
+                "the change-note keeper's start declared the epoch change log",
+                extra={"extra_data": {"started": done.started, "restored": done.restored}},
+            )
+        return done
+
+    async def install(self) -> list[str]:
+        """create the ring where missing, then give every noted table its triggers; safe to run again.
+
+        :return: ``schema.table`` for each table given a trigger
+        :rtype: list[str]
+        """
+        await self.keeper.install()
+        return await self.install_triggers()
+
+    async def install_triggers(self) -> list[str]:
+        """give every noted table this process declares its note function and triggers (a backstop to the
+        migration run, which gives a new table its triggers in the run that creates it).
+
+        :return: ``schema.table`` for each table given anything
+        :rtype: list[str]
+        """
+        return await self.keeper.install_triggers(noted_tables())
+
+    async def claim_and_keep(self, holder: str) -> None:
+        """take the keeper's lease and run its passes until the lease is lost; return at once when another holds it.
+
+        :param holder: this replica's name, so the lease names its holder
+        :ptype holder: str
+        :return: nothing
+        :rtype: None
+        """
+        lease = KVLease(self._nats, pod_id=holder, create_if_missing=self._create_if_missing, key_scope=self._key_scope)
+        try:
+            held = await lease.hold(
+                self._lease, ttl=_KEEPER_LEASE_TTL, renew_every=_KEEPER_LEASE_RENEW, name="the change-note keeper"
+            )
+        except LeaseUnavailable:
+            # NOSILENT: another replica keeps the ring; this one claims again at the next tick
+            return
+        log.info("this replica keeps the change-note ring", extra={"extra_data": {"lease": self._lease}})
+        try:
+            await run_change_note_keeper(held, self.keeper)
+        finally:
+            await held.release()
+        log.warning(
+            "this replica stopped keeping the change-note ring: its lease was lost",
+            extra={"extra_data": {"lease": self._lease, "reason": f"{held.lost_reason}"}},
+        )

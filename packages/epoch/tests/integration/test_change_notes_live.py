@@ -41,7 +41,7 @@ from threetears.core.backends.protocol import LoadFile
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, BaseCollection, CollectionRegistry
-from threetears.core.collections.change_note_keeper import ChangeNoteKeeper, ScrubPass
+from threetears.core.collections.change_note_keeper import ChangeNoteKeeper, ChangeNoteKeeping, ScrubPass
 from threetears.core.collections.change_notes import (
     RESTORE_BUDGET_RATIO,
     PoolNotedKeysReader,
@@ -53,6 +53,7 @@ from threetears.core.collections.write_marks import WriteMarkReconciler, install
 from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, collection_for_schema
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.coordination.lease import KVLease
 from threetears.core.ddl.change_notes import (
     WHOLE_COPY_ROWS,
     NOTE_REACH_SETTING,
@@ -1406,3 +1407,106 @@ class TestAWholeNoteNamesItsReachAndTheRestoreKeepsIt:
         assert [(record.whole_table, record.reason, record.prefixes) for record in records] == [(True, None, None)], (
             "a whole note naming no reach: the whole table, as an older writer's"
         )
+
+
+class TestARingBesideALogAnotherKeeperKeeps:
+    """a second database's ring (identity-core's) beside the change log the hub's keeper owns (RC3, 2026-11-16)."""
+
+    async def test_it_never_declares_restores_marks_or_scrubs_the_log_and_still_switches(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        """Flips if a ring beside another keeper's log declares the log, marks it, or scrubs it: it would race the
+        owner's restore, and its scrub would read every other database's epochs as missing notes."""
+        pool, schema, table = ring
+        source = EpochGenerationSource(FakeNatsClient())
+        keeper = ChangeNoteKeeper(
+            pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0), keeps_log=False
+        )
+        await keeper.install()
+        await keeper.install_triggers([NotedTable(table=table, keys=("id",), columns=("owner",))])
+
+        absent = await keeper.run_pass()
+        assert (absent.started, absent.restored) == (None, None)
+        assert await source.log_state() is None, "the log's owner declares it, never this ring"
+        assert (await keeper.ring()).log_incarnation is None
+
+        incarnation = await source.start_log()  # the owner declares it
+        adopted = await keeper.run_pass()
+        assert adopted.adopted == incarnation and (await keeper.ring()).log_incarnation == incarnation
+        await asyncio.sleep(_FENCE.total_seconds() * 2)
+        await keeper.run_pass()
+        assert (await keeper.ring()).fence_seq is not None, "the ring's fence passes as the owner's does"
+
+        # an epoch of another database's write: no note of it here, and nothing says it is missing
+        await source.advance_with_change(table, [ChangedRow(ids=["another-database"])])
+        await keeper.run_pass()
+        scrub = (await keeper.run_pass()).scrub
+        assert (scrub.checked, scrub.missing) == (0, 0), "a ring beside another keeper's log never scrubs it"
+        assert await pool.fetchval(f"SELECT count(*) FROM {schema}.threetears_change_note_marks") == 0
+
+        # its notes name its own writes, and the ring switches on the log's bytes as the owner's does
+        await pool.execute(f"INSERT INTO {schema}.{table} VALUES ('mine', 'o', '1')")
+        assert [row["keys"] for row in await _notes(pool, schema)] == [["mine"]]
+        side = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, switch_bytes=1, keeps_log=False)
+        before = (await keeper.ring()).current
+        assert (await side.run_pass()).switched_to == (before + 1) % NOTE_RING_SIZE
+
+    async def test_a_lost_log_is_put_back_by_its_owner_alone_and_the_ring_beside_adopts_it(
+        self, ring: tuple[asyncpg.Pool, str, str], nats_container: str
+    ) -> None:
+        pool, schema, table = ring
+        beside = f"{schema}_beside"
+        await pool.execute(f"CREATE SCHEMA {beside}")
+        try:
+            async with _nats(nats_container) as nc:
+                writer = _Pod(nc, pool, table, "writer")
+                await writer.source.start_log()
+                owner = await _fenced(pool, schema, table, writer.source)
+                side = ChangeNoteKeeper(pool, notes_schema=beside, log=writer.source, fence=_FENCE, keeps_log=False)
+                await side.install()
+                await side.run_pass()
+                await writer.rows.save_entity(writer.rows.create({"id": "w1", "owner": "ada", "n": "1"}))
+                lost = (await writer.source.log_state()).incarnation  # type: ignore[union-attr]
+
+                await nc.jetstream_context().delete_stream(f"KV_{nc.namespace}-{EPOCH_CHANGES_BUCKET}")
+                gone = await side.run_pass()
+                assert (gone.started, gone.restored) == (None, None)
+                assert await writer.source.log_state() is None, "the ring beside never puts the log back"
+
+                restored = (await owner.run_pass()).restored
+                assert restored is not None and restored != lost
+                assert (await writer.reader.continues(restored) or ("",))[0] == lost, "the owner's restore, labelled"
+                assert (await side.run_pass()).adopted == restored
+                beside_ring = await side.ring()
+                assert beside_ring.log_incarnation == restored and beside_ring.floor == f"{restored}:0"
+        finally:
+            await pool.execute(f"DROP SCHEMA IF EXISTS {beside} CASCADE")
+
+
+class TestTheKeepingRunsUnderItsOwnLease:
+    async def test_one_replica_keeps_each_ring_and_two_rings_keep_at_once(
+        self, ring: tuple[asyncpg.Pool, str, str], nats_container: str
+    ) -> None:
+        """Flips if two rings share one lease (one database's ring would never be kept) or two replicas of one ring
+        both keep it."""
+        pool, schema, table = ring
+        async with _nats(nats_container) as nc:
+            source = EpochGenerationSource(nc)
+            await source.start_log()
+            keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, keeps_log=False)
+            first = ChangeNoteKeeping(keeper, nc, lease="rc3-ring-a", key_scope="svc-rc3")
+            second = ChangeNoteKeeping(keeper, nc, lease="rc3-ring-a", key_scope="svc-rc3")
+            other = ChangeNoteKeeping(keeper, nc, lease="rc3-ring-b", key_scope="svc-rc3")
+            await first.start()
+            keeping = asyncio.create_task(first.claim_and_keep("replica-1"))
+            beside = asyncio.create_task(other.claim_and_keep("replica-1"))
+            try:
+                await asyncio.sleep(0.5)
+                assert not keeping.done() and not beside.done(), "each ring is kept, under its own lease"
+                await asyncio.wait_for(second.claim_and_keep("replica-2"), timeout=10)  # returns: another keeps it
+                lease = KVLease(nc, key_scope="svc-rc3")
+                assert await lease.holder("rc3-ring-a") == "replica-1"
+            finally:
+                keeping.cancel()
+                beside.cancel()
+                await asyncio.gather(keeping, beside, return_exceptions=True)

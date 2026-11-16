@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a second database keeps its own change-note ring beside the log the hub's keeper owns
+
+`ChangeNoteKeeper(keeps_log=False)` keeps a ring (install, switch, fence, empty) in a database whose writers advance
+through a change log another keeper owns, and never declares, restores, marks or scrubs that log: two keepers restoring
+one log from two rings would each put back only their own notes, and the scrub would read every other database's
+epochs as missing notes. identity-core runs one over its own database, so its write-mark reconciler names a lost
+write's rows from the notes (no longer `notes_unavailable`) and its followers page a bracket's keys from them.
+`ChangeNoteKeeping` (the same module) is the hub's lease-held keeping, moved here so every keeping process shares it:
+`start()` once, `claim_and_keep(holder)` every `CHANGE_NOTE_KEEPER_CLAIM_EVERY`, `install_triggers()` beside it; the
+lease name is per ring, and `key_scope` / `create_if_missing=False` serve a process granted only its own keys of the
+shared `leases` bucket. A lost log is put back from the owner's notes alone: the other database's epochs since the
+floor are not in it.
+
 ### core: a follower on a direct L3 pool reads a keys-unknown epoch's keys from the change notes
 
 `PoolNotedKeysReader` (`threetears.core.collections.change_notes`) is a noted-keys reader over a direct L3 pool: it
