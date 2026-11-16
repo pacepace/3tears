@@ -34,8 +34,10 @@ def nothing(case: dict[str, Any]) -> None:
 def unpassed(result: Result) -> float:
     """The share of the control arm's cases that some repeat failed: lost, or graded false or zero by a grader.
 
-    Read off each trial's grades rather than its state, since a trial's state counts only checks, and a function
-    grader that returns False is a measure, not a check: the first line counts its case passed.
+    Read off each trial's grades rather than its state, since a trial's state counts only checks, and which graders
+    are checks differs between builds (in builds before 2026-11-16 a function grader returning False is a measure, and
+    the first line counts its case passed; later builds decide by the grader's declared kind): the same reading on
+    every build measured.
     """
     readings = ["match" if name == "accuracy" else name for name in result.grader_readings]
     failed: dict[str, bool] = defaultdict(bool)

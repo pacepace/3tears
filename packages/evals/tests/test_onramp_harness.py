@@ -957,6 +957,43 @@ def test_the_census_states_each_checks_tally_with_its_exact_range() -> None:
     assert any("cannot show" in line for line in lines)
 
 
+def test_the_census_never_pools_arms_and_tallies_each_check_app_by_app() -> None:
+    """Two arms are tallied apart, each line headed by its arm; with more than one app, each line ends with its tally
+    by app, the unit a claim beyond these apps rests on. One arm on one app prints as before."""
+
+    def row(arm: str, app: str, passed: bool) -> dict[str, Any]:
+        scores = {"eval_runs": 1.0, "measures_the_app": float(passed), "read_right": 1.0}
+        return {"arm": arm, "scores": scores, "record": {"app": app, "stopped": "done"}}
+
+    rows = [
+        row("docs@control", "holds", False), row("docs@control", "holds", False), row("docs@control", "recipes", True),
+        row("docs@candidate", "holds", True), row("docs@candidate", "recipes", True), row("docs@candidate", "recipes", True),
+    ]  # fmt: skip
+    lines = census(rows)
+    measured = [line for line in lines if "measures_the_app:" in line]
+    assert measured == [
+        "  docs@control measures_the_app: 1 of 3 trials, 95% range 0.01 to 0.91; 2 failed: 2 cannot tell; "
+        "by app: holds 0 of 2, recipes 1 of 1",
+        "  docs@candidate measures_the_app: 3 of 3 trials, 95% range 0.29 to 1.00; by app: holds 1 of 1, recipes 2 of 2",
+    ], measured
+    assert not any(line.startswith("  measures_the_app: ") for line in lines), "no line pools the two arms"
+    one = census([row("docs@control", "holds", False), row("docs@control", "holds", False)])
+    assert "  measures_the_app: 0 of 2 trials, 95% range 0.00 to 0.84; 2 failed: 2 cannot tell" in one, one
+    assert any("trials on one app are repeats of that app" in line for line in lines)
+
+
+def test_pytest_collects_nothing_from_the_run_directories(pytester: pytest.Pytester) -> None:
+    """Agents write ``test_*.py`` into the copies of the apps under ``runs/``; the harness's conftest keeps a sweep of
+    the tree from collecting them, and collects the rest of it as before."""
+    onramp = pytester.mkpydir("onramp")
+    shutil.copy(Path(__file__).parents[1] / "onramp" / "conftest.py", onramp / "conftest.py")
+    trial = onramp / "runs" / "20261116T030232Z" / "docs-control" / "holds-1" / "app"
+    trial.mkdir(parents=True)
+    (trial / "test_eval.py").write_text("def test_an_agents_file():\n    raise AssertionError('collected')\n")
+    (onramp / "test_kept.py").write_text("def test_kept():\n    pass\n")
+    pytester.runpytest_inprocess(str(onramp), "-p", "no:cacheprovider").assert_outcomes(passed=1)
+
+
 def _worst_coverage(n: int, interval: Callable[[int, int], tuple[float, float]]) -> float:
     """The least often ``interval`` covers the true share, over shares 0.01 to 0.99: at each, every outcome of ``n``
     trials weighed by its chance."""
@@ -1338,6 +1375,44 @@ def test_a_door_run_that_scored_nothing_is_a_failed_turn_and_the_stuck_point_nam
     stuck = stuck_point(steps)
     assert stuck is not None and (stuck["from_turn"], stuck["to_turn"], stuck["failed_turns"]) == (1, 5, 4)
     assert scored_door_turns(steps) == [6]
+
+
+def test_a_door_run_that_exits_1_having_scored_nothing_fails_and_is_named_by_its_first_line() -> None:
+    """Builds from 2026-11-16 exit 1 when the runner raised on every case and say so on the first line, to stdout: the
+    turn fails on its exit code, and the stuck point names that line, not the ``exit 1`` header."""
+    first = "scaling: scale failed on all 10 cases, so no answer was graded: the runner raised RuntimeError: boom."
+    said = f"exit 1\n{first}\n10 result(s): 0 scored, 10 failed by the candidate"
+    steps = [
+        _door_step(1, said, ok=False),
+        _door_step(2, said, ok=False),
+        _door_step(3, "exit 0\n3 result(s): 3 scored"),
+    ]
+    stuck = stuck_point(steps)
+    assert stuck is not None and (stuck["from_turn"], stuck["failed_turns"], stuck["opened_by"]) == (1, 2, first)
+    assert scored_door_turns(steps) == [3]
+    assert errors_hit(steps) == {"runner_raised": 1}
+
+
+def test_the_doors_help_neither_scores_nor_ends_a_stuck_span() -> None:
+    """``python -m threetears.evals --help`` exits 0 and runs no eval: it is the agent looking for help, so a wall stop
+    after it is not a run that had a working eval (run 20261116T030232Z counted two such turns as scored)."""
+    nothing = "exit 0\n3 result(s): 0 scored, 3 failed by the candidate"
+    helped = _step(3, "run", True, "exit 0\nusage: python -m threetears.evals ...", "python -m threetears.evals --help")
+    steps = [_door_step(1, nothing), _door_step(2, nothing), helped, _door_step(4, nothing)]
+    assert scored_door_turns(steps) == []
+    stuck = stuck_point(steps)
+    assert stuck is not None and (stuck["from_turn"], stuck["to_turn"], stuck["failed_turns"]) == (1, 4, 3)
+
+
+def test_errors_hit_reads_the_wording_of_every_build_measured() -> None:
+    """The control build says "the candidate raised" and "the scorer X raised"; builds from 2026-11-16 say "the runner
+    raised" on their first line and "the grader X raised" on their error lines."""
+    for runner, grader in (
+        ("error: case 0: the candidate raised KeyError: 'x'", "the scorer right raised KeyError: 'x'"),
+        ("s: r failed on all 3 cases, so no answer was graded: the runner raised KeyError: 'x'.", "the grader right raised KeyError: 'x'"),
+    ):  # fmt: skip
+        steps = [_door_step(1, f"exit 1\n{runner}", ok=False), _door_step(2, f"exit 1\n{grader}", ok=False)]
+        assert errors_hit(steps) == {"runner_raised": 1, "grader_raised": 2}
 
 
 def test_the_spend_line_states_the_charged_bound_beside_the_reported_cost() -> None:

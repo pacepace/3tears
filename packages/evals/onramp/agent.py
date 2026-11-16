@@ -571,15 +571,17 @@ async def _turns(sandbox: Sandbox, brain: Brain, caps: Caps, system: str, run: A
 
 
 #: The newcomer's errors the docs and messages are measured on, each by an id and what its message says, read off what
-#: each run printed: a run met an error when the package said it, whatever caused it.
+#: each run printed: a run met an error when the package said it, whatever caused it. The messages are what is measured,
+#: so they are read as text; a pattern takes every wording a measured build prints (builds from 2026-11-16 on say "the
+#: runner raised" on their first line and "the grader X raised" where earlier ones said "the scorer X raised").
 ERRORS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("no_key", re.compile(r"no key for \w+")),
     ("cases_missing", re.compile(r"the cases file .+ is not there")),
     ("eval_not_at_module_level", re.compile(r"defines no Eval at module level")),
     ("grader_unnamed", re.compile(r"a (?:grader|scorer)'s __name__ names its measure")),
     ("field_not_in_answer", re.compile(r"answered no \S+ it can be graded on")),
-    ("runner_raised", re.compile(r"the candidate raised \w+")),
-    ("grader_raised", re.compile(r"the scorer \w+ raised \w+")),
+    ("runner_raised", re.compile(r"the (?:candidate|runner) raised \w+")),
+    ("grader_raised", re.compile(r"the (?:scorer|grader) \w+ raised \w+")),
     ("eval_unnamed", re.compile(r"name this eval \(name=")),
     ("recording_refused", re.compile(r"RecordingRefused|recording \S+: .+; ")),
 )
@@ -601,12 +603,14 @@ def errors_hit(steps: Sequence[Step]) -> dict[str, int]:
     return hit
 
 
-#: What a door run prints when it scored no result: every case failed by the candidate.
+#: What a door run prints when it scored no result: every case failed by the candidate, or excluded. Builds before
+#: 2026-11-16 exit 0 on such a run, so this count line is the only sign of it; later builds also exit 1, which fails
+#: the turn whatever the line says.
 NOTHING_SCORED = re.compile(r"\d+ result\(s\): 0 scored\b")
 
 
 def scored_nothing(step: Step) -> bool:
-    """Whether a turn ran the eval door and it scored no result (exit 0, every case failed by the candidate)."""
+    """Whether a turn ran the eval door and it printed that it scored no result (:data:`NOTHING_SCORED`)."""
     return (
         step.act is not None
         and step.act.tool == "run"
@@ -616,19 +620,27 @@ def scored_nothing(step: Step) -> bool:
 
 
 def failed(step: Step) -> bool:
-    """Whether a turn failed: a reply that was no tool call, a call refused, a run that ended badly, or a door run that
-    scored nothing (it exits 0 with every case failed)."""
+    """Whether a turn failed: a reply that was no tool call, a call refused, a run that ended badly (a door run exiting
+    other than 0 or 4), or a door run that scored nothing (an older build exits 0 on it)."""
     return not step.observation.ok or scored_nothing(step)
 
 
-def scored_door_turns(steps: Sequence[Step]) -> list[int]:
-    """The turns whose door run worked and scored a result: where the agent had an eval that measured something."""
-    return [
-        step.turn
-        for step in steps
-        if step.act is not None and step.act.tool == "run" and is_door(step.act.command.split())
+def ran_an_eval(step: Step) -> bool:
+    """Whether a turn ran an eval file through the door (``python -m threetears.evals FILE.py``), and it worked and did
+    not print that it scored nothing. ``--help`` and the door's other commands run no eval: they score nothing."""
+    if step.act is None or step.act.tool != "run":
+        return False
+    argv = step.act.command.split()
+    return (
+        is_door(argv) and len(argv) > 3 and argv[3].endswith((".py", ".toml"))
         and step.observation.ok and not scored_nothing(step)
-    ]  # fmt: skip
+    )  # fmt: skip
+
+
+def scored_door_turns(steps: Sequence[Step]) -> list[int]:
+    """The turns whose door run of an eval file worked and scored a result: where the agent had an eval that measured
+    something (:func:`ran_an_eval`)."""
+    return [step.turn for step in steps if ran_an_eval(step)]
 
 
 #: What caused a failure, as far as the harness can tell it mechanically: the harness's own rules and limits (a reply
@@ -667,21 +679,32 @@ def cause(step: Step, guide: str = "") -> str:
     return CANNOT_TELL
 
 
+def _message(observation: Observation) -> str:
+    """What a failed turn said: its first error; else, for a run that wrote nothing to stderr, the first line it printed
+    (a door run that scored nothing says why on its first line), not its ``exit N`` header."""
+    if observation.first_error:
+        return observation.first_error
+    lines = [line for line in observation.text.splitlines() if line.strip()]
+    if len(lines) > 1 and re.fullmatch(r"exit -?\d+", lines[0]):
+        return lines[1]
+    return lines[0] if lines else ""
+
+
 def stuck_point(steps: Sequence[Step], guide: str = "") -> dict[str, Any] | None:  # Any: a span's fields
     """The longest span of consecutive failing turns, the message that opened it and its :func:`cause`; ``None`` when
     none failed.
 
-    Only a run of the eval door that worked and scored ends a span (one that scored nothing is a failed turn). Anything else that worked (a read, a write, ``ls``, ``cat``, a
-    probe script) neither extends nor ends it: it is the agent looking for help, or trying a fix. Ties go to the
-    earliest span.
+    Only a door run of an eval file that worked and scored ends a span (:func:`ran_an_eval`; one that scored nothing
+    is a failed turn). Anything else that worked (a read, a write, ``ls``, ``cat``, the door's ``--help``, a probe
+    script) neither extends nor ends it: it is the agent looking for help, or trying a fix. Ties go to the earliest
+    span.
     """
     spans: list[list[Step]] = []
     current: list[Step] = []
     for step in steps:
         if failed(step):
             current.append(step)
-        elif step.act is not None and step.act.tool == "run" and is_door(step.act.command.split()) and current:
-            # failed() was false: a door run that worked and scored, which ends the span.
+        elif ran_an_eval(step) and current:
             spans.append(current)
             current = []
     if current:
@@ -689,12 +712,11 @@ def stuck_point(steps: Sequence[Step], guide: str = "") -> dict[str, Any] | None
     if not spans:
         return None
     worst = max(spans, key=len)
-    opened = worst[0].observation
     return {
         "from_turn": worst[0].turn,
         "to_turn": worst[-1].turn,
         "failed_turns": len(worst),
-        "opened_by": opened.first_error or opened.text.splitlines()[0],
+        "opened_by": _message(worst[0].observation),
         "cause": cause(worst[0], guide),
     }
 

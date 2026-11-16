@@ -526,26 +526,56 @@ def census(rows: Sequence[Mapping[str, Any]]) -> list[str]:  # Any: a trial's st
 
     A handful of runs is a census of where agents get stuck and what they cost, not a rate: trials on one app share
     the app, so the ranges are if anything too narrow, and a failure does not say whether the docs or the model failed.
+    Arms are never pooled: with more than one, each check is tallied per arm, its line headed by the arm. With more
+    than one app, each line ends with the tally app by app, since the app, not the trial, is the unit a claim beyond
+    these apps rests on.
     """
+    arms = list(dict.fromkeys(row.get("arm") for row in rows))
     lines = [f"what {len(rows)} run(s) can say:"]
-    for grader in GRADERS:
-        name = grader.__name__
-        n = sum(1 for row in rows if name in row["scores"])
-        passed = sum(1 for row in rows if row["scores"].get(name) == 1.0)
-        if n:
-            low, high = clopper_pearson(passed, n)
-            causes = [row.get("causes", failure_causes(row)).get(name) for row in rows if name in row["scores"]]
-            counted = ", ".join(f"{causes.count(each)} {each}" for each in CAUSES if causes.count(each))
-            harness = causes.count(HARNESS)
-            apart = f"; {n - passed} failed: {counted}" if n > passed else ""
-            apart += f"; {passed} of {n - harness} the harness failed none of" if harness else ""
-            lines.append(f"  {name}: {passed} of {n} trials, 95% range {low:.2f} to {high:.2f}{apart}")
+    for arm in arms:
+        own = [row for row in rows if row.get("arm") == arm]
+        head = f"{arm} " if len(arms) > 1 else ""
+        for grader in GRADERS:
+            name = grader.__name__
+            n = sum(1 for row in own if name in row["scores"])
+            passed = sum(1 for row in own if row["scores"].get(name) == 1.0)
+            if n:
+                low, high = clopper_pearson(passed, n)
+                causes = [row.get("causes", failure_causes(row)).get(name) for row in own if name in row["scores"]]
+                counted = ", ".join(f"{causes.count(each)} {each}" for each in CAUSES if causes.count(each))
+                harness = causes.count(HARNESS)
+                apart = f"; {n - passed} failed: {counted}" if n > passed else ""
+                apart += f"; {passed} of {n - harness} the harness failed none of" if harness else ""
+                lines.append(
+                    f"  {head}{name}: {passed} of {n} trials, 95% range {low:.2f} to {high:.2f}{apart}"
+                    f"{_by_app(own, name)}"
+                )
     lines += [
         "  it shows: whether the tier ever succeeds, where runs get stuck and on which message, and turns and cost",
-        "  per run.",
-        "  it cannot show: a success rate to rely on, a difference between apps (each has a few trials), or whether",
-        "  a failure belongs to the docs or to the model.",
+        "  per run, on these apps.",
+        "  it cannot show: a success rate to rely on, a difference between apps, whether a failure belongs to the",
+        "  docs or to the model, or anything beyond these apps: trials on one app are repeats of that app.",
         "  between arms, compare each check's k of n only: never errors_hit, and never the count of trials the",
         "  harness failed none of, which differ with how each arm's agents behave, not with what the harness is.",
     ]
     return lines
+
+
+def _app_of(row: Mapping[str, Any]) -> str | None:  # Any: a trial's stored row
+    """The app a trial ran on, from its record; ``None`` when the record holds none."""
+    record = row.get("record")
+    app = record.get("app") if isinstance(record, Mapping) else None
+    return app if isinstance(app, str) else None
+
+
+def _by_app(rows: Sequence[Mapping[str, Any]], name: str) -> str:  # Any: a trial's stored row
+    """``; by app: holds 1 of 7, recipes 3 of 7``: one check's tally app by app, when the rows span more than one
+    app; empty otherwise."""
+    apps = sorted({app for row in rows if (app := _app_of(row)) is not None and name in row["scores"]})
+    if len(apps) < 2:
+        return ""
+    tallies = []
+    for app in apps:
+        on = [row for row in rows if _app_of(row) == app and name in row["scores"]]
+        tallies.append(f"{app} {sum(1 for row in on if row['scores'][name] == 1.0)} of {len(on)}")
+    return f"; by app: {', '.join(tallies)}"
