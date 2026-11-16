@@ -9,7 +9,7 @@ packages (bumped in lock-step).
 ### core: a read's long reply is decoded and its rows read off the event loop
 
 `fetch`, `fetchrow` and `fetch_page` on the L3 rail (`NatsProxyL3Backend`) decoded each reply's JSON and read its rows
-(`_deserialize_row`) on the serving loop. A keyed read of one state's 33,786 candidate rows at the production reply cap
+(`deserialize_row`) on the serving loop. A keyed read of one state's 33,786 candidate rows at the production reply cap
 (12 MiB) is five statements of up to 10 MB, and held the loop 130 ms (a pool runner) to over 200 ms a reply; the
 decoded rows were freed on the loop too (5 ms for 10,000 rows). They now share a transaction's reader
 (`_read_rows_reply`, from the returning delete's change): a reply over 64 KiB is decoded and read on a worker thread

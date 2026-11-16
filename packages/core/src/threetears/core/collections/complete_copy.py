@@ -193,7 +193,7 @@ def l3_row_pages(
 #: its digits, a timestamp outside ``date_*`` as its ISO text)
 _RAIL_TEXT_TYPES: Final = frozenset({STRING_TYPE, UUID_TYPE, ENUM_TYPE, TSVECTOR_TYPE, NUMERIC_TYPE, DATETIMETZ_TYPE})
 
-#: the prefix of the columns the rail's proxy answers as aware datetimes (``nats_proxy._deserialize_row``)
+#: the prefix of the columns the rail's proxy answers as aware datetimes (``nats_proxy.deserialize_row``)
 _DATED_PREFIX: Final = "date_"
 
 

@@ -453,13 +453,13 @@ def _with_proof(encoded: bytes, body: Mapping[str, Any], sent: Mapping[str, Any]
 #: about a quarter of a millisecond. Measured 2026-11-16 (quiet host): a 64,602-byte reply of 64 rows read on the loop
 #: in 0.59 ms against a 0.72 ms round trip to a thread, 32 KB in 0.28 ms; the loop is held no longer than about one
 #: turn (0.5 ms) below this size, and a thread's round trip costs more than the read it saves
-_READ_ON_THREAD_BYTES: Final = 64 * 1024
+READ_ON_THREAD_BYTES: Final = 64 * 1024
 
 
 def _rows_reply(
     subject: str, reply: bytes, loop: asyncio.AbstractEventLoop | None = None, keep: int | None = None
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """a reply's JSON and, when it succeeded, its rows each read as :func:`_deserialize_row` reads it; pure, for a
+    """a reply's JSON and, when it succeeded, its rows each read as :func:`deserialize_row` reads it; pure, for a
     thread, the thread's turns taken between rows as they are decoded and as they are read.
 
     The decode is one C call: on a thread, a megabyte's 3.5 ms held the loop as long, under load 8.5 ms (2026-11-16).
@@ -500,12 +500,12 @@ def _rows_reply(
         return response, []
     raw = decoded_rows if keep is None else decoded_rows[:keep]
     if turns is None:
-        rows = [_deserialize_row(row) for row in raw]
+        rows = [deserialize_row(row) for row in raw]
         response["rows"] = rows
         return response, rows
     # a turn looked at every STEP_ITEMS values, not rows: a row of 49 values read in 3 us
     every = max(1, STEP_ITEMS // max(1, len(raw[0])))
-    rows = [_deserialize_row(row) for row in stepped(raw, turns, every)]
+    rows = [deserialize_row(row) for row in stepped(raw, turns, every)]
     response["rows"] = rows
     del raw
     # their last holder: freed a slice a turn, a slice of rows of ``every``'s values
@@ -519,7 +519,7 @@ async def _read_rows_reply(
     subject: str, reply: bytes, keep: int | None = None
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """:func:`_rows_reply` of a reply, read on a worker thread taking turns with the loop when the reply is longer than
-    :data:`_READ_ON_THREAD_BYTES`, on the loop when shorter: every read of rows a reply answers, a transaction's
+    :data:`READ_ON_THREAD_BYTES`, on the loop when shorter: every read of rows a reply answers, a transaction's
     (``tx.fetch``) and the backend's own (``fetch``, ``fetchrow``, ``fetch_page``), reads them here.
 
     :param subject: the request's subject, named in the error
@@ -532,12 +532,12 @@ async def _read_rows_reply(
     :rtype: tuple[dict[str, Any], list[dict[str, Any]]]
     :raises DataLayerUnavailableError: when the reply is not JSON
     """
-    if len(reply) > _READ_ON_THREAD_BYTES:
+    if len(reply) > READ_ON_THREAD_BYTES:
         return await asyncio.to_thread(_rows_reply, subject, reply, asyncio.get_running_loop(), keep)
     return _rows_reply(subject, reply, None, keep)
 
 
-def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
+def deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
     """deserialize row values returned from L3 broker proxy.
 
     three conversions run per row:
@@ -2401,7 +2401,7 @@ class _ProxyConnection:
         row = response.get("row")
         if row is None:
             return None
-        return _deserialize_row(row)
+        return deserialize_row(row)
 
     async def fetchval(
         self,

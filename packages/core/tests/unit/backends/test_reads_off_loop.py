@@ -2,7 +2,7 @@
 
 A keyed read of one state's candidates (33,786 rows of 49 columns) at the production reply cap (12 MiB, the hub's
 ``FOURTEENAIBOTS_DB_L3_REPLY_MAX_BYTES``) is five statements, the largest replies about 10 MB: each reply's JSON
-decoded and its rows read (``_deserialize_row``) on the serving loop held it 180-210 ms a reply, and its decoded rows
+decoded and its rows read (``deserialize_row``) on the serving loop held it 180-210 ms a reply, and its decoded rows
 freed there 5 ms more (a 10-core Apple host, 2026-11-16). A transaction's ``fetch`` read its reply on a thread already
 (a delete returning its rows, ``test_bulk_write_off_loop``); the backend's own reads now share that reader
 (``_read_rows_reply``).
@@ -24,7 +24,7 @@ import pytest
 from threetears.nats import Subject
 
 import threetears.core.backends.nats_proxy as nats_proxy
-from threetears.core.backends.nats_proxy import _READ_ON_THREAD_BYTES, NatsProxyL3Backend, _deserialize_row
+from threetears.core.backends.nats_proxy import READ_ON_THREAD_BYTES, NatsProxyL3Backend, deserialize_row
 from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.core.keyset import read_keyset_pages
@@ -161,13 +161,13 @@ async def _keyed_read(backend: NatsProxyL3Backend) -> Any:
 def _recording_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """the thread each row is read on, in order."""
     threads: list[int] = []
-    original = _deserialize_row
+    original = deserialize_row
 
     def recording(row: dict[str, Any]) -> dict[str, Any]:
         threads.append(threading.get_ident())
         return original(row)
 
-    monkeypatch.setattr(nats_proxy, "_deserialize_row", recording)
+    monkeypatch.setattr(nats_proxy, "deserialize_row", recording)
     return threads
 
 
@@ -178,10 +178,10 @@ class TestALongReplyIsReadOffTheLoopAsAShortOneIsOnIt:
         reply = _reply(wire)
         threads = _recording_reads(monkeypatch)
         rows = await _Answering(reply).proxy().fetch("SELECT * FROM candidates")
-        assert rows == [_deserialize_row(row) for row in wire][: len(rows)] and len(rows) == count
+        assert rows == [deserialize_row(row) for row in wire][: len(rows)] and len(rows) == count
         assert rows[0]["date_updated"] == _AT and rows[0]["c4"] == wire[0]["c4"], "a row was not read as the wire's"
         on_loop = threading.get_ident()
-        if len(reply) > _READ_ON_THREAD_BYTES:
+        if len(reply) > READ_ON_THREAD_BYTES:
             assert on_loop not in threads[:count], f"a {len(reply):,}-byte reply's rows were read on the loop"
         else:
             assert set(threads[:count]) == {on_loop}, f"a {len(reply):,}-byte reply's rows went to a thread"
@@ -189,8 +189,8 @@ class TestALongReplyIsReadOffTheLoopAsAShortOneIsOnIt:
     async def test_fetchrow_reads_the_first_row_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         wire = [_wire_row(row) for row in range(300)]
         reply = _reply(wire, truncated=True)
-        assert len(reply) > _READ_ON_THREAD_BYTES
-        expected = _deserialize_row(wire[0])
+        assert len(reply) > READ_ON_THREAD_BYTES
+        expected = deserialize_row(wire[0])
         threads = _recording_reads(monkeypatch)
         row = await _Answering(reply).proxy().fetchrow("SELECT * FROM candidates")
         assert row == expected
@@ -206,7 +206,7 @@ class TestALongReplyIsReadOffTheLoopAsAShortOneIsOnIt:
         reply = _reply(wire, truncated=True, max_reply_bytes=_CAP)
         threads = _recording_reads(monkeypatch)
         page = await _Answering(reply).proxy().fetch_page("SELECT * FROM candidates LIMIT 301")
-        assert page.rows == [_deserialize_row(row) for row in wire]
+        assert page.rows == [deserialize_row(row) for row in wire]
         assert (page.truncated, page.reply_bytes, page.reply_cap) == (True, len(reply), _CAP)
         assert threading.get_ident() not in threads[:300], "a long page's rows were read on the loop"
 
@@ -229,7 +229,7 @@ class TestALongReplyIsReadOffTheLoopAsAShortOneIsOnIt:
         hub = _Hub(5000, cap=1024 * 1024)
         read = await _keyed_read(hub.proxy())
         assert [tuple(row[name] for name in _KEY) for row in read.rows] == [_key(row) for row in range(5000)]
-        assert read.rows[-1] == _deserialize_row(hub.rows[-1])
+        assert read.rows[-1] == deserialize_row(hub.rows[-1])
         assert read.statements > 2, "the read was not paged at the cap"
 
 
@@ -240,7 +240,7 @@ class TestTheLoopRunsWhileAKeyedReadReadsItsRows:
         hub = _Hub()
         turns = 0
         seen: list[int] = []
-        original = _deserialize_row
+        original = deserialize_row
 
         def counting(row: dict[str, Any]) -> dict[str, Any]:
             seen.append(turns)
@@ -252,7 +252,7 @@ class TestTheLoopRunsWhileAKeyedReadReadsItsRows:
                 turns += 1
                 await asyncio.sleep(0)
 
-        monkeypatch.setattr(nats_proxy, "_deserialize_row", counting)
+        monkeypatch.setattr(nats_proxy, "deserialize_row", counting)
         ticking = asyncio.get_running_loop().create_task(ticker())
         try:
             read = await _keyed_read(hub.proxy())
@@ -275,7 +275,7 @@ def _read_steps(hub: _Hub) -> tuple[float, int]:
     try:
         started = time.perf_counter()
         for reply in replies:
-            [_deserialize_row(row) for row in json.loads(reply)["rows"]]
+            [deserialize_row(row) for row in json.loads(reply)["rows"]]
         return time.perf_counter() - started, len(replies)
     finally:
         gc.enable()
