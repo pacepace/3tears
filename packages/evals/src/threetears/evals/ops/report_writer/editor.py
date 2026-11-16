@@ -66,7 +66,7 @@ from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.inner_ceilings import EDITOR_ANSWERS
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
 from threetears.evals.ops.report_writer.rubric import EditorRubric, editor_rubric, shipped_rubric
-from threetears.evals.ops.report_writer.session import SessionLimits, SessionStop, ToolMount, ToolSession
+from threetears.evals.ops.report_writer.session import PackageDefect, SessionLimits, SessionStop, ToolMount, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.turns import ToolTurnClient
@@ -257,8 +257,9 @@ class EditorOutcome:
 
     :ivar ending: ``reviewed``, a review was read; ``review_failed``, the answer could not be read twice;
         ``over_budget``, the report's budget refused a turn; ``failed``, the model refused, its reply stopped
-        short for a cause other than the output cap, or the client failed (the provider's failure, after its
-        retries, or a reply the client refused after it was paid for).
+        short for a cause other than the output cap, the client failed (the provider's failure, after its
+        retries, or a reply the client refused after it was paid for), or the package's own code raised
+        (:attr:`defect`).
     :ivar round: The round reviewed.
     :ivar review: The review; ``None`` unless ``reviewed``.
     :ivar faults: What kept the last answer from being read; empty unless ``review_failed``.
@@ -267,6 +268,8 @@ class EditorOutcome:
         is resumable, never thrown away.
     :ivar failure: The client's failure a ``failed`` round ended on, when one did, so a caller that records it can
         ask the host what of it is safe to keep (its text may carry a provider's account); never stored.
+    :ivar defect: The package's own failure a ``failed`` round ended on, when one did: an internal error, never the
+        client's, so never handed to the host's describer; ``failure`` is then ``None``. Never stored.
     """
 
     ending: Literal["reviewed", "review_failed", "over_budget", "failed"]
@@ -276,6 +279,7 @@ class EditorOutcome:
     reason: str = ""
     session: dict[str, Any] = field(default_factory=dict)  # Any: a JSON object
     failure: Exception | None = field(default=None, compare=False, repr=False)
+    defect: PackageDefect | None = field(default=None, compare=False, repr=False)
 
 
 async def review_report(
@@ -323,7 +327,8 @@ async def review_report(
     :ptype limits: EditorLimits | None
     :return: How the round ended, with its session as a stored value. A failure of the client is the ``failed``
         ending, contained and logged as an error, so the session that led to it is kept; every turn it paid for is in
-        the tally.
+        the tally. So is a failure the package's own code raised in the round, carried as its ``defect`` (an internal
+        error, never described as the client's).
     :rtype: EditorOutcome
     :raises ValueError: ``skill`` states no rubric that reads; refused before anything is sent (and before the report's
         first turn by the kind's preparation and ``write_report``).
@@ -347,10 +352,18 @@ async def review_report(
             session, doc, report_input, rubric, round=round, snapshot=snapshot, earlier=earlier, limits=held
         )
     except Exception as exc:
-        # The client's failure (a provider's, after its retries; a reply refused after it was paid for), which the
-        # engine cannot name by type: reported as this round's `failed` ending, so the session is kept beside it.
-        contain(exc, log=log, what=f"the report editor's round {round} failed and ends failed", level="error")
-        ended = EditorOutcome(ending="failed", round=round, reason=f"{type(exc).__name__}: {exc}", failure=exc)
+        # Reported as this round's `failed` ending, so the session is kept beside it, and told apart by where it was
+        # raised: the client's failure (a provider's, after its retries; a reply refused after it was paid for),
+        # which the engine cannot name by type, or the package's own defect, which is never described as the client's.
+        defect = session.defect(exc)
+        if defect is None:
+            contain(exc, log=log, what=f"the report editor's round {round} failed and ends failed", level="error")
+            ended = EditorOutcome(ending="failed", round=round, reason=f"{type(exc).__name__}: {exc}", failure=exc)
+        else:
+            contain(
+                exc, log=log, what=f"the report editor's round {round} ends failed on {defect.line()}", level="error"
+            )
+            ended = EditorOutcome(ending="failed", round=round, reason=defect.line(), defect=defect)
     return replace(ended, session=session.to_json())
 
 
