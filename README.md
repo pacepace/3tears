@@ -78,6 +78,7 @@ Every package shares the `threetears.*` import namespace. The `agent-*` packages
 | [`3tears-object-store`](packages/object-store/) | `threetears.object_store` | Streaming S3-compatible store for large binaries (pcaps, dumps, rendered reports), kept out of the entity tiers |
 | [`3tears-backup`](packages/backup/) | `threetears.backup` | Encrypted, grandfather-father-son rotated database backups to any `ObjectStore`, with restore verification |
 | [`3tears-geo`](packages/geo/) | `threetears.geo` | Slippy-map tile geometry: WKB decoding, zoom bands and MVT encoding, with no PostGIS |
+| [`3tears-pwa`](packages/pwa/) | `threetears.pwa` | Installable web apps: manifest with a stable per-app id, icon set from one PNG or SVG, the head tags iOS reads, safe-area CSS, Media Session and Wake Lock helpers; no service worker |
 | [`3tears-nats`](packages/nats/) | `threetears.nats` | Typed NATS client, subject builders, and JetStream KV helpers |
 | [`3tears-observe`](packages/observe/) | `threetears.observe` | Structured logging, OpenTelemetry tracing, the `@traced` decorator, and ASGI correlation middleware |
 | [`3tears-epoch`](packages/epoch/) | `threetears.epoch` | Generation-stamped config epochs broadcast over NATS, so every pod reloads its caches coherently |

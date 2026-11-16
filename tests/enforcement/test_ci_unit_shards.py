@@ -29,6 +29,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 _SCRIPT = _REPO_ROOT / "scripts" / "ci-unit-tests.sh"
 
+#: the shards holding browser tests: evals' render tests in the evals shards, pwa's in rest (test_browser_marker.py)
+_BROWSER_SHARDS = "(startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest')"
+
 
 def _script_shards() -> list[str]:
     """Return the shard names the script accepts.
@@ -113,10 +116,11 @@ def test_the_unit_matrix_runs_every_shard(workflow: str) -> None:
 
 
 @pytest.mark.parametrize("workflow", ["ci.yml", "release.yml"])
-def test_the_evals_shards_install_chromium_and_require_it(workflow: str) -> None:
-    """the evals render tests (the ``browser`` marker) run in the evals shards: each installs headless Chromium
-    before its test step, and that step sets THREETEARS_REQUIRE_CHROMIUM, so a failed install fails the tests rather
-    than skipping them. tests/enforcement/test_browser_marker.py keeps every browser test in packages/evals.
+def test_the_browser_shards_install_chromium_and_require_it(workflow: str) -> None:
+    """the browser tests (the ``browser`` marker) run in the evals shards (evals' render tests) and the rest shard
+    (pwa's): each installs headless Chromium before its test step, and that step sets THREETEARS_REQUIRE_CHROMIUM, so
+    a failed install fails the tests rather than skipping them. tests/enforcement/test_browser_marker.py keeps every
+    browser test in packages/evals or packages/pwa.
 
     :param workflow: the file name under .github/workflows
     :ptype workflow: str
@@ -131,12 +135,12 @@ def test_the_evals_shards_install_chromium_and_require_it(workflow: str) -> None
     assert install and test and install[0] < test[0], (
         f"{workflow}'s unit job does not install Chromium before its tests"
     )
-    assert "startsWith(matrix.shard, 'evals-')" in str(steps[install[0]].get("if", "")), (
-        f"{workflow}: the Chromium install should run on the evals shards, where the browser tests are"
+    assert _BROWSER_SHARDS in str(steps[install[0]].get("if", "")), (
+        f"{workflow}: the Chromium install should run on the evals and rest shards, where the browser tests are"
     )
     env = steps[test[0]].get("env") or {}
-    assert env.get("THREETEARS_REQUIRE_CHROMIUM") == "${{ startsWith(matrix.shard, 'evals-') && '1' || '' }}", (
-        f"{workflow}: the evals shards' test step must require Chromium"
+    assert env.get("THREETEARS_REQUIRE_CHROMIUM") == f"${{{{ {_BROWSER_SHARDS} && '1' || '' }}}}", (
+        f"{workflow}: the browser shards' test step must require Chromium"
     )
     fonts = [i for i, run in enumerate(runs) if run.strip() == "./scripts/check-fallback-fonts.sh"]
     assert fonts and install[0] < fonts[0] < test[0], (

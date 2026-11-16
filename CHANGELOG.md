@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### pwa: a new package, `3tears-pwa`, for web apps people install
+
+**Added:** `3tears-pwa` (`threetears.pwa`), framework-free. `AppIdentity` and `install_id(prefix, slug)`
+give each app a stable manifest `id` (several apps per host, one per station or persona, each its own
+install), with `start_url` checked inside `scope` and colours, names and categories validated.
+`render_icons(png, *, background, maskable_scale=0.8, monochrome=False, svg=None)` renders an `IconSet`
+from one square PNG: 192 and 512 px, maskable 192 and 512 (the mark inside the safe circle on an opaque
+background), the opaque 180 px `apple-touch-icon.png`, `favicon-32.png`, optionally a monochrome
+silhouette and the SVG itself; byte-identical for the same input, each file with a content-hash
+`version` and `etag`. `threetears.pwa.svg.render_svg_icons` renders the set from an SVG through resvg
+(the new `svg` extra, `resvg-py`; no system libraries). `build_manifest`, `manifest_body`,
+`MANIFEST_MEDIA_TYPE`, `MANIFEST_CACHE_CONTROL`, `icon_cache_control` (immutable for a year under the
+current `?v=`, a day without) and `not_modified`. `head_tags`/`identity_head_tags` write the manifest
+link, `theme-color` per colour scheme and the iOS tags iOS reads instead of the manifest
+(`apple-mobile-web-app-title`, `apple-touch-icon`, status bar style), and `insert_head_tags` puts them
+in a page; `threetears.pwa.head.VIEWPORT` has `viewport-fit=cover`. The package ships `pwa.js` (`displayMode`,
+`markDisplayMode`, `MediaSessionControl` with no seek or skip on a live stream, `ScreenWakeLock`) and
+`safe-area.css`, copied into an app by `export_static(dir)` or `python -m threetears.pwa export-static
+<dir>`. No service worker: none is needed to install on current Chrome, Edge, Safari or Firefox (the
+package README, "Service worker", has the evidence), and live pages stay live.
+
 ### langgraph: prune checkpoint history, and measure and clean the checkpoint tables
 
 LangGraph writes a full checkpoint after every superstep, and once a run ends only the newest

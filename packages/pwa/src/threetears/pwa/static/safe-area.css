@@ -1,0 +1,48 @@
+/* 3tears-pwa: safe-area insets for pages that draw edge to edge.
+ *
+ * Needs viewport-fit=cover in the viewport meta (threetears.pwa.VIEWPORT); without it every inset
+ * is 0 and the browser letterboxes the page instead. On iOS with the status bar style
+ * black-translucent, an installed page draws under the status bar, the notch or Dynamic Island,
+ * and the home indicator; in landscape also under the sensor housing on one side.
+ *
+ * Use the custom properties, adding the inset to a region's own spacing, on whatever sits at an
+ * edge: the body's padding, and every position: fixed or sticky element at an edge (they ignore
+ * the body's padding). The utility classes do the common cases.
+ *
+ *   .topbar { padding-top: calc(12px + var(--safe-top)); }
+ *   .dock   { position: fixed; bottom: 0; padding-bottom: max(16px, var(--safe-bottom)); }
+ *
+ * max() keeps a gutter where there is no inset and uses the inset where it is larger; calc(+)
+ * keeps the gutter clear of the inset. Height: 100dvh (the dynamic viewport) for a page that
+ * fills the screen, not 100vh, which on iOS is the largest viewport and runs under the toolbar.
+ */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* Padding on all four edges, at least --safe-gutter (default 0). */
+.safe-area-pad {
+  padding-top: max(var(--safe-gutter, 0px), var(--safe-top));
+  padding-right: max(var(--safe-gutter, 0px), var(--safe-right));
+  padding-bottom: max(var(--safe-gutter, 0px), var(--safe-bottom));
+  padding-left: max(var(--safe-gutter, 0px), var(--safe-left));
+}
+
+/* A fixed bar at the top or bottom edge: clear of the status bar or the home indicator, and of
+ * the sides in landscape. */
+.safe-area-top {
+  padding-top: max(var(--safe-gutter, 0px), var(--safe-top));
+  padding-left: max(var(--safe-gutter, 0px), var(--safe-left));
+  padding-right: max(var(--safe-gutter, 0px), var(--safe-right));
+}
+.safe-area-bottom {
+  padding-bottom: max(var(--safe-gutter, 0px), var(--safe-bottom));
+  padding-left: max(var(--safe-gutter, 0px), var(--safe-left));
+  padding-right: max(var(--safe-gutter, 0px), var(--safe-right));
+}
+
+/* A full-screen surface: the dynamic viewport's height, never 100vh. */
+.safe-area-fill { min-height: 100dvh; }

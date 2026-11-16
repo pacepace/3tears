@@ -182,3 +182,24 @@ packages/epoch/src/threetears/epoch/__init__.py:EpochChangeRetention  # bluelabs
 packages/epoch/src/threetears/epoch/generation.py:EpochChangeRetention  # defined here and re-exported from threetears.epoch for the hub source the __init__.py entry names
 packages/epoch/src/threetears/epoch/__init__.py:follow_l2_kept_tables  # bluelabsio/14-eng-ai-bot: the hub follows its L2-kept collections by their generation keys in place of its timed L2 catch-up pass (L2_CATCH_UP_INTERVAL)
 packages/epoch/src/threetears/epoch/table_follow.py:follow_l2_kept_tables  # defined here and re-exported from threetears.epoch for the hub the __init__.py entry names
+packages/pwa/src/threetears/pwa/manifest.py:MANIFEST_CACHE_CONTROL  # pacepace/ranch.station: station/pwa.py: StationApp.h_manifest's Cache-Control
+packages/pwa/src/threetears/pwa/__init__.py:MANIFEST_CACHE_CONTROL  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp.h_manifest's Cache-Control
+packages/pwa/src/threetears/pwa/manifest.py:MANIFEST_MEDIA_TYPE  # pacepace/ranch.station: station/pwa.py: StationApp.h_manifest's content type
+packages/pwa/src/threetears/pwa/__init__.py:MANIFEST_MEDIA_TYPE  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp.h_manifest's content type
+packages/pwa/src/threetears/pwa/manifest.py:build_manifest  # pacepace/ranch.station: station/pwa.py: StationApp builds each station's manifest
+packages/pwa/src/threetears/pwa/__init__.py:build_manifest  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp builds each station's manifest
+packages/pwa/src/threetears/pwa/head.py:head_tags  # pacepace/ranch.station: station/pwa.py: StationApp.page writes another station's head (its manifest and apple-touch-icon)
+packages/pwa/src/threetears/pwa/__init__.py:head_tags  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp.page writes another station's head (its manifest and apple-touch-icon)
+packages/pwa/src/threetears/pwa/manifest.py:icon_cache_control  # pacepace/ranch.station: station/pwa.py: StationApp.h_icon's Cache-Control
+packages/pwa/src/threetears/pwa/__init__.py:icon_cache_control  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp.h_icon's Cache-Control
+packages/pwa/src/threetears/pwa/head.py:identity_head_tags  # pacepace/ranch.station: station/pwa.py: StationApp writes its own station's head into the player page
+packages/pwa/src/threetears/pwa/__init__.py:identity_head_tags  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp writes its own station's head into the player page
+packages/pwa/src/threetears/pwa/head.py:insert_head_tags  # pacepace/ranch.station: station/pwa.py: StationApp.page puts the head into index.html
+packages/pwa/src/threetears/pwa/__init__.py:insert_head_tags  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp.page puts the head into index.html
+packages/pwa/src/threetears/pwa/identity.py:install_id  # pacepace/ranch.station: station/pwa.py: identity_for builds the /stations/<id> install id
+packages/pwa/src/threetears/pwa/__init__.py:install_id  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: identity_for builds the /stations/<id> install id
+packages/pwa/src/threetears/pwa/manifest.py:manifest_body  # pacepace/ranch.station: station/pwa.py: StationApp serves the manifest's bytes
+packages/pwa/src/threetears/pwa/__init__.py:manifest_body  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp serves the manifest's bytes
+packages/pwa/src/threetears/pwa/manifest.py:not_modified  # pacepace/ranch.station: station/pwa.py: StationApp.h_icon answers 304
+packages/pwa/src/threetears/pwa/__init__.py:not_modified  # re-exported from threetears.pwa, where pacepace/ranch.station: station/pwa.py imports it: StationApp.h_icon answers 304
+packages/pwa/src/threetears/pwa/svg.py:render_svg_icons  # pacepace/ranch.station: station/pwa.py: load_icons renders the station mark (and an SVG STATION_APP_ICON)

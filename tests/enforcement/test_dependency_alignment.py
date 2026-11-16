@@ -85,6 +85,16 @@ _DEPENDENCY_FLOORS = (
         ),
     ),
     DependencyFloor(
+        package="packages/pwa",
+        allowed=("pillow",),
+        rationale=(
+            "argued at the package's birth (2026-11-16): 3tears-pwa is framework-free so any family web app "
+            "takes it, whatever serves its pages. Pillow renders and encodes the icon set, the one job that "
+            "needs a library. The SVG renderer (resvg-py) rides the [svg] extra, since a PNG source needs "
+            "none, and no web framework or family package is a dependency: the app routes the bytes"
+        ),
+    ),
+    DependencyFloor(
         package="packages/evals",
         allowed=("httpx", "pydantic"),
         rationale=(

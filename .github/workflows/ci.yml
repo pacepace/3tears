@@ -184,13 +184,13 @@ jobs:
         if: steps.scope.outputs.needed == 'true'
         run: uv sync --extra vision
 
-      # The evals render tests (the `browser` marker) run in these shards as they do on the pool:
+      # The browser tests (the `browser` marker) run in these shards as they do on the pool:
       # headless Chromium, installed by the locked playwright, its download cached by that version.
-      # Only the evals shards hold them. THREETEARS_REQUIRE_CHROMIUM below makes a failed install
-      # fail them rather than skip them.
+      # The evals shards hold the evals render tests and the rest shard holds pwa's (its pwa.js runs in
+      # Chromium). THREETEARS_REQUIRE_CHROMIUM below makes a failed install fail them rather than skip them.
       - name: Read the locked playwright version (browser tests)
         id: playwright
-        if: steps.scope.outputs.needed == 'true' && startsWith(matrix.shard, 'evals-')
+        if: steps.scope.outputs.needed == 'true' && (startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest')
         # assigned first, so a failed read fails the step instead of caching under an empty version
         run: |
           version="$(uv run python -c 'import importlib.metadata as m; print(m.version("playwright"))')"
@@ -198,13 +198,13 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v6
-        if: steps.scope.outputs.needed == 'true' && startsWith(matrix.shard, 'evals-')
+        if: steps.scope.outputs.needed == 'true' && (startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest')
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
 
       - name: Install headless Chromium and its system libraries (browser tests)
-        if: steps.scope.outputs.needed == 'true' && startsWith(matrix.shard, 'evals-')
+        if: steps.scope.outputs.needed == 'true' && (startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest')
         # DejaVu as the pool's image has it: the package's pages set a local font stack, so they draw in the
         # machine's faces, and the dev box's and the pool's are DejaVu (docker/testament.Dockerfile says why)
         run: |
@@ -220,7 +220,7 @@ jobs:
       - name: Test (unit + enforcement; integration runs in its own job below)
         if: steps.scope.outputs.needed == 'true'
         env:
-          THREETEARS_REQUIRE_CHROMIUM: ${{ startsWith(matrix.shard, 'evals-') && '1' || '' }}
+          THREETEARS_REQUIRE_CHROMIUM: ${{ (startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest') && '1' || '' }}
         # four workers, one package per worker, as ./scripts/test.sh runs it locally -- split into
         # several sessions so no worker outgrows the runner's memory (see the script's header)
         run: ./scripts/ci-unit-tests.sh --shard ${{ matrix.shard }} -v

@@ -87,6 +87,8 @@ dev-dependencies = [
     "pint>=0.25.2",
     "trafilatura>=2.0.0",
     "pillow>=10.0",
+    # 3tears-pwa's `svg` extra (threetears.pwa.svg), installed in dev so its tests run
+    "resvg-py>=0.5.0",
     "anthropic>=0.94.0",
     # optional model-provider adapters installed in dev so their test suites
     # exercise the real langchain integrations rather than getting skipped.
@@ -196,6 +198,7 @@ dev-dependencies = [
 "3tears-epoch" = "PT0S"
 "3tears-evals" = "PT0S"
 "3tears-geo" = "PT0S"
+"3tears-pwa" = "PT0S"
 "3tears-iam" = "PT0S"
 "3tears-interfaces" = "PT0S"
 "3tears-langgraph" = "PT0S"
@@ -496,6 +499,7 @@ mypy_path = [
     "packages/search/src",
     "packages/tool-schema/src",
     "packages/geo/src",
+    "packages/pwa/src",
     "packages/iam/src",
 ]
 # default scope when invoked with no arguments; avoids duplicate-module errors
@@ -520,6 +524,7 @@ files = [
     "packages/epoch/src",
     "packages/evals/src",
     "packages/geo/src",
+    "packages/pwa/src",
     "packages/iam/src",
     "packages/langgraph/src",
     "packages/mcp/src",

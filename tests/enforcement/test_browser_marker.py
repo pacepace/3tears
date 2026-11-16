@@ -192,12 +192,18 @@ def test_the_walker_sees_the_render_tests() -> None:
     assert files >= 11 and tests >= 41, (files, tests)
 
 
-def test_every_browser_test_lives_in_packages_evals() -> None:
-    """CI's GitHub shards install Chromium on the evals shards only (test_ci_unit_shards.py), so a browser test
-    elsewhere would run there without it. Move the install with it before moving one out."""
+#: the packages whose tests may drive Chromium: CI installs it in the shards that run them (test_ci_unit_shards.py)
+_BROWSER_PACKAGES = (_REPO_ROOT / "packages" / "evals", _REPO_ROOT / "packages" / "pwa")
+
+
+def test_every_browser_test_lives_in_a_browser_package() -> None:
+    """CI's GitHub shards install Chromium on the evals shards (evals) and the rest shard (pwa) only
+    (test_ci_unit_shards.py), so a browser test elsewhere would run there without it. Move the install with it
+    before moving one out."""
     outside = [
         str(path.relative_to(_REPO_ROOT))
         for path in _test_files()
-        if _imported_helpers(parse_python_path(path)) and not path.is_relative_to(_REPO_ROOT / "packages" / "evals")
+        if _imported_helpers(parse_python_path(path))
+        and not any(path.is_relative_to(package) for package in _BROWSER_PACKAGES)
     ]
     assert outside == [], outside

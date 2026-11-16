@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "3tears-pwa"
+version = "0.95.0"
+description = "Installable web apps: manifests with a stable per-app identity, icon sets, head tags, safe-area CSS and small browser helpers"
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [{name = "pace"}]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# Framework-free: no web framework, no family package. Pillow resizes and encodes the icon
+# set; nothing else is needed to make an app installable.
+dependencies = [
+    # 12 is the first line with cp314 wheels on every platform the family builds for.
+    "pillow>=12.0",
+]
+
+[project.optional-dependencies]
+# An SVG icon source (threetears.pwa.svg): resvg, a self-contained Rust renderer, so no cairo or
+# other system library is needed and the same SVG renders to the same pixels everywhere.
+svg = ["resvg-py>=0.5.0"]
+
+[project.urls]
+Repository = "https://github.com/pacepace/3tears"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/threetears"]
+
+[tool.mypy]
+strict = true
+mypy_path = "src"
+packages = ["threetears.pwa"]
+explicit_package_bases = true
+ignore_missing_imports = true
+
+# no [tool.pytest.ini_options] block: pytest's rootdir detection picks the
+# closest pyproject with that block, so a per-package one would hide the
+# workspace conftest.py and unregister the canonical pytest_plugins line.
+# inherit from the workspace instead.

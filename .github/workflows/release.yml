@@ -141,11 +141,12 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra vision
 
-      # the evals render tests (the `browser` marker), as ci.yml's shards run them: headless Chromium
-      # from the locked playwright, and a failed install fails them rather than skipping them
+      # the browser tests (the `browser` marker: evals' render tests, pwa's pwa.js tests in the rest shard), as
+      # ci.yml's shards run them: headless Chromium from the locked playwright, and a failed install fails them
+      # rather than skipping them
       - name: Read the locked playwright version (browser tests)
         id: playwright
-        if: startsWith(matrix.shard, 'evals-')
+        if: (startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest')
         # assigned first, so a failed read fails the step instead of caching under an empty version
         run: |
           version="$(uv run python -c 'import importlib.metadata as m; print(m.version("playwright"))')"
@@ -153,13 +154,13 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@v6
-        if: startsWith(matrix.shard, 'evals-')
+        if: (startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest')
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright.outputs.version }}
 
       - name: Install headless Chromium and its system libraries (browser tests)
-        if: startsWith(matrix.shard, 'evals-')
+        if: (startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest')
         # DejaVu as the pool's image has it: the package's pages set a local font stack, so they draw in the
         # machine's faces, and the dev box's and the pool's are DejaVu (docker/testament.Dockerfile says why)
         run: |
@@ -176,7 +177,7 @@ jobs:
       # the runner lacks docker: ubuntu-latest has a daemon, so a docker-gated unit test here runs.
       - name: Test (unit + enforcement; the integration suite runs separately)
         env:
-          THREETEARS_REQUIRE_CHROMIUM: ${{ startsWith(matrix.shard, 'evals-') && '1' || '' }}
+          THREETEARS_REQUIRE_CHROMIUM: ${{ (startsWith(matrix.shard, 'evals-') || matrix.shard == 'rest') && '1' || '' }}
         # the same sessions CI runs (see the script's header): one session over the whole suite
         # outgrew the runner's memory under xdist
         run: ./scripts/ci-unit-tests.sh --shard ${{ matrix.shard }} -v

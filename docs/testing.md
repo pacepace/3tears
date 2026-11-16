@@ -326,9 +326,10 @@ handover or a credentialed package; without the credential a `secrets` test skip
 **CI runs only part of the suite:** its `integration` job covers core, nats, epoch, scheduled-jobs
 and agent/acl against Postgres and NATS service containers.
 
-The evals render tests are not here. They need headless Chromium, not Docker, so they carry the
-`browser` marker and run in the unit suite: on the testament pool and on the GitHub evals shards of
-`ci.yml` and `release.yml` (above).
+The browser tests are not here: evals' render tests and pwa's `pwa.js` tests. They need headless
+Chromium, not Docker, so they carry the `browser` marker and run in the unit suite: on the testament
+pool and on the GitHub shards of `ci.yml` and `release.yml` that install Chromium (above): the evals
+shards and the rest shard, which holds pwa.
 A local run without Chromium skips them; `-m "not browser"` leaves them out.
 
 **Run them before any PR** (`check-all.sh` does, where the pool is reachable). Cross-pod behaviour lives entirely there.
