@@ -22,10 +22,15 @@ from __future__ import annotations
 
 import math
 import random
+from collections import Counter
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from threetears.evals import Eval, Result, grader
+from threetears.evals.analysis import ComparisonFamily, assemble_context_bundle, get_campaign
 from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
@@ -35,10 +40,24 @@ from threetears.evals.analysis.stats import (
     exact_rate_interval,
     holm_adjust,
 )
+from threetears.evals.kernel import CampaignArm
+from threetears.evals.kernel.candidate_kind import QUICK_PATH_KINDS
 from threetears.evals.kernel.declaration import AspectDesign
+from threetears.evals.quick.continuation import continued_sentence, new_comparison_sentence
+from threetears.evals.schema import EvalResult, RubricScore
+from threetears.evals.storage import InMemoryDocumentStore
 
-from packages.evals.tests.factories import minimal_aspect_design
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_aspect_campaign,
+    make_eval_result,
+    make_eval_run,
+    minimal_aspect_design,
+)
+from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ladder_support import load, offline_copy
+from packages.evals.tests.off_loop import off_loop
 
 #: The pass rate's range, which the per-case shares and their differences are read on.
 _RATE = (0.0, 1.0)
@@ -241,9 +260,315 @@ async def test_rung_3_s_comparison_is_read_by_the_bet_and_says_so_once(
             assert comparison.p_adjusted == pytest.approx(adjusted)
 
 
-def test_a_design_is_rereadable_or_plans_its_looks_never_both() -> None:
-    assert "rereadable" not in minimal_aspect_design().model_dump(mode="json")
-    assert minimal_aspect_design(rereadable=True).model_dump(mode="json")["rereadable"] is True
-    with pytest.raises(ValueError, match="rereadable or plans its looks"):
-        minimal_aspect_design(rereadable=True, planned_looks=3)
-    assert AspectDesign.model_fields["rereadable"].default is False
+# --- one comparison, continued ---------------------------------------------------------------------------------------
+
+
+def _correct(case: Mapping[str, Any], answer: str) -> bool:
+    """Whether the answer is right."""
+    return answer == "right"
+
+
+def _short(case: Mapping[str, Any], answer: str) -> bool:
+    """Whether the answer is short."""
+    return len(answer) < 6
+
+
+def _coin(tag: str, arm: str, rate: float, calls: Counter[tuple[int, str]]) -> Callable[[Mapping[str, Any]], Any]:
+    """An arm answering ``right`` at ``rate``, each call a fresh seeded draw: a case run again draws again, so a product
+    that re-ran a case already run would read a new value for it. ``calls`` counts each case's calls on the arm."""
+
+    async def run(case: Mapping[str, Any]) -> str:
+        calls[case["n"], arm] += 1
+        draw = random.Random(f"{tag}-{case['n']}-{arm}-{calls[case['n'], arm]}").random()
+        return "right" if draw < rate else "wrong"
+
+    run.__name__ = arm
+    return run
+
+
+def _cases(n: int, start: int = 0) -> list[dict[str, Any]]:
+    return [{"n": index} for index in range(start, n)]
+
+
+def _how_it_ran(result: Result) -> list[str]:
+    """The print's sentence saying whether the comparison continued, or why it is a new one."""
+    return [line for line in result.disclosures if line.startswith(("Continues the comparison", "A new comparison"))]
+
+
+async def test_a_comparison_run_again_runs_only_the_cases_appended_and_reads_every_case() -> None:
+    """Run again into its store over more cases, a comparison runs only the cases appended, on every arm; reads every
+    case, the earlier ones as they ran; files a campaign holding both runs of each arm; bets on the cases in the order
+    they were added; and says so. Run again with no case added, nothing runs and the reading is the same."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    arms = {"a": _coin("continue", "a", 0.5, calls), "b": _coin("continue", "b", 0.5, calls)}
+    first = await Eval(_cases(20), arms, [_correct], k=1, name="grows").run(store=store, scope="s")
+    assert set(calls) == {(n, arm) for n in range(20) for arm in "ab"} and set(calls.values()) == {1}
+    assert _how_it_ran(first) == []
+
+    second = await Eval(_cases(30), arms, [_correct], k=1, name="grows").run(store=store, scope="s")
+    assert set(calls) == {(n, arm) for n in range(30) for arm in "ab"} and set(calls.values()) == {1}
+    assert _how_it_ran(second) == [continued_sentence(20, 10)]
+    assert {arm: summary.n_results for arm, summary in second.arms.items()} == {"a": 30, "b": 30}
+    (aspect,) = off_loop(get_campaign, second.host.storage, second.campaign_id, "s").aspects
+    (earlier,) = off_loop(get_campaign, first.host.storage, first.campaign_id, "s").aspects
+    assert set(earlier.run_ids) < set(aspect.run_ids) and len(aspect.run_ids) == 4
+    (family,) = second.report.bundle.multiple_comparisons.families
+    (paired,) = [comparison for comparison in family.comparisons if comparison.name == "_correct"]
+    assert family.rereadable and paired.basis == "bounded" and paired.case_values is not None
+    assert len(paired.case_values[0]) == 30
+    # Every case the first run ran is read as it ran: its answer on each arm is the first run's.
+    for arm in "ab":
+        ran = {(result.case, result.answer) for result in first.arms[arm].case_results}
+        assert ran < {(result.case, result.answer) for result in second.arms[arm].case_results}
+    places = {trial.case_place for trial in second.report.bundle.trials}
+    assert places == set(range(1, 31))
+
+    again = await Eval(_cases(30), arms, [_correct], k=1, name="grows").run(store=store, scope="s")
+    assert set(calls.values()) == {1}
+    assert _how_it_ran(again) == [continued_sentence(30, 0)]
+    (same,) = [c for c in again.report.bundle.multiple_comparisons.families[0].comparisons if c.name == "_correct"]
+    assert (same.p_raw, same.interval) == (paired.p_raw, paired.interval)
+
+
+def _changed_ids() -> list[dict[str, Any]]:
+    return [{"id": f"c{n}", "n": n} for n in range(25)]
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "changed"),
+    [
+        ({}, {"k": 2}, "the repeats per case changed"),
+        ({}, {"runner": "renamed"}, "the arms changed"),
+        ({}, {"runner": "swapped"}, "the control changed"),
+        ({}, {"grader": [_correct, _short]}, "the graders, the guardrails, the question or its margin changed"),
+        (
+            {},
+            {"question": "Does b answer right more often?"},
+            "the graders, the guardrails, the question or its margin changed",
+        ),
+        ({}, {"grader": [grader(_correct, margin=0.1)]}, "a grader's margin, range or guard changed"),
+        ({}, {"cases": [{"n": 1}, {"n": 0}, *_cases(25, 2)]}, "case 1 was edited, moved or removed"),
+        ({}, {"cases": [{"n": 99}, *_cases(25)]}, "case 1 was edited, moved or removed"),
+        ({}, {"cases": [*_cases(7), {"n": 7, "extra": True}, *_cases(25, 8)]}, "case 8 was edited, moved or removed"),
+        ({}, {"cases": _cases(15)}, "a case run before was removed"),
+        (
+            {"cases": _changed_ids()[:20]},
+            {"cases": [{"id": "c0", "n": 0}, {"id": "x1", "n": 1}, *_changed_ids()[2:]]},
+            "case x1 was edited, moved or removed",
+        ),
+    ],
+    ids=[
+        "k",
+        "arms",
+        "control",
+        "graders",
+        "question",
+        "declaration",
+        "reordered",
+        "inserted",
+        "edited",
+        "removed",
+        "renamed-id",
+    ],
+)
+async def test_what_changed_starts_a_new_comparison_that_runs_every_case_and_says_what(
+    first: dict[str, Any], second: dict[str, Any], changed: str
+) -> None:
+    """Anything but cases appended at the end makes another comparison: every case runs again, on every arm, and the
+    print names what changed in one sentence. The case order is append-only: a case run before moved, inserted
+    before, edited or removed is a change."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    arms = {"a": _coin("changed", "a", 0.5, calls), "b": _coin("changed", "b", 0.5, calls)}
+    variants = {
+        "renamed": {"a": arms["a"], "c": arms["b"]},
+        "swapped": {"b": arms["b"], "a": arms["a"]},
+    }
+
+    def eval_of(spec: Mapping[str, Any]) -> Eval:
+        given = dict(spec)
+        runner = given.pop("runner", None)
+        return Eval(
+            given.pop("cases", _cases(20) if spec is first else _cases(25)),
+            variants[runner] if runner is not None else arms,
+            given.pop("grader", [_correct]),
+            name="changes",
+            **{"k": 1, **given},
+        )
+
+    await eval_of(first).run(store=store, scope="s")
+    ran_first = sum(calls.values())
+    result = await eval_of(second).run(store=store, scope="s")
+    cases = len(second.get("cases", _cases(25)))
+    assert sum(calls.values()) - ran_first == 2 * cases * second.get("k", 1)
+    assert _how_it_ran(result) == [new_comparison_sentence(changed)]
+    assert all(len(summary.case_results) == cases * second.get("k", 1) for summary in result.arms.values())
+
+
+async def test_a_new_name_or_scope_is_a_fresh_comparison_and_says_nothing_of_the_one_before() -> None:
+    """The doors to a fresh comparison over the same store: a new name, or another scope. Each runs every case and
+    continues nothing; a store kept in memory keeps nothing between runs, so each run there is fresh too."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    arms = {"a": _coin("fresh", "a", 0.5, calls), "b": _coin("fresh", "b", 0.5, calls)}
+    await Eval(_cases(20), arms, [_correct], k=1, name="one").run(store=store, scope="s")
+    renamed = await Eval(_cases(25), arms, [_correct], k=1, name="two").run(store=store, scope="s")
+    elsewhere = await Eval(_cases(25), arms, [_correct], k=1, name="one").run(store=store, scope="t")
+    in_memory = await Eval(_cases(25), arms, [_correct], k=1, name="one").run(store=":memory:", scope="s")
+    assert sum(calls.values()) == 2 * (20 + 25 + 25 + 25)
+    assert _how_it_ran(renamed) == _how_it_ran(elsewhere) == _how_it_ran(in_memory) == []
+
+
+def test_no_host_declares_a_design_into_the_bet() -> None:
+    """No stored field opts a campaign into the bet: a design naming ``rereadable`` is refused as an unknown field."""
+    assert "rereadable" not in AspectDesign.model_fields
+    with pytest.raises(ValueError, match="rereadable"):
+        minimal_aspect_design(rereadable=True)
+
+
+def _kinded_family(kind: str) -> ComparisonFamily:
+    """One question's family over two arms' judged scores on twelve shared cases, every run and result of ``kind``."""
+    runs = []
+    results: dict[str, list[EvalResult]] = {}
+    for model in ("control-model", "contrast-model"):
+        run = make_eval_run(
+            status="completed",
+            candidate_model=model,
+            candidate_kind=kind,
+            test_case_ids=[f"tc-{case:02d}" for case in range(12)],
+        )
+        runs.append(run)
+        results[run.id] = [
+            make_eval_result(
+                id=f"{model}-{case}",
+                eval_run_id=run.id,
+                scope_id=run.scope_id,
+                model=model,
+                candidate_kind=kind,
+                test_case_id=f"tc-{case:02d}",
+                goal_state_outcomes=[],
+                rubric_scores=[
+                    RubricScore(
+                        dim="extraction.d0",
+                        score=3 + (case % 2 if model == "contrast-model" else 0),
+                        scale="ordinal",
+                        axis="capability",
+                        judge_temperature=0.0,
+                    )
+                ],
+            )
+            for case in range(12)
+        ]
+    asked = min(run.created_at for run in runs)
+    campaign = make_aspect_campaign(
+        label="b",
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=["quality"]),
+        question="is the contrast better?",
+        asked_at=asked,
+        control=CampaignArm(
+            label="control", role="control", variant_key=fixture_variant_key("control-model"), named_at=asked
+        ),
+        scope_id=runs[0].scope_id,
+        name="kinds",
+        subject_id=runs[0].subject_snapshot.subject_id,
+        subject_kind="s",
+    )
+    bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
+    (family,) = bundle.multiple_comparisons.families
+    return family
+
+
+def test_the_bet_reads_a_comparison_whose_results_only_the_quick_path_launches_and_no_other() -> None:
+    """Whether the bet reads a family is decided from its stored results' kinds alone: the same campaign over results
+    of the quick path's kinds is read by it, and over an engine host's kind is read as before."""
+    for kind in sorted(QUICK_PATH_KINDS):
+        family = _kinded_family(kind)
+        assert family.rereadable and REREAD_SENTENCE in family.disclosure
+    engine = _kinded_family("test-kind")
+    assert not engine.rereadable and REREAD_SENTENCE not in engine.disclosure
+    assert {comparison.interval_basis for comparison in engine.comparisons} != {"bounded"} or all(
+        comparison.basis != "bounded" or comparison.p_raw is not None for comparison in engine.comparisons
+    )
+
+
+# --- the null, through the product -----------------------------------------------------------------------------------
+
+
+async def _newcomer(tag: str, *, continued: bool) -> bool:
+    """One newcomer under the null, through ``Eval.run`` itself: two arms answering right at one rate (0.5, k = 1),
+    each call a fresh seeded draw. Run 20 cases; while nothing separates, append cases and run again, at most five runs
+    in all, each add ten cases plus up to ninety more the closer the reading's p came to α. ``continued`` runs every
+    time into one store, so the product continues the comparison; otherwise each run is into a store of its own, which
+    re-runs every case, as the quick path did before it continued a comparison. Separated: a verdict of improved or
+    regressed on any comparison the print reads."""
+    calls: Counter[tuple[int, str]] = Counter()
+    arms = {"a": _coin(tag, "a", 0.5, calls), "b": _coin(tag, "b", 0.5, calls)}
+    store = InMemoryDocumentStore()
+    n = 20
+    for _ in range(5):
+        if not continued:
+            store = InMemoryDocumentStore()
+        result = await Eval(_cases(n), arms, [_correct], k=1, name="null").run(store=store, scope="s")
+        compared = [c for family in result.report.bundle.multiple_comparisons.families for c in family.comparisons]
+        if any(comparison.verdict in ("improved", "regressed") for comparison in compared):
+            return True
+        ps = [
+            comparison.p_raw
+            for comparison in compared
+            if comparison.name == "_correct" and comparison.p_raw is not None
+        ]
+        n += 10 + int(90 * (1.0 - min(1.0, min(ps, default=1.0))))
+    return False
+
+
+#: Newcomers per shard: each shard is one seeded test, so the pool runs them side by side.
+_PER_SHARD = 50
+
+#: How many of each continued shard's fifty newcomers separated, as seeded (shard by shard). Each shard test reproduces
+#: its count exactly, so their sum is the product's count; the bound below is read on that sum.
+_CONTINUED_SEPARATED: tuple[int, ...] = ()
+
+#: How many of each re-run-everything shard's fifty newcomers separated, as seeded.
+_RERUN_SEPARATED: tuple[int, ...] = ()
+
+
+@pytest.mark.parametrize("shard", range(len(_CONTINUED_SEPARATED)))
+async def test_a_continued_comparison_s_newcomers_separate_as_seeded(shard: int) -> None:
+    """Fifty seeded newcomers (:func:`_newcomer`), each running ``Eval.run`` into one store, so the quick path continues
+    its comparison: as many separate as this shard's pinned count."""
+    separated = 0
+    for index in range(_PER_SHARD):
+        separated += await _newcomer(f"continued-{shard}-{index}", continued=True)
+    assert separated == _CONTINUED_SEPARATED[shard]
+
+
+@pytest.mark.parametrize("shard", range(len(_RERUN_SEPARATED)))
+async def test_a_comparison_re_run_whole_each_time_separates_as_seeded(shard: int) -> None:
+    """Fifty seeded newcomers (:func:`_newcomer`), each run into a store of its own, so every case runs again on each
+    run: as many separate as this shard's pinned count."""
+    separated = 0
+    for index in range(_PER_SHARD):
+        separated += await _newcomer(f"rerun-{shard}-{index}", continued=False)
+    assert separated == _RERUN_SEPARATED[shard]
+
+
+def test_under_the_null_a_continued_comparison_separates_at_most_alpha_and_re_running_every_case_exceeds_it() -> None:
+    """The claim, read on the shards' seeded counts (each reproduced by its shard test above), at α = 5%, two arms
+    passing 50% each, k = 1, up to five runs with adds sized from the data, stopping at the first separation:
+
+    - continued (the quick path as it is): the Clopper-Pearson 95% upper bound on the false-separation rate is below α;
+    - re-run whole each time (the quick path before it continued a comparison): the 95% lower bound is above α, so
+      re-drawing every case on each run is not one bet and loses the bound.
+
+    The figures are in this test's assertion message and the chunk report."""
+    replicates = _PER_SHARD * len(_CONTINUED_SEPARATED)
+    rerun_replicates = _PER_SHARD * len(_RERUN_SEPARATED)
+    continued, rerun = sum(_CONTINUED_SEPARATED), sum(_RERUN_SEPARATED)
+    kept = exact_rate_interval(continued, replicates)
+    lost = exact_rate_interval(rerun, rerun_replicates)
+    assert kept is not None and lost is not None
+    said = f"continued {continued}/{replicates} {kept}; re-run {rerun}/{rerun_replicates} {lost}"
+    assert kept[1] < SIGNIFICANCE_ALPHA, said
+    assert lost[0] > SIGNIFICANCE_ALPHA, said

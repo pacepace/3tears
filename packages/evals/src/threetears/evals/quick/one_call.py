@@ -52,6 +52,7 @@ from pydantic import BaseModel
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel.candidate_kind import CALLABLE_KIND, JUDGED_CALLABLE_KIND
 from threetears.evals.kernel.scoring import measure_catalog_of
+from threetears.evals.kernel.metrics import declaration_of
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
@@ -1542,13 +1543,16 @@ def _what_changed(
     keys: Sequence[tuple[str | None, str, str]],
     control_index: int,
     k: int,
+    declared: str,
     cases: Sequence[EvalTestCase],
     names: Sequence[str],
     first_address: str,
 ) -> str | None:
     """What makes this launch another comparison than ``earlier``, as a clause; ``None`` where it continues it.
 
-    ``cases`` are this launch's cases as ``earlier``'s case set would store them, each at its place, and
+    ``declared`` is how this launch's host declares its measures and margins, as a run freezes them
+    (``EvalRun.declared_measures``, ``declared_margins``). ``cases`` are this launch's cases as ``earlier``'s case set
+    would store them, each at its place, and
     ``first_address`` the address of the cases ``earlier`` first ran, read off this launch's (``_template_id``, which
     covers their content, labels, seeds, rubric, intent and goal checks). Every case ``earlier`` ran must be stored at
     its place as this launch holds it, and a case appended must not be stored there otherwise (another comparison in
@@ -1560,6 +1564,8 @@ def _what_changed(
         return "the arms changed"
     if keys[control_index] != earlier.control:
         return "the control changed"
+    if any(arm.declared != declared for arm in earlier.arms.values()):
+        return "a grader's margin, range or guard changed"
     if len(cases) < len(earlier.case_ids):
         return "a case run before was removed"
     for index, case in enumerate(cases):
@@ -2491,6 +2497,16 @@ async def launch_arms(
                 keys,
                 control_index,
                 k,
+                canonical_json(
+                    {
+                        "measures": {
+                            name: declaration_of(descriptor).model_dump(mode="json")
+                            for name in host.profile.measures.names
+                            if (descriptor := host.profile.measures.get(name)) is not None
+                        },
+                        "margins": dict(margins or {}),
+                    }
+                ),
                 cases_of(earlier.template_id),
                 names,
                 _template_id(
@@ -2673,7 +2689,7 @@ async def launch_arms(
                 subject=subject,
                 margins=margins,
                 measure_latency=measure_latency,
-                said=new_comparison_sentence("an arm, a grader or the judge reads otherwise"),
+                said=new_comparison_sentence("an arm's levers, a grader's declaration or the judge changed"),
             )
     by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
     read_runs = [(*held, *((runs[index].id,) if runs else ())) for index, held in enumerate(reading)]
