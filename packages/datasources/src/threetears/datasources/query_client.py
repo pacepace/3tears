@@ -1106,7 +1106,6 @@ class DatasourceQueryClient:
         return credential.presented(request, door=DATASOURCE_DOOR, op=datasource_query_op(subject))
 
     @traced
-    @traced
     async def query_arrow(
         self,
         datasource_name: str,

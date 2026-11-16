@@ -200,3 +200,31 @@ async def test_the_warehouse_types_are_the_forms_its_columns_reply_in() -> None:
     }
     with pytest.raises(ValueError, match="no column"):
         await warehouse_arrow_types(_Catalogue(), "ds", "reporting.results", ["absent"])  # type: ignore[arg-type]
+
+
+async def test_every_column_s_type_is_read_in_one_ask_and_a_column_of_no_json_form_is_left_out() -> None:
+    """Flips if a caller asking every column (columns=None, one catalogue read for all its reads of a relation) is
+    refused for a column of a type with no one JSON form it never reads, or is answered another column's type."""
+
+    class _Catalogue:
+        asks = 0
+
+        async def query(self, datasource_name: str, query: str, params: list[Any] | None = None) -> Any:
+            _Catalogue.asks += 1
+            rows = [
+                {"column_name": "race", "data_type": "character varying"},
+                {"column_name": "payload", "data_type": "super"},
+                {"column_name": "margin", "data_type": "numeric"},
+            ]
+            return DatasourceQueryResult(rows=rows, row_count=len(rows), truncated=False, correlation_id=uuid7())
+
+    types = await warehouse_arrow_types(
+        _Catalogue(),  # type: ignore[arg-type]
+        "ds",
+        "reporting.results",
+        None,
+        extra={"row_hash": pa.string()},
+    )
+
+    assert types == {"race": pa.string(), "margin": pa.string(), "row_hash": pa.string()}
+    assert _Catalogue.asks == 1

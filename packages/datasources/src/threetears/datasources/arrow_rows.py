@@ -72,7 +72,7 @@ async def warehouse_arrow_types(
     client: DatasourceQueryClient,
     datasource_name: str,
     relation: str,
-    columns: Sequence[str],
+    columns: Sequence[str] | None,
     *,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -89,8 +89,11 @@ async def warehouse_arrow_types(
     :ptype datasource_name: str
     :param relation: the relation, ``schema.table``, a TRUSTED identifier
     :ptype relation: str
-    :param columns: the columns read, in the order selected
-    :ptype columns: Sequence[str]
+    :param columns: the columns read, in the order selected; None for every column of the relation whose type has one
+        JSON form, in the catalogue's order (a caller that keeps one answer per relation for all its reads, so the
+        catalogue is read once, not once per select list); a column of another type is then left out, and refused only
+        when a read names it
+    :ptype columns: Sequence[str] | None
     :param extra: the types of selected expressions the catalogue does not hold (a row hash), by their names, which
         follow ``columns`` in this order
     :ptype extra: Mapping[str, pyarrow.DataType] | None
@@ -110,6 +113,10 @@ async def warehouse_arrow_types(
     )
     held = {str(row["column_name"]): str(row["data_type"]) for row in result.rows}
     types: dict[str, Any] = {}
+    if columns is None:
+        types = {name: _arrow_of(_JSON_FORMS[kind]) for name, kind in held.items() if kind in _JSON_FORMS}
+        types.update(extra or {})
+        return types
     for name in columns:
         kind = held.get(name)
         if kind is None:
