@@ -11,8 +11,13 @@ packages (bumped in lock-step).
 **Changed:** `examples/2-replies/` checks its judge against a reference (owner rulings, 2026-11-16): `labels.csv`
 holds a person's blind read of 20 replies, adjudicated by the person reader where a model's blind read disagreed, with
 no independent adjudicator; 55 labels, 5 left out and said on their rows (4 unclear on adjudication, 1 borderline
-under the new wording). Two items were re-ruled by the owner on 2026-11-17 under the new wording. Both reads, the
-rulings and the re-checks are in `adjudication/`. `grounded` now asks for consistency with the
+under the new wording). Two items were re-ruled by the owner on 2026-11-17 under the new wording. The three re-checks
+were chosen after both judges' verdicts were read, two of them because the stronger judge failed those replies, and
+one re-ruling (locked-out) moved the reference toward both judges: the ladder and the examples README show the
+`grounded` rows before the re-checks beside those after, and `adjudication/rechecks.csv` says why each was chosen.
+Agreed `grounded` passes read only under the earlier wording are carried to the new one (a pass under the stricter
+wording is a pass under the more lenient one). Both reads, the rulings, the re-checks and the page the readers read
+(`adjudication/blind_read_as_read.html`, an earlier draw) are in `adjudication/`. `grounded` now asks for consistency with the
 policy, not that the policy states everything: silence in the policy is no failure. A second eval, `stronger_eval`,
 judges the same replies with `claude-sonnet-5-5`. With at most two reference failures per dimension, neither judge is
 shown to catch failures; the ladder states each judge's counts. The model reviewer and `tighter_eval` are gone.
@@ -26,8 +31,13 @@ intervals count each answer as independent, which answers on one case are not. A
 served prints one block per served model, each naming it (#1231). Labels off the draw are said with whose they are,
 and a label bound to other wording of its criterion is said as such, not as an output no longer among the answers.
 `analysis.blind_read.table_kappa`, whose one caller was the console, is removed.
+The console reads its rate statements from the one owner the host's response reads,
+`analysis.report.blind_rates.blind_rates`, so both say a rate in the same words: the catch rate is now `the judge
+caught 1 of 2 (exact 95% interval ...)` (was `the judge failed 1 of the 2 answers the reader failed (...)`), a missing
+rate `the reader failed no answer: no catch rate` (was `..., so no catch rate`), and a 1-5 line opens with `a 1-5
+criterion has no fixed pass, so no catch rate: the table counts every pair`. The host's response is unchanged.
 A judged miss names its dimension as every surface does (`the judge failed it on answer grounded (judged)`), not
-by its stored id.
+by its stored id (a one-line fix in `analysis/summary.py`, `_judged_missed`).
 
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 

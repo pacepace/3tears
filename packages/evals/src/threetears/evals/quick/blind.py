@@ -39,11 +39,11 @@ from threetears.evals.analysis.blind_read import (
     blind_sheet,
     exact_sign_test_p,
     pass_fail_counts,
-    single_verdicts,
 )
+from threetears.evals.analysis.report.blind_rates import blind_rates
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import judged_heading
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, exact_rate_interval
+from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget
 from threetears.evals.run.blind_review import answer_score
 from threetears.evals.run.blind_review import answer_sheet as read_sheet
@@ -691,55 +691,27 @@ def _sample_words(sample: BlindSample, *, labels_name: str | None) -> str:
     return f"{read}, out of the drawn order (not drawn at random{aside})"
 
 
-#: The words a pass/fail score is said in.
-_VERDICT_WORDS: Final = {0: "fail", 1: "pass"}
-
-
-def _interval(count: int, of: int) -> str:
-    """``count`` of ``of``'s exact (Clopper-Pearson) 95% interval, in words."""
-    interval = exact_rate_interval(count, of)
-    assert interval is not None  # of is at least 1
-    forms = PageForms.off_page()
-    return f"(exact 95% interval {forms.share(interval[0]).text} to {forms.share(interval[1]).text})"
-
-
 def _counts_clause(table: BlindVerdictTable, *, reader: str, judge: str) -> str:
-    """One check as counts (#1208): on pass/fail, of the answers ``reader`` failed how many ``judge`` failed (the
-    catch rate), and of those ``reader`` passed how many ``judge`` failed (the false-fail rate), each with its exact
-    interval; on 1-5, the cross-table. A side that gave one verdict, and a rate that does not exist, are said."""
-    cells = pass_fail_counts(table)
+    """One check as counts (#1208), in the words the host's response serves (:func:`blind_rates`): on pass/fail the
+    catch rate and the false-fail rate, each named for ``judge`` and with its exact interval, or why it does not
+    exist; on 1-5, why neither rate exists, then the cross-table. Last, a side that gave one verdict."""
+    rates = blind_rates(table, reader=reader, judge=judge)
     said: list[str] = []
-    if cells is None:
+    if pass_fail_counts(table) is None:
         total = sum(map(sum, table.counts))
         rows = "; ".join(
             f"{score}: {' '.join(str(count) for count in row)}"
             for score, row in zip(table.scores, table.counts, strict=True)
         )
+        assert rates.no_catch is not None  # a 1-5 criterion has neither rate
+        said.append(rates.no_catch)
         said.append(
             f"the same score on {agreed_pairs(table)} of {total}; by {reader}'s score, {judge}'s 1 to 5: {rows}"
         )
     else:
-        failed = cells.both_fail + cells.reader_fail_judge_pass
-        passed = cells.both_pass + cells.reader_pass_judge_fail
-        if failed:
-            said.append(
-                f"{judge} failed {cells.both_fail} of the {failed} answers {reader} failed "
-                f"{_interval(cells.both_fail, failed)}"
-            )
-        else:
-            said.append(f"{reader} failed no answer, so no catch rate")
-        if passed:
-            said.append(
-                f"{judge} failed {cells.reader_pass_judge_fail} of the {passed} {reader} passed "
-                f"{_interval(cells.reader_pass_judge_fail, passed)}"
-            )
-        else:
-            said.append(f"{reader} passed no answer, so no false-fail rate")
-    one_reader, one_judge = single_verdicts(table)
-    for who, one in ((reader, one_reader), (judge, one_judge)):
-        if one is not None:
-            word = _VERDICT_WORDS[one] if cells is not None else f"a {one}"
-            said.append(f"{who} gave every answer one verdict, {word}")
+        for rate, none in ((rates.catch, rates.no_catch), (rates.false_fail, rates.no_false_fail)):
+            said.append(f"{judge} {rate.said}" if rate is not None else str(none))
+    said.extend(rates.single)
     return "; ".join(said)
 
 

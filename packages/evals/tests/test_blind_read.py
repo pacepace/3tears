@@ -34,6 +34,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import blind_read as core
+from threetears.evals.analysis.report.blind_rates import blind_rates
 from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.analysis.blind_read import (
     blind_sheet,
@@ -508,13 +509,34 @@ def test_a_judge_that_passes_everything_is_shown_by_the_table_where_kappa_says_n
     assert lines[0] == "judge: 30 of 30 cases read blind by owner, in the drawn order (a random sample)"
     # #1208: counts, the catch rate and the false-fail rate with exact intervals, and the one verdict the judge gave.
     assert lines[1].endswith(
-        "30 results from 30 cases: the judge failed 0 of the 3 answers the reader failed (exact 95% interval 0% to "
+        "30 results from 30 cases: the judge caught 0 of 3 (exact 95% interval 0% to "
         "71%); the judge failed 0 of the 27 the reader passed (exact 95% interval 0% to 13%); the judge gave every "
         "answer one verdict, pass"
     )
     # No kappa, bar, tier word or estimate of results still needed is printed.
     for word in ("kappa", "calibrated", "undetermined", "bar of", "more results", "read further"):
         assert not any(word in line for line in lines), word
+    # One owner of the rate statements: the console says each in the words the host's response serves.
+    rates = blind_rates(reading.table, reader="the reader", judge="the judge")
+    assert rates.catch is not None and rates.false_fail is not None
+    assert f"the judge {rates.catch.said}; the judge {rates.false_fail.said}; {'; '.join(rates.said)}" in lines[1]
+
+
+def test_the_console_and_the_host_response_state_a_check_s_rates_in_one_set_of_words() -> None:
+    """Every rate statement the console prints is one :func:`blind_rates` makes, which the host's response serves:
+    where the reader failed nothing (no catch rate), and where the reader passed nothing (no false-fail rate)."""
+    results, evidence = _campaign(30, arms=1)
+    read = _draw(results, evidence, arms=1)
+    for score in (1, 0):
+        answers = [_answer(read, n, scores={"v1": score}) for n in range(30)]
+        closed = close_blind_read(_with(read, answers), results)
+        (reading,) = closed.agreement
+        line = judge_lines(closed, labels_name="labels.csv", labels_there=True)[1]
+        rates = blind_rates(reading.table, reader="the reader", judge="the judge")
+        assert (rates.catch is None) == (score == 1) and (rates.false_fail is None) == (score == 0)
+        said = [f"the judge {rate.said}" for rate in (rates.catch, rates.false_fail) if rate is not None]
+        for statement in [*said, *rates.said]:
+            assert statement in line, (score, statement, line)
 
 
 def test_the_preference_is_withheld_until_the_planned_length_and_reads_only_those_items() -> None:
@@ -771,7 +793,7 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
     assert lines[1] == f"  checked against a model ({reviewer}), not yet against people:"
     # A pair read: two results of each case, so the exact intervals' independence is said not to hold.
     assert lines[2].endswith(
-        "48 results from 24 cases: the judge failed 8 of the 8 answers the model failed (exact 95% interval 63% to "
+        "48 results from 24 cases: the judge caught 8 of 8 (exact 95% interval 63% to "
         "100%); the judge failed 0 of the 40 the model passed (exact 95% interval 0% to 9%); the intervals count "
         "each answer as independent, which answers on one case are not"
     )

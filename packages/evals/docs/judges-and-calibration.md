@@ -1108,5 +1108,6 @@ bounces broke the format, so the run is void). Anything else fails, and nobody r
 - [Reading the guardrails](reading-reports.md#reading-the-guardrails): held, breached and undecided in a report.
 - [Principles](design.md#principles): code checks facts, a judge assesses judgment, people check the judge.
 - [Evaluating a tool-using agent](evaluating-agents.md): grading what an agent *did*, with no judge.
-- `examples/2-replies/replies.py`: a judged run on a judge of another family, checked against a person's read and a
-  model's (`reviewer=`) of the same replies, printed apart.
+- `examples/2-replies/replies.py`: a judged run on a judge of another family, checked against an adjudicated reference
+  (`labels.csv`: a person's blind read, adjudicated by that person where a model's blind read disagreed), with a
+  stronger judge checked against the same reference beside it.

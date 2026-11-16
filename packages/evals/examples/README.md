@@ -118,14 +118,30 @@ judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.0009
 ```
 
 Telling four written pairs apart is not grading the run's replies right, so the judge is checked against a reference,
-[`labels.csv`](2-replies/labels.csv). Two readers read the 20 replies blind from
-[`blind_read.html`](2-replies/blind_read.html), under an earlier, exhaustive wording of `grounded`: Brooks, a person,
-and `claude-fable-5-2`, a model. Where they disagreed (13 of 60 reply and dimension pairs), the person reader ruled,
-blind to who said what: 9 decided, 4 unclear. On 2026-11-17 the owner re-checked three `grounded` items under the
+[`labels.csv`](2-replies/labels.csv). Two readers read the 20 replies blind from the page of an earlier draw,
+[`adjudication/blind_read_as_read.html`](2-replies/adjudication/blind_read_as_read.html), under an earlier, exhaustive
+wording of `grounded`: Brooks, a person, and `claude-fable-5-2`, a model. (The
+[`blind_read.html`](2-replies/blind_read.html) beside `replies.py` is what a replay of this run writes: it draws the
+other repeat on 10 of the 20 cases, so it is not the page they read.) Where they disagreed (13 of 60 reply and
+dimension pairs), the person reader ruled, blind to who said what: 9 decided, 4 unclear. On 2026-11-17 the owner re-checked three `grounded` items under the
 new wording and re-ruled two: the locked-out reply is a fail, reversing its pass, and the search-bug reply both readers
 failed is left out as borderline. The reference is 55 labels; the 4 unclear and the borderline one are left out, each
 said on its row. It is adjudicated by the person reader; no independent adjudicator.
-[`adjudication/`](2-replies/adjudication/) holds both reads, the rulings and the re-checks.
+[`adjudication/`](2-replies/adjudication/) holds both reads, the rulings and the re-checks. 9 of the 14 `grounded`
+passes were read only under the earlier wording and are carried to the new one, which is sound because a pass under
+the stricter wording is a pass under the more lenient one; the one reply both readers failed was read again instead.
+
+The re-checks were chosen after both judges' verdicts were seen, and two of them, locked-out and annual-late, were put
+to the owner because the stronger judge had failed those replies. One re-ruling, locked-out, moved the reference toward
+both judges, so on those items the reference is not independent of the judges. The `grounded` rows before the
+re-checks, beside those after (`answers` and `safe` were not re-checked):
+
+| Judge | Dimension | Reference failed, of those read | Judge failed of those | Judge failed of the rest |
+|---|---|---|---|---|
+| `gemini-2.5-flash-lite`, before | grounded | 1 of 16 | 0 of 1 (0% to 97%) | 1 of 15 (0% to 32%) |
+| `gemini-2.5-flash-lite`, after | grounded | 2 of 16 | 1 of 2 (1% to 99%) | 0 of 14 (0% to 23%) |
+| `claude-sonnet-5-5`, before | grounded | 1 of 16 | 1 of 1 (3% to 100%) | 5 of 15 (12% to 62%) |
+| `claude-sonnet-5-5`, after | grounded | 2 of 16 | 2 of 2 (16% to 100%) | 4 of 14 (8% to 58%) |
 
 The run prints each judge against the reference as counts, with exact 95% intervals
 ([the print](../docs/ladder.md#rung-2-a-judge-checked-against-a-person)). `stronger_eval` judges the same replies on
@@ -142,7 +158,8 @@ the same words with `claude-sonnet-5-5`, one tier up:
 
 With at most two reference failures per dimension, no catch rate here says how often either judge catches a bad
 reply, and neither judge is shown to. Both are read on the 20 replies the reference was built from, against one person's
-adjudication.
+adjudication. The rubric's wording was not tuned toward either judge, but the reference was revisited after their
+verdicts were read, as said above.
 
 **Your own judge needs your own read.** The reference pairs with these recorded replies and these words only:
 re-record the replies or reword a dimension, and it does not pair. To read your run:

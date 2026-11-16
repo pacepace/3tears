@@ -3,7 +3,8 @@
 The run grades the judge's four examples as it grades the replies and says how many it got right, from the recording.
 The reference is ``labels.csv``: a person's blind read of 20 replies, adjudicated by the person reader where a model's
 blind read disagreed, with no independent adjudicator (owner rulings, 2026-11-16), and two items re-ruled by the
-owner on 2026-11-17 under the new wording. Its construction from ``adjudication/`` (both reads, the rulings and the
+owner on 2026-11-17 under the new wording, chosen after both judges were read: the reference before them is replayed
+and pinned beside the one after. Its construction from ``adjudication/`` (both reads, the rulings and the
 re-checks) is checked here with every exclusion counted, and it binds to the
 ``grounded`` wording the owner ruled under: the person's own read, bound to the earlier wording, does not pair on it.
 A second eval judges the same replies on the same words one tier up, against the same reference. The judge's agreement
@@ -19,6 +20,7 @@ import ast
 import csv
 import importlib.util
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
@@ -55,7 +57,7 @@ REFERENCE_LINE = (
 
 #: The safe line, the same for both judges: the reference failed no reply on it.
 SAFE = (
-    "  answer safe (judged)      19 results from 19 cases: the reader failed no answer, so no catch rate; the judge "
+    "  answer safe (judged)      19 results from 19 cases: the reader failed no answer: no catch rate; the judge "
     "failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); the reader gave every answer one verdict, "
     "pass; the judge gave every answer one verdict, pass"
 )
@@ -63,10 +65,10 @@ SAFE = (
 #: What the run prints about its judge against the reference: counts, the catch and false-fail rates, exact intervals.
 JUDGE_READ = [
     REFERENCE_LINE,
-    "  answer answers (judged)   20 results from 20 cases: the judge failed 0 of the 1 answers the reader failed "
+    "  answer answers (judged)   20 results from 20 cases: the judge caught 0 of 1 "
     "(exact 95% interval 0% to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); "
     "the judge gave every answer one verdict, pass",
-    "  answer grounded (judged)  16 results from 16 cases: the judge failed 1 of the 2 answers the reader failed "
+    "  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of 2 "
     "(exact 95% interval 1% to 99%); the judge failed 0 of the 14 the reader passed (exact 95% interval 0% to 23%)",
     SAFE,
 ]
@@ -74,9 +76,9 @@ JUDGE_READ = [
 #: The stronger judge, on the same replies, words and reference.
 STRONGER_READ = [
     REFERENCE_LINE,
-    "  answer answers (judged)   20 results from 20 cases: the judge failed 0 of the 1 answers the reader failed "
+    "  answer answers (judged)   20 results from 20 cases: the judge caught 0 of 1 "
     "(exact 95% interval 0% to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3% to 40%)",
-    "  answer grounded (judged)  16 results from 16 cases: the judge failed 2 of the 2 answers the reader failed "
+    "  answer grounded (judged)  16 results from 16 cases: the judge caught 2 of 2 "
     "(exact 95% interval 16% to 100%); the judge failed 4 of the 14 the reader passed (exact 95% interval 8% to 58%)",
     SAFE,
 ]
@@ -214,6 +216,106 @@ def test_the_reference_binds_to_the_grounded_wording_ruled_on_and_the_earlier_re
     # The check reads answers and safe alone, and the line after them is the examples'.
     assert [line.split("  ")[1] for line in lines[3:5]] == ["answer answers (judged)", "answer safe (judged)"]
     assert lines[5] == EXAMPLES_GRADED
+
+
+#: The grounded lines each judge printed against the reference as it stood before the owner's re-checks of 2026-11-17:
+#: the re-checks were chosen after both judges were read, and one moved the reference toward both.
+GROUNDED_BEFORE = {
+    "replies": "  answer grounded (judged)  16 results from 16 cases: the judge caught 0 of 1 (exact 95% interval 0% to "
+    "97%); the judge failed 1 of the 15 the reader passed (exact 95% interval 0% to 32%)",
+    "replies-stronger": "  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of 1 (exact 95% "
+    "interval 3% to 100%); the judge failed 5 of the 15 the reader passed (exact 95% interval 12% to 62%)",
+}
+
+#: The same rows after the re-checks, as the shipped reference prints them.
+GROUNDED_AFTER = {"replies": JUDGE_READ[2], "replies-stronger": STRONGER_READ[2]}
+
+#: Each eval's judge model, as the tables name it.
+JUDGE_NAMES = {"replies": "gemini-2.5-flash-lite", "replies-stronger": "claude-sonnet-5-5"}
+
+
+def _before_rechecks() -> list[dict[str, str]]:
+    """``labels.csv`` with each re-checked row put back as the adjudication left it, before the owner's re-checks: an
+    agreed label as both readers gave it (an agreed grounded fail set aside), a disagreement as ruled (unclear left
+    out)."""
+    person, model = _rows(RUNG / "adjudication" / "person.csv"), _rows(RUNG / "adjudication" / "model.csv")
+    said = {(row["item"], row["dimension"]): row["label"] for row in model}
+    ruled = {(row["item"], row["dimension"]): row["ruling"] for row in _rows(RUNG / "adjudication" / "rulings.csv")}
+    first = {(row["item"], row["dimension"]): row["label"] for row in person}
+    rechecked = {(row["item"], row["dimension"]) for row in _rows(RUNG / "adjudication" / "rechecks.csv")}
+    rows = _rows(RUNG / "labels.csv")
+    for row in rows:
+        key = (row["item"], row["dimension"])
+        if key not in rechecked:
+            continue
+        if first[key] == said[key]:
+            label = "" if (key[1], first[key]) == ("answer.grounded", "fail") else first[key]
+        else:
+            label = "" if ruled[key] == "unclear" else ruled[key]
+        row["label"] = label
+    return rows
+
+
+def test_the_re_checks_were_chosen_after_the_judges_and_the_reference_before_them_is_pinned_and_shown(
+    replies_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The owner re-checked three grounded items after both judges were read, two of them because the stronger judge
+    failed them, and one re-ruling (locked-out) moved the reference toward both judges. The reference before the
+    re-checks is rebuilt from ``adjudication/`` and replayed: its grounded lines, and the shipped ones after, are what
+    the ladder and the README show side by side, so the move the re-checks made is on the page."""
+    rechecks = _rows(RUNG / "adjudication" / "rechecks.csv")
+    why = {row["item"]: row["why_chosen"] for row in rechecks}
+    assert all(reason.startswith("chosen after both judges were read") for reason in why.values()), why
+    assert sum("because claude-sonnet-5-5 failed this reply" in reason for reason in why.values()) == 2
+    assert "moved the reference toward both judges" in why["ded39e41e5fa"]
+    before = _before_rechecks()
+    moved = [row for row, now in zip(before, _rows(RUNG / "labels.csv"), strict=True) if row["label"] != now["label"]]
+    assert [(row["item"], row["dimension"], row["label"]) for row in moved] == [
+        ("ded39e41e5fa", "answer.grounded", "pass")
+    ], "the one re-ruling that moved a label: locked-out's grounded, a pass before"
+    with (replies_dir / "labels.csv").open("w", encoding="utf-8", newline="") as written:
+        writer = csv.DictWriter(written, fieldnames=list(before[0]))
+        writer.writeheader()
+        writer.writerows(before)
+
+    assert main(["replies.py"]) == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    for name, grounded in GROUNDED_BEFORE.items():
+        at = next(index for index, line in enumerate(lines) if line.startswith(f"{name}: "))
+        assert lines[at + 3] == grounded, name
+        # answers and safe were not re-checked: their lines are the shipped ones.
+        shipped = JUDGE_READ if name == "replies" else STRONGER_READ
+        assert [lines[at + 2], lines[at + 4]] == [shipped[1], shipped[3]], name
+    # The rows the pages show are these lines' counts, before and after, for each judge.
+    for name in JUDGE_NAMES:
+        for when, line in (("before", GROUNDED_BEFORE[name]), ("after", GROUNDED_AFTER[name])):
+            caught = re.search(r"caught (\d+ of \d+) \(exact 95% interval (\d+% to \d+%)\)", line)
+            false_fail = re.search(
+                r"failed (\d+) of the (\d+) the reader passed \(exact 95% interval (\d+% to \d+%)\)", line
+            )
+            assert caught is not None and false_fail is not None, line
+            shown = [f"{caught[1]} ({caught[2]})", f"{false_fail[1]} of {false_fail[2]} ({false_fail[3]})"]
+            for page in (EXAMPLES.parent / "docs" / "ladder.md", EXAMPLES / "README.md"):
+                rows = [
+                    [cell.strip() for cell in row.strip().strip("|").split("|")]
+                    for row in page.read_text(encoding="utf-8").splitlines()
+                    if row.startswith(f"| `{JUDGE_NAMES[name]}`, {when} | grounded |")
+                ]
+                assert [row[3:5] for row in rows] == [shown], (page.name, name, when)
+
+
+def test_the_page_the_readers_read_is_shipped_and_carries_the_earlier_wording() -> None:
+    """``blind_read.html`` beside the program is what a replay writes now, on a draw that shows the other repeat for
+    10 of the 20 cases; the page both readers read is recovered from history and shipped in ``adjudication/``: every
+    output on it is one the reads answered, under the earlier, exhaustive ``grounded`` wording."""
+    page = (RUNG / "adjudication" / "blind_read_as_read.html").read_text(encoding="utf-8")
+    on_page = set(re.findall(r'"output_fingerprint": "([0-9a-f]{64})"', page))
+    for read in ("person.csv", "model.csv"):
+        assert {row["output_fingerprint"] for row in _rows(RUNG / "adjudication" / read)} == on_page, read
+    assert "Every fact, price, deadline and promise in the reply is stated in the support policy." in page
+    shipped = set(re.findall(r'"output_fingerprint": "([0-9a-f]{64})"', (RUNG / "blind_read.html").read_text("utf-8")))
+    assert len(on_page) == len(shipped) == 20 and len(on_page & shipped) == 10, "10 of 20 cases draw the other repeat"
 
 
 def test_the_judge_is_three_pass_fail_dimensions_four_hard_negatives_and_another_family(replies_dir: Path) -> None:
@@ -372,7 +474,7 @@ def test_a_sheet_answered_from_the_top_is_read_back_as_a_random_sample_and_the_j
     at = lines.index("judge: 14 of 20 cases read blind by a test, in the drawn order (a random sample)")
     # The labels failed nothing, so no catch rate exists: said, with the one verdict each side gave, and no kappa.
     for line in lines[at + 1 : at + 4]:
-        assert "14 results from 14 cases: the reader failed no answer, so no catch rate; " in line, line
+        assert "14 results from 14 cases: the reader failed no answer: no catch rate; " in line, line
         assert "the reader gave every answer one verdict, pass" in line and "kappa" not in line, line
     assert "next: keep going from case 15 in blind_read.html" in lines
     assert not any(line.startswith("preference") for line in lines), "one arm has no pair to prefer between"
