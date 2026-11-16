@@ -358,7 +358,7 @@ PINNED: dict[str, str] = {
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
     # order 16.8, a carried case's source 16.9, a lever's stored reader name 17.0, a rating's evidence inputs 17.1, the
     # first screen's declaration and call fields 17.2, a campaign's looks rule and an aspect's membership 17.3, the
-    # blind read 17.4, a blind read's preference stored as counts 17.5. It is no part of what a run, cell, pool,
+    # blind read 17.4, a blind read's preference stored as counts the minor after it (#1236). It is no part of what a run, cell, pool,
     # pairing, analysis or reporter case keys on.
     "durable version": "17.5",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",

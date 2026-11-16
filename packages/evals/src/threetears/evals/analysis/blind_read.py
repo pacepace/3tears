@@ -1047,11 +1047,11 @@ def read_preference(preference: BlindPreference) -> BlindPreference:
     """``preference`` as it reads: its p and verdict computed off its stored counts. The one computation of either:
     a close reads its preferences through it, and a door reads a loaded read's through it (#1236).
 
-    A preference stored since durable 17.5 holds the shares its test reads, in the order it reads them, and on the
+    A preference stored since #1236's durable minor holds the shares its test reads, in the order it reads them, and on the
     anytime test the planned pair items its stakes were fixed for; never a p or verdict. The test is the one it names:
     the exact sign test over the non-tie items (one answer per item), the bounded test on shares against a half
     (several raters), or the anytime test, the bounded test on shares in the drawn order with its stakes fixed for
-    ``stake_items``. A preference not read (``state``: withheld, or too few) has neither, and one stored before 17.5
+    ``stake_items``. A preference not read (``state``: withheld, or too few) has neither, and one stored before it
     (no ``shares``) carries the p and verdict its close computed: both are returned as they are.
 
     :param preference: A preference as stored, or as a close built it.

@@ -963,11 +963,15 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   the first answer) are written by every preference a close builds, which writes no ``p`` or ``verdict``:
 #:   ``threetears.evals.analysis.blind_read.read_preference`` computes both, for the close and for the door's response
 #:   alike. A preference stored at v17.4 holds no ``shares``; it reads with the ``p`` and ``verdict`` it carries, and
-#:   writes them back as stored. **The sentence below is false for a v17.4 build's read of a blind read closed at this
-#:   minor**: its ``p`` and ``verdict`` are required there, so that build refuses the document by name (a validation
-#:   error on ``report.preferences.*.p``) and never misreads it. No host stores 17.4 blind reads (unreleased), so no
-#:   fleet mixes the two; a host that pinned a 17.4 build rolls every pod past it before closing a read. No other
-#:   durable shape moves, and every document v17.4 stored is read and written byte for byte as before.
+#:   writes them back as stored. No other durable shape moves, and every document v17.4 stored is read and written
+#:   byte for byte as before. **A recorded exception, for this step only (owner ruling, 2026-11-17).** The rule it
+#:   departs from: an older reader that refuses a newer document makes the change a major. A v17.4 build refuses a blind
+#:   read closed at this minor, by name (``p`` and ``verdict`` are required there; a validation error on
+#:   ``report.preferences.*.p``), and never misreads it. Accepted because v17.4 (the blind read) exists only on
+#:   evals/main SHAs of 2026-11-16 and 2026-11-17, no host pinned one, and the one production host runs
+#:   ``56edc697e``, which predates v17.4: no v17.4 reader can meet a document of this minor. It covers this step alone
+#:   and is no precedent: the rule stands for every other step. (This step's number is the minor after v17.4 that it
+#:   merges at; ``evals/bp-q2`` claims a durable minor too, and integration numbers whichever merges second next.)
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 DURABLE_SCHEMA_MINOR: int = 5
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""

@@ -60,7 +60,7 @@ PINNED_DURABLE_SCHEMA_MINOR = 5
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    # Re-taken under 17.5 (#1236): every durable type's ``schema_minor`` default moved; the blind read's shape gained
+    # Re-taken under the durable minor of #1236: every durable type's ``schema_minor`` default moved; the blind read's shape gained
     # ``BlindPreference.shares`` and ``stake_items``, and its ``p`` and ``verdict`` came to default to None (read off the
     # counts, never written).
     "blind_read": "f62a67f6aed506a2aed80e7d2a11910c4945b40a635aea61c6a24ea0622b53e6",

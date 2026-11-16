@@ -334,7 +334,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     ),
     # A pair read closed early: one person's answer, a declared reviewer's review, the judge's scores against the person
     # and against the reviewer as one served model (counts only), the reviewer against the person, and a preference
-    # too few to read, stored as its shares and its stakes' planned pair items with no p or verdict (durable 17.5).
+    # too few to read, stored as its shares and its stakes' planned pair items with no p or verdict (#1236).
     "BlindRead": lambda: BlindRead(
         id="blind-0b5b9abb32a0",
         scope_id="uni-1",

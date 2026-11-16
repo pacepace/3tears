@@ -284,10 +284,10 @@ class BlindReviewerCheck(EvalDocumentModel, CoreShapeModel):
 class BlindPreference(EvalDocumentModel, CoreShapeModel):
     """Which of a pair one kind of rater preferred, per case, and whether that separates the arms.
 
-    **Stored as counts; its p and verdict are read off them** (#1236, durable 17.5). A preference stores the facts its
+    **Stored as counts; its p and verdict are read off them** (#1236, a durable minor). A preference stores the facts its
     test reads (``shares``, and on the anytime test ``stake_items``) and never its p or verdict, which
     :func:`~threetears.evals.analysis.blind_read.read_preference` computes when the read is loaded or closed: every
-    reader gets them from that one computation. A preference stored before 17.5 holds no ``shares``, carries the p and
+    reader gets them from that one computation. A preference stored before that minor (at v17.4) holds no ``shares``, carries the p and
     verdict its close computed, and reads and writes them as stored.
     """
 
@@ -323,8 +323,8 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
         description=(
             "Each pair item's candidate share, in the order the test reads them (the drawn order on the anytime test): "
             "1 or 0 for one rater's choice, a half for a tie, the mean over several raters. What the p and verdict are "
-            "read off; empty while withheld. None on a preference stored before durable 17.5, which carries its own p "
-            "and verdict."
+            "read off; empty while withheld. None on a preference stored before #1236's durable minor, which carries "
+            "its own p and verdict."
         ),
     )
     stake_items: int | None = Field(
@@ -333,14 +333,14 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
         exclude_if=lambda value: value is None,
         description=(
             "The anytime test only: the planned pair items its stakes were fixed for before the first answer, which its "
-            "p is read under. None on every other test, and on a preference stored before durable 17.5."
+            "p is read under. None on every other test, and on a preference stored before #1236's durable minor."
         ),
     )
     p: float | None = Field(
         default=None,
         description=(
             "The two-sided p; None where too few items carry a preference to test. Read off `shares` when the read is "
-            "loaded or closed, never written; a preference stored before durable 17.5 carries it as stored."
+            "loaded or closed, never written; a preference stored before #1236's durable minor carries it as stored."
         ),
     )
     verdict: Literal["improved", "regressed", "not_separated"] | None = Field(
@@ -348,7 +348,7 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
         description=(
             "How it read, in a contrast's own verdict words: the candidate shown better or worse, or the two not "
             "told apart; None where it was not read, and `state` says why. Read off `shares` as `p` is, never "
-            "written; a preference stored before durable 17.5 carries it as stored."
+            "written; a preference stored before #1236's durable minor carries it as stored."
         ),
     )
     state: StateOf | None = Field(
@@ -397,7 +397,7 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
         ):
             raise ValueError("a withheld preference states how far the read is, and no count, share or p")
         if self.shares is None:
-            # Stored before durable 17.5: its close's p and verdict are carried, as stored.
+            # Stored before #1236's durable minor: its close's p and verdict are carried, as stored.
             if (self.verdict is None) == (self.state is None):
                 raise ValueError("a preference has a verdict, or the state that says why it has none, and never both")
             return self
@@ -424,7 +424,7 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
     @model_serializer(mode="wrap")
     def _no_p_or_verdict_beside_the_shares(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         """Write a preference holding its shares without its p and verdict, which are read off them; one stored
-        before durable 17.5 writes back the p and verdict it carries."""
+        before #1236's durable minor writes back the p and verdict it carries."""
         dumped: dict[str, Any] = handler(self)
         if self.shares is not None:
             dumped.pop("p", None)
@@ -502,7 +502,7 @@ class BlindReadReport(EvalDocumentModel, CoreShapeModel):
 class BlindRead(DurableDocumentModel):
     """A drawn, blinded order of judged outputs, the answers given to it, and its close.
 
-    **Stored, and durable** (durable v17.4; since v17.5 its preferences store counts only): what a person answered is
+    **Stored, and durable** (durable v17.4; its preferences store counts only since #1236): what a person answered is
     authored, so a read outlives a core baseline reset as the ratings its close writes do; the runs and results it was
     drawn over are provenance and may dangle.
     The quick path recomputes its read from the eval's files and never stores one; a host's actions store one per

@@ -8,14 +8,16 @@ packages (bumped in lock-step).
 
 ### evals: a blind read's preference stores its counts, and its p and verdict are read off them (#1236)
 
-**Changed (durable 17.5):** a closed blind read stores each preference as its counts only: `BlindPreference.shares`
+**Changed (a durable minor):** a closed blind read stores each preference as its counts only: `BlindPreference.shares`
 (each pair item's candidate share, in the order its test reads them) and, on the anytime test,
 `BlindPreference.stake_items` (the planned pair items its stakes were fixed for). It no longer writes `p` or `verdict`;
 both are computed off the counts by one function, `threetears.evals.analysis.blind_read.read_preference`, which the
 close and the door's responses (`blind_read_get`, `blind_reads_list`, `blind_read_close`) read through, so every
 response and the quick path's console line state the same p and verdict as before. A preference a 17.4 build stored
-holds no shares and reads with the p and verdict it carries, written back as stored. For hosts: nothing to change;
-a 17.4 build refuses a read closed at 17.5 by name, so move every pod past a pinned 17.4 build before closing a read.
+holds no shares and reads with the p and verdict it carries, written back as stored. The minor carries a recorded
+exception, for this step only (owner ruling 2026-11-17): an older build that cannot read a newer document would make it
+a major, and 17.4 never reached a released host. For hosts: a build on a 17.4 SHA cannot read a blind read closed at
+this minor; no released host is affected.
 
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 
