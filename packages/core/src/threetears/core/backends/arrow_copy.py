@@ -47,10 +47,22 @@ except ImportError:  # NOSILENT: the snapshot extra is optional; without it a co
     _PYARROW = False
 
 if _PYARROW:
+    #: the pool every Arrow buffer of the build is allocated from: the system allocator, never pyarrow's default
+    #: (mimalloc in our images). Under mimalloc a quarter of a 12 MB copy's builds held the lock one stretch of 5-15 ms
+    #: of the build's CPU, inside a slice's conversion or a column's join, where every other stretch ran under 1 ms;
+    #: under the system allocator 20 of 20 builds ran every stretch under 0.71 ms (first build in a fresh process,
+    #: Linux container on Apple silicon, pyarrow 25, the pools alternated build by build). A serving process's Arrow
+    #: work belongs on the system allocator in any case (:mod:`threetears.core.arrow_pool`)
+    _POOL: Final[Any] = pa.system_memory_pool()
+
     # pyarrow looks for pandas at its first conversion of Python values: an import searched along sys.path, holding
-    # the interpreter lock 1-4 ms with no turn. Done here, at import, never in a process's first copy's build beside
-    # the caller's event loop
+    # the interpreter lock 1-4 ms with no turn. And its first conversion of text sets its converter up: 0.7-1.6 ms of
+    # CPU against 0.01-0.04 ms for the next (same container). Both done here, at import, for every kind a column is
+    # sent as, never in a process's first copy's build beside the caller's event loop
     pa.array((), pa.int64())
+    for _value, _kind in (("a", pa.string()), (1, pa.int64()), (0.5, pa.float64()), (True, pa.bool_())):
+        pa.array([_value, None], _kind, memory_pool=_POOL)
+    del _value, _kind
 
 __all__ = [
     "COPY_ARROW_FIELD",
@@ -234,7 +246,7 @@ def _json_text(values: Sequence[Any], turns: _Turns) -> Any:
 
 def _sliced_array(values: Sequence[Any], arrow_type: Any, turns: _Turns) -> Any:
     """``values`` as one Arrow array of ``arrow_type``, converted a slice at a time with the build's turns between: one
-    call over a whole column of text held the caller's loop for its length.
+    call over a whole column of text held the caller's loop for its length. Allocated from :data:`_POOL`.
 
     :param values: the values
     :ptype values: Sequence[Any]
@@ -250,9 +262,9 @@ def _sliced_array(values: Sequence[Any], arrow_type: Any, turns: _Turns) -> Any:
     """
     slices = []
     for start in range(0, len(values), _SLICE_VALUES):
-        slices.append(pa.array(values[start : start + _SLICE_VALUES], arrow_type))
+        slices.append(pa.array(values[start : start + _SLICE_VALUES], arrow_type, memory_pool=_POOL))
         turns.take()
-    return pa.concat_arrays(slices) if slices else pa.array([], arrow_type)
+    return pa.concat_arrays(slices, memory_pool=_POOL) if slices else pa.array([], arrow_type, memory_pool=_POOL)
 
 
 #: the Arrow type a column of one kind of value is sent as
@@ -382,7 +394,7 @@ def _ipc_stream(table: Any, turns: _Turns) -> Any:
     :return: the stream's buffer
     :rtype: pyarrow.Buffer
     """
-    sink = pa.BufferOutputStream()
+    sink = pa.BufferOutputStream(memory_pool=_POOL)
     with pa_ipc.new_stream(sink, table.schema) as writer:
         writer.write_table(table)
     turns.hand()
