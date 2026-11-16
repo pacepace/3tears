@@ -579,9 +579,12 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     )
     yield from _wrapped(
         "Run into the same store, the comparison continues: the cases already run are read as they ran and only the "
-        "cases appended run, so each reading is one bet read later. Changing an arm, a grader, the question, the "
-        "repeats, or a case already run starts a new comparison, which the print names. An arm is known by its name, "
-        "not its code: after changing a runner, give the eval a new name to compare it afresh."
+        "cases appended run, so each reading is one bet read later. Changing an arm's name, model or levers, a "
+        "grader's name or declaration, a judge's model or criteria, the question, the repeats, or a case already run "
+        "starts a new comparison, which the print names. An arm is known by its name, model and levers, and a grader "
+        "by its name and declaration (a judge by its model and criteria), never by its code: a runner or a grader "
+        "edited under the same name is pooled with the cases run before, so give the eval a new name to compare an "
+        "edit afresh."
     )
     yield from _wrapped(
         "Below it: each measure's rate, the top misses with why each missed, and where the report page is. A "

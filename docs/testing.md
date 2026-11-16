@@ -80,9 +80,13 @@ runners instead (testament 0.45.1 or later: an older client refuses the manifest
 `fallback` key and runs nothing; upgrade with
 `uv tool install --force --python 3.14 git+ssh://git@github.com/brookstalley/testament@v<version>`,
 where `testament status --json` names the pool's `coordinator_version`), and none of the above applies. Testament distributes the tests itself, and a run
-there leaves out the integration and `loop_timing` tests, and the `docker` and `secrets` ones
-(`.testament.toml` selects `-m "not integration and not loop_timing and not docker and not
-secrets"`; CI runs `loop_timing` serially on its own runner). `docker` marks a test that drives a
+there leaves out the integration and `loop_timing` tests, the `docker` and `secrets` ones, and the
+`long_simulation` shards (`.testament.toml` selects `-m "not integration and not loop_timing and not
+docker and not secrets and not long_simulation"`; CI runs `loop_timing` serially on its own runner).
+A `long_simulation` test is one shard of a seeded simulation that takes minutes of CPU, beyond the
+one shard of it the unit suite keeps beside the bound it feeds; the manifest's `simulation` suite runs
+them on the pool, `testament run --no-fallback --suite simulation`, and is run whenever the reading the
+simulation holds changes (the suite's comment names the files). CI's GitHub shards still collect them. `docker` marks a test that drives a
 Docker daemon itself, which the pool's image has none of, and `secrets` one that reads a
 credential, which never ships to a runner; both run on this machine
 (`tests/enforcement/test_docker_marker.py` and `test_secrets_marker.py` hold them to it). A

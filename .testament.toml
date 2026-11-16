@@ -55,7 +55,7 @@ tags = ["v[0-9]*"]
 # packages/ and tests/, split by marker) runs here, as do options with no path (`-- -k foo`).
 [suites.default]
 adapter = "pytest"
-command = ["uv", "run", "--frozen", "pytest", "-m", "not integration and not loop_timing and not docker and not secrets"]
+command = ["uv", "run", "--frozen", "pytest", "-m", "not integration and not loop_timing and not docker and not secrets and not long_simulation"]
 default_selection = ["packages/", "tests/"]
 default_for_paths = true
 
@@ -199,3 +199,17 @@ nats = ["packages/nats/**"]
 core = ["packages/core/**"]
 agent = ["packages/agent/**"]
 platform = ["packages/**"]
+
+# The long simulations: seeded simulation shards marked `long_simulation`, each minutes of CPU, which the unit suite
+# leaves out so its batches stay within `batch_timeout_s`. The unit suite keeps one shard of each beside the bound it
+# feeds, as a smoke check; this suite runs the rest, side by side on the pool. Run it whenever the reading it simulates
+# changes (for test_rereadable_bet.py: analysis/stats.py, analysis/bundle/comparisons.py, analysis/bundle/assemble.py,
+# analysis/bundle/trials.py, quick/continuation.py, quick/one_call.py): `testament run --no-fallback --suite
+# simulation`. A path more than one suite holds runs in the unit suite, so this suite runs only when named.
+[suites.simulation]
+adapter = "pytest"
+command = ["uv", "run", "--frozen", "pytest", "-m", "long_simulation and not integration and not docker and not secrets"]
+default_selection = ["packages/evals/tests/test_rereadable_bet.py"]
+
+[suites.simulation.areas]
+evals = ["packages/evals/**"]

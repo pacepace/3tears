@@ -16,16 +16,19 @@ Held here:
   new comparison that runs every case and says what changed; the case order is append-only;
 - the product under the null, ``Eval.run`` itself over a scripted runner whose arms are equal in distribution: run
   again as cases are added it separates at most α, and re-running every case on each run (as the quick path did
-  before) exceeds α;
+  before), read by the same bet, exceeds α;
 - at one stated alternative, a single read's power against the reading it replaces;
 - the rung 3 comparison prints the one sentence that says so, and reads cost by its t test, once.
 
 Each simulation is seeded, so a run is one fixed draw; its docstring states the rate it holds and the bound it is
-checked against.
+checked against. The product null's shards past the first of each are ``long_simulation`` (about two CPU-minutes
+each): the unit suite runs the bound and one shard of each, and the pool's ``simulation`` suite runs the rest,
+``testament run --no-fallback --suite simulation``, whenever the reading they simulate changes.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import random
 from collections import Counter
@@ -35,9 +38,11 @@ from typing import Any
 
 import pytest
 
-from threetears.evals import Eval, Result, grader
+from threetears.evals import Answer, Eval, Result, grader
+from threetears.evals.actions import eval_catalogue, standard_tools
+from threetears.evals.actions.catalogue import Caller
 from threetears.evals.analysis import ComparisonFamily, assemble_context_bundle, get_campaign
-from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE
+from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
@@ -47,8 +52,10 @@ from threetears.evals.analysis.stats import (
     holm_adjust,
 )
 from threetears.evals.kernel import CampaignArm
-from threetears.evals.kernel.candidate_kind import QUICK_PATH_KINDS
+from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
 from threetears.evals.kernel.declaration import AspectDesign
+from threetears.evals.ops.host import OpsHost
+from threetears.evals.quick import as_host
 from threetears.evals.quick.continuation import UNKEPT_SENTENCE, continued_sentence, new_comparison_sentence
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
@@ -257,7 +264,7 @@ async def test_rung_3_s_comparison_is_read_by_the_bet_and_says_so_once(
     printed = str(result).splitlines()
     assert printed[1] == REREAD_SENTENCE and str(result).count(REREAD_SENTENCE) == 1
     (family,) = result.report.bundle.multiple_comparisons.families
-    assert family.rereadable and REREAD_SENTENCE in family.disclosure
+    assert read_by_bet(family) and family.disclosure.endswith(REREAD_SENTENCE)
     on_t = [comparison for comparison in family.comparisons if comparison.basis == "t"]
     on_bet = [comparison for comparison in family.comparisons if comparison.basis == "bounded"]
     assert [comparison.name for comparison in on_t] == ["production_replicating_cost"]
@@ -324,7 +331,7 @@ async def test_a_comparison_run_again_runs_only_the_cases_appended_and_reads_eve
     assert set(earlier.run_ids) < set(aspect.run_ids) and len(aspect.run_ids) == 4
     (family,) = second.report.bundle.multiple_comparisons.families
     (paired,) = [comparison for comparison in family.comparisons if comparison.name == "_correct"]
-    assert family.rereadable and paired.basis == "bounded" and paired.case_values is not None
+    assert read_by_bet(family) and paired.basis == "bounded" and paired.case_values is not None
     assert len(paired.case_values[0]) == 30
     # Every case the first run ran is read as it ran: its answer on each arm is the first run's.
     for arm in "ab":
@@ -417,11 +424,21 @@ async def test_what_changed_starts_a_new_comparison_that_runs_every_case_and_say
 
 async def test_kept_in_memory_a_comparison_says_running_it_again_is_a_new_one() -> None:
     """A store kept in memory is gone when its run ends, so the line under the first line says running it again is a
-    new comparison, never that cases may be added and read again."""
+    new comparison, never that cases may be added and read again. Its page and its bundle, which say the family's
+    sentence wherever they are read, say it of a store that outlives the run, so they license no re-read of a run kept
+    in memory either: one sentence, true for every store."""
     calls: Counter[tuple[int, str]] = Counter()
     arms = {"a": _coin("unkept", "a", 0.5, calls), "b": _coin("unkept", "b", 0.5, calls)}
-    printed = str(await Eval(_cases(20), arms, [_correct], k=1, name="unkept").run(store=":memory:")).splitlines()
+    result = await Eval(_cases(20), arms, [_correct], k=1, name="unkept").run(store=":memory:")
+    printed = str(result).splitlines()
     assert printed[1] == UNKEPT_SENTENCE and REREAD_SENTENCE not in printed
+    assert REREAD_SENTENCE.startswith("Where its runs are kept in a store that outlives the run")
+    (family,) = result.report.bundle.multiple_comparisons.families
+    assert read_by_bet(family)
+    page = json.dumps(result.page.model_dump(mode="json"))
+    assert json.dumps(REREAD_SENTENCE)[1:-1] in page and page.count("run it again") == page.count(
+        "run it again into that store"
+    )
 
 
 async def test_a_new_name_or_scope_is_a_fresh_comparison_and_says_nothing_of_the_one_before() -> None:
@@ -445,21 +462,26 @@ def test_no_host_declares_a_design_into_the_bet() -> None:
         minimal_aspect_design(rereadable=True)
 
 
-def _kinded_family(kind: str) -> ComparisonFamily:
-    """One question's family over two arms' judged scores on twelve shared cases, every run and result of ``kind``."""
+def _kinded_family(kind: str, *, created_by: str = QUICK_PATH_FILER, rerun: bool = False) -> ComparisonFamily:
+    """One question's family over two arms' judged scores on twelve shared cases, every run and result of ``kind``, in
+    a campaign filed by ``created_by``; ``rerun`` gives the contrast arm a second run over the first six cases again,
+    so it ran those cases twice."""
     runs = []
     results: dict[str, list[EvalResult]] = {}
-    for model in ("control-model", "contrast-model"):
+    lists = [("control-model", range(12)), ("contrast-model", range(12))]
+    if rerun:
+        lists.append(("contrast-model", range(6)))
+    for model, cases in lists:
         run = make_eval_run(
             status="completed",
             candidate_model=model,
             candidate_kind=kind,
-            test_case_ids=[f"tc-{case:02d}" for case in range(12)],
+            test_case_ids=[f"tc-{case:02d}" for case in cases],
         )
         runs.append(run)
         results[run.id] = [
             make_eval_result(
-                id=f"{model}-{case}",
+                id=f"{run.id}-{case}",
                 eval_run_id=run.id,
                 scope_id=run.scope_id,
                 model=model,
@@ -476,7 +498,7 @@ def _kinded_family(kind: str) -> ComparisonFamily:
                     )
                 ],
             )
-            for case in range(12)
+            for case in cases
         ]
     asked = min(run.created_at for run in runs)
     campaign = make_aspect_campaign(
@@ -492,23 +514,160 @@ def _kinded_family(kind: str) -> ComparisonFamily:
         name="kinds",
         subject_id=runs[0].subject_snapshot.subject_id,
         subject_kind="s",
+        created_by=created_by,
     )
     bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
     (family,) = bundle.multiple_comparisons.families
     return family
 
 
-def test_the_bet_reads_a_comparison_whose_results_only_the_quick_path_launches_and_no_other() -> None:
-    """Whether the bet reads a family is decided from its stored results' kinds alone: the same campaign over results
-    of the quick path's kinds is read by it, and over an engine host's kind is read as before."""
+def test_the_bet_reads_a_campaign_the_quick_path_filed_over_its_own_runs_and_no_other() -> None:
+    """Whether the bet reads a family is decided from stored facts: its campaign's origin (filed by the quick path),
+    its runs' kinds (only the quick path's) and its case lists (no arm ran a case twice). The same runs in a campaign a
+    host filed, runs of an engine host's kind, or an arm that ran a case in two runs read as before, and say nothing of
+    reading again."""
     for kind in sorted(QUICK_PATH_KINDS):
         family = _kinded_family(kind)
-        assert family.rereadable and REREAD_SENTENCE in family.disclosure
-    engine = _kinded_family("test-kind")
-    assert not engine.rereadable and REREAD_SENTENCE not in engine.disclosure
-    assert {comparison.interval_basis for comparison in engine.comparisons} != {"bounded"} or all(
-        comparison.basis != "bounded" or comparison.p_raw is not None for comparison in engine.comparisons
+        assert read_by_bet(family) and REREAD_SENTENCE in family.disclosure
+    for family in (
+        _kinded_family("test-kind"),
+        _kinded_family(sorted(QUICK_PATH_KINDS)[0], created_by="host-operator"),
+        _kinded_family(sorted(QUICK_PATH_KINDS)[0], rerun=True),
+    ):
+        assert not read_by_bet(family) and REREAD_SENTENCE not in family.disclosure
+
+
+async def test_a_host_s_campaign_over_quick_runs_reads_as_an_engine_campaign_at_alpha_over_its_looks() -> None:
+    """A host serving quick evals (``as_host``) files its own campaigns over a comparison's runs through the action
+    catalogue (``campaign_create``): their origin is the host's caller, not the quick path, so each reads as an engine
+    campaign does, and the bet reads neither. One filed over runs already read declares its plan of looks after its
+    first look, which is no plan, so it reads at α; one declaring a plan of two looks before its runs joined
+    (``campaign_runs_add``) reads each look at α/2. Neither says it may be read again; the quick path's own campaign
+    over the same runs is read by the bet."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    arms = {"a": _coin("hosted", "a", 0.5, calls), "b": _coin("hosted", "b", 0.8, calls)}
+    warm, later = (Eval(_cases(30), arms, [_correct], k=1, name=name) for name in ("warm", "later"))
+    host = as_host([warm], store=store)
+    tool, ops = eval_catalogue().mount_all(standard_tools())[0], OpsHost.reading(host)
+    caller = Caller(scope_id="h", identity="host-operator")
+
+    async def act(action: str, **arguments: Any) -> Any:
+        done = await tool.call({"action": action, **arguments}, host=ops, caller=caller)
+        assert not done.is_error, done.text
+        return done.structured
+
+    first = await warm.run(host=host, scope="h")
+    (own,) = first.report.bundle.multiple_comparisons.families
+    assert read_by_bet(own)
+    (aspect,) = off_loop(get_campaign, host.storage, first.campaign_id, "h").aspects
+    own_design = aspect.design
+    assert own_design is not None and aspect.template_id is not None
+
+    def declared(planned: int | None) -> dict[str, Any]:
+        """The quick campaign's own design, as a host copying it declares it, with or without a plan of looks."""
+        return own_design.model_copy(update={"planned_looks": planned}).model_dump(mode="json", exclude_none=True)
+
+    question = "does b answer right more often?"
+    over_read = await act(
+        "campaign_create",
+        name="hosted over runs already read",
+        subject_id="warm",
+        behavior=aspect.label,
+        question=question,
+        aspects=[{"label": aspect.label, "run_ids": list(aspect.run_ids), "design": declared(2)}],
+        campaign_arms=[{"label": "a", "role": "control", "from_run_ids": [first.arms["a"].run_id]}],
     )
+    planned = await act(
+        "campaign_create",
+        name="hosted, planned before its runs",
+        subject_id="later",
+        behavior=aspect.label,
+        question=question,
+        aspects=[{"label": aspect.label, "template_id": aspect.template_id, "run_ids": [], "design": declared(2)}],
+    )
+    second = await later.run(host=host, scope="h")
+    await act(
+        "campaign_runs_add",
+        campaign_id=planned["id"],
+        run_ids=[summary.run_id for summary in second.arms.values()],
+    )
+    await act("campaign_update", campaign_id=planned["id"], control_from_run_id=second.arms["a"].run_id)
+    for campaign_id, alpha in ((over_read["id"], SIGNIFICANCE_ALPHA), (planned["id"], SIGNIFICANCE_ALPHA / 2)):
+        campaign = off_loop(get_campaign, host.storage, str(campaign_id), "h")
+        assert campaign.created_by == "host-operator"
+        bundle = off_loop(assemble_context_bundle, campaign, storage=host.storage, profile=host.profile)
+        (family,) = bundle.multiple_comparisons.families
+        assert (family.look_alpha if family.look_alpha is not None else family.alpha) == pytest.approx(alpha)
+        assert not read_by_bet(family) and REREAD_SENTENCE not in family.disclosure
+        (paired,) = [comparison for comparison in family.comparisons if comparison.name == "_correct"]
+        assert paired.basis == "t"
+
+
+# --- a run that stopped, run again --------------------------------------------------------------------------------
+
+
+def _priced(tag: str, arm: str, rate: float, calls: Counter[tuple[int, str]]) -> Callable[[Mapping[str, Any]], Any]:
+    """:func:`_coin`'s arm, each answer priced at ten cents by one model, which it names as served, so a cost cap stops
+    it between cases and its runs pool."""
+    draw = _coin(tag, arm, rate, calls)
+
+    async def run(case: Mapping[str, Any]) -> Answer:
+        return Answer(
+            await draw(case),
+            model="priced-model",
+            served_model="priced-model",
+            input_tokens=10,
+            output_tokens=2,
+            cost_usd=0.10,
+        )
+
+    run.__name__ = arm
+    return run
+
+
+async def test_a_comparison_whose_run_stopped_finishes_when_run_again_with_the_cap_raised() -> None:
+    """A cost cap stops a comparison's run partway, and its print opens on the stop and exits 1. Run again with the cap
+    raised, it finishes and exits as a run that completed does. A first run that stopped had nothing read, so the run
+    again is a first comparison over every case. A continuation that stopped is set aside: the cases run before it are
+    read as they ran, its cases run again after them, and the bet reads every case in the order first run, over the
+    first launch's runs and the new ones only, so it is one bet read later."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    arms = {"a": _priced("stopped", "a", 0.5, calls), "b": _priced("stopped", "b", 0.5, calls)}
+
+    def compare(n: int, cap: float) -> Eval:
+        return Eval(_cases(n), arms, [_correct], k=1, name="capped", max_cost_usd=cap, measure_latency=True)
+
+    stopped = await compare(20, 1.0).run(store=store, scope="s")
+    assert stopped.exit_code() == 1 and {summary.status for summary in stopped.arms.values()} == {"budget_stopped"}
+    first = await compare(20, 10.0).run(store=store, scope="s")
+    assert first.exit_code() in (0, 4) and {summary.status for summary in first.arms.values()} == {"completed"}
+    assert _how_it_ran(first) == [] and all(summary.n_results == 20 for summary in first.arms.values())
+
+    again = await compare(30, 1.0).run(store=store, scope="s")
+    assert again.exit_code() == 1 and _how_it_ran(again) == [continued_sentence(20, 10)]
+    before = dict(calls)
+    finished = await compare(30, 10.0).run(store=store, scope="s")
+    assert finished.exit_code() in (0, 4)
+    assert {summary.status for summary in finished.arms.values()} == {"completed"}
+    assert _how_it_ran(finished) == [continued_sentence(20, 10, again=10)]
+    # The cases the first comparison ran are not run again; the stopped launch's ten are, once more on each arm.
+    assert {key: calls[key] - before.get(key, 0) for key in calls if calls[key] != before.get(key, 0)} == {
+        (n, arm): 1 for n in range(20, 30) for arm in "ab"
+    }
+    (aspect,) = off_loop(get_campaign, finished.host.storage, finished.campaign_id, "s").aspects
+    (kept,) = off_loop(get_campaign, first.host.storage, first.campaign_id, "s").aspects
+    (set_aside,) = off_loop(get_campaign, again.host.storage, again.campaign_id, "s").aspects
+    assert set(kept.run_ids) < set(aspect.run_ids) and len(aspect.run_ids) == 4
+    assert not set(aspect.run_ids) & (set(set_aside.run_ids) - set(kept.run_ids))
+    (family,) = finished.report.bundle.multiple_comparisons.families
+    (paired,) = [comparison for comparison in family.comparisons if comparison.name == "_correct"]
+    assert read_by_bet(family) and paired.case_values is not None and len(paired.case_values[0]) == 30
+    assert {trial.case_place for trial in finished.report.bundle.trials} == set(range(1, 31))
+    for arm in "ab":
+        ran = {(result.case, result.answer) for result in first.arms[arm].case_results}
+        assert ran < {(result.case, result.answer) for result in finished.arms[arm].case_results}
 
 
 # --- the null, through the product -----------------------------------------------------------------------------------
@@ -519,8 +678,8 @@ async def _newcomer(tag: str, *, continued: bool) -> bool:
     each call a fresh seeded draw. Run 20 cases; while nothing separates, append cases and run again, at most five runs
     in all, each add ten cases plus up to ninety more the closer the reading's p came to α. ``continued`` runs every
     time into one store, so the product continues the comparison; otherwise each run is into a store of its own, which
-    re-runs every case, as the quick path did before it continued a comparison. Separated: a verdict of improved or
-    regressed on any comparison the print reads."""
+    re-runs every case, as the quick path did before it continued a comparison, though read by the same bet. Separated:
+    a verdict of improved or regressed on any comparison the print reads."""
     calls: Counter[tuple[int, str]] = Counter()
     arms = {"a": _coin(tag, "a", 0.5, calls), "b": _coin(tag, "b", 0.5, calls)}
     store = InMemoryDocumentStore()
@@ -552,8 +711,16 @@ _CONTINUED_SEPARATED: tuple[int, ...] = (1, 2, 1, 1, 2, 1, 1, 2, 1, 3, 3, 1, 2, 
 _RERUN_SEPARATED: tuple[int, ...] = (5, 3, 3, 5, 3, 3, 6, 8)
 
 
+def _shards(n: int) -> list[Any]:
+    """Shards ``0`` to ``n - 1``: the first runs in the unit suite as a smoke check on the bound's inputs, and the
+    rest are ``long_simulation`` (minutes of CPU each), which the pool's ``simulation`` suite runs:
+    ``testament run --no-fallback --suite simulation``. Every shard is the bound's evidence, so all of them run
+    whenever the reading they simulate changes (``.testament.toml`` names the files)."""
+    return [pytest.param(shard, marks=() if shard == 0 else pytest.mark.long_simulation) for shard in range(n)]
+
+
 @pytest.mark.timeout(1200)
-@pytest.mark.parametrize("shard", range(len(_CONTINUED_SEPARATED)))
+@pytest.mark.parametrize("shard", _shards(len(_CONTINUED_SEPARATED)))
 async def test_a_continued_comparison_s_newcomers_separate_as_seeded(shard: int) -> None:
     """Fifty seeded newcomers (:func:`_newcomer`), each running ``Eval.run`` into one store, so the quick path continues
     its comparison: as many separate as this shard's pinned count."""
@@ -564,7 +731,7 @@ async def test_a_continued_comparison_s_newcomers_separate_as_seeded(shard: int)
 
 
 @pytest.mark.timeout(1200)
-@pytest.mark.parametrize("shard", range(len(_RERUN_SEPARATED)))
+@pytest.mark.parametrize("shard", _shards(len(_RERUN_SEPARATED)))
 async def test_a_comparison_re_run_whole_each_time_separates_as_seeded(shard: int) -> None:
     """Fifty seeded newcomers (:func:`_newcomer`), each run into a store of its own, so every case runs again on each
     run: as many separate as this shard's pinned count."""
@@ -579,8 +746,9 @@ def test_under_the_null_a_continued_comparison_separates_at_most_alpha_and_re_ru
     passing 50% each, k = 1, up to five runs with adds sized from the data, stopping at the first separation:
 
     - continued (the quick path as it is): the Clopper-Pearson 95% upper bound on the false-separation rate is below α;
-    - re-run whole each time (the quick path before it continued a comparison): the 95% lower bound is above α, so
-      re-drawing every case on each run is not one bet and loses the bound.
+    - re-run whole each time (the quick path's re-runs before it continued a comparison, read by the same bet, not by
+      the reading the quick path had then): the 95% lower bound is above α, so re-drawing every case on each run is
+      not one bet and loses the bound.
 
     As seeded: continued, 32 of 1,000 newcomers separate (3.2%, 95% interval 2.2% to 4.5%); re-run whole each time,
     36 of 400 (9.0%, 6.4% to 12.2%)."""

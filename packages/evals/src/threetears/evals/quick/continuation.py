@@ -20,10 +20,18 @@ campaign holds every arm's runs of both. Whether it is the same comparison is re
 - every case already run, at its place: the case set's address (``_template_id``) over the cases first run, and each
   stored case's content, label and name at its place, so a case removed, moved or edited is seen.
 
+A launch of it that did not finish (a cost cap, a replay miss, a cancel) gave no verdict: every surface opens such a
+reading on its stop and reads nothing further (:func:`~threetears.evals.analysis.run_ending.stopped_short`), and so did
+every reading after it. So a continuation sets that launch, and any after it, aside, and runs their cases again after
+the cases before it, as though appended: they were never read, so betting on them later keeps the one bet, and raising
+the cap and running again finishes the comparison. A comparison whose first launch did not finish has nothing to
+continue, and runs as a first.
+
 Anything else starts a NEW comparison, which runs every case and says so in one sentence naming what changed
 (:func:`new_comparison_sentence`). A comparison continued says so too (:func:`continued_sentence`), and says how to start
-afresh: a new name, or another scope or store. An arm is known by its name, never by its code, so a runner changed
-under the same name continues the comparison; the sentence says that as well.
+afresh: a new name, or another scope or store. An arm is known by its name, model and levers, and a grader by its name
+and declaration (a judge by its model and its criteria), never by its code, so a runner or a grader whose code changed
+under the same name continues the comparison, pooled with the cases run before; the sentence says that as well.
 """
 
 from __future__ import annotations
@@ -36,14 +44,10 @@ from typing import Any
 
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.campaigns import list_campaigns
-from threetears.evals.kernel.candidate_kind import QUICK_PATH_KINDS
+from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.run.reads import list_results
 from threetears.evals.schema import EvalRun
-
-#: Who files the quick path's campaigns, as :data:`~threetears.evals.quick.result.CREATED_BY` records it (read here,
-#: not imported, because the result module imports this one).
-_FILED_BY = "eval"
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,8 @@ class EarlierComparison:
     :ivar design: What its campaign declared that a continuation must declare alike: the graders in order, the
         guardrails' margins, latency under test and the question, as JSON.
     :ivar margin: The question's margin, a share of 0 to 1; ``None`` declares none.
+    :ivar set_aside: How many cases its launches that did not finish held (the first such launch and every one after
+        it), which no reading gave a verdict on: they are not in :attr:`case_ids`, and a continuation runs them again.
     """
 
     campaign_id: str
@@ -94,6 +100,7 @@ class EarlierComparison:
     arms: Mapping[tuple[str | None, str, str], EarlierArm]
     design: str
     margin: float | None
+    set_aside: int = 0
 
 
 def launched_as(arm: str | None, model: str, levers: Mapping[str, Any] | None) -> tuple[str | None, str, str]:
@@ -136,8 +143,10 @@ def earlier_comparison(
     host: EvalHost, scope_id: str, name: str, launched_as_run: Callable[[EvalRun], tuple[str | None, str, str]]
 ) -> EarlierComparison | None:
     """The comparison the quick path filed last under ``name`` in ``scope_id``, or ``None`` where there is none to
-    continue: none filed, one of a single arm, or one whose runs are not one quick-path case set run alike. Reads the
-    store.
+    continue: none filed, one of a single arm, one whose runs are not one quick-path case set run alike launch by
+    launch, or one whose first launch did not finish. A launch that did not finish (an arm's run not ``completed``)
+    is set aside with every launch after it (:attr:`EarlierComparison.set_aside`): no reading of them gave a verdict.
+    Reads the store.
 
     :param host: The host whose store is read.
     :ptype host: EvalHost
@@ -155,7 +164,7 @@ def earlier_comparison(
     filed = [
         campaign
         for campaign in list_campaigns(host.storage, scope_id, subject_id=name, archived=False)
-        if campaign.created_by == _FILED_BY and len(campaign.aspects) == 1
+        if campaign.created_by == QUICK_PATH_FILER and len(campaign.aspects) == 1
     ]
     if not filed:
         return None
@@ -177,6 +186,23 @@ def earlier_comparison(
         grouped.setdefault(launched_as_run(run), []).append(run)
     if len(grouped) < 2:
         return None
+    # One launch is every arm's run at one index, each over the same cases.
+    launches = {len(held) for held in grouped.values()}
+    if len(launches) != 1:
+        return None
+    (n_launches,) = launches
+    if any(len({tuple(held[index].test_case_ids) for held in grouped.values()}) != 1 for index in range(n_launches)):
+        return None
+    # The first launch an arm's run did not finish, which gave no verdict, and every launch after it, each of which
+    # opened on that stop: set aside, so their cases run again after the cases before them.
+    finished = next(
+        (index for index in range(n_launches) if any(held[index].status != "completed" for held in grouped.values())),
+        n_launches,
+    )
+    if finished == 0:
+        return None
+    set_aside = sum(len(held.test_case_ids) for held in next(iter(grouped.values()))[finished:])
+    grouped = {key: held[:finished] for key, held in grouped.items()}
     by_arm: dict[tuple[str | None, str, str], EarlierArm] = {}
     case_lists: list[tuple[str, ...]] = []
     for key, held in grouped.items():
@@ -223,6 +249,7 @@ def earlier_comparison(
             campaign.question or None,
         ),
         margin=None if aspect.margin is None else aspect.margin / 100,
+        set_aside=set_aside,
     )
 
 
@@ -238,14 +265,25 @@ UNKEPT_SENTENCE = (
 )
 
 
-def continued_sentence(already: int, added: int) -> str:
+def continued_sentence(already: int, added: int, again: int = 0) -> str:
     """What a continued comparison's print says of how it ran: the cases read again as they ran, the cases that ran
-    now, and how to start a new comparison instead. The one owner of the sentence."""
-    ran = f"{added} new case{'s' if added != 1 else ''} ran" if added else "no case was added, so nothing ran"
+    now (``again`` of them a launch's that did not finish, run again), what a runner or a grader is known by, and how to
+    start a new comparison instead. The one owner of the sentence."""
+    if not added:
+        ran = "no case was added, so nothing ran"
+    elif again:
+        ran = (
+            f"{added} case{'s' if added != 1 else ''} ran, {again} of them again because the run before stopped before "
+            "it finished, so it gave no verdict"
+        )
+    else:
+        ran = f"{added} new case{'s' if added != 1 else ''} ran"
     return (
         f"Continues the comparison run before under this name: its {already} case{'s' if already != 1 else ''} already "
-        f"run are read as they ran, and {ran}. An arm is known by its name, not its code: to compare a changed runner, "
-        "or to start afresh, give the eval a new name, or run it in another scope or store."
+        f"run are read as they ran, and {ran}. An arm is known by its name, model and levers, and a grader by its name "
+        "and declaration (a judge by its model and criteria), never by its code, so a runner or a grader edited under "
+        "the same name is pooled with the cases run before: to compare an edit, or to start afresh, give the eval a new "
+        "name, or run it in another scope or store."
     )
 
 

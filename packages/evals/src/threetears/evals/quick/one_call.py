@@ -1588,6 +1588,8 @@ def _what_changed(
         ):
             if ran:
                 return f"case {names[index]} was edited, moved or removed"
+            if index < len(earlier.case_ids) + earlier.set_aside:
+                return f"case {names[index]}, which the run that stopped held, was edited, moved or removed"
             return f"another comparison in this scope added another case {names[index]} to the same cases"
     if first_address != earlier.template_id:
         return "the judge's rubric, the intent or the goal checks changed"
@@ -2267,50 +2269,6 @@ def _template_intent(arms: Sequence[CallableArm], graded_by: str, intent: str | 
     return f"Answer each case so that {graded_by} the answer well.", f"a generic default: {lacking}"
 
 
-async def run_arms(
-    cases: Sequence[Mapping[str, Any]],
-    arms: Sequence[CallableArm],
-    scorers: Sequence[Scorer] = (),
-    *,
-    scope_id: str,
-    host: EvalHost,
-    template_name: str,
-    expected: ExpectedLabel | None = None,
-    label_field: str | None = None,
-    judge: Judge | None = None,
-    intent: str | None = None,
-    world: World | None = None,
-    goal_checks: Sequence[str] = (),
-    k: int = DEFAULT_LAUNCH_K_RUNS,
-    max_cost_usd: float | None = None,
-    subject: str | None = None,
-    margins: Mapping[str, float] | None = None,
-    measure_latency: bool = False,
-) -> list[EvalSummary]:
-    """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order: what
-    :func:`launch_arms` launches with no earlier comparison to continue. Its parameters are that function's."""
-    launched = await launch_arms(
-        cases,
-        arms,
-        scorers,
-        scope_id=scope_id,
-        host=host,
-        template_name=template_name,
-        expected=expected,
-        label_field=label_field,
-        judge=judge,
-        intent=intent,
-        world=world,
-        goal_checks=goal_checks,
-        k=k,
-        max_cost_usd=max_cost_usd,
-        subject=subject,
-        margins=margins,
-        measure_latency=measure_latency,
-    )
-    return launched.summaries
-
-
 @dataclass(frozen=True)
 class Launched:
     """What :func:`launch_arms` launched and reads, arm by arm in arm order.
@@ -2360,7 +2318,9 @@ async def launch_arms(
     (:func:`~threetears.evals.quick.continuation.earlier_comparison`), the launch continues it where it is the same
     comparison: the same arms (``control_index`` the control), the same repeats, and every case it ran still at its
     place, unedited, with the same rubric, intent and goal checks over them. Then only the cases after them run, into
-    its case set, and each arm reads its earlier runs with its new one. A new run whose variant key, measurement
+    its case set, and each arm reads its earlier runs with its new one. The cases of a launch of it that did not finish
+    are among those (:attr:`~threetears.evals.quick.continuation.EarlierComparison.set_aside`): it gave no verdict, so
+    they run again. A new run whose variant key, measurement
     context or graders' declarations differ from its arm's earlier runs is archived, and every case runs again. Where
     it is not the same comparison, every case runs, and :attr:`Launched.said` names what changed. ``said`` is a
     sentence the caller found already (a design that changed), which the launch keeps.
@@ -2733,7 +2693,15 @@ async def launch_arms(
         run_ids=read_runs,
         launched=[run.id for run in runs],
         continued=continuing,
-        said=continued_sentence(len(test_cases) - len(to_run), len(to_run)) if continuing else said,
+        said=(
+            continued_sentence(
+                len(test_cases) - len(to_run),
+                len(to_run),
+                again=min(earlier.set_aside, len(to_run)) if earlier is not None else 0,
+            )
+            if continuing
+            else said
+        ),
     )
 
 
@@ -2836,6 +2804,5 @@ __all__ = [
     "refuse_an_unusable_cap",
     "refuse_unusable_guardrails",
     "refuse_unusable_margins",
-    "run_arms",
     "scorer_measure",
 ]

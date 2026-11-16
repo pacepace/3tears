@@ -351,7 +351,7 @@ counts against v2, stated, never excluded: a model's unusable answer is the cand
 first line says what that allows:
 
 ```text
-Add cases to the end and run it again as often as you like: each comparison of the arms on a pass rate, or on a score within its declared range, keeps its error however many times it is read, and a single read gives up some power for that; guardrails, floors, each arm's own rate, cost, latency and the exit status are read at the cases run so far, so reading them again is not covered.
+Where its runs are kept in a store that outlives the run (a file, or a host's), add cases to the end and run it again into that store as often as you like: each comparison of the arms on a pass rate, or on a score within its declared range, keeps its error however many times it is read, and a single read gives up some power for that; guardrails, floors, each arm's own rate, cost, latency and the exit status are read at the cases run so far, so reading them again is not covered.
 ```
 
 - **Why it holds.** Run again into the same store, the comparison continues: the invoices already run are read as they
@@ -360,11 +360,18 @@ Add cases to the end and run it again as often as you like: each comparison of t
   of cases declared ahead: a mixture of fixed betting fractions over the cases in the order they were first run. A
   reading after you add cases is the same bet read later, so stopping when it first tells the arms apart keeps the
   error it states.
-- **What starts a new comparison.** Change an arm, the control, a grader, a margin, the question or the repeats, or
-  edit, move or remove an invoice already run, and every case runs again as a new comparison; the print names what
-  changed (`A new comparison: ...`). An arm is known by its name, not its code: after changing a prompt, give the eval
-  a new `name=` (or another scope or store) to compare it afresh. A store kept in memory (`store=":memory:"`) keeps
-  nothing between runs, so each run there is a new comparison.
+- **What starts a new comparison.** Change an arm's name, model or levers, the control, a grader's name or what it
+  declares (its range, direction, margin or guard), a judge's model or criteria, the question or its margin, or the
+  repeats, or edit, move or remove an invoice already run, and every case runs again as a new comparison; the print
+  names what changed (`A new comparison: ...`).
+- **What does not.** An arm is known by its name, model and levers, and a grader by its name and declaration (a judge
+  by its model and criteria), never by its code. A runner or a grader function edited under the same name continues
+  the comparison, its new cases pooled with the ones run before, as the continuation's sentence says: after changing a
+  prompt or a grader's code, give the eval a new `name=` (or another scope or store) to compare it afresh. A store kept
+  in memory (`store=":memory:"`) keeps nothing between runs, so each run there is a new comparison, and the line under
+  the first line says so in place of the one above.
+- **A run that stopped.** A run stopped by its cost cap or a replay miss gives no verdict, so running it again (with
+  the cap raised) runs the cases it did not finish again, after the cases before them, and the comparison continues.
 - **What it costs.** Read once, it tells the arms apart a little later than a test fixed for that many cases would:
   its intervals are somewhat wider. That is the price of reading again freely.
 - **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at

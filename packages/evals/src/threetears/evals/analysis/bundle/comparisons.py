@@ -680,20 +680,42 @@ def _margin_of(
 
 
 #: What a comparison read by the mixture bet lets a reader do, what it costs, and exactly what it leaves out: the one
-#: sentence every surface says it in (the print under a comparison's first line, the family's disclosure on its page),
-#: on a quick-path comparison whose family the bet read. It covers the family's comparisons the bet read, and only those:
-#: their verdicts, p's and intervals. A guardrail's held or undecided, a floor's held, each arm's own rate interval, the
-#: gate's exit status, cost and latency are read at the cases run so far, and it names each of them as not covered. The
-#: quick path continues one comparison by running only the cases appended to it (:mod:`threetears.evals.quick.continuation`),
-#: so a reading after more cases is the same bet read later. Each clause is held by a seeded simulation in
+#: sentence every surface says it in (the print under a comparison's first line, the family's disclosure on its page and
+#: in its bundle), on a quick-path comparison whose family the bet read. It covers the family's comparisons the bet read,
+#: and only those: their verdicts, p's and intervals. A guardrail's held or undecided, a floor's held, each arm's own
+#: rate interval, the gate's exit status, cost and latency are read at the cases run so far, and it names each of them
+#: as not covered. It is said of the store that keeps the runs, so it is true wherever it is read: the quick path
+#: continues one comparison run again into the store that holds it by running only the cases appended
+#: (:mod:`threetears.evals.quick.continuation`), so a reading after more cases is the same bet read later, and where the
+#: runs were kept in memory there is no such store, which the print says in its place
+#: (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`). Each clause is held by a seeded simulation in
 #: ``tests/test_rereadable_bet.py``: the error at most α over re-runs of the quick path as cases are added, the same
 #: re-runs re-drawing every case exceeding it, and a single read's power against the bounded test read once.
 REREAD_SENTENCE = (
-    "Add cases to the end and run it again as often as you like: each comparison of the arms on a pass rate, or on a "
-    "score within its declared range, keeps its error however many times it is read, and a single read gives up some "
-    "power for that; guardrails, floors, each arm's own rate, cost, latency and the exit status are read at the cases "
-    "run so far, so reading them again is not covered."
+    "Where its runs are kept in a store that outlives the run (a file, or a host's), add cases to the end and run it "
+    "again into that store as often as you like: each comparison of the arms on a pass rate, or on a score within its "
+    "declared range, keeps its error however many times it is read, and a single read gives up some power for that; "
+    "guardrails, floors, each arm's own rate, cost, latency and the exit status are read at the cases run so far, so "
+    "reading them again is not covered."
 )
+
+
+def read_by_bet(family: ComparisonFamily) -> bool:
+    """Whether the mixture bet read some comparison of ``family``, a quick-path comparison's, so it may be read again as
+    cases are appended (:data:`REREAD_SENTENCE`).
+
+    Read off what the family stores of its correction, its ``disclosure``, which this module composes
+    (:func:`_family_disclosure`) and which closes on :data:`REREAD_SENTENCE` exactly where the bet read it: nothing
+    else is stored to say so, and a reader reads it as the page shows it. Whether the bet reads a campaign at all is
+    decided from its stored origin, kinds and case lists when its bundle is assembled
+    (:func:`~threetears.evals.analysis.bundle.trials.bet_places`).
+
+    :param family: The family.
+    :ptype family: ComparisonFamily
+    :return: Whether the bet read it.
+    :rtype: bool
+    """
+    return family.disclosure.endswith(REREAD_SENTENCE)
 
 
 def _family_disclosure(
@@ -913,7 +935,6 @@ def _corrected_family(
         interval_level=interval_level,
         n_untested=n_untested,
         comparisons=comparisons,
-        rereadable=rereadable and any(one.bet_samples is not None for one in tested),
         disclosure=_family_disclosure(
             family_size,
             n_untested,
@@ -1703,6 +1724,7 @@ __all__ = [
     "REREAD_SENTENCE",
     "PlanningReading",
     "multiple_comparisons",
+    "read_by_bet",
     "planning_readings",
     "reading_scope",
     "aspect_looks",

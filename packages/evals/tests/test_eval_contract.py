@@ -24,7 +24,7 @@ from threetears.evals.analysis import campaign_report_markdown, get_campaign, sc
 from threetears.evals.quick import as_host
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.logged import NOT_LOGGED
-from threetears.evals.quick.one_call import CallableArm, callable_host, run_arms
+from threetears.evals.quick.one_call import CallableArm, callable_host, launch_arms
 from threetears.evals.quick.blind import SHEET_COLUMNS
 from threetears.evals.quick.result import read_blind
 from threetears.evals.schema import CalibrationRating
@@ -126,17 +126,19 @@ async def test_the_reserved_keys_name_and_sort_each_case_and_reach_no_runner_or_
 async def test_a_field_grader_is_the_classifier_expected_was_with_the_same_figures() -> None:
     by_field = (await Eval(TICKETS, keywords, ["label", short_label], k=2).run(store=":memory:")).summary
     host = callable_host([short_label])
-    (by_expected,) = await run_arms(
-        TICKETS,
-        [CallableArm(keywords)],
-        [short_label],
-        scope_id="expected",
-        host=host,
-        template_name="expected",
-        expected=lambda case: str(case["label"]),
-        label_field="label",
-        k=2,
-    )
+    (by_expected,) = (
+        await launch_arms(
+            TICKETS,
+            [CallableArm(keywords)],
+            [short_label],
+            scope_id="expected",
+            host=host,
+            template_name="expected",
+            expected=lambda case: str(case["label"]),
+            label_field="label",
+            k=2,
+        )
+    ).summaries
 
     assert by_field.confusion == by_expected.confusion
     assert by_field.labels == by_expected.labels

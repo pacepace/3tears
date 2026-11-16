@@ -79,7 +79,7 @@ from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE
+from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet
 from threetears.evals.quick.continuation import MEMORY_WHERE, UNKEPT_SENTENCE
 from threetears.evals.analysis.bundle.trials import pass_count, trial_order
 from threetears.evals.analysis.cells import cell_ref
@@ -119,11 +119,14 @@ from threetears.evals.quick.blind import (
 from threetears.evals.run.blind_review import REVIEWER_PURPOSE, plan_review
 from threetears.evals.quick.judged import BorrowedJudgeClient, Judge, JudgeExamples, judge_client
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
+from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER
 from threetears.evals.run import get_result_trace, list_results
 from threetears.evals.analysis.style import measure_name, measure_name_of
 
-#: Who an eval's campaign and its control are recorded as created by, unless the caller says.
-CREATED_BY = "eval"
+#: Who an eval's campaign and its control are recorded as created by, unless the caller says: the quick path's own
+#: name, which the analysis reads a quick-path comparison's origin by
+#: (:data:`~threetears.evals.kernel.candidate_kind.QUICK_PATH_FILER`).
+CREATED_BY = QUICK_PATH_FILER
 
 
 #: The factors that are levers of the engine or the host, never of the callable kind: no kind prefix names them.
@@ -804,12 +807,14 @@ class Result:
 
     def _reread_line(self) -> list[str]:
         """What a reader may do with the comparison the first line reads, one line under it: read it again as cases are
-        added (:data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE`), where the mixture bet read its
-        family and its runs are kept in a store a later run continues it from; where they were kept in memory, that
-        running it again is a new comparison (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`). Empty for
-        one arm, or a family no bet read."""
+        added (:data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE`, its family's disclosure on the
+        page), where the mixture bet read its family
+        (:func:`~threetears.evals.analysis.bundle.comparisons.read_by_bet`) and its runs are kept in a store a later run
+        continues it from; where they were kept in memory, that running it again is a new comparison
+        (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`), which is what the page's sentence, said of a
+        store that keeps the runs, comes to there. Empty for one arm, or a family no bet read."""
         families = self.report.bundle.multiple_comparisons.families
-        if not any(family.rereadable for family in families):
+        if not any(read_by_bet(family) for family in families):
             return []
         return [UNKEPT_SENTENCE if self.store == MEMORY_WHERE else REREAD_SENTENCE]
 

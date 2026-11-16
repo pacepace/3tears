@@ -116,6 +116,7 @@ from threetears.evals.kernel.world_session import WorldSession
 __all__ = [
     "CALLABLE_KIND",
     "JUDGED_CALLABLE_KIND",
+    "QUICK_PATH_FILER",
     "QUICK_PATH_KINDS",
     "CandidateKind",
     "CandidateKindDefect",
@@ -141,6 +142,11 @@ JUDGED_CALLABLE_KIND = "callable-judged"
 #: mixture bet, as the quick path continues it (one comparison, its cases appended and never re-run), and the analysis
 #: may not import the quick path.
 QUICK_PATH_KINDS: frozenset[str] = frozenset({CALLABLE_KIND, JUDGED_CALLABLE_KIND})
+
+#: Who the quick path files its campaigns as (``EvalCampaign.created_by``): with :data:`QUICK_PATH_KINDS`, the origin
+#: the analysis reads a quick-path comparison by, so a host's campaign over the quick path's runs (``campaign_create``,
+#: filed as its caller) reads as every engine campaign does. Held here for the reason the kinds are.
+QUICK_PATH_FILER = "eval"
 
 
 class VariantConfig(EvalBaseModel):

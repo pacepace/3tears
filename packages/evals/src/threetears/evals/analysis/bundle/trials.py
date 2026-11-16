@@ -56,6 +56,7 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
     TrialState,
 )
+from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
 from threetears.evals.kernel.errors import ConflictError
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.result_condition import (
@@ -74,7 +75,7 @@ from threetears.evals.schema.models import USAGE_ROLES, rubric_dim_scale
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.result_reading import ResultView, UsageView
-    from threetears.evals.schema.models import EvalResult, JudgeEvidence, RubricScale, RubricScore
+    from threetears.evals.schema.models import EvalResult, EvalRun, JudgeEvidence, RubricScale, RubricScore
 
 
 #: How much worse a lost or failed trial is than a passed one, for keeping trials under the cap: lost first.
@@ -394,6 +395,56 @@ def case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
     """
     ordered = dict.fromkeys(case for cases in case_lists for case in cases)
     return {case: place for place, case in enumerate(ordered, start=1)}
+
+
+def bet_places(
+    created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView], *, planned_looks: int | None
+) -> dict[str, int] | None:
+    """Each case's place in the order a quick-path comparison first ran its cases (:func:`case_places`), which the
+    mixture bet reads its paired contrasts in; ``None`` where the campaign is not one, and every reading is as an
+    engine campaign's.
+
+    A quick-path comparison is decided from stored facts only, so every reader of a stored campaign reads it alike:
+
+    - its origin: the quick path filed it (``EvalCampaign.created_by`` is
+      :data:`~threetears.evals.kernel.candidate_kind.QUICK_PATH_FILER`), so a host's campaign over the quick path's
+      runs (``campaign_create``, filed as its caller) is not one;
+    - every run is of a kind only the quick path launches
+      (:data:`~threetears.evals.kernel.candidate_kind.QUICK_PATH_KINDS`), and it holds a result;
+    - no arm ran a case in two runs: each arm's runs hold disjoint case lists, chained in launch order, which is how
+      the quick path continues one comparison (its cases appended, never run again), so the bet is one process;
+    - no plan of looks is in force (``planned_looks``), which reads α/L instead.
+
+    :param created_by: Who filed the campaign.
+    :ptype created_by: str
+    :param runs: The member runs, in the bundle's run order.
+    :ptype runs: Sequence[EvalRun]
+    :param results: Their results.
+    :ptype results: Sequence[ResultView]
+    :param planned_looks: The plan of looks in force, or ``None``.
+    :ptype planned_looks: int | None
+    :return: Each case's place, by case id, or ``None``.
+    :rtype: dict[str, int] | None
+    """
+    if (
+        planned_looks is not None
+        or created_by != QUICK_PATH_FILER
+        or not results
+        or any(run.candidate_kind not in QUICK_PATH_KINDS for run in runs)
+    ):
+        return None
+    arms_of: dict[str, set[str]] = {}
+    for result in results:
+        arms_of.setdefault(result.eval_run_id, set()).add(result.variant_key)
+    ran: dict[str, set[str]] = {}
+    for run in runs:
+        cases = set(run.test_case_ids)
+        for arm in arms_of.get(run.id, set()):
+            held = ran.setdefault(arm, set())
+            if held & cases:
+                return None
+            held |= cases
+    return case_places([run.test_case_ids for run in runs])
 
 
 def _whole(
