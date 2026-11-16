@@ -513,7 +513,7 @@ def _copy_batches(
 
 
 def _key_led_deletes(
-    schema: TableSchema, named: list[tuple[Any, ...]], *, max_rows: int
+    schema: TableSchema, named: list[tuple[Any, ...]], *, max_rows: int, turns: LoopTurns | None = None
 ) -> list[tuple[str, list[Any]]]:
     """:meth:`SqlBackend.delete_many`'s statements for ``named`` keys, each with its arguments.
 
@@ -527,30 +527,34 @@ def _key_led_deletes(
     :ptype named: list[tuple[Any, ...]]
     :param max_rows: the most keys one statement names
     :ptype max_rows: int
+    :param turns: the building thread's turns with the caller's loop, taken a key at a time; None to take none
+    :ptype turns: LoopTurns | None
     :return: each statement and its arguments
     :rtype: list[tuple[str, list[Any]]]
     """
     if not named:
         return []
-    varying, groups = _key_led_groups(schema, named)
+    varying, groups = _key_led_groups(schema, named, turns)
     grouped = sum(-(-len(values) // max_rows) for _, values in groups)
     whole = -(-len(named) // max_rows)
     if len(schema.pk_columns) > 1 and whole < grouped and _every_key_column_has_an_array(schema):
         sql = schema_sql.build_whole_key_delete_sql(schema)
-        return [
-            (sql, [list(column) for column in zip(*named[start : start + max_rows], strict=True)])
-            for start in range(0, len(named), max_rows)
-        ]
+        statements: list[tuple[str, list[Any]]] = []
+        for start in range(0, len(named), max_rows):
+            statements.append((sql, [list(column) for column in zip(*named[start : start + max_rows], strict=True)]))
+            if turns is not None:
+                turns.take()
+        return statements
     sql = schema_sql.build_key_led_delete_sql(schema, varying=schema.pk_columns[varying])
     return [
         (sql, [values[start : start + max_rows], *fixed])
-        for fixed, values in groups
+        for fixed, values in (groups if turns is None else stepped(groups, turns))
         for start in range(0, len(values), max_rows)
     ]
 
 
 def _key_led_groups(
-    schema: TableSchema, keys: list[tuple[Any, ...]]
+    schema: TableSchema, keys: list[tuple[Any, ...]], turns: LoopTurns | None = None
 ) -> tuple[int, list[tuple[tuple[Any, ...], list[Any]]]]:
     """group whole keys for key-led deletes: one key column varies in an array, the rest are fixed.
 
@@ -563,6 +567,9 @@ def _key_led_groups(
     :ptype schema: TableSchema
     :param keys: whole keys, write-coerced, in the schema's key order
     :ptype keys: list[tuple[Any, ...]]
+    :param turns: the building thread's turns with the caller's loop, taken a key at a time: a JSON text a key a
+        key column, 33,786 keys of seven columns, held the loop a quarter of a second (2026-11-16); None to take none
+    :ptype turns: LoopTurns | None
     :return: the varying column's index in the key, and the groups
     :rtype: tuple[int, list[tuple[tuple[Any, ...], list[Any]]]]
     :raises ValueError: when no key column has an array form
@@ -572,7 +579,7 @@ def _key_led_groups(
         if schema_sql.key_array_type(schema, name) is None:
             continue
         groups: dict[str, tuple[tuple[Any, ...], list[Any]]] = {}
-        for key in keys:
+        for key in keys if turns is None else stepped(keys, turns):
             fixed = key[:index] + key[index + 1 :]
             token = json.dumps(list(fixed), default=schema_sql.json_default, sort_keys=True)
             groups.setdefault(token, (fixed, []))[1].append(key[index])
@@ -1511,8 +1518,7 @@ class SqlL3Backend:
         :raises ValueError: when no schema is registered for ``table``, ``max_rows`` is under one,
             a key is not as wide as the table's key, or no key column has an array form
         """
-        schema, named = self._keys_to_delete(table, keys, max_rows=max_rows)
-        statements = _key_led_deletes(schema, named, max_rows=max_rows)
+        _, named, statements = await self._planned_delete(table, keys, max_rows=max_rows)
         for sql, args in statements:
             await self._execute(sql, *args, conn=conn)
         _logger.debug(
@@ -1549,11 +1555,10 @@ class SqlL3Backend:
         :raises ValueError: when no schema is registered for ``table``, ``max_rows`` is under one, a key is
             not as wide as the table's key, or no key column has an array form
         """
-        schema, named = self._keys_to_delete(table, keys, max_rows=max_rows)
+        schema, named, statements = await self._planned_delete(table, keys, max_rows=max_rows)
         callers = {bound: tuple(key) for bound, key in zip(named, keys, strict=True)}
         key_columns = [schema.column(name) for name in schema.pk_columns]
         found: dict[tuple[Any, ...], dict[str, Any]] = {}
-        statements = _key_led_deletes(schema, named, max_rows=max_rows)
         for sql, args in statements:
             for row in await self._fetch(schema_sql.returning_rows_sql(schema, sql), *args, conn=conn):
                 read = dict(row)
@@ -1566,8 +1571,58 @@ class SqlL3Backend:
         )
         return found
 
-    def _keys_to_delete(
+    async def _planned_delete(
         self, table: str, keys: Sequence[Sequence[Any]], *, max_rows: int
+    ) -> tuple[TableSchema, list[tuple[Any, ...]], list[tuple[str, list[Any]]]]:
+        """:meth:`_delete_plan`, on a worker thread taking turns with the loop for a delete binding more than
+        :data:`_STATEMENT_ON_THREAD_PARAMS` key values: on the loop, 33,786 keys of seven columns, each value bound
+        and the keys grouped by a JSON text a key a key column, held it 250 ms (2026-11-16).
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one statement names; at least one
+        :ptype max_rows: int
+        :return: the schema, each key's bound values in ``keys``' order, and each statement with its arguments
+        :rtype: tuple[TableSchema, list[tuple[Any, ...]], list[tuple[str, list[Any]]]]
+        :raises ValueError: as :meth:`_keys_to_delete`, and when no key column has an array form
+        """
+        schema = self._schemas.get(table)
+        if schema is not None and len(keys) * len(schema.pk_columns) > _STATEMENT_ON_THREAD_PARAMS:
+            return await asyncio.to_thread(
+                self._delete_plan, table, keys, max_rows=max_rows, loop=asyncio.get_running_loop()
+            )
+        return self._delete_plan(table, keys, max_rows=max_rows)
+
+    def _delete_plan(
+        self,
+        table: str,
+        keys: Sequence[Sequence[Any]],
+        *,
+        max_rows: int,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> tuple[TableSchema, list[tuple[Any, ...]], list[tuple[str, list[Any]]]]:
+        """the delete's keys checked and bound (:meth:`_keys_to_delete`) and its key-led statements
+        (:func:`_key_led_deletes`); pure, for a thread (:meth:`_planned_delete`).
+
+        :param table: the table
+        :ptype table: str
+        :param keys: each row's key values
+        :ptype keys: Sequence[Sequence[Any]]
+        :param max_rows: the most keys one statement names
+        :ptype max_rows: int
+        :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+        :ptype loop: asyncio.AbstractEventLoop | None
+        :return: the schema, the bound keys, and the statements with their arguments
+        :rtype: tuple[TableSchema, list[tuple[Any, ...]], list[tuple[str, list[Any]]]]
+        """
+        turns = LoopTurns(loop) if loop is not None else None
+        schema, named = self._keys_to_delete(table, keys, max_rows=max_rows, turns=turns)
+        return schema, named, _key_led_deletes(schema, named, max_rows=max_rows, turns=turns)
+
+    def _keys_to_delete(
+        self, table: str, keys: Sequence[Sequence[Any]], *, max_rows: int, turns: LoopTurns | None = None
     ) -> tuple[TableSchema, list[tuple[Any, ...]]]:
         """the table's schema and ``keys`` as a delete binds them, checked.
 
@@ -1577,6 +1632,8 @@ class SqlL3Backend:
         :ptype keys: Sequence[Sequence[Any]]
         :param max_rows: the most keys one statement names
         :ptype max_rows: int
+        :param turns: the binding thread's turns with the caller's loop, taken a key at a time; None to take none
+        :ptype turns: LoopTurns | None
         :return: the schema, and each key's bound values in ``keys``' order
         :rtype: tuple[TableSchema, list[tuple[Any, ...]]]
         :raises ValueError: when no schema is registered, ``max_rows`` is under one, or a key is not as wide
@@ -1589,7 +1646,7 @@ class SqlL3Backend:
             raise ValueError(f"{table}: max_rows must be at least 1, got {max_rows}")
         key_columns = [schema.column(name) for name in schema.pk_columns]
         named: list[tuple[Any, ...]] = []
-        for key in keys:
+        for key in keys if turns is None else stepped(keys, turns):
             if len(key) != len(key_columns):
                 raise ValueError(
                     f"{table}: a key to delete has {len(key)} values where the table's key has {len(key_columns)}"

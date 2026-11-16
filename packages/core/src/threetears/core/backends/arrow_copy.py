@@ -164,7 +164,7 @@ def rows_digest(ipc: Any) -> str:
 
 
 #: the values read or converted in Python between two of the build's turns: few enough that no stretch nears
-#: :data:`~threetears.core.loop_turns.HOLD_SECONDS` (4096 held the caller's loop a whole switch interval, 5 ms, on a loaded host; 256 still ran
+#: :data:`~threetears.core.loop_turns._HOLD_SECONDS` (4096 held the caller's loop a whole switch interval, 5 ms, on a loaded host; 256 still ran
 #: 0.6 ms a slice on an oversubscribed test host)
 _SLICE_VALUES: Final = 128
 

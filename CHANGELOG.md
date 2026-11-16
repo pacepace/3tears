@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a bulk delete and a listened collection's write hold the event loop a few milliseconds at most
+
+`delete_rows` of 33,786 keys (seven key columns, a hub answering at once) held the serving loop 250 ms: every key made
+a tuple, checked for its width and enrolled on the loop, and the store's `delete_many` bound every key value and
+grouped the keys into statements by a JSON text a key a key column there. Both now run on worker threads that take
+turns with the loop (`threetears.core.loop_turns`): 2.0-2.4 ms. A collection with L1 change listeners (a scope
+snapshot's holders) heard every key of a 33,786-row write in one stretch on the loop, as the write evicted it and again
+as the commit settled it: 5.2-5.7 ms with two holders. The listeners still run on the loop, a key at a time and in
+order, but the loop's other work runs between half-millisecond stretches of them (`called_in_turns`, new): 1.5-2.0 ms.
+A commit's grouping of its enrollments on a thread takes the same turns. `loop_turns.HOLD_SECONDS` is private now
+(`_HOLD_SECONDS`): nothing outside the module reads it. loop_timing budgets at 33,786 keys for both, red on the old
+code (250 ms and 5.6 ms against 5 ms bounds), and a counted check that the loop runs between stretches of keys heard.
+
 ### core: a bulk write of many rows holds the event loop a few milliseconds at most
 
 A 33,786-row write (179 columns, a hub answering at once) held the serving loop, before its commit, 6-7 ms through

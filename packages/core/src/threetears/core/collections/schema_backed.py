@@ -3327,15 +3327,16 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         if max_rows is not None and max_rows < 1:
             raise ValueError(f"{self.table_name}.delete_rows: max_rows must be at least 1, got {max_rows}")
         width = len(self.schema.pk_columns)
-        named = [tuple(key) for key in keys]
-        wrong = [key for key in named if len(key) != width]
-        if wrong:
-            raise ValueError(
-                f"{self.table_name}.delete_rows: key {wrong[0]!r} has {len(wrong[0])} values where the key has {width}"
-            )
+        # each key checked, and later keyed and enrolled, on a worker thread taking turns with the loop, from the
+        # count where a thread costs less than the work, as save_rows' rows are (_stamped_rows)
+        loop = asyncio.get_running_loop() if len(keys) >= self.L1_EVICT_OFF_LOOP_KEYS else None
+        named = (
+            await asyncio.to_thread(self._delete_keys_named, keys, loop)
+            if loop is not None
+            else self._delete_keys_named(keys)
+        )
         if self.invalidation_columns and named and isinstance(store, ReturningDeletingStore):
             return await self._delete_rows_returning(store, named, transaction, conn=conn, max_rows=max_rows)
-        entity_keys: list[Any] = []
         # a collection whose row messages carry columns reads each row before it goes, on the caller's
         # transaction, so the message can say whose it was: a statement a batch of keys where the store reads
         # many (one a key was a round trip each, on the rail a NATS request each), a read a key where it
@@ -3343,19 +3344,24 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         held: dict[tuple[Any, ...], dict[str, Any]] | None = None
         if self.invalidation_columns and named and isinstance(store, ManyKeyReadingStore):
             held = await store.fetch_many(self.table_name, named, max_rows=max_rows or self.BULK_MAX_ROWS, conn=conn)
-        for key in named:
-            entity_key = key if width > 1 else key[0]
-            if not self.invalidation_columns:
-                seen = None
-            elif held is not None:
-                seen = held.get(key)
-            else:
+        if not self.invalidation_columns or held is not None:
+            entity_keys, enrollments = (
+                await asyncio.to_thread(self._delete_enrollments, named, held, loop)
+                if loop is not None
+                else self._delete_enrollments(named, held)
+            )
+            # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
+            transaction.enroll_all(enrollments)
+        else:
+            entity_keys = []
+            for key in named:
+                entity_key = key if width > 1 else key[0]
                 seen = await store.fetch_one(
                     self.table_name, dict(zip(self.schema.pk_columns, key, strict=True)), conn=conn
                 )
-            # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
-            transaction.enroll(self, entity_key, row=seen)
-            entity_keys.append(entity_key)
+                # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
+                transaction.enroll(self, entity_key, row=seen)
+                entity_keys.append(entity_key)
         # every key leaves L1 in one write before the store's delete, not one write a key
         await self._evict_l1_many_off_loop(entity_keys)
         deleted = 0
@@ -3372,6 +3378,60 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             extra={"extra_data": {"table": self.table_name, "rows": deleted}},
         )
         return deleted
+
+    def _delete_keys_named(
+        self, keys: Sequence[Sequence[Any]], loop: asyncio.AbstractEventLoop | None = None
+    ) -> list[tuple[Any, ...]]:
+        """:meth:`delete_rows`' keys as tuples, each checked for the table's key width; pure, for a thread.
+
+        :param keys: each row's key values, in the schema's key order
+        :ptype keys: Sequence[Sequence[Any]]
+        :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+            or off any loop (a few keys: no turn taken)
+        :ptype loop: asyncio.AbstractEventLoop | None
+        :return: the keys, in order
+        :rtype: list[tuple[Any, ...]]
+        :raises ValueError: when a key is not as wide as the table's key, naming the first such key
+        """
+        width = len(self.schema.pk_columns)
+        named = [tuple(key) for key in (keys if loop is None else stepped(keys, LoopTurns(loop)))]
+        wrong = next((key for key in named if len(key) != width), None)
+        if wrong is not None:
+            raise ValueError(
+                f"{self.table_name}.delete_rows: key {wrong!r} has {len(wrong)} values where the key has {width}"
+            )
+        return named
+
+    def _delete_enrollments(
+        self,
+        named: Sequence[tuple[Any, ...]],
+        held: Mapping[tuple[Any, ...], dict[str, Any]] | None,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> tuple[list[Any], list[tuple[BaseCollection[Any], Any, dict[str, Any] | None]]]:
+        """:meth:`delete_rows`' keys as each is enrolled (a value, or a tuple for a key of many columns) and their
+        enrollments, each with the row read before it went (``held``) or none; pure, for a thread.
+
+        :param named: the keys as tuples, in the schema's key order
+        :ptype named: Sequence[tuple[Any, ...]]
+        :param held: the rows read before the delete, by key; None for a collection that declares no
+            :attr:`invalidation_columns`
+        :ptype held: Mapping[tuple[Any, ...], dict[str, Any]] | None
+        :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
+            or off any loop (a few keys: no turn taken)
+        :ptype loop: asyncio.AbstractEventLoop | None
+        :return: the entity keys and their enrollments (:meth:`CallerTransaction.enrollments`), in key order
+        :rtype: tuple[list[Any], list[tuple[BaseCollection, Any, dict[str, Any] | None]]]
+        """
+        turns = LoopTurns(loop) if loop is not None else None
+        keys: Iterable[tuple[Any, ...]] = named if turns is None else stepped(named, turns)
+        many = len(self.schema.pk_columns) > 1
+        entity_keys = [key if many else key[0] for key in keys]
+        seen: list[dict[str, Any] | None] = (
+            [None] * len(named)
+            if held is None
+            else [held.get(key) for key in (named if turns is None else stepped(named, turns))]
+        )
+        return entity_keys, CallerTransaction.enrollments(self, entity_keys, seen, turns)
 
     async def delete_arrow(self, keys: Any, *, conn: Any) -> int:
         """:meth:`delete_rows` for keys already in an Arrow table: deleted through the store's Arrow write door, the

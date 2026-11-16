@@ -125,10 +125,12 @@ INHERITED_UNFILTERED: dict[str, str] = {
         "the L2-first saver's many-row L3 upsert of rows already committed and announced at L2; returns no row"
     ),
     "save_rows": "a bulk write of rows the caller supplies; it returns no stored row",
+    "save_arrow": "save_rows for rows the caller supplies as an Arrow table; it returns a count, no stored row",
     "persist_to_store": "the write-buffer flush of entities callers already saved",
     "delete": "a delete by key must reach the row whether or not this task may read it",
     "delete_from_store": "the L3 leg of delete; must reach the row whatever the filter says",
     "delete_rows": "a bulk delete by key; must reach every named row whatever the filter says",
+    "delete_arrow": "delete_rows for keys the caller supplies as an Arrow table; must reach every named row",
     "truncate": "empties the whole table, as an operator's clear; reads and returns no row",
     "reset": "an operator's reset: empties the whole table; reads and returns no row",
     "clear_partition": "a bulk delete of key prefixes; must reach every row of them whatever the filter says",

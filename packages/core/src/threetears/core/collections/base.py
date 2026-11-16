@@ -32,7 +32,7 @@ from sqlalchemy import Column, Float, MetaData, String, Table, Text
 
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core._bridge import fire_and_forget, sync_await
-from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, stepped
+from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, called_in_turns, stepped
 from threetears.core.backends.broker_generation import naming_changed_rows
 from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
 from threetears.core.cache import MISSING
@@ -2776,7 +2776,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         A commit of thousands of rows settles them in one delete, which held the event loop for its
         whole length (cobalt prod reports pods, 2026-11-06). So the keys' fence forms are made, and
         the rows deleted, on a worker thread; the fence hears every key on the loop before the
-        delete starts, and every listener hears every key after it ends, also when it fails. Both
+        delete starts, and every listener hears every key after it ends, also when it fails, in order
+        on the loop with the loop's other work let run between stretches (:func:`called_in_turns`). Both
         L1 backends are built for any thread: SQLite gives each thread its own connection to the one
         in-memory database, DuckDB writes under its own lock. A cancel waits for the eviction to
         finish and is raised after, so a cancel never leaves L1 holding a row a commit replaced.
@@ -2808,11 +2809,11 @@ class BaseCollection(ABC, Generic[EntityT]):
             if l1 is not None:
                 await asyncio.to_thread(self._delete_l1_rows, l1, entity_ids)
         finally:
-            # a call a key only when something listens: with none, 33,786 keys held the loop 2-3 ms for nothing
-            listeners = tuple(getattr(self, "_l1_change_listeners", ()))
-            if listeners:
-                for entity_id in entity_ids:
-                    self._l1_changed(entity_id)
+            # a call a key only when something listens: with none, 33,786 keys held the loop 2-3 ms for nothing. With
+            # listeners, still on the loop, as they are promised, but with the loop's other work let run between
+            # stretches: 33,786 keys heard by a scope snapshot's two holders held it 5-6 ms in one (2026-11-16)
+            if getattr(self, "_l1_change_listeners", ()):
+                await called_in_turns(entity_ids, self._l1_changed)
 
     async def _changed_rows_off_loop(
         self, entity_ids: Sequence[Any], rows: Sequence[dict[str, Any] | None]
@@ -3038,7 +3039,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         :meth:`_evict_l1_many`, so a listener here hears each change. It runs synchronously inside the
         change, on the event loop, and must not raise. A row a collection keeps off the loop
         (:meth:`_keeps_off_loop`, a large answer) is written on a worker thread; its listeners run on
-        the loop once that write, and any delete of a copy an eviction overtook, has finished.
+        the loop once that write, and any delete of a copy an eviction overtook, has finished. An
+        eviction of many keys on threads (:meth:`_evict_l1_many_off_loop`) calls it a key at a time, in
+        order, after the delete, and lets the loop's other work run between stretches of those calls.
 
         :param listener: called with the row's key (pk value, or tuple of pk values)
         :ptype listener: Callable[[Any], None]
