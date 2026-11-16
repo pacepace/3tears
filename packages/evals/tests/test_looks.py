@@ -49,11 +49,16 @@ from threetears.evals.analysis.campaign_readings import CampaignReadings, campai
 from threetears.evals.analysis.caveats import UnkeptPlan, caveat_list, unkept_plan
 from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.floors import floor_readings
+from threetears.evals.analysis.report.block_spec import block_look, complete_chart
+from threetears.evals.analysis.report.charts import drawn_head
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.keys.vocabulary import joint_level, looks_of, plan_unshown
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
 from threetears.evals.analysis.report.number_forms.intervals import interval_level
+from threetears.evals.analysis.report.parts.full_results import every_table
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.words import UNSHOWN_PLAN_LEVEL
 from threetears.evals.analysis.report_input import CaveatEntry, FalseSeparation, ReportInput, report_input_digest
 from threetears.evals.analysis.report_input_build import report_input
@@ -71,6 +76,7 @@ from threetears.evals.analysis.significance import (
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SIGNIFICANCE_ALPHA, bounded_difference_interval
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.campaign import EvalCampaign
+from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, MembershipChange, RateDrop
@@ -212,6 +218,7 @@ def _bundle(
     margin: float | None = None,
     floors: Sequence[DecisionClause] = (),
     guardrail_margin: float | None = None,
+    stripped: bool = True,
 ) -> tuple[AnalysisContextBundle, EvalCampaign, dict[str, dict[str, float]]]:
     """A two-arm campaign asked a question, its runs launched as ``launches`` says: each a launch group (None: each
     arm launched alone, the candidate five minutes after the control), when it started in minutes, the cases it ran,
@@ -272,7 +279,8 @@ def _bundle(
                         cost_usd=cost,
                         usage=[] if cost is None else [RoleUsage(role="candidate", model=model, cost_usd=cost)],
                         rubric_scores=[],
-                        host_measures={"field_accuracy": round(value, 6), "fields_stripped": 5.0}
+                        host_measures={"field_accuracy": round(value, 6)}
+                        | ({"fields_stripped": 5.0} if stripped else {})
                         | ({} if guardrail_margin is None else {"destructive_calls": destructive}),
                         scored_at=(began + timedelta(seconds=case_index)).isoformat(),
                         judge_rescores=[
@@ -1019,6 +1027,64 @@ def test_a_written_page_prints_no_level_where_its_plan_is_not_shown_kept() -> No
 
     assert weakest(kept) == f"the 95% interval, adjusted for {written.family_size} comparisons"
     assert weakest(unkept) == "the multiplicity-corrected interval"
+
+
+#: The candidate arm's id on a written page built from :func:`_bundle` (:func:`_candidate_arm`).
+_CANDIDATE_ARM = "candidate"
+
+
+def _written_level(held: ReportInput) -> dict[str, str]:
+    """A written page's level cell for its one contrast (the full results' contrast table), and the head of a chart
+    comparing the two arms on that contrast's measure (``compare``, drawn on the contrast's own interval), each as the
+    page prints it."""
+    forms = PageForms.of(held)
+    look = block_look(held, fact_arms(held))
+    (table,) = [table for table in every_table(held, look, forms=forms) if table.name == "contrasts"]
+    (row,) = table.rows
+    query = ChartQuery.model_validate(
+        {
+            "source": "compare",
+            "aspect": "",
+            "measures": ["field_accuracy"],
+            "arms": [_CANDIDATE_ARM, "control"],
+            "strata": [],
+            "limit": 0,
+            "transform": "none",
+            "small_multiples_by": "none",
+        }
+    )
+    planned = PlannedChart.model_validate(
+        {"kind": "dot_interval", "title": "", "query": query, "reference": [], "emphasis": ""}
+    )
+    spec, faults = complete_chart(planned, held, "chart", forms=forms)
+    assert not faults
+    chart = resolve_chart(spec, look, title="", forms=forms).chart
+    return {"level cell": str(row["level"].value), "chart head": drawn_head(chart.data)}
+
+
+@pytest.mark.parametrize("where", ["level cell", "chart head"])
+def test_a_written_page_prints_no_level_for_a_family_of_one_where_its_plan_is_not_shown_kept(where: str) -> None:
+    """A family of one states no joint level (``joint_guarantee``); under a plan of two looks its stated level, 97.5%,
+    is the one each look reads at. Read twice on the t test, the plan is not shown kept, so the written page's level
+    cell and a chart's head print no level, as the aspect page's head prints none for the same family; kept, both
+    print its level. The plan's decision comes first for a family of any size."""
+    bundle, campaign, _ = _bundle(
+        [("g1", 0, range(20)), ("g2", 120, range(20, 40))],
+        planned=2,
+        stripped=False,
+        **_TWO_LOOKS_AND_A_GAIN,  # type: ignore[arg-type]
+    )
+    (family,) = bundle.multiple_comparisons.families
+    assert (family.family_size, family.interval_level) == (1, 0.975)
+    assert _page_lines(bundle)[0] == "Interval", "the aspect page prints no level for this family"
+    unkept = _built(bundle, campaign)
+    (written,) = unkept.contrast_families
+    assert (written.family_size, written.level) == (1, "97.5%")
+    assert plan_unshown(looks_of(unkept, written.aspect)) is not None
+
+    after = " intervals" if where == "chart head" else ""
+    assert _written_level(unkept)[where] == f"{UNSHOWN_PLAN_LEVEL}{after}"
+    assert _written_level(_restated(unkept, planned=2, taken=2, tests=["bounded"]))[where] == f"97.5%{after}"
 
 
 def test_the_one_decision_of_a_plan_s_keeping_reads_past_short_unrecorded_and_sized_looks() -> None:

@@ -27,8 +27,9 @@ def interval_level(level: str, family: ContrastFamily | None, looks: Looks | Non
     meets the guarantee they act on; any other level as the one rule prints a level as text
     (:func:`~threetears.evals.analysis.report.number_forms.policy.policy_level`: ``95%``, an uncorrected 98.33% as
     ``98.3%``), so a level reads alike in a head, a cell and the prose (owner ruling, 2026-11-14). A level the input
-    states in no percent's digits reads as stated. The per-interval level is Method's and the glossary's. Where such a
-    family's plan of looks is not shown held (:func:`plan_unshown`), no level (:data:`UNSHOWN_PLAN_LEVEL`).
+    states in no percent's digits reads as stated. The per-interval level is Method's and the glossary's. Where the
+    family's plan of looks is not shown held (:func:`plan_unshown`), no level (:data:`UNSHOWN_PLAN_LEVEL`), whatever the
+    family's size: a family of one's level is the one each look reads at under the plan, corrected for its looks.
 
     :param level: The level as the input states it (``99.69%``).
     :ptype level: str
@@ -40,11 +41,15 @@ def interval_level(level: str, family: ContrastFamily | None, looks: Looks | Non
     :rtype: str
     """
     stated = level.strip()
-    joint = joint_level(family) if family is not None and family.level == level else None
-    if joint is None:
+    if family is None or family.level != level:
         return level_text(stated)
+    # The plan's decision first, for a family of any size: a family of one states no joint level, and its stated level
+    # is the one each look reads at, which holds no better over several looks than a larger family's.
     if plan_unshown(looks) is not None:
         return UNSHOWN_PLAN_LEVEL
+    joint = joint_level(family)
+    if joint is None:
+        return level_text(stated)
     return FAMILY_LEVEL_TEMPLATE.format(joint=policy_level(joint[0] * 100), size=joint[1])
 
 

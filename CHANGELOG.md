@@ -20,7 +20,8 @@ condition: why it is not shown (a look's cases sized from an earlier reading; th
 plan; or a count that may be short), naming the readings behind it. On a change of several candidates that line says
 the level is each arm's intervals', and the Methods paragraph keeps the sentence that the correction does not run
 across the arms, with no rate. The written page's heads and level cells print `multiplicity-corrected` in place of a
-level: each interval's own level holds no better over several looks, and the caveat on looks says why.
+level, for a family of any size, one comparison included: each interval's own level holds no better over several
+looks, and the caveat on looks says why.
 `CampaignReadings` gains `planned_looks`, the plan its `look_alpha` is read under (optional, left out with none). The
 method is unchanged: no reading, interval or verdict moves. With no plan nothing moves. The looks entry below said pages
 print that level; that was the defect, and it is corrected there.
