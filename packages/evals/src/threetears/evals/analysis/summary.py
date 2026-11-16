@@ -447,9 +447,11 @@ def _judged_missed(grade: JudgeGrade, threshold: int) -> str:
     """One judged dimension under the bar, as a miss reads it: a pass/fail one failed, a 1–5 one scored under the
     level the pass rule asks, each with the judge's reason on one line."""
     reason = " ".join(grade.reasoning.split())
+    # Named as every surface names a judged dimension (``answer grounded (judged)``), never by its stored id.
+    named = judged_heading(grade.dimension)
     if grade.scale == "pass_fail":
-        return f"the judge failed it on {grade.dimension}: {reason}"
-    return f"the judge scored {grade.dimension} {grade.score} of 5, under the bar of {threshold}: {reason}"
+        return f"the judge failed it on {named}: {reason}"
+    return f"the judge scored {named} {grade.score} of 5, under the bar of {threshold}: {reason}"
 
 
 class CaseResult(BaseModel):

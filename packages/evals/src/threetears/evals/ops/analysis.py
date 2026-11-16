@@ -2314,8 +2314,14 @@ async def _write_doc_analysis(
             if not_stored is not None
             else outcome.reason or "it stored nothing"
         )
-        why: EvalServiceError
-        if outcome.failure is not None:
+        why: EvalServiceError | None
+        if outcome.defect is not None:
+            # The package's own failure, not the client's: no refusal of the work and never the provider's, so the job
+            # carries no refusal kind, and its error names the type, where it was raised and the last tool call, which
+            # the loop's log record carries with the traceback.
+            error = f"the report writer ended {written.ending} on {outcome.defect.line()}"
+            why = None
+        elif outcome.failure is not None:
             # The client's failure: its text may hold a provider's account, so the record keeps what the host's
             # describer says is safe, as a planned generation's does, and a withheld payload is the provider's refusal.
             failure = describe_failure(

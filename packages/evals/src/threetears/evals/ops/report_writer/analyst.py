@@ -281,7 +281,7 @@ class AnalystSession:
         """
         if self._session.round:
             raise ValueError("the analyst has drafted already; send the editor's findings with revise()")
-        overview = await self._session.mount.call({"action": "campaign_overview", "snapshot_id": self.snapshot})
+        overview = await self._session.call_tool({"action": "campaign_overview", "snapshot_id": self.snapshot})
         if overview.is_error:
             raise ValueError(
                 f"the tool refused snapshot {self.snapshot!r}'s overview, so the analyst cannot be briefed: "
