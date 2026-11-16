@@ -116,11 +116,44 @@ def test_media_session_routes_actions_and_clears_seeking_on_a_live_stream(page: 
         onPlay: () => calls.push('play'), onPause: () => calls.push('pause'),
         onStop: () => { throw new Error('boom'); } });
       handlers.play(); handlers.pause(); handlers.stop();
+      await new Promise((r) => setTimeout(r, 0));
       return [calls, 'seekforward' in handlers && handlers.seekforward === null,
               'nexttrack' in handlers && handlers.nexttrack === null, 'seekto' in handlers];
     """
     # a throwing handler is contained (logged), and an action the platform lacks is skipped
     assert _run(page, body) == [["play", "pause"], True, True, False]
+
+
+def test_media_session_contains_a_handler_that_rejects(page: Page) -> None:
+    body = """
+      const handlers = {};
+      const unhandled = [];
+      const onUnhandled = (e) => { unhandled.push(String(e.reason)); e.preventDefault(); };
+      window.addEventListener('unhandledrejection', onUnhandled);
+      const nav = { mediaSession: { setActionHandler(a, f) { handlers[a] = f; } } };
+      new m.MediaSessionControl(nav, { onPlay: () => Promise.reject(new Error('NotAllowedError')) });
+      handlers.play();
+      await new Promise((r) => setTimeout(r, 50));
+      window.removeEventListener('unhandledrejection', onUnhandled);
+      return unhandled;
+    """
+    assert _run(page, body) == []
+
+
+def test_metadata_the_platform_refused_is_tried_again(page: Page) -> None:
+    body = """
+      let fail = true;
+      let set = null;
+      class Meta { constructor(o) { if (fail) throw new TypeError('bad artwork'); Object.assign(this, o); } }
+      const session = { setActionHandler() {}, set metadata(v) { set = v; } };
+      const ms = new m.MediaSessionControl({ mediaSession: session }, { MediaMetadata: Meta });
+      let threw = false;
+      try { ms.setNowPlaying({ title: 'A' }); } catch { threw = true; }
+      fail = false;
+      ms.setNowPlaying({ title: 'A' });
+      return [threw, set && set.title];
+    """
+    assert _run(page, body) == [True, "A"]
 
 
 def test_media_session_does_not_reset_unchanged_metadata(page: Page) -> None:

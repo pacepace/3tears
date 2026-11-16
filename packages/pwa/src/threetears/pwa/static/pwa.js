@@ -93,7 +93,9 @@ export class MediaSessionControl {
   handle(action, fn) {
     if (!this.session) return false;
     try {
-      this.session.setActionHandler(action, fn ? () => { try { fn(); } catch (e) { console.warn(`media session ${action}:`, e); } } : null);
+      // a handler may throw or return a promise that rejects (audio.play() refused): both are logged
+      const run = fn ? () => { Promise.resolve().then(fn).catch((e) => console.warn(`media session ${action}:`, e)); } : null;
+      this.session.setActionHandler(action, run);
       return true;
     } catch {
       return false; // an action this platform does not know
@@ -110,8 +112,8 @@ export class MediaSessionControl {
     if (!this.session || typeof this.Metadata !== "function") return;
     const key = JSON.stringify([title, artist, album, artwork]);
     if (key === this.key) return;
-    this.key = key;
     this.session.metadata = new this.Metadata({ title, artist, album, artwork });
+    this.key = key; // only once set: metadata the platform refused is tried again next time
   }
 
   /** Tells the platform whether it plays (the lock screen's play/pause button follows it). */
@@ -164,6 +166,7 @@ export class ScreenWakeLock {
     if (this.sentinel && !this.sentinel.released) return true;
     if (this.pending) return this.pending;
     this.pending = (async () => {
+      await null; // run the body after this.pending is assigned, so its finally clears the right one
       try {
         const s = await this.nav.wakeLock.request("screen");
         // Given up while the request ran: let it go at once.

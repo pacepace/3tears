@@ -79,5 +79,11 @@ def test_insert_head_tags_prefers_the_marker_else_closes_the_head() -> None:
         insert_head_tags("<body></body>", "<T>")
 
 
+def test_insert_head_tags_lands_before_the_close_whatever_the_title() -> None:
+    # "İ".lower() is two code points: an index found in a lowered copy would land mid-tag
+    page = "<head><title>İİİ</title></head ><body></body>"
+    assert insert_head_tags(page, "<T>") == "<head><title>İİİ</title><T>\n</head ><body></body>"
+
+
 def test_viewport_covers_the_safe_areas() -> None:
     assert "viewport-fit=cover" in VIEWPORT

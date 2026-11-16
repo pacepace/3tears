@@ -86,6 +86,7 @@ platform = [
     "packages/nats/**",
     "packages/object-store/**",
     "packages/observe/**",
+    "packages/pwa/**",
     "packages/registry/**",
     "packages/scheduled-jobs/**",
     "packages/scrape/**",

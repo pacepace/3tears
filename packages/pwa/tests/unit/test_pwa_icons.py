@@ -134,6 +134,14 @@ def test_bad_options_are_refused(source: bytes) -> None:
         render_icons(source, background="#07060c", maskable_scale=0)
     with pytest.raises(ValueError, match="background"):
         render_icons(source, background="not-a-colour")
+    # flattened onto it, so a transparent background would come out black
+    with pytest.raises(ValueError, match="opaque"):
+        render_icons(source, background="#00000000")
+
+
+def test_a_truncated_source_is_a_value_error(source: bytes) -> None:
+    with pytest.raises(ValueError, match="decoded"):
+        render_icons(source[: len(source) // 2], background="#07060c")
 
 
 def test_an_icon_outside_the_set_is_a_key_error(source: bytes) -> None:

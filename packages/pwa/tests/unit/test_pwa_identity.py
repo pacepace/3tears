@@ -48,6 +48,13 @@ def test_urls_must_be_on_the_apps_own_origin(field: str) -> None:
         _identity(**{field: "https://elsewhere.example/"})
 
 
+@pytest.mark.parametrize("url", ["/player/../admin/", "/player/./x", "/.."])
+def test_dot_segments_are_refused(url: str) -> None:
+    """A browser resolves them, so "/player/../admin/" would pass a prefix check and leave the scope."""
+    with pytest.raises(ValueError, match="path-absolute"):
+        _identity(scope="/player/", start_url=url)
+
+
 def test_start_url_must_be_inside_scope() -> None:
     with pytest.raises(ValueError, match="outside scope"):
         _identity(scope="/player/", start_url="/auth/login")

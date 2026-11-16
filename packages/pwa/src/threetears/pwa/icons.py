@@ -12,16 +12,19 @@ A maskable icon is cropped to anything from a circle to a squircle, and only the
 80 % of its width is guaranteed visible. So it is the source scaled into that circle
 (``maskable_scale``) over a solid background colour. The apple-touch icon is composed the same way:
 iOS rounds its corners, and an opaque square with the mark inside reads as an app icon rather than a
-cropped picture. A round mark fits the safe circle at 0.8; a square picture needs about 0.6.
+cropped picture. A round mark fits the safe circle at 0.8; a square one needs 0.56 (0.8 / sqrt 2) or less.
 
-Output is deterministic: the same source and options give byte-identical files (Pillow writes no
-timestamps into a PNG), so a content hash names a version and the URLs can be cached for good.
+Output is deterministic for a given Pillow (and its zlib): the same source and options give
+byte-identical files (Pillow writes no timestamps into a PNG), so a content hash names a version and
+the URLs can be cached for good. Another Pillow release may resample or compress differently, which
+only changes the hashes, so browsers fetch the icons again.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Final
@@ -48,6 +51,7 @@ MIN_SOURCE_PX: Final[int] = 512
 #: the largest source accepted: well past any icon size, and a bound on decoding work
 MAX_SOURCE_PX: Final[int] = 4096
 
+_HEX_COLOUR: Final[re.Pattern[str]] = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _APPLE_PX: Final[int] = 180
 _FAVICON_PX: Final[int] = 32
 _SIZES: Final[tuple[int, ...]] = (192, 512)
@@ -167,6 +171,8 @@ def _open_source(png: bytes) -> Image.Image:
             return probe.convert("RGBA")
     except UnidentifiedImageError as exc:
         raise ValueError("the icon source is not an image Pillow can read") from exc
+    except OSError as exc:  # a truncated or corrupt file fails while decoding
+        raise ValueError(f"the icon source cannot be decoded: {exc}") from exc
 
 
 def render_icons(
@@ -184,7 +190,7 @@ def render_icons(
     :param background: the colour behind the mark in the maskable and apple-touch icons (CSS hex)
     :ptype background: str
     :param maskable_scale: the mark's width as a fraction of the maskable and apple-touch icons;
-        0.8 fills the maskable safe circle with a round mark, about 0.6 fits a square one
+        0.8 fills the maskable safe circle with a round mark, 0.56 fits a square one
     :ptype maskable_scale: float
     :param monochrome: also render ``purpose: monochrome`` (a white silhouette from the alpha);
         useful only for a mark on a transparent background
@@ -197,11 +203,10 @@ def render_icons(
     """
     if not 0 < maskable_scale <= 1:
         raise ValueError(f"maskable_scale must be in (0, 1]: {maskable_scale}")
+    if not _HEX_COLOUR.match(background):
+        # opaque only: the maskable and apple-touch icons are flattened onto it
+        raise ValueError(f"background must be an opaque hex colour (#rgb or #rrggbb): {background!r}")
     source = _open_source(png)
-    try:
-        Image.new("RGB", (1, 1), background)
-    except ValueError as exc:
-        raise ValueError(f"background must be a colour Pillow reads, e.g. '#07060c': {background!r}") from exc
     files: list[IconFile] = []
     for px in _SIZES:
         files.append(IconFile(f"icon-{px}.png", _png(_resized(source, px)), "image/png", f"{px}x{px}", "any"))

@@ -52,7 +52,15 @@ def install_id(prefix: str, slug: str) -> str:
 def _require_path(value: str, what: str) -> None:
     """``value`` is a same-origin, path-absolute URL (``/x``, never ``//host`` or ``https:``)."""
     parts = urlsplit(value)
-    if not value.startswith("/") or value.startswith("//") or parts.scheme or parts.netloc or "\\" in value:
+    dot_segment = any(segment in (".", "..") for segment in parts.path.split("/"))
+    if (
+        not value.startswith("/")
+        or value.startswith("//")
+        or parts.scheme
+        or parts.netloc
+        or "\\" in value
+        or dot_segment
+    ):
         raise ValueError(f"{what} must be a path-absolute URL on the app's own origin: {value!r}")
 
 
@@ -111,7 +119,7 @@ class AppIdentity:
             _require_colour(self.dark_theme_color, "dark_theme_color")
         for category in self.categories:
             if not category or category != category.lower() or not category.replace("-", "").isalpha():
-                raise ValueError(f"a manifest category is one lowercase word: {category!r}")
+                raise ValueError(f"a manifest category is one lowercase word (hyphens allowed): {category!r}")
 
     @property
     def label(self) -> str:

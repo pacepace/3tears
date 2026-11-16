@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+import re
 from html import escape
 from typing import Final, Literal
 
@@ -38,6 +39,8 @@ VIEWPORT: Final[str] = "width=device-width, initial-scale=1, viewport-fit=cover"
 
 #: where :func:`insert_head_tags` puts the tags, if the page has it (else before ``</head>``)
 _HEAD_MARKER: Final[str] = "<!-- pwa-head -->"
+
+_HEAD_CLOSE: Final[re.Pattern[str]] = re.compile(r"</head\s*>", re.IGNORECASE)
 
 #: the iOS status bar in standalone mode: ``black-translucent`` draws the page under it
 StatusBarStyle = Literal["default", "black", "black-translucent"]
@@ -136,7 +139,10 @@ def insert_head_tags(document: str, tags: str) -> str:
     """
     if _HEAD_MARKER in document:
         return document.replace(_HEAD_MARKER, tags, 1)
-    at = document.lower().find("</head>")
-    if at < 0:
+    # matched in the document itself: lower() can change a string's length ("İ" becomes two code
+    # points), so an index found in a lowered copy can land mid-tag in the original
+    found = _HEAD_CLOSE.search(document)
+    if found is None:
         raise ValueError(f"the document has no {_HEAD_MARKER} and no </head> to put the tags before")
+    at = found.start()
     return f"{document[:at]}{tags}\n{document[at:]}"

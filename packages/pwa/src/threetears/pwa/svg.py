@@ -1,7 +1,7 @@
 """An icon set from an SVG source (the ``svg`` extra: ``pip install '3tears-pwa[svg]'``).
 
 The SVG is rendered by resvg, a self-contained renderer: no cairo or other system library, and
-the same SVG gives the same pixels on every machine. System fonts are not loaded, so a mark that
+the same SVG gives the same pixels on every machine with the same resvg-py release. System fonts are not loaded, so a mark that
 uses ``<text>`` renders without it: convert text to paths first. External references
 (``<image href>`` to a file or URL) are not resolved either; embed them as data URLs.
 """
