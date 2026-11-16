@@ -262,8 +262,10 @@ async def plain_keyed_delete_seconds(conn: Any, rows: int, *, runs: int = _RUNS)
     return best
 
 
-def budget_problem(what: str, took: float, baseline: float, *, factor: float = DEFAULT_BUDGET_FACTOR) -> str | None:
-    """why ``took`` is over ``factor`` times its calibrated ``baseline``, or None when it is within.
+def budget_problem(
+    what: str, took: float, baseline: float, *, factor: float = DEFAULT_BUDGET_FACTOR, plus: float = 0.0
+) -> str | None:
+    """why ``took`` is over ``factor`` times its calibrated ``baseline`` plus ``plus``, or None when it is within.
 
     :param what: the path, for the message
     :ptype what: str
@@ -273,11 +275,19 @@ def budget_problem(what: str, took: float, baseline: float, *, factor: float = D
     :ptype baseline: float
     :param factor: the most times the baseline the path may take
     :ptype factor: float
+    :param plus: seconds of a fixed cost the path pays once beside its reads, measured on its own and budgeted on its
+        own (a restore's worker start); 0 for none
+    :ptype plus: float
     :return: the problem, or None
     :rtype: str | None
     """
-    if took <= factor * baseline:
+    if took <= factor * baseline + plus:
         return None
+    if plus:
+        return (
+            f"{what} took {took * 1000:.1f} ms, over {factor}x its calibrated {baseline * 1000:.1f} ms plus "
+            f"{plus * 1000:.1f} ms ({(took - plus) / baseline:.1f}x once that is taken off)"
+        )
     return f"{what} took {took * 1000:.1f} ms, {took / baseline:.1f}x its calibrated {baseline * 1000:.1f} ms (over {factor}x)"
 
 

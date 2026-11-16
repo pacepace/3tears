@@ -13,7 +13,7 @@ Against the session ``db_container``; set ``THREETEARS_TEST_POSTGRES_URL`` to a 
 
 from __future__ import annotations
 
-
+import time
 import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass
@@ -23,8 +23,9 @@ import asyncpg
 import pytest
 from threetears.nats.change_log import ChangeLogState
 
+from threetears.core.change_note_fold import RestoreFolder
 from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO, ChangeNoteKeeper
-from threetears.core.collections.epoch_change import EpochChange
+from threetears.core.collections.epoch_change import EpochChange, keyed_record_form
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.testing.loop_lateness import turn_holds
@@ -148,10 +149,29 @@ async def _sizes(ring: _Ring) -> tuple[int, int]:
     return int(distinct) + 256 * _TABLES, int(every) + 256 * _TABLES
 
 
+async def _worker_start() -> float:
+    """one restore worker's start, spawn to its first answer, the best of three: what a restore pays once beside its
+    reads (R4 option 1, Pace 2026-11-15). Its own budget is test_change_note_fold's
+    test_a_restore_worker_starts_within_its_budget."""
+    form = keyed_record_form()
+    pieces = (form.head, form.middle, form.tail, form.row_head, form.row_columns, form.row_tail)
+    starts: list[float] = []
+    for _ in range(3):
+        folder = RestoreFolder()
+        started = time.perf_counter()
+        folder.start()
+        await folder.fold(b"", final=True, form=pieces, chunk_rows=1, max_bytes=form.max_bytes)
+        starts.append(time.perf_counter() - started)
+        await folder.close()
+        await folder.closed()
+    return min(starts)
+
+
 async def test_a_restore_reads_its_coverage_within_twice_the_bare_reads(ring: _Ring) -> None:
     """Flips if the keeper's pass putting a lost log back (``_count_since``, ``_estimate`` and ``_stream`` with its
-    keyed notes' ``_folded`` over the coverage) takes more than twice the bare count, sized distinct read and read of every note, or puts back other
-    than one change per table's whole notes and per table's keyed ones."""
+    keyed notes' ``_folded`` over the coverage) takes more than twice the bare count, sized distinct read and read of
+    every note plus one worker start (the restore spawns its fold worker: Pace 2026-11-15), or puts back other than
+    one change per table's whole notes and per table's keyed ones."""
     notes = f"{ring.schema}.{note_table(0)}"
     ring_row = f"{ring.schema}.{RING_TABLE}"
     appended: list[int] = []
@@ -172,10 +192,11 @@ async def test_a_restore_reads_its_coverage_within_twice_the_bare_reads(ring: _R
         appended.append(log.appended)
 
     baseline, took = await best_seconds_interleaved(bare, restore, runs=3)
+    start = await _worker_start()
 
     # one change per table loaded whole, and one per other table (its keyed notes, fewer than a chunk)
     assert set(appended) == {_TABLES}, appended
-    problem = budget_problem(f"restoring a log from {_NOTES:,} notes", took, baseline)
+    problem = budget_problem(f"restoring a log from {_NOTES:,} notes", took, baseline, plus=start)
     assert problem is None, problem
 
 
@@ -199,8 +220,9 @@ async def _restore_into(ring: _Ring, log: _LostLog) -> str | None:
 
 async def test_a_restore_whose_bound_does_not_fit_reads_within_twice_the_bare_reads(ring_twice: _Ring) -> None:
     """Flips if a restore whose coverage fits the log only once its distinct rows are sized (each row noted twice, so
-    the count's bound passes the budget and the estimate does not) takes more than twice the bare reads, or puts
-    back other than the whole coverage: one change per table's whole notes and per table's keyed ones."""
+    the count's bound passes the budget and the estimate does not) takes more than twice the bare reads plus one
+    worker start, or puts back other than the whole coverage: one change per table's whole notes and per table's
+    keyed ones."""
     estimate, bound = await _sizes(ring_twice)
     budget = (estimate + bound) / 2
     assert estimate < budget < bound
@@ -216,9 +238,12 @@ async def test_a_restore_whose_bound_does_not_fit_reads_within_twice_the_bare_re
         calls.append(log.calls)
 
     baseline, took = await best_seconds_interleaved(bare, restore, runs=3)
+    start = await _worker_start()
     # the whole coverage, in one finish_restore: one change per table loaded whole, and one per other table
     assert {tuple(each) for each in calls} == {(_TABLES,)}, calls
-    problem = budget_problem(f"restoring a log from {_NOTES:,} notes, its bound over the budget", took, baseline)
+    problem = budget_problem(
+        f"restoring a log from {_NOTES:,} notes, its bound over the budget", took, baseline, plus=start
+    )
     assert problem is None, problem
 
 

@@ -93,6 +93,9 @@ _STORE_BYTES: Final = 48 << 20
 #: a worker holding more private memory than this after a page is replaced
 _WORKER_PRIVATE_BYTES: Final = 512 << 20
 
+#: each folder's shutdown still running (:meth:`RestoreFolder.close`): held here so none is collected mid-way
+_CLOSING: set[asyncio.Task[None]] = set()
+
 
 class RestoreFolder:
     """one restore's worker process and the shared-memory store its pages and records cross: made for the restore,
@@ -109,6 +112,9 @@ class RestoreFolder:
     :mod:`threetears.core.change_note_fold_job`); the first page waits for it from ~80 ms, the six pages after fold
     in ~15 ms each, and the worker's exit takes ~25-55 ms more: a restore 331-372 ms against 148-176 ms of bare reads,
     2.1-2.4x (the kept worker's restore was inside 2x). YugabyteDB, whose bare reads are slower, stays inside 2x.
+    So (Pace 2026-11-15, R4 option 1) a restore's speed budget is twice its bare reads plus one worker start, and the
+    start has its own budget (``test_change_note_fold.py::test_a_restore_worker_starts_within_its_budget``); the
+    worker's exit is off the restore's path: :meth:`close` hands it to a task of its own and returns.
 
     The store's directory is a fresh one, memory-backed where the system has ``/dev/shm``. Used as ``async with``.
     """
@@ -120,6 +126,8 @@ class RestoreFolder:
         self._root: Path | None = None
         #: the worker's spawn, started by :meth:`start`
         self._warming: asyncio.Future[None] | None = None
+        #: the worker's exit and the store's removal, started by :meth:`close`
+        self._closing: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> RestoreFolder:
         return self
@@ -231,7 +239,8 @@ class RestoreFolder:
         return int(result.value), folded
 
     async def _shut(self) -> None:
-        """wait for the spawn, shut the worker down (waiting for it to exit) and remove the store.
+        """wait for the spawn, shut the worker down (waiting for it to exit) and remove the store. Raises nothing: it
+        runs on a task of its own, after the restore has its answer, so a failure is only said.
 
         :return: nothing
         :rtype: None
@@ -243,15 +252,34 @@ class RestoreFolder:
                 contain(exc, log=log, what="the change-note restore's worker failed to start", level="warning")
         with self._lock:
             pool = self._pool
-        if pool is not None:
-            await pool.close()
-        await asyncio.to_thread(self._remove_root)
+        try:
+            if pool is not None:
+                await pool.close()
+        except Exception as exc:  # noqa: BLE001 -- the restore already has its answer; a failed exit is only said
+            contain(exc, log=log, what="the change-note restore's worker failed to shut down", level="warning")
+        finally:
+            await asyncio.to_thread(self._remove_root)
 
     async def close(self) -> None:
-        """end the restore's worker and remove its store: nothing of the folder is left. A caller cancelled meanwhile
-        leaves the shutdown to finish on its own.
+        """start the worker's exit and the store's removal on a task of their own, and return: the restore never waits
+        for them (the exit took ~25-55 ms of a restore's 331-372 ms, R4 2026-11-15). The task is held until it ends
+        (``_CLOSING``) and never belongs to the caller, so a caller cancelled meanwhile leaves it to finish; a process
+        ending before it does removes the store at its exit (``atexit``). :meth:`closed` waits for it. Once.
 
         :return: nothing
         :rtype: None
         """
-        await asyncio.shield(asyncio.ensure_future(self._shut()))
+        if self._closing is None:
+            self._closing = asyncio.get_running_loop().create_task(self._shut())
+            _CLOSING.add(self._closing)
+            self._closing.add_done_callback(_CLOSING.discard)
+
+    async def closed(self) -> None:
+        """wait until the shutdown :meth:`close` started has ended: the worker exited and the store is gone. A caller
+        cancelled here leaves the shutdown running.
+
+        :return: nothing
+        :rtype: None
+        """
+        if self._closing is not None:
+            await asyncio.shield(self._closing)

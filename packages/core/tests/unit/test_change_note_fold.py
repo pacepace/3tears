@@ -9,6 +9,7 @@ import asyncio
 import json
 import multiprocessing
 import tempfile
+import time
 from collections.abc import Iterator, Sequence
 from itertools import groupby
 from pathlib import Path
@@ -59,8 +60,14 @@ def _module_folder() -> Iterator[None]:
     try:
         yield
     finally:
-        asyncio.run(_FOLDER.close())
+        asyncio.run(_ended(_FOLDER))
         _FOLDER = None
+
+
+async def _ended(folder: RestoreFolder) -> None:
+    """close ``folder`` and wait for its shutdown, which runs on a task of its own."""
+    await folder.close()
+    await folder.closed()
 
 
 async def _fold(
@@ -233,9 +240,54 @@ async def test_a_closed_folder_leaves_no_worker_and_no_store() -> None:
     stores = _stores() - stores_before
     spawned = {child.pid for child in multiprocessing.active_children()} - before
     assert len(stores) == 1 and spawned
-    await folder.close()
+    await _ended(folder)
     assert not any(store.exists() for store in stores)
     assert not ({child.pid for child in multiprocessing.active_children()} & spawned)
+
+
+async def test_close_returns_before_the_worker_exits_and_the_exit_still_ends() -> None:
+    """Flips if a restore waits for its worker's exit (off its path since Pace 2026-11-15: ~25-55 ms of a restore's
+    331-372 ms, R4), or if the exit started then does not end with no worker and no store, a caller cancelled while
+    it waits included."""
+    before = {child.pid for child in multiprocessing.active_children()}
+    stores_before = _stores()
+    folder = RestoreFolder()
+    folder.start()
+    await folder.fold(b"", final=True, form=_PIECES, chunk_rows=5000, max_bytes=_FORM.max_bytes)
+    stores = _stores() - stores_before
+    spawned = {child.pid for child in multiprocessing.active_children()} - before
+    await folder.close()
+    # close only started the shutdown: the store and the worker are still there as it returns
+    assert all(store.exists() for store in stores) and stores
+    assert spawned <= {child.pid for child in multiprocessing.active_children()}
+    waiting = asyncio.ensure_future(folder.closed())
+    await asyncio.sleep(0)
+    waiting.cancel()
+    await folder.closed()
+    assert not any(store.exists() for store in stores)
+    assert not ({child.pid for child in multiprocessing.active_children()} & spawned)
+
+
+#: one restore worker's start, spawn to its first answer, at most (R4 option 1, Pace 2026-11-15: a restore's speed is
+#: budgeted as twice its bare reads plus one worker start, and the start budgeted here on its own). Measured spawn to
+#: ready 196-211 ms (R4 2026-11-15, macOS arm64, Python 3.14, quiet machine; the job's module imports only Arrow,
+#: NumPy and the shared-Arrow job types: threetears.core.change_note_fold_job); the budget is twice the slowest. A
+#: start past it is the worker importing more, or the spawn path growing: see change_note_fold_job's why first.
+_WORKER_START_BUDGET = 0.42
+
+
+async def test_a_restore_worker_starts_within_its_budget() -> None:
+    """Flips if a restore's worker takes longer than its budget to start and give its first answer (the best of
+    three): the start every restore pays beside its reads."""
+    starts: list[float] = []
+    for _ in range(3):
+        folder = RestoreFolder()
+        started = time.perf_counter()
+        folder.start()
+        await folder.fold(b"", final=True, form=_PIECES, chunk_rows=5000, max_bytes=_FORM.max_bytes)
+        starts.append(time.perf_counter() - started)
+        await _ended(folder)
+    assert min(starts) <= _WORKER_START_BUDGET, f"the worker started in {min(starts) * 1000:.0f} ms at best: {starts}"
 
 
 async def test_a_folder_never_started_spawns_nothing() -> None:

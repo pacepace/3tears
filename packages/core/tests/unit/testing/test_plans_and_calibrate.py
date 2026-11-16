@@ -92,6 +92,16 @@ def test_a_budget_is_twice_its_calibrated_baseline(took: float, baseline: float,
     assert (budget_problem("path", took, baseline) is not None) is fails
 
 
+@pytest.mark.parametrize(("took", "fails"), [(0.219, False), (0.221, True)])
+def test_a_fixed_cost_is_budgeted_beside_twice_the_baseline(took: float, fails: bool) -> None:
+    """Flips if a path paying a fixed cost once (a restore's worker start, Pace 2026-11-15) is not allowed twice its
+    baseline plus that cost, or is allowed more; the message names the cost."""
+    problem = budget_problem("path", took, 0.01, plus=0.2)
+    assert (problem is not None) is fails
+    if fails:
+        assert problem is not None and "plus 200.0 ms" in problem, problem
+
+
 class _QuietHost:
     """a :class:`~threetears.core.testing.loop_lateness.HostTicker` whose idle loop is never late: what this test asks
     of the timing is the order of its sides, never the host's quiet (tests/timing_suite.py)."""
