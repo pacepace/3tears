@@ -544,7 +544,7 @@ def _where(site: str) -> str:
 
 
 #: Every attribute path each family reads of a result, over every campaign it is read over (see the module
-#: docstring for the path syntax). Sizes: bundle 187, aggregates 100, planning 124.
+#: docstring for the path syntax). Sizes: bundle 197, aggregates 103, planning 130.
 #:
 #: The measure walk reads each model type's declared fields, never the judge's prose
 #: (``analysis/bundle/measures.py``), so no family reads ``judge_reasoning``, ``world_events`` or ``kind_payload``
@@ -737,6 +737,7 @@ PINNED: dict[str, frozenset[str]] = {
             "turns_delivered",
             "usage",
             "usage[].actor_id",
+            "usage[].answers_nothing",
             "usage[].call_count",
             "usage[].completion_tokens",
             "usage[].cost_usd",
@@ -860,6 +861,7 @@ PINNED: dict[str, frozenset[str]] = {
             "transcript_score.served_model",
             "turns_delivered",
             "usage",
+            "usage[].answers_nothing",
             "usage[].cost_usd",
             "usage[].role",
             "usage[].sent_settings",
@@ -979,6 +981,7 @@ PINNED: dict[str, frozenset[str]] = {
             "turns_delivered",
             "usage",
             "usage[].actor_id",
+            "usage[].answers_nothing",
             "usage[].call_count",
             "usage[].completion_tokens",
             "usage[].cost_usd",
@@ -1446,6 +1449,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "latency.tool_ms",
                 "latency.total_ms",
                 "model_copy()",
+                "usage[].answers_nothing",
                 "usage[].sent_settings",
                 "usage[].sent_settings[].model_dump()",
             }
@@ -1478,6 +1482,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "latency.tool_ms",
                 "latency.total_ms",
                 "model_copy()",
+                "usage[].answers_nothing",
                 "usage[].sent_settings",
                 "usage[].sent_settings[].model_dump()",
             }
@@ -1535,6 +1540,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "transcript_score.score",
                 "transcript_score.served_model",
                 "turns_delivered",
+                "usage[].answers_nothing",
                 "usage[].sent_settings",
                 "usage[].sent_settings[].model_dump()",
             }
@@ -1615,6 +1621,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         "enriched": frozenset(
             {
                 "judge_model",
+                "usage[].answers_nothing",
                 "usage[].cost_usd",
             }
         ),
@@ -1664,6 +1671,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "scored_at",
                 "termination",
                 "turns_delivered",
+                "usage[].answers_nothing",
                 "usage[].cost_usd",
                 "usage[].sent_settings",
                 "usage[].sent_settings[].model_dump()",
@@ -1701,6 +1709,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "precondition_outcomes[].detail",
                 "precondition_outcomes[].expression",
                 "precondition_outcomes[].presumes",
+                "usage[].answers_nothing",
                 "usage[].sent_settings",
                 "usage[].sent_settings[].model_dump()",
             }
@@ -1816,6 +1825,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "turns_delivered",
                 "usage",
                 "usage[].actor_id",
+                "usage[].answers_nothing",
                 "usage[].call_count",
                 "usage[].completion_tokens",
                 "usage[].cost_usd",
@@ -1910,6 +1920,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "usage[].sent_settings[].model_dump()",
             }
         ),
+        "enriched": frozenset({"usage[].answers_nothing"}),
     },
 }
 

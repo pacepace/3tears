@@ -694,7 +694,17 @@ _census(GoalReading, _GOAL)
 _census(PreconditionReading, _PRECONDITION)
 _census(LatencyReading, _LATENCY)
 _census(RescoreReading, _RESCORE, _RESCORE_NOT)
-_census(UsageReading, _USAGE, _PRICING)
+_census(
+    UsageReading,
+    _USAGE,
+    {
+        **_PRICING,
+        "answers_nothing": (
+            "derived: RoleUsage.answers_nothing read off the row's counts, which are evidence already; carried by the "
+            "reading, never stored"
+        ),
+    },
+)
 _census(RepeatedScoreReading, _REPEATED_SCORE)
 _census(RepeatReading, _REPEAT)
 _census(SecondScoreReading, _SECOND_SCORE)

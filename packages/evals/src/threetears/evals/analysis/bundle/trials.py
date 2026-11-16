@@ -468,18 +468,26 @@ def _pricing(results: Sequence[ResultView]) -> ArmPricing | None:
     A tool the model called (a web-search API, metered as an ``external`` row) never reads as a provider of the model:
     its spend is the cost's and its calls are counted, but it is named as tool spend (``tool_providers``).
 
+    A row holding only unanswered calls (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`)
+    priced nothing and counted no answered call, so it is no row of the cost's: never one that left its calls
+    uncounted, and never one whose provider went unrecorded. Every other model row names who served it or leaves it
+    unrecorded, a row that reported no count included.
+
     :param results: The arm's trials.
     :ptype results: Sequence[ResultView]
-    :return: The pricing; None where no trial recorded a production row.
+    :return: The pricing; None where no trial recorded a production row of an answered call.
     :rtype: ArmPricing | None
     """
     rows = [
-        row for result in results for row in production_rows(result.usage or [], candidate_kind=result.candidate_kind)
+        row
+        for result in results
+        for row in production_rows(result.usage or [], candidate_kind=result.candidate_kind)
+        if not row.answers_nothing
     ]
     if not rows:
         return None
     counted = all(row.call_count is not None for row in rows)
-    model_rows = [row for row in rows if row.role != _TOOL_ROLE and _answered(row)]
+    model_rows = [row for row in rows if row.role != _TOOL_ROLE]
     providers = sorted({name for row in model_rows if (name := _served_by(row))})
     return ArmPricing(
         sources=sorted({row.price_source for row in rows if row.cost_usd is not None and row.price_source}),
@@ -497,24 +505,13 @@ def _served_by(row: UsageView) -> str | None:
     return row.served_provider or row.provider or None
 
 
-def _answered(row: UsageView) -> bool:
-    """Whether a row counts answered calls or spend: a row holding only unanswered calls was served by nobody, so it
-    leaves the providers unread (``RoleUsage.answers_nothing``)."""
-    return not (
-        row.call_count is None
-        and row.cost_usd is None
-        and row.prompt_tokens is None
-        and row.completion_tokens is None
-        and row.reasoning_tokens is None
-    )
-
-
 def _unanswered(results: Sequence[ResultView]) -> list[RoleUnanswered]:
     """Each role's unanswered calls over one arm's trials, for every role a usage row counted them in.
 
     Sums what each row counted (``RoleUsage.unanswered_retried``, ``unanswered_lost``, ``unanswered_reasons``) and
     never adds a row that counted nothing as zero: a role no row counted in is absent, and a trial whose row in a
-    counting role counted nothing (any of its rows there) is ``results_uncounted``. ``calls`` sums the counting rows' answered calls, and is
+    counting role counted nothing (any of its rows there) is ``results_uncounted``. ``calls`` sums the counting rows' answered calls (none on a row
+    holding only unanswered calls), and is
     None once one of them did not count its calls, since a share over a partial denominator would overstate.
 
     :param results: The arm's trials.
@@ -539,7 +536,10 @@ def _unanswered(results: Sequence[ResultView]) -> list[RoleUnanswered]:
             retried = sum_optional_tokens(retried, row.unanswered_retried)
             lost = sum_optional_tokens(lost, row.unanswered_lost)
             reasons.update(row.unanswered_reasons or {})
-            calls = None if calls is None or row.call_count is None else calls + row.call_count
+            # A row holding only unanswered calls answered none (``RoleUsage.answers_nothing``): 0 answered calls, never
+            # a row that left its answered calls uncounted.
+            answered = 0 if row.answers_nothing else row.call_count
+            calls = None if calls is None or answered is None else calls + answered
         uncounted = sum(
             1
             for result in results

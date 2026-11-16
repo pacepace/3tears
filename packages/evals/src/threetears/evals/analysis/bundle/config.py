@@ -85,8 +85,15 @@ class EffectiveLever:
 
 
 def _observed_models(results: list[ResultView], role: str) -> set[str]:
-    """Every distinct model the given usage role spent tokens on across ``results``."""
-    return {usage.model for result in results for usage in result.usage if usage.role == role and usage.model}
+    """Every distinct model the given usage role spent tokens on across ``results``: a row holding only unanswered
+    calls (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) names a model that answered nothing,
+    so it is no observation of it."""
+    return {
+        usage.model
+        for result in results
+        for usage in result.usage
+        if usage.role == role and usage.model and not usage.answers_nothing
+    }
 
 
 #: How many ARMS (variants) must have observed a recovered lever's role for the lever to be a level at all. A role one

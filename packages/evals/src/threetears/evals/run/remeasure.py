@@ -474,8 +474,12 @@ async def attest_measure_definitions(
 
 
 def _silent_candidate_rows(result: EvalResult) -> int:
-    """How many of a result's candidate usage rows name no served model."""
-    return sum(1 for row in result.usage if row.role == "candidate" and not row.served_model)
+    """How many of a result's candidate usage rows name no served model: of a call that was answered, since a row
+    holding only unanswered calls (``RoleUsage.answers_nothing``) names none because no model served it, and no
+    statement says what answered it."""
+    return sum(
+        1 for row in result.usage if row.role == "candidate" and not row.served_model and not row.answers_nothing
+    )
 
 
 async def attest_served_model(

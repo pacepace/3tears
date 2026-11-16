@@ -5636,16 +5636,21 @@ class RoleUsage(EvalDocumentModel, CoreShapeModel):
 
     @property
     def answers_nothing(self) -> bool:
-        """Whether the row holds only unanswered calls: it counts no answered call, no token and no dollar, and counts
-        calls that went unanswered (``RoleUsageLedger.add_unanswered`` on a key no answered call reached).
+        """Whether the row holds only unanswered calls: it counts no answered call, no token, no dollar and no unit,
+        and counts calls that went unanswered (``RoleUsageLedger.add_unanswered`` on a key no answered call reached).
 
         Such a row is no spend at all, so it neither prices nor unprices a total (owner, 2026-10-27: unanswered calls
         add nothing to cost and never unprice it): :func:`~threetears.evals.kernel.usage_capture.blended_cost` and the
-        run summary's tallies leave it out, and its counts still reach the bundle's unanswered census.
+        run summary's tallies leave it out, and its counts still reach the bundle's unanswered census. It is no answer
+        either (#1238): every reader that reads a row as one skips it.
+
+        The one statement of the rule: a reading of the row (``UsageReading``) carries this value, never restates it.
         """
+        # The dollars first: the field every reader of a row reads, so a row that spent some is decided without
+        # reading a field its reader never otherwise reads (``test_result_reading_fields.py`` pins what each reads).
         return (
-            self.call_count is None
-            and self.cost_usd is None
+            self.cost_usd is None
+            and self.call_count is None
             and self.prompt_tokens is None
             and self.completion_tokens is None
             and self.reasoning_tokens is None

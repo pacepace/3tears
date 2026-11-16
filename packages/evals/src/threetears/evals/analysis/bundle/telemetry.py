@@ -77,12 +77,16 @@ def _token_count_unreported(row: UsageView) -> bool:
     token-metered too, explicitly: a count it left out then reads the sums as "at least this much", which is true
     whatever the role meters, where reading it as unmetered would claim sums complete that may not be.
 
+    A row holding only unanswered calls
+    (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) left no count out: no call it counts was
+    answered, so no token was spent to report.
+
     :param row: One usage row.
     :ptype row: UsageView
     :return: ``True`` when the row's prompt or completion count is missing from the sums.
     :rtype: bool
     """
-    if row.role == "external":
+    if row.role == "external" or row.answers_nothing:
         return False
     # Every other role is token-metered: the roles this build knows, and one a newer build recorded.
     return row.prompt_tokens is None or row.completion_tokens is None

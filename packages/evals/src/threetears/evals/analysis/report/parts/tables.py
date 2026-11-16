@@ -55,6 +55,7 @@ from threetears.evals.analysis.report.words import given_name
 from threetears.evals.analysis.report.parts.words import (
     ALL_PRICED_TEMPLATE,
     ARM_HEADERS,
+    AT_LEAST_COUNT_TEMPLATE,
     ARM_ROLE_WORDS,
     ARMS_EYEBROW,
     ASPECT_HEADER_TEMPLATE,
@@ -76,7 +77,7 @@ from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.kernel.numbers import UNPRICED
 
-__all__ = ["arms_key", "arms_table", "pass_rate_cell"]
+__all__ = ["arms_key", "arms_table", "pass_rate_cell", "unanswered_calls_said"]
 
 
 def _said(figure: Figure | None, forms: PageForms, filters: tuple[str, ...] = ()) -> str | None:
@@ -84,20 +85,70 @@ def _said(figure: Figure | None, forms: PageForms, filters: tuple[str, ...] = ()
     return format_figure(figure, filters, forms=forms) if figure is not None else None
 
 
-def _unanswered_marks(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> list[str]:
-    """How many of the arm's calls went unanswered, where any did: retried and lost together, else each kind a role
-    counted alone (the two together are not counted there). ``where`` is the keys' aspect prefix
-    (``aspects.<aspect>.``), empty for the lead aspect's."""
+def _unanswered_counts(arm: str, report_input: ReportInput, where: str) -> list[tuple[str, Figure]]:
+    """The arm's unanswered calls as counted: retried and lost together, else each kind a role counted alone (the two
+    together are not counted there), each with the words its count reads in; empty where no role counted them.
+    ``where`` is the keys' aspect prefix (``aspects.<aspect>.``), empty for the lead aspect's."""
     together = held_figure(f"{where}calls.unanswered.{arm}", report_input)
     if together is not None:
-        return [_calls(together, "unanswered", forms)] if together.value else []
+        return [("unanswered", together)]
     kinds = ((kind, held_figure(f"{where}calls.unanswered.{arm}.{kind}", report_input)) for kind in ("lost", "retried"))
-    return [_calls(held, f"{kind} unanswered", forms) for kind, held in kinds if held is not None and held.value]
+    return [(f"{kind} unanswered", held) for kind, held in kinds if held is not None]
 
 
-def _calls(figure: Figure, what: str, forms: PageForms) -> str:
-    """A count of calls in words: ``1 call unanswered``, ``3 calls unanswered``."""
-    return f"{format_figure(figure, forms=forms)} {'call' if figure.value == 1 else 'calls'} {what}"
+def _counted_in_part(arm: str, report_input: ReportInput, where: str) -> bool:
+    """Whether some of the arm's trials counted none of their calls in a role that counted unanswered ones
+    (``calls.unanswered.<arm>.uncounted``): each count is then a lower bound, read ``at least`` (the keys' rule)."""
+    uncounted = held_figure(f"{where}calls.unanswered.{arm}.uncounted", report_input)
+    return uncounted is not None and bool(uncounted.value)
+
+
+def _unanswered_marks(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> list[str]:
+    """How many of the arm's calls went unanswered, where any did (:func:`_unanswered_counts`), each ``at least``
+    where some trials counted none."""
+    at_least = _counted_in_part(arm, report_input, where)
+    return [
+        _calls(held, what, forms, at_least=at_least)
+        for what, held in _unanswered_counts(arm, report_input, where)
+        if held.value
+    ]
+
+
+def unanswered_calls_said(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> str | None:
+    """An arm's calls answered and unanswered, as a scoreboard's cell states them: the answered calls of the roles that
+    counted unanswered ones (``18 calls answered``), then its unanswered ones in the words the options table flags
+    them in (``8 calls unanswered``, else each kind a role counted alone), a zero included. Each count is its key's
+    (``calls.unanswered.<arm>`` and ``.calls``), never a sum of the roles' records, which hold no one number; a count
+    no role counted is left out, and an arm none counted is None (a dash). Where some trials counted none
+    (``.uncounted``), every count is a lower bound and reads so (``at least 18 calls answered``), as the options
+    table's flag does.
+
+    :param arm: The arm, by id.
+    :ptype arm: str
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param forms: The page's forms, which print each count.
+    :ptype forms: PageForms
+    :param where: The keys' aspect prefix (``aspects.<aspect>.``), empty for the input's own scoreboard.
+    :ptype where: str
+    :return: The counts in words, joined by ``; ``; None where no role counted any.
+    :rtype: str | None
+    """
+    at_least = _counted_in_part(arm, report_input, where)
+    answered = held_figure(f"{where}calls.unanswered.{arm}.calls", report_input)
+    said = [_calls(answered, "answered", forms, at_least=at_least)] if answered is not None else []
+    said += [
+        _calls(held, what, forms, at_least=at_least) for what, held in _unanswered_counts(arm, report_input, where)
+    ]
+    return "; ".join(said) or None
+
+
+def _calls(figure: Figure, what: str, forms: PageForms, *, at_least: bool = False) -> str:
+    """A count of calls in words: ``1 call unanswered``, ``3 calls unanswered``; ``at least 3 calls unanswered`` where
+    the count is a lower bound (:data:`~threetears.evals.analysis.report.parts.words.AT_LEAST_COUNT_TEMPLATE`)."""
+    count = format_figure(figure, forms=forms)
+    said = AT_LEAST_COUNT_TEMPLATE.format(count=count) if at_least else count
+    return f"{said} {'call' if figure.value == 1 else 'calls'} {what}"
 
 
 def _chip(arm: ArmLook) -> TableCell:

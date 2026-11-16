@@ -681,6 +681,10 @@ EXTERNAL_CALL_UNPRICED = "neither a charge their provider reported nor a rate th
 #: Why an external call carries no dollars in a run that declared no external rate, whose total sums none.
 EXTERNAL_NOT_COUNTED = "the run declared no external rate, so its total sums no external dollars"
 
+#: What a role whose calls all went unanswered spent (RoleSpend.answers_nothing): nothing, over no answered call, so it
+#: neither prices nor unprices its line and the run's total (owner, 2026-10-27).
+_NO_ANSWERED_CALL = "no spend, over no answered call"
+
 #: Why a call of a role this build does not know carries no dollars: a newer build recorded the role, and only it
 #: knows how the role is priced.
 UNKNOWN_ROLE_UNPRICED = "the build that recorded this role knows how it is priced, and this one does not"
@@ -712,6 +716,9 @@ class RoleSpend(BaseModel):
     :ivar counted: Whether the run's total (each result's blended cost) sums this role. Every model-metered role is;
         the ``external`` role is only in a run that declared external rates.
     :ivar units: The ``external`` role's own metering, per provider and unit; empty for every other role.
+    :ivar answers_nothing: Whether every usage row of the role held only unanswered calls
+        (``RoleUsage.answers_nothing``), read off the rows, never off the sums: it spent nothing, over no answered
+        call, so its line says so, and the run's total and spend-cap lines read it as no spend reported.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -723,6 +730,7 @@ class RoleSpend(BaseModel):
     uncounted_rows: int = 0
     counted: bool = True
     units: list[ProviderUnits] = []
+    answers_nothing: bool = False
 
     @property
     def known(self) -> bool:
@@ -731,8 +739,9 @@ class RoleSpend(BaseModel):
 
     @property
     def unpriced_because(self) -> str | None:
-        """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced."""
-        if not self.unpriced_calls and self.cost_usd is not None:
+        """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced, and when
+        it answered no call (:attr:`answers_nothing`), which left nothing to price."""
+        if self.answers_nothing or (not self.unpriced_calls and self.cost_usd is not None):
             return None
         if not self.known:
             return UNKNOWN_ROLE_UNPRICED
@@ -748,7 +757,10 @@ class RoleSpend(BaseModel):
         return f"{self.calls} call(s) and {rows}" if self.calls else rows
 
     def money_text(self) -> str:
-        """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why."""
+        """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why;
+        no spend where it answered no call (:attr:`answers_nothing`)."""
+        if self.answers_nothing:
+            return _NO_ANSWERED_CALL
         money = UNPRICED if self.cost_usd is None else PageForms.off_page().money_total(self.cost_usd).text
         text = f"{money} over {self.calls_text()}"
         if (because := self.unpriced_because) is None:
@@ -768,6 +780,12 @@ class RoleSpend(BaseModel):
             f"{units.units} {units.unit}" + (f" ({units.provider})" if units.provider else "") for units in self.units
         )
         return f"external spend: {metered or 'no units counted'}, {self.money_text()}{outside}"
+
+
+def _reported_spend(spend: Sequence[RoleSpend]) -> bool:
+    """Whether some result reported spend: a role answered some call (:attr:`RoleSpend.answers_nothing`). A run none
+    of whose calls were answered reported none, as a run with no usage row did, whatever roles its lines name."""
+    return any(not role.answers_nothing for role in spend)
 
 
 def _shown_value(value: Any) -> str:
@@ -844,7 +862,9 @@ class EvalSummary(BaseModel):
         them under purpose ``second_judge``. Measurement cost: never in :attr:`spend` or :attr:`total_cost_usd`.
     :ivar second_judge_cost_usd: What those calls cost; ``None`` when any went unpriced, and when none was made.
     :ivar spend: What each role spent (:class:`RoleSpend`), in :data:`~threetears.evals.schema.UsageRole`'s order, for
-        every role the results' usage rows name; empty for a run whose results reported none.
+        every role the results' usage rows name; empty for a run whose results left no usage row. A run none of whose
+        calls were answered holds a line per role naming them, each :attr:`RoleSpend.answers_nothing`, and reported
+        no spend: it states no total, and its spend-cap line reads as a run's with no usage row does.
     :ivar total_cost_usd: The results' cost summed (each result's blended ``cost_usd``) — what the counted roles'
         dollars add up to, external units aside; ``None`` when any result's cost is unknown (its line then states
         the counted roles' priced dollars and their unpriced calls), and for a run whose results reported no
@@ -1058,7 +1078,7 @@ class EvalSummary(BaseModel):
     @property
     def spend_cap_text(self) -> str | None:
         """The spend-cap line, without indentation, or None."""
-        if self.max_cost_usd is None and not self._judged_in_play and not self.spend:
+        if self.max_cost_usd is None and not self._judged_in_play and not _reported_spend(self.spend):
             return None
         return _spend_cap_line(PageForms.off_page(), self)
 
@@ -1230,7 +1250,8 @@ class EvalSummary(BaseModel):
     @property
     def total_spend_text(self) -> str | None:
         """The total-spend line, without indentation, or None."""
-        if not self.spend:
+        if not _reported_spend(self.spend):
+            # No role line states a call answered: nothing was spent, as with no line at all, so no total is stated.
             return None
         forms = PageForms.off_page()
         if self.total_cost_usd is not None:
@@ -1335,7 +1356,7 @@ def _spend_cap_line(forms: PageForms, summary: EvalSummary) -> str | None:
     line = f"spend cap: {forms.money_total(summary.max_cost_usd).text} for this run"
     if summary.cap_checked_on_estimates:
         line += ", checked against estimated rates"
-    if not summary.spend:
+    if not _reported_spend(summary.spend):
         line += "; it counts only spend a result reports, and no result reported any"
     return line
 
@@ -1791,12 +1812,15 @@ class _JudgedTally:
 class _RoleTally:
     """One role's usage rows, summed as :class:`RoleSpend` reports them."""
 
-    __slots__ = ("calls", "counted", "n_priced", "priced", "uncounted_rows", "unpriced_calls", "units")
+    __slots__ = ("answered", "calls", "counted", "n_priced", "priced", "uncounted_rows", "unpriced_calls", "units")
 
     def __init__(self) -> None:
         self.calls = self.n_priced = self.unpriced_calls = self.uncounted_rows = 0
         self.priced = _ExactSum()
         self.counted = True
+        # Whether some row of the role answered a call: the rows' own fact, never read back off the sums, which a row
+        # that answered (an external row metering units over no counted call) can leave at zero.
+        self.answered = False
         self.units: dict[tuple[str | None, str], int] = {}
 
 
@@ -1822,10 +1846,13 @@ class _SpendTally:
 
     def add(self, result: EvalResult) -> None:
         for row in result.usage:
+            # Every row names its role, so the pass below reads the roles this one tallied: a role whose rows hold only
+            # unanswered calls has a line stating no answered call (#1238), never a lookup of a role never tallied.
+            role = self._roles.setdefault(row.role, _RoleTally())
             if row.answers_nothing:
                 # Only unanswered calls: no spend and no answered call to count (RoleUsage.answers_nothing).
                 continue
-            role = self._roles.setdefault(row.role, _RoleTally())
+            role.answered = True
             role.calls += row.call_count or 0
             if row.call_count is None:
                 role.uncounted_rows += 1
@@ -1857,6 +1884,7 @@ class _SpendTally:
                 unpriced_calls=role.unpriced_calls,
                 uncounted_rows=role.uncounted_rows,
                 counted=role.counted,
+                answers_nothing=not role.answered,
                 units=[
                     ProviderUnits(provider=provider, unit=unit, units=units)
                     for (provider, unit), units in sorted(

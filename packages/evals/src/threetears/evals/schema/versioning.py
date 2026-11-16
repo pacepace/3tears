@@ -956,7 +956,26 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   type (every read selects by ``doc_type``); its operator wipe of durable documents leaves these in place, and its
 #:   deletes never reach them (a new doc type's two disclosed costs, above).
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 4
+#: - **v17.5** — a blind read's preference stores its counts only, and its p and verdict are read off them when the
+#:   read is loaded or closed (#1236, owner ruling 2026-11-17: store facts, derive judgements, as #1208 ruled for a
+#:   judge's agreement). ``BlindPreference.shares`` (each pair item's candidate share, in the order its test reads
+#:   them) and ``BlindPreference.stake_items`` (the anytime test's planned pair items, its stakes fixed for them before
+#:   the first answer) are written by every preference a close builds, which writes no ``p``, ``verdict`` or too-few
+#:   ``state``: ``threetears.evals.analysis.blind_read.read_preference`` computes all three, for the close and for the
+#:   door's response alike. A preference stored at v17.4 holds no ``shares``; it reads with the ``p``, ``verdict`` and
+#:   ``state`` it carries, and writes them back as stored (a too-few ``state`` its counts contradict is refused). No
+#:   other durable shape moves, and every document v17.4 stored is read and written byte for byte as before. **A recorded exception, for this step only (owner ruling, 2026-11-17).** The rule it
+#:   departs from: an older reader that refuses a newer document makes the change a major. A v17.4 build refuses a blind
+#:   read closed at this minor, by name (``p`` and ``verdict`` are required there; a validation error on
+#:   ``report.preferences.*.p``), and never misreads it. Accepted because v17.4 (the blind read) exists only on
+#:   evals/main SHAs of 2026-11-16 and 2026-11-17, no host pinned one, and the one production host runs
+#:   ``56edc697e``, which predates v17.4: no v17.4 reader can meet a document of this minor. It covers this step alone
+#:   and is no precedent: the rule stands for every other step. (This step's number is the minor after v17.4 that it
+#:   merges at; ``evals/bp-q2`` claims a durable minor too, and integration numbers whichever merges second next.)
+#:   The closing sentence is false for a v17.4 build's read of a ``blind_read`` closed at this minor, the recorded
+#:   exception above, and true of every other durable type, whose shape does not move:
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 5
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

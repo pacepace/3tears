@@ -1835,7 +1835,9 @@ A read closed before anyone answered every planned item is closed early, and its
 test, which holds its level wherever the read stopped; while a read is open no preference is shown at all. A model
 reviewer's preference is read once per model that served its answers, and each names that model in `served_model`
 (people's names none): two served models under one reviewer are never pooled into one preference. A reviewer
-is declared when the read is drawn, never after, and one that is the judge's own model is refused there.
+is declared when the read is drawn, never after, and one that is the judge's own model is refused there. A closed
+read stores each preference as its counts (#1236): its `p` and `verdict` are computed off them each time the
+door loads the read, so a response serves them as before and the stored document holds neither.
 
 **For hosts.** To take a person's answers through an action, supply `attests_person`; without it every answer is
 refused. If you show the sheet on a page of your own, keep its four rules: the items in the drawn order, `next`

@@ -1800,7 +1800,9 @@ def _simulator_sent_settings(_run: EvalRun, results: Sequence[ResultView]) -> li
     """The request settings a run's simulated-user calls were actually SENT with, each distinct value once.
 
     Read off the ``simulator`` role's usage rows (``RoleUsage.sent_settings``, which already folds every call a row
-    counts), never off the run's ``simulator_asked_settings``.
+    counts), never off the run's ``simulator_asked_settings``. A row holding only unanswered calls
+    (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) sent no request a reply came back under,
+    so it is read as no call, never as one that left its settings unverified.
 
     :param _run: Unused — the run records what it asked, not what was sent.
     :ptype _run: EvalRun
@@ -1813,7 +1815,8 @@ def _simulator_sent_settings(_run: EvalRun, results: Sequence[ResultView]) -> li
     sent: list[ClientRequestSettings] = []
     for result in results:
         for row in result.usage:
-            if row.role != "simulator":
+            # A row holding only unanswered calls sent no request a reply came back under: no settings to read.
+            if row.role != "simulator" or (row.sent_settings is None and row.answers_nothing):
                 continue
             if row.sent_settings is None:
                 return None
