@@ -113,7 +113,7 @@ async def test_the_bucket_is_declared_under_its_exact_name_with_its_stated_shape
 
     bucket = await client.kv_bucket(name=_BUCKET, create_if_missing=False)
     assert owner.name == _BUCKET
-    assert bucket.storage == "file"
+    assert bucket.storage == "memory"
     assert bucket.direct is True
     assert _BUCKET in client.remembered_declarations, "the client puts the bucket back after a restart"
     await owner.stop()

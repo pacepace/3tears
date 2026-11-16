@@ -34,6 +34,8 @@ from __future__ import annotations
 from typing import Final
 
 __all__ = [
+    "AUDIT_STREAM_MAX_AGE_SECONDS",
+    "AUDIT_STREAM_MAX_BYTES",
     "IDENTITY_JS_STREAMS",
     "IDENTITY_KV_BUCKETS",
     "IDENTITY_KV_KEY_SCOPES",
@@ -45,12 +47,24 @@ __all__ = [
 #: and declaring one needs ``STREAM.CREATE``/``STREAM.UPDATE``, which a read grant does not carry.
 #:
 #: ``audit`` is DECLARED BY TWO SERVICES, deliberately. identity-core and the hub both call
-#: ``ensure_jetstream_stream(name="audit", ..., storage="file")`` -- the storage matches on both
-#: sides on purpose, because whichever started first won the stream's storage type and the second
-#: crashed outright on ``stream configuration update can not change storage type``. Identity
-#: therefore needs the DECLARING capability, not merely publish: it may genuinely be the process
-#: that creates the stream.
+#: ``ensure_jetstream_stream(name="audit", ...)`` with the same storage -- memory since 2026-11-15
+#: (NATS is memory only), file before -- because whichever starts first creates the stream. A
+#: declaration that meets the stream live on the other storage leaves it as it is (it used to crash
+#: on ``stream configuration update can not change storage type``) until an operator moves it
+#: (:mod:`threetears.nats.stream_storage`). Identity therefore needs the DECLARING capability, not
+#: merely publish: it may genuinely be the process that creates the stream.
 IDENTITY_JS_STREAMS: Final[tuple[str, ...]] = ("audit",)
+
+#: the audit stream's age bound, declared identically by both its declarers: whichever restarts
+#: sends its whole config, so a declarer with another bound (or none) would reset the other's. Seven
+#: days: every envelope reaches ``audit_events`` in L3 within seconds (dead letters too, through the
+#: hub's dead-letter lander), so the stream is a transport with a week's window for inspection and the
+#: hub's replay (cobalt prod 2026-11-16: 2.66 MB a day, 343,334 envelopes since 2026-08-25).
+AUDIT_STREAM_MAX_AGE_SECONDS: Final[float] = 7 * 86_400.0
+
+#: the audit stream's byte bound, past which the oldest envelope (one already in L3) is discarded:
+#: 256 MiB held prod's whole 82-day history, so a week at ten times the average rate still fits.
+AUDIT_STREAM_MAX_BYTES: Final[int] = 256 << 20
 
 #: every KV bucket identity-core and identity-edge open, unprefixed, sorted.
 #:

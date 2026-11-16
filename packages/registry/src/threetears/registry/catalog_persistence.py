@@ -12,8 +12,12 @@ the bucket is owned by :class:`threetears.nats.PersistedCopyBucket`, built here 
 - **exact name.** the bucket carries the bare name every deployment's NATS permissions
   grant (``$KV.tool_catalog.>``, ``KV_tool_catalog``), so it is declared without the namespace
   prefix; a prefixed name would orphan the persisted catalog and fall outside the grant.
-- **its shape, stated:** file storage, history 1, and ``allow_direct`` set (a bucket found live
-  without ``allow_direct`` has it set in place by the declaration).
+- **its shape, stated:** memory storage, history 1, and ``allow_direct`` set (a bucket found live
+  without ``allow_direct`` has it set in place by the declaration). Memory because NATS is memory
+  only, on three servers (2026-11-15): the bucket is a copy of what the registry holds, and a copy
+  all three servers lost is written back from memory. A bucket still live on file storage is left
+  as it is by the declaration (a warning says so) until an operator moves it
+  (:mod:`threetears.nats.stream_storage`).
 - **a handle that follows the client.** the owner hands the catalog the client's own bucket handle,
   which rebinds across a credential renewal or a move off a lame-duck server. a handle bound to one
   connection would fail every write once the client retires that connection.
@@ -90,7 +94,7 @@ def catalog_bucket(
         bucket=bucket,
         load=catalog.load_from_kv,
         write_back=functools.partial(_write_catalog_back, catalog),
-        storage="file",
+        storage="memory",
         history=1,
         direct=True,
         retry_first_delay=retry_first_delay,

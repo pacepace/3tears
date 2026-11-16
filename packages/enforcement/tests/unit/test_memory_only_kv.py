@@ -33,6 +33,43 @@ class TestTheWalkerCatchesWhatItMust:
         source.write_text(f'def go(js):\n    return {callee}(js, storage="file")\n')
         assert file_backed_kv_calls(source) == [(2, callee)]
 
+    @pytest.mark.parametrize(
+        "callee",
+        [
+            "nc.ensure_kv_bucket",
+            "nc.ensure_jetstream_stream",
+            "ensure_replicated_jetstream_stream",
+            "nc.ensure_object_store",
+            "PersistedCopyBucket",
+            "NatsKvBucket.open",
+            "StreamConfig",
+        ],
+    )
+    def test_streams_object_stores_and_every_bucket_opener_are_watched(self, tmp_path: Path, callee: str) -> None:
+        """2026-11-15: six streams and buckets on file storage on cobalt, opened through names this gate missed."""
+        source = tmp_path / "streams.py"
+        source.write_text(f'def go(nc):\n    return {callee}(name="x", storage="file")\n')
+        assert [line for line, _name in file_backed_kv_calls(source)] == [2]
+
+    def test_the_storage_type_constant_is_caught_like_the_literal(self, tmp_path: Path) -> None:
+        source = tmp_path / "typed.py"
+        source.write_text("def go():\n    return StreamConfig(name='x', storage=StorageType.FILE)\n")
+        assert file_backed_kv_calls(source) == [(2, "StreamConfig")]
+
+    def test_a_storage_parameter_defaulting_to_file_is_caught(self, tmp_path: Path) -> None:
+        """every caller that names no storage gets the default: two catalogs were file-backed so."""
+        source = tmp_path / "default.py"
+        source.write_text(
+            'class Owner:\n    def __init__(self, *, bucket: str, storage: str = "file") -> None:\n        pass\n'
+        )
+        assert file_backed_kv_calls(source) == [(2, "__init__(storage default)")]
+
+    @pytest.mark.parametrize("keyword", ["replicas", "num_replicas"])
+    def test_a_store_declared_on_fewer_than_three_servers_is_caught(self, tmp_path: Path, keyword: str) -> None:
+        source = tmp_path / "r1.py"
+        source.write_text(f'async def go(nc):\n    await nc.ensure_jetstream_stream(name="x", {keyword}=1)\n')
+        assert file_backed_kv_calls(source) == [(2, f"ensure_jetstream_stream({keyword}=1)")]
+
     def test_a_file_that_is_not_valid_utf8_is_still_read(self, tmp_path: Path) -> None:
         """the shared parse cache refuses invalid utf-8; the walker falls back to a lenient read."""
         source = tmp_path / "latin1.py"
@@ -56,6 +93,17 @@ class TestTheWalkerLeavesTheCompliantAlone:
         source = tmp_path / "fine.py"
         source.write_text(
             'async def go(nc):\n    await nc.kv_bucket(name="a", storage="memory")\n    await nc.kv_bucket(name="b")\n'
+        )
+        assert file_backed_kv_calls(source) == []
+
+    def test_three_replicas_a_computed_count_and_a_plain_open_pass(self, tmp_path: Path) -> None:
+        source = tmp_path / "r3.py"
+        source.write_text(
+            "async def go(nc, config, path):\n"
+            '    await nc.ensure_jetstream_stream(name="a", replicas=3)\n'
+            '    await nc.ensure_jetstream_stream(name="b", replicas=config.nats.replicas)\n'
+            "    open(path)\n"
+            "    path.open()\n"
         )
         assert file_backed_kv_calls(source) == []
 

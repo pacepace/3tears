@@ -6210,6 +6210,7 @@ class NatsClient:
         max_age_seconds: float | None = None,
         max_msgs_per_subject: int | None = None,
         replicas: int | None = None,
+        max_bytes: int | None = None,
     ) -> str:
         """create (or update) a JetStream stream over given subjects.
 
@@ -6257,6 +6258,10 @@ class NatsClient:
             three (by its declarer or by an operator) stays on three when a declarer that asks for
             fewer, or for none, starts. the count remembered for a restoration is the one sent
         :ptype replicas: int | None
+        :param max_bytes: the most bytes the stream may hold; past it the oldest message is discarded
+            (the stream's discard policy, ``old``). ``None`` (the default) leaves it unbounded. a
+            memory stream needs one: it holds its bytes in every server's memory store
+        :ptype max_bytes: int | None
         :return: full namespace-prefixed stream name
         :rtype: str
         :raises ValueError: if ``replicas`` is given and not positive
@@ -6272,6 +6277,8 @@ class NatsClient:
             config.max_age = max_age_seconds
         if max_msgs_per_subject is not None:
             config.max_msgs_per_subject = max_msgs_per_subject
+        if max_bytes is not None:
+            config.max_bytes = max_bytes
         js = self.jetstream_context()
         try:
             await js.add_stream(config)
@@ -6300,6 +6307,31 @@ class NatsClient:
             # their declarers restarted)
             live = (await js.stream_info(full_name)).config
             config.num_replicas = _never_fewer_replicas(live.num_replicas, replicas)
+            if live.storage is not None and live.storage != storage_type:
+                # JetStream refuses to change a live stream's storage ("stream configuration update
+                # can not change storage type"), so the update below would raise and take the
+                # declaring service down at every start. a declaration that moved a stream to
+                # another storage (file -> memory, 2026-11-15: NATS is memory only) therefore
+                # leaves the live stream exactly as it is -- its storage, and its limits too, so a
+                # bound declared for the memory stream (max_age, max_bytes) does not discard a
+                # file stream's history before it is migrated -- and says so. moving it is a
+                # migration: delete and create again, run by an operator (threetears.nats.
+                # stream_storage). the declaration remembered for a restoration is the new one, so
+                # a stream a NATS restart lost comes back on the declared storage.
+                log.warning(
+                    "jetstream stream is live on %s storage and declared on %s; left as it is until it is migrated",
+                    _storage_word(live.storage),
+                    storage,
+                    extra={
+                        "extra_data": {
+                            "stream": full_name,
+                            "live_storage": _storage_word(live.storage),
+                            "declared_storage": storage,
+                        }
+                    },
+                )
+                self._declarations[full_name] = dataclasses.replace(config)
+                return full_name
             await js.update_stream(config)
         self._declarations[full_name] = dataclasses.replace(config)
         log.info(
@@ -7176,6 +7208,17 @@ async def _on_disconnected() -> None:
     :rtype: None
     """
     log.warning("NATS disconnected")
+
+
+def _storage_word(storage: Any) -> str:
+    """a JetStream storage type as its word (``file``, ``memory``).
+
+    :param storage: nats-py's ``StorageType``, or its string value
+    :ptype storage: Any
+    :return: the word
+    :rtype: str
+    """
+    return str(getattr(storage, "value", storage))
 
 
 def _never_fewer_replicas(live: int | None, requested: int | None) -> int:

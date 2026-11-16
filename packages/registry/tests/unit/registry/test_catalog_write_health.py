@@ -76,7 +76,7 @@ def _closed_connection() -> KvError:
 
 
 async def _bound_catalog() -> tuple[ToolCatalog, FakeKvBucket]:
-    bucket = FakeKvBucket(bucket_name="tool_catalog", storage="file", direct=True)
+    bucket = FakeKvBucket(bucket_name="tool_catalog", storage="memory", direct=True)
     catalog = ToolCatalog()
     await catalog.load_from_kv(bucket)
     return catalog, bucket

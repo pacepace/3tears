@@ -36,7 +36,7 @@ class _FakeBucketPausingOnFirstPut(FakeKvBucket):
     """the shipped in-memory bucket, whose first write lets a deregistration land, as one can while a restore awaits it."""
 
     def __init__(self) -> None:
-        super().__init__(bucket_name="tool_catalog", storage="file", direct=True)
+        super().__init__(bucket_name="tool_catalog", storage="memory", direct=True)
         self.on_first_put: Callable[[], Awaitable[None]] | None = None
 
     async def put(self, *, key: str, value: bytes, ttl: timedelta | None = None) -> int:
