@@ -36,7 +36,8 @@ from threetears.evals.analysis.report.aspect.common import (
 from threetears.evals.analysis.report.aspect.guardrails import guardrail_verdicts
 from threetears.evals.analysis.report.figures import ContrastPlaces, MeasureRuler, Rulers, report_rulers
 from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.keys.vocabulary import UnkeptPlan, joint_guarantee, plan_condition, unkept_plan
+from threetears.evals.analysis.caveats import UnkeptPlan
+from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee, plan_condition, plan_unshown
 from threetears.evals.analysis.report.model import (
     CellValue,
     DisclosureBlock,
@@ -57,7 +58,6 @@ from threetears.evals.analysis.report.words import (
     reading_verb,
     reason_words,
 )
-from threetears.evals.analysis.significance import SeparationTest
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
 from threetears.evals.analysis.style import CANNOT_TELL_APART
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
@@ -416,18 +416,14 @@ def _joint_text(family: ComparisonFamily, forms: PageForms, *, noun: str = "") -
     return FAMILY_LEVEL_TEMPLATE.format(joint=f"{_level_text(joint, forms)}{after}", size=size)
 
 
-def _family_tests(family: ComparisonFamily) -> set[SeparationTest]:
-    """The tests a family's comparisons are read by: each one's interval basis."""
-    return {comparison.interval_basis for comparison in family.comparisons if comparison.interval_basis is not None}
-
-
 def _unkept(bundle: AnalysisContextBundle, family: ComparisonFamily) -> UnkeptPlan | None:
     """Whether the family's plan of looks is not shown to hold the level it is for over the aspect's looks, on the
-    tests its own comparisons are read by (:func:`~threetears.evals.analysis.report.keys.vocabulary.unkept_plan`);
+    tests its own comparisons are read by (:func:`~threetears.evals.analysis.report.keys.vocabulary.plan_unshown`);
     None where it is shown, or no plan is in force (``look_alpha`` None)."""
     if family.look_alpha is None or family.interval_level is None:
         return None
-    return unkept_plan(bundle.reading_scope.looks, _family_tests(family))
+    tests = {comparison.interval_basis for comparison in family.comparisons if comparison.interval_basis is not None}
+    return plan_unshown(bundle.reading_scope.looks, tests)
 
 
 def _plan_lines(bundle: AnalysisContextBundle, surface: DecisionSurface, forms: PageForms) -> list[str]:
@@ -445,7 +441,9 @@ def _plan_lines(bundle: AnalysisContextBundle, surface: DecisionSurface, forms: 
             if comparison.interval_basis is not None
             and (unkept.why != "sized" or comparison.interval_basis in unkept.tests)
         ]
-        lines.append(plan_condition(_joint_text(family, forms), unkept, list(dict.fromkeys(named))))
+        # The plan's level: the joint one, or a family of one's 1 − α, never its interval's level at each look.
+        level = _joint_text(family, forms) if family.family_size > 1 else _level_text(1 - family.alpha, forms)
+        lines.append(plan_condition(level, unkept, list(dict.fromkeys(named))))
     return lines
 
 

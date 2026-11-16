@@ -37,19 +37,24 @@ import pytest
 
 from threetears.evals.analysis import (
     AnalysisContextBundle,
+    CampaignReport,
     assemble_context_bundle,
     build_campaign_report,
     build_code_only_report,
+    campaign_report_markdown,
     campaigns,
 )
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
-from threetears.evals.analysis.caveats import caveat_list
+from threetears.evals.analysis.caveats import UnkeptPlan, caveat_list, unkept_plan
 from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.floors import floor_readings
-from threetears.evals.analysis.report.keys.vocabulary import UnkeptPlan, joint_level, looks_of, unkept_plan
+from threetears.evals.analysis.report.figure_keys import format_figure, resolve
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.keys.vocabulary import joint_level, looks_of, plan_unshown
 from threetears.evals.analysis.report.model import DisclosureBlock, TableBlock
-from threetears.evals.analysis.report.number_forms.intervals import interval_level, level_text
+from threetears.evals.analysis.report.number_forms.intervals import interval_level
+from threetears.evals.analysis.report.parts.words import UNSHOWN_PLAN_LEVEL
 from threetears.evals.analysis.report_input import CaveatEntry, FalseSeparation, ReportInput, report_input_digest
 from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.significance import (
@@ -82,6 +87,7 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
+from packages.evals.tests.report_shapes_support import Shape, s1_change, s2_choice
 from packages.evals.tests.simulation_support import family_verdicts
 
 _START = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
@@ -873,59 +879,162 @@ def test_plan_kept_reads_the_planner_sized_row_s_upper_bound() -> None:
 # --- what a page prints of a plan's level (#1220) -----------------------------------------------------------------------
 
 
-def _page_lines(bundle: AnalysisContextBundle) -> tuple[str, list[str]]:
-    """An aspect page's contrast table's interval head, and every line under it."""
+def _page_lines(bundle: AnalysisContextBundle) -> tuple[str, list[str], list[dict[str, str]]]:
+    """An aspect page's contrast table's interval head, every line under it, and each row's reading and interval."""
     report = build_code_only_report(bundle, assembled_at=_stamp(0))
     (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
     head = next(column.header for column in table.columns if column.key == "interval")
-    return head, [block.text for block in report.blocks if isinstance(block, DisclosureBlock)]
+    rows = [{key: str(row[key].value) for key in ("reading", "interval")} for row in table.rows]
+    return head, [block.text for block in report.blocks if isinstance(block, DisclosureBlock)], rows
+
+
+def _conditions(lines: list[str]) -> list[str]:
+    return [line for line in lines if "looks the design plans" in line]
+
+
+def _with_looks(bundle: AnalysisContextBundle, **looks: object) -> AnalysisContextBundle:
+    """``bundle`` with its aspect's looks restated as ``looks`` says."""
+    held = bundle.reading_scope.looks
+    assert held is not None
+    scope = bundle.reading_scope.model_copy(update={"looks": held.model_copy(update=looks)})
+    return bundle.model_copy(update={"reading_scope": scope})
+
+
+#: Two looks within a plan of two, field accuracy read by the t test and the pass rates by the bounded one.
+_GAIN_TWICE = dict(shift=0.08, seed="gain-0", pass_rates=(0.6, 0.8))
 
 
 def test_a_page_prints_a_plan_s_level_only_where_keeping_it_is_shown_and_otherwise_states_its_condition() -> None:
     """Within a plan of two looks, field accuracy is read by the t test, whose planner-sized extends are not shown to
     hold the plan's level (``plan_kept``); the pass rates, on the bounded test, are. Read once, the plan is kept on
     every test, and the head prints the joint level. Read twice, no head or cell prints it: one line states it with its
-    condition, naming the t-test reading and only it. The written page's heads (``joint_level``) follow the same
-    decision, on every test the aspect uses."""
-    gain = dict(shift=0.08, seed="gain-0", pass_rates=(0.6, 0.8))
-    once, _, _ = _bundle([("g1", 0, range(40))], planned=2, **gain)  # type: ignore[arg-type]
-    twice, campaign, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], planned=2, **gain)  # type: ignore[arg-type]
+    condition, which says the family's level is not shown and names the t-test reading behind that."""
+    once, _, _ = _bundle([("g1", 0, range(40))], planned=2, **_GAIN_TWICE)  # type: ignore[arg-type]
+    twice, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], planned=2, **_GAIN_TWICE)  # type: ignore[arg-type]
     for bundle, taken in ((once, 1), (twice, 2)):
         looks = bundle.reading_scope.looks
         assert looks is not None and (looks.planned, looks.taken, looks.tests) == (2, taken, ["bounded", "t"])
     assert plan_kept("t", 2, 1) and plan_kept("bounded", 2, 2) and not plan_kept("t", 2, 2)
 
     (family,) = once.multiple_comparisons.families
-    head, lines = _page_lines(once)
+    head, lines, _ = _page_lines(once)
     assert head == f"95% interval (adjusted for {family.family_size} comparisons)", "kept: the level is printed"
-    assert not [line for line in lines if "looks the design plans" in line]
+    assert not _conditions(lines)
 
     (family,) = twice.multiple_comparisons.families
     bases = {comparison.name: comparison.interval_basis for comparison in family.comparisons}
     assert bases["field_accuracy"] == "t" and bases["passed"] == "bounded"
-    head, lines = _page_lines(twice)
+    head, lines, rows = _page_lines(twice)
     assert head == "Interval", "not kept: the head prints no level"
-    (condition,) = [line for line in lines if "looks the design plans" in line]
-    assert condition == (
+    assert not [row for row in rows if "adjusted for" in row["interval"]], "nor does any cell"
+    assert _conditions(lines) == [
         f"95% (adjusted for {family.family_size} comparisons) is the level the intervals are read to hold together "
-        "over the 2 looks the design plans; it holds where each look's cases were fixed before its results, and for "
-        "Field accuracy it is not shown where a look's cases were sized from an earlier reading."
-    )
+        "over the 2 looks the design plans; it holds where each look's cases were fixed before its results, and is "
+        "not shown where a look's cases were sized from an earlier reading, which is not shown to keep it for Field "
+        "accuracy."
+    ]
 
-    built = _built(twice, campaign)
-    (written,) = built.contrast_families
+
+def test_looks_past_a_plan_or_short_counted_say_what_the_count_is_and_name_every_reading_of_the_family() -> None:
+    """Past the plan, the sentence states the count as what it is, the most looks any contrast behind the readings
+    had, and that the family's level is not shown; a count that may be short says more looks may have been taken. Both
+    name every reading of the family, whatever its test."""
+    twice, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], planned=2, **_GAIN_TWICE)  # type: ignore[arg-type]
+    (family,) = twice.multiple_comparisons.families
+    level = f"95% (adjusted for {family.family_size} comparisons) is the level the intervals are read to hold together"
+    head, lines, _ = _page_lines(_with_looks(twice, taken=3))
+    assert head == "Interval"
+    assert _conditions(lines) == [
+        f"{level} over the 2 looks the design plans; the most looks any contrast behind Field accuracy, Ok check and "
+        "Pass rate had is 3, past the plan, so it is not shown."
+    ]
+    head, lines, _ = _page_lines(_with_looks(twice, lower_bound=True))
+    assert head == "Interval"
+    assert _conditions(lines) == [
+        f"{level} over the 2 looks the design plans; not every look behind Field accuracy, Ok check and Pass rate was "
+        "counted, so more than planned may have been taken, and it is not shown."
+    ]
+
+
+def test_a_page_of_families_kept_and_not_prints_each_kept_family_s_level_in_its_cells_and_none_in_the_others() -> None:
+    """Two families on one aspect under a plan of two looks taken: the t test's (a family of one) is not shown to keep
+    the plan, the bounded test's is. Each cell of the kept family says its family's joint level; no cell of the other
+    says any, and its one condition line states the plan's level, a family of one's 95%, never its interval's 97.5% at
+    each look."""
+    twice, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], planned=2, **_GAIN_TWICE)  # type: ignore[arg-type]
+    (family,) = twice.multiple_comparisons.families
+    look_alpha = family.look_alpha
+    assert look_alpha is not None
+    halves = [
+        [comparison for comparison in family.comparisons if comparison.interval_basis == "t"],
+        [comparison for comparison in family.comparisons if comparison.interval_basis != "t"],
+    ]
+    families = [
+        family.model_copy(
+            update={"comparisons": half, "family_size": len(half), "interval_level": 1 - look_alpha / len(half)}
+        )
+        for half in halves
+    ]
+    comparisons = twice.multiple_comparisons.model_copy(update={"families": families})
+    head, lines, rows = _page_lines(twice.model_copy(update={"multiple_comparisons": comparisons}))
+    assert head == "Interval"
+    cells = {row["reading"]: row["interval"] for row in rows}
+    assert "adjusted for" not in cells["Field accuracy"] and "%" not in cells["Field accuracy"]
+    assert cells["Pass rate"].endswith(" at 95% (adjusted for 3 comparisons)")
+    assert _conditions(lines) == [
+        "95% is the level the intervals are read to hold together over the 2 looks the design plans; it holds where "
+        "each look's cases were fixed before its results, and is not shown where a look's cases were sized from an "
+        "earlier reading, which is not shown to keep it for Field accuracy."
+    ]
+
+
+def test_a_written_page_prints_no_level_where_its_plan_is_not_shown_kept() -> None:
+    """The written page's heads and level cells (``interval_level``) and ``{weakest.interval}`` print the family's
+    joint level where the plan is shown kept, and no level where it is not: never each interval's own level, which
+    holds no better over several looks (owner ruling, level in headings)."""
+    bundle, campaign, _ = _bundle(
+        [("g1", 0, range(20)), ("g2", 120, range(20, 40))],
+        planned=2,
+        margin=0.05,
+        **_GAIN_TWICE,  # type: ignore[arg-type]
+    )
+    unkept = _built(bundle, campaign)
+    kept = _restated(unkept, planned=2, taken=2, tests=["bounded"])
+    (written,) = unkept.contrast_families
     level = written.level
     assert written.aspect is not None and level is not None
-    assert joint_level(written, looks_of(built, written.aspect)) is None
-    assert interval_level(level, written, looks_of(built, written.aspect)) == level_text(level)
-    kept = Looks(planned=2, taken=2, tests=["bounded"])
-    assert joint_level(written, kept) == (0.95, written.family_size)
-    assert unkept_plan(kept) is None
+
+    assert interval_level(level, written, looks_of(kept, written.aspect)) == (
+        f"95% (adjusted for {written.family_size} comparisons)"
+    )
+    assert joint_level(written, looks_of(kept, written.aspect)) == (0.95, written.family_size)
+    # Corrected from the first round, which pinned each interval's own level here (`level_text(level)`, 99.4%): that
+    # level holds no better over several looks than the joint one, and a head never prints it.
+    assert interval_level(level, written, looks_of(unkept, written.aspect)) == UNSHOWN_PLAN_LEVEL
+    assert not any(character.isdigit() for character in UNSHOWN_PLAN_LEVEL)
+    assert joint_level(written, looks_of(unkept, written.aspect)) is None
+
+    def weakest(held: ReportInput) -> str:
+        return format_figure(resolve("weakest.interval", held), forms=PageForms.of(held))
+
+    assert weakest(kept) == f"the 95% interval, adjusted for {written.family_size} comparisons"
+    assert weakest(unkept) == "the multiplicity-corrected interval"
+
+
+def test_the_one_decision_of_a_plan_s_keeping_reads_past_short_unrecorded_and_sized_looks() -> None:
+    """``caveats.unkept_plan`` decides for the caveat on looks and every page alike; a page qualifies only a plan of
+    more than one look (``plan_unshown``), so no plan, or one of one look, leaves its level as it was."""
+    assert unkept_plan(Looks(planned=2, taken=2, tests=["bounded"])) is None
     assert unkept_plan(Looks(planned=2, taken=3, tests=["bounded"])) == UnkeptPlan(2, 3, "past", ("bounded",))
     assert unkept_plan(Looks(planned=2, taken=2, lower_bound=True, tests=["bounded"])) == UnkeptPlan(
         2, 2, "uncounted", ("bounded",)
     )
-    assert unkept_plan(Looks(planned=None, taken=2, tests=["t"])) is None, "no plan: no plan's level"
+    assert unkept_plan(Looks(planned=2, taken=2, tests=["bounded", "t"])) == UnkeptPlan(2, 2, "sized", ("t",))
+    assert unkept_plan(Looks(planned=2, recorded=False, evidence_changes=3)) == UnkeptPlan(2, None, "uncounted", ())
+    assert unkept_plan(Looks(planned=None, taken=2, tests=["t"])) == UnkeptPlan(None, 2, "past", ("t",))
+    assert plan_unshown(Looks(planned=None, taken=2, tests=["t"])) is None, "no plan: no plan's level"
+    assert plan_unshown(Looks(planned=1, taken=2, tests=["t"])) is None, "a plan of one look: none either"
+    assert plan_unshown(Looks(planned=2, taken=3, tests=["t"])) == UnkeptPlan(2, 3, "past", ("t",))
 
 
 def test_a_campaign_s_scorecard_states_its_plan_s_error_rate_only_where_keeping_it_is_shown() -> None:
@@ -942,6 +1051,7 @@ def test_a_campaign_s_scorecard_states_its_plan_s_error_rate_only_where_keeping_
         )
         arms = [*campaign.arms, _candidate_arm()]
         read = campaign_readings(campaign, {_ASPECT: bundle}, arms=arms)
+        assert read.planned_looks == planned
         reports = {_ASPECT: build_code_only_report(bundle, assembled_at=_stamp(0), arm_labels=read.arm_labels())}
         page = build_campaign_report(campaign, read, reports)
         (methods,) = [
@@ -950,11 +1060,74 @@ def test_a_campaign_s_scorecard_states_its_plan_s_error_rate_only_where_keeping_
             if isinstance(block, DisclosureBlock) and block.section == "methods" and "is read at" in block.text
         ]
         assert ("the chance of being wrongly shown better" in methods) is kept, planned
-        assert ("it is not shown where a look's cases were sized from an earlier reading" in methods) is not kept
         if not kept:
             assert (
-                "for the pass rate on b it is not shown" in methods and "over the 4 looks the design plans" in methods
-            )
+                "95% is the level the intervals are read to hold together over the 4 looks the design plans; it holds "
+                "where each look's cases were fixed before its results, and is not shown where a look's cases were "
+                "sized from an earlier reading, which is not shown to keep it for the pass rate on b."
+            ) in methods
+
+
+def _past_plan(shape: Shape) -> CampaignReport:
+    """``shape``'s page with its readings read under a plan of two looks, and every aspect looked at three times."""
+    looks = Looks(planned=2, taken=3, tests=["bounded"])
+    reports = {
+        label: report.model_copy(
+            update={
+                "bundle": report.bundle.model_copy(
+                    update={"reading_scope": report.bundle.reading_scope.model_copy(update={"looks": looks})}
+                )
+            }
+        )
+        for label, report in shape.reports.items()
+    }
+    readings = shape.readings.model_copy(update={"look_alpha": looks_alpha(2), "planned_looks": 2})
+    return build_campaign_report(shape.campaign, readings, reports)
+
+
+def _glyph_key(page: CampaignReport) -> str:
+    (key,) = [block.glyph_key for block in page.blocks if isinstance(block, TableBlock) and block.glyph_key]
+    return key
+
+
+def test_a_change_of_several_candidates_past_its_plan_states_each_arm_s_level_and_that_none_runs_across_arms() -> None:
+    """s1 reads three candidates on three aspects, each candidate's rows corrected across its own aspects only. Past
+    its plan, the Methods paragraph states no error rate, says the level is each arm's intervals' (never that the
+    intervals hold together), and keeps the sentence that the correction does not run across the arms, with no rate;
+    the glyph key prints no level."""
+    shape = s1_change()
+    assert _glyph_key(shape.page()).endswith("with its 95% interval (adjusted for 3 comparisons); right is better."), (
+        "no plan: the key states the joint level"
+    )
+    page = _past_plan(shape)
+    methods = campaign_report_markdown(page)
+    assert (
+        "95% (adjusted for 3 comparisons) is the level each arm's intervals are read to hold together over the 2 looks "
+        "the design plans; the most looks any contrast behind the pass rate on billing, the pass rate on tone and the "
+        "pass rate on refunds had is 3, past the plan, so it is not shown."
+    ) in methods
+    assert "the intervals are read to hold together" not in methods
+    assert (
+        "The correction does not run across the 3 arms, so some arm is wrongly shown better more often than any one "
+        "arm is, and likewise for worse."
+    ) in methods
+    assert "up to 7.5%" not in methods and "at most 2.5%" not in methods
+    assert _glyph_key(page).endswith("with its interval; right is better.")
+
+
+def test_a_choice_past_its_plan_states_its_pairs_level_with_its_condition() -> None:
+    """s2's pairs are one step-down over every pair, so the level is the intervals' together; past the plan, the note
+    under the pairs states it with its condition, in place of saying they hold together at it."""
+    shape = s2_choice()
+    held = "The intervals hold together at 95% (adjusted for 3 comparisons)."
+    assert held in campaign_report_markdown(shape.page()).splitlines()
+    said = campaign_report_markdown(_past_plan(shape))
+    assert held not in said.splitlines()
+    assert (
+        "95% (adjusted for 3 comparisons) is the level the intervals are read to hold together over the 2 looks the "
+        "design plans; the most looks any contrast behind the pass rate on answers had is 3, past the plan, so it is "
+        "not shown."
+    ) in said.splitlines()
 
 
 def test_a_second_look_at_an_aspect_that_claims_nothing_qualifies_the_method_only() -> None:

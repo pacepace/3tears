@@ -97,7 +97,8 @@ from threetears.evals.analysis.report.model import (
 from threetears.evals.analysis.bundle.trials import pass_count
 from threetears.evals.analysis.cells import unread_arms
 from threetears.evals.analysis.report.verdict import interval_words, not_graded_words, passed_clause
-from threetears.evals.analysis.report.keys.vocabulary import UnkeptPlan, joint_guarantee, plan_condition, unkept_plan
+from threetears.evals.analysis.caveats import UnkeptPlan, unkept_plan
+from threetears.evals.analysis.report.keys.vocabulary import joint_guarantee, plan_condition
 from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.words import PASS_RATE, label_case, reason_words
 from threetears.evals.analysis.style import judged_name
@@ -969,7 +970,7 @@ def _level_lines(
     arm's gains are its rows with an interval, its drops those with an interval on an aspect with a margin or asked a
     question (``drop_interval``), as its two families are read. One sentence each, every one a whole template. Where
     the plan of looks the readings are read under is not shown to hold its level on some aspect (``unkept``,
-    :func:`_unkept`), the error rates are not stated: the level is, with its condition (:func:`_plan_lines`)."""
+    :func:`_unkept`), no error rate is stated: the level is, with its condition (:func:`_plan_lines`)."""
     families = Counter(row.arm for row in readings.readings)
     gains = Counter(row.arm for row in readings.readings if row.gain_interval is not None)
     drops = Counter(row.arm for row in readings.readings if row.drop_interval is not None)
@@ -1003,62 +1004,54 @@ def _level_lines(
             )
             lines.append(f"So each interval is read at {read_at}, not {_level_text(forms, INTERVAL_LEVEL)}.")
     if unkept:
-        sized = max((max(size) for size in sizes), default=0)
-        guarantee = joint_guarantee(readings.alpha, sized)
+        guarantee = joint_guarantee(readings.alpha, max((max(size) for size in sizes), default=0))
         level = (
             _level_text(forms, 1 - readings.alpha)
             if guarantee is None
             else FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, guarantee[0]), size=guarantee[1])
         )
-        return [*lines, *_plan_lines(level, unkept, names)]
-    half = _level_text(forms, readings.alpha / 2)
-    lines.append(
-        f"For any one arm, the chance of being wrongly shown better on some aspect is at most {half}, and likewise "
-        "for wrongly shown worse."
-        if any(max(size) > 1 for size in sizes)
-        else f"For any one arm, the chance of being wrongly shown better is at most {half}, and likewise for wrongly "
-        "shown worse."
-    )
-    if len(families) > 1:
+        lines += _plan_lines(level, unkept, names, len(families) > 1)
+    else:
+        half = _level_text(forms, readings.alpha / 2)
         lines.append(
-            f"The correction does not run across the {len(families)} arms, so the chance that some arm is wrongly "
-            f"shown better is up to {_level_text(forms, min(1.0, len(families) * readings.alpha / 2))}, and likewise "
-            "for worse."
+            f"For any one arm, the chance of being wrongly shown better on some aspect is at most {half}, and "
+            "likewise for wrongly shown worse."
+            if any(max(size) > 1 for size in sizes)
+            else f"For any one arm, the chance of being wrongly shown better is at most {half}, and likewise for "
+            "wrongly shown worse."
+        )
+    if len(families) > 1:
+        up_to = _level_text(forms, min(1.0, len(families) * readings.alpha / 2))
+        lines.append(
+            f"The correction does not run across the {len(families)} arms, so some arm is wrongly shown better more "
+            "often than any one arm is, and likewise for worse."
+            if unkept
+            else f"The correction does not run across the {len(families)} arms, so the chance that some arm is "
+            f"wrongly shown better is up to {up_to}, and likewise for worse."
         )
     return lines
 
 
 def _unkept(readings: CampaignReadings, reports: Mapping[str, Report]) -> list[tuple[str, UnkeptPlan]]:
-    """Each aspect on which the plan of looks a campaign's readings are read under (the largest among its aspects, as
-    :func:`~threetears.evals.analysis.campaign_readings.campaign_readings` reads it) is not shown to hold the level it is for over that aspect's looks, on the bounded
-    test every pass rate here is read by (:func:`~threetears.evals.analysis.report.keys.vocabulary.unkept_plan`),
-    with why; empty where it is on every aspect, or no plan is in force. A candidate's family runs across its aspects,
-    so one aspect not shown is its family's level not shown."""
-    plans = [
-        looks.planned
-        for report in reports.values()
-        if (looks := report.bundle.reading_scope.looks) is not None and looks.planned is not None
-    ]
-    planned = max((plan for plan in plans if plan > 1), default=None)
-    if readings.look_alpha is None or planned is None:
+    """Each aspect on which the campaign's plan (``planned_looks``) is not shown held on the bounded test every pass
+    rate here is read by (:func:`~threetears.evals.analysis.caveats.unkept_plan`), with why. A candidate's family runs
+    across its aspects, so one aspect not shown is its family's level not shown."""
+    if readings.planned_looks is None:
         return []
     found = []
     for aspect in readings.aspects:
-        report = reports.get(aspect)
-        looks = report.bundle.reading_scope.looks if report is not None else None
-        if (unkept := unkept_plan(looks, ("bounded",), planned=planned)) is not None:
+        looks = reports[aspect].bundle.reading_scope.looks if aspect in reports else None
+        if looks is not None and (unkept := unkept_plan(looks, ("bounded",), planned=readings.planned_looks)):
             found.append((aspect, unkept))
     return found
 
 
-def _plan_lines(level: str, unkept: Sequence[tuple[str, UnkeptPlan]], names: AspectNames) -> list[str]:
-    """The sentence stating the plan's ``level`` with its condition
-    (:func:`~threetears.evals.analysis.report.keys.vocabulary.plan_condition`), one per reason and count, each naming
-    the pass rates it is not shown for."""
+def _plan_lines(level: str, unkept: Sequence[tuple[str, UnkeptPlan]], names: AspectNames, per_arm: bool) -> list[str]:
+    """The plan's ``level`` with its condition (``plan_condition``), one per reason and count, naming its pass rates."""
     grouped: dict[tuple[str, int | None], tuple[UnkeptPlan, list[str]]] = {}
     for aspect, plan in unkept:
         grouped.setdefault((plan.why, plan.taken), (plan, []))[1].append(f"the pass rate on {names(aspect)}")
-    return [plan_condition(level, plan, named) for plan, named in grouped.values()]
+    return [plan_condition(level, plan, named, per_arm=per_arm) for plan, named in grouped.values()]
 
 
 def _within_lines(readings: CampaignReadings, names: AspectNames, forms: PageForms) -> list[str]:
@@ -1670,7 +1663,7 @@ def pair_blocks(
         # are read under is not shown to hold it, the level is stated with its condition.
         joint = FAMILY_LEVEL_TEMPLATE.format(joint=_level_text(forms, guarantee[0]), size=guarantee[1])
         unkept = _unkept(readings, reports)
-        notes += _plan_lines(joint, unkept, names) if unkept else [f"The intervals hold together at {joint}."]
+        notes += _plan_lines(joint, unkept, names, False) if unkept else [f"The intervals hold together at {joint}."]
     elif levels:
         notes.append(f"Each interval is read at {_level_text(forms, levels[0])}.")
     notes += [

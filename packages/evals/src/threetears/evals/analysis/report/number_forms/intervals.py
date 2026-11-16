@@ -8,10 +8,10 @@ import re
 
 from threetears.evals.analysis.report.keys.figure import Figure
 from threetears.evals.analysis.checks import Looks
-from threetears.evals.analysis.report.keys.vocabulary import joint_level
+from threetears.evals.analysis.report.keys.vocabulary import joint_level, plan_unshown
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text
 from threetears.evals.analysis.report.number_forms.policy import policy_level
-from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
+from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE, UNSHOWN_PLAN_LEVEL
 from threetears.evals.analysis.report.unit_once import interval_beside
 from threetears.evals.analysis.report_input import ContrastFamily
 from threetears.evals.kernel.numbers import spell_count
@@ -27,8 +27,8 @@ def interval_level(level: str, family: ContrastFamily | None, looks: Looks | Non
     meets the guarantee they act on; any other level as the one rule prints a level as text
     (:func:`~threetears.evals.analysis.report.number_forms.policy.policy_level`: ``95%``, an uncorrected 98.33% as
     ``98.3%``), so a level reads alike in a head, a cell and the prose (owner ruling, 2026-11-14). A level the input
-    states in no percent's digits reads as stated. The per-interval level is Method's and the glossary's. A family
-    whose aspect's plan of looks is not shown to hold its level states no joint guarantee (:func:`joint_level`).
+    states in no percent's digits reads as stated. The per-interval level is Method's and the glossary's. Where such a
+    family's plan of looks is not shown held (:func:`plan_unshown`), no level (:data:`UNSHOWN_PLAN_LEVEL`).
 
     :param level: The level as the input states it (``99.69%``).
     :ptype level: str
@@ -40,9 +40,11 @@ def interval_level(level: str, family: ContrastFamily | None, looks: Looks | Non
     :rtype: str
     """
     stated = level.strip()
-    joint = joint_level(family, looks) if family is not None and family.level == level else None
+    joint = joint_level(family) if family is not None and family.level == level else None
     if joint is None:
         return level_text(stated)
+    if plan_unshown(looks) is not None:
+        return UNSHOWN_PLAN_LEVEL
     return FAMILY_LEVEL_TEMPLATE.format(joint=policy_level(joint[0] * 100), size=joint[1])
 
 

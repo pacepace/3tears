@@ -8,8 +8,8 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Literal, NamedTuple
 
+from threetears.evals.analysis.caveats import UnkeptPlan, unkept_plan
 from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.keys.figure import Figure, PERCENTILE_NAMES, Scale, _SCALE_COUNTS
@@ -36,7 +36,7 @@ from threetears.evals.analysis.report_input import (
     Task,
 )
 from threetears.evals.analysis.report_margins import lead_aspect
-from threetears.evals.analysis.significance import SeparationTest, plan_kept
+from threetears.evals.analysis.significance import SeparationTest
 
 
 # --- the vocabulary a path is matched against -------------------------------------------------------------------
@@ -308,99 +308,52 @@ def joint_guarantee(alpha: float | None, size: int, *, corrected: bool = True) -
     return (1.0 - float(alpha), size)
 
 
-class UnkeptPlan(NamedTuple):
-    """A plan of looks not shown to hold the level it is for (:func:`unkept_plan`).
+def plan_unshown(looks: Looks | None, tests: Iterable[SeparationTest] | None = None) -> UnkeptPlan | None:
+    """Why a plan of more than one look in force on an aspect is not shown to hold its level
+    (:func:`~threetears.evals.analysis.caveats.unkept_plan`); None where it is, or no such plan is in force.
 
-    :ivar planned: The looks the plan allows.
-    :ivar taken: The looks taken; None where they were not recorded.
-    :ivar why: Why it is not shown: within the plan, a test a reading uses is not shown to keep it where a look's cases
-        were sized from an earlier reading (``sized``); more looks were taken than planned (``past``); or the count of
-        looks is a lower one, or was not recorded, so more may have been (``uncounted``).
-    :ivar tests: The tests it is not shown on: for ``sized`` those
-        :func:`~threetears.evals.analysis.significance.plan_kept` does not show, otherwise every test given.
-    """
-
-    planned: int
-    taken: int | None
-    why: Literal["sized", "past", "uncounted"]
-    tests: tuple[SeparationTest, ...]
-
-
-def unkept_plan(
-    looks: Looks | None, tests: Iterable[SeparationTest] | None = None, *, planned: int | None = None
-) -> UnkeptPlan | None:
-    """Whether the level a plan of looks is for is shown to hold over the looks an aspect took, for every test its
-    readings use, the one decision of it for every page that prints that level: shown where the looks taken are at
-    most the plan and exactly counted (or, not recorded, the stored evidence changed once), and
-    :func:`~threetears.evals.analysis.significance.plan_kept` holds for each test (each look's cases fixed before
-    its data by the union bound, planner-sized extends only where the simulation shows it). It decides what a page
-    prints, never how a reading was read: the statistical method is unchanged.
-
-    No plan in force (none, or a plan of one look) is no plan's level, so nothing is returned; nor where ``looks`` is
-    None, which an aspect carries only where its contrasts were read once or not at all.
-
-    :param looks: The aspect's looks (``reading_scope.looks``, or the report input's ``Aspect.looks``).
+    :param looks: The aspect's looks (``reading_scope.looks``, or the report input's ``Aspect.looks``); None for none.
     :ptype looks: Looks | None
-    :param tests: The tests the readings whose level is printed use; None for every test the aspect's readings use
-        (``Looks.tests``).
+    :param tests: The tests the readings whose level is printed use; None for every test the aspect's readings use.
     :ptype tests: Iterable[SeparationTest] | None
-    :param planned: The plan the readings were read under where it is not the aspect's own (a campaign's readings read
-        under the largest plan among its aspects); None for the aspect's.
-    :ptype planned: int | None
-    :return: The plan and why its level is not shown; None where it is shown, or no plan is in force.
+    :return: Why the plan's level is not shown, or None.
     :rtype: UnkeptPlan | None
     """
-    plan = planned if planned is not None else looks.planned if looks is not None else None
-    if looks is None or plan is None or plan <= 1:
-        return None
-    used = tuple(looks.tests if tests is None else sorted(set(tests)))
-    taken = looks.taken
-    if taken is not None and taken > plan:
-        return UnkeptPlan(plan, taken, "past", used)
-    if taken is None:
-        # Looks not recorded: a single change of the stored evidence is one look; more could be any number.
-        return UnkeptPlan(plan, taken, "uncounted", used) if (looks.evidence_changes or 0) > 1 else None
-    if looks.lower_bound:
-        return UnkeptPlan(plan, taken, "uncounted", used)
-    unshown = tuple(test for test in used if not plan_kept(test, plan, taken))
-    return UnkeptPlan(plan, taken, "sized", unshown) if unshown else None
+    return None if looks is None or (looks.planned or 0) < 2 else unkept_plan(looks, tests)
 
 
-def plan_condition(level: str, unkept: UnkeptPlan, readings: Sequence[str]) -> str:
-    """The sentence a page states in place of a plan's level it cannot show held (:func:`unkept_plan`): the level, the
-    plan it is for, the readings it is not shown for, and why, every word from
-    :mod:`~threetears.evals.analysis.report.parts.words`. True of every reading it names: it says where the level holds
-    and where it is not shown, never that it holds.
+def plan_condition(level: str, unkept: UnkeptPlan, readings: Sequence[str], *, per_arm: bool = False) -> str:
+    """The sentence a page states in place of a plan's level it cannot show held (:func:`plan_unshown`): the level, the
+    plan it is for, and why it is not shown, naming the readings behind that, every word from
+    :mod:`~threetears.evals.analysis.report.parts.words`. It never says the level holds for a reading.
 
     :param level: The level as the page prints it (``95% (adjusted for 16 comparisons)``).
     :ptype level: str
     :param unkept: The plan, and why its level is not shown.
     :ptype unkept: UnkeptPlan
-    :param readings: What the page calls the readings it is not shown for, at least one.
+    :param readings: What the page calls the readings behind it, at least one.
     :ptype readings: Sequence[str]
+    :param per_arm: Whether the correction runs per arm only (several candidates): the level is each arm's intervals'.
+    :ptype per_arm: bool
     :return: The sentence.
     :rtype: str
     """
     named = readings[0] if len(readings) == 1 else f"{', '.join(readings[:-1])} and {readings[-1]}"
-    one = len(readings) == 1
-    clause = {
-        "sized": PLAN_SIZED_CLAUSE,
-        "past": PLAN_PAST_CLAUSE,
-        "uncounted": PLAN_UNCOUNTED_CLAUSE,
-    }[unkept.why].format(
-        readings=named, were="was" if one else "were", them="it" if one else "them", taken=unkept.taken
+    clause = {"sized": PLAN_SIZED_CLAUSE, "past": PLAN_PAST_CLAUSE, "uncounted": PLAN_UNCOUNTED_CLAUSE}[unkept.why]
+    return PLAN_LEVEL_TEMPLATE.format(
+        level=level,
+        intervals="each arm's intervals" if per_arm else "the intervals",
+        planned=unkept.planned,
+        clause=clause.format(readings=named, taken=unkept.taken),
     )
-    return PLAN_LEVEL_TEMPLATE.format(level=level, planned=unkept.planned, clause=clause)
 
 
-def joint_level(family: ContrastFamily | None, looks: Looks | None) -> tuple[float, int] | None:
+def joint_level(family: ContrastFamily | None, looks: Looks | None = None) -> tuple[float, int] | None:
     """What a written page's contrast family's intervals guarantee together (:func:`joint_guarantee`), which a figure
     in the package's words holds (:attr:`Figure.joint`) and every heading states
     (:func:`~threetears.evals.analysis.report.number_forms.intervals.interval_level`). None for no family, one that
     corrects nothing (no correction, or ``none``), every family :func:`joint_guarantee` reads none for, and one whose
-    aspect's plan of looks is not shown to hold that level (:func:`unkept_plan`, on every test the aspect's readings
-    use, the input carrying no test per contrast): its heading then states each interval's own level, and the caveat
-    on looks says why.
+    aspect's plan of looks is not shown held (:func:`plan_unshown`, on every test the aspect uses).
 
     :param family: The contrast family, or None.
     :ptype family: ContrastFamily | None
@@ -409,7 +362,7 @@ def joint_level(family: ContrastFamily | None, looks: Looks | None) -> tuple[flo
     :return: The joint level and the family's size, or None.
     :rtype: tuple[float, int] | None
     """
-    if family is None or unkept_plan(looks) is not None:
+    if family is None or plan_unshown(looks) is not None:
         return None
     corrected = (family.correction or "").strip().lower() not in ("", "none")
     return joint_guarantee(family.alpha, family.family_size or 0, corrected=corrected)
@@ -492,11 +445,10 @@ def _printed_stratum(report_input: ReportInput, stratum: Stratum) -> str:
 
 
 __all__ = [
-    "UnkeptPlan",
     "looks_of",
     "joint_guarantee",
     "joint_level",
     "on_lead_aspect",
     "plan_condition",
-    "unkept_plan",
+    "plan_unshown",
 ]

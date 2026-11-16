@@ -28,6 +28,7 @@ __all__ = [
     "PLAN_PAST_CLAUSE",
     "PLAN_SIZED_CLAUSE",
     "PLAN_UNCOUNTED_CLAUSE",
+    "UNSHOWN_PLAN_LEVEL",
     "BETTER_WORDS",
     "CASES_WORD",
     "COMPUTED_REPEATS_NOTE",
@@ -380,22 +381,27 @@ MARGIN_BAND_TEMPLATE = "{line}; shaded: no worse than the margin"
 #: ``95% intervals (adjusted for 16 comparisons)``). The per-interval level (``99.69%``) is Method's and the glossary's.
 FAMILY_LEVEL_TEMPLATE = "{joint} (adjusted for {size} comparisons)"
 
-#: What a page states in place of the level a plan of looks is for where that level is not shown to hold over the looks
-#: taken (:func:`~threetears.evals.analysis.report.keys.vocabulary.plan_condition`): the level, the plan, then one
-#: clause saying which readings it is not shown for and why. Each clause is true of every reading it names.
+#: What a page states in place of a plan's level not shown held (``vocabulary.plan_condition``): the level, whose
+#: intervals hold it (``each arm's`` where a correction runs per arm only), the plan, and one clause saying why it is
+#: not shown, naming the readings behind it. No clause says the level holds for a reading.
 PLAN_LEVEL_TEMPLATE = (
-    "{level} is the level the intervals are read to hold together over the {planned} looks the design plans{clause}."
+    "{level} is the level {intervals} are read to hold together over the {planned} looks the design plans{clause}."
 )
-#: Within the plan, a reading whose test is not shown to keep the level where a look's cases were sized from an earlier
-#: reading (:func:`~threetears.evals.analysis.significance.plan_kept`).
+#: Within the plan, a test not shown to keep the level where a look's cases were sized from an earlier reading
+#: (:func:`~threetears.evals.analysis.significance.plan_kept`).
 PLAN_SIZED_CLAUSE = (
-    "; it holds where each look's cases were fixed before its results, and for {readings} it is not shown where a "
-    "look's cases were sized from an earlier reading"
+    "; it holds where each look's cases were fixed before its results, and is not shown where a look's cases were "
+    "sized from an earlier reading, which is not shown to keep it for {readings}"
 )
-#: More looks were taken than the plan allows.
-PLAN_PAST_CLAUSE = "; {readings} {were} read {taken} times, so it is not shown for {them}"
+#: More looks were taken than the plan allows; ``taken`` is the most looks any one contrast had (``Looks.taken``).
+PLAN_PAST_CLAUSE = "; the most looks any contrast behind {readings} had is {taken}, past the plan, so it is not shown"
 #: The count of looks is a lower one, or looks were not recorded: more than planned may have been taken.
-PLAN_UNCOUNTED_CLAUSE = "; {readings} may have been read more times than that, so it is not shown for {them}"
+PLAN_UNCOUNTED_CLAUSE = (
+    "; not every look behind {readings} was counted, so more than planned may have been taken, and it is not shown"
+)
+#: A written page's interval head and level cell where a plan's level is not shown held (``interval_level``): no level,
+#: since each interval's own holds no better over several looks; the caveat on looks says why.
+UNSHOWN_PLAN_LEVEL = "multiplicity-corrected"
 
 #: The words under a change chart's two ends, the left end's first, by whether higher is better.
 BETTER_WORDS: dict[bool, tuple[str, str]] = {True: ("worse", "better"), False: ("better", "worse")}

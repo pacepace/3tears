@@ -14,12 +14,16 @@ heads printed the level the plan is for (`95% (adjusted for 16 comparisons)`, or
 with no condition. The plan holds that level only where each look's cases were fixed before its results, or where the
 simulation shows planner-sized extends keep it (`significance.plan_kept`: pass rates on the bounded test, not means on
 the t test, where a plan of two errs 5.6% at a nominal 5%). Each now prints the level only where the plan is shown
-kept for every test its readings use, over the looks taken (`report.keys.vocabulary.unkept_plan`, the one decision).
-Otherwise no head or key prints it, and one line states it with its condition: the readings it is not shown for and
-why (a look's cases sized from an earlier reading, more looks taken than planned, or a count that may be short), from
-templates in `report.parts.words`. The written page's heads then state each interval's own level, and the caveat on
-looks says why. The method is unchanged: no reading, interval or verdict moves. With no plan nothing moves. The looks
-entry below said pages print that level; that was the defect, and it is corrected there.
+kept for every test its readings use, over the looks taken. One decision says so, `caveats.unkept_plan`, which the
+caveat on looks reads too. Otherwise no head or key prints a level, and one line states the plan's level with its
+condition: why it is not shown (a look's cases sized from an earlier reading; the most looks any contrast had, past the
+plan; or a count that may be short), naming the readings behind it. On a change of several candidates that line says
+the level is each arm's intervals', and the Methods paragraph keeps the sentence that the correction does not run
+across the arms, with no rate. The written page's heads and level cells print `multiplicity-corrected` in place of a
+level: each interval's own level holds no better over several looks, and the caveat on looks says why.
+`CampaignReadings` gains `planned_looks`, the plan its `look_alpha` is read under (optional, left out with none). The
+method is unchanged: no reading, interval or verdict moves. With no plan nothing moves. The looks entry below said pages
+print that level; that was the defect, and it is corrected there.
 
 **For hosts:** nothing to do.
 
