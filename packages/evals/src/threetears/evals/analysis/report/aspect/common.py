@@ -12,7 +12,6 @@ from typing import Protocol
 
 from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import PERCENT, is_money
@@ -333,30 +332,60 @@ def _unit_on(text: str, ruler: MeasureRuler) -> str:
     return unit_spaced(text, ruler.unit)
 
 
-def _case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
-    """Each case's number: its place in the list given, from 1.
+#: What a page says where it numbers its cases by their place among the cases it holds: its bundle carries no case's
+#: place in its runs' case lists (it was frozen with an analysis before places were carried, or a case is in no member
+#: run's list), so a case's number is not its place in the list it was given (:func:`held_places_note`).
+_NUMBERED_AS_HELD = (
+    "A case without a name is numbered here by its place among the cases this report lists, not by its place in the "
+    "list its runs were given, which this report's evidence does not hold."
+)
 
-    A generated case id is ``<template>-<position>``, its position counted from 0 (an ``Eval``'s, and what
-    :func:`~threetears.evals.analysis.bundle.trials.trial_order` sorts by), so its number is that position plus one,
-    read off the id itself: the first case in the list, the first line of a cases file, is ``case 1`` here, on its
-    console and in its listing alike, however many of the run's trials the bundle holds past its cap. Where an id
-    ends in no number, or two ids would read as one number, the place is not in the ids, and each case is numbered by
-    its place among the cases the bundle holds, in the Trials table's order; never a place in the order of the cases'
-    labels, which a reader cannot count to."""
-    cases = list(dict.fromkeys(trial.case_id for trial in bundle.trials))
-    positions = {case: trial_order(case, 0, 0)[1] for case in cases}
-    if all(position >= 0 for position in positions.values()) and len(set(positions.values())) == len(cases):
-        return {case: position + 1 for case, position in positions.items()}
-    ordered = sorted(cases, key=lambda case: trial_order(case, 0, 0))
-    return {case: index for index, case in enumerate(ordered, start=1)}
+
+def case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
+    """Each case's number, by case id: its place in the list its runs were given, from 1, as its runs stored it
+    (:attr:`~threetears.evals.analysis.bundle.schema.TrialRow.case_place`), so the first case in the list, the first
+    line of a cases file, is ``case 1`` on the page, on its first line and on its console alike, however many of the
+    run's trials the bundle holds past its cap. No number is read off a case's id.
+
+    Where any case the bundle holds carries no place (a bundle frozen with an analysis before places were carried),
+    every case is numbered by its place among the cases the bundle holds, in the Trials table's order, so one page
+    holds one numbering, and the page says so (:func:`held_places_note`).
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: Each held case's number.
+    :rtype: dict[str, int]
+    """
+    places = {trial.case_id: trial.case_place for trial in bundle.trials}
+    stored = {case: place for case, place in places.items() if place is not None}
+    if len(stored) == len(places):
+        return stored
+    return {case: number for number, case in enumerate(places, start=1)}
+
+
+def held_places_note(bundle: AnalysisContextBundle) -> str | None:
+    """The sentence a page says where it numbers a case it names by no label by its place among the cases it holds,
+    not by its place in the list given (:func:`case_numbers`); None where every case it holds carries its place, or
+    where every case reads by its label, so no number is printed.
+
+    :param bundle: The aspect's evidence.
+    :ptype bundle: AnalysisContextBundle
+    :return: The sentence, or None.
+    :rtype: str | None
+    """
+    if all(trial.case_place is not None for trial in bundle.trials):
+        return None
+    if all(humanize("case", trial.case_label) for trial in bundle.trials):
+        return None
+    return _NUMBERED_AS_HELD
 
 
 def case_namer(bundle: AnalysisContextBundle) -> Callable[[str], str]:
     """Name a case as every table, the verdict and the console do: by the name its author gave it where its label
-    reads as one (``double-charge``), else ``case N``, N its place in the order the cases were given, from 1
-    (:func:`_case_numbers`) — never its first input."""
+    reads as one (``double-charge``), else ``case N``, N its place in the list its runs were given, from 1
+    (:func:`case_numbers`) — never its first input."""
     labels = {trial.case_id: trial.case_label for trial in bundle.trials}
-    numbers = _case_numbers(bundle)
+    numbers = case_numbers(bundle)
 
     def name(case: str) -> str:
         if case not in numbers:
@@ -374,4 +403,6 @@ def _listed(ids: Sequence[str]) -> str:
 __all__ = [
     "NO_STRATUM",
     "case_namer",
+    "case_numbers",
+    "held_places_note",
 ]

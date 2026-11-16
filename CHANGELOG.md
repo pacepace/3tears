@@ -18,11 +18,12 @@ first line and the page will not print an id that does not read as a name, a bar
 whitespace (`ticket 7`) or a long hex string, and call that case by its place (`case 12`) where the console and
 `results()` call it by its id (`case 1042`). A case's stored id and every recording key are as before.
 
-The page reads a case's place off its stored id, `<template>-<position>` for every `Eval` case. A host whose case ids
-end in no number (a UUID) gets its cases numbered by their place among the cases the page holds, in the order of the
-ids' text, not the order it gave them, and past 500 trials that place is among the cases the page holds, not all
-of them. A host whose ids end in a number counted from 1 (`ticket-1`) sees a case the page numbers one higher than
-that number. Both are the subject of a follow-up issue.
+The place is the one the runs stored: where the case first stands in the member runs' frozen case lists
+(`EvalRun.test_case_ids`), in the order the runs were created. It is the same for an `Eval`'s case and a host's, and
+no number is read off a case's id, so a host case `invoice-2024` that its runs list first is `case 1`. Each trial row of
+a report's bundle carries it, as `TrialRow.case_place` (additive and optional). A page over a bundle that carries no
+place, such as one frozen with an analysis stored before this change, numbers its cases by their place among the cases
+it lists, in the Trials table's order, and says so under its Cases table.
 
 **Fixed:** an arm whose runner raised on every case printed `Accuracy: 0%, 0 of 3 trials` beside another measure
 `not shown, carried by no result`. No answer was graded, so every measure of such an arm now reads one way,
@@ -37,8 +38,7 @@ some answers graded, and a comparison in which one arm answered nothing, keep th
 
 **For hosts:** a CI step that gates on the file door's exit code now fails on an eval that measured nothing, where it
 passed before. A caller that retries on 1 (`EXIT_RUN_DID_NOT_COMPLETE`), reading it as a run that did not finish, now
-also gets 1 from a run that finished and graded nothing, which a retry repeats: a runner that raised on every case
-raises again. Tell the two apart by the eval's first line (a run that did not complete names what stopped it; one that
+also gets 1 from a run that finished and graded nothing. Tell the two apart by the eval's first line (a run that did not complete names what stopped it; one that
 measured nothing says `so no answer was graded` or that every trial was lost, and why), or in code by
 `Result.arms`, whose every summary reads `status == "completed"` only in the second. Code that reads
 `CaseResult.case` or an error line's case number for a case with no `id` reads it one higher.

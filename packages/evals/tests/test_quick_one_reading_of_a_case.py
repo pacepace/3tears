@@ -4,7 +4,9 @@
   its place in the list given, from 1: the line of the cases file it is on. The first line, the top misses, the
   ``error:`` lines, ``results()`` and the report page's tables all call it that, past the 500 trials a report's
   bundle holds as well; the first line once numbered the failed cases from 1 and the misses under it from 0, and the
-  page numbered them by the order of their labels, then by their place among the cases its bundle held.
+  page numbered them by the order of their labels, then by their place among the cases its bundle held, then by a
+  number read off the case's id. The place is the one the runs stored (``EvalRun.test_case_ids``), for a host's case
+  as for an ``Eval``'s; a page over a bundle that carries none numbers the cases it holds and says so.
 - **No rate over nothing graded.** An arm whose runner raised on every case had no answer graded, so every measure of
   it reads ``none (no answer was graded)``, a classifier's accuracy as much as a function grader's, and no label's
   precision or recall is printed: never ``Accuracy: 0%, 0 of 3 trials`` beside another measure left unshown. The
@@ -19,17 +21,43 @@ from __future__ import annotations
 
 import re
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from threetears.evals import Eval
-from threetears.evals.analysis import campaign_report_markdown
+from threetears.evals.analysis import (
+    assemble_context_bundle,
+    build_campaign_report,
+    build_code_only_report,
+    campaign_report_markdown,
+    report_markdown,
+)
+from threetears.evals.analysis.campaign_readings import campaign_readings
+from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.quick import EXIT_OK, EXIT_REFUSED, EXIT_RUN_DID_NOT_COMPLETE
 from threetears.evals.quick.files import main
+from threetears.evals.schema.models import EvalCaseStratum, GoalStateOutcome
+from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION
 from packages.evals.tests.clock_support import frozen_clock
+from packages.evals.tests.factories import (
+    fixture_variant_key,
+    make_aspect_campaign,
+    make_eval_result,
+    make_eval_run,
+    make_template,
+    minimal_aspect_design,
+)
+from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
+from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+
+#: What a page says where it numbers its cases by their place among those it holds (``held_places_note``).
+HELD_PLACES = (
+    "A case without a name is numbered here by its place among the cases this report lists, not by its place in the "
+    "list its runs were given, which this report's evidence does not hold."
+)
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +138,141 @@ async def test_past_the_bundle_cap_a_case_keeps_its_place_in_the_list() -> None:
     flagged = [row.split("|")[1].strip() for row in rows if "✗" in row or "(lost" in row]
     assert flagged == ["case 190", "case 195"], "the page's Cases table calls each as the console does"
     assert "| case 1 | — | ✓ ✓ ✓ |" in cases_table, "the first case in the list is case 1 here too"
+
+
+#: A host's own case ids, each ending in a number that is not its place in the list its runs were given (1, 2, 3).
+HOST_CASES = ["invoice-2024", "invoice-7", "invoice-12"]
+HOST_CHECK = "state.shop.cart.length >= 1"
+HOST_STAMP = "2026-10-01T00:00:00+00:00"
+
+
+class _BillingStrata(ToyhostStorage):
+    """The toy host's reads, every case declaring the stratum ``billing``, so its label (``billing: invoice-7``) reads
+    as no name and the page calls it by its number, as a traced host case's first input does."""
+
+    def load_case_strata(self, test_case_ids: Sequence[str], scope_id: str) -> list[EvalCaseStratum]:
+        return [EvalCaseStratum(id=case, stratum="billing") for case in test_case_ids]
+
+
+def _host_page(*, strip_places: bool = False) -> tuple[str, str]:
+    """A host-shaped campaign over :data:`HOST_CASES`: production loses ``invoice-12`` to its test setup, candidate
+    fails ``invoice-2024`` and ``invoice-12``. Its campaign page and its aspect's page, as markdown; with
+    ``strip_places``, over the bundle as one frozen before a case's place was carried."""
+    template = make_template(id="tpl-1", goal_state_checks=[HOST_CHECK], created_at=HOST_STAMP, updated_at=HOST_STAMP)
+    arms = [
+        CampaignArm(
+            label=label,
+            role="control" if index == 0 else "candidate",
+            variant_key=fixture_variant_key(label),
+            **({"named_at": ASKED_AT} if index == 0 else {}),
+        )
+        for index, label in enumerate(("production", "candidate"))
+    ]
+    runs = [
+        make_eval_run(
+            id=f"run-{arm}", status="completed", candidate_model=arm, test_case_ids=HOST_CASES, created_at=HOST_STAMP
+        )
+        for arm in ("production", "candidate")
+    ]
+    results = {
+        run.id: [
+            make_eval_result(
+                id=f"{run.id}-{case}",
+                eval_run_id=run.id,
+                scope_id=run.scope_id,
+                model=run.candidate_model,
+                test_case_id=case,
+                scored_at=HOST_STAMP,
+                goal_state_outcomes=[GoalStateOutcome(expression=HOST_CHECK, passed=index == 0 or case == "invoice-7")],
+                infra_error="the sandbox timed out" if index == 0 and case == "invoice-12" else None,
+            )
+            for case in HOST_CASES
+        ]
+        for index, run in enumerate(runs)
+    }
+    campaign = make_aspect_campaign(
+        id="campaign-places",
+        label="Invoices",
+        template_id=template.id,
+        run_ids=[run.id for run in runs],
+        design=minimal_aspect_design(merit_axes=[]),
+        question=QUESTION,
+        asked_at=ASKED_AT,
+        control=arms[0],
+        arms=arms,
+        scope_id=runs[0].scope_id,
+        name="places",
+        subject_id=runs[0].subject_snapshot.subject_id,
+        subject_kind="s",
+        created_at=ASKED_AT,
+    )
+    bundle = assemble_context_bundle(
+        campaign, storage=_BillingStrata(runs, results, templates=[template]), profile=toyhost_profile()
+    )
+    if strip_places:
+        bundle = bundle.model_copy(
+            update={"trials": [trial.model_copy(update={"case_place": None}) for trial in bundle.trials]}
+        )
+    readings = campaign_readings(campaign, {"Invoices": bundle}, arms=arms)
+    report = build_code_only_report(
+        bundle, assembled_at=ASSEMBLED_AT, campaign_name="places", arm_labels=readings.arm_labels()
+    )
+    page = build_campaign_report(campaign, readings, {"Invoices": report})
+    return campaign_report_markdown(page), report_markdown(report)
+
+
+def _named_rows(page: str, section: str) -> list[tuple[str, str]]:
+    """Each row of a page's table under ``section``: its first two cells."""
+    table = page.split(f"### {section}\n", 1)[1].split("\n### ", 1)[0]
+    return [
+        (cells[1].strip(), cells[2].strip())
+        for row in table.splitlines()
+        if row.startswith("| ") and not row.startswith(("| Case |", "| Trial |"))
+        for cells in [row.split("|")]
+    ]
+
+
+def test_a_host_case_is_numbered_by_its_stored_place_never_by_its_id() -> None:
+    campaign_page, aspect_page = _host_page()
+
+    # invoice-2024 is first in the runs' list, invoice-7 second and invoice-12 third: each is called by that place on
+    # the campaign page's first line, the aspect page's first line and every table, never by a number in its id.
+    lead = next(line for line in campaign_page.splitlines() if line.startswith("**"))
+    assert lead.endswith("Not graded on production: case 3 (the test setup failed: `the sandbox timed out`).**")
+    verdict = next(line for line in aspect_page.splitlines() if line.startswith("**"))
+    assert verdict.endswith("Not graded on production: case 3 (the test setup failed: `the sandbox timed out`).**")
+    assert _named_rows(campaign_page, "Cases") == [
+        ("case 1", "regression"),
+        ("case 3", "no usable trial"),
+        ("case 2", "—"),
+    ]
+    # The trials that went wrong, then the passed ones, each by its case's place.
+    assert _named_rows(campaign_page, "Trials") == [
+        ("T4", "case 3"),
+        ("T6", "case 1"),
+        ("T3", "case 3"),
+        ("T1", "case 2"),
+        ("T2", "case 2"),
+        ("T5", "case 1"),
+    ]
+    assert not re.search(r"case (2024|2025|7|8|12|13)\b", campaign_page + aspect_page)
+    assert HELD_PLACES not in campaign_page, "the places are the runs' own, so nothing says otherwise"
+
+
+def test_a_bundle_with_no_stored_place_numbers_the_cases_it_holds_and_says_so() -> None:
+    campaign_page, aspect_page = _host_page(strip_places=True)
+
+    # Held in the Trials table's order, invoice-7 is first, invoice-12 second, invoice-2024 third: one numbering on
+    # the whole page, said once where the cases are listed.
+    lead = next(line for line in campaign_page.splitlines() if line.startswith("**"))
+    assert lead.endswith("Not graded on production: case 2 (the test setup failed: `the sandbox timed out`).**")
+    assert _named_rows(campaign_page, "Cases") == [
+        ("case 3", "regression"),
+        ("case 2", "no usable trial"),
+        ("case 1", "—"),
+    ]
+    assert campaign_page.count(HELD_PLACES) == 1
+    assert aspect_page.count(HELD_PLACES) == 1
 
 
 async def test_an_error_line_calls_the_case_by_its_place_from_1() -> None:

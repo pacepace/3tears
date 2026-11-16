@@ -358,10 +358,12 @@ document's appendix lists its Checks after Method, each name defined by its expr
   failed and lost ones first. The Flag column reads `regression` only where a candidate passed a smaller share of
   its usable trials on the case than the control (`✓ ✓ ✗` against `✓ ✓ ✓`); a tie or a gain never flags, and
   `no usable trial` marks a case an arm has none on. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
-  name — one token, not a generated id, not a bare number — and `case N` otherwise, N its place in the list given,
-  from 1, read off the case's stored id, `<template>-<position>` (an `Eval`'s first case, the first line of its cases
-  file, is `case 1`, as the console and `results()` call it, however many trials the page holds). A case whose id
-  ends in no number is numbered by its place among the cases the page holds, in the order of the ids' text. Then the trials' census in one
+  name — one token, not a generated id, not a bare number — and `case N` otherwise, N its place in the list its runs
+  were given, from 1, as the runs stored it (`EvalRun.test_case_ids`), never a number read off its id (an `Eval`'s
+  first case, the first line of its cases file, is `case 1`, as the console and `results()` call it, however many
+  trials the page holds; a host's case is numbered by where its runs list it). A page over evidence that holds no
+  case's place (one frozen with an analysis stored before places were carried) numbers its cases by their place among
+  the cases it lists, in the Trials table's order, and says so under the Cases table. Then the trials' census in one
   line (`180 trials ran. Of them 161 passed and 19 failed.`) and only what went wrong: one row per failed or lost
   trial, the failed first, each naming its stored result (`Stored result`, read with `result_get`) and carrying the
   trial's id, so a link to the trial lands on its row. The full record of each is opt-in, because the records are

@@ -89,8 +89,7 @@ did not complete.
 Exit codes, in full: 0 done; 1 a launched run did not complete, or, from an eval file, every run completed but no
 arm had an answer graded, so nothing was measured; 2 refused; 3 failed with an unanticipated error; 4 the gate failed.
 The first line an eval prints says which 1 it is: a run that did not complete is named with what stopped it, and an
-eval that measured nothing says no answer was graded, or that every trial was lost, and why. A runner that raised on
-every case raises again on a rerun; a rerun helps only where that line names a provider that declined its calls.
+eval that measured nothing says no answer was graded, or that every trial was lost, and why.
 """
 
 from __future__ import annotations

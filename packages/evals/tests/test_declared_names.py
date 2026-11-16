@@ -278,6 +278,14 @@ def _as_00107a5b7_stamped(document: dict[str, Any]) -> dict[str, Any]:
     return {**document, "schema_version": _MAJOR_AT_00107A5B7, "schema_minor": _MINOR_AT_00107A5B7}
 
 
+def _less_case_places(document: dict[str, Any]) -> dict[str, Any]:
+    """A bundle document less each trial's ``case_place`` (#1209), the one field added inside a trial row since these
+    pins: its case's place in the runs' frozen case lists, read off ``EvalRun.test_case_ids``, which names no case and
+    is no name. Less it each bundle is written as before."""
+    trials = [{k: v for k, v in trial.items() if k != "case_place"} for trial in document["trials"]]
+    return {**document, "trials": trials}
+
+
 def documents() -> dict[str, str]:
     """The stored documents of the fixture as written, named nothing: the template and the campaign byte for byte,
     and each bundle in its identity form (:func:`~threetears.evals.schema.hashing.identity_json`)."""
@@ -293,7 +301,7 @@ def documents() -> dict[str, str]:
                 identity_json(
                     {
                         k: v
-                        for k, v in bundle.to_dict().items()
+                        for k, v in _less_case_places(bundle.to_dict()).items()
                         # `evidence`: the manifest a bundle carries since fingerprint version 3 (#1062), the one
                         # field added; less it each bundle is written as before.
                         if k not in ("package_version", "lever_names", "evidence")
