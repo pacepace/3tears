@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a replay guard sizes its bucket -- `ReplayGuard(max_bytes=)`; `pop_nonces` bounded at 1 MiB
+
+`ReplayGuard` takes `max_bytes`, passed to its owning declaration (`ensure_kv_bucket(owns_bucket=True)` reconciles
+`max_bytes` onto a live bucket in place), so a nonce bucket is bounded by bytes as well as by its TTL. A full bucket
+refuses the next nonce (`discard: new`): `record_unique` raises `KvError` and the caller denies, failing closed on that
+one bucket instead of filling the NATS servers' shared memory store. A bind-only guard refuses a `max_bytes` (the
+declarer sizes the bucket); a non-positive one is refused. `None` (the default) declares no bound, as before.
+The registry's `pop_nonces` declares 1 MiB: about 155 bytes a nonce, kept 120 s, at cobalt prod's busiest measured
+rate (5,601 a day) it holds about 1.2 KB, and 1 MiB holds 56 calls a second sustained (NATS2's reads, 2026-11-16).
+
 ### core: pyarrow stays optional -- the change-note keeper moves to its own module, behind the new `arrow` extra
 
 **Changed (import path):** `ChangeNoteKeeper`, `run_change_note_keeper`, `KeeperPass`, `ScrubPass` and

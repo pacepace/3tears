@@ -1205,3 +1205,76 @@ class TestTheGuardOwnsItsBucket:
             verifier_future_tolerance=_SKEW,
             create_if_missing=False,
         )
+
+
+class TestReplayGuardSizesItsBucket:
+    """a declaring guard bounds its bucket at the size its caller measured; a full one fails closed."""
+
+    @pytest.mark.asyncio
+    async def test_the_declaration_carries_the_bound(self) -> None:
+        bucket = AsyncMock()
+        bucket.create = AsyncMock(return_value=1)
+        bucket.date_created = AsyncMock(return_value=datetime.now(UTC))
+        spy_client = AsyncMock()
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
+        guard = ReplayGuard(
+            spy_client,
+            bucket_name="b",
+            ttl_seconds=70,
+            verifier_future_tolerance=_SKEW,
+            max_bytes=4 << 20,
+        )
+        await guard.bind()
+        kwargs = spy_client.ensure_kv_bucket.call_args.kwargs
+        # the owner reconciles max_bytes in place, so the bound reaches a bucket already live
+        assert (kwargs["max_bytes"], kwargs["owns_bucket"]) == (4 << 20, True)
+
+    @pytest.mark.asyncio
+    async def test_no_bound_declares_none(self) -> None:
+        bucket = AsyncMock()
+        bucket.date_created = AsyncMock(return_value=datetime.now(UTC))
+        spy_client = AsyncMock()
+        spy_client.ensure_kv_bucket = AsyncMock(return_value=bucket)
+        await _guard(spy_client, bucket_name="b").bind()
+        assert spy_client.ensure_kv_bucket.call_args.kwargs["max_bytes"] is None
+
+    @pytest.mark.parametrize("max_bytes", [0, -1])
+    def test_a_bound_that_holds_nothing_is_refused(self, max_bytes: int) -> None:
+        with pytest.raises(ValueError, match="max_bytes must be positive"):
+            ReplayGuard(
+                FakeNatsClient(),
+                bucket_name="b",
+                ttl_seconds=70,
+                verifier_future_tolerance=_SKEW,
+                max_bytes=max_bytes,
+            )
+
+    def test_a_bind_only_guard_takes_no_bound(self) -> None:
+        # the declarer sizes the bucket; a binder's number would be silently ignored
+        with pytest.raises(ValueError, match="bind-only guard takes no max_bytes"):
+            ReplayGuard(  # type: ignore[call-overload]
+                FakeNatsClient(),
+                bucket_name="b",
+                ttl_seconds=70,
+                verifier_future_tolerance=_SKEW,
+                create_if_missing=False,
+                max_bytes=1 << 20,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_full_bucket_refuses_the_next_nonce(self, client: FakeNatsClient) -> None:
+        # bound so small that one nonce fills it: the next fresh nonce is a write the bucket has no
+        # room for, and the guard raises rather than answering "fresh" -- the caller denies
+        guard = ReplayGuard(
+            client,
+            bucket_name="b",
+            ttl_seconds=70,
+            verifier_future_tolerance=_SKEW,
+            max_bytes=96,
+        )
+        await guard.bind()
+        assert await guard.record_unique("first", issued_at=_later()) is True
+        with pytest.raises(KvError):
+            await guard.record_unique("second", issued_at=_later())
+        # the nonce it holds is still a replay: a full bucket loses nothing it kept
+        assert await guard.record_unique("first", issued_at=_later()) is False

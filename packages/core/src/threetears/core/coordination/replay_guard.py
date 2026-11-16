@@ -187,6 +187,7 @@ class ReplayGuard:
         anchor: "ReplayAnchor | None" = None,
         create_if_missing: Literal[True] = True,
         key_scope: str | None = None,
+        max_bytes: int | None = None,
     ) -> None: ...
 
     @overload
@@ -212,6 +213,7 @@ class ReplayGuard:
         anchor: "ReplayAnchor | None" = None,
         create_if_missing: bool = True,
         key_scope: str | None = None,
+        max_bytes: int | None = None,
     ) -> None:
         """configure the guard; the bucket is opened by :meth:`bind`, which a service calls at start.
 
@@ -262,12 +264,28 @@ class ReplayGuard:
             share a ledger this way, which is sound because an assertion is bound to the one pod it
             was issued for: its replay to another owner fails verification before the guard is asked
         :ptype key_scope: str | None
-        :raises ValueError: when ``ttl_seconds`` is not positive, the tolerance is negative, or
-            ``key_scope`` is not one literal subject token
+        :param max_bytes: the bucket's byte bound, set by the declaration (the owner reconciles it onto
+            a live bucket in place); ``None`` declares none. Size it from the measured steady state:
+            a nonce lives ``ttl_seconds``, so the bucket holds about (writes a second) x
+            ``ttl_seconds`` x (bytes a stored nonce takes) and never grows past that. A full bucket
+            refuses the next nonce (``discard: new``), which this guard reports as a refused
+            artifact -- failing closed on its own bucket rather than filling the NATS servers'
+            shared memory store for every other bucket. Only a declaring guard sizes its bucket
+        :ptype max_bytes: int | None
+        :raises ValueError: when ``ttl_seconds`` is not positive, the tolerance is negative,
+            ``key_scope`` is not one literal subject token, ``max_bytes`` is not positive, or a
+            bind-only guard is given a ``max_bytes``
         :raises TypeError: when the guard declares its bucket and the client cannot declare one
         """
         if ttl_seconds <= 0:
             raise ValueError(f"ReplayGuard ttl_seconds must be positive, got {ttl_seconds}")
+        if max_bytes is not None and max_bytes <= 0:
+            raise ValueError(f"ReplayGuard max_bytes must be positive, got {max_bytes}")
+        if max_bytes is not None and not create_if_missing:
+            raise ValueError(
+                f"ReplayGuard for {bucket_name!r} binds a bucket another identity declares and sizes; "
+                f"a bind-only guard takes no max_bytes"
+            )
         if verifier_future_tolerance < timedelta(0):
             raise ValueError(
                 f"ReplayGuard verifier_future_tolerance must not be negative, got {verifier_future_tolerance}"
@@ -287,6 +305,7 @@ class ReplayGuard:
         self._verifier_future_tolerance = verifier_future_tolerance
         self._anchor = anchor
         self._create_if_missing = create_if_missing
+        self._max_bytes = max_bytes
         # Read once, at bind, and kept: the anchor is a fact about this ledger's whole history, so
         # re-reading it per artifact would put a durable round trip on the hot path to learn
         # something that cannot change while the process runs. A failed read stays None and is
@@ -625,6 +644,7 @@ class ReplayGuard:
                 create_if_missing=True,
                 owns_bucket=True,
                 drop_file_storage=True,
+                max_bytes=self._max_bytes,
             )
         else:
             bucket = await self._client.kv_bucket(
