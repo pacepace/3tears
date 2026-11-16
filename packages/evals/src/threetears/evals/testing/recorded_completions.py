@@ -126,12 +126,13 @@ a line this recorder writes, refuses the whole file by its line number. One proc
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import threading
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -291,7 +292,8 @@ class ReplayedCompletion:
     """A completion as it was recorded, replayed: the ten :class:`~threetears.evals.schema.CompletionResult` members.
 
     Satisfies :class:`~threetears.evals.schema.CompletionResult` structurally, and carries its optional
-    ``sent_settings`` member. Every member holds what the inner client's completion held when it was recorded.
+    ``sent_settings`` member. Every member holds what the inner client's completion held when it was recorded, ``served_model`` apart where
+    that named none (below).
     ``cost_usd`` and ``price_source`` are a historical fact, what the call cost when it was made and who priced it then,
     not a quote: a replay calls no price source, and a rate that moved since is not reflected.
 
@@ -301,7 +303,10 @@ class ReplayedCompletion:
     :ivar cost_usd: What the call cost when it was recorded, or ``None`` when nothing priced it.
     :ivar price_source: Who priced it then, or ``None``.
     :ivar model: The model the call was attributed to.
-    :ivar served_model: The model the provider's response named, or ``None``.
+    :ivar served_model: The model the provider's response named. Where the recorded reply named none, the
+        recording itself, as ``recording:`` and the first 12 hex digits of the sha256 of its file: a replay knows
+        what answers it, so two replays of one recording are answered alike and a run replayed from it never reads
+        as answered by an unknown model.
     :ivar reasoning_tokens: The reasoning share of ``output_tokens``, or ``None``.
     :ivar temperature: The temperature the request was sent with, or ``None``.
     :ivar stop_reason: Why the completion stopped, in the engine's vocabulary.
@@ -335,6 +340,9 @@ class ReplayedCompletion:
         said = self.extra.get("served_provider")
         return said if isinstance(said, str) and said else None
 
+
+#: What a replayed call whose recorded reply named no model is answered by, before the recording's digest.
+_RECORDING_ANSWERED = "recording:"
 
 #: What a recording holds under one key: the request settings it was recorded under, and its calls in index order.
 _Recorded = tuple[ClientRequestSettings | None, list[ReplayedCompletion]]
@@ -1306,9 +1314,12 @@ def _read_recording(path: Path, remedy: str) -> _Read:
     heads: dict[str, str] = {}
     keyed_by: dict[str, dict[str, Any] | None] = {}
     prompt_keys: dict[str, list[str | None]] = {}
-    lines = path.read_text(encoding="utf-8").split("\n")
+    text_held = path.read_text(encoding="utf-8")
+    lines = text_held.split("\n")
     if lines and lines[-1] == "":
         lines.pop()  # the newline that ends the last line
+    # What answers a replayed call whose recorded reply named no model: this recording, whatever model made it.
+    answered_by = f"{_RECORDING_ANSWERED}{hashlib.sha256(text_held.encode('utf-8')).hexdigest()[:12]}"
     client: _Client | None = None
     for number, text in enumerate(lines, start=1):
         key, index, settings, completion, cell, head, inputs, prompt_key = _read_line(path, number, text, remedy)
@@ -1348,7 +1359,7 @@ def _read_recording(path: Path, remedy: str) -> _Read:
                 "file was edited",
                 remedy,
             )
-        calls.append(completion)
+        calls.append(completion if completion.served_model else replace(completion, served_model=answered_by))
         cells.setdefault(key, []).append(cell)
         heads.setdefault(key, head)
         keyed_by.setdefault(key, inputs)

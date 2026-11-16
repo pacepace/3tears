@@ -179,6 +179,24 @@ async def test_concurrent_identical_calls_are_numbered_without_a_gap(tmp_path: P
     assert [line["index"] for line in _lines(path)] == [0, 1, 2, 3], "indexes are given in the order lines are written"
 
 
+async def test_a_replayed_call_whose_recorded_reply_named_no_model_is_answered_by_its_recording(tmp_path: Path) -> None:
+    """#1187: a replay knows what answers it. Where the recorded reply named a model it is that model; where it named
+    none it is the recording itself, alike on every replay of the file and unlike another recording's."""
+    path, other = tmp_path / "rec.jsonl", tmp_path / "other.jsonl"
+    await _record(path, ("Named.", _Reply(content="a")), ("Silent.", _Reply(content="b", served_model=None)))
+    await _record(other, ("Silent.", _Reply(content="c", served_model=None)))
+
+    async def answered(recording: Path, user: str) -> str | None:
+        client = RecordedCompletions.replay(recording, settings=BUDGETED)
+        return (await client.generate(system=SYSTEM, user=user)).served_model
+
+    assert await answered(path, "Named.") == "acme/large-2026-09"
+    silent = await answered(path, "Silent.")
+    assert silent is not None and silent.startswith("recording:") and len(silent) == len("recording:") + 12
+    assert await answered(path, "Silent.") == silent, "two replays of one recording are answered alike"
+    assert await answered(other, "Silent.") != silent, "another recording is another answer"
+
+
 async def test_replay_serves_repeats_in_order_and_refuses_the_call_past_the_recording(tmp_path: Path) -> None:
     path = tmp_path / "rec.jsonl"
     await _record(path, ("Roll a die.", _Reply(content="4")), ("Roll a die.", _Reply(content="2")))

@@ -76,6 +76,7 @@ from threetears.evals.schema.versioning import (
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.schema.judge_attribution import JudgeAttributionSource, JudgeAttributionState, attribution_state
 from threetears.evals.schema.prose import ModelProse
+from threetears.evals.schema.reading_states import SampleKind
 from threetears.evals.schema.world_events import WorldEvent
 from threetears.evals.schema.job_lease import (
     CancelRequestReasonField,
@@ -3695,6 +3696,33 @@ class MeasureAttestation(EvalBaseModel, CoreShapeModel):
     note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
 
 
+class ServedModelAttestation(EvalBaseModel, CoreShapeModel):
+    """A host's statement, after the fact, of the model that answered a stored run's candidate calls whose responses
+    named none.
+
+    Written by the ``runs_attest`` action (coordinate ``served_model``) on a run some of whose candidate usage rows
+    name no served model. It is the host's word and never the engine's guess: the id a run asked for
+    (``RoleUsage.model``) is not evidence of what answered, and nothing else a silent run stores is. No row is
+    touched: the rows stay as the responses left them, so a reading still tells a model a response named from one a
+    host stated, and the identity disclosure stays true. A reading that pools by answering model (a campaign's cells,
+    pass^k) reads the silent rows of the results named here THROUGH the statement, and says it was stated.
+    """
+
+    attested_at: str = Field(default_factory=utc_now_iso)
+    attested_by: str = Field(min_length=1, description="Who stated it, as the host names them: a person or a job.")
+    served_model: str = Field(
+        min_length=1, description="The model stated as having answered the run's candidate calls that named none."
+    )
+    result_ids: list[str] = Field(
+        min_length=1,
+        description=(
+            "The results whose candidate rows named no model when the statement was made, sorted: what it covers. A "
+            "result written after it (a take-up) is not covered, and its silence stays a silence."
+        ),
+    )
+    note: str | None = Field(default=None, description="Why the host knows, in its own words; None when it gave none.")
+
+
 class RunLifetime(EvalBaseModel, CoreShapeModel):
     """One holding of a run by one process, from when it took the run up to how that holding ended.
 
@@ -4563,6 +4591,16 @@ class EvalRun(CoreDocumentModel):
             "Each re-measure of this run, oldest first (MeasureRemeasure). Empty for a run whose values are as its "
             "cells wrote them. A run carrying one has its context identity derived at read, from "
             "measure_definitions as the re-measure left them, never read off the key its launch stamped."
+        ),
+    )
+    served_model_attestation: ServedModelAttestation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The host's statement of the model that answered this run's candidate calls whose responses named none, "
+            "made after the run by the runs_attest action. The rows are never rewritten: a reading that pools by "
+            "answering model reads the silent rows of the results it names through it, as attested, not recorded. "
+            "None = never attested: a row naming no model is unknown, which pools with nothing."
         ),
     )
 
@@ -6138,6 +6176,16 @@ class JudgeRepeat(EvalDocumentModel, CoreShapeModel):
             "its wording, for every dim the repeat asked."
         ),
     )
+    sample: SampleKind | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "How the result was chosen for the repeat: ``random`` = asked of every result of the run, in an order the "
+            "engine drew, so the results repeated before any stop are a random draw from the run's; ``selected`` = "
+            "named by id. None = a repeat stored before this was recorded. Only a random draw stands for an arm's "
+            "results, so only it is read into the arm's re-score noise."
+        ),
+    )
 
     @field_validator("scores")
     @classmethod
@@ -7169,6 +7217,7 @@ __all__ = [
     "MeasureDeclaration",
     "MeasureRemeasure",
     "MeasureReread",
+    "ServedModelAttestation",
     "EvalRunStatus",
     "ArmSchedule",
     "EvalTemplate",

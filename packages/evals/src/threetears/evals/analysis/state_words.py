@@ -92,7 +92,7 @@ STATE_WORDS: Final[tuple[StateWord, ...]] = (
     StateWord("ServedModelState", "one", "counted", identity="one"),
     StateWord("ServedModelState", "pooled", "withheld", "split", "served_model", identity="split"),
     StateWord("ServedModelState", "unrecorded", "withheld", "identity_unrecorded", "served_model", "unrecorded"),
-    # An arm answered by more than one model on an aspect, read per model.
+    # An arm not read as an arm on an aspect, on the coordinate its entry names (the served model by default).
     StateWord("AnswerSplit", "answer_split", "withheld", "split", "served_model", identity="split"),
     # Why a cell of one run pools with nothing, or is not another cell.
     StateWord("UnpooledReason", "other_served_model", "withheld", "split", "served_model", identity="split"),

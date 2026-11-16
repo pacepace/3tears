@@ -47,7 +47,12 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.result_condition import candidate_failure_cause, harness_faulted
 from threetears.evals.schema.models import EvalResult, EvalRun, RubricScore
 from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
-from threetears.evals.ops.lenses import detectable_effect_lines, detectable_effects, estimate_text
+from threetears.evals.ops.lenses import (
+    DETECTABLE_EFFECT_ASSUMPTIONS,
+    detectable_effect_lines,
+    detectable_effects,
+    estimate_text,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.factories import make_campaign, make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
@@ -339,6 +344,58 @@ class TestTheEstimateReadsEarlierRuns:
         block = detectable_effects(host, SCOPE, TEMPLATE, n_cases=1, k_runs=3, n_arms=2)
 
         assert block.cannot_estimate == "a paired test needs two cases per arm; the launch plans 1"
+
+
+#: What the block adds to its assumptions where the earlier runs it pools were read under different definitions.
+_DEFINITIONS_POOLED = (
+    "; and its variance pools earlier runs read under different definitions of a host measure, or under none recorded"
+)
+
+
+def _over_definitions(*recorded: dict[str, str] | None) -> DetectableEffects:
+    """The block planned from one earlier run per entry, each recording that definitions map (None: none), each
+    holding the host measure on two cases repeated twice."""
+    host = _host()
+    for index, definitions in enumerate(recorded):
+        run = make_eval_run(
+            id=f"run-{index}",
+            scope_id=SCOPE,
+            template_id=TEMPLATE,
+            candidate_model=f"model-{index}",
+            status="completed",
+            k_runs=2,
+            test_case_ids=["c1", "c2"],
+            measure_definitions=definitions,
+        )
+        host.storage.save_eval_run(run)
+        for case in run.test_case_ids:
+            for repeat in (1, 2):
+                host.storage.save_eval_result(
+                    make_eval_result(
+                        id=f"{run.id}-{case}-{repeat}",
+                        eval_run_id=run.id,
+                        scope_id=SCOPE,
+                        model=run.candidate_model,
+                        test_case_id=case,
+                        k_iteration=repeat,
+                        host_measures={READING: float(repeat)},
+                    )
+                )
+    return detectable_effects(host, SCOPE, TEMPLATE, n_cases=10, k_runs=2, n_arms=2)
+
+
+def test_the_block_says_its_variance_pools_definitions_only_where_the_runs_it_read_were_not_all_read_under_one() -> (
+    None
+):
+    """The planning read pools every earlier run's variance whatever definition read it: where those differ, or one
+    went unrecorded beside another run, the block's assumptions say so; where every run says one thing, they do not,
+    so a block over one definition reads as it always did."""
+    before, after = {READING: "a" * 64}, {READING: "b" * 64}
+
+    for alike in ((before, before), (before,), (None,)):
+        assert _over_definitions(*alike).assumptions == DETECTABLE_EFFECT_ASSUMPTIONS, alike
+    for apart in ((before, after), (before, None), (None, None)):
+        assert _over_definitions(*apart).assumptions == DETECTABLE_EFFECT_ASSUMPTIONS + _DEFINITIONS_POOLED, apart
 
 
 def test_the_launch_estimate_prints_one_line_per_reading() -> None:

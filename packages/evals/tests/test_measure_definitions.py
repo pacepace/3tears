@@ -246,8 +246,9 @@ async def test_runs_launched_under_two_definitions_of_one_measure_never_share_a_
     assert BADGE_MEASURE_DEFINITIONS_DIFFER in grouped["badges"]
     disclosure = grouped["measure_definition_disclosure"]
     assert FIELD_ACCURACY in disclosure and redefined.id in disclosure
-    assert "pass^k keeps them in separate cells" in disclosure
-    assert "still pool them" in disclosure, "the page says what is not kept apart yet"
+    assert "pass^k and a campaign's cells keep them apart, and no contrast is read between them" in disclosure
+    assert "a pivot withholds a cell that would pool them" in disclosure, "and how the lenses outside the cells read it"
+    assert "still pool" not in disclosure, "nothing pools them any more"
 
 
 async def test_runs_of_one_definition_carry_no_badge_and_no_disclosure() -> None:
@@ -463,7 +464,9 @@ async def test_a_host_reaches_both_doors_through_the_action_catalogue() -> None:
     (tool, *_) = eval_catalogue().mount_all(standard_tools())
     caller = Caller(scope_id=TOYHOST_SCOPE, identity="agent:backfill")
 
-    stated = await tool.call({"action": "runs_attest_definitions", "run_ids": [since.id]}, host=host, caller=caller)
+    stated = await tool.call(
+        {"action": "runs_attest", "coordinate": "measure_definition", "run_ids": [since.id]}, host=host, caller=caller
+    )
     reported = await tool.call({"action": "run_remeasure", "run_id": old.id}, host=host, caller=caller)
     applied = await tool.call({"action": "run_remeasure", "run_id": old.id, "store": True}, host=host, caller=caller)
 

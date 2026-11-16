@@ -6,7 +6,9 @@ outputs are pushed instead. ``Log("outputs.jsonl")`` is a runner whose outputs a
 - **The app logs each output** where it appears: ``log(case, output, cost_usd=..., model=...)``, once per repeat. The
   case is named by its ``id``, so a case logged to carries one.
 - **Another process, in any language, may append** ``{"id": ..., "output": ...}`` lines to the same file (with
-  ``cost_usd`` and ``model`` when it knows them).
+  ``cost_usd`` and ``model`` when it knows them, and ``served_model``, the model the provider's response named: a
+  line naming a model and no served model leaves its run answered by a model nothing names, which pools with no
+  other run until its host states it).
 - **The eval grades what was logged.** The ``k``-th repeat of a case is graded on the ``k``-th output logged for it,
   in the order the file holds them. A case with fewer than ``k`` outputs has each missing repeat excluded with cause
   ``not_logged`` — counted and named among the run's exclusions, never dropped and never read as a failure of the app.
@@ -56,7 +58,13 @@ class Log:
         return f"Log({str(self.path)!r})"
 
     def __call__(
-        self, case: Mapping[str, Any], output: Any, *, cost_usd: float | None = None, model: str | None = None
+        self,
+        case: Mapping[str, Any],
+        output: Any,
+        *,
+        cost_usd: float | None = None,
+        model: str | None = None,
+        served_model: str | None = None,
     ) -> None:
         """Log one output for one case: one repeat of it.
 
@@ -68,13 +76,19 @@ class Log:
         :ptype cost_usd: float | None
         :param model: The model that produced it, when there was one.
         :ptype model: str | None
+        :param served_model: The model the provider's response named as having answered, when it named one. Left
+            out, a run of the log records that nothing says which model answered, and pools with no other run.
+        :ptype served_model: str | None
         :raises ValueError: A case with no ``id``, an output JSON cannot hold, or a spend no usage row can hold.
         """
         name = case.get("id") if isinstance(case, Mapping) else None
         if isinstance(name, bool) or not isinstance(name, str | int) or not str(name).strip():
             raise ValueError(f"a logged output names its case by the case's id, and {case!r} carries none")
-        Answer(value=output, model=model, cost_usd=cost_usd)
+        Answer(value=output, model=model, cost_usd=cost_usd, served_model=served_model)
         line = {"id": str(name), "output": output, "cost_usd": cost_usd, "model": model}
+        if served_model is not None:
+            # Left out when unset, so a log written without it holds the lines it always did.
+            line["served_model"] = served_model
         try:
             text = json.dumps(line, sort_keys=True)
         except (TypeError, ValueError) as unencodable:
@@ -106,7 +120,12 @@ class Log:
             if unnamed or "output" not in line:
                 raise ValueError(f"{self.path} line {number} is not an {{'id', 'output'}} object: {text[:80]}")
             logged.setdefault(str(name), []).append(
-                Answer(value=line["output"], model=line.get("model"), cost_usd=line.get("cost_usd"))
+                Answer(
+                    value=line["output"],
+                    model=line.get("model"),
+                    cost_usd=line.get("cost_usd"),
+                    served_model=line.get("served_model"),
+                )
             )
         return logged
 

@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable, Sequence
 from itertools import chain
 
+from threetears.evals.analysis.cells import MEASURE_DEFINITIONS_DIMENSION
 from threetears.evals.analysis.lens_text import tier_sentence_in
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
@@ -17,7 +18,11 @@ from threetears.evals.analysis.bundle.schema import (
     GoalCheckProofReading,
     UnexercisedFactor,
 )
-from threetears.evals.analysis.lenses.frontier import PASS_HAT_K_CELL_READING, pass_hat_k_cell_lines
+from threetears.evals.analysis.lenses.frontier import (
+    DEFINITIONS_APART_READING,
+    PASS_HAT_K_CELL_READING,
+    pass_hat_k_cell_lines,
+)
 from threetears.evals.analysis.report.aspect.common import (
     _case_namer,
     _control_key,
@@ -489,6 +494,9 @@ def _run_disclosures(
     if cell_lines:
         # What "kept out" covers, once, before the first: the arm's tables above still count those runs.
         say("runs", PASS_HAT_K_CELL_READING)
+    elif bundle.frontier.definitions_apart:
+        # Where the contestants' definitions differ: the reading's last sentence, which no cell line brought.
+        say("runs", DEFINITIONS_APART_READING)
     for line in cell_lines:
         say("runs", line)
 
@@ -572,6 +580,21 @@ def _design_disclosures(
         if row.cannot_be_an_arm:
             why = row.cannot_be_an_arm.rstrip(".")
             say("comparisons", f"Declared axis {lever} reads unswept whatever the runs did: {why}.")
+    # Why runs read under another definition of a host measure, or under none recorded, share no cell and no contrast,
+    # and what their host does about it: said wherever the campaign's cells keep such runs apart.
+    unrecorded = any(MEASURE_DEFINITIONS_DIMENSION in cell.unknown_dimensions for cell in bundle.cells)
+    for compared in bundle.comparison.comparison_sets:
+        if compared.measure_definition_disclosure and (unrecorded or "measure_definitions_differ" in compared.badges):
+            say("apparatus", compared.measure_definition_disclosure)
+    # A campaign that pools only because its host stated the definitions some runs ran under says so: the runs did not
+    # record them (#1187: an attestation is evidence read through, never a record).
+    attested = sum(1 for summary in bundle.run_summaries if "measure_definition" in summary.attested_coordinates)
+    if attested:
+        say(
+            "apparatus",
+            f"Attested, not recorded: the host stated after the fact the definitions of its measures {attested} "
+            "run(s) were read under, and they pool on its word.",
+        )
     for merge in bundle.refused_merges:
         dimensions = f" on {_listed(merge.dimensions)}" if merge.dimensions else ""
         say(
