@@ -24,6 +24,10 @@ __all__ = [
     "OPEN_MARKS_NOTE",
     "MARGIN_BAND_TEMPLATE",
     "FAMILY_LEVEL_TEMPLATE",
+    "PLAN_LEVEL_TEMPLATE",
+    "PLAN_PAST_CLAUSE",
+    "PLAN_SIZED_CLAUSE",
+    "PLAN_UNCOUNTED_CLAUSE",
     "BETTER_WORDS",
     "CASES_WORD",
     "COMPUTED_REPEATS_NOTE",
@@ -375,6 +379,23 @@ MARGIN_BAND_TEMPLATE = "{line}; shaded: no worse than the margin"
 #: plain words, as a chart's head and a table both print it (``95% (adjusted for 16 comparisons)``; a chart's head reads
 #: ``95% intervals (adjusted for 16 comparisons)``). The per-interval level (``99.69%``) is Method's and the glossary's.
 FAMILY_LEVEL_TEMPLATE = "{joint} (adjusted for {size} comparisons)"
+
+#: What a page states in place of the level a plan of looks is for where that level is not shown to hold over the looks
+#: taken (:func:`~threetears.evals.analysis.report.keys.vocabulary.plan_condition`): the level, the plan, then one
+#: clause saying which readings it is not shown for and why. Each clause is true of every reading it names.
+PLAN_LEVEL_TEMPLATE = (
+    "{level} is the level the intervals are read to hold together over the {planned} looks the design plans{clause}."
+)
+#: Within the plan, a reading whose test is not shown to keep the level where a look's cases were sized from an earlier
+#: reading (:func:`~threetears.evals.analysis.significance.plan_kept`).
+PLAN_SIZED_CLAUSE = (
+    "; it holds where each look's cases were fixed before its results, and for {readings} it is not shown where a "
+    "look's cases were sized from an earlier reading"
+)
+#: More looks were taken than the plan allows.
+PLAN_PAST_CLAUSE = "; {readings} {were} read {taken} times, so it is not shown for {them}"
+#: The count of looks is a lower one, or looks were not recorded: more than planned may have been taken.
+PLAN_UNCOUNTED_CLAUSE = "; {readings} may have been read more times than that, so it is not shown for {them}"
 
 #: The words under a change chart's two ends, the left end's first, by whether higher is better.
 BETTER_WORDS: dict[bool, tuple[str, str]] = {True: ("worse", "better"), False: ("better", "worse")}

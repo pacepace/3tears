@@ -7,6 +7,7 @@ from __future__ import annotations
 import re
 
 from threetears.evals.analysis.report.keys.figure import Figure
+from threetears.evals.analysis.checks import Looks
 from threetears.evals.analysis.report.keys.vocabulary import joint_level
 from threetears.evals.analysis.report.parts.look import Quantity, figure_text
 from threetears.evals.analysis.report.number_forms.policy import policy_level
@@ -19,24 +20,27 @@ from threetears.evals.kernel.numbers import spell_count
 # --- an interval's level, an interval's words and a count, as every surface prints them -------------------------------
 
 
-def interval_level(level: str, family: ContrastFamily | None) -> str:
+def interval_level(level: str, family: ContrastFamily | None, looks: Looks | None = None) -> str:
     """An interval's level as every heading prints it, a chart's head and a table's column alike: where ``family``
     corrects its comparisons together at this level, the joint guarantee they hold at, in plain words (``95% (adjusted
     for 16 comparisons)``, which a chart's head prints ``95% intervals (adjusted for 16 comparisons)``), so a reader
     meets the guarantee they act on; any other level as the one rule prints a level as text
     (:func:`~threetears.evals.analysis.report.number_forms.policy.policy_level`: ``95%``, an uncorrected 98.33% as
     ``98.3%``), so a level reads alike in a head, a cell and the prose (owner ruling, 2026-11-14). A level the input
-    states in no percent's digits reads as stated. The per-interval level is Method's and the glossary's.
+    states in no percent's digits reads as stated. The per-interval level is Method's and the glossary's. A family
+    whose aspect's plan of looks is not shown to hold its level states no joint guarantee (:func:`joint_level`).
 
     :param level: The level as the input states it (``99.69%``).
     :ptype level: str
     :param family: The contrast family the interval belongs to, or None.
     :ptype family: ContrastFamily | None
+    :param looks: The looks of the family's aspect; None for none.
+    :ptype looks: Looks | None
     :return: The level's words.
     :rtype: str
     """
     stated = level.strip()
-    joint = joint_level(family) if family is not None and family.level == level else None
+    joint = joint_level(family, looks) if family is not None and family.level == level else None
     if joint is None:
         return level_text(stated)
     return FAMILY_LEVEL_TEMPLATE.format(joint=policy_level(joint[0] * 100), size=joint[1])

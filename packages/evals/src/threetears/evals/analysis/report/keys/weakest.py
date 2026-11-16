@@ -7,7 +7,7 @@ from dataclasses import replace
 from threetears.evals.analysis.report.keys.figure import Figure, _listed
 from threetears.evals.analysis.report.keys.names import reader_name
 from threetears.evals.analysis.report.keys.reads import _floor_rate, _gap_figure, _scale_of, pass_rate_measure
-from threetears.evals.analysis.report.keys.vocabulary import _level, _number, _refuse, _text, joint_level
+from threetears.evals.analysis.report.keys.vocabulary import _level, _number, _refuse, _text, joint_level, looks_of
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.analysis.report_margins import Margin, undecided_arms, weakest_margin
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
@@ -83,7 +83,7 @@ def _weakest_interval(report_input: ReportInput, margin: Margin, path: str) -> F
             (held for held in report_input.contrast_families if held.aspect in (margin.aspect, None) and held.level),
             None,
         )
-        joint = joint_level(family)
+        joint = joint_level(family, looks_of(report_input, family.aspect) if family is not None else None)
         if joint is None:
             # The family states no joint guarantee to say, and the per-interval level is no reading text's.
             return _text(path, "the multiplicity-corrected interval", "which interval the weakest margin is read on")
