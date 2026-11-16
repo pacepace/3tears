@@ -268,7 +268,7 @@ def refuse_undeclared(tool: MountedTool, action: Action, undeclared: Sequence[st
 def refuse_invalid(tool: MountedTool, action: Action, problems: Sequence[tuple[Sequence[str], str]]) -> str:
     """A call whose values do not validate against the action's parameters: each by where it is and what is wrong."""
     del tool
-    lines = [f"- {'.'.join(where) or '(the call)'}: {said}" for where, said in problems]
+    lines = [f"- {'.'.join(where) or '(the call)'}: {one_line(said)}" for where, said in problems]
     return "\n".join([f"refused: {action.name} was called with values it cannot take:", *lines, _accepted(action)])
 
 
