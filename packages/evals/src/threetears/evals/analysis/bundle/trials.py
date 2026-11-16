@@ -133,6 +133,10 @@ def first_recorded_error(error_words: str) -> tuple[str | None, str]:
     return None, first
 
 
+#: The cause of a trial the candidate failed without answering: the runner raised, or its model call failed.
+_UNANSWERED: FailCause = "model_failed"
+
+
 @dataclass(frozen=True)
 class PassCount:
     """One arm's pass count over every trial that ran, as the engine's census holds it: the one count a first line, a
@@ -153,6 +157,9 @@ class PassCount:
     :ivar ungraded_error: That error, in its own words; None where none is held.
     :ivar ungraded_causes: The census's causes of the trials not graded (``infra``, ``judge_truncated``, ...), the
         most common first: what is said where no trial's own error is held.
+    :ivar candidate_failed: Graded trials the candidate failed by failing to answer (the runner raised, its model call
+        failed): each counts against it, and no grader had an answer to read on it.
+    :ivar candidate_error: The first such trial's recorded error, in its own words; None where none is held.
     """
 
     passed: int
@@ -164,11 +171,18 @@ class PassCount:
     ungraded_role: str | None
     ungraded_error: str | None
     ungraded_causes: tuple[str, ...] = ()
+    candidate_failed: int = 0
+    candidate_error: str | None = None
 
     @property
     def ungraded(self) -> int:
         """Trials that ran and were not graded: lost to the test setup (a grader that raised, a declined call)."""
         return self.ran - self.graded
+
+    @property
+    def none_answered(self) -> bool:
+        """Whether the candidate failed every graded trial without answering, so no grader read an answer on any."""
+        return self.graded > 0 and self.candidate_failed == self.graded
 
 
 def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount:
@@ -185,6 +199,17 @@ def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount
     lost = [trial for trial in bundle.trials if trial.arm == board.variant_key and trial.state == "lost"]
     recorded = next((trial.error_words for trial in lost if trial.error_words), None)
     role, words = first_recorded_error(recorded) if recorded is not None else (None, None)
+    unanswered = next(
+        (
+            trial.error_words
+            for trial in bundle.trials
+            if trial.arm == board.variant_key
+            and trial.state == "failed"
+            and trial.cause == _UNANSWERED
+            and trial.error_words
+        ),
+        None,
+    )
     return PassCount(
         passed=board.passed,
         graded=board.usable,
@@ -195,6 +220,8 @@ def pass_count(bundle: AnalysisContextBundle, board: ArmScoreboard) -> PassCount
         ungraded_role=role,
         ungraded_error=words,
         ungraded_causes=tuple(sorted(board.lost, key=lambda cause: (-board.lost[cause], cause))),
+        candidate_failed=board.failed.get(_UNANSWERED, 0),
+        candidate_error=first_recorded_error(unanswered)[1] if unanswered is not None else None,
     )
 
 

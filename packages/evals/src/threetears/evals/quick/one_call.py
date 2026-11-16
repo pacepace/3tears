@@ -147,7 +147,7 @@ from threetears.evals.quick.logged import Log
 from threetears.evals.quick.measures import Measure
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, declares_a_check, predicted_label
 from threetears.evals.quick.tools import CellTools, Tool, ToolRecording, ToolUsingCandidate
-from threetears.evals.quick.world import World, WorldAgent, WorldCellKind, WorldOutcome, world_case_payload
+from threetears.evals.quick.world import SEED_KEY, World, WorldAgent, WorldCellKind, WorldOutcome, world_case_payload
 from threetears.evals.storage import InMemoryDocumentStore
 
 log = get_logger(__name__)
@@ -978,10 +978,11 @@ class CallableKind:
                     model_unserved=owner == "unserved",
                     telemetry=CandidateTelemetry(turns_delivered=0),
                 )
-            contain(raised, log=log, what=f"the candidate raised {type(raised).__name__}: {raised}")
+            said = _raised_words("the candidate", raised, test_case)
+            contain(raised, log=log, what=said)
             missed = _missed(test_case.host_payload[_EXPECTED_KEY]) if self._classifies else {}
             return CandidateOutput(
-                candidate_errors=[f"the candidate raised {type(raised).__name__}: {raised}"],
+                candidate_errors=[said],
                 host_measures=missed,
                 # One call, and it answered nothing: a refusal's round trip is no turn's time or spend.
                 telemetry=CandidateTelemetry(turns_delivered=0),
@@ -1015,10 +1016,11 @@ class CallableKind:
                 score = scorer(case, answer)
             # prawduct:ok-broad-except — a scorer is the caller's grader, the rig: a raise excludes the cell and says which scorer
             except Exception as raised:
-                contain(raised, log=log, what=f"the grader {name} raised {type(raised).__name__}: {raised}")
+                said = _raised_words(f"the grader {name}", raised, test_case)
+                contain(raised, log=log, what=said)
                 return CandidateOutput(
                     output=trace,
-                    infra_errors=[f"the grader {name} raised {type(raised).__name__}: {raised}"],
+                    infra_errors=[said],
                     judge_evidence=evidence,
                     telemetry=telemetry,
                 )
@@ -1108,6 +1110,39 @@ class CallableKind:
                 f"grader({name}, range=(low, high))"
             )
         return None
+
+
+#: Why each reserved case key (:data:`RESERVED_CASE_KEYS`) is withheld from the runner and every grader, said where a
+#: function raised ``KeyError`` looking one up in a case that held it.
+_WITHHELD_WHY: dict[str, str] = {
+    "id": (
+        "names the case, and a renamed case keeps its history, so it is withheld from the runner and every grader; "
+        "if your function needs the value, copy it into the case under another key as well"
+    ),
+    STRATUM_KEY: "is the kind of case, which the runner must not be told, so it is withheld from the runner and every grader",
+    WORLD_KEY: (
+        "is the case's starting state, which the agent reads through its world's tools, so it is withheld from the "
+        "runner and every grader"
+    ),
+}
+
+
+def _raised_words(whose: str, raised: Exception, test_case: EvalTestCase) -> str:
+    """What a function the author wrote raised, as its cell's error says it: ``the candidate raised KeyError: 'x'``.
+
+    A ``KeyError`` on a reserved key the case held (:data:`RESERVED_CASE_KEYS`) says the key is the package's and
+    withheld, and why: the case as the author wrote it holds it, and the function was handed the case without it.
+    """
+    said = f"{whose} raised {type(raised).__name__}: {raised}"
+    key = raised.args[0] if isinstance(raised, KeyError) and len(raised.args) == 1 else None
+    held = {
+        "id": test_case.name is not None,
+        STRATUM_KEY: test_case.stratum is not None,
+        WORLD_KEY: SEED_KEY in test_case.host_payload,
+    }
+    if isinstance(key, str) and held.get(key, False):
+        said += f"; the case's {key!r} {_WITHHELD_WHY[key]}"
+    return said
 
 
 def _case_called(test_case: EvalTestCase) -> str:

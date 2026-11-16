@@ -10,7 +10,10 @@ no verdict (:func:`unfinished_line`, the ``unfinished`` rule): whether there is 
    and the line names the arm, how many it lost, the cause most of them share in words, and the remedy.
 2. **One arm.** ``agent passed 31 of 36 trials on 12 cases.`` — its pass rate as the count it is computed over
    (:func:`passed_clause`), the campaign page's lead; then the cases it missed: ``Cases that failed a trial: r08,
-   r09, r10.`` An arm split on a coordinate of its identity has no one pass rate, and the line says why.
+   r09, r10.`` An arm split on a coordinate of its identity has no one pass rate, and the line says why. An arm whose
+   candidate failed every graded trial without answering says that and the first error, with no pass count and no
+   word about its graders (``gloss failed on all 4 cases, so no answer was graded: ...``); arms that all did so each
+   say it, and nothing is compared.
 3. **Too small.** An arm has fewer than :data:`MIN_CASES` usable cases: which arm passed more trials, and that no
    difference is called; the case floor itself is a caveat line under the scoreboard (:func:`caveat_lines`).
 4. **A declared question.** What its contrasts came to on the measure it leads on, in their own verdict words
@@ -38,7 +41,8 @@ the table's header states. Each measure and guardrail is named as the page names
 (:func:`_is_cost`).
 
 **No pass count where nothing graded can fail a trial.** An arm whose aspect declares no check and no judged dimension
-that counts (:func:`_holds_a_check`, read off the measure catalog, never the eval's kind) states how many it ran and
+that counts (:func:`_holds_a_check`, read off what its design declares it grades, never the eval's kind nor which
+measures happened to score) states how many it ran and
 that no grader says pass or fail: ``classify ran 3 of 3 cases; no grader here says pass or fail.`` Its readings carry
 the means. Two arms under the case floor say the same, with no pass comparison: ``b and a ran 3 cases each; no grader
 here says pass or fail; too few cases to call a difference.``
@@ -55,6 +59,7 @@ from threetears.evals.analysis.bundle.schema import (
     ArmExclusions,
     ArmScoreboard,
     FailCause,
+    JudgedMeasure,
 )
 from threetears.evals.analysis.bundle.trials import PassCount, pass_count
 from threetears.evals.analysis.quantities import is_money
@@ -384,8 +389,11 @@ def passed_clause(arm: str, count: PassCount) -> str:
     nothing graded (a grader that raised, a declined call), the count is every trial that ran and says how many
     were not graded beside it: ``classify passed 7 of 10 cases; 3 were not graded``. The percent and its interval are
     the scorecard's, over the graded trials: a sentence carries at most three figures
-    (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`). The console's first line, a page's lead, an aspect fold's
-    heading and a listing's line all say it through this.
+    (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`). Where the candidate failed every graded trial without
+    answering (the runner raised on each), there is no pass to count and nothing a grader read: the clause says it
+    failed on all of them and gives the first error, ``gloss failed on all 4 cases, so no answer was graded: the
+    candidate raised KeyError: 'word'``. The console's first line, a page's lead, an aspect fold's heading and a
+    listing's line all say it through this.
 
     :param arm: The arm, as the page names it.
     :ptype arm: str
@@ -396,6 +404,18 @@ def passed_clause(arm: str, count: PassCount) -> str:
     :rtype: str
     """
     lost = count.ungraded
+    if count.none_answered:
+        # Every graded trial failed with no answer for a grader to read (the runner raised on each): no pass count
+        # says that, and no statement about the graders either. How many it failed on, and the error, once.
+        every = (
+            f"all {count.graded_cases} cases"
+            if count.graded == count.graded_cases
+            else f"all {count.graded} trials on {count.graded_cases} cases"
+        )
+        more = f" ({lost} more {'was' if lost == 1 else 'were'} not graded)" if lost else ""
+        # The error in its own words, on the clause's one line: an error may run over several.
+        error = f": {' '.join(count.candidate_error.split())}" if count.candidate_error else ""
+        return f"{arm} failed on {every}{more}, so no answer was graded{error}"
     trials, cases = (count.ran, count.cases) if lost else (count.graded, count.graded_cases)
     said = (
         f"{arm} passed {count.passed} of {cases} cases"
@@ -681,14 +701,20 @@ def verdict_line(
             return VerdictLine(rule="one_arm", text=result, lead=result)
         result = f"{_one_arm(bundle, board, arm, graded=_holds_a_check(bundle))}."
         named = case_name or (lambda case: case)
-        return VerdictLine(
-            rule="one_arm",
-            text=result + ungraded_sentence(pass_count(bundle, board), named) + _missed_cases(bundle, named),
-            lead=result,
-        )
+        count = pass_count(bundle, board)
+        # Where it failed every case without answering, the line has said so: naming each case again says nothing.
+        missed = "" if count.none_answered else _missed_cases(bundle, named)
+        return VerdictLine(rule="one_arm", text=result + ungraded_sentence(count, named) + missed, lead=result)
     declared_question = bundle.question_declared
     # Every figure below is over the graded trials: an arm that lost any says so, and which, beside them.
     ungraded = ungraded_sentences(bundle, arm, case_name or (lambda case: case))
+    answered = [board for board in boards if board.usable]
+    if answered and all(pass_count(bundle, board).none_answered for board in answered):
+        # No arm gave an answer a grader read (each runner raised on every case): there is nothing to compare, and
+        # each arm's own clause says what failed, as one arm's line does.
+        lead = "" if declared_question else "Exploratory: "
+        failed = " ".join(f"{passed_clause(arm(board.variant_key), pass_count(bundle, board))}." for board in answered)
+        return VerdictLine(rule="too_small", text=lead + failed + ungraded)
     if any(board.usable_cases < MIN_CASES for board in boards):
         lead = "" if declared_question else "Exploratory: "
         return VerdictLine(rule="too_small", text=lead + _too_small(bundle, arm) + ungraded)
@@ -885,23 +911,58 @@ def _one_arm(bundle: AnalysisContextBundle, board: ArmScoreboard, arm: Callable[
     trials nothing judged: its readings carry what was measured."""
     if not board.usable:
         return f"{arm(board.variant_key)} ran {board.ran} trials, all lost to the test setup"
+    count = pass_count(bundle, board)
+    if count.none_answered:
+        # Whatever its graders are, none read an answer: what failed is the runner, which the clause says.
+        return passed_clause(arm(board.variant_key), count)
     if not graded:
         if board.ran == board.cases:
             ran = f"{arm(board.variant_key)} ran {board.usable} of {board.ran} cases"
         else:
             ran = f"{arm(board.variant_key)} ran {board.usable} of {board.ran} trials on {board.usable_cases} cases"
         return f"{ran}; no grader here says pass or fail"
-    return passed_clause(arm(board.variant_key), pass_count(bundle, board))
+    return passed_clause(arm(board.variant_key), count)
 
 
 def _holds_a_check(bundle: AnalysisContextBundle) -> bool:
-    """Whether anything the aspect grades can fail a trial, by what its measure catalog declares: a goal check, a
-    label match or a measure declared a check (``MetricDescriptor.is_check``), or a judged dimension that counts. Never
-    by the eval's kind: a measure no trial can fail on (a number) decides no pass."""
-    return any(
-        goal_check_of(name) is not None or name == MATCH_MEASURE or descriptor.is_check
-        for name, descriptor in bundle.measure_catalog.items()
-    ) or any(measure.family == RUBRIC_FAMILY and measure.axis == "capability" for measure in bundle.judged_measures)
+    """Whether anything the aspect declares it grades can fail a trial: a fact about what was declared, never about
+    which measures happened to score.
+
+    Each reading its design lists (``AspectDesign.measure_order``, its graders' measures) is read as declared: a goal
+    check, a label match or the classifier's accuracy can fail a trial by what it is, and any other by its description
+    (``MetricDescriptor.is_check``, or a judged dimension that counts). A declared reading no trial scored has no
+    description here (the catalog describes what scored), so nothing shows it cannot fail a trial, and the aspect is
+    not said to hold no check: "no grader here says pass or fail" is said only where every declared reading is
+    described and none can. A measure the catalog describes that the design does not list (an aspect declaring no
+    order) is read the same way. Never by the eval's kind: a measure no trial can fail on (a number) decides no
+    pass."""
+    catalog = bundle.measure_catalog
+    judged = {measure.name: measure for measure in bundle.judged_measures}
+    declared = bundle.declared.design.measure_order if bundle.declared and bundle.declared.design else []
+
+    def counts(measure: JudgedMeasure) -> bool:
+        return measure.family == RUBRIC_FAMILY and measure.axis == "capability"
+
+    def described_check(name: str) -> bool:
+        descriptor = catalog.get(name)
+        return (
+            goal_check_of(name) is not None or name == MATCH_MEASURE or (descriptor is not None and descriptor.is_check)
+        )
+
+    def declared_check(name: str) -> bool:
+        if described_check(name) or name == ACCURACY_MEASURE:
+            return True
+        if name in catalog:
+            return False
+        if (measure := judged.get(name)) is not None:
+            return counts(measure)
+        return True  # declared, and scored by no trial: nothing here says it cannot fail one
+
+    return (
+        any(declared_check(name) for name in declared)
+        or any(described_check(name) for name in catalog)
+        or any(counts(measure) for measure in judged.values())
+    )
 
 
 #: How many missed cases one arm's line names before it counts the rest.
