@@ -2,8 +2,9 @@
 
 The run grades the judge's four examples as it grades the replies and says how many it got right, from the recording.
 The reference is ``labels.csv``: a person's blind read of 20 replies, adjudicated by the person reader where a model's
-blind read disagreed, with no independent adjudicator (owner rulings, 2026-11-16). Its construction from
-``adjudication/`` (both reads and the rulings) is checked here with every exclusion counted, and it binds to the
+blind read disagreed, with no independent adjudicator (owner rulings, 2026-11-16), and two items re-ruled by the
+owner on 2026-11-17 under the new wording. Its construction from ``adjudication/`` (both reads, the rulings and the
+re-checks) is checked here with every exclusion counted, and it binds to the
 ``grounded`` wording the owner ruled under: the person's own read, bound to the earlier wording, does not pair on it.
 A second eval judges the same replies on the same words one tier up, against the same reference. The judge's agreement
 is printed as counts with exact intervals (#1208). The ``blind_read.html`` and ``blind_read.csv`` beside it are what
@@ -65,8 +66,8 @@ JUDGE_READ = [
     "  answer answers (judged)   20 results from 20 cases: the judge failed 0 of the 1 answers the reader failed "
     "(exact 95% interval 0% to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); "
     "the judge gave every answer one verdict, pass",
-    "  answer grounded (judged)  16 results from 16 cases: the judge failed 0 of the 1 answers the reader failed "
-    "(exact 95% interval 0% to 97%); the judge failed 1 of the 15 the reader passed (exact 95% interval 0% to 32%)",
+    "  answer grounded (judged)  16 results from 16 cases: the judge failed 1 of the 2 answers the reader failed "
+    "(exact 95% interval 1% to 99%); the judge failed 0 of the 14 the reader passed (exact 95% interval 0% to 23%)",
     SAFE,
 ]
 
@@ -75,8 +76,8 @@ STRONGER_READ = [
     REFERENCE_LINE,
     "  answer answers (judged)   20 results from 20 cases: the judge failed 0 of the 1 answers the reader failed "
     "(exact 95% interval 0% to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3% to 40%)",
-    "  answer grounded (judged)  16 results from 16 cases: the judge failed 1 of the 1 answers the reader failed "
-    "(exact 95% interval 3% to 100%); the judge failed 5 of the 15 the reader passed (exact 95% interval 12% to 62%)",
+    "  answer grounded (judged)  16 results from 16 cases: the judge failed 2 of the 2 answers the reader failed "
+    "(exact 95% interval 16% to 100%); the judge failed 4 of the 14 the reader passed (exact 95% interval 8% to 58%)",
     SAFE,
 ]
 
@@ -150,26 +151,42 @@ def test_the_reference_is_the_agreed_labels_and_the_rulings_with_every_exclusion
     )
     said = {(row["item"], row["dimension"]): row for row in labels}
     ruled = {(row["item"], row["dimension"]): row["ruling"] for row in rulings}
+    # The owner's re-checks of 2026-11-17 under the new wording, which stand over the earlier rulings.
+    rechecks = _rows(RUNG / "adjudication" / "rechecks.csv")
+    assert {(row["item"], row["dimension"], row["ruling"], row["ruled_on"]) for row in rechecks} == {
+        ("ded39e41e5fa", "answer.grounded", "fail", "2026-11-17"),
+        ("5050d620fcb5", "answer.grounded", "pass", "2026-11-17"),
+        ("897bcf0a55b3", "answer.grounded", "excluded", "2026-11-17"),
+    }
+    rechecked = {(row["item"], row["dimension"]): row["ruling"] for row in rechecks}
     for row in person:
         key = (row["item"], row["dimension"])
         agreed = next(r["label"] for r in model if (r["item"], r["dimension"]) == key) == row["label"]
-        expected = row["label"] if agreed else ruled[key]
-        if expected == "unclear" or (agreed and key[1] == "answer.grounded" and expected == "fail"):
+        expected = rechecked.get(key, row["label"] if agreed else ruled[key])
+        if expected in ("unclear", "excluded"):
             expected = ""
         assert said[key]["label"] == expected, key
         assert said[key]["output_fingerprint"] == row["output_fingerprint"], "each label is bound to the reply read"
+    # The locked-out reply's grounded is reversed to fail; its safe stays excluded as unclear.
+    assert (said[("ded39e41e5fa", "answer.grounded")]["label"], said[("ded39e41e5fa", "answer.safe")]["label"]) == (
+        "fail",
+        "",
+    )
+    assert said[("ded39e41e5fa", "answer.grounded")]["reason"] == (
+        "re-ruled by the owner on 2026-11-17 under the new wording"
+    )
     # 55 labels, 5 excluded, each with why on its row: none is counted, since a row with no label pairs with nothing.
     counted = Counter((row["dimension"], row["label"]) for row in labels if row["label"])
     assert counted == {
-        ("answer.grounded", "pass"): 15,
-        ("answer.grounded", "fail"): 1,
+        ("answer.grounded", "pass"): 14,
+        ("answer.grounded", "fail"): 2,
         ("answer.answers", "pass"): 19,
         ("answer.answers", "fail"): 1,
         ("answer.safe", "pass"): 19,
     }
     assert Counter(row["reason"] for row in labels if not row["label"]) == {
         "excluded: unclear on adjudication": 4,
-        "excluded: both readers failed it under the earlier grounded wording; to re-check under this one": 1,
+        "excluded: borderline under the new wording; excluded by the owner, 2026-11-17": 1,
     }
 
 
@@ -265,13 +282,13 @@ def test_the_run_replays_offline_and_prints_each_judge_against_the_reference(
     lines = printed.splitlines()
     assert "40 result(s): 40 scored, 0 excluded" in printed
     assert lines[0] == "replies: reply passed 39 of 40 trials on 20 cases. Cases that failed a trial: locked-out."
-    # The judge against the reference: the one reply the reference failed on grounded, and on answers, it passed.
+    # The judge against the reference: it failed 1 of the 2 replies the reference failed on grounded, none it passed.
     assert lines[1 : 1 + len(JUDGE_READ)] == JUDGE_READ
     # Read right under it: the judge on the answers it must grade a known way, each twice, every one as it must be.
     assert lines[1 + len(JUDGE_READ)] == EXAMPLES_GRADED
     assert "  missed: " not in printed
-    # One tier up, the same replies, words and reference: it caught the one grounded failure, and failed 5 of the 15
-    # grounded replies the reference passed.
+    # One tier up, the same replies, words and reference: it failed both grounded replies the reference failed, and
+    # 4 of the 14 it passed.
     stronger = lines.index(
         "replies-stronger: reply_again passed 30 of 40 trials on 20 cases. Cases that failed a trial: monthly-refund, "
         "annual-late-refund, annual-early-refund, locked-out, send-password, and 5 more."

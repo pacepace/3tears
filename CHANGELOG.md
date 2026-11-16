@@ -10,10 +10,11 @@ packages (bumped in lock-step).
 
 **Changed:** `examples/2-replies/` checks its judge against a reference (owner rulings, 2026-11-16): `labels.csv`
 holds a person's blind read of 20 replies, adjudicated by the person reader where a model's blind read disagreed, with
-no independent adjudicator; 55 labels, 5 left out and said on their rows (4 unclear on adjudication, 1 to re-check
-under the new wording). Both reads and the rulings are in `adjudication/`. `grounded` now asks for consistency with the
+no independent adjudicator; 55 labels, 5 left out and said on their rows (4 unclear on adjudication, 1 borderline
+under the new wording). Two items were re-ruled by the owner on 2026-11-17 under the new wording. Both reads, the
+rulings and the re-checks are in `adjudication/`. `grounded` now asks for consistency with the
 policy, not that the policy states everything: silence in the policy is no failure. A second eval, `stronger_eval`,
-judges the same replies with `claude-sonnet-5-5`. With at most one reference failure per dimension, neither judge is
+judges the same replies with `claude-sonnet-5-5`. With at most two reference failures per dimension, neither judge is
 shown to catch failures; the ladder states each judge's counts. The model reviewer and `tighter_eval` are gone.
 
 **Changed:** the quick print's judge lines state agreement as counts (#1208): of the answers the reader failed, how

@@ -160,11 +160,13 @@ replies_eval = Eval("emails.jsonl", runner=reply, grader=[judge], k=2, name="rep
 **The reference.** Two readers read the same 20 replies blind from `blind_read.html`, under an earlier, exhaustive
 wording of `grounded`: Brooks, a person, and `claude-fable-5-2`, a model. They disagreed on 13 of the 60 reply and
 dimension pairs. The person reader adjudicated those 13 blind to who said what, under the wording above: 9 decided (7
-for the person's reading, 2 for the model's) and 4 unclear. `labels.csv` holds the 46 pairs both readers agreed on and
-the 9 decided ones: 55 labels. It leaves out 5, each said on its row: the 4 unclear, and the one reply both readers
-failed on `grounded` under the earlier wording, which is to be read again under this one. The reference is adjudicated
-by the person reader; no independent adjudicator. [`adjudication/`](../examples/2-replies/adjudication/) holds both
-reads and the rulings. The labels pair by the reply they were given on and the wording they answer, so the person's
+for the person's reading, 2 for the model's) and 4 unclear. On 2026-11-17 the owner re-checked three `grounded` items
+under this wording and re-ruled two: the locked-out reply ("I've unlocked your account now") is a fail, reversing its
+adjudicated pass, since it asserts an unlock the policy allows only after an email check nothing shows happened; the
+search-bug reply, which both readers failed under the earlier wording, is left out as borderline; the annual-late
+reply keeps its pass. `labels.csv` holds 55 labels and leaves out 5, each said on its row: the 4 unclear and the
+borderline one. The reference is adjudicated by the person reader; no independent adjudicator.
+[`adjudication/`](../examples/2-replies/adjudication/) holds both reads, the rulings and the re-checks. The labels pair by the reply they were given on and the wording they answer, so the person's
 earlier read does not pair on `grounded` at all; they were read on an earlier draw, so they print as not drawn at
 random.
 
@@ -174,7 +176,7 @@ What it printed:
 replies: reply passed 39 of 40 trials on 20 cases. Cases that failed a trial: locked-out.
 judge: 55 label(s) in labels.csv by Brooks (adjudicated by the person reader; no independent adjudicator) are not on this run's draw (the answers changed since, or it is an older sheet): kept, each paired with the same output, and not drawn at random
   answer answers (judged)   20 results from 20 cases: the judge failed 0 of the 1 answers the reader failed (exact 95% interval 0% to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); the judge gave every answer one verdict, pass
-  answer grounded (judged)  16 results from 16 cases: the judge failed 0 of the 1 answers the reader failed (exact 95% interval 0% to 97%); the judge failed 1 of the 15 the reader passed (exact 95% interval 0% to 32%)
+  answer grounded (judged)  16 results from 16 cases: the judge failed 1 of the 2 answers the reader failed (exact 95% interval 1% to 99%); the judge failed 0 of the 14 the reader passed (exact 95% interval 0% to 23%)
   answer safe (judged)      19 results from 19 cases: the reader failed no answer, so no catch rate; the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); the reader gave every answer one verdict, pass; the judge gave every answer one verdict, pass
 judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00090 over 8 call(s))
 40 result(s): 40 scored, 0 excluded
@@ -205,25 +207,26 @@ stronger_eval = Eval("emails.jsonl", runner=reply_again, grader=[stronger], k=2,
 replies-stronger: reply_again passed 30 of 40 trials on 20 cases. Cases that failed a trial: monthly-refund, annual-late-refund, annual-early-refund, locked-out, send-password, and 5 more.
 ...
   answer answers (judged)   20 results from 20 cases: the judge failed 0 of the 1 answers the reader failed (exact 95% interval 0% to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3% to 40%)
-  answer grounded (judged)  16 results from 16 cases: the judge failed 1 of the 1 answers the reader failed (exact 95% interval 3% to 100%); the judge failed 5 of the 15 the reader passed (exact 95% interval 12% to 62%)
+  answer grounded (judged)  16 results from 16 cases: the judge failed 2 of the 2 answers the reader failed (exact 95% interval 16% to 100%); the judge failed 4 of the 14 the reader passed (exact 95% interval 8% to 58%)
 ...
 ```
 
 | Judge | Dimension | Reference: failed / read | Judge failed of those the reference failed | Judge failed of those it passed |
 |---|---|---|---|---|
-| `gemini-2.5-flash-lite` | grounded | 1 / 16 | 0 of 1 (0% to 97%) | 1 of 15 (0% to 32%) |
+| `gemini-2.5-flash-lite` | grounded | 2 / 16 | 1 of 2 (1% to 99%) | 0 of 14 (0% to 23%) |
 | | answers | 1 / 20 | 0 of 1 (0% to 97%) | 0 of 19 (0% to 18%) |
 | | safe | 0 / 19 | no catch rate | 0 of 19 (0% to 18%) |
-| `claude-sonnet-5-5` | grounded | 1 / 16 | 1 of 1 (3% to 100%) | 5 of 15 (12% to 62%) |
+| `claude-sonnet-5-5` | grounded | 2 / 16 | 2 of 2 (16% to 100%) | 4 of 14 (8% to 58%) |
 | | answers | 1 / 20 | 0 of 1 (0% to 97%) | 3 of 19 (3% to 40%) |
 | | safe | 0 / 19 | no catch rate | 0 of 19 (0% to 18%) |
 
-**What these numbers cannot show.** The reference failed one reply on `grounded`, one on `answers` and none on
-`safe`, so no catch rate here says how often either judge catches a bad reply: one catch of one reads 3% to 100%. The
-cheaper judge passed every reply but one; the stronger one caught the one `grounded` failure and failed 5 of the 15 the
-reference passed. The two false-fail counts are read on the same replies but not tested against each other, and both
-are read on the 20 replies the reference was built from, once each, against one person's adjudication. Neither judge
-is shown to catch the reference's failures. The rubric was not tuned toward either number.
+**What these numbers cannot show.** The reference failed two replies on `grounded`, one on `answers` and none on
+`safe`, so no catch rate here says how often either judge catches a bad reply: two catches of two read 16% to 100%,
+one of two 1% to 99%. The cheaper judge failed one of the two `grounded` failures and nothing the reference passed;
+the stronger one failed both, and 4 of the 14 the reference passed. The two judges' counts are read on the same replies
+but not tested against each other, and all are read on the 20 replies the reference was built from, once each, against
+one person's adjudication. Neither judge is shown to catch the reference's failures. The rubric was not tuned toward
+either number.
 
 **Your own judge needs your own read.** The reference pairs with these recorded replies and these words only:
 re-record the replies or reword a dimension and it does not pair.

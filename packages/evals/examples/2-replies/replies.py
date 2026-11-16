@@ -4,8 +4,9 @@ Run ``python -m threetears.evals examples/2-replies/replies.py``. A model drafts
 ``policy.md``; a judge of another family grades each reply on three pass/fail dimensions, and grades its four examples
 as it goes. ``labels.csv`` is the reference: Brooks's blind read of 20 replies, adjudicated by the person reader where
 claude-fable-5-2's blind read disagreed, with no independent adjudicator. It holds 55 labels; 5 are left out, as the
-file says: 4 the adjudication found unclear, and 1 both readers failed under the earlier ``grounded`` wording, to be
-read again under this one. ``adjudication/`` holds both reads and the rulings. ``stronger_eval`` judges the same replies
+file says: 4 the adjudication found unclear, and 1 the owner found borderline under this ``grounded`` wording. Items 1
+and 3 of the owner's re-checks (``adjudication/rechecks.csv``) were re-ruled on 2026-11-17 under this wording.
+``adjudication/`` holds both reads, the rulings and the re-checks. ``stronger_eval`` judges the same replies
 on the same words, one tier up, against the same reference. Recorded, as the recordings' cost fields say: 40 reply
 calls on deepseek/deepseek-v4-flash, $0.0017; 128 judge calls on google/gemini-2.5-flash-lite, $0.0148 (8 of them on
 the examples); 128 judge calls on claude-sonnet-5-5, $0.6568, at Anthropic's published rates.
