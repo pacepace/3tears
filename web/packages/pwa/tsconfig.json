@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2023", "dom", "dom.iterable", "webworker"],
+    "allowJs": true,
+    "checkJs": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "types",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["src/index.js", "src/worker.js", "src/workbox.js", "src/react.js", "src/vite.js"]
+}

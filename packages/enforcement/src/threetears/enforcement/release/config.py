@@ -10,6 +10,7 @@ versions many members in lockstep -- 3tears -- names them::
     smoke-tests = ["packages/*/tests/test_smoke.py", "packages/agent/*/tests/test_smoke.py"]
     bake-file = "docker-bake.hcl"
     family-prefix = "3tears"                         # intra-family bounds move with the minor
+    npm-lockstep-files = ["web/packages/*/package.json", "web/package-lock.json"]  # @3tears/* too
     notes = "CHANGELOG.md"
     notes-style = "3tears"                           # keepachangelog | 3tears | prawduct
 
@@ -35,6 +36,7 @@ _KEYS = frozenset(
         "smoke-tests",
         "bake-file",
         "family-prefix",
+        "npm-lockstep-files",
         "notes",
         "notes-style",
         "command",
@@ -69,6 +71,9 @@ class ReleaseConfig:
     :ptype notes_style: str
     :param command: how the repo invokes the tool, for the messages it prints
     :ptype command: str
+    :param npm_files: npm ``package.json`` and ``package-lock.json`` files whose own version (and
+        the versions of the workspace packages a lock lists) carry the same version
+    :ptype npm_files: tuple[str, ...]
     """
 
     root: Path
@@ -80,6 +85,7 @@ class ReleaseConfig:
     notes_file: str
     notes_style: str
     command: str
+    npm_files: tuple[str, ...] = ()
 
     @property
     def version_files(self) -> tuple[str, ...]:
@@ -97,7 +103,12 @@ class ReleaseConfig:
         :return: repo-relative paths
         :rtype: tuple[str, ...]
         """
-        return (*self.version_files, *self.smoke_tests, *((self.bake_file,) if self.bake_file else ()))
+        return (
+            *self.version_files,
+            *self.smoke_tests,
+            *((self.bake_file,) if self.bake_file else ()),
+            *self.npm_files,
+        )
 
 
 def _globbed(root: Path, patterns: list[str]) -> tuple[str, ...]:
@@ -193,4 +204,5 @@ def load_release_config(root: Path) -> ReleaseConfig:
         notes_file=notes_file,
         notes_style=notes_style,
         command=_optional_string(table, "command") or "./scripts/bump-version.sh",
+        npm_files=_globbed(root, _string_list(table, "npm-lockstep-files")),
     )

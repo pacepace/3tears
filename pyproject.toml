@@ -17,6 +17,9 @@ lockstep-files = ["packages/*/pyproject.toml", "packages/agent/*/pyproject.toml"
 smoke-tests = ["packages/*/tests/test_smoke.py", "packages/agent/*/tests/test_smoke.py"]
 bake-file = "docker-bake.hcl"
 family-prefix = "3tears"
+# The browser packages (web/, @3tears/*) carry the same version as the Python family: one tag, one
+# release run publishes both (release.yml: PyPI, then npm).
+npm-lockstep-files = ["web/packages/*/package.json", "web/package-lock.json"]
 notes = "CHANGELOG.md"
 notes-style = "3tears"
 

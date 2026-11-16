@@ -1,0 +1,50 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { NEVER_SHELL, appShell } from "../src/workbox.js";
+
+function recorder() {
+  const calls = [];
+  const routes = [];
+  const wb = {
+    clientsClaim: () => calls.push("clientsClaim"),
+    precacheAndRoute: (m) => calls.push(`precacheAndRoute:${JSON.stringify(m)}`),
+    cleanupOutdatedCaches: () => calls.push("cleanupOutdatedCaches"),
+    createHandlerBoundToURL: (url) => ({ boundTo: url }),
+    NavigationRoute: class { constructor(handler, options) { this.handler = handler; this.options = options; } },
+    registerRoute: (match, handler, method) => { calls.push("registerRoute"); routes.push({ match, handler, method }); },
+    NetworkFirst: class { constructor(options) { this.options = options; } },
+    ExpirationPlugin: class { constructor(options) { this.options = options; } },
+  };
+  return { wb, calls, routes };
+}
+
+test("the generated worker's order: claim, precache, clean, shell navigation, network-first files", () => {
+  const { wb, calls, routes } = recorder();
+  appShell(wb, { precache: [{ url: "index.html", revision: "a" }], neverShell: [...NEVER_SHELL, /^\/s3\//],
+    networkFirst: [{ path: "/config.js", cacheName: "app-runtime-config" }] });
+  assert.deepEqual(calls, ["clientsClaim", 'precacheAndRoute:[{"url":"index.html","revision":"a"}]', "cleanupOutdatedCaches",
+    "registerRoute", "registerRoute"]);
+  assert.deepEqual(routes[0].match.handler, { boundTo: "index.html" });
+  assert.deepEqual(routes[0].match.options.denylist.map(String), ["/^\\/api/", "/^\\/ws/", "/^\\/healthz/", "/^\\/s3\\//"]);
+  assert.equal(routes[1].method, "GET");
+  assert.equal(routes[1].match({ url: new URL("https://x/config.js") }), true);
+  assert.equal(routes[1].match({ url: new URL("https://x/config.json") }), false);
+  assert.equal(routes[1].handler.options.cacheName, "app-runtime-config");
+  assert.equal(routes[1].handler.options.networkTimeoutSeconds, 3);
+  assert.deepEqual(routes[1].handler.options.plugins[0].options, { maxEntries: 1, maxAgeSeconds: 86400 });
+});
+
+test("never-shell navigations get no route at all: the network, nothing stored", () => {
+  const { wb, routes } = recorder();
+  appShell(wb, { precache: [], networkFirst: [{ path: "/config.js", cacheName: "c" }] });
+  for (const route of routes.slice(1)) {
+    assert.equal(route.match({ url: new URL("https://x/api/auth/callback"), request: { mode: "navigate" } }), false);
+  }
+});
+
+test("defaults: index.html, the standard never-shell paths, no extra routes", () => {
+  const { wb, routes } = recorder();
+  appShell(wb, { precache: [] });
+  assert.equal(routes.length, 1);
+  assert.deepEqual(routes[0].match.options.denylist, [...NEVER_SHELL]);
+});

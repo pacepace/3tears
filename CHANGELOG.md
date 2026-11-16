@@ -360,6 +360,28 @@ are written without tokens). `file_tokens(path)` reads a file's tokens from its 
 inode, size and modified time, 65,536 files), and `column_print(path, columns)` prints the columns a read takes (a file
 without tokens prints as its identity). A memo over a version reruns a query only when a column it reads moved, with no
 row read again. Guide: docs/shared-arrow.md, "Know which columns a write moved".
+### web: a JavaScript workspace, and @3tears/web-pwa for installable web apps
+
+**Added:** `web/`, the family's browser packages, published to npm as `@3tears/web-<name>` at the
+family's version (one tag: `release.yml`'s new `npm-publish` job runs after PyPI and publishes to npmjs.com by
+trusted publishing, with provenance; a new package's first version uses the `NPM_TOKEN` secret, and
+the job is off until `NPM_PUBLISH` is set).
+Its first package, `@3tears/web-pwa`, is plain ES modules usable with or without a bundler, each feature opt-in: the manifest
+(`appManifest`, `installId`) and head tags iOS reads instead of it (`headTags`); `shell-worker.js`, a
+complete service worker for apps with no build step that keeps only the app's shell (network-first,
+never the API, sign-in or media, never a redirect) and waits for the person before a new version
+takes over; `appShell` (`/workbox`) and `vitePwa` (`/vite`) for Workbox apps; the update prompt
+(`registerWorker`, `watchVersion`, `updatePrompt`, `forceReload`; `useUpdatePrompt` in `/react`); Web
+Push on the page (`subscribePush`, `unsubscribePush`) and in the worker (`showPushes`,
+`openOnNotificationClick`, `/worker`); `MediaSessionControl`, `ScreenWakeLock`, display mode and
+`safe-area.css`. An example app in `web/examples` is tested in headless Chromium against the real
+worker (`.github/workflows/web.yml`).
+
+**Added:** `[tool.threetears-release] npm-lockstep-files`: a bump moves each listed `package.json`'s
+version, its pins on `@<family-prefix>/*` siblings, and a `package-lock.json`'s workspace entries;
+`verify` names any that disagree. `tests/enforcement/test_web_packages_follow_the_family_version.py`
+holds every `web/packages/*` to the family version.
+
 ### langgraph: prune checkpoint history, and measure and clean the checkpoint tables
 
 LangGraph writes a full checkpoint after every superstep, and once a run ends only the newest
