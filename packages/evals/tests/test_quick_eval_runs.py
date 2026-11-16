@@ -232,7 +232,7 @@ async def test_a_grader_returning_no_finite_number_fails_the_run_naming_the_case
 
     result = await Eval(CASES[:1], double, [odd_grade], k=1).run(store=MEMORY, scope=SCOPE)
     assert (result.summary.status, result.summary.n_scored, result.exit_code()) == ("failed", 0, 1)
-    assert f"the grader odd_grade returned {said} on case 0" in result.summary.errors[-1]
+    assert f"the grader odd_grade returned {said} on case 1" in result.summary.errors[-1]
 
 
 async def test_a_raising_grader_excludes_the_cell_and_names_the_grader() -> None:
@@ -342,8 +342,8 @@ async def test_a_cancelled_run_settles_its_run_as_cancelled() -> None:
         ([], "needs at least one case"),
         ({"n": 1}, "a list of JSON objects or a file of them"),
         ("n", "reads its cases from a"),
-        ([{"n": 1}, ["n", 1]], r"case\(s\) 1 are not JSON objects"),
-        ([{1: "n"}], "case 0 is not a mapping with string keys"),
+        ([{"n": 1}, ["n", 1]], r"case\(s\) 2 are not JSON objects"),
+        ([{1: "n"}], "case 1 is not a mapping with string keys"),
         ([{"n": {1, 2}}], "every case must be JSON"),
     ],
     ids=["empty", "one mapping", "a string", "a list among them", "a non-string key", "a set value"],
@@ -678,10 +678,10 @@ _ABSENT = object()
 @pytest.mark.parametrize(
     ("label", "said"),
     [
-        (_ABSENT, "case 0: ValueError: the field grader 'expected' reads the case's 'expected', which it lacks"),
-        (None, "case 0: ValueError: the case's 'expected' is None; a field grader's label is a non-blank string"),
-        ("  ", "case 0: ValueError: the case's 'expected' is '  '; a field grader's label is a non-blank string"),
-        (["move"], r"case 0: ValueError: the case's 'expected' is \['move'\]; a field grader's label"),
+        (_ABSENT, "case 1: ValueError: the field grader 'expected' reads the case's 'expected', which it lacks"),
+        (None, "case 1: ValueError: the case's 'expected' is None; a field grader's label is a non-blank string"),
+        ("  ", "case 1: ValueError: the case's 'expected' is '  '; a field grader's label is a non-blank string"),
+        (["move"], r"case 1: ValueError: the case's 'expected' is \['move'\]; a field grader's label"),
         (UNUSABLE_ANSWER, "the label an unusable answer is counted under"),
     ],
     ids=["absent", "None", "blank", "a list", "the unusable label"],

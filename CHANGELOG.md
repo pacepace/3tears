@@ -6,6 +6,50 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: one name per case on every line; no rate over nothing graded; an eval that graded nothing exits 1
+
+**Fixed:** one result numbered the same cases two ways: the first line from 1 (`Cases that failed a trial: case 2,
+case 4.`) and the top misses under it from 0 (`case 1 (repeat 1)`, `case 3 (repeat 1)`), while the report page
+numbered them by the order of their labels. A case with no `id` is now called by its place in the list given, from 1,
+the line of the cases file it is on: on the first line, the top misses, the `error:` lines, `results()` and `misses()`
+(`CaseResult.case` is `"1"` for the first case, was `"0"`), every refusal that names a case, and the page's Cases and
+Trials tables, past the 500 trials a report holds too. A case with an `id` is called by it, with one exception: the
+first line and the page will not print an id that does not read as a name, a bare number (`1042`), one holding
+whitespace (`ticket 7`) or a long hex string, and call that case by its place (`case 12`) where the console and
+`results()` call it by its id (`case 1042`). A case's stored id and every recording key are as before.
+
+The place is the one the runs stored: where the case first stands in the member runs' frozen case lists
+(`EvalRun.test_case_ids`), chained in the order the runs were created. Where every run holds one list (an `Eval`'s
+arms, the usual host campaign), that is the case's line in it, so a host case `invoice-2024` that its runs list first
+is `case 1`. Where the runs' lists differ (a case added or dropped between runs, a run reordered, runs sharded), it is
+the order the campaign first launched its cases in: no two cases share a number, but no one run's list need hold the
+case at that line, and the page says so under its Cases table. It is the same rule for an `Eval`'s case and a host's,
+and no number is read off a case's id, on the page, its first line, the console or an error line. Each trial row of a
+report's bundle carries it, as `TrialRow.case_place`, and the bundle carries `case_lists_differ` where the lists
+differ (both additive and optional, outside every fingerprint). A page over a bundle that carries no place, such as
+one frozen with an analysis stored before this change, numbers its cases by their place among the cases it lists, in
+the Trials table's order, and says so under its Cases table. A host's own `callable_kind`, which holds no case list,
+names a case with no `name` by its stored id where a grader's value contradicts its declaration (it read a number off
+the id, and refused an id ending in none with an unrelated error).
+
+**Fixed:** an arm whose runner raised on every case printed `Accuracy: 0%, 0 of 3 trials` beside another measure
+`not shown, carried by no result`. No answer was graded, so every measure of such an arm now reads one way,
+`Accuracy: none (no answer was graded)`, in the quiet and the full print, and no label's precision or recall is
+printed for it. What is stored is unchanged (a raise is still the classifier's miss, which an arm that answered some
+cases is counted against), so a result stored before reads the new way. The report page's readings tables still show
+such an arm's accuracy as `0% (0 of 3 cases)` under its lead `... so no answer was graded`.
+
+**Changed:** `python -m threetears.evals FILE` (and `Result.exit_code()`) exits 1, not 0, for an eval in which no arm
+had an answer graded: its runner raised on every case, or every trial was lost. Its first line says why. An eval with
+some answers graded, and a comparison in which one arm answered nothing, keep their codes.
+
+**For hosts:** a CI step that gates on the file door's exit code now fails on an eval that measured nothing, where it
+passed before. A caller that retries on 1 (`EXIT_RUN_DID_NOT_COMPLETE`), reading it as a run that did not finish, now
+also gets 1 from a run that finished and graded nothing. Tell the two apart by the eval's first line (a run that did not complete names what stopped it; one that
+measured nothing says `so no answer was graded` or that every trial was lost, and why), or in code by
+`Result.arms`, whose every summary reads `status == "completed"` only in the second. Code that reads
+`CaseResult.case` or an error line's case number for a case with no `id` reads it one higher.
+
 ### evals: a host's door onto the blind read, and a recorded call says whether a person or a model made it (#1178)
 
 **Added:** seven actions draw and run a blind read in a host. `blind_read_create` draws a seeded random order over a

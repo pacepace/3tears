@@ -378,7 +378,7 @@ class World:
 
         :param values: The case's ``world``.
         :ptype values: Any
-        :param case: What the refusal calls the case: its name, or its position.
+        :param case: What the refusal calls the case: its id, or its place in the list from 1.
         :ptype case: int | str
         :return: The state, every field as JSON.
         :rtype: dict[str, Any]

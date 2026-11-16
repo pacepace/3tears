@@ -100,7 +100,7 @@ class TestAnEvalReadsEachKind:
         results = summary.results()
         assert [result.stratum for result in results] == [case["stratum"] for case in CASES]
         assert all(isinstance(result.input, dict) and "stratum" not in result.input for result in results)
-        assert results[-1].render().startswith("case 13 (lookalike, repeat 1, scored)")
+        assert results[-1].render().startswith("case 14 (lookalike, repeat 1, scored)")
 
     async def test_a_case_without_the_key_declares_none(self) -> None:
         cases = [*CASES, {"ticket": "plain x", "queue": "b"}, {"ticket": "plain y", "queue": "b", "stratum": None}]
@@ -174,7 +174,7 @@ class TestRefusals:
     @pytest.mark.parametrize("value", ["", " ", 3, ["plain"]])
     async def test_a_stratum_that_is_no_name_is_refused_naming_its_case(self, value: Any) -> None:
         cases = [*CASES[:2], {"ticket": "x", "queue": "b", "stratum": value}]
-        with pytest.raises(ValueError, match=r"case 2's stratum is"):
+        with pytest.raises(ValueError, match=r"case 3's stratum is"):
             await _summary(cases, always_b, [QUEUE])
 
 

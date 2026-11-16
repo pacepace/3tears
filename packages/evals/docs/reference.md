@@ -724,11 +724,11 @@ The host bridge: an eval's host, the command line, and a measure declared on the
   <br>`= 3`
 - **`EXIT_GATE_FAILED`** · constant (int) · Exit code: `gate` read a verdict its `--fail-on` names.
   <br>`= 4`
-- **`EXIT_OK`** · constant (int) · Exit code: every run completed, or the command read what it was asked for.
+- **`EXIT_OK`** · constant (int) · Exit code: every run completed (from an eval file, with an answer graded), or the command read what it was asked for.
   <br>`= 0`
 - **`EXIT_REFUSED`** · constant (int) · Exit code: the command was refused before it could do anything.
   <br>`= 2`
-- **`EXIT_RUN_DID_NOT_COMPLETE`** · constant (int) · Exit code: a launched run did not complete.
+- **`EXIT_RUN_DID_NOT_COMPLETE`** · constant (int) · Exit code: a launched run did not complete, or, from an eval file, every run completed but no arm had an answer graded, so nothing was measured.
   <br>`= 1`
 
 <a id="api-harness"></a>
@@ -1165,6 +1165,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `negative_values` | `list[NegativeValues]` | `[]` | Per measure declared non-negative and per arm, the results that recorded a value below zero on it: a host bug, which the measure's intervals (clamped at zero) would otherwise hide. |
 | `trials` | `list[TrialRow]` | `[]` | One row per trial — one case run once on one arm — with how it ended and why: its failed checks, the judge's scores and reasons, what the case asked, the tail of what the judge was handed and the recorded error, each capped. |
 | `trials_omitted` | `int` | `0` | Trials beyond the cap, left out of `trials`; the scoreboard counts every one. |
+| `case_lists_differ` | `bool` | `False` | Whether the member runs' frozen case lists (`EvalRun.test_case_ids`) differ, so each trial's `case_place` is the order the campaign first launched its cases in, not one run's line, and a page says so where it numbers a case. |
 | `case_sets` | `list[CaseSetRef]` | `[]` | The named, versioned case sets the member runs were launched against, distinct and sorted. |
 | `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused. |
 | `first_result_at` | `str \| None` | `None` | When the aspect's readings could first be seen (ISO-8601): the earliest `scored_at` among the results of the runs it reads. |
@@ -1716,7 +1717,7 @@ A product mounting the commands under its own CLI (`run_cli(host_factory=...)`) 
 
 `python -m threetears.evals FILE.py|FILE.toml [--verbose]` runs every eval the file declares instead: each prints its result, writes its report to `.evals/reports/<name>/` and exits with the codes below.
 
-Exit codes, in full: 0 done; 1 a launched run did not complete; 2 refused; 3 failed with an unanticipated error; 4 the gate failed.
+Exit codes, in full: 0 done; 1 a launched run did not complete, or, from an eval file, every run completed but no arm had an answer graded, so nothing was measured; 2 refused; 3 failed with an unanticipated error; 4 the gate failed. The first line an eval prints says which 1 it is: a run that did not complete is named with what stopped it, and an eval that measured nothing says no answer was graded, or that every trial was lost, and why.
 
 Each command's options, as its `--help` prints them:
 

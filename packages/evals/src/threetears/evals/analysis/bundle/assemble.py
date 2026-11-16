@@ -1002,10 +1002,12 @@ def assemble_context_bundle(
         # Without the verbatim fields (a world's event log, a kind's payload), which no trial row shows.
         load_results=lambda result_ids: storage.load_eval_results(result_ids, scope_id, elide=VERBATIM_RESULT_FIELDS),
         rubric_scales={run.id: run.rubric_scales for run in runs},
+        case_lists=[run.test_case_ids for run in runs],
     )
     bundle.scoreboard = census.scoreboard
     bundle.trials = census.trials
     bundle.trials_omitted = census.trials_omitted
+    bundle.case_lists_differ = census.case_lists_differ
     bundle.case_sets = sorted(
         {run.case_set for run in runs if run.case_set is not None}, key=lambda ref: (ref.name, ref.version)
     )

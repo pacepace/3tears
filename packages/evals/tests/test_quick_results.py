@@ -2,7 +2,7 @@
 
 A newcomer's first question after a run is which cases it got wrong. The summary carries every result —
 the case, the answer, the grades and why it failed — so it can be read after ``Eval.run`` returns, whatever
-store the run used. Cases are called by their own ``id`` when they carry one, else by their position, in the
+store the run used. Cases are called by their own ``id`` when they carry one, else by their place from 1, in the
 results and in every error line; the ``id`` itself is withheld from the runner and the graders. A plain ``def``
 runner is called in a worker thread; one handed a world's tools must be async, and is refused before anything runs.
 
@@ -31,6 +31,7 @@ from typing import Any, Self
 
 import pytest
 
+from threetears.evals.analysis.report.aspect.common import case_namer
 from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Answer, Eval, Judge, Result, World, grader
 from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
@@ -80,10 +81,10 @@ async def test_every_result_reads_back_after_the_call_with_its_case_answer_and_g
     assert [(result.case, result.repeat) for result in results] == [
         ("refund", 1),
         ("refund", 2),
-        ("1", 1),
-        ("1", 2),
         ("2", 1),
         ("2", 2),
+        ("3", 1),
+        ("3", 2),
     ]
     first = results[0]
     # The case as the runner was handed it: its id names it, and is withheld.
@@ -95,9 +96,10 @@ async def test_every_result_reads_back_after_the_call_with_its_case_answer_and_g
 async def test_misses_are_the_wrong_answers_each_saying_why() -> None:
     summary = await _summary(CASES, hasty, [QUEUE])
     (miss,) = summary.misses()
-    assert miss.case == "2" and miss.answer == "bug" and miss.expected == "billing"
+    # Re-pinned deliberately (P1, #1209 item 1): a case with no id is called by its place from 1, the third "3".
+    assert miss.case == "3" and miss.answer == "bug" and miss.expected == "billing"
     assert miss.missed_because == ["answered 'bug', expected 'billing'"]
-    assert miss.render().splitlines()[0] == "case 2 (repeat 1, scored): answered 'bug', expected 'billing'"
+    assert miss.render().splitlines()[0] == "case 3 (repeat 1, scored): answered 'bug', expected 'billing'"
 
 
 async def test_a_failed_runner_is_a_miss_and_its_error_line_names_the_case_by_its_id() -> None:
@@ -131,7 +133,7 @@ async def test_a_runner_reading_a_withheld_id_is_told_the_key_is_withheld_and_wh
         "another key as well"
     )
     # A case the author gave no id lacks one as written: its KeyError is the function's own, said as it was raised.
-    assert summary.errors[1] == "case 1: the candidate raised KeyError: 'id'"
+    assert summary.errors[1] == "case 2: the candidate raised KeyError: 'id'"
 
 
 async def test_a_grader_reading_a_withheld_stratum_is_told_the_key_is_withheld() -> None:
@@ -161,16 +163,17 @@ async def test_a_grader_that_gives_zero_marks_a_miss_and_an_excluded_result_is_n
     summary = await _summary(CASES, hasty, [short, picky])
     by_case = {result.case: result for result in summary.results()}
     assert by_case["refund"].missed_because == ["Short score is 0"], "the check, as its pass rule words it failing"
-    assert by_case["1"].outcome == "excluded" and not by_case["1"].missed
+    assert by_case["2"].outcome == "excluded" and not by_case["2"].missed
     # Re-pinned deliberately (T1, Critic V3-2): the author's own function is named as what they call it, a grader.
-    assert by_case["1"].errors == ["the grader picky raised ValueError: cannot grade crashes"]
+    assert by_case["2"].errors == ["the grader picky raised ValueError: cannot grade crashes"]
     assert [result.case for result in summary.misses()] == ["refund"]
 
 
-async def test_cases_without_ids_are_called_by_their_position() -> None:
+async def test_cases_without_ids_are_called_by_their_place_from_1() -> None:
+    # Re-pinned deliberately (P1, #1209 item 1): from 0 it read "0", "1", which no line of a cases file is numbered.
     summary = await _summary([{"n": 1}, {"n": 2}], hasty_n, [even])
-    assert [result.case for result in summary.results()] == ["0", "1"]
-    assert [result.case for result in summary.misses()] == ["0"]
+    assert [result.case for result in summary.results()] == ["1", "2"]
+    assert [result.case for result in summary.misses()] == ["1"]
 
 
 async def hasty_n(case: Mapping[str, Any]) -> int:
@@ -185,10 +188,11 @@ def even(case: Mapping[str, Any], answer: Any) -> bool:
     ("cases", "said"),
     [
         ([{"id": "a"}, {"id": "a"}], "more than one case is called 'a'"),
-        ([{"id": 1}, {}], "more than one case is called '1'"),
-        ([{"id": ""}], "case 0's id is ''"),
-        ([{"id": True}], "case 0's id is True"),
-        ([{"id": {"x": 1}}], "case 0's id is {'x': 1}"),
+        # An id is refused where it is another case's place: the second case, with none, is called "2".
+        ([{"id": 2}, {}], "more than one case is called '2'"),
+        ([{"id": ""}], "case 1's id is ''"),
+        ([{"id": True}], "case 1's id is True"),
+        ([{"id": {"x": 1}}], "case 1's id is {'x': 1}"),
     ],
 )
 async def test_case_ids_that_cannot_name_one_case_each_are_refused_before_anything_runs(
@@ -222,7 +226,7 @@ async def test_a_comparison_reads_each_arms_results_and_misses_by_its_key() -> N
     comparison = await Eval(CASES, {"hasty": hasty, "careful": careful}, [QUEUE], k=1, name="hasty vs careful").run(
         store=":memory:", scope=SCOPE
     )
-    assert [result.case for result in comparison.misses("hasty")] == ["2"]
+    assert [result.case for result in comparison.misses("hasty")] == ["3"]
     assert comparison.misses("careful") == []
     assert len(comparison.results("careful")) == 3
     with pytest.raises(ValueError, match="'nobody' names no arm"):
@@ -234,8 +238,8 @@ def misses_two_and_ten(case: Mapping[str, Any], answer: Any) -> bool:
 
 
 async def test_a_comparison_over_unnamed_cases_lists_its_misses_case_by_case_on_both_surfaces() -> None:
-    """The console and the page's Trials table share one order, case 2 before case 10, then arm, for cases called by
-    their position."""
+    """The console and the page's Trials table share one order, case 3 before case 11, then arm, and one name, for cases
+    called by their place from 1."""
 
     async def twin(case: Mapping[str, Any]) -> int:
         return int(case["n"])
@@ -244,13 +248,16 @@ async def test_a_comparison_over_unnamed_cases_lists_its_misses_case_by_case_on_
         [{"n": n} for n in range(12)], {"a": hasty_n, "b": twin}, [misses_two_and_ten], k=1, name="a vs b"
     ).run(store=":memory:", scope=SCOPE)
     arm_of = {variant: arm for arm, variant in comparison.arm_variants.items()}
+    named = case_namer(comparison.report.bundle)
     page = [
-        (trial.case_id.rsplit("-", 1)[1], arm_of[trial.arm])
+        (named(trial.case_id).removeprefix("case "), arm_of[trial.arm])
         for trial in comparison.report.bundle.trials
         if trial.state == "failed"
     ]
     console = re.findall(r"^  case (\d+) \((\w+), repeat 1\): ", comparison.render(), flags=re.M)
-    assert page == console == [("2", "a"), ("2", "b"), ("10", "a"), ("10", "b")]
+    # Re-pinned deliberately (P1, #1209 item 1): the page side was the stored id's index, which no page prints; it is
+    # now the name the page prints, and the cases at index 2 and 10 are the third and the eleventh.
+    assert page == console == [("3", "a"), ("3", "b"), ("11", "a"), ("11", "b")]
 
 
 async def test_a_sync_runner_runs_in_a_worker_thread() -> None:
@@ -267,7 +274,7 @@ async def test_a_sync_runner_runs_in_a_worker_thread() -> None:
 
 async def test_a_sync_callable_returning_a_coroutine_has_it_awaited() -> None:
     summary = await _summary(CASES, {"wrapped": lambda case: hasty(case)}, [QUEUE])
-    assert summary.n_scored == 3 and [result.case for result in summary.misses()] == ["2"]
+    assert summary.n_scored == 3 and [result.case for result in summary.misses()] == ["3"]
 
 
 async def test_a_sync_runner_handed_a_worlds_tools_is_refused_once_before_anything_runs() -> None:
@@ -301,7 +308,7 @@ def _miss_lines(printed: str) -> list[str]:
 async def test_a_classifier_miss_prints_the_graded_field_never_the_whole_answer() -> None:
     result = await Eval(CASES, routed, [QUEUE], k=1).run(store=":memory:", scope=SCOPE)
     (line,) = _miss_lines(result.render())
-    assert line == "  case 2 (repeat 1): answered queue 'bug', expected 'billing'"
+    assert line == "  case 3 (repeat 1): answered queue 'bug', expected 'billing'"
     # The whole answer is still on the result, for a reader who asks for it.
     (miss,) = result.misses()
     assert isinstance(miss.answer, dict) and "usage_id" in miss.answer
@@ -316,7 +323,7 @@ async def test_a_guardrail_field_listed_first_leaves_the_classifier_s_miss_line_
         store=":memory:", scope=SCOPE
     )
     (line,) = _miss_lines(result.render())
-    assert line == "  case 2 (repeat 1): answered queue 'bug', expected 'billing'"
+    assert line == "  case 3 (repeat 1): answered queue 'bug', expected 'billing'"
     # The classifier's label match is printed as the page names it: the Accuracy it leads on.
     assert any(re.match(r"  Accuracy: [\d.]+%, \d+ of \d+ trials", text) for text in result.render().splitlines())
     matrix, _ = result.labels()
@@ -381,7 +388,7 @@ async def test_a_miss_s_reasons_print_on_one_line_and_the_first_line_keeps_and_n
     assert "Cases that failed a trial: " in printed[0] and printed[0].endswith(", and 2 more.")
     assert printed[0].split("failed a trial: ", 1)[1].count(", ") == 5
     lines = _miss_lines(result.render())
-    assert lines[0] == "  case 0 (repeat 1): failed: the candidate raised ValueError: first line second line"
+    assert lines[0] == "  case 1 (repeat 1): failed: the candidate raised ValueError: first line second line"
     assert not [line for line in printed if line.strip() == "second line"], "no reason runs onto a line of its own"
 
 

@@ -276,6 +276,9 @@ class TrialsAndCensus:
     scoreboard: list[ArmScoreboard]
     trials: list[TrialRow]
     trials_omitted: int
+    #: Whether the member runs' case lists differ, so a case's place is where it first stands in their union, in run
+    #: order, and no one run's list need hold it at that line (``AnalysisContextBundle.case_lists_differ``).
+    case_lists_differ: bool = False
 
 
 def trials_and_census(
@@ -290,6 +293,7 @@ def trials_and_census(
     load_results: Callable[[Sequence[str]], Sequence[EvalResult]],
     rubric_scales: Mapping[str, Mapping[str, RubricScale]],
     names: Mapping[str, str] | None = None,
+    case_lists: Sequence[Sequence[str]] = (),
 ) -> TrialsAndCensus:
     """Every trial's row and every arm's census, over the campaign's results.
 
@@ -304,6 +308,11 @@ def trials_and_census(
     :ptype strata: Mapping[str, str | None]
     :param names: The name each test case's author gave it, by case id, for the cases that have one.
     :ptype names: Mapping[str, str] | None
+    :param case_lists: The member runs' frozen case lists (``EvalRun.test_case_ids``), in the bundle's run order: each
+        case's place is where it first stands in them, from 1 (:func:`_case_places`), carried on its rows
+        (:attr:`~threetears.evals.analysis.bundle.schema.TrialRow.case_place`), and whether they differ is
+        ``case_lists_differ``. Empty carries no place.
+    :ptype case_lists: Sequence[Sequence[str]]
     :param criteria: Each judged dimension's rubric criterion as the judge was asked it, by dimension name.
     :ptype criteria: Mapping[str, str]
     :param rubric_threshold: The 1–5 level a judged dimension must reach to pass.
@@ -346,6 +355,7 @@ def trials_and_census(
     evidence = load_judge_evidence(traced) if traced else {}
     labels = _case_labels(kept, strata, evidence, names or {})
     whole = _whole(kept, load_results)
+    places = _case_places(case_lists)
     rows = [
         _row(
             f"T{index}",
@@ -356,6 +366,7 @@ def trials_and_census(
             criteria,
             evidence.get(result.id),
             rubric_scales.get(result.eval_run_id, {}),
+            places.get(result.test_case_id),
         )
         for index, result in enumerate(kept, start=1)
     ]
@@ -363,7 +374,26 @@ def trials_and_census(
         scoreboard=scoreboard,
         trials=rows,
         trials_omitted=omitted,
+        case_lists_differ=len({tuple(cases) for cases in case_lists}) > 1,
     )
+
+
+def _case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
+    """Each case's place from 1: where it first stands in ``case_lists``, the member runs' frozen case lists chained
+    in the bundle's run order (created, then id), each case kept where it first appears. Where every run holds one
+    list (an ``Eval``'s every arm, the usual host campaign), that is the case's line in it, the line of a cases file.
+    Where the lists differ (a case added or dropped between runs, a run reordered, runs sharded), it is the order the
+    campaign first launched its cases in, so no two cases share a number, and no one run's list need hold the case at
+    that line (a run over cases 1 to 38 and the next over 39 to 76 numbers the second's first case 39, and a case
+    dropped from a later run keeps its number). Never read off a case's id.
+
+    :param case_lists: The member runs' ``test_case_ids``, in the bundle's run order.
+    :ptype case_lists: Sequence[Sequence[str]]
+    :return: Each case's place, by case id.
+    :rtype: dict[str, int]
+    """
+    ordered = dict.fromkeys(case for cases in case_lists for case in cases)
+    return {case: place for place, case in enumerate(ordered, start=1)}
 
 
 def _whole(
@@ -574,6 +604,7 @@ def _row(
     criteria: Mapping[str, str],
     evidence: JudgeEvidence | None,
     scales: Mapping[str, RubricScale],
+    place: int | None,
 ) -> TrialRow:
     """One trial's row, every text in it capped; a dim the judge could not tell on is shown on the scale its run
     recorded for it (:func:`~threetears.evals.schema.models.rubric_dim_scale`), never assumed."""
@@ -614,6 +645,7 @@ def _row(
         trial_id=trial_id,
         case_id=result.test_case_id,
         case_label=label,
+        case_place=place,
         stratum=strata.get(result.test_case_id),
         arm=result.variant_key,
         repeat=result.k_iteration,
