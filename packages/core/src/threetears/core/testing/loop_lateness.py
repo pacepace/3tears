@@ -465,6 +465,7 @@ async def trusted(
     threads: int | None = None,
     cpu_may_be_crowded: float = _CPU_MAY_BE_CROWDED,
     probe: Callable[[int], float] = _taken,
+    disk_waits: Callable[[], int] | None = None,
 ) -> _Measured:
     """the first of up to ``attempts`` measurements over which the host's idle loop was late by at most
     ``host_may_be_late`` (and, for a path on ``threads`` threads, its cores were free before and after it), and over
@@ -488,16 +489,20 @@ async def trusted(
         (:func:`_taken`) unless a test scripts one; each probe has its own session reference, and every probe's takes
         lower the host's record
     :ptype probe: Callable[[int], float]
+    :param disk_waits: the process's major page faults so far, read before and after each measurement: the process's own
+        (:func:`_disk_waits`) unless a test scripts them
+    :ptype disk_waits: Callable[[], int] | None
     :return: the trusted measurement
     :rtype: _Measured
     :raises CouldNotMeasure: when the host was too late, or its cores too crowded, in every attempt
     """
+    faults = _disk_waits if disk_waits is None else disk_waits
     seen: list[str] = []
     for _ in range(attempts):
         before = _crowding(threads, probe)
-        waits = _disk_waits()
+        waits = faults()
         measured = await measure()
-        waited = _disk_waits() - waits
+        waited = faults() - waits
         after = _crowding(threads, probe)
         ticks, host = window(measured)
         verdict = _untrusted(
@@ -517,6 +522,7 @@ def quietly(
     threads: int | None = None,
     cpu_may_be_crowded: float = _CPU_MAY_BE_CROWDED,
     probe: Callable[[int], float] = _taken,
+    disk_waits: Callable[[], int] | None = None,
 ) -> _Measured:
     """the first of up to ``attempts`` runs of ``measure()`` over which the host's idle loop, ticking beside it in a
     process of its own (:class:`HostTicker`), was late by at most ``host_may_be_late``, and the process waited on the
@@ -540,18 +546,21 @@ def quietly(
     :ptype cpu_may_be_crowded: float
     :param probe: the spin crowding is judged by, as :func:`trusted` takes it
     :ptype probe: Callable[[int], float]
+    :param disk_waits: the major page faults counted, as :func:`trusted` takes them
+    :ptype disk_waits: Callable[[], int] | None
     :return: the trusted measurement
     :rtype: _Measured
     :raises CouldNotMeasure: when the host was too late, or its cores too crowded, in every attempt
     """
+    faults = _disk_waits if disk_waits is None else disk_waits
     seen: list[str] = []
     for _ in range(attempts):
         before = _crowding(threads, probe)
         with HostTicker() as host:
             began = time.perf_counter()
-            waits = _disk_waits()
+            waits = faults()
             measured = measure()
-            waited = _disk_waits() - waits
+            waited = faults() - waits
             ended = time.perf_counter()
         after = _crowding(threads, probe)
         late = host_lateness(host.ticks, [(began, ended)])
