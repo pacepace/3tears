@@ -219,6 +219,10 @@ class BlindReadPreference(EvalBaseModel):
 
     made_by: Maker
     raters: list[str]
+    served_model: str | None = Field(
+        description="A model's preference: the model that served every answer it is read over; one preference per "
+        "served model, never pooled. None for people, and where the served model was not recorded."
+    )
     control: str = Field(description="The control arm, by its key.")
     candidate: str = Field(description="The candidate arm, by its key.")
     planned: int = Field(ge=0, description="The items the preference was planned over, fixed at the draw.")
@@ -344,6 +348,7 @@ def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
         BlindReadPreference(
             made_by=entry.anchor,
             raters=list(entry.anchor_names),
+            served_model=entry.served_model,
             control=entry.control,
             candidate=entry.candidate,
             planned=entry.planned,

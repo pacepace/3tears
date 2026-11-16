@@ -285,6 +285,15 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
 
     anchor: Maker
     anchor_names: list[str] = Field(min_length=1)
+    served_model: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "A model's preference only: the model that served every answer it is read over, as the provider named it. "
+            "A reviewer whose answers two models served has one preference per served model, never pooled. None for "
+            "people, and for a model's answers whose served model was not recorded."
+        ),
+    )
     random: bool = Field(description="Whether every rater behind it answered a random sample.")
     control: str = Field(min_length=1, description="The control arm (BlindArm.key).")
     candidate: str = Field(min_length=1, description="The candidate arm.")

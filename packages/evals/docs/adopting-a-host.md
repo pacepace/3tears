@@ -1832,7 +1832,9 @@ other wording of a criterion than the read shows (a template edited since) is le
 `excluded`; a read with none left is refused, naming the edit.
 
 A read closed before anyone answered every planned item is closed early, and its preference is read by the anytime
-test, which holds its level wherever the read stopped; while a read is open no preference is shown at all. A reviewer
+test, which holds its level wherever the read stopped; while a read is open no preference is shown at all. A model
+reviewer's preference is read once per model that served its answers, and each names that model in `served_model`
+(people's names none): two served models under one reviewer are never pooled into one preference. A reviewer
 is declared when the read is drawn, never after, and one that is the judge's own model is refused there.
 
 **For hosts.** To take a person's answers through an action, supply `attests_person`; without it every answer is

@@ -901,6 +901,38 @@ def test_a_reviewer_s_answers_two_served_models_gave_are_read_apart_and_never_po
     assert all(entry.served_model is None for entry in report.agreement if entry.anchor == "person")
 
 
+def test_a_reviewer_s_preference_is_read_once_per_served_model_and_never_pooled() -> None:
+    """One reviewer id, two served models that disagree: the first prefers the candidate, the second the control. Pooled,
+    they would read as one reviewer who cannot tell the arms apart. Each served model's answers are one preference,
+    naming its model; a skip, which no model served, counts as unanswered in each, and the print names which is which."""
+    results, evidence = _campaign(24)
+    read = _draw(results, evidence)
+    reviewer = "other/reviewer-9"
+    first = [_reference(read, n, reviewer, prefer_arm="v2", reviewer_served_model="other/a-1") for n in range(11)]
+    skip = BlindAnswer(item=read.items[11].item, rater=reviewer, made_by="model", skipped=True)
+    second = [_reference(read, n, reviewer, prefer_arm="v1", reviewer_served_model="other/b-2") for n in range(12, 24)]
+    closed = close_blind_read(_with(read, [*first, skip, *second]), results, closed_by="owner")
+    report = closed.read.report
+    assert report is not None
+
+    read_as = sorted((p.anchor_names, p.prefer_candidate, p.prefer_control, p.missing) for p in report.preferences)
+    assert read_as == [([reviewer], 0, 12, 1), ([reviewer], 11, 0, 1)], "two preferences, never one pooled"
+    named = {p.served_model: (p.prefer_candidate, p.prefer_control) for p in report.preferences}
+    assert named == {"other/a-1": (11, 0), "other/b-2": (0, 12)}
+    lines = judge_lines(closed, labels_name="labels.csv", labels_there=True, shown={"v1": "v1", "v2": "v2"})
+    said = [line for line in lines if line.startswith("preference of")]
+    assert [line.split(":")[0] for line in said] == [
+        f"preference of a model ({reviewer}), served by other/a-1, not a person",
+        f"preference of a model ({reviewer}), served by other/b-2, not a person",
+    ]
+    # One served model throughout: one preference, naming it, and the print as it was.
+    whole = [_reference(read, n, reviewer, prefer_arm="v2") for n in range(24)]
+    once = close_blind_read(_with(read, whole), results).read.report
+    assert once is not None
+    (alone,) = once.preferences
+    assert (alone.served_model, alone.prefer_candidate, alone.test) == (f"{reviewer}-0613", 24, "exact_sign")
+
+
 # parity-with: threetears.evals.schema.completion.PricedCompletion
 class FakeReviewer:
     """A reviewer that passes every output and prefers B, and keeps what it was sent; ``replies`` scripts a reply by

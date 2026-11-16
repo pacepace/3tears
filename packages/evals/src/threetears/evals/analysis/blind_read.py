@@ -888,10 +888,12 @@ def _preference(
     samples: Mapping[tuple[str, Maker], BlindSample],
     *,
     closing: bool = False,
+    served_model: str | None = None,
 ) -> BlindPreference:
     """One kind of rater's preference over the planned items, per case, with its test; withheld until a rater has
     answered every planned item, unless the read is being closed (``closing``), when an unfinished one is read by the
-    anytime test (:func:`_anytime_preference`)."""
+    anytime test (:func:`_anytime_preference`). ``served_model`` is the model that served a model's ``answers``,
+    stated on the preference; None for people."""
     control = next(arm.key for arm in read.arms if arm.role == "control")
     candidate = next(arm.key for arm in read.arms if arm.role == "candidate")
     planned = read.items[: read.draw.planned_items]
@@ -904,10 +906,11 @@ def _preference(
     done = sorted(rater for rater, own in by_rater.items() if {answer.item for answer in own} == planned_ids)
     kind = answers[0].made_by
     if not done and planned and closing:
-        return _anytime_preference(read, answers, samples, by_rater)
+        return _anytime_preference(read, answers, samples, by_rater, served_model=served_model)
     if not done or not planned:
         return BlindPreference(
             anchor=kind,
+            served_model=served_model,
             anchor_names=sorted({answer.rater for answer in answers}),
             random=False,
             control=control,
@@ -967,6 +970,7 @@ def _preference(
             verdict = "improved" if for_candidate > for_control else "regressed"
     return BlindPreference(
         anchor=kind,
+        served_model=served_model,
         anchor_names=done,
         random=all(samples[(rater, kind)].sample == "random" for rater in done),
         control=control,
@@ -993,6 +997,8 @@ def _anytime_preference(
     answers: Sequence[BlindAnswer],
     samples: Mapping[tuple[str, Maker], BlindSample],
     by_rater: Mapping[str, Sequence[BlindAnswer]],
+    *,
+    served_model: str | None = None,
 ) -> BlindPreference:
     """The preference of a read closed before any rater answered every planned item: read once, at the close, by the
     bounded test on shares in the drawn order with its stakes fixed for the planned pair items before the first
@@ -1038,6 +1044,7 @@ def _anytime_preference(
     raters = sorted(by_rater)
     return BlindPreference(
         anchor=kind,
+        served_model=served_model,
         anchor_names=raters or sorted({answer.rater for answer in answers}),
         random=bool(raters) and all(samples[(rater, kind)].sample == "random" for rater in raters),
         control=control,
@@ -1238,9 +1245,9 @@ def close_blind_read(
     if "preference" in read.ask:
         makers: tuple[Maker, ...] = ("person", "model")
         for kind in makers:
-            for group in _preference_groups(read, kind):
+            for served_model, group in _preference_groups(read, kind):
                 if group:
-                    preferences.append(_preference(read, group, samples, closing=closing))
+                    preferences.append(_preference(read, group, samples, closing=closing, served_model=served_model))
     report = BlindReadReport(
         cases=len(read.items),
         reviews=list(read.reviews),
@@ -1290,12 +1297,30 @@ def _with_the_deciding_anchor(agreement: Sequence[BlindAgreementReading]) -> lis
     return marked
 
 
-def _preference_groups(read: BlindRead, kind: Maker) -> list[list[BlindAnswer]]:
-    """The answers a preference is read over: every person's together, and each reference reviewer's alone."""
+def _preference_groups(read: BlindRead, kind: Maker) -> list[tuple[str | None, list[BlindAnswer]]]:
+    """The answers a preference is read over, each beside the model that served them: every person's together (no
+    served model), and each reference reviewer's alone, once per model that served its answers, never pooled.
+
+    A skipped answer names no served model, since no reply was used: it goes with every served model the reviewer's
+    answers name, where it counts toward how far the read is and as a planned item with no preference given.
+    """
     answers = [answer for answer in read.answers if answer.made_by == kind]
     if kind == "person":
-        return [answers] if answers else []
-    return [[answer for answer in answers if answer.rater == rater] for rater in sorted({a.rater for a in answers})]
+        return [(None, answers)] if answers else []
+    groups: list[tuple[str | None, list[BlindAnswer]]] = []
+    for rater in sorted({answer.rater for answer in answers}):
+        own = [answer for answer in answers if answer.rater == rater]
+        served = sorted(
+            {answer.reviewer_served_model for answer in own if not answer.skipped}, key=lambda name: name or ""
+        )
+        if not served:
+            groups.append((None, own))
+            continue
+        for model in served:
+            groups.append(
+                (model, [answer for answer in own if answer.skipped or answer.reviewer_served_model == model])
+            )
+    return groups
 
 
 #: What another module calls: the quick path's files and the host's door (:mod:`threetears.evals.ops.blind_reads`).

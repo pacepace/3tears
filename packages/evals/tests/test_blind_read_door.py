@@ -858,6 +858,65 @@ async def test_an_early_close_reads_the_preference_by_the_anytime_test() -> None
     assert preference["verdict"] in ("improved", "not_separated") and preference["p"] is not None
 
 
+async def test_a_reviewer_s_preference_is_served_once_per_served_model_with_the_model_named() -> None:
+    """One reviewer id whose answers two served models gave, the two disagreeing: the door serves two preferences,
+    each naming its served model, and never one pooled over both."""
+    host, fixture, _ = _world(reviewer_reply=_reply())
+    line = await _pair_read(host, fixture, reviewer=REVIEWER)
+    read_id = line["read_id"]
+    started = await _call(host, "blind_read_review", read_id=read_id)
+    assert not started.is_error, started.text
+    (handle,) = started.structured["jobs"]
+    assert (await settled(host, handle["job_id"])).status == "completed"
+    read, _ = _stored(host, read_id)
+    assert read.review_job_id is not None
+    candidate = next(arm.key for arm in read.arms if arm.role == "candidate")
+    pairs = [item.item for item in read.items[: read.draw.planned_items] if len(item.outputs) == 2]
+    assert len(pairs) >= 4, "the toy corpus holds enough pairs for a read"
+    first = set(pairs[: len(pairs) // 2])
+
+    def answer(position: int) -> BlindAnswer:
+        """Every item answered again: the first half of the pairs preferring the candidate under one served model,
+        the rest preferring the control under another."""
+        item = read.items[position]
+        served = "reviewer/a-1" if item.item in first or len(item.outputs) == 1 else "reviewer/b-2"
+        prefer = None
+        if len(item.outputs) == 2:
+            to_candidate = item.item in first
+            prefer = next(output.slot for output in item.outputs if (output.arm == candidate) == to_candidate)
+        return BlindAnswer(
+            item=item.item,
+            rater=REVIEWER,
+            made_by="model",
+            reviewer_served_model=served,
+            verdicts=[BlindVerdict(slot=output.slot, dim=DIM.name, score=4) for output in item.outputs],
+            prefer=prefer,
+        )
+
+    answers = [answer(position) for position in range(len(read.items))]
+    with job_running(read.review_job_id):
+        await asyncio.to_thread(
+            keep_review, host.eval_host, read_id, TOYHOST_SCOPE, answers, BlindReview(reviewer=REVIEWER, asked=1)
+        )
+
+    closed = await _call(host, "blind_read_close", read_id=read_id)
+
+    assert not closed.is_error, closed.text
+    served = sorted(
+        (p["raters"], p["prefer_candidate"], p["prefer_control"])
+        for p in closed.structured["preferences"]
+        if p["made_by"] == "model"
+    )
+    half = len(first)
+    assert served == [([REVIEWER], 0, len(pairs) - half), ([REVIEWER], half, 0)], "two preferences, never one pooled"
+    named = {
+        p["served_model"]: (p["prefer_candidate"], p["prefer_control"])
+        for p in closed.structured["preferences"]
+        if p["made_by"] == "model"
+    }
+    assert named == {"reviewer/a-1": (half, 0), "reviewer/b-2": (0, len(pairs) - half)}
+
+
 # --- the sheet conformance check -------------------------------------------------------------------------------
 
 

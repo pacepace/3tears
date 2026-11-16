@@ -26,6 +26,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple, assert_never
@@ -709,10 +710,14 @@ def _agreement_clause(reading: BlindAgreementReading) -> str:
     return f"{counted}  {figure}  {said or 'not decided'}{caught}"
 
 
-def _preference_line(preference: BlindPreference, shown: Mapping[str, str]) -> str:
+def _preference_line(preference: BlindPreference, shown: Mapping[str, str], *, split: bool = False) -> str:
+    """One preference, said. ``split``: its reviewer's answers were served by more than one model, so each of its
+    preferences names the model that served it."""
     head = "preference"
     if preference.anchor == "model":
-        head = f"preference of {_who('model', preference.anchor_names[0])}, not a person"
+        reviewer = preference.anchor_names[0]
+        served = f", served by {preference.served_model or 'a model not recorded'}" if split else ""
+        head = f"preference of {_who('model', reviewer)}{served}, not a person"
     if preference.withheld:
         return (
             f"{head}: shown when the first {preference.planned} cases are answered "
@@ -868,7 +873,11 @@ def judge_lines(
     for reviewer, reason in ((reviewer, reason) for reviewer, why in report.not_checked.items() for reason in why):
         lines += under(f"not checked against {_who('model', reviewer)}: {reason}", "  ")
     lines += reviews
-    lines += [_preference_line(preference, shown or {}) for preference in report.preferences]
+    by_reviewer = Counter(p.anchor_names[0] for p in report.preferences if p.anchor == "model")
+    lines += [
+        _preference_line(p, shown or {}, split=p.anchor == "model" and by_reviewer[p.anchor_names[0]] > 1)
+        for p in report.preferences
+    ]
     if people:
         furthest = max(people, key=lambda sample: sample.answered)
         if all(sample.sample == "random" for sample in people):

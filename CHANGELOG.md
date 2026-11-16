@@ -20,7 +20,8 @@ meanwhile refuses the close (409) and no rating exists for a read still open; it
 (a person's as theirs, a model's as an agent's) and refuses later answers. A rating write that fails reaches the caller
 with the read closed, as a 503 whose remedy is to close it again, which writes the ratings still missing; a closed read
 whose missing ratings are each refused (their result gone) says so, rating by rating. A read closed before anyone answered every
-planned item reads its preference by the anytime test, valid wherever it stopped.
+planned item reads its preference by the anytime test, valid wherever it stopped. A model reviewer's preference is
+read once per model that served its answers, never pooled, and each one names that model (`served_model`).
 `blind_read_get` and `blind_reads_list` read them back. A read is a new durable document (durable minor 17.4), carried
 by a campaign's export. Who made each answer is stored as `made_by` (`person` or `model`, the one `Maker` a recorded call
 uses too), never as a third kind of rater.

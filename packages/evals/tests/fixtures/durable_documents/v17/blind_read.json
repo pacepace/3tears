@@ -250,6 +250,7 @@
         "prefer_candidate": 1,
         "prefer_control": 0,
         "random": true,
+        "served_model": null,
         "slot_a": 1,
         "slot_a_share": 1.0,
         "slot_choices": 1,
