@@ -313,10 +313,20 @@ class TestAPublishTakesAsLongAsWhatItChanges:
         bare_dir = tmp_path / "bare"
         bare_dir.mkdir()
         times = quietly(lambda: _timed_rounds(small, large, bare_dir), host_may_be_late=HOST_MAY_BE_LATE)
-        n, ten_n, bare = (statistics.median(times[key]) for key in ("n", "ten_n", "bare"))
+        # each side's fastest round, as best_seconds_interleaved judges a path against its bare: the host only ever
+        # adds time to a round (a thread taken off its core for a few ms, which a 20 ms idle-loop limit does not see),
+        # and adds it unevenly; the fastest round is the closest each side comes to its own cost. Measured 2026-11-16
+        # on a host at load ~3: the publish's CPU time was 1.5-1.6x the bare write's in every run of 9 rounds (50
+        # runs), its wall time up to 2.5x on the median of 9 -- each such run's publish rounds 1-2 ms off the CPU (wall
+        # 2.8-3.3 ms against CPU 1.6-1.7 ms), the bare write's not. Over 60 runs the median of 9 read 1.57x typical,
+        # 3.38x worst, 7 runs past 2x; the fastest round 1.60x typical, 1.73x worst. (Before the publish kept its
+        # base's schema file, 80 runs: fastest 1.75x typical, 2.11x worst -- the publish's own cost, not noise.)
+        n, ten_n, bare = (min(times[key]) for key in ("n", "ten_n", "bare"))
         print(
             f"publish of {CHANGED} parts: {PARTS} parts {n * 1000:.2f} ms; {TEN_TIMES} parts {ten_n * 1000:.2f} ms; "
-            f"bare write {bare * 1000:.2f} ms; ratio {ten_n / bare:.2f}"
+            f"bare write {bare * 1000:.2f} ms; ratio {ten_n / bare:.2f} (medians: "
+            + "; ".join(f"{key} {statistics.median(times[key]) * 1000:.2f} ms" for key in ("n", "ten_n", "bare"))
+            + ")"
         )
         assert ten_n <= FLAT * n, f"a publish at {TEN_TIMES} parts took {ten_n / n:.2f}x one at {PARTS}"
         assert ten_n <= BARE_MULTIPLE * bare, f"a publish took {ten_n / bare:.2f}x its bare write"

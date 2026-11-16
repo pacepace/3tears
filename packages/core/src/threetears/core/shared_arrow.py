@@ -838,6 +838,21 @@ def _file_schema(path: Path) -> Any:
         return ipc.open_file(mapped).schema
 
 
+@functools.lru_cache(maxsize=256)
+def _held_schema(path: str) -> Any:
+    """the columns of a part directory's table schema file, read once: a part file is written once under a directory
+    named for the publish that wrote it (a fresh ``uuid7``) and never written again, so what a path holds never
+    changes. Every publish on a base checks its table's columns against the base's schema file; read each time, that
+    is an open, a map and a parse of the same bytes (about 40 us on macOS, 2026-11-16) on every publish.
+
+    :param path: the schema file
+    :ptype path: str
+    :return: the schema
+    :rtype: pa.Schema
+    """
+    return _file_schema(Path(path))
+
+
 class _Place:
     """where a write's files go and the bytes they may take together: one directory under one bound (a result's
     slot, a hand-off). A slot in pieces is a place of its own (:class:`_Pieces`) whose files move to the next piece.
@@ -1429,14 +1444,18 @@ def _write_parts(
             held = None if base is None else base.lines.get(name)
             if held is not None and schema_file in held:
                 _, held_dir, _ = _line_fields(held[schema_file])
-                if not _file_schema(part_dir.parent / held_dir / schema_file).equals(source.schema):
+                if not _held_schema(str(part_dir.parent / held_dir / schema_file)).equals(source.schema):
                     raise ValueError(f"table {name!r} changed its columns from the base version's; publish it whole")
+                # the base's schema file names the same columns: kept as its line, as an unchanged part is, never
+                # written again (an empty Arrow file's create, write and stat: about 80 us of a 2 ms publish of four
+                # changed parts on macOS, 2026-11-16)
                 table_lines = dict(held)
                 size = nbytes[name]
-            path = placed(schema_file)
-            stat = _write_file(path, source.schema, iter(()), left, what=name, reclaim=reclaim)
-            written += stat.st_size
-            size += recorded(table_lines, schema_file, stat)
+            else:
+                path = placed(schema_file)
+                stat = _write_file(path, source.schema, iter(()), left, what=name, reclaim=reclaim)
+                written += stat.st_size
+                size += recorded(table_lines, schema_file, stat)
             for part, rows in source.parts.items():
                 file_name = f"{name}{_PART_SEPARATOR}{part}{_TABLE_SUFFIX}"
                 if rows is None:
@@ -4232,11 +4251,13 @@ class SharedArrowStore:
                 if len(text) > room() - written:
                     raise SharedArrowFullError(f"version {name!r}'s manifest would pass the bytes it may take")
             (staging / _MANIFEST_FILE).write_text(text)
-            (staging / _LOCK_FILE).touch()
-            (staging / _CACHED_FILE).touch()
-            (staging / _REVOKE_FILE).touch()
-            # held from before the version has its name: no reader can keep it mapped before the store can revoke it
-            revoker = _locked(staging, fcntl.LOCK_EX, _REVOKE_FILE)
+            # made by one create each (a Path.touch is a failed utime first: about 5 us apiece on macOS, 2026-11-16)
+            for marker in (_LOCK_FILE, _CACHED_FILE):
+                os.close(os.open(staging / marker, os.O_WRONLY | os.O_CREAT, 0o666))
+            # made and locked by one open; held from before the version has its name: no reader can keep it mapped
+            # before the store can revoke it (nothing else knows the staging name, so the lock is never refused)
+            revoker = os.open(staging / _REVOKE_FILE, os.O_RDONLY | os.O_CREAT, 0o666)
+            fcntl.flock(revoker, fcntl.LOCK_EX | fcntl.LOCK_NB)
             staged = _directory_files(staging)
             kept = {} if imported is None else self._kept_imported(manifest, imported)
             os.rename(staging, self._versions / name)
@@ -4261,9 +4282,9 @@ class SharedArrowStore:
         finally:
             if revoker is not None:
                 os.close(revoker)
-            # renamed into place on success, so only a failed write's staging is still here to remove
-            remove_tree(staging, log=log, what="a failed version's staging directory")
             if not done:
+                # renamed into place on success, so only a failed write's staging is still here to remove
+                remove_tree(staging, log=log, what="a failed version's staging directory")
                 remove_tree(part_dir, log=log, what="a failed version's part files")
                 if imported is not None:
                     remove_tree(imported, log=log, what="a failed version's part files named from its base")

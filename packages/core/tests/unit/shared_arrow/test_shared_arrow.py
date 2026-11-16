@@ -1020,7 +1020,8 @@ class TestANewVersionMapsOnlyWhatChanged:
         mapped_files.clear()
         with reader.read() as read:
             assert read.version == "v2"
-            assert sorted(mapped_files) == ["t@.arrow", "t@S3.arrow"], "only the changed files were mapped"
+            # the table's schema file names the same columns, so it is the base's own too (never written again)
+            assert sorted(mapped_files) == ["t@S3.arrow"], "only the changed files were mapped"
             expected = (sum(range(20)) - 3 - 4 + 300) * 1_000
             assert read.cursor.execute(f'SELECT sum(a) FROM "{TABLE}"').fetchone() == (expected,)
             assert read.cursor.execute('SELECT sum(a) FROM "whole"').fetchone() == (50,)
@@ -1041,7 +1042,7 @@ class TestANewVersionMapsOnlyWhatChanged:
         mapped_files.clear()
         with reader.read() as read:
             assert read.version == "v4"
-            assert sorted(mapped_files) == ["t@.arrow", "t@S5.arrow", "t@S6.arrow"]
+            assert sorted(mapped_files) == ["t@S5.arrow", "t@S6.arrow"]
             expected += (500 - 5 + 600 - 6) * 1_000
             assert read.cursor.execute(f'SELECT sum(a) FROM "{TABLE}"').fetchone() == (expected,)
         reader.close()
@@ -1057,7 +1058,7 @@ class TestANewVersionMapsOnlyWhatChanged:
         with store.lease("v2"), read_version(store.root, "v2") as mapped:
             column = mapped.tables[TABLE].column("a")
             assert pa.compute.sum(column).as_py() == (sum(range(10)) + 7) * 1_000
-        assert sorted(mapped_files) == ["t@.arrow", "t@S0.arrow"], "only the changed files were mapped"
+        assert sorted(mapped_files) == ["t@S0.arrow"], "only the changed files were mapped"
 
 
 class TestNothingLeaksWhenTheCallerStopsWaiting:

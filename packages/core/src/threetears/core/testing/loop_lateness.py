@@ -20,7 +20,9 @@ off the interpreter lock (:func:`_cpu_crowding`) runs on that many threads at on
 against the fastest this host has ever run it on that many -- a record kept per host under the user's cache dir, and
 this session's first take, the lower of the two. With that many cores free it takes about as long; when fewer are
 free its threads wait their turn, and past :data:`_CPU_MAY_BE_CROWDED` the window is untrusted. A host with no record
-whose idle loop was late over the session's first take has no reference, and nothing in that session is trusted. An
+whose idle loop was late over the session's first take has no reference, and nothing in that session is trusted. A
+window in which the test's process waited on the disk for its own pages -- a major page fault, a page the host had
+dropped from memory read back -- is untrusted as well (:func:`_disk_waits`). An
 untrusted measurement is never a pass and never a skip: it is retaken, a bounded number of times
 (:data:`MEASURE_ATTEMPTS`), and when no window is trusted the test fails with :class:`CouldNotMeasure` ("could not
 measure: the host's idle loop ran X ms late"), which says the host, not the code, was late. A trusted measurement
@@ -48,6 +50,7 @@ import json
 import math
 import os
 import platform
+import resource
 import socket
 import subprocess
 import sys
@@ -100,6 +103,15 @@ _SPIN_ROUNDS: Final[int] = 4
 
 #: how many times each side of the spin is taken; its fastest is kept
 _SPIN_TAKES: Final[int] = 3
+
+#: the most major page faults the test's process may take over a window for it to be trusted: none. A major fault is
+#: a page the host dropped from memory (a library's code, a mapped file) read back from disk while a thread of the
+#: process waits; whichever thread holds the interpreter lock then holds the loop for the disk's time, not the code's.
+#: Measured 2026-11-16 on a host swapping 6.3 of 7 GB (Docker's VM holding ~9 GB): the first save_arrow of a process
+#: took 68 major faults and held the loop 4.1 ms; each of the next 399 took none and held it 0.6-1.5 ms; a whole
+#: loop_timing session read that first save_arrow at 8.9 ms against a 5 ms bound. A fault a test meant to measure
+#: would fault in every attempt and fail as unmeasurable, never pass: no timing test here reads cold pages on purpose
+_DISK_WAITS_ALLOWED: Final[int] = 0
 
 #: one tick of a ticker: when it asked to sleep and when it woke, on ``time.perf_counter`` (the host's monotonic clock,
 #: one clock for every process on the host)
@@ -455,7 +467,8 @@ async def trusted(
     probe: Callable[[int], float] = _taken,
 ) -> _Measured:
     """the first of up to ``attempts`` measurements over which the host's idle loop was late by at most
-    ``host_may_be_late`` (and, for a path on ``threads`` threads, its cores were free before and after it).
+    ``host_may_be_late`` (and, for a path on ``threads`` threads, its cores were free before and after it), and over
+    which the process waited on the disk for none of its pages (:data:`_DISK_WAITS_ALLOWED`).
 
     :param measure: takes one measurement (runs the work with a :class:`HostTicker` beside it)
     :ptype measure: Callable[[], Awaitable[_Measured]]
@@ -482,10 +495,14 @@ async def trusted(
     seen: list[str] = []
     for _ in range(attempts):
         before = _crowding(threads, probe)
+        waits = _disk_waits()
         measured = await measure()
+        waited = _disk_waits() - waits
         after = _crowding(threads, probe)
         ticks, host = window(measured)
-        verdict = _untrusted(host_lateness(host, ticks), (before, after), host_may_be_late, cpu_may_be_crowded)
+        verdict = _untrusted(
+            host_lateness(host, ticks), (before, after), host_may_be_late, cpu_may_be_crowded, disk_waits=waited
+        )
         if verdict is None:
             return measured
         seen.append(verdict)
@@ -502,7 +519,8 @@ def quietly(
     probe: Callable[[int], float] = _taken,
 ) -> _Measured:
     """the first of up to ``attempts`` runs of ``measure()`` over which the host's idle loop, ticking beside it in a
-    process of its own (:class:`HostTicker`), was late by at most ``host_may_be_late``: :func:`trusted` for a
+    process of its own (:class:`HostTicker`), was late by at most ``host_may_be_late``, and the process waited on the
+    disk for none of its pages: :func:`trusted` for a
     measurement that is no loop's ticks -- a duration, or two timed side by side for a speed ratio -- whose window is
     the whole call.
 
@@ -531,11 +549,13 @@ def quietly(
         before = _crowding(threads, probe)
         with HostTicker() as host:
             began = time.perf_counter()
+            waits = _disk_waits()
             measured = measure()
+            waited = _disk_waits() - waits
             ended = time.perf_counter()
         after = _crowding(threads, probe)
         late = host_lateness(host.ticks, [(began, ended)])
-        verdict = _untrusted(late, (before, after), host_may_be_late, cpu_may_be_crowded)
+        verdict = _untrusted(late, (before, after), host_may_be_late, cpu_may_be_crowded, disk_waits=waited)
         if verdict is None:
             return measured
         seen.append(verdict)
@@ -547,8 +567,23 @@ def _crowding(threads: int | None, probe: Callable[[int], float]) -> float | Non
     return None if threads is None else _cpu_crowding(threads, probe)
 
 
+def _disk_waits() -> int:
+    """the major page faults this process has taken so far, every thread's: each a wait on the disk for a page the host
+    had dropped from memory (:data:`_DISK_WAITS_ALLOWED`).
+
+    :return: the count
+    :rtype: int
+    """
+    return resource.getrusage(resource.RUSAGE_SELF).ru_majflt
+
+
 def _untrusted(
-    late: float, crowding: tuple[float | None, float | None], host_may_be_late: float, cpu_may_be_crowded: float
+    late: float,
+    crowding: tuple[float | None, float | None],
+    host_may_be_late: float,
+    cpu_may_be_crowded: float,
+    *,
+    disk_waits: int = 0,
 ) -> str | None:
     """why a window is untrusted, or None when it is trusted.
 
@@ -560,11 +595,15 @@ def _untrusted(
     :ptype host_may_be_late: float
     :param cpu_may_be_crowded: the most either crowding may be
     :ptype cpu_may_be_crowded: float
+    :param disk_waits: the major page faults the process took over the window (:func:`_disk_waits`)
+    :ptype disk_waits: int
     :return: the reason, or None
     :rtype: str | None
     """
     if late > host_may_be_late:
         return f"the host's idle loop ran {late * 1000:.1f} ms late (past {host_may_be_late * 1000:.1f} ms)"
+    if disk_waits > _DISK_WAITS_ALLOWED:
+        return f"the process waited on the disk for {disk_waits} pages the host had dropped from memory"
     worst = max((taken for taken in crowding if taken is not None), default=None)
     if worst is not None and math.isinf(worst):
         return "no quiet reference for the path's threads: this host has no record and was busy at the session's start"

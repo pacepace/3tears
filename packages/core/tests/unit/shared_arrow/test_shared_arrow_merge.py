@@ -93,14 +93,13 @@ class TestAMergedGroup:
         new = _inodes(store, "v2")
         # every part outside the group, and the other table, is the base's own file
         kept = {name for name in old if not any(name == f"lsf@{part}.arrow" for part in group)}
-        kept.discard("lsf@.arrow")
         assert {name: new[name][0] for name in kept} == {name: old[name][0] for name in kept}
         assert not any(f"lsf@{part}.arrow" in new for part in group)
         written = {name: size for name, (inode, size) in new.items() if inode not in {i for i, _ in old.values()}}
         group_bytes = sum(old[f"lsf@{part}.arrow"][1] for part in group)
         merged = written.pop("lsf@r0000.1.arrow")
-        # the only other file written is the table's schema file, rewritten by any publish in parts (no rows)
-        assert set(written) == {"lsf@.arrow"} and written["lsf@.arrow"] < 4096
+        # nothing else is written: the table's schema file names the same columns, so it is the base's own too
+        assert written == {}
         assert 0.9 * group_bytes <= merged <= group_bytes, (merged, group_bytes)
         print(f"group {group_bytes} B in {len(group)} parts -> merged {merged} B; other files written {written}")
 

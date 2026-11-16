@@ -155,6 +155,47 @@ async def test_a_host_busy_in_every_attempt_could_not_measure_never_a_pass_or_a_
     assert len(taken) == inspect.signature(trusted).parameters["attempts"].default
 
 
+@pytest.fixture
+def disk(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[int]], None]:
+    """script the major page faults the process takes over each measured window (:func:`loop_lateness._disk_waits`):
+    each window reads the count before and after its measurement, so a window's faults are the step between them."""
+
+    def script(per_window: list[int]) -> None:
+        counts = iter(itertools.chain.from_iterable((0, faults) for faults in per_window))
+        monkeypatch.setattr(loop_lateness, "_disk_waits", lambda: next(counts))
+
+    return script
+
+
+async def test_a_window_the_process_waited_on_the_disk_in_is_retaken_and_a_clean_retake_judged(
+    disk: Callable[[list[int]], None],
+) -> None:
+    """Flips if a loop window over which the process took a major page fault is judged (the first save_arrow of a
+    process on a swapping host: 68 faults, 4.1 ms held against ~1 ms warm), or a retake that took none is not."""
+    disk([68, 0])
+    windows = iter([([(0.05, 0.0591)], _quiet_host(0.0, 0.2)), ([(0.05, 0.052)], _quiet_host(0.0, 0.2))])
+
+    async def measure() -> tuple[list[Tick], list[Tick]]:
+        return next(windows)
+
+    ticks, _ = await trusted(measure, _window, host_may_be_late=_BUDGET)
+    assert ticks == [(0.05, 0.052)]
+
+
+async def test_a_process_waiting_on_the_disk_in_every_window_could_not_measure(
+    disk: Callable[[list[int]], None],
+) -> None:
+    """Flips if a window with major page faults in every attempt passes or is judged red: it is the host's memory,
+    said as such, after a bounded number of attempts."""
+    disk([3] * MEASURE_ATTEMPTS)
+
+    async def measure() -> tuple[list[Tick], list[Tick]]:
+        return [(0.05, 0.052)], _quiet_host(0.0, 0.2)
+
+    with pytest.raises(CouldNotMeasure, match=r"^could not measure: the process waited on the disk for 3 pages"):
+        await trusted(measure, _window, host_may_be_late=_BUDGET)
+
+
 class _ScriptedHost:
     """a :class:`HostTicker` whose idle loop is as late as the script says, once over each block it ticks beside."""
 
@@ -229,6 +270,18 @@ def test_a_duration_on_crowded_cores_is_retaken(
     durations = iter([9.0, 0.25])
 
     assert quietly(lambda: next(durations), host_may_be_late=_BUDGET, threads=2, probe=probe) == 0.25
+
+
+def test_a_duration_the_process_waited_on_the_disk_for_is_retaken(
+    scripted: Callable[[list[float]], None], disk: Callable[[list[int]], None]
+) -> None:
+    """Flips if :func:`quietly` keeps a duration over which the process took major page faults (one side of a ratio
+    stretched by the host's memory, not the code), or does not keep the clean retake."""
+    scripted([0.0, 0.0])
+    disk([12, 0])
+    durations = iter([9.0, 0.25])
+
+    assert quietly(lambda: next(durations), host_may_be_late=_BUDGET) == 0.25
 
 
 @pytest.mark.loop_timing
