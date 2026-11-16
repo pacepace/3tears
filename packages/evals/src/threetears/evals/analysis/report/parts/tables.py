@@ -76,7 +76,7 @@ from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.kernel.numbers import UNPRICED
 
-__all__ = ["arms_key", "arms_table", "pass_rate_cell"]
+__all__ = ["arms_key", "arms_table", "pass_rate_cell", "unanswered_calls_said"]
 
 
 def _said(figure: Figure | None, forms: PageForms, filters: tuple[str, ...] = ()) -> str | None:
@@ -84,15 +84,44 @@ def _said(figure: Figure | None, forms: PageForms, filters: tuple[str, ...] = ()
     return format_figure(figure, filters, forms=forms) if figure is not None else None
 
 
-def _unanswered_marks(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> list[str]:
-    """How many of the arm's calls went unanswered, where any did: retried and lost together, else each kind a role
-    counted alone (the two together are not counted there). ``where`` is the keys' aspect prefix
-    (``aspects.<aspect>.``), empty for the lead aspect's."""
+def _unanswered_counts(arm: str, report_input: ReportInput, where: str) -> list[tuple[str, Figure]]:
+    """The arm's unanswered calls as counted: retried and lost together, else each kind a role counted alone (the two
+    together are not counted there), each with the words its count reads in; empty where no role counted them.
+    ``where`` is the keys' aspect prefix (``aspects.<aspect>.``), empty for the lead aspect's."""
     together = held_figure(f"{where}calls.unanswered.{arm}", report_input)
     if together is not None:
-        return [_calls(together, "unanswered", forms)] if together.value else []
+        return [("unanswered", together)]
     kinds = ((kind, held_figure(f"{where}calls.unanswered.{arm}.{kind}", report_input)) for kind in ("lost", "retried"))
-    return [_calls(held, f"{kind} unanswered", forms) for kind, held in kinds if held is not None and held.value]
+    return [(f"{kind} unanswered", held) for kind, held in kinds if held is not None]
+
+
+def _unanswered_marks(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> list[str]:
+    """How many of the arm's calls went unanswered, where any did (:func:`_unanswered_counts`)."""
+    return [_calls(held, what, forms) for what, held in _unanswered_counts(arm, report_input, where) if held.value]
+
+
+def unanswered_calls_said(arm: str, report_input: ReportInput, forms: PageForms, where: str = "") -> str | None:
+    """An arm's calls answered and unanswered, as a scoreboard's cell states them: the answered calls its cost counts
+    (``18 calls answered``), then its unanswered ones in the words the options table flags them in (``8 calls
+    unanswered``, else each kind a role counted alone), a zero included. Each count is its key's
+    (``calls.unanswered.<arm>`` and ``.calls``), never a sum of the roles' records, which hold no one number; a count
+    no role counted is left out, and an arm none counted is None (a dash).
+
+    :param arm: The arm, by id.
+    :ptype arm: str
+    :param report_input: The report input.
+    :ptype report_input: ReportInput
+    :param forms: The page's forms, which print each count.
+    :ptype forms: PageForms
+    :param where: The keys' aspect prefix (``aspects.<aspect>.``), empty for the input's own scoreboard.
+    :ptype where: str
+    :return: The counts in words, joined by ``; ``; None where no role counted any.
+    :rtype: str | None
+    """
+    answered = held_figure(f"{where}calls.unanswered.{arm}.calls", report_input)
+    said = [_calls(answered, "answered", forms)] if answered is not None else []
+    said += [_calls(held, what, forms) for what, held in _unanswered_counts(arm, report_input, where)]
+    return "; ".join(said) or None
 
 
 def _calls(figure: Figure, what: str, forms: PageForms) -> str:

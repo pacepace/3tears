@@ -679,6 +679,10 @@ EXTERNAL_CALL_UNPRICED = "neither a charge their provider reported nor a rate th
 #: Why an external call carries no dollars in a run that declared no external rate, whose total sums none.
 EXTERNAL_NOT_COUNTED = "the run declared no external rate, so its total sums no external dollars"
 
+#: What a role whose calls all went unanswered spent: nothing, over no answered call (RoleUsage.answers_nothing), so it
+#: neither prices nor unprices its line and the run's total (owner, 2026-10-27).
+_NO_ANSWERED_CALL = "no spend, over no answered call"
+
 #: Why a call of a role this build does not know carries no dollars: a newer build recorded the role, and only it
 #: knows how the role is priced.
 UNKNOWN_ROLE_UNPRICED = "the build that recorded this role knows how it is priced, and this one does not"
@@ -729,8 +733,9 @@ class RoleSpend(BaseModel):
 
     @property
     def unpriced_because(self) -> str | None:
-        """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced."""
-        if not self.unpriced_calls and self.cost_usd is not None:
+        """Why its unpriced calls carry no dollars, as true for its run; ``None`` when every call was priced, and when
+        it answered no call (:func:`_answered_nothing`), which left nothing to price."""
+        if _answered_nothing(self) or (not self.unpriced_calls and self.cost_usd is not None):
             return None
         if not self.known:
             return UNKNOWN_ROLE_UNPRICED
@@ -746,7 +751,10 @@ class RoleSpend(BaseModel):
         return f"{self.calls} call(s) and {rows}" if self.calls else rows
 
     def money_text(self) -> str:
-        """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why."""
+        """Its dollars over its calls: the priced calls' cost (or :data:`UNPRICED`), and how many are unpriced and why;
+        no spend where it answered no call (:func:`_answered_nothing`)."""
+        if _answered_nothing(self):
+            return _NO_ANSWERED_CALL
         money = UNPRICED if self.cost_usd is None else PageForms.off_page().money_total(self.cost_usd).text
         text = f"{money} over {self.calls_text()}"
         if (because := self.unpriced_because) is None:
@@ -766,6 +774,12 @@ class RoleSpend(BaseModel):
             f"{units.units} {units.unit}" + (f" ({units.provider})" if units.provider else "") for units in self.units
         )
         return f"external spend: {metered or 'no units counted'}, {self.money_text()}{outside}"
+
+
+def _answered_nothing(spend: RoleSpend) -> bool:
+    """Whether a role's rows count no answered call, no uncounted row and no dollar: every call it sent went unanswered
+    (``RoleUsage.answers_nothing``), so it spent nothing, never an unpriced amount."""
+    return not spend.calls and not spend.uncounted_rows and spend.cost_usd is None
 
 
 def _shown_value(value: Any) -> str:
@@ -1228,7 +1242,8 @@ class EvalSummary(BaseModel):
     @property
     def total_spend_text(self) -> str | None:
         """The total-spend line, without indentation, or None."""
-        if not self.spend:
+        if all(_answered_nothing(spend) for spend in self.spend):
+            # No role line states a call answered: nothing was spent, as with no line at all, so no total is stated.
             return None
         forms = PageForms.off_page()
         if self.total_cost_usd is not None:
@@ -1820,10 +1835,12 @@ class _SpendTally:
 
     def add(self, result: EvalResult) -> None:
         for row in result.usage:
+            # Every row names its role, so the pass below reads the roles this one tallied: a role whose rows hold only
+            # unanswered calls has a line stating no answered call (#1238), never a lookup of a role never tallied.
+            role = self._roles.setdefault(row.role, _RoleTally())
             if row.answers_nothing:
                 # Only unanswered calls: no spend and no answered call to count (RoleUsage.answers_nothing).
                 continue
-            role = self._roles.setdefault(row.role, _RoleTally())
             role.calls += row.call_count or 0
             if row.call_count is None:
                 role.uncounted_rows += 1

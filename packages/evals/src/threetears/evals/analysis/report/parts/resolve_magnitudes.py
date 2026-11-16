@@ -234,8 +234,13 @@ def _scoreboard_bars(context: ChartContext) -> tuple[list[_Bar], Quantity, set[s
         for arm in context.arm_order(rows):
             held = getattr(rows[arm], key)
             value = sum(held.values()) if key in _BY_CAUSE else held
-            if value is not None:
-                picked.append((key, arm, float(value)))
+            if value is None:
+                continue
+            if not isinstance(value, int | float):
+                # A figure no bar is: the calls answered and unanswered by role (#1250), whose records hold no one
+                # number, never summed into one; refused, so the page draws its table, which states them in words.
+                raise context.refuse(f"{key!r} holds no one number per arm, which a bar draws")
+            picked.append((key, arm, float(value)))
     # One unit: the one-unit rule (charting.unit_refusal, which the bars resolver reads first) has refused figures in
     # more than one.
     unit = figure_unit(context.report_input, keys[0], source="scoreboard")

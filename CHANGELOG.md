@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a scoreboard block and a run's summary read an arm's or a role's unanswered calls without raising
+
+**Fixed:** the scoreboard block (`block_render`, a written page's evidence) summed each figure's values, and an arm
+whose calls went unanswered holds them by role (`ScoreboardRow.unanswered`), so the block raised
+`TypeError: int + Unanswered` and ended a production report (#1250). Its cell now states the calls answered and
+unanswered in the options table's words (`18 calls answered; 8 calls unanswered`; `2 calls lost unanswered` where a
+role counted one kind), each count its `calls.unanswered.<arm>` key's, a zero included, and never a sum. A bars block
+over that figure is refused, so a page draws its table. `run_get` raised `KeyError` on a run where a result's rows for
+a role held only unanswered calls and no earlier result had answered for it (#1238); a role whose calls all went
+unanswered now has a spend line stating `no spend, over no answered call`, never unpriced, and a run none of whose
+calls were answered states no total, as a run with no spend does.
+
+**For hosts:** nothing to do.
+
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 
 **Fixed:** under a plan of looks (`AspectDesign.planned_looks`), the aspect page's contrast table head, the change

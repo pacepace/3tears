@@ -17,6 +17,9 @@ never answered. They stand beside the row's spend and never inside it. Contracts
   and by aspect; an arm no role counted for is no key; a share over two roles is computed, and marked derived;
 - **beside the cost**: the analyst's overview cites them on the arm's row, and the options table flags them on its
   cost cell ("1 call unanswered", "3 calls unanswered"), only where any went unanswered;
+- **the scoreboard block** (#1250: it summed the roles' records, ``int + Unanswered``, and ended a production report):
+  its cell states the calls answered and unanswered in the options table's words, never a sum, a zero included; a bar
+  of them is refused, so a page draws the table;
 - **not counted is never zero**: where a role counted only one kind, the bare count and the share are refused as not
   counted, and the kind it counted reads alone.
 """
@@ -33,10 +36,12 @@ from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.run_facts_support import ASPECT, CASES, aspect_bundle, campaign_over, result_of, run_of
+from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.facts import campaign_overview
 from threetears.evals.analysis.errors import UnresolvableReference, UnstatedFigure
 from threetears.evals.analysis.report.figure_keys import format_figure, resolve
-from threetears.evals.analysis.report.block_spec import block_look
+from threetears.evals.analysis.report.block_spec import block_look, complete_chart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.tables import arms_table
 from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input import ReportInput, Unanswered
@@ -45,6 +50,7 @@ from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel import RoleUsageLedger
+from threetears.evals.kernel.chart_query import ChartQuery, PlannedChart
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.run.runner import RunnerOptions, execute_run
 from threetears.evals.schema.models import EvalResult, EvalRun, JudgedArtifact, RoleUsage
@@ -490,3 +496,72 @@ def test_the_bare_count_and_the_share_are_not_counted_where_a_role_counted_one_k
         f"calls.unanswered.{FAST}.lost",
         f"calls.unanswered.{FAST}.uncounted",
     ]
+
+
+# --- the scoreboard block (#1250) -----------------------------------------------------------------------------------
+
+#: A scoreboard query naming nothing: every figure the rows hold, the unanswered calls among them.
+_SCOREBOARD_QUERY: dict[str, Any] = {
+    "source": "scoreboard",
+    "aspect": "",
+    "measures": [],
+    "arms": [],
+    "strata": [],
+    "limit": 0,
+    "transform": "none",
+    "small_multiples_by": "none",
+}
+
+
+def _unanswered_cells(held: ReportInput, **query: Any) -> dict[str, str]:
+    """Each arm's Unanswered cell in the scoreboard block, by arm label, drawn as the analyst's and the writer's
+    ``block_render`` draws it (through ``resolve_chart``)."""
+    drawn = block_render(held, block_kind="table", query=ChartQuery.model_validate({**_SCOREBOARD_QUERY, **query}))
+    return {str(row.cells[0]): str(row.cells[2]) for row in drawn.rows if row.cells[1] == "Unanswered"}
+
+
+@pytest.mark.parametrize("aspect", ["", ASPECT], ids=["input", "aspect"])
+def test_the_scoreboard_block_states_the_calls_answered_and_unanswered_and_never_sums_them(aspect: str) -> None:
+    """Today's code summed the arm's records by role (``int + Unanswered``) and raised, which ended a report."""
+    cells = _unanswered_cells(_counted_input(), aspect=aspect)
+    # Each trial counted three answered calls and retried one; two of them lost one more.
+    assert list(cells.values()) == [f"{3 * CASES} calls answered; {CASES + 2} calls unanswered"]
+    (arm,) = cells
+    assert arm.endswith(FAST), "an arm no role counted for states none"
+
+
+@pytest.mark.parametrize(
+    ("unanswered", "said"),
+    [
+        ({"candidate": Unanswered(retried=0, lost=0, calls=300, share=0.0)}, "300 calls answered; 0 calls unanswered"),
+        ({"candidate": Unanswered(retried=None, lost=2, calls=298)}, "298 calls answered; 2 calls lost unanswered"),
+        ({"candidate": Unanswered(retried=1, lost=0)}, "1 call unanswered"),
+        (
+            {
+                "candidate": Unanswered(retried=1, lost=1, calls=10, share=2 / 12),
+                "inner_agent": Unanswered(retried=0, lost=2, calls=20, share=2 / 22),
+            },
+            "30 calls answered; 4 calls unanswered",
+        ),
+    ],
+    ids=["none-unanswered", "one-kind-counted", "answered-uncounted", "two-roles"],
+)
+def test_the_scoreboard_cell_reads_each_count_its_key_reads(unanswered: dict[str, Unanswered], said: str) -> None:
+    held = _counted_input()
+    counted = held.scoreboard[FAST].model_copy(update={"unanswered": unanswered})
+    cells = _unanswered_cells(held.model_copy(update={"scoreboard": {**held.scoreboard, FAST: counted}}))
+    assert list(cells.values()) == [said]
+
+
+def test_a_bar_of_the_calls_answered_and_unanswered_is_refused_so_the_page_draws_its_table() -> None:
+    """A page draws a block it completed (``doc_page.build``) before its checks name the measure, and a refusal is
+    what it catches to draw the table instead: today's code raised ``TypeError`` there."""
+    held = _counted_input()
+    query = {**_SCOREBOARD_QUERY, "measures": ["unanswered"]}
+    planned = PlannedChart.model_validate(
+        {"kind": "bars", "title": "", "query": query, "reference": [], "emphasis": ""}
+    )
+    spec, faults = complete_chart(planned, held, "block", forms=PageForms.of(held))
+    assert not faults
+    with pytest.raises(UnresolvableReference, match="'unanswered' holds no one number per arm"):
+        resolve_chart(spec, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held))
