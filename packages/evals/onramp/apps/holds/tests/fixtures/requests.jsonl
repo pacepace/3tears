@@ -1,0 +1,8 @@
+{"request": {"action": "list", "patron": "p-104", "today": "2026-03-10"}, "expired": ["h-02", "h-03"]}
+{"request": {"action": "list", "patron": "p-221", "today": "2026-03-10"}, "expired": ["h-04"]}
+{"request": {"action": "list", "patron": "p-317", "today": "2026-03-10"}, "expired": ["h-06", "h-07"]}
+{"request": {"action": "list", "patron": "p-402", "today": "2026-03-10"}, "expired": []}
+{"request": {"action": "list", "patron": "p-555", "today": "2026-03-10"}, "expired": ["h-10"]}
+{"request": {"action": "list", "patron": "p-104", "today": "2026-03-01"}, "expired": ["h-03"]}
+{"request": {"action": "list", "patron": "p-317", "today": "2026-03-03"}, "expired": ["h-06"]}
+{"request": {"action": "list", "patron": "p-402", "today": "2026-04-05"}, "expired": ["h-08", "h-09"]}

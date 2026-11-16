@@ -69,6 +69,7 @@ from threetears.evals.kernel.host import Bar, EvalHost, HostProfile, PassThresho
 from threetears.evals.kernel.remedies import FIND_CAMPAIGN
 from threetears.evals.schema import DOC_TYPE_FACTS
 from threetears.evals.schema.models import is_builtin_judge_config_id, judge_config_of
+from threetears.evals.schema.blind_read import BlindRead
 from threetears.evals.schema.hashing import canonical_digest, canonical_json
 from threetears.evals.kernel.analyst_gap import EvalAnalystGap
 from threetears.evals.kernel.campaign import (
@@ -114,6 +115,7 @@ _CHUNK: Final = 16
 _BEYOND_ID: Final[Mapping[str, tuple[str, ...]]] = {
     str(model.model_fields["doc_type"].default): tuple(field for field in model.model_fields if field != "id")
     for model in (
+        BlindRead,
         CalibrationRating,
         CaseSet,
         EvalAnalysis,
@@ -600,6 +602,8 @@ def _gather(closure: _Closure, campaign: Mapping[str, Any], scope_id: str) -> No
         closure.where("eval_second_judge_pass", run_id=run_id)
         closure.where("eval_judge_temperature_check", run_id=run_id)
         closure.where("eval_out_of_run_spend", run_id=run_id)
+    # The blind reads drawn over the campaign: what people answered of its outputs, and what the reads found.
+    closure.where("blind_read", campaign_id=campaign["id"])
 
     # Definitions the runs ran: templates, cases, case sets, judge configs and their rubric dims, cassettes.
     case_sets: list[dict[str, Any]] = []

@@ -22,7 +22,9 @@ What a product supplies, in the order it is written below:
 4. **Its profile**, assembling the three, plus how one observation resolves its levers.
 5. **Its candidate kind** — ``prepare`` seeds the world through the engine's seed walk, ``invoke``
    runs the candidate and reports its measures.
-6. **Its host** — the profile, a store, and the three services with no safe default.
+6. **Its host** — the profile, a store, and the three services with no safe default; and, since it shows blind reads
+   to its dispatchers, who it vouches for relaying a dispatcher's word (``courier_attests``) and its page for a
+   sheet (``courier_sheet_page``).
 
 Everything else — the trial loop, the stored documents, the bundle — is the engine's.
 
@@ -39,7 +41,7 @@ packages.evals.tests.fixtures.courierhost:courier_launch_host``; with this file 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -53,6 +55,8 @@ from threetears.evals.kernel import (
     CellSpanWindow,
     EvalCampaign,
     EvalStorage,
+    FIND_TEMPLATE,
+    NotFoundError,
     ValidationFailedError,
     MetricDescriptor,
     WorldSession,
@@ -93,6 +97,7 @@ from threetears.evals.run import (
     execute_run,
     launch_run,
     run_blocking,
+    update_template,
 )
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -321,8 +326,45 @@ class RoutePlannerKind:
 # --- 6. host, and one drive ------------------------------------------------------------------------
 
 
+#: The one caller the courier vouches for relaying a dispatcher's own word: its dispatch desk's page.
+COURIER_DISPATCH_DESK = "courier:dispatch-desk"
+
+
+def courier_attests(*, scope_id: str, caller: str, person: str) -> str | None:
+    """Whether the courier vouches that ``caller`` relays ``person``'s blind-read answer or campaign call.
+
+    Only its dispatch desk does, only in its depot's scope, and the courier names a dispatcher by their lower-cased
+    login, whatever spelling the desk sent: the name the engine records the answer under (``attests_person``).
+    """
+    if scope_id != COURIER_SCOPE or caller != COURIER_DISPATCH_DESK or not person.strip():
+        return None
+    return person.strip().lower()
+
+
+def courier_sheet_page(sheet: Mapping[str, Any]) -> str:
+    """The dispatch desk's page for a blind read: the sheet as text, from the item a dispatcher reads next.
+
+    What a host writes when it shows a blind read on its own page. It reads the ``blind_read_sheet`` action's result as
+    the page receives it (its JSON), shows nothing but what that carries, and never shows again an item a dispatcher
+    already answered; the items keep the drawn order and each pair its drawn slots.
+    """
+    answered = set(sheet.get("answered") or [])
+    lines = [str(sheet["name"]), str(sheet["instructions"]), ""]
+    for criterion in sheet["criteria"]:
+        answers = " / ".join(str(level["value"]) for level in criterion["levels"])
+        lines.append(f"{criterion['dim']}: {criterion['question']} ({answers})")
+    for item in sheet["items"]:
+        if item["item"] in answered:
+            continue
+        lines += ["", f"[{item['item']}] {item['case_material']}"]
+        lines += [f"  {output['slot']}: {output['text']}" for output in item["outputs"]]
+        if item["ask"].get("preference"):
+            lines.append("  Which is better: A, B, or tie?")
+    return "\n".join(lines)
+
+
 def courier_host() -> EvalHost:
-    """The courier as the engine receives it."""
+    """The courier as the engine receives it: it vouches for its dispatch desk relaying a dispatcher's word."""
     return EvalHost(
         profile=courier_profile(),
         storage=EvalStorage(InMemoryDocumentStore()),
@@ -330,6 +372,7 @@ def courier_host() -> EvalHost:
         trace_sink=None,
         blocking_executor=None,
         cell_timeout=default_cell_timeout,
+        attests_person=courier_attests,
     )
 
 
@@ -542,7 +585,54 @@ def courier_launch_host() -> LaunchHost:
     return launch_host
 
 
+# --- 8. an operator's own edits to a stored scenario ------------------------------------------------
+
+
+def rename_stratum(host: EvalHost, template_id: str, stratum: str, name: str) -> EvalTemplate:
+    """Give a stratum of a stored scenario the operator's own name, over the one it already has.
+
+    The seed and a definitions reset only fill a name a template lacks, so ``update_template`` is the one door to a
+    rename. A name is presentation only: the template keeps its id, its revision and its ``updated_at``, and every
+    run of it reads on, named anew.
+
+    :param host: The courier host, with its template checks (``courier_launch_host().eval_host``).
+    :ptype host: EvalHost
+    :param template_id: The stored scenario.
+    :ptype template_id: str
+    :param stratum: The stratum id its cases declare.
+    :ptype stratum: str
+    :param name: What a page prints for it from now on.
+    :ptype name: str
+    :return: The scenario as stored after the rename.
+    :rtype: EvalTemplate
+    :raises NotFoundError: No such scenario in the courier's scope.
+    """
+    stored = host.storage.load_template(template_id, COURIER_SCOPE)
+    if stored is None:
+        raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
+    # update_template is the only door to renaming a name a stored template already holds.
+    return update_template(host, template_id, COURIER_SCOPE, {"stratum_names": {**stored.stratum_names, stratum: name}})
+
+
+def retire_scenario(host: EvalHost, template_id: str) -> EvalTemplate:
+    """Retire a stored scenario: it leaves the active template listing, and every run of it still reads.
+
+    :param host: The courier host, with its template checks (``courier_launch_host().eval_host``).
+    :ptype host: EvalHost
+    :param template_id: The stored scenario.
+    :ptype template_id: str
+    :return: The scenario as stored, archived.
+    :rtype: EvalTemplate
+    :raises NotFoundError: No such scenario in the courier's scope.
+    """
+    # update_template is the only door to archiving a template outright; a reset archives only what it supersedes.
+    # It stamps the template's updated_at, so today no earlier run of it can be re-judged, its run summary drops the
+    # template's intent and its judges' criteria read as unknown; rename_stratum leaves updated_at alone.
+    return update_template(host, template_id, COURIER_SCOPE, {"archived": True})
+
+
 __all__ = [
+    "COURIER_DISPATCH_DESK",
     "COURIER_ID",
     "COURIER_KIND",
     "COURIER_MEASURES",
@@ -554,12 +644,16 @@ __all__ = [
     "RoutePlannerKind",
     "COURIER_SUBJECT",
     "COURIER_TEMPLATE_ID",
+    "courier_attests",
     "courier_cases",
     "courier_host",
     "courier_launch_host",
     "courier_run",
+    "courier_sheet_page",
     "courier_template",
     "courier_profile",
     "courier_world",
+    "rename_stratum",
+    "retire_scenario",
     "run_courier_campaign",
 ]

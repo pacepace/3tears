@@ -349,9 +349,9 @@ PINNED: dict[str, str] = {
     # The one entry that moves with the durable version: ``00107a5b7`` was at 16.2, aspect and check names are 16.3 and
     # arm names 16.4, stratum names 16.5, plan reporter cases 16.6, the analyst's gap notes 16.7, a design's measure
     # order 16.8, a carried case's source 16.9, a lever's stored reader name 17.0, a rating's evidence inputs 17.1, the
-    # first screen's declaration and call fields 17.2. It is no part of what a run, cell, pool, pairing, analysis or
-    # reporter case keys on.
-    "durable version": "17.2",
+    # first screen's declaration and call fields 17.2, a campaign's looks rule and an aspect's membership 17.3, the
+    # blind read 17.4. It is no part of what a run, cell, pool, pairing, analysis or reporter case keys on.
+    "durable version": "17.4",
     "measured_template_digest": "16e80e0cbd36ae4d39ca180c5f08bcb9d165afaab0e7e014ff42464f11e4f3df",
     "readings": "29f0e8ce68005f27cfc8ff7c76ef3623a174125af4a46b8e587bb7af7d88ebc9",
     "run-0-candidate case_set_fingerprint": "89df90840e5dc430494c9d36ab9ae0dff05c199d54ddf7027f3f339c44bcfe56",

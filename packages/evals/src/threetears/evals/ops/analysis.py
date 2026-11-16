@@ -123,6 +123,8 @@ from threetears.evals.ops.jobs import JobHandle, JobsStarted, analysis_job_id, g
 from threetears.evals.ops.report_writer.loop import TurnModel, WriterLimits
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
 from threetears.evals.ops.report_writer.write import ReportNotStored, ReportWritten
+from threetears.evals.ops.runs import attested_person
+from threetears.evals.schema.reading_states import Maker
 from threetears.evals.run.curation import delete_analysis, delete_insight, set_analysis_archived, set_campaign_archived
 from threetears.evals.schema.completion import BoundCompletionClient
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
@@ -170,6 +172,12 @@ class CampaignLineCall(EvalBaseModel):
 
     arm: str = Field(description="The label of the arm the call names.")
     reason: str = Field(description="Why, in the words it was recorded with.")
+    made_by: Maker | None = Field(
+        default=None,
+        description="A person or a model; None where the call recorded neither, which is never read as a person's.",
+    )
+    model: str | None = Field(default=None, description="The model that made a model's call, by id.")
+    on_behalf_of: str | None = Field(default=None, description="Who a model made its call for, where it said.")
 
 
 class CampaignLineReport(EvalBaseModel):
@@ -708,7 +716,15 @@ def _campaign_line(campaign: EvalCampaign) -> CampaignLine:
         question_short=_whole_question(campaign.question),
         arms=[CampaignLineArm(label=arm.label, short_name=arm.short_name, role=arm.role) for arm in campaign.arms],
         call=(
-            CampaignLineCall(arm=campaign.call.arm, reason=campaign.call.reason) if campaign.call is not None else None
+            CampaignLineCall(
+                arm=campaign.call.arm,
+                reason=campaign.call.reason,
+                made_by=campaign.call.made_by,
+                model=campaign.call.model,
+                on_behalf_of=campaign.call.on_behalf_of,
+            )
+            if campaign.call is not None
+            else None
         ),
     )
 
@@ -1310,8 +1326,19 @@ def campaign_record(
     floors_overridden: list[str] | None = None,
     bars_overridden: list[OverriddenBar] | None = None,
     analysis_id: str | None = None,
+    made_by: Maker | None = None,
+    person: str | None = None,
+    model: str | None = None,
+    on_behalf_of: str | None = None,
 ) -> CampaignCallLine:
-    """Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
+    """Record a call on a campaign — the arm decided, why, who made it, and each broken floor and missed bar it
+    overrides.
+
+    **Who made it.** A person's call (``made_by="person"``) is recorded only when the host attests the caller for
+    that person (``EvalHost.attests_person``, the check a person's blind-read answer and rating pass), and is stored
+    under the host's name for them; without the host's word it is refused (403) and nothing is written. A model's call
+    (``made_by="model"``) names its model, and whom it acted for where it did, and needs no attestation. A call that
+    says neither is stored as before and reads as not recorded, never as a person's.
 
     Read against code's readings of the evidence as it stands, never a memo's words
     (:func:`~threetears.evals.analysis.record_campaign_call`): an arm with a broken floor or a missed bar is recorded
@@ -1336,12 +1363,42 @@ def campaign_record(
     :ptype bars_overridden: list[OverriddenBar] | None
     :param analysis_id: The analysis whose memo the call was made over; None for code's readings alone.
     :ptype analysis_id: str | None
+    :param made_by: A person or a model; None records neither.
+    :ptype made_by: Maker | None
+    :param person: Whose call it is, a person's call only, in the caller's spelling.
+    :ptype person: str | None
+    :param model: The model that made a model's call, by id.
+    :ptype model: str | None
+    :param on_behalf_of: Who a model made its call for.
+    :ptype on_behalf_of: str | None
     :return: The call as stored.
     :rtype: CampaignCallLine
+    :raises EvalServiceError: Status 403: a person's call the host does not attest the caller for; nothing is
+        written.
     :raises NotFoundError: No campaign with that id in the scope, or no such analysis.
     :raises ValidationFailedError: See :func:`~threetears.evals.analysis.record_campaign_call`.
     :raises ConflictError: The campaign changed while its readings were read.
     """
+    if (made_by == "person") != (person is not None):
+        raise ValidationFailedError(
+            "a person's call names the person, and only a person's call names one",
+            remedy="record a person's call with person=<who decided>, or a model's with model=<its id>",
+        )
+    if made_by == "person":
+        assert person is not None
+        called_by = attested_person(
+            host,
+            scope_id=scope_id,
+            collected_by=called_by,
+            person=person,
+            operation="campaign_record",
+            what="campaign call",
+            unchecked_remedy=(
+                "record the call as a model's (made_by=model, model=<its id>, on_behalf_of=<who it acted for>); a "
+                "host that relays people's calls is built with attests_person=<its check>"
+            ),
+            refused_remedy="record the call as a caller the host attests for that person, or as a model's",
+        )
     campaign = record_campaign_call(
         host,
         campaign_id,
@@ -1352,6 +1409,9 @@ def campaign_record(
         floors_overridden=floors_overridden or (),
         bars_overridden=bars_overridden or (),
         analysis_id=analysis_id,
+        made_by=made_by,
+        model=model,
+        on_behalf_of=on_behalf_of,
     )
     assert campaign.call is not None  # just recorded and re-read
     return CampaignCallLine(campaign_id=campaign.id, call=campaign.call)

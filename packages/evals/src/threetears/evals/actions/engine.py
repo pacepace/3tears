@@ -24,6 +24,7 @@ from pydantic.fields import FieldInfo
 from threetears.evals.kernel.remedies import FIND_JUDGE_CONFIG, SCHEMA_REMEDY
 from threetears.evals.actions import render
 from threetears.evals.actions.analyst import analyst_actions
+from threetears.evals.actions.blind_reads import blind_read_actions
 from threetears.evals.actions.catalogue import Action, ActionCatalogue, Caller, ConformanceStage
 from threetears.evals.actions.params import AnalysisId, CampaignId, Limit, Offset
 from threetears.evals.actions.report_writing import campaign_report_writer
@@ -590,6 +591,22 @@ class CampaignRecordParams(EvalBaseModel):
     # meaning across the tool: described as every other action's analysis_id is.
     analysis_id: Annotated[
         str | None, Field(min_length=1, description="A stored analysis's id, as analyses_list names it.")
+    ] = None
+    made_by: Annotated[
+        Literal["person", "model"] | None,
+        Field(
+            description=(
+                "Who made the call: a person (name them in person; the host must vouch that you relay their call) or a "
+                "model (name it in call_model). Omitted records neither, and the call never reads as a person's."
+            )
+        ),
+    ] = None
+    person: Annotated[str | None, Field(min_length=1, description=PERSON_DESCRIPTION)] = None
+    call_model: Annotated[
+        str | None, Field(min_length=1, description="The model that made the call, by id; a model's call only.")
+    ] = None
+    on_behalf_of: Annotated[
+        str | None, Field(min_length=1, description="Who the model made the call for; a model's call only.")
     ] = None
 
 
@@ -1340,6 +1357,10 @@ async def _campaign_record(host: OpsHost, caller: Caller, params: CampaignRecord
             floors_overridden=params.floors_overridden,
             bars_overridden=bars,
             analysis_id=params.analysis_id,
+            made_by=params.made_by,
+            person=params.person,
+            model=params.call_model,
+            on_behalf_of=params.on_behalf_of,
         ),
         eval_host,
         params.campaign_id,
@@ -2499,14 +2520,21 @@ def engine_actions() -> tuple[Action, ...]:
         ),
         Action(
             name="campaign_record",
-            summary="Record a person's call on a campaign: the arm decided, why, and each warning it overrides.",
+            summary="Record a call on a campaign: the arm decided, why, who made it, and each warning it overrides.",
             workflow=ANALYSE,
             permission="write",
             params=CampaignRecordParams,
             result=CampaignCallLine,
             handler=_campaign_record,
             render=render.render_model,
-            example={"campaign_id": campaign_id, "arm": "v2", "call_reason": "Tone matters more this quarter."},
+            example={
+                "campaign_id": campaign_id,
+                "arm": "v2",
+                "call_reason": "Tone matters more this quarter.",
+                "made_by": "model",
+                "call_model": "anthropic/claude-opus",
+                "on_behalf_of": "ana@example.com",
+            },
             detail=(
                 "Code reports, the writer recommends, a person decides: this records the decision, beside code's "
                 "readings, never in place of them. The arm is matched by its variant key, which is what is recorded. "
@@ -2518,7 +2546,10 @@ def engine_actions() -> tuple[Action, ...]:
                 "so it is refused. In a choice, an arm shown behind another is never refused: the page warns of each "
                 "such pair beside the call. A new call replaces the earlier one; the campaign's page states the call, "
                 "who made it and when, every warning it overrides, and how many runs joined since. call_reason is "
-                "recorded as the call's reason."
+                "recorded as the call's reason. made_by says whether a person or a model decided: a person's call "
+                "names them in person and is recorded only when the host vouches that you relay their call (refused, "
+                "403, otherwise, and nothing is written); a model's names call_model, and on_behalf_of where it "
+                "decided for someone. A call that says neither is never read as a person's."
             ),
         ),
         Action(
@@ -3344,6 +3375,7 @@ def engine_actions() -> tuple[Action, ...]:
                 "written. An agent's own opinion goes through result_rate."
             ),
         ),
+        *blind_read_actions(CURATE),
         Action(
             name="analysis_archive",
             summary="Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed.",

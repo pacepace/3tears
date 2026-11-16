@@ -130,7 +130,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `providers.describe_failure`: What the engine may know of a call through the client that raised: the host's `failure_describer`.
 - `providers.Model`: the same as `Model`.
 
-## Functions a host's code calls: 75
+## Functions a host's code calls: 76
 
 Each is `invoked`: your code imports it and calls it. None is an action; the actions follow.
 
@@ -138,9 +138,10 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 
 - `surface_tier`: A public name's stability tier in the installed build, by `root.name`.
 
-### `schema` (5)
+### `schema` (6)
 
 - `schema.bind_cell_identity`: Make `identity` the answer of `current_cell_identity` for the extent of the block.
+- `schema.check_after`: Return `DocumentStore.by_doc_type`'s `after` checked, as a pair — the calls every implementation refuses.
 - `schema.current_cell_identity`: Return the cell the calling task is working for, or `None` outside any cell.
 - `schema.field_in_values`: Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
 - `schema.label_key_of`: The label key of one judgement: `evidence` read on `dim`.
@@ -242,7 +243,7 @@ Each is `action`: the function an action of the catalogue (below) runs, under th
 operator invokes the action by name; a host's code may also call the function.
 
 - `ops.campaign_create`: Create a campaign over runs already in the scope, declared as it is created when the definition says so.
-- `ops.campaign_record`: Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
+- `ops.campaign_record`: Record a call on a campaign — the arm decided, why, who made it, and each broken floor and missed bar it overrides.
 - `ops.campaigns_list`: One page of the scope's campaigns, newest first, and the next page's cursor.
 - `ops.job_cancel`: Ask a running job to stop — from any process — then report where it stands.
 - `ops.job_poll`: Where a job stands, read from the record its work writes — the same answer in every process.
@@ -255,7 +256,7 @@ operator invokes the action by name; a host's code may also call the function.
 - `ops.scope_history`: One measure over time for each contestant in the scope, with its regressions flagged.
 - `ops.templates_list`: The scope's templates, each with its revision: a reset template's older revisions are archived, so the active listing shows each name once, at the revision a launch by name runs.
 
-## The action catalogue: 87 actions an agent calls
+## The action catalogue: 94 actions an agent calls
 
 `actions.eval_catalogue()` holds them; `transports.fastmcp.mount_fastmcp` serves them over MCP. An agent or
 an operator invokes each by its name, with no Python, and the action does the work.
@@ -289,7 +290,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `campaign_update`: Rename or redescribe a campaign, or declare, amend or withdraw its declaration before its first run.
 - `campaign_runs_add`: Put runs in a campaign's aspect — runs launched after it was created, or measured on their own first.
 - `campaign_runs_remove`: Take runs out of a campaign; the runs and their results stay, in any other campaign too.
-- `campaign_record`: Record a person's call on a campaign: the arm decided, why, and each warning it overrides.
+- `campaign_record`: Record a call on a campaign: the arm decided, why, who made it, and each warning it overrides.
 - `analysis_generate`: Write a campaign's report with the analyst and the report editor (paid model turns), as a job to poll.
 - `analysis_estimate`: State the report budget a campaign's analysis generation would be held to, without spending.
 - `judge_second`: Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement.
@@ -323,7 +324,7 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `scope_export`: Export the scope's observations as flat rows, CSV or JSON, for analysis elsewhere.
 - `campaign_export`: Export a campaign's stored documents, its host's profile and a manifest: what a writer case is minted from.
 
-### Curate (14)
+### Curate (21)
 
 - `cases_rename`: Rename a stored case: the name the report calls it by, and nothing else about it.
 - `run_archive`: Archive a run (or restore it): out of every cohort, nothing destroyed.
@@ -334,6 +335,13 @@ an operator invokes each by its name, with no Python, and the action does the wo
 - `runs_attest`: State one coordinate of stored runs that they did not record: their measure definitions or served model.
 - `result_rate`: Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled.
 - `result_rate_person`: Record a person's rating of one judged dimension, relayed by a caller the host attests for them.
+- `blind_read_create`: Draw a blind read: a campaign's judged outputs in a seeded random order, for people to answer.
+- `blind_read_sheet`: Read a blind read's sheet: the items in order, content and criteria only, for a rater to answer.
+- `blind_read_answer`: Record a person's answer to one item of a blind read, relayed by a caller the host attests.
+- `blind_read_review`: Have a blind read's declared reviewer model answer its sheet, priced and capped, as a job.
+- `blind_read_close`: Close a blind read: its answers become ratings, and what they say of the judge is read.
+- `blind_read_get`: Read one blind read: what was drawn, who has answered how far, and once closed what it found.
+- `blind_reads_list`: List the scope's blind reads, oldest first, or those drawn over one campaign.
 - `analysis_archive`: Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed.
 - `writer_case_archive`: Retire a writer case (or restore it): no launch runs it again, nothing destroyed.
 - `run_delete`: Destroy a run, its results and its campaign memberships.
@@ -777,10 +785,10 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | `typed` | 12 | a newcomer writes it in an eval file |
 | `bound` | 93 | a host implements it or hands it to the engine |
 | `action` | 17 | the function behind an action of the catalogue, which an agent or operator invokes by name |
-| `invoked` | 91 | a function a host's own code calls, to make the engine act or do one step its way |
+| `invoked` | 92 | a function a host's own code calls, to make the engine act or do one step its way |
 | `received` | 258 | a value someone is handed and reads |
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
-| all | 488 | |
+| all | 489 | |
 
 Of these, 22 await demotion and 4 need a shipped example
 (issue #1199), each listed in its register's section above.

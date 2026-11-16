@@ -652,7 +652,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
     from threetears.evals.quick.guardrails import GuardrailDirection
     from threetears.evals.run.judge_second import SecondJudgeAskedBy
     from threetears.evals.run.job_work import JobOutcome
-    from threetears.evals.schema import models
+    from threetears.evals.schema import blind_read, models, reading_states
     from threetears.evals.schema.completion import StopReason
     from threetears.evals.schema.judge_attribution import JudgeAttributionSource
     from threetears.evals.schema.out_of_run_spend import OutOfRunOutcome
@@ -696,6 +696,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "VariationAxis.generator": frozenset({"enum", "sample", "llm"}),
         "ConversationSpec.turn_scheduler": frozenset({"round_robin", "llm_decided"}),
         "BudgetStop.currency": frozenset({"cost_usd", "metered_calls"}),
+        "MembershipChange.change": frozenset({"joined", "left"}),
         "RaterKind": values(models.RaterKind),
         "Maker": values(Maker),
         "OutOfRunOutcome": values(OutOfRunOutcome),
@@ -704,6 +705,16 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "SampleKind": values(SampleKind),
         "rate_drop": frozenset({"rate_drop"}),
         "cost_lower": frozenset({"cost_lower"}),
+        "BlindSlot": values(blind_read.BlindSlot),
+        "BlindAsk": values(blind_read.BlindAsk),
+        "BlindPreferenceAnswer": values(blind_read.BlindPreferenceAnswer),
+        "BlindPreferenceTest": values(blind_read.BlindPreferenceTest),
+        "BlindPreference.verdict": frozenset({"improved", "regressed", "not_separated"}),
+        "ReadingState": values(reading_states.ReadingState),
+        "SetAsideReason": values(reading_states.SetAsideReason),
+        "WithheldReason": values(reading_states.WithheldReason),
+        "NotAvailableReason": values(reading_states.NotAvailableReason),
+        "Coordinate": values(reading_states.Coordinate),
     }
 
 

@@ -1,0 +1,342 @@
+{
+  "answers": [
+    {
+      "answered_at": "2026-07-20T00:00:00.000001+00:00",
+      "collected_by": "agent:test",
+      "item": "0b5b9abb32a0",
+      "made_by": "person",
+      "prefer": "A",
+      "rater": "ana@example.com",
+      "reviewer_effort": null,
+      "reviewer_served_model": null,
+      "skipped": false,
+      "verdicts": [
+        {
+          "dim": "conversation.tone",
+          "reason": "",
+          "score": 4,
+          "slot": "A"
+        }
+      ]
+    }
+  ],
+  "arms": [
+    {
+      "key": "k-control",
+      "role": "control",
+      "run_ids": [
+        "run-a"
+      ]
+    },
+    {
+      "key": "k-candidate",
+      "role": "candidate",
+      "run_ids": [
+        "run-b"
+      ]
+    }
+  ],
+  "ask": [
+    "verdicts",
+    "preference"
+  ],
+  "campaign_id": "c-1",
+  "closed_at": "2026-11-15T12:00:00+00:00",
+  "closed_by": "agent:test",
+  "closed_early": true,
+  "created_at": "2026-07-20T00:00:00.000001+00:00",
+  "created_by": "agent:test",
+  "criteria": [
+    {
+      "axis": "capability",
+      "description": "Warm and on topic.",
+      "judge": null,
+      "name": "conversation.tone",
+      "scale": "ordinal",
+      "scoring_guide": {}
+    }
+  ],
+  "doc_type": "blind_read",
+  "draw": {
+    "excluded": {
+      "identical outputs": 1
+    },
+    "planned_items": 1,
+    "population": 1,
+    "population_digest": "9999999999999999999999999999999999999999999999999999999999999999",
+    "seed": 7
+  },
+  "id": "blind-0b5b9abb32a0",
+  "items": [
+    {
+      "case_id": "case-1",
+      "item": "0b5b9abb32a0",
+      "outputs": [
+        {
+          "arm": "k-candidate",
+          "criterion_fingerprints": {
+            "conversation.tone": "98768155bd7ea6dd8ef476fa4e39d63b00dac9cd040957c100c04589f521ffe7"
+          },
+          "evidence": {
+            "artifact": "assistant: two tickets are waiting",
+            "case_material": "a customer asks about the queue",
+            "subject": null
+          },
+          "output_fingerprint": "1f9d9bece16539e2c8031142aefce56788324982259145a36677bf1cc818ad1c",
+          "result_id": "res-b",
+          "run_id": "run-b",
+          "slot": "A"
+        },
+        {
+          "arm": "k-control",
+          "criterion_fingerprints": {
+            "conversation.tone": "98768155bd7ea6dd8ef476fa4e39d63b00dac9cd040957c100c04589f521ffe7"
+          },
+          "evidence": {
+            "artifact": "assistant: two tickets are waiting",
+            "case_material": "a customer asks about the queue",
+            "subject": null
+          },
+          "output_fingerprint": "1f9d9bece16539e2c8031142aefce56788324982259145a36677bf1cc818ad1c",
+          "result_id": "res-a",
+          "run_id": "run-a",
+          "slot": "B"
+        }
+      ]
+    }
+  ],
+  "name": "tone, blind",
+  "report": {
+    "agreement": [
+      {
+        "anchor": "person",
+        "anchor_names": [
+          "ana@example.com"
+        ],
+        "blind_pairs": 1,
+        "cases": 1,
+        "dim": "conversation.tone",
+        "judge_model": "judge/served-1",
+        "pairs": 1,
+        "random_pairs": 1,
+        "results": 1,
+        "scale": "ordinal",
+        "served_model": null,
+        "table": {
+          "counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "scores": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      },
+      {
+        "anchor": "model",
+        "anchor_names": [
+          "reviewer/model"
+        ],
+        "blind_pairs": 1,
+        "cases": 1,
+        "dim": "conversation.tone",
+        "judge_model": "judge/served-1",
+        "pairs": 1,
+        "random_pairs": 1,
+        "results": 1,
+        "scale": "ordinal",
+        "served_model": "reviewer/model-0613",
+        "table": {
+          "counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "scores": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      }
+    ],
+    "cases": 1,
+    "not_checked": {},
+    "other_ratings": 0,
+    "preferences": [
+      {
+        "anchor": "person",
+        "anchor_names": [
+          "ana@example.com"
+        ],
+        "answered": 1,
+        "candidate": "k-candidate",
+        "control": "k-control",
+        "items": 1,
+        "missing": 0,
+        "p": null,
+        "planned": 1,
+        "prefer_candidate": 1,
+        "prefer_control": 0,
+        "random": true,
+        "served_model": null,
+        "slot_a": 1,
+        "slot_a_share": 1.0,
+        "slot_choices": 1,
+        "state": {
+          "reason": "too_few",
+          "state": "not_available"
+        },
+        "test": "anytime",
+        "ties": 0,
+        "verdict": null
+      }
+    ],
+    "reviewer_checks": [
+      {
+        "dim": "conversation.tone",
+        "outputs": 1,
+        "reviewer": "reviewer/model",
+        "served_model": "reviewer/model-0613",
+        "table": {
+          "counts": [
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          ],
+          "scores": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      }
+    ],
+    "reviews": [],
+    "samples": [],
+    "unread": []
+  },
+  "review_job_id": "0193a1b2-job",
+  "reviewer": "reviewer/model",
+  "reviews": [
+    {
+      "asked": 1,
+      "calls": 1,
+      "cost_usd": 0.01,
+      "reused": 0,
+      "reviewer": "reviewer/model",
+      "served_models": [],
+      "stopped": null,
+      "unanswered": [],
+      "unpriced_calls": 0
+    }
+  ],
+  "schema_minor": 4,
+  "schema_version": 17,
+  "scope_id": "uni-1"
+}

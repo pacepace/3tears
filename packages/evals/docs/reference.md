@@ -74,6 +74,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`bind_cell_identity`** · *host contract* · function · Make `identity` the answer of `current_cell_identity` for the extent of the block.
   <br>`bind_cell_identity(identity: CellIdentity) -> Iterator[None]`
+- **`check_after`** · *host contract* · function · Return `DocumentStore.by_doc_type`'s `after` checked, as a pair — the calls every implementation refuses.
+  <br>`check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None`
 - **`current_cell_identity`** · *host contract* · function · Return the cell the calling task is working for, or `None` outside any cell.
   <br>`current_cell_identity() -> CellIdentity | None`
 - **`field_in_values`** · *host contract* · function · Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
@@ -194,7 +196,7 @@ The engine's stored shapes and the ports a host implements: what is written down
   <br>`= 15`
 - **`DURABLE_DOC_TYPES`** · constant (frozenset) · What people author, by `doc_type`: the `durable` entries of `DOC_TYPE_FACTS`, derived as `CORE_DOC_TYPES` is.
 - **`DURABLE_SCHEMA_MINOR`** · *host contract* · constant (int) · The durable minor this build writes within `DURABLE_SCHEMA_VERSION`, under the core's minor rules.
-  <br>`= 2`
+  <br>`= 4`
 - **`DURABLE_SCHEMA_VERSION`** · *host contract* · constant (int) · The durable version this build writes.
   <br>`= 17`
 - **`EVAL_DOC_TYPES`** · constant (tuple) · Every `doc_type` the engine writes — the set the operator wipe sweeps.
@@ -753,8 +755,8 @@ Typed operations over a host: what every surface — a CLI, an MCP tool, a REST 
   <br>`campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: str, *, created_by: str) -> CampaignLine`
 - **`campaign_export`** · *host contract* · function · Assemble one campaign's closure, read-only: the documents, the profile declaration and the manifest a writer case is minted from.
   <br>`campaign_export(host: EvalHost, scope_id: str, campaign_id: str, *, built_by: str | None, paged: bool = False, after_doc_type: str | None = None, after_document_id: str | None = None, max_bytes: int | None = None) -> CampaignExport`
-- **`campaign_record`** · *host contract* · function · Record a person's call on a campaign — the arm decided, why, and each broken floor and missed bar it overrides.
-  <br>`campaign_record(host: EvalHost, campaign_id: str, scope_id: str, *, arm: str, called_by: str, reason: str = '', floors_overridden: list[str] | None = None, bars_overridden: list[OverriddenBar] | None = None, analysis_id: str | None = None) -> CampaignCallLine`
+- **`campaign_record`** · *host contract* · function · Record a call on a campaign — the arm decided, why, who made it, and each broken floor and missed bar it overrides.
+  <br>`campaign_record(host: EvalHost, campaign_id: str, scope_id: str, *, arm: str, called_by: str, reason: str = '', floors_overridden: list[str] | None = None, bars_overridden: list[OverriddenBar] | None = None, analysis_id: str | None = None, made_by: Maker | None = None, person: str | None = None, model: str | None = None, on_behalf_of: str | None = None) -> CampaignCallLine`
 - **`campaigns_list`** · function · One page of the scope's campaigns, newest first, and the next page's cursor.
   <br>`campaigns_list(host: EvalHost, scope_id: str, *, archived: bool | None = None, cursor: str | None = None, limit: int = 100) -> CampaignListing`
 - **`case_rename`** · *host contract* · function · Rename a stored case: write its `name`, and nothing else but the seed name drift would have found it by.
@@ -1468,7 +1470,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `campaign_update` | `write` | `campaign_id`, `name?`, `description?`, `question?`, `aspects?`, `floors?`, `short_names?`, `arm_short_names?`, `exploratory?`, `control_from_run_id?` | Rename or redescribe a campaign, or declare, amend or withdraw its declaration before its first run. |
 | `campaign_runs_add` | `write` | `campaign_id`, `run_ids`, `aspect?` | Put runs in a campaign's aspect — runs launched after it was created, or measured on their own first. |
 | `campaign_runs_remove` | `write` | `campaign_id`, `run_ids`, `aspect?` | Take runs out of a campaign; the runs and their results stay, in any other campaign too. |
-| `campaign_record` | `write` | `campaign_id`, `arm`, `call_reason?`, `floors_overridden?`, `bars_overridden?`, `analysis_id?` | Record a person's call on a campaign: the arm decided, why, and each warning it overrides. |
+| `campaign_record` | `write` | `campaign_id`, `arm`, `call_reason?`, `floors_overridden?`, `bars_overridden?`, `analysis_id?`, `made_by?`, `person?`, `call_model?`, `on_behalf_of?` | Record a call on a campaign: the arm decided, why, who made it, and each warning it overrides. |
 | `analysis_generate` | `spend`, job | `campaign_id`, `model?` | Write a campaign's report with the analyst and the report editor (paid model turns), as a job to poll. |
 | `analysis_estimate` | `read` | `campaign_id`, `model?` | State the report budget a campaign's analysis generation would be held to, without spending. |
 | `judge_second` | `spend`, job | `run_id`, `second_judge_model`, `second_judge_config_ids?`, `second_judge_temperature?`, `result_ids?`, `sample_fraction?`, `sample_seed?` | Ask a second judge to score a seeded share of a finished run's judged results, as a job; read agreement. |
@@ -1515,6 +1517,13 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `runs_attest` | `write` | `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`, `attestation_note?` | State one coordinate of stored runs that they did not record: their measure definitions or served model. |
 | `result_rate` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason` | Rate one judged dimension of one result, as an agent — kept beside people's ratings, never pooled. |
 | `result_rate_person` | `write` | `result_id`, `rubric_dim`, `score`, `rating_reason`, `person`, `rating_source`, `rated_at?` | Record a person's rating of one judged dimension, relayed by a caller the host attests for them. |
+| `blind_read_create` | `write` | `campaign_id?`, `run_ids?`, `candidate?`, `criteria?`, `planned_items?`, `read_name?`, `reviewer?` | Draw a blind read: a campaign's judged outputs in a seeded random order, for people to answer. |
+| `blind_read_sheet` | `read` | `read_id`, `rater?` | Read a blind read's sheet: the items in order, content and criteria only, for a rater to answer. |
+| `blind_read_answer` | `write` | `read_id`, `item`, `person`, `verdicts?`, `prefer?`, `skip?`, `answer_reason?` | Record a person's answer to one item of a blind read, relayed by a caller the host attests. |
+| `blind_read_review` | `spend`, job | `read_id` | Have a blind read's declared reviewer model answer its sheet, priced and capped, as a job. |
+| `blind_read_close` | `write` | `read_id` | Close a blind read: its answers become ratings, and what they say of the judge is read. |
+| `blind_read_get` | `read` | `read_id` | Read one blind read: what was drawn, who has answered how far, and once closed what it found. |
+| `blind_reads_list` | `read` | `campaign_id?` | List the scope's blind reads, oldest first, or those drawn over one campaign. |
 | `analysis_archive` | `write` | `analysis_id`, `archived`, `archive_reason?` | Archive a stored analysis (or restore it): marked, its insights retracted, nothing destroyed. |
 | `writer_case_archive` | `write` | `writer_case_id`, `archived?`, `archive_reason?` | Retire a writer case (or restore it): no launch runs it again, nothing destroyed. |
 | `run_delete` | `destructive` | `run_id`, `confirm` | Destroy a run, its results and its campaign memberships. Unrecoverable; archive instead. |
@@ -1528,6 +1537,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 |---|---|---|
 | `analysis_id` (on `analysis_archive`, `analysis_delete`) | `string` | A stored analysis's id, as analyses_list names it. |
 | `analysis_id` (on `campaign_record`, `writer_case_mint`) | `string` or `null` | A stored analysis's id, as analyses_list names it. |
+| `answer_reason` | `string` | The person's own words for the answer, where given. |
 | `apparatus_settings` | `object` or `null` | Host-declared apparatus values to set the runs' rig up with, by apparatus dimension (e.g. who sits in an adjudicator's seat) — each a string, a bool or a number, and one the template's kind reads; refused otherwise. Recorded on every run and part of its measurement context, so one template can be compared at two. |
 | `apply` | `boolean` | Store the re-graded check verdicts; false (the default) reports and writes nothing. |
 | `archive_reason` | `string` or `null` | Why the record is archived (an analysis shown false or superseded, a writer case that can no longer measure anything); cleared on restore. |
@@ -1546,15 +1556,17 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `baseline_run_id` | `string` | The run read as the baseline (A), as runs_list names it. |
 | `behavior` | `string` | Which aspect of the subject is under test. |
 | `built_by` | `string` or `null` | Provenance: the module:callable this host's profile comes from, recorded in the profile as built_by. The mint never imports it; its operator names the factory (--host). Omitted, the profile names none. |
+| `call_model` | `string` or `null` | The model that made the call, by id; a model's call only. |
 | `call_reason` | `string` | Why the call was made, in the decider's words. |
 | `campaign_arms` | array of `object` | The arms, each {label, role: control\|candidate (default candidate), from_run_ids: [run id, ...], short_name?}: a contestant stack, read from the first of its runs, each a run one of the campaign's aspects holds, all carrying one variant key. short_name is what a page prints for the arm where space is tight (chart labels, table cells), at most 32 characters and no other arm's label or short name; omitted, the page computes one from what differs from the control. One control at most, read first. Omitted, an adopted campaign's arms are carried and every other variant among the runs is read as a candidate. |
 | `campaign_behavior` | `string` | What the sweep's campaign measures. |
 | `campaign_description` | `string` | The sweep's campaign's description. |
 | `campaign_filter` | `string` or `null` | List only the insights this campaign's analyses minted, by id; omitted lists every campaign's. |
 | `campaign_id` (on `campaign_update`, `campaign_runs_add`, `campaign_runs_remove`, `campaign_record`, `analysis_generate`, `analysis_estimate`, `analyses_list`, `report_read`, `bars_propose`, `writer_promotion`, `writer_pairwise`, `campaign_export`, `campaign_archive`) | `string` | A campaign's id, as campaigns_list names it. |
-| `campaign_id` (on `writer_case_mint`) | `string` or `null` | A campaign's id, as campaigns_list names it. |
+| `campaign_id` (on `writer_case_mint`, `blind_read_create`, `blind_reads_list`) | `string` or `null` | A campaign's id, as campaigns_list names it. |
 | `campaign_name` | `string` | The campaign every arm's run joins as it is created. It is created exploratory, since a sweep takes no design; declare one with campaign_create, an aspect over the sweep's run_ids and arms from from_run_ids. |
-| `candidate` | `string` | The candidate arm, by its label or its variant key; never the control. |
+| `candidate` (on `writer_promotion`, `writer_pairwise`) | `string` | The candidate arm, by its label or its variant key; never the control. |
+| `candidate` (on `blind_read_create`) | `string` or `null` | The candidate arm, by its label or its variant key; never the control. |
 | `candidate_run_id` | `string` | The run read against the baseline (B), as runs_list names it. |
 | `case_material` | `string` | What the output is judged against: its source, or its facts. |
 | `case_name` | `string` | A case's name, as the report should call it: one token such as double-charge, not a bare number or a generated id, and used by no other case of its template or of a case set listing it. |
@@ -1599,6 +1611,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `insight_id` | `string` | An insight's id, as insights_list names it. |
 | `intent` | `string` | What its campaigns measure, in a sentence a reader of their reports is told. |
 | `into_case_set` | `string` or `null` | A case set to mint the next version of, listing exactly the frozen cases — what a launch targets. |
+| `item` | `string` | The item answered, as the sheet names it. |
 | `job_id` | `string` | A job's id, exactly as the action that started it returned it. |
 | `judge_model` | `string` or `null` | The judge model, where the kind is model-judged. |
 | `judge_run_ids` | array of `string` | The finished judge-kind runs whose trials make up the measurement — every arm of the judge campaign, as runs_list names them. Each judge and criterion they measured is recorded from all of them together. |
@@ -1611,6 +1624,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `launch_group_filter` | `string` or `null` | Only the calls one launch's case generation made; its runs carry this id. |
 | `launched_run_ids` | array of `string` or `null` | The runs the estimated launch made (the run ids its launch job names, as run_ids), with predicted_cost: each predicted cell then says how many of its observations came from other runs. |
 | `limit` | `integer` | The most rows to return, up to 200. |
+| `made_by` | `'person'` \| `'model'` or `null` | Who made the call: a person (name them in person; the host must vouch that you relay their call) or a model (name it in call_model). Omitted records neither, and the call never reads as a person's. |
 | `margins` | `object` | An adopted aspect's label to its margin, in points of a 0-100 pass rate, more than 0 and less than 100: a margin declared at adoption, carrying the time it was added. |
 | `max_cost_usd` | `number` or `null` | A per-run cost cap in dollars, at or below the host's ceiling; it can only lower that ceiling, and a value above it is refused. |
 | `measure_definitions` | `object` or `null` | For measure_definition: measure key -> the definition digest those runs ran under, as the host computes it from the measure descriptors as they were. Omitted: the host's current definitions, for runs made since its last definition change. |
@@ -1626,28 +1640,36 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `name` (on `campaign_update`) | `string` or `null` | The campaign's name, as an operator reads it in a list: at most 32 characters. Put the detail (the arms, the round, the case count) in question or description, never in the name. |
 | `note` | `string` | Why the output must get that verdict, in the author's words. |
 | `offset` | `integer` | Skip this many rows; the previous page's next_offset. |
+| `on_behalf_of` | `string` or `null` | Who the model made the call for; a model's call only. |
 | `output` | `string` | The output under review, as the judge reads it. |
 | `overlays` | `object` or `null` | The knobs this launch turns on the template's kind, by field. |
 | `pairwise_job` | `string` or `null` | The completed writer_pairwise job over this candidate, whose report is the primary reading; without one the read never promotes. |
 | `part` | `'record'` \| `'judge'` \| `'spans'` | Which part of the stored trace to return: record (the output the kind stored, its call ledger and end state, beside the result), judge (what the judge was sent) or spans (the stored spans). |
-| `person` (on `result_rate_person`) | `string` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
-| `person` (on `judge_case_author`) | `string` or `null` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
+| `person` (on `result_rate_person`, `blind_read_answer`) | `string` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
+| `person` (on `campaign_record`, `judge_case_author`) | `string` or `null` | Whose verdict it is, as you name them; the host must vouch that you relay it for them, and records it under its own name for them. |
+| `planned_items` | `integer` or `null` | The items the preference is read over, fixed now; omitted is all, up to 30. |
 | `predicted_cost` | `object` or `null` | A cost pivot's plan: the structured result launch_estimate returned before these runs. The cell at each priced arm's model and template then shows its predicted cost beside the cost observed. |
+| `prefer` | `'A'` \| `'B'` \| `'tie'` or `null` | Of an item showing two outputs: the better slot, or tie. |
 | `purpose_filter` | `'variation'` \| `'proposer'` \| `'analysis'` \| `'judge'` \| `'second_judge'` \| `'reviewer'` or `null` | Only calls made for this purpose: variation (a launch's case generation), proposer (a rubric draft), analysis (an analysis generation), judge (a judge's repeat or temperature comparison) or second_judge (a second judge's pass). |
 | `question` (on `campaign_create`) | `string` | The one question the campaign asks of its arms, in the operator's words: what would make a candidate the one to adopt. A decision rule is never written here; its clauses are floors. Empty asks none. |
 | `question` (on `campaign_update`) | `string` or `null` | The one question the campaign asks of its arms, in the operator's words: what would make a candidate the one to adopt. A decision rule is never written here; its clauses are floors. Empty asks none. |
 | `rated_at` | `string` or `null` | When the person gave the rating, ISO-8601 with an offset, not in the future; omitted is now and replaces their stored rating of the same thing. Dated, it replaces one given at the same time or earlier; one they gave later stands, and this call is refused (conflict, 409). |
+| `rater` | `string` or `null` | Whose progress to show (answered, next), as the host names them. |
 | `rating_reason` | `string` | Why that score, in the rater's own words. |
 | `rating_source` | `string` | Where the person gave the rating, e.g. a blind read's id. |
+| `read_id` | `string` | The blind read, by the id blind_read_create returned. |
+| `read_name` | `string` or `null` | What the read is called. |
 | `reason` | `string` or `null` | Why, recorded on a cancelled run. |
 | `repeats` | `integer` | How many times each dim is judged at each temperature. |
 | `report_doc_id` | `string` or `null` | A stored report document of the campaign, any version (analyses_list names each analysis's report_doc_id): given, the report is that document's page in place of the campaign's report; omitted, the campaign's report. |
 | `result_id` | `string` | A result's id, as results_list names it. |
 | `result_ids` | array of `string` or `null` | A run's result ids, as results_list names them; omitted for every result of the run. |
+| `reviewer` | `string` or `null` | A model to read the sheet too, by id, declared now or never; not the judge's own model. |
 | `row_factor` | `string` | The coordinate the rows are: a declared one (model, template_id, ...) or a lever the host registers. |
 | `rubric_dim` | `string` | The judged dimension rated, spelled as the result's score spells it. |
 | `run_id` | `string` | A run's id, as runs_list or a launch's job names it. |
-| `run_ids` | array of `string` | Runs, by id, as runs_list names them; every one in the caller's scope. |
+| `run_ids` (on `campaign_runs_add`, `campaign_runs_remove`, `runs_attest`) | array of `string` | Runs, by id, as runs_list names them; every one in the caller's scope. |
+| `run_ids` (on `blind_read_create`) | array of `string` or `null` | Runs, by id, as runs_list names them; every one in the caller's scope. |
 | `run_labels` | array of `string` | The run's labels, replacing any it has; [] clears them. Each 1 to 64 characters, stored sorted and each once. A label names the run (a baseline, a production snapshot) and moves no key or fingerprint. |
 | `run_status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `string` | Read only runs with this status, or 'all'. Completed unless named: a run still going is still adding results. |
 | `sample_fraction` | `number` | The share of the run's judged results the second judge is asked about. |
@@ -1663,6 +1685,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `simulator_model` | `string` or `null` | The simulated user's model, where the kind has one. |
 | `since` | `string` or `null` | Read only the gaps stored at or after this time, ISO 8601 with its offset (2026-10-28T00:00:00Z), each by its own time; omit for every gap. |
 | `skill` | `string` or `null` | The skill whose notes the withheld ones are checked against, by its content digest: the one the case's arms run, which the host gives the mint. Omitted, the skill this build ships. |
+| `skip` | `boolean` | The person passes on the item: no verdict or preference. A skip is an answer. |
 | `snapshot_id` | `string` or `null` | A snapshot already frozen in the scope, as report_snapshot_freeze named it. |
 | `static` | `boolean` | With html, the static page, for a host whose policy lets a page neither run nor load anything: no script and no link, the system's fonts, and every chart shown as its table of values. Markdown and json are the same either way. |
 | `status` | `'pending'` \| `'running'` \| `'completed'` \| `'failed'` \| `'cancelled'` \| `'budget_stopped'` \| `'exhausted'` or `null` | List only runs with this stored status. |
@@ -1679,6 +1702,7 @@ Every engine action, as every transport mounts it (the FastMCP tools, a host's o
 | `tracked` | `boolean` | Whether the set is a standing suite followed over time, or made for one launch. |
 | `trials` | `'table'` \| `'all'` | How much of each failed or lost trial the report lays out: table (the default) is the census line and one row per such trial naming its stored result, read with result_get; all adds each one's full record (what it asked, what the judge saw and said, and why). JSON carries no records either way. |
 | `variation_model` | `string` or `null` | The model that writes the template's llm variation axes' values; required when n_variations generates for such an axis, refused otherwise. |
+| `verdicts` | `object` | A verdict per output and criterion the item shows, keyed '&lt;slot>/&lt;criterion>' (e.g. 'A/answer.grounded'), each answered as the sheet's levels word it: pass or fail, or 1 to 5. |
 | `weighting` | `string` or `null` | How a cell averages its observations; omitted takes equal per scenario. |
 | `withhold` | array of `string` | The exemplar notes, by file name, the case's analyst is never given: the note reasoned on this campaign, for a blind run. Each must be a note of the mint's skill (skill); empty withholds none. |
 | `writer_case_id` | `string` | A writer case's id, the test_case_id writer_case_mint returned. |

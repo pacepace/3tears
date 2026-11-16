@@ -201,6 +201,11 @@ _LATENCY: Final[Mapping[str, Any]] = dict.fromkeys(
     ("total_ms", "llm_ms", "tool_ms", "async_wait_ms", "judge_ms"), _AS_STORED
 )
 _RESCORE: Final[Mapping[str, Any]] = {"cost_usd": _AS_STORED}
+#: When a re-judge was made dates a look (`reading_scope.looks`), which is counted at read time and kept out of the
+#: fingerprint (`_ADDED_SINCE_V2`): no verdict, interval or figure reads it.
+_RESCORE_NOT: Final[Mapping[str, str]] = {
+    "rejudged_at": "dates a look only: the looks are counted at read time and are outside the fingerprint"
+}
 
 #: The fields of a usage row, or a background delivery, that are pricing and so no evidence (owner rulings,
 #: 2026-10-28 and 2026-11-14): where its cost came from and who served it. The cost, the tokens and the calls stay.
@@ -688,7 +693,7 @@ _census(ScoreReading, _SCORE)
 _census(GoalReading, _GOAL)
 _census(PreconditionReading, _PRECONDITION)
 _census(LatencyReading, _LATENCY)
-_census(RescoreReading, _RESCORE)
+_census(RescoreReading, _RESCORE, _RESCORE_NOT)
 _census(UsageReading, _USAGE, _PRICING)
 _census(RepeatedScoreReading, _REPEATED_SCORE)
 _census(RepeatReading, _REPEAT)

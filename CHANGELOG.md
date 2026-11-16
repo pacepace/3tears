@@ -22,6 +22,214 @@ person: judge uncalibrated` line and its next step still print. Each model's rea
 people's, and an agreement line names a dimension as every surface does (`answer grounded (judged)`), never by its
 stored id.
 
+### evals: a host's door onto the blind read, and a recorded call says whether a person or a model made it (#1178)
+
+**Added:** seven actions draw and run a blind read in a host. `blind_read_create` draws a seeded random order over a
+campaign's control and one candidate (or over runs of one arm) and stores it; it takes no seed, which is derived from
+the outputs, the arms and how many reads were drawn over them before (`earlier_reads`). `blind_read_sheet` serves what a
+rater sees: content, criteria and slots, and no arm, run, result or case id, judge score, label key or count of answers.
+`blind_read_answer` records a person's answer only when the host attests the caller relaying it for that person (403
+otherwise, nothing written). `blind_read_review` has the reviewer model the read declared when it was drawn answer the
+sheet, priced and admitted first, as a job; its answers enter the read only from inside that job, and a job that fails
+to start leaves the read free for the next review. `blind_read_close` stores the closed read first, so an answer landing
+meanwhile refuses the close (409) and no rating exists for a read still open; it then writes every answer as a rating
+(a person's as theirs, a model's as an agent's) and refuses later answers. A rating write that fails reaches the caller
+with the read closed, as a 503 whose remedy is to close it again, which writes the ratings still missing; a closed read
+whose missing ratings are each refused (their result gone) says so, rating by rating. A read closed before anyone answered every
+planned item reads its preference by the anytime test, valid wherever it stopped. A model reviewer's preference is
+read once per model that served its answers, never pooled, and each one names that model (`served_model`).
+`blind_read_get` and `blind_reads_list` read them back. A read is a new durable document (durable minor 17.4), carried
+by a campaign's export. Who made each answer is stored as `made_by` (`person` or `model`, the one `Maker` a recorded call
+uses too), never as a third kind of rater.
+
+**Changed (#1208):** a judge's agreement with a blind read's reader is stated as counts. The stored read keeps the
+confusion counts (on 1-5, the full rating cross-table) per criterion and per reader, one per model that served a
+reviewer's answers; no kappa, bar verdict, tier or "more results" figure is stored. A closed read's `checks` serve the
+agreed count, the table, and on pass/fail the catch rate and the false-fail rate, each with its exact 95% interval and
+count (`caught 0 of 2 (exact 95% interval 0% to 84%)`), and say so plainly where one side gave a single verdict or the
+reader failed nothing, so no catch rate exists. A draw leaves out results judged on other wording of a criterion than
+it shows, and counts them, so every rating is bound to what its reader was shown. The quick path's console lines are
+unchanged for now.
+
+**Changed:** a blind read's report says who answered as `person` or `model`: `BlindSample.made_by` replaces
+`rater_kind`, and `BlindAgreement.anchor` and `BlindPreference.anchor` read `model` where they read `reference`.
+`BlindRaterKind` is removed. A labels file's `rater_kind` column is unchanged, and `reference` there still names a
+model.
+
+**Added:** `campaign_record` takes `made_by` (`person` or `model`), `person`, `call_model` and `on_behalf_of`. A model's
+call stores the model and whom it acted for and reads back with both, in the call and in a campaign's listing; a
+person's call needs the host's attestation, as a person's answer does. A call that says neither is never read as a
+person's.
+
+**For hosts:** to record a person's blind-read answer or a person's call through an action, build the host with
+`attests_person`. A host that renders the sheet on its own page keeps its order from `next` on and its slots as drawn;
+the courier example's `courier_sheet_page` and `courier_attests` show both.
+
+### evals: `schema.check_after` is public again, and the host's recorded import list is re-taken
+
+**Fixed:** `threetears.evals.schema.check_after` is exported again, `host-contract`, kind `invoked`. The entry
+"a public name is admitted by criteria" below removed it as a name no production code uses, working from Discodon's
+import list as recorded at a78b15b66 (2026-11-13). That list was stale: Discodon's production store
+(`discodon/evals/storage.py`) imports and calls `check_after` since its 7b2e0afeb pin. The name meets the admission
+criteria: every `DocumentStore` adapter that declares `after` calls it, every store the package ships does, the
+host guide teaches it again, and its meaning is the port's own refusal. That entry claimed Discodon's production code
+imported none of the removed names; the claim was false and is corrected there.
+
+**Changed:** Discodon's recorded lists (`tests/fixtures/host_imports/discodon.txt` and `host_test_imports/`) are
+re-taken at 73996c83e (2026-11-16) by `scripts/record_host_imports.py`, whose header names that commit. A new test
+imports every name on a host's production list from the root the host names it on, from the recorded list alone.
+
+**Added:** a shipped example of `run.update_template`: the courier host renames a stratum that already has a name
+and retires a scenario through it (`tests/fixtures/courierhost/`), the two things only it does.
+
+**For hosts:** nothing to change for `check_after`: `from threetears.evals.schema import check_after` imports as it did
+at 7b2e0afeb. The three names Discodon's tests import that left their roots stay removed; their ports are in the
+entry below.
+
+### evals: a runner that raised on every case says so on the first line; a withheld case key is named in the error; llms.txt says where cases come from
+
+**Fixed:** an eval whose runner raised on every case printed `cases: runner ran 4 of 4 cases; no grader here says pass
+or fail.` over a grader declared `-> bool`. Where the candidate failed every graded trial without answering, the first
+line, the page's lead and every other surface that states a pass count (`passed_clause`, from `pass_count`) now say
+how many it failed on and the first error, once: `gloss failed on all 4 cases, so no answer was graded: the runner
+raised KeyError: 'word'.` Such an arm is compared with nothing: beside other arms it is named in that sentence and
+`Nothing is compared with gloss.`, and no pass share or contrast is stated against it.
+
+**Changed:** whether a line states a pass count is read off each reading's declared kind (a goal check, a classifier's
+accuracy, a host measure declared pass/fail or a boolean with a better end, a judged dimension that counts), over the
+readings the design lists (`AspectDesign.measure_order`) and those the catalog describes. A declared reading no trial
+scored has no stated kind there: it is read as no check, and the line says so (`fields_stripped scored on no trial, so
+it is read as no check`), never guessed to be one.
+
+**Changed:** a runner or grader that raises `KeyError` on a reserved case key the case held (`id`, `stratum`, `world`)
+has its error say the key is withheld from the runner and every grader, and what to do: `the candidate raised
+KeyError: 'id'; the case's 'id' names the case: the package reads it and withholds it from the runner and every
+grader; if your function needs the value, copy it into the case under another key as well`. Every reserved key stays
+withheld. Nothing stored moves: the stored case, its template id and every recording key are as before.
+
+**Docs:** `llms.txt` gains a short `YOUR APP'S CASES` passage: start from the cases the app already has (the data
+files its tests read, tables in its test code, examples in its README or docs), which file shapes load as cases, take
+expected values from its documentation or specification, never from running it, and the package keeps a case's `id`,
+`stratum` and `world`. It says an app that calls no model needs `Eval` alone. The examples' command says it runs from
+the fetched directory, and the KINDS heading points at the surface page named above instead of repeating its address.
+
+### evals: looks are counted from stored facts, a plan of looks tightens every claim, and a reading past it says how often that errs (judges D1)
+
+**Added:** a look is an occasion on which a contrast's test could have been read again on more or different evidence.
+An aspect's reading scope carries `looks` (`planned`, `taken`; `plannable`, `lower_bound` and `late_plan` where they
+say more), the most any contrast there has had, counted from stored facts at read time: the first once both arms hold
+a result; then each launch whose results changed what the test reads (more cases run on one arm and then the other are
+one look), each membership write (a run joined after its results were scored is a look when it joins; a run removed
+or deleted keeps the look it made, and its leaving is another), each re-measure and each re-judge. Judge repeats, a
+second judge's pass and a measure attestation change no value the test reads and are not counted. Where a fact the
+count needs is not stored (a deleted run, an archived member, an untimed result, re-judges stored per result), the
+count is a lower bound and says so. Where a member joined before membership was recorded (durable 17.3), looks were
+not recorded: no count of looks is given (`Looks.recorded` false, `taken` none), since the stored occasions can be too
+many as well as too few, and `evidence_changes` gives the count as what it is. Where looks were recorded since (an
+existing campaign joined or extended after 17.3), `taken` is the first comparison and those, a lower count: at least
+that many looks since looks were recorded, earlier ones not recorded. `Looks.launched` and `largest_step` give the
+cases the first look read and the most one later look added. Each aspect records its runs joining
+and leaving, append-only (`Aspect.membership`), and a new campaign is stamped `EvalCampaign.looks_rule`. `Looks.tests`
+names the tests the aspect's readings are read by (`bounded`, `t`).
+
+**Changed:** under `AspectDesign.planned_looks` = L, declared before the first look, each look of the aspect's family
+reads at α/L (`ComparisonFamily.look_alpha`), and a floor's and a guardrail's `held`, a campaign row's
+`within_margin` and the cases an unclear row projects are read at 1 − (1 − level)/L. `ComparisonFamily.alpha` and
+`CampaignReadings.alpha` are the level the plan is for, which pages print: it holds over looks whose sizes were fixed
+before their data, and over extends sized by the planner only where the simulation shows it (on pass-rate aspects in
+the simulated setting; not shown on t-test aspects); the per-look level is `look_alpha`. A plan declared after the first look is no plan (`late_plan`). With no plan nothing moves. Past its plan
+(past the first look with none), under a plan a lower-bound count cannot show was kept, or within a plan whose keeping
+is not shown for a test the aspect uses (extends sized by the planner from the reading before are shown to hold α only
+where the measured rate's 97.5% upper bound is at most α: today on the bounded test, not on the t test), the caveat
+list carries one `looks` entry per aspect, class D, naming every claim of the aspect and carrying the looks and, per
+test, a reference false-separation rate: what a seeded simulation of that test, plan and count measured, in the
+setting it states (a single contrast, the launch sizes, the extend cap), with the simulation's own uncertainty and its
+named row (`significance.FALSE_SEPARATION`; the larger of batches fixed in advance and planner-sized extends, since
+which added the looks is not stored). It is never the campaign's own rate, which can be higher. None is quoted where no
+row measured that situation, where the aspect's own launch or largest step falls outside the setting, or where the
+count is a lower count, which is shown alone (`CaveatEntry.looks`, `false_separation`). At method reach where the
+aspect claims nothing or the campaign was created before looks were counted and every member's joining is recorded;
+looks recorded since 17.3 on an older campaign reach the report. An aspect whose looks were not recorded carries one method-reach entry saying so, with no rate, where its
+evidence changed more than once. An aspect's `looks` is outside the report input's digest: a look taken re-keys no
+input and no snapshot.
+
+**For hosts:** nothing to do. A campaign whose author will add cases and read again can declare how many looks it plans
+on the aspect's design before its first result.
+
+### evals: a newcomer's wiring mistakes are refused with the fix named, not scored as 0%
+
+**Changed:** a field grader that no answer of any arm carries is refused once the arms have run (exit 2 at the file
+door), naming the fields the answers do carry: `no answer has a field 'label', so its grader could score none of them;
+the answers carry category: grade the field they carry, or have the runner return 'label'`. It used to score every
+case 0% and exit 0. Answers that hold no fields say which shapes do. The refused eval's runs are archived (kept and
+restorable, as `run_archive` keeps a run): `ls`, the history and the frontier read none of them, and no campaign is
+filed. What is the product failing is still scored as before, 0% included: an arm whose answers lack a field another
+arm's carry, answers that carry the field and are all wrong, and answers that are all `None` from a runner that
+returns a value somewhere (one returning `None` where the model's output never parsed), each case's answer stored as
+`None`.
+
+**Changed:** `Eval(...)` refuses, before anything runs, a runner that cannot be called with one case (a world's agent
+with a case and its tools), a runner whose code has no `return` of a value while a field grader reads its answer, a
+function grader that cannot take `(case, out)`, and a case a field grader other than the classifier cannot read a
+label from. Each names the signature to declare, what to return, or the fields the case carries. The first two used
+to score 0% and exit 0, the others to fail the run after the runner had answered every case. The signature read is
+what is called (a decorator's wrapper, not the function it wraps) and never evaluates annotations, so a name imported
+only under `if TYPE_CHECKING:` is no error; a callable whose signature cannot be read (a C wrapper such as
+`functools.cache`) is not refused. A function grader's annotations are never evaluated either: its argument
+annotations are not read for its kind, and its return annotation is read as written text (a return annotated with a
+name imported only for type checking is refused naming it; see the entry on a function grader's kind).
+
+**Changed:** a field is read off any object answer as `out.<field>`, so a dataclass answer is graded by its field; it
+used to read as no label.
+
+**Changed:** `python -m threetears.evals --help`, and the command with no argument, open with the file door
+(`python -m threetears.evals FILE.py`, rung 1's example); a first argument that is neither an eval file nor a command
+is refused naming both. A model with no key and no recording names `recording=` as the way to run without one, and an
+eval of several arms with no name names `name=` or a cases file, not an example from another app.
+
+**For hosts:** no code to change, and two things a host sees. An eval whose answers are objects other than a dict or
+a pydantic model (a dataclass, a named tuple, a plain object) graded by a field moves from 0% to its real score on
+upgrade: its history then shows a step that is the package's change, not the product's. And a run that was scoring a
+field no answer carried now stops with exit 2, its runs archived; `include_archived=True` lists them, and
+`run_archive(..., archived=False)` restores one.
+
+### evals: a function grader is a check unless it declares a number, and a first line states no pass count nothing judged
+
+**Fixed:** an `Eval` grader written `def right(case, out): return out == case["want"]`, with no return annotation, was
+read as a score no case can fail: the first line printed `passed 3 of 3 cases` over `Right score: mean 0.3333`, and
+a comparison's gate passed over it (an arm right on thirty cases against one wrong on all thirty exited 0). A function
+grader's kind is now read from what its author declared, never from its source: annotated `-> bool`, a check;
+annotated `-> float` or `-> int`, or given a range (`grader(f, range=(1, 5))`), a number; neither, a check. An
+annotation read as both (`-> bool | float`) or as neither (an alias, `-> np.float64`, `-> Any`) is refused when the
+`Eval` is built, saying what was read and the spellings accepted; it is parsed as written, never evaluated. A check's
+False fails the case on the first line, it is listed among the misses, it prints as a pass rate with its count (`33%,
+1 of 3 trials`), and a comparison gates on it. A value the declaration contradicts (anything but `True`, `False`, 0
+or 1 from a check, `None` from a function that falls off its end and a numpy bool among them; from a grader declared
+to grade a number, a bool, `None`, NaN, infinity, a string, or a score outside its declared range) fails the run at
+the first such answer, naming the case and the fix; no cell is dropped from the count or the mean. A grader that
+raises, or a `Measure` that returns no number, leaves its case ungraded and the run goes on, but the first line counts
+every case that ran and says how many were not graded, which, and the first error as recorded (`classify passed 7 of
+10 cases; 3 were not graded. Not graded: c0, c1, c2 (...)`); a comparison says the same of each arm beside its
+figures. The report page's lead, an aspect fold's heading and an analysis listing's line say the same clause, from one
+owner (`analysis.bundle.trials.pass_count`, worded by `report.verdict.passed_clause`), never a count over the graded
+cases alone; the pass rate, its interval and every verdict stay over the graded trials. A grader's own error is named
+as the author's: `the grader right raised TypeError: ...`, where it read `the scorer`. A grader written `async def`, or annotated with `None` among its kinds (`-> bool | None`), is refused when the
+`Eval` is built. Where no grader is a check and no judged dimension counts, one arm's first line states no pass count
+(`classify ran 3 of 3 cases; no grader here says pass or fail.`, its readings carrying the means), and two arms under
+the case floor compare none (`b and a ran 3 cases each; no grader here says pass or fail; too few cases to call a
+difference.`).
+
+**For hosts:** an unannotated function grader that returns numbers (`return 0.5`) now fails its run: annotate it
+`-> float`, or declare its range. A grader annotated `-> float` or `-> int` that returns a bool fails its run: annotate
+it `-> bool`. A run graded before this by an unannotated grader stored its grades under a number's measure
+definition; read back through the same grader, its 0.0s fail their trials, and that recorded definition keeps it from
+pooling with runs graded now. A grader annotated `-> bool | float`, or with an annotation the engine reads as neither
+kind, is refused until it names one. A check returning a numpy bool fails its run: return `bool(...)`. A grader of a number whose `None`, NaN or
+out-of-range score used to exclude its cell now fails its run: return a finite number on its scale, or declare the
+scale it has (`range=`). An old run of an
+unannotated grader of a number (0.25, 0.5), re-read before the grader is annotated, is described as a check, its every
+non-zero value a pass: annotate the grader `-> float` before re-reading it.
+
 ### evals: a judge checked against itself: re-score noise in the judge's own table
 
 **Added:** a bundle fills two fields the shape move left unset, from the judge's repeats (`judge_repeat`). Each judged
@@ -220,8 +428,8 @@ the second, marked.
 **Changed:** a shipped page that names, as code, a name `MIGRATIONS.toml` records removed fails a test, unless the
 page marks it removed where it names it; a page that teaches a provisional name, the `@name(...)` spelling included,
 must mark it provisional there. `@measure(...)` is marked provisional on the two pages that teach it, and the pages that
-told a reader to call `check_after`, `check_names`, `judge_config_of` or `is_builtin_judge_config_id` now give the
-replacement inline.
+told a reader to call `check_names`, `judge_config_of` or `is_builtin_judge_config_id` now give the replacement
+inline.
 
 **Changed:** a host-contract name moves only with a `MIGRATIONS.toml` record naming its replacement, in a single
 cut-over with no shim (owner ruling, 2026-11-15). The host guide (its stability tiers and its upgrading section),
@@ -229,7 +437,7 @@ the README, the reference and `MIGRATIONS.toml`'s header said a deprecation cycl
 
 **Removed:** names no production code uses, from their public roots: `kernel.CassetteStore`,
 `kernel.DefinitionStore`, `kernel.RunRecordStore`, `kernel.production_replicating_cost`,
-`schema.sent_settings_of`, `schema.check_after`, `schema.is_builtin_judge_config_id`, `schema.judge_config_of`,
+`schema.sent_settings_of`, `schema.is_builtin_judge_config_id`, `schema.judge_config_of`,
 `schema.utc_now_iso`, `analysis.lint_prose`, `analysis.check_names` and `analysis.host_declarations_digest`. The
 engine still uses each inside; `MIGRATIONS.toml` records each released one with its port. `Log`, `quick.measure` and
 `quick.Measure` stay importable but are provisional now: `Eval`'s signature names `Log`, and the toy host declares its
@@ -246,7 +454,6 @@ imports against this map:
 - `schema.is_builtin_judge_config_id`: `config_id is not None and config_id.startswith("builtin:")`.
 - `schema.judge_config_of`: the part of a recorded `<config id>@<sha12>` before the `@`; `None` for a built-in one.
 - `schema.utc_now_iso`: `datetime.now(UTC).isoformat()`.
-- `schema.check_after`: refuse an `after` given without `order_by`, or one that is not a (scalar, `str` id) pair.
 - `kernel.production_replicating_cost` (Discodon's tests import it): read an arm's production cost off the bundle
   scoreboard, `ArmScoreboard.reply_cost_usd`.
 - `analysis.host_declarations_digest` (Discodon's tests import it): read `AnalysisContextBundle.host_declarations_digest`
@@ -255,7 +462,9 @@ imports against this map:
   in the template's `goal_check_names`.
 - `analysis.lint_prose`: no replacement; nothing imported it.
 
-Discodon's production code imports none of these. Nothing stored changes.
+Discodon's production code imports none of these, by its list as re-recorded at 73996c83e. Its tests import three:
+`kernel.production_replicating_cost`, `analysis.check_names` and `analysis.host_declarations_digest`. Nothing stored
+changes.
 
 ### evals: the one caveat list is filled and the first screen computed, with a typed next step per reason (#1192)
 

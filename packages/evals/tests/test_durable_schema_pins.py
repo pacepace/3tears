@@ -1,7 +1,8 @@
 """The durable space's shape is pinned, and it is the one space where a major must ship an upgrader.
 
 ``schema/versioning.py`` splits what people author (templates, rubric dims, judge configs and their tombstones, case
-sets, test cases, calibration ratings, since durable v16 campaigns, and since a later minor the analyst's gap notes) out of
+sets, test cases, calibration ratings, since durable v16 campaigns, and since later minors the analyst's gap notes and
+blind reads) out of
 the evidence core into a version space of its own, forked from core v15 at ``.26``. The core may reset its baseline (a stamp and a refusal, no steps); the durable space never does, so
 this file is the gate that holds it to its promise:
 
@@ -55,20 +56,24 @@ NEVER_MOVES = 15
 PINNED_DURABLE_SCHEMA_VERSION = 17
 
 #: The ``DURABLE_SCHEMA_MINOR`` every digest below was taken under.
-PINNED_DURABLE_SCHEMA_MINOR = 2
+PINNED_DURABLE_SCHEMA_MINOR = 4
 
 #: Each durable type's validation JSON schema, normalised as the core pins normalise it, by ``doc_type``.
 DURABLE_SHAPE_DIGESTS: dict[str, str] = {
-    "calibration_rating": "9d7deaac8013ca1fce10c416d6dc26f43af9c1cbcab0c24f3ff6c32f6eddd0e4",
-    "case_set": "f4addee4ee64df0fbeaa893213facfecf1b6cf8e15b5f3ed2ca0aab93dda9b97",
-    "eval_analyst_gap": "718e58702485287cb248fa1b8c0e9f19d92e66d510de0a6ad4fd079eefe38ed1",
-    "eval_campaign": "69be682c0e27293a9262a8cb2d4db7a8b5b1833eb5ef98c97975238d04170773",
-    "eval_template": "a609f2a6eb5c834d4ca82979913eaf548d8ba982ad26596eb92b8809bde830b1",
-    "eval_test_case": "eab972eb1b34f293b9ecf5d349e0df3fbea19cf14feb8877000a1a109c723854",
-    "judge_config": "df9521a0ebe582eca7398091f48cfd8257e63a0031b1ed1b19a9af563c4e9f57",
-    "judge_config_tombstone": "6ec583a89e64e377284a17554d988566fa6d098648023d3cd7f7454df0968ea5",
-    "rubric_dim": "650a15f9c1e52b5b22aa19a9e4c7b1615bfffd3edd077df0f6417d907fdbc98a",
-    "rubric_dim_tombstone": "66783ee6f1744cfc457ce5818fbc61e9a2baad2aa98a45070aafcc44a4bb3d81",
+    # Re-taken under 17.4 (unshipped) when the blind read's report moved to counts only (#1208): no kappa, bar,
+    # tier or results-needed figure is stored; a reading is per served model. Again (unshipped) when a preference came to
+    # name its served model (``BlindPreference.served_model``), one per served model, never pooled.
+    "blind_read": "358e364b3126def437bf47ea66c71550152722b003d8c8c8c993e46d224697c2",
+    "calibration_rating": "645e9cdeadda3272d71454ae5913cf214e58bb58daa90607f2838228e3db2f2f",
+    "case_set": "529d8a007683e49bd5e8f7a388036561a589994bac0e7e0aec61c5971c7fe3ba",
+    "eval_analyst_gap": "3ef9cddea0af1ef4cbac0eda27ee1059adc448d44e3eb5f60b636442ce0148c8",
+    "eval_campaign": "ddd54af951b17ecc4b044ec562254f6962b66f8107c36e09dc8e0236f87a08fa",
+    "eval_template": "9a672b9436193f7c82143092d7374d6a631725d180411b86f377b1a2dea36fa7",
+    "eval_test_case": "41f926126d3432d6709ea6166fddc93d29b75cbf53fabdb63e75446ff4715eb7",
+    "judge_config": "b2b74c4a71f72c7eef3cb1639b163376ecf6d6112728909e449bb488c4f1a3be",
+    "judge_config_tombstone": "36280d1c8cc3ffca5900a78b8dab4f25ef6c6924bd5abd43ee1d325101286600",
+    "rubric_dim": "012776dfb62950678db74d29c6bf9353facc10cef750c463b860d267a258836d",
+    "rubric_dim_tombstone": "be3b6281602119b4b232b07b2c5d5c1fd25dcdb07431c4de91e7ef4ddddf9af1",
 }
 
 #: The fields the store addresses each durable type by, pinned: a durable step may never touch one.
@@ -99,6 +104,7 @@ PINNED_DURABLE_ADDRESSING_FIELDS: dict[str, frozenset[str]] = {
         {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
     ),
     "eval_analyst_gap": frozenset({"id", "doc_type", "schema_version", "scope_id", "created_at"}),
+    "blind_read": frozenset({"id", "doc_type", "schema_version", "scope_id", "campaign_id", "created_at"}),
 }
 
 #: The frozen durable corpus: one directory per durable major, one stored document per durable type.
@@ -127,6 +133,9 @@ FIXTURE_DIGESTS: dict[str, str] = {
     "v16/judge_config_tombstone.json": "4831dcf1c41fa3725f578d2119d046473c832cec7fb25a3ab04fa57d5b26eea7",
     "v16/rubric_dim.json": "34a340255217cbafb3b9be7c6517d3b200b77aa07aedf77c32f06b372db3bc45",
     "v16/rubric_dim_tombstone.json": "374d32a4b7497c976dec064095209bffd224d861dac6f17b492366e60034ad09",
+    # Re-written from its stored sample (unshipped 17.4, #1208): the report now holds agreement counts for a person and
+    # a served model and a reviewer check, where it held none; its person's preference names no served model.
+    "v17/blind_read.json": "abedc5ff4965a019f10656233c0384347a4e0471aa044f51371edd6cbd2e2e71",
     "v17/calibration_rating.json": "64213ddc7847462b483759ce1ee07928b2245c1c6572deabaebe1801d3044370",
     "v17/eval_analyst_gap.json": "a3a45b37c6417984f079bc78856bfd29a852bd62a8b2971eabe91ea202220258",
     "v17/case_set.json": "60fa982745ed59772ca13d6a5637efd2abf6d8226fe101635370e0fae4a08129",

@@ -83,6 +83,7 @@ from threetears.evals.analysis.floors import (
     project_rate,
     read_floor,
 )
+from threetears.evals.analysis.significance import looks_alpha, looks_confidence
 from threetears.evals.analysis.said import Said, SaidFigure
 from threetears.evals.analysis.stats import (
     INTERVAL_LEVEL,
@@ -220,8 +221,9 @@ class AspectReading(EvalDocumentModel):
         default=None,
         description=(
             "The change's interval in points, low then high, at the nominal level (`stats.INTERVAL_LEVEL`) with no "
-            "correction, as a floor reads it: what `within_margin` is read on, and what an unclear row's "
-            "`projection` counts from. None when the arms' cases cannot bound it, or the aspect declares no margin."
+            "correction, as a floor reads it (under a plan of L looks, at 1 − (1 − level)/L, as a floor's held is "
+            "read): what `within_margin` is read on, and what an unclear row's `projection` counts from. None when "
+            "the arms' cases cannot bound it, or the aspect declares no margin."
         ),
     )
     drop_p: float | None = Field(
@@ -254,8 +256,8 @@ class AspectReading(EvalDocumentModel):
     projection: SampleProjection | None = Field(
         description=(
             "For an `unclear` row, the drop side only: the cases that would show the candidate no worse than the "
-            "control by more than the aspect's margin (read `within_margin`), counted at the nominal level from "
-            "`within_interval`, as a floor's are. None for a settled row, for an aspect with no margin, or where "
+            "control by more than the aspect's margin (read `within_margin`), counted at `within_interval`'s level "
+            "from it, as a floor's are. None for a settled row, for an aspect with no margin, or where "
             "nothing can be projected. No gain is projected."
         )
     )
@@ -655,7 +657,23 @@ class CampaignReadings(EvalDocumentModel):
 
     campaign_id: str = Field(description="The campaign read.")
     alpha: float = Field(
-        gt=0.0, lt=1.0, description="The campaign's α, at which each candidate's two Holm families are tested."
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "The campaign's α: the error each candidate's two Holm families are read for, held over every look a plan "
+            "allows whose size was fixed before its data, and over planner-sized extends only where "
+            "`significance.plan_kept` shows it (on the bounded test, not on the t test); under a plan each look is "
+            "tested at `look_alpha`."
+        ),
+    )
+    # Left out with no plan, so readings with none dump as they did.
+    look_alpha: float | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The level each look's two Holm families are tested at under a plan of L looks (the largest plan among the "
+            "aspects): alpha / L. None with no plan in force, where each look is tested at `alpha`."
+        ),
     )
     control: str | None = Field(description="The control arm's variant key; None when the campaign declares none.")
     control_label: str = Field(description="What a reader calls the control; empty when there is none.")
@@ -852,6 +870,11 @@ class _Row:
             )
             self.levels[confidence] = replace(self.rate, interval=interval, confidence=confidence)
         return self.levels[confidence]
+
+    def within(self, confidence: float) -> RateReading:
+        """The pass rate as a claim of within the margin reads it: its interval at ``confidence``, the level that claim
+        is read at (under a plan of looks, already the tighter one, so it is not tightened again)."""
+        return replace(self.at(confidence), looks=None) if self.rate.looks else self.at(confidence)
 
     def fewest(self) -> int | None:
         """The fewer usable cases of the two arms; None when either was not counted."""
@@ -1281,10 +1304,12 @@ def campaign_readings(
     **A change.** Per aspect and candidate, the aspect's pass rate
     (:func:`~threetears.evals.analysis.floors.aspect_pass_rate`): the change in points, shown better, shown
     worse or unclear, read by the step-down on intervals the module describes, Holm across each candidate's aspects
-    at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, gains and drops apart; nothing corrects across
-    candidates. An aspect with no margin that a question asks is read against zero both ways (a superiority
+    at :data:`~threetears.evals.analysis.stats.SIGNIFICANCE_ALPHA`, or at α/L where an aspect's design plans ``L`` looks
+    (the largest plan among them, :func:`~threetears.evals.analysis.significance.looks_alpha`), gains and drops apart;
+    nothing corrects across candidates. An aspect with no margin that a question asks is read against zero both ways (a superiority
     question: shown better, shown worse or unclear); one asked nothing is never shown worse and tests no drop. A row neither shown better nor shown worse reads ``within_margin`` where
-    the floor's own reading of its pass rate against the margin, at the nominal level, is ``held``. An unclear row
+    the floor's own reading of its pass rate against the margin, at the nominal level, is ``held`` (read, as a floor's
+    is, at the level a plan of looks tightens it to). An unclear row
     with a margin carries the cases that would show the candidate within it
     (:func:`~threetears.evals.analysis.floors.project_rate`, at the nominal level, as a floor's are).
     Per floor and candidate, :func:`~threetears.evals.analysis.floors.evaluate_floor`, at the nominal level
@@ -1320,7 +1345,13 @@ def campaign_readings(
     checked = _checked_bundles(campaign, bundles)
     every = _distinct(arms)
     kind = campaign_kind(every)
-    alpha = SIGNIFICANCE_ALPHA
+    # A candidate's gains and drops are one family across its aspects, read again whenever any of them is: under the
+    # largest plan of looks among them each look reads at α/L, so the family's error holds over every planned look
+    # whose size was fixed before its data (over planner-sized extends, only where `plan_kept` shows it).
+    plans = [bundle.reading_scope.looks.planned for bundle in checked.values() if bundle.reading_scope.looks]
+    plan = max((looks for looks in plans if looks is not None and looks > 1), default=None)
+    alpha = looks_alpha(plan)
+    look_alpha = alpha if plan is not None else None
     labels = [aspect.label for aspect in campaign.aspects]
     bars = _bar_statuses(campaign, checked, every)
     control = campaign.control or next((arm for arm in every if arm.role == "control"), None)
@@ -1330,7 +1361,8 @@ def campaign_readings(
         return _aggregated(
             CampaignReadings(
                 campaign_id=campaign.id,
-                alpha=alpha,
+                alpha=SIGNIFICANCE_ALPHA,
+                look_alpha=look_alpha,
                 control=None,
                 control_label="",
                 aspects=labels,
@@ -1407,7 +1439,13 @@ def campaign_readings(
         drop_level = drop.level if drop is not None else None
         gain_rate = row.at(gain_level) if gain_level is not None else None
         drop_rate = row.at(drop_level) if drop_level is not None else None
-        within_rate = row.at(INTERVAL_LEVEL) if drop_kept(row) and row.margin is not None else None
+        # Read at the level its held is read at: the nominal one, or under a plan of looks the tighter one, so the
+        # interval shown and the cases projected are the ones the reading rests on.
+        within_rate = (
+            row.within(looks_confidence(INTERVAL_LEVEL, row.rate.looks))
+            if drop_kept(row) and row.margin is not None
+            else None
+        )
         fewest = row.fewest()
         projection = (
             project_rate(within_rate, cases=fewest, margin=row.margin, per_case_usd=row.per_case_usd)
@@ -1456,7 +1494,8 @@ def campaign_readings(
     return _aggregated(
         CampaignReadings(
             campaign_id=campaign.id,
-            alpha=alpha,
+            alpha=SIGNIFICANCE_ALPHA,
+            look_alpha=look_alpha,
             control=control.variant_key,
             control_label=control.label,
             aspects=labels,

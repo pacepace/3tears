@@ -13,7 +13,12 @@ and :func:`aspect_pass_rate` reads the aspect's overall pass rate on a candidate
 any rate it reads is shown past it, so each rate is read on its own two-sided bounded interval at
 :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL` (each end a 2.5% one-sided claim), computed again from per-case
 values, never at the family's Bonferroni level: a warning that fires less often for every floor added is no warning.
-The overall pass rate's and the cost per reply's values are the bundle's ``floor_contrasts``, carried whatever the
+**Except under a plan of looks** (``AspectDesign.planned_looks`` = L, read off the bundle's ``reading_scope.looks``):
+``held`` claims the candidate is no worse, and the claim is made at every look, so it is read at
+``1 − (1 − level)/L`` (:func:`~threetears.evals.analysis.significance.looks_confidence`) and holds its tail over all L
+where each look's size was fixed before its data (over planner-sized extends this is not shown: the cost floor's held
+row measures 2.38% and 2.44% against its 2.5% tail with upper bounds above it, and no rate floor's held row is measured);
+broken and unclear still warn at the nominal level at every look. The overall pass rate's and the cost per reply's values are the bundle's ``floor_contrasts``, carried whatever the
 family compares; a check's are its family comparison's (``case_values``). Each rate a rate floor reads (the overall pass
 rate and each check's, or the one reading it names) is in one of three states, and so is cost, on its own interval:
 
@@ -74,6 +79,7 @@ from threetears.evals.analysis.stats import (
     difference_interval,
 )
 from threetears.evals.analysis.said import Said, SaidFigure
+from threetears.evals.analysis.significance import looks_confidence
 from threetears.evals.analysis.style import code, declared_check_name, humanize, judged_name, measure_name
 from threetears.evals.kernel.analysis_measures import MeasureSummary
 from threetears.evals.kernel.declaration import CostLower, DecisionClause, Floor, RateDrop
@@ -286,6 +292,11 @@ class RateReading:
     pass rate, None elsewhere. Each case's share
     weighs the same in the interval whatever its trials, while the passed-of-measured counts pool every trial.
     ``judged`` says ``measure`` is a judged dimension's id, which the rate is named by as one (:func:`_rate_name`).
+    ``looks`` is the looks the aspect's design plans, where it plans more than one: a claim that the drop stays within a
+    margin is then read on the interval at :func:`~threetears.evals.analysis.significance.looks_confidence`
+    (:meth:`held_worst_drop`), so it holds its tail over every planned look whose size was fixed before its data (over
+    planner-sized extends, not shown); a drop shown past the margin is read at
+    ``confidence`` whatever is planned, so it warns at every look.
     """
 
     name: str
@@ -304,6 +315,7 @@ class RateReading:
     trials: tuple[tuple[int, ...], tuple[int, ...]] | None = None
     passes: tuple[tuple[int, ...], tuple[int, ...]] | None = None
     judged: bool = False
+    looks: int | None = None
 
     def drop_bounds(self) -> tuple[float, float]:
         """The arm's drop from the control in points, at best and at worst for the arm."""
@@ -319,6 +331,22 @@ class RateReading:
     def worst_drop(self) -> float | None:
         """The largest drop in points the interval allows; None without an interval."""
         return None if self.interval is None else -100 * self.interval[0]
+
+    def held_worst_drop(self) -> float | None:
+        """The largest drop in points the interval a claim of no worse than a margin reads allows: the interval's own
+        (:meth:`worst_drop`), or under a plan of more than one look the bounded interval on the same per-case values at
+        :func:`~threetears.evals.analysis.significance.looks_confidence`. None without an interval."""
+        if not self.looks or self.looks <= 1 or self.samples is None or self.confidence is None:
+            return self.worst_drop()
+        control, candidate = self.samples
+        interval = bounded_difference_interval(
+            control,
+            candidate,
+            paired=self.paired,
+            value_range=_RATE_RANGE,
+            confidence=looks_confidence(self.confidence, self.looks),
+        )
+        return None if interval is None else -100 * interval[0]
 
     def least_drop(self) -> float | None:
         """The smallest drop in points the interval allows, negative where it allows a gain; None without an
@@ -361,7 +389,9 @@ class FloorReadings:
     costs the bundle carries (``floor_contrasts``), uncorrected; None when none exists. ``cost_compared`` says whether
     any per-case costs were carried for the pair at all, so an absent interval reads as not compared or as no spread.
     ``check_names`` is each goal check's name by its expression (``AnalysisContextBundle.named_checks``), which a
-    floor naming a check no rate here carries is said by.
+    floor naming a check no rate here carries is said by. ``cost_held_interval`` is the cost interval a cost floor's
+    ``held`` reads under a plan of more than one look, at
+    :func:`~threetears.evals.analysis.significance.looks_confidence`; None reads ``cost_interval``.
     """
 
     rates: tuple[RateReading, ...]
@@ -373,6 +403,7 @@ class FloorReadings:
     cost_compared: bool = False
     confidence: float = INTERVAL_LEVEL
     check_names: Mapping[str, str] = field(default_factory=dict)
+    cost_held_interval: tuple[float, float] | None = None
 
     def fewest_cases(self) -> int | None:
         """The fewer usable cases of the two arms; None when either was not counted."""
@@ -788,11 +819,13 @@ def _rate_decision(rate: RateReading, fewest: int, margin: float, *, named: bool
 
     least, most = rate.drop_bounds()
     near, worst = rate.least_drop(), rate.worst_drop()
+    # A claim of no worse than the margin reads the interval a plan of looks tightens; one past it, the nominal one.
+    shown_within = rate.held_worst_drop()
     floored = fewest >= _FLOOR
     if floored and near is not None and near > margin and least > margin:
         return "broken", decided("broken", low=min(near, least))
-    if floored and worst is not None and worst <= margin and most <= margin:
-        return "held", decided("held", high=worst)
+    if floored and shown_within is not None and shown_within <= margin and most <= margin:
+        return "held", decided("held", high=shown_within)
     past = rate.point_drop() > margin
     if rate.degenerate():
         return "unclear", decided("inseparable")
@@ -804,10 +837,10 @@ def _rate_decision(rate: RateReading, fewest: int, margin: float, *, named: bool
         if near > margin:
             return "unclear", decided("past_lost_trials")
         return "unclear", decided("past_point_only", low=near, high=worst)
-    if worst is None:
+    if shown_within is None:
         return "unclear", decided("unshown_uncomputed")
-    if worst > margin:
-        return "unclear", decided("unshown_reaches", high=worst)
+    if shown_within > margin:
+        return "unclear", decided("unshown_reaches", high=shown_within)
     return "unclear", decided("unshown_lost_trials")
 
 
@@ -848,8 +881,8 @@ def _rate_floor(
     if unclear := [verdict for verdict in verdicts if verdict.outcome == "unclear"]:
         lead = next((verdict for verdict in unclear if verdict.rate.point_drop() > margin), unclear[0])
         return "unclear", lead.decision, lead.rate, verdicts
-    widest = max(rates, key=lambda rate: rate.worst_drop() or 0.0)
-    held = _on_rate(widest, "held", margin, named=False).model_copy(update={"high": widest.worst_drop() or 0.0})
+    widest = max(rates, key=lambda rate: rate.held_worst_drop() or 0.0)
+    held = _on_rate(widest, "held", margin, named=False).model_copy(update={"high": widest.held_worst_drop() or 0.0})
     return "held", held, widest, verdicts
 
 
@@ -870,7 +903,9 @@ def _cost_floor(readings: FloorReadings) -> tuple[FloorOutcome, FloorDecision]:
         return "unclear", FloorDecision(case="cost_alike")
     if interval[0] > 0:
         return "broken", FloorDecision(case="cost_more")
-    if interval[1] < 0:
+    # Cheaper is a claim of safety, read on the interval a plan of looks tightens.
+    held = readings.cost_held_interval if readings.cost_held_interval is not None else interval
+    if held[1] < 0:
         return "held", FloorDecision(case="cost_less")
     return "unclear", FloorDecision(case="cost_unseparated")
 
@@ -1108,6 +1143,18 @@ def floor_readings(
         if cost is None
         else difference_interval(*cost.case_values, paired=cost.test == "paired", confidence=confidence)
     )
+    # The looks the aspect's design plans: a claim that a candidate is no worse holds its tail over every one of them
+    # whose size was fixed before its data (over planner-sized extends, not shown).
+    planned = bundle.reading_scope.looks.planned if bundle.reading_scope.looks is not None else None
+    cost_held_interval = (
+        None
+        if cost is None or planned is None or planned <= 1
+        else difference_interval(
+            *cost.case_values, paired=cost.test == "paired", confidence=looks_confidence(confidence, planned)
+        )
+    )
+    if planned is not None and planned > 1:
+        rates = [replace(rate, looks=planned) for rate in rates]
     return FloorReadings(
         rates=tuple(rates),
         control_cost=ours.reply_cost_usd,
@@ -1118,6 +1165,7 @@ def floor_readings(
         cost_compared=cost is not None,
         confidence=confidence,
         check_names=dict(check_names or {}),
+        cost_held_interval=cost_held_interval,
     )
 
 
@@ -1375,8 +1423,10 @@ def project_rate(
     they differ as observed, from the bounded interval computed again at each count.
 
     The rate's own per-case values (``RateReading.samples``, the ones its bounded interval read) are repeated to each
-    count and the bounded interval read again at the rate's own level (``RateReading.confidence``)
-    (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`), so the count keeps the run's spread and the
+    count and the bounded interval read again at the level its ``held`` is read at: the rate's own
+    (``RateReading.confidence``), or under a plan of looks the tighter one
+    (:func:`~threetears.evals.analysis.significance.looks_confidence`), so the cases it names lift the claim at the
+    level it is actually read at (:func:`~threetears.evals.analysis.stats.bounded_cases_to_clear`), and the count keeps the run's spread and the
     interval's small-sample excess. With no true difference the interval may reach the whole margin below its
     estimate; as observed, the margin less the drop the per-case values show. Where the interval already keeps the
     drop within the margin as observed and the floor is met, only the lost trials kept it open (``lost``).
@@ -1398,6 +1448,7 @@ def project_rate(
     if len(control) < 2 or len(contrast) < 2:
         return None
     paired = rate.paired
+    level = looks_confidence(rate.confidence, rate.looks)
     # An unpaired rate's interval is read over each arm's cases apart, at a cost in proportion to them: its search
     # stops sooner and coarser (UNPAIRED_PROJECTION_CAP, or four times the cases observed where that is more, so it
     # always reads past what the run held), so a page of unclear rows is laid out in seconds.
@@ -1411,7 +1462,7 @@ def project_rate(
             contrast,
             paired=paired,
             value_range=(0.0, 1.0),
-            confidence=rate.confidence or 0.0,
+            confidence=level,
             room=room,
             cap=cap,
             resolution=resolution,

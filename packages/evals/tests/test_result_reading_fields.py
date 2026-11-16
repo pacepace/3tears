@@ -550,6 +550,10 @@ def _where(site: str) -> str:
 #: (``analysis/bundle/measures.py``), so no family reads ``judge_reasoning``, ``world_events`` or ``kind_payload``
 #: through it, and planning reads no score's ``reasoning``.
 #:
+#: ``judge_rescores[].rejudged_at`` (judges D1): when a re-judge was made dates it as a look at the result's contrasts
+#: (``aspect_looks``), which a count of re-judges alone cannot place after the first look. It reaches only the looks
+#: count, outside every digest and fingerprint, so a re-judge's time moves no verdict, interval or figure.
+#:
 #: Every record list a result carries is filled in the enriched campaign, so its items' fields are measured, with
 #: two exceptions: ``judge_rescores[].usage[]`` (no family reads a re-judge's own usage rows, so the reading leaves
 #: them out) and ``judge_cut_short{}`` (carried whole by the reading; no campaign
@@ -624,6 +628,7 @@ PINNED: dict[str, frozenset[str]] = {
             "judge_repeats[].scores[].scale",
             "judge_rescores",
             "judge_rescores[].cost_usd",
+            "judge_rescores[].rejudged_at",
             "judge_score()",
             "judge_scores()",
             "judge_seconds",
@@ -1045,6 +1050,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
                 "judge_rescores[].cost_usd",
+                "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
                 "judge_seconds[].judge.model",
                 "judge_seconds[].judge.temperature",
@@ -1122,6 +1128,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
                 "judge_rescores[].cost_usd",
+                "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
                 "judge_seconds[].judge.model",
                 "judge_seconds[].judge.temperature",
@@ -1200,6 +1207,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
                 "judge_rescores[].cost_usd",
+                "judge_rescores[].rejudged_at",
                 "judge_seconds[].judge",
                 "judge_seconds[].judge.model",
                 "judge_seconds[].judge.temperature",
@@ -1313,6 +1321,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_repeats[].scores[].repeat.served_model",
                 "judge_repeats[].scores[].scale",
                 "judge_rescores[].cost_usd",
+                "judge_rescores[].rejudged_at",
                 "judge_score()",
                 "judge_scores()",
                 "judge_seconds[].judge",

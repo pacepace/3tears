@@ -295,12 +295,16 @@ async def test_the_result_carries_the_read_and_each_standing(replies_dir: Path) 
 
     result = await module.replies_eval.run(store=":memory:")
 
-    read, _ = off_loop(read_blind, result.judge, result.host, result.arms, result.control, result.scope_id, result.name)
-    assert read is not None and read.report is not None
+    closed, _ = off_loop(
+        read_blind, result.judge, result.host, result.arms, result.control, result.scope_id, result.name
+    )
+    assert closed is not None
+    read = closed.read
+    assert read.report is not None
     assert sorted(result.blind_read_files) == ["blind_read.csv", "blind_read.html"]
     assert (len(read.items), read.draw.population, read.draw.excluded) == (20, 20, {})
     assert [arm.role for arm in read.arms] == ["control"] and read.ask == ["verdicts"]
-    (standing,) = [sample for sample in read.report.samples if sample.rater_kind == "person"]
+    (standing,) = [sample for sample in read.report.samples if sample.made_by == "person"]
     assert (standing.sample, standing.answered, standing.items) == ("random", 20, 20)
     assert [(c.dimension, c.labels, c.kappa) for c in result.calibrations] == [
         ("answer.answers", 20, None),
