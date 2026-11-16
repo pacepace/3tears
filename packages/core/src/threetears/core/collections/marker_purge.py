@@ -102,8 +102,9 @@ _PASS_SECONDS = histogram(
 _OLDEST_AGE = gauge(
     "threetears_kv_marker_oldest_age_seconds",
     description=(
-        "the age of the oldest marker the last pass found past the purge age (0 when it found none): about the "
-        "purge age plus one interval while the purge keeps up, more when it is behind or not running"
+        "the age of the oldest marker this replica's last pass found past the purge age (0 when it found none or "
+        "another replica held the lease): about the purge age plus one interval while the purge keeps up, more "
+        "when it is behind"
     ),
     label_names=("bucket",),
 )
@@ -258,6 +259,9 @@ class RemovalMarkerPurger:
                     )
                 except LeaseUnavailable:
                     _PASSES.labels(bucket=bucket, outcome="skipped").inc()
+                    # this replica found nothing this hour, so a max across replicas reads the holder's pass, not
+                    # an hours-old one of a replica that held the lease before
+                    _OLDEST_AGE.labels(bucket=bucket).set(0.0)
                     return MarkerPurgePass(purged=0, read=0, oldest_marker_age=None, behind=False, skipped=True)
                 async with held:
                     done = await self._walk(apply=apply, lost=held.lost.is_set)
