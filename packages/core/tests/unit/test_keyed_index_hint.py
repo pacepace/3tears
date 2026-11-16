@@ -249,11 +249,8 @@ class TestServingIndex:
         served = serving_index(_CONV, {"agent_id": 1, "status": "open"}, [Sort("name"), Sort("conversation_id")])
         assert served is not None and served.name == "o88_conv_open_named", served
         assert served.stated == frozenset({("status", "open")})
-        for by in ({"agent_id": 1, "status": AnyOf(["open"])}, {"agent_id": 1}):
+        for by in ({"agent_id": 1, "status": "closed"}, {"agent_id": 1, "status": AnyOf(["open"])}, {"agent_id": 1}):
             assert serving_index(_CONV, by, [Sort("name"), Sort("conversation_id")]) is None, by
-        # another text: no index holds the order, so the index binding the most pins serves it (never the partial one)
-        other = serving_index(_CONV, {"agent_id": 1, "status": "closed"}, [Sort("name"), Sort("conversation_id")])
-        assert other is not None and other.name == "o88_conv_agent_status", other
         unordered = serving_index(_CONV, {"agent_id": 1, "user_id": 2, "status": "open", "name": "n"}, [])
         assert unordered is not None and unordered.name == "o88_conv_agent_user_status", unordered
 
@@ -278,19 +275,23 @@ class TestServingIndex:
             served = serving_index(_SCHED, by, [])
             assert served is not None and served.primary, (by, served)
 
-    def test_an_ordered_read_no_index_serves_takes_the_index_binding_most_pins(self) -> None:
-        """Flips if an ordered read whose order no declared index holds (an expression, or columns no index has after
-        the pins) is not served by the index binding most of its pins, as an unordered read is: YugabyteDB read a
-        user's enabled skills, recency first, through the user's prefix of the unique name index, the disabled ones
-        too, when the read named no index (D5, 2026-11-15). Where only the primary key binds the pins, none is named
-        (the planner's own choice, as for an unordered read)."""
-        by = {"agent_id": 1, "user_id": 2, "enabled": "t"}
-        for order in (_RECENT_FIRST, _RECENT_FIRST[1:]):
-            served = serving_index(_SKILLS, by, order)
-            assert served is not None and served.name == "yb1_skills_agent_user_enabled", (order, served)
-            assert index_hint(served) == "/*+ IndexOnlyScan(t yb1_skills_agent_user_enabled) */ "
+    def test_a_read_sorted_by_an_expression_takes_the_index_binding_most_pins(self) -> None:
+        """Flips if a read sorting by an expression (no plain index holds its order) is not served by the index binding
+        most of its pins, as an unordered read is: YugabyteDB read a user's enabled skills, recency first, through the
+        user's prefix of the unique name index, the disabled ones too, when the read named no index (D5, 2026-11-15).
+        Where only the primary key binds the pins, none is named (the planner's own choice)."""
+        served = serving_index(_SKILLS, {"agent_id": 1, "user_id": 2, "enabled": "t"}, _RECENT_FIRST)
+        assert served is not None and served.name == "yb1_skills_agent_user_enabled", served
+        assert index_hint(served) == "/*+ IndexOnlyScan(t yb1_skills_agent_user_enabled) */ "
         assert serving_index(_SKILLS, {"agent_id": 1}, _RECENT_FIRST) is None
         assert serving_index(_SKILLS, {"user_id": 2}, _RECENT_FIRST) is None
+
+    def test_a_plain_order_no_declared_index_holds_names_none(self) -> None:
+        """Flips if a read sorting by plain columns that no declared index holds after its pins is handed the index
+        binding most of them: an index the declarations do not name may hold that order, and the hint would override
+        it (the hub's provider model pages read v160's undeclared (provider_id, status, id) indexes; named the declared
+        (provider_id, model_name) instead, YugabyteDB read 333 and 1,021 rows for a page of 21; YB1, 2026-11-16)."""
+        assert serving_index(_SKILLS, {"agent_id": 1, "user_id": 2, "enabled": "t"}, _RECENT_FIRST[1:]) is None
 
     def test_a_declared_index_names_plain_identifiers(self) -> None:
         """Flips if an index a hint could not name unquoted, or one sorting a column it lacks, is accepted."""
@@ -393,8 +394,7 @@ class TestTheHintOnYugabyteOnly:
 
     async def test_a_read_by_stating_a_partial_index_names_it_on_yugabyte(self) -> None:
         """Flips if an ordered read_by pinning a partial index's text does not start with the hint naming it on
-        YugabyteDB (its literal written as the predicate's), or one pinning another text names it rather than the
-        index binding its pins (no index holds its order)."""
+        YugabyteDB (its literal written as the predicate's), or one pinning another text names it."""
         reader = _yugabyte()
         await read_by(
             reader, _CONV, by={"agent_id": 1, "status": "open"}, order=[Sort("name"), Sort("conversation_id")]
@@ -403,8 +403,7 @@ class TestTheHintOnYugabyteOnly:
         stated, other = [sql for sql in reader.asked if not sql.startswith("SELECT version()")]
         assert stated.startswith("/*+ IndexOnlyScan(t o88_conv_open_named) */ "), stated
         assert "t.\"status\" = 'open'" in stated, stated
-        assert other.startswith("/*+ IndexOnlyScan(t o88_conv_agent_status) */ "), other
-        assert "o88_conv_open_named" not in other, other
+        assert "/*+" not in other, other
 
     async def test_an_unordered_read_by_names_the_index_on_yugabyte_only(self) -> None:
         """Flips if an unordered read_by pinning the agent and a status does not start with the hint naming

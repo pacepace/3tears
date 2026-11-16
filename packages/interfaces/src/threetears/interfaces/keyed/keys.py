@@ -533,8 +533,8 @@ def serving_index(
     """the declared index that serves a keyed read of ``table`` pinning ``by``, in ``order``; None when none does.
 
     An unordered read (no sort, or one sorting only pinned columns) is served by the index binding most of its pins
-    (:func:`_unordered_serving`); so is an ordered read whose order no declared index holds after its pins (a sort by
-    an expression among them), unless only the primary key binds them (None: the planner's own choice).
+    (:func:`_unordered_serving`); so is a read sorting by an expression, which no plain index holds, unless only the
+    primary key binds its pins (None: the planner's own choice).
 
     :param table: the relation read (a derived relation, or a name no declaration registers, has none)
     :ptype table: Any
@@ -556,24 +556,28 @@ def serving_index(
     sets = frozenset(column for column, value in by.items() if isinstance(column, str) and isinstance(value, AnyOf))
     if not sorts:
         return _unordered_serving(relation, pinned, by, guarded, sets)
-    ranked = (
-        []
-        if any(sort.expression is not None for sort in sorts)
-        else [
-            (rank, index)
-            for named, index in _INDEXES
-            if named == relation and _states(index, by, guarded) and (rank := _rank(index, pinned, sorts)) is not None
-        ]
-    )
-    if ranked:
-        return max(ranked, key=lambda pair: pair[0])[1]
-    # WHY an order no index holds still names the index binding most pins (D5 via the coordinator, 2026-11-15): with
-    # none named, YugabyteDB read a user's enabled skills, recency first (an expression and columns no index holds),
-    # through the user's prefix of uq_skills_agent_user_name, every disabled skill beside them too, rather than
-    # idx_skills_agent_user_enabled, which binds all three pins. The read sorts whatever rows it reads, so the fewest
-    # rows is the best it can do: the unordered read's choice. The primary key stays unnamed (the planner's own)
-    fallback = _unordered_serving(relation, pinned, by, guarded, sets)
-    return None if fallback is None or fallback.primary else fallback
+    if any(sort.expression is not None for sort in sorts):
+        # WHY an order by an expression names the index binding most pins (D5 via the coordinator, 2026-11-15): no
+        # plain B-tree index holds such an order, so the read sorts whatever rows it reads and the fewest is the best
+        # it can do: the unordered read's choice. Unnamed, YugabyteDB read a user's enabled skills (recency first,
+        # COALESCE(last_used_at, '-infinity')) through the user's prefix of uq_skills_agent_user_name, all 2,000 of
+        # them, rather than the 200 enabled ones of idx_skills_agent_user_enabled, which binds all three pins
+        # (skills' test_skills_agent_user_enabled on YugabyteDB: 2,000 rows scanned before, 200 after).
+        # WHY not an order by plain columns that no declared index holds: an index the declarations do not name may
+        # hold it, and naming a declared one overrides it. The hub's provider model pages (gateway_models by
+        # provider, by status / type / dates) read v160's (provider_id, <sort>, id) indexes, which its TableSchema
+        # does not declare; named its declared idx_gw_models_provider_model instead, YugabyteDB read 333 and 1,021
+        # rows for a page of 21 (YB1, 2026-11-16). The primary key stays unnamed (the planner's own choice).
+        fallback = _unordered_serving(relation, pinned, by, guarded, sets)
+        return None if fallback is None or fallback.primary else fallback
+    ranked = [
+        (rank, index)
+        for named, index in _INDEXES
+        if named == relation and _states(index, by, guarded) and (rank := _rank(index, pinned, sorts)) is not None
+    ]
+    if not ranked:
+        return None
+    return max(ranked, key=lambda pair: pair[0])[1]
 
 
 def index_hint(index: DeclaredIndex | None, alias: str = "t") -> str:
