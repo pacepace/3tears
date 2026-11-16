@@ -74,6 +74,8 @@ The engine's stored shapes and the ports a host implements: what is written down
 
 - **`bind_cell_identity`** · *host contract* · function · Make `identity` the answer of `current_cell_identity` for the extent of the block.
   <br>`bind_cell_identity(identity: CellIdentity) -> Iterator[None]`
+- **`check_after`** · *host contract* · function · Return `DocumentStore.by_doc_type`'s `after` checked, as a pair — the calls every implementation refuses.
+  <br>`check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None`
 - **`current_cell_identity`** · *host contract* · function · Return the cell the calling task is working for, or `None` outside any cell.
   <br>`current_cell_identity() -> CellIdentity | None`
 - **`field_in_values`** · *host contract* · function · Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.

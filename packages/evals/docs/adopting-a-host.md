@@ -779,8 +779,8 @@ declare it. To page in your backend:
 
 - **Declare `after` by name**, keyword-only, as `exclude_in_items` is declared (`takes_after` is the probe;
   `**field_eq` does not count, because an old store reads `after=` as an equality predicate and answers nothing).
-  Refuse first what the port refuses, as `DocumentStore.by_doc_type`'s contract states and the store conformance kit
-  checks: an `after` given without `order_by`, or one that is not a pair of a scalar value and a `str` id.
+  Call `check_after(after, order_by)` first: it refuses what the port refuses (`after` without `order_by`, a pair
+  that is not a scalar and a string id).
 - **Break every ordered read's ties by `id`**, in the sort direction, the first page's included: a page cut where
   several documents share a `created_at` must end where the next one starts. On Postgres, descending:
   `ORDER BY data->>'created_at' DESC NULLS LAST, id DESC` (Postgres puts nulls first descending unless told; the
@@ -795,7 +795,7 @@ declare it. To page in your backend:
 **Declaring `after` means honouring it.** A strictly typed adapter must declare it to match the port, but one that
 declares it and drops it hands back the first page again, and a caller reading until `next` is `None` would never
 stop; `page_by_doc_type` refuses such a page with `PageNotPastAfter`, naming your adapter. If your backend cannot page
-yet, declare `after`, refuse what the port refuses (above), and return `order_and_page(rows, order_by=..., descending=..., after=after,
+yet, declare `after`, call `check_after`, and return `order_and_page(rows, order_by=..., descending=..., after=after,
 limit=limit)` over your own unlimited read: correct, and no dearer than the default.
 
 The kit's `page.walk_reads_each_once`, `page.holds_predicates_and_projection`, `page.after_is_honoured` and
