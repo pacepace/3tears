@@ -1471,6 +1471,61 @@ async def test_ensure_jetstream_stream_propagates_when_both_fail() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_jetstream_stream_reconciles_existing_on_the_same_storage() -> None:
+    """a live stream read back on the storage it is declared on is reconciled by update_stream."""
+    from nats.js.api import StorageType
+
+    client, js = _client_with_js()
+    js.add_stream.side_effect = RuntimeError("stream name already in use")
+    js.stream_info.return_value = MagicMock(config=MagicMock(num_replicas=3, storage=StorageType.MEMORY))
+
+    await client.ensure_jetstream_stream(name="audit", subjects=["3tears.audit.>"], max_bytes=1024)
+
+    js.update_stream.assert_awaited_once()
+    config = js.update_stream.await_args.args[0]
+    assert (config.storage, config.max_bytes, config.num_replicas) == (StorageType.MEMORY, 1024, 3)
+
+
+@pytest.mark.asyncio
+async def test_ensure_jetstream_stream_leaves_a_stream_live_on_another_storage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """a live stream on a different storage is not updated (JetStream refuses that), and a WARNING says so."""
+    from nats.js.api import StorageType
+
+    client, js = _client_with_js()
+    js.add_stream.side_effect = RuntimeError("stream name already in use")
+    js.stream_info.return_value = MagicMock(config=MagicMock(num_replicas=3, storage=StorageType.FILE))
+
+    with caplog.at_level(logging.WARNING, logger="threetears.nats.client"):
+        full = await client.ensure_jetstream_stream(name="audit", subjects=["3tears.audit.>"], storage="memory")
+
+    assert full == "3tears-audit"
+    js.update_stream.assert_not_awaited()
+    left = [rec for rec in caplog.records if "left as it is until it is migrated" in rec.getMessage()]
+    assert len(left) == 1 and left[0].levelno == logging.WARNING
+    assert left[0].extra_data == {  # type: ignore[attr-defined]
+        "stream": "3tears-audit",
+        "live_storage": "file",
+        "declared_storage": "memory",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unreadable", [None, "tape"])
+async def test_ensure_jetstream_stream_reconciles_a_stream_whose_storage_cannot_be_read(unreadable: Any) -> None:
+    """a live storage that is absent or unknown is never taken as "another storage": the update still runs."""
+    client, js = _client_with_js()
+    js.add_stream.side_effect = RuntimeError("stream name already in use")
+    js.stream_info.return_value = MagicMock(config=MagicMock(num_replicas=1, storage=unreadable))
+    js.update_stream.side_effect = ValueError("refused by the server")
+
+    with pytest.raises(ValueError, match="refused by the server"):
+        await client.ensure_jetstream_stream(name="audit", subjects=["3tears.audit.>"])
+    js.update_stream.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_ensure_jetstream_stream_raises_on_subjects_overlap_err_code() -> None:
     """subjects claimed by a DIFFERENT stream (JetStream err_code 10065) raise, not reconcile.
 

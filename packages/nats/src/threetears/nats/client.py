@@ -6307,7 +6307,8 @@ class NatsClient:
             # their declarers restarted)
             live = (await js.stream_info(full_name)).config
             config.num_replicas = _never_fewer_replicas(live.num_replicas, replicas)
-            if live.storage is not None and live.storage != storage_type:
+            live_storage = _storage_word(live.storage)
+            if live_storage in _STORAGE_WORDS and live_storage != storage_type.value:
                 # JetStream refuses to change a live stream's storage ("stream configuration update
                 # can not change storage type"), so the update below would raise and take the
                 # declaring service down at every start. a declaration that moved a stream to
@@ -6317,16 +6318,20 @@ class NatsClient:
                 # file stream's history before it is migrated -- and says so. moving it is a
                 # migration: delete and create again, run by an operator (threetears.nats.
                 # stream_storage). the declaration remembered for a restoration is the new one, so
-                # a stream a NATS restart lost comes back on the declared storage.
+                # a stream a NATS restart lost comes back on the declared storage. only a storage
+                # read as one of JetStream's words skips the update: a live config whose storage
+                # cannot be read (absent, or a value this client does not know) is reconciled as
+                # before, so a real failure there still surfaces from update_stream instead of the
+                # stream silently keeping a stale config.
                 log.warning(
                     "jetstream stream is live on %s storage and declared on %s; left as it is until it is migrated",
-                    _storage_word(live.storage),
-                    storage,
+                    live_storage,
+                    storage_type.value,
                     extra={
                         "extra_data": {
                             "stream": full_name,
-                            "live_storage": _storage_word(live.storage),
-                            "declared_storage": storage,
+                            "live_storage": live_storage,
+                            "declared_storage": storage_type.value,
                         }
                     },
                 )
@@ -7208,6 +7213,10 @@ async def _on_disconnected() -> None:
     :rtype: None
     """
     log.warning("NATS disconnected")
+
+
+#: the storages JetStream has, as the words its stream config carries
+_STORAGE_WORDS: Final = frozenset(t.value for t in _NatsStorageType)
 
 
 def _storage_word(storage: Any) -> str:

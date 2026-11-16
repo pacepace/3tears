@@ -37,8 +37,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol
 
-from nats.js.api import StorageType
-
 from threetears.observe import get_logger
 
 __all__ = [
@@ -67,6 +65,13 @@ _ANY_SUBJECT: Final = ">"
 
 #: how far a plan's detail lines sit under its first
 _INDENT: Final = "  "
+
+#: JetStream's storage words. nats-py's ``StorageType`` is a ``str`` enum over exactly these, so a
+#: config read back compares equal to them and one carrying the word goes over the wire the same.
+#: Naming the words keeps this module off nats-py: every JetStream call it makes goes through the
+#: context it is handed (``NatsClient.jetstream_context()``), the wrapper's escape hatch.
+_FILE: Final = "file"
+_MEMORY: Final = "memory"
 
 
 class StreamMoveRefused(Exception):
@@ -271,7 +276,7 @@ async def _plan(
     age = float(max_age_seconds if max_age_seconds is not None else (config.max_age or 0))
     byte_bound = int(max_bytes if max_bytes is not None else (config.max_bytes if config.max_bytes is not None else -1))
     refused: str | None = None
-    if config.storage != StorageType.FILE:
+    if _storage_name(config.storage) != _FILE:
         refused = f"it is on {_storage_name(config.storage)} storage already"
     owing = {c.name: (int(c.num_pending or 0), int(c.num_ack_pending or 0)) for c in durables}
     owing = {name: counts for name, counts in owing.items() if counts != (0, 0)}
@@ -396,7 +401,7 @@ async def stream_move(
         raise StreamMoveRefused(f"{stream}: {move.refused}")
     created = dataclasses.replace(
         config,
-        storage=StorageType.MEMORY,
+        storage=_MEMORY,
         num_replicas=move.replicas,
         max_age=move.max_age_seconds,
         max_bytes=move.max_bytes,
@@ -423,4 +428,4 @@ def moves_wanted(streams: Sequence[Any]) -> list[str]:
     :return: their names, sorted
     :rtype: list[str]
     """
-    return sorted(s.config.name for s in streams if s.config.storage == StorageType.FILE)
+    return sorted(s.config.name for s in streams if _storage_name(s.config.storage) == _FILE)
