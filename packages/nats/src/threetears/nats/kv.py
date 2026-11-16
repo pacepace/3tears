@@ -108,6 +108,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_KV_TIMINGS",
+    "AgedMarkerPurge",
     "RECONCILED_KV_STREAM_FIELDS",
     "REQUESTABLE_KV_STREAM_FIELDS",
     "KvDeclaring",
@@ -1629,6 +1630,27 @@ async def _bind_kv_handle(
     return _KvHandleBinding(kv=opening.kv, entry_ttl=entry_ttl, bound_to=bound_to, created=opening.created)
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class AgedMarkerPurge:
+    """what one page of :meth:`NatsKvBucket.purge_aged_removal_markers` read and purged.
+
+    :ivar read: the messages the page read, the one that stopped it included
+    :ivar purged: the removal markers stored before the cutoff that it purged (without ``apply``, found)
+    :ivar oldest_marker: when the oldest of those markers was stored; ``None`` when the page found none
+    :ivar next_sequence: the stream sequence the next page starts at. Every message below it the page read
+        is a value it kept or a marker it purged, and a marker is never written below a sequence already read
+        (a delete appends), so a walk resumed here misses no marker the cutoff covers
+    :ivar done: the page reached the end of the stream or a message stored at or after the cutoff, past which
+        every message is younger; ``False`` when it stopped at its message budget with more left to read
+    """
+
+    read: int
+    purged: int
+    oldest_marker: datetime | None
+    next_sequence: int
+    done: bool
+
+
 class NatsKvBucket:
     """one JetStream KV bucket.
 
@@ -2987,6 +3009,91 @@ class NatsKvBucket:
             extra={"extra_data": {"bucket": self._full_name, "markers": len(markers)}},
         )
         return len(markers)
+
+    async def purge_aged_removal_markers(
+        self, *, before: datetime, from_sequence: int = 1, max_messages: int, apply: bool = True
+    ) -> AgedMarkerPurge:
+        """purge the delete and purge markers stored before ``before``, one page of the stream walked by sequence.
+
+        The paged form of :meth:`purge_removal_markers` for a bucket whose markers must outlive every read that
+        may still hold their revision (the collections L2: :mod:`threetears.core.collections.marker_purge`), and
+        whose keys are too many to list at once. ``STREAM.INFO``'s subject listing of a 180,000-key bucket is two
+        answers of up to 9 MB, each one ``json.loads`` of about 40 ms on the caller's event loop; this walk asks for
+        one message at a time instead (a ``DIRECT.GET`` of the next message at or after a sequence), so no reply
+        is larger than one entry and the loop runs between every two.
+
+        In a bucket keeping one revision per key every message is its key's latest, so a marker met by sequence
+        is the key's marker. Messages are stored in sequence order, so the walk stops at the first message stored
+        at or after ``before``: every message past it is younger. Each marker is purged by its exact subject and
+        only below its own sequence plus one, so a write that lands on the key after the walk read it has a
+        higher sequence and is kept.
+
+        A stream purge is a management verb only the bucket's OWNER is granted (the hub, for the pod buckets);
+        the reads are ``DIRECT.GET``, which the bucket must allow (every bucket the platform declares does).
+
+        :param before: markers stored before this instant are purged; it must carry a timezone
+        :ptype before: datetime
+        :param from_sequence: the stream sequence to start at: ``1``, or the ``next_sequence`` of the page before
+        :ptype from_sequence: int
+        :param max_messages: the most messages this page reads
+        :ptype max_messages: int
+        :param apply: purge; ``False`` only counts what would be purged
+        :ptype apply: bool
+        :return: what the page read and purged, and where the next page starts
+        :rtype: AgedMarkerPurge
+        :raises ValueError: when ``before`` is naive or ``max_messages`` is under one
+        :raises KvError: when a read or a purge fails, or the server answers a message with no timestamp
+        """
+        if before.tzinfo is None:
+            raise ValueError("purge_aged_removal_markers needs a timezone-aware cutoff")
+        if max_messages < 1:
+            raise ValueError(f"purge_aged_removal_markers reads at least one message, got {max_messages}")
+        stream = kv_stream_name(self._full_name)
+        subjects = f"$KV.{self._full_name}.>"
+        js = self._client.jetstream_context()
+        sequence = max(1, from_sequence)
+        read = purged = 0
+        oldest: datetime | None = None
+        done = False
+        while read < max_messages:
+            try:
+                message = await self._run_op(
+                    lambda sequence=sequence: js.get_msg(
+                        stream, seq=sequence, subject=subjects, next=True, direct=True
+                    ),
+                    passthrough=(NatsNotFoundError,),
+                    failure=f"KV marker walk failed: bucket={self._full_name} sequence={sequence}",
+                )
+            except NatsNotFoundError:
+                # NOSILENT: no message at or after this sequence -- the walk reached the stream's end
+                done = True
+                break
+            read += 1
+            stored = message.time
+            if stored is None:
+                raise KvError(f"KV marker walk: {self._full_name} answered sequence {message.seq} with no timestamp")
+            if stored >= before:
+                # stored in sequence order: this and every message after it is younger than the cutoff,
+                # and the next page starts at it
+                sequence = int(message.seq)
+                done = True
+                break
+            sequence = int(message.seq) + 1
+            if (message.headers or {}).get(_KV_OPERATION_HEADER) not in _KV_REMOVAL_OPERATIONS:
+                continue
+            if oldest is None:
+                oldest = stored
+            if apply:
+                subject = str(message.subject)
+                # below the marker's own sequence plus one: the marker and anything older, never a write that
+                # landed on the key since the marker was read
+                await self._run_op(
+                    lambda subject=subject, sequence=sequence: js.purge_stream(stream, subject=subject, seq=sequence),
+                    passthrough=(),
+                    failure=f"KV marker purge failed: bucket={self._full_name} subject={subject}",
+                )
+            purged += 1
+        return AgedMarkerPurge(read=read, purged=purged, oldest_marker=oldest, next_sequence=sequence, done=done)
 
 
 class _KeyWatchConsumer:

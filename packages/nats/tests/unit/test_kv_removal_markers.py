@@ -10,15 +10,16 @@ below its own sequence plus one, so a write that lands after the sweep read the 
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nats.js.errors import APIError, KeyNotFoundError
+from nats.js.errors import APIError, KeyNotFoundError, NotFoundError
 
 from threetears.nats import NatsKvBucket
 from threetears.nats import kv as kv_module
+from threetears.nats.errors import KvError
 
 _BUCKET = "ns-leases"
 
@@ -159,3 +160,75 @@ class TestTheOwnersSweep:
 
         assert await _bucket(js, _Kv(_LATEST)).purge_removal_markers(apply=False) == 2
         assert js.purged == []
+
+
+# parity-exempt: a KV stream as the walk reads it -- the next message at or after a sequence -- and the purges it
+# sends, recorded; the server's own walk is proven in tests/integration/test_kv_aged_marker_purge_live.py
+class _Walked(_Js):
+    def __init__(self, messages: list[tuple[int, str, str | None, datetime | None]]) -> None:
+        super().__init__()
+        self.messages = messages
+        self.asked: list[int] = []
+
+    async def get_msg(self, stream: str, *, seq: int, subject: str, next: bool, direct: bool) -> Any:
+        assert (stream, subject, next, direct) == (f"KV_{_BUCKET}", f"$KV.{_BUCKET}.>", True, True)
+        self.asked.append(seq)
+        for sequence, key, operation, stored in self.messages:
+            if sequence >= seq:
+                headers = None if operation is None else {"KV-Operation": operation}
+                return MagicMock(seq=sequence, subject=f"$KV.{_BUCKET}.{key}", headers=headers, time=stored)
+        raise NotFoundError()
+
+
+_CUT = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+_OLD = _CUT - timedelta(hours=3)
+_YOUNG = _CUT + timedelta(minutes=1)
+
+
+class TestTheOwnersAgedPurge:
+    async def test_it_purges_old_markers_below_their_own_sequence_and_stops_at_the_first_young_message(self) -> None:
+        js = _Walked(
+            [
+                (3, "t.a", None, _OLD),
+                (8, "t.b", "DEL", _OLD),
+                (9, "t.c", "PURGE", _OLD + timedelta(hours=1)),
+                (12, "t.d", "DEL", _YOUNG),
+                (14, "t.e", "DEL", _YOUNG),
+            ]
+        )
+
+        page = await _bucket(js).purge_aged_removal_markers(before=_CUT, max_messages=100)
+
+        assert js.purged == [(f"KV_{_BUCKET}", f"$KV.{_BUCKET}.t.b", 9), (f"KV_{_BUCKET}", f"$KV.{_BUCKET}.t.c", 10)]
+        assert (page.read, page.purged, page.oldest_marker, page.next_sequence, page.done) == (4, 2, _OLD, 12, True)
+        assert js.asked == [1, 4, 9, 10]
+
+    async def test_a_page_stops_at_its_budget_and_the_next_resumes_after_its_last_message(self) -> None:
+        js = _Walked([(n, f"t.k{n}", "DEL", _OLD) for n in range(1, 6)])
+        bucket = _bucket(js)
+
+        first = await bucket.purge_aged_removal_markers(before=_CUT, max_messages=2)
+        rest = await bucket.purge_aged_removal_markers(before=_CUT, from_sequence=first.next_sequence, max_messages=9)
+
+        assert (first.read, first.purged, first.next_sequence, first.done) == (2, 2, 3, False)
+        assert (rest.read, rest.purged, rest.next_sequence, rest.done) == (3, 3, 6, True)
+
+    async def test_the_end_of_the_stream_ends_the_walk(self) -> None:
+        page = await _bucket(_Walked([])).purge_aged_removal_markers(before=_CUT, from_sequence=40, max_messages=5)
+
+        assert (page.read, page.purged, page.oldest_marker, page.next_sequence, page.done) == (0, 0, None, 40, True)
+
+    async def test_a_dry_run_counts_and_purges_nothing(self) -> None:
+        js = _Walked([(1, "t.a", "DEL", _OLD)])
+
+        page = await _bucket(js).purge_aged_removal_markers(before=_CUT, max_messages=5, apply=False)
+
+        assert page.purged == 1 and js.purged == []
+
+    async def test_a_message_with_no_timestamp_fails_the_walk(self) -> None:
+        with pytest.raises(KvError, match="no timestamp"):
+            await _bucket(_Walked([(1, "t.a", "DEL", None)])).purge_aged_removal_markers(before=_CUT, max_messages=5)
+
+    async def test_a_cutoff_with_no_timezone_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="timezone"):
+            await _bucket(_Walked([])).purge_aged_removal_markers(before=datetime(2026, 11, 15), max_messages=5)
