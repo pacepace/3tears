@@ -39,6 +39,21 @@ was skipped before; an arm with such a row beside rows that named a provider rea
 
 **For hosts:** nothing to do.
 
+### evals: a blind read's preference stores its counts, and its p and verdict are read off them (#1236)
+
+**Changed (a durable minor):** a closed blind read stores each preference as its counts only: `BlindPreference.shares`
+(each pair item's candidate share, in the order its test reads them) and, on the anytime test,
+`BlindPreference.stake_items` (the planned pair items its stakes were fixed for). It no longer writes `p`, `verdict`
+or a too-few `state`; all three are computed off the counts by one function, which the close and the door's responses
+(`blind_read_get`, `blind_reads_list`, `blind_read_close`) read through, so every response and the quick path's console
+line state the same p, verdict and state as before. A preference a 17.4 build stored holds no shares and reads with the
+p, verdict and state it carries, written back as stored; a stored too-few state its counts contradict is refused, as is
+a sign-test share other than 0, a half or 1. The minor carries a recorded exception, for this step only (owner ruling
+2026-11-17): an older build that cannot read a newer document would make it a major, and 17.4 never reached a released
+host. For hosts: read a preference's p, verdict and state from the door's `blind_read_get`, `blind_reads_list` or
+`blind_read_close` response (a closed read's `preferences`), not off a stored document's `report.preferences`; a build
+on a 17.4 SHA cannot read a blind read closed at this minor; no released host is affected.
+
 ### evals: rung 2's judges checked against an adjudicated reference, and the console states a judge's agreement as counts
 
 **Changed:** `examples/2-replies/` checks its judge against a reference (owner rulings, 2026-11-16): `labels.csv`
