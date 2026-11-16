@@ -489,9 +489,9 @@ def read_nearest_statement(
         # packages/agent/memory/tests/integration/test_keyword_arm_plans.py.
         rank = quote_identifier(nearest.rank)
         sql, params = _sql(table, by, None, limit=False, where=where, also=also)
-        outer = ", ".join([*(selected_column(column) for column in columns), f"t.{rank}"])
+        listed = ", ".join([*(selected_column(column) for column in columns), f"t.{rank}"])
         return (
-            f"SELECT {outer} FROM ({sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}) AS t"
+            f"SELECT {listed} FROM ({sql} ORDER BY {distance} DESC{ties} LIMIT ${place + 1}) AS t"
             f" ORDER BY t.{rank} DESC{ties}",
             [*params, nearest.text, limit],
         )
