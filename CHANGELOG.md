@@ -8,12 +8,15 @@ packages (bumped in lock-step).
 
 ### interfaces / agent-memory: a text-ranked read evaluates its columns on the rows it keeps
 
-**Changed:** `read_nearest_statement` given a `TextRank` and a column list ranks the rows whole inside a derived
-table (`SELECT <columns>, t."<rank>" FROM (SELECT t.*, <rank> ... ORDER BY <rank> DESC <then> LIMIT $k) AS t ORDER BY
-t."<rank>" DESC <then>`), so its columns, `Selected` expressions included, run on the `limit` rows kept, not on every
-row the pins and the match leave. Same rows, same order. Memory's hybrid keyword arms (memories, file contents,
-chunks) select `embedding::text`: for a 20,000-memory owner all matching the query, PostgreSQL's arm took 357 ms, 330
-of them casting every embedding to text. A `Selected` expression names the row `t`, as before.
+**Changed:** `read_nearest_statement` given a `TextRank` and a column list ranks only the table's declared primary
+key (with the rank) under its order and `LIMIT`, then reads each kept row again by that key (`CROSS JOIN LATERAL`)
+for its columns, `Selected` expressions included, re-sorted by the rank with the same ties. A relation with no
+declared primary key ranks its rows whole in a derived table instead. Same rows, same order. Before, the columns were
+read and evaluated for every row the pins and the match left. Memory's hybrid keyword arms (memories, file contents,
+chunks) select `embedding::text`. For a 20,000-memory owner whose rows all match the query, the ambient arm took
+357 ms on PostgreSQL (330 of them casting embeddings to text) and 662-699 ms on YugabyteDB (fetching every
+embedding). A `Selected` expression names the row `t`, as before.
+**Added:** `threetears.interfaces.keyed.keys.primary_key(table)`, a registered table's primary key columns.
 
 ### core: shared memory evicts what is only cached before it refuses; one eviction vocabulary; shared-memory autosize
 

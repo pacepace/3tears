@@ -490,9 +490,11 @@ def read_nearest_statement(
         # the agent, see the joined read below) for the select list, Selected expressions included (each names the
         # row ``t``, as the lateral read is named), re-sorted by the rank, ties in the same ``then`` order. Same rows
         # (one statement, one snapshot: each kept row is there to read again), same order. A relation with no
-        # declared primary key (a derived one) keeps the derived-table form. Measured: scratchpad ms1/m2-*.raw
-        # (before), m4-*.raw (derived table), m5-*.raw (by key); held by
-        # packages/agent/memory/tests/integration/test_keyword_arm_plans.py.
+        # declared primary key (a derived one) keeps the derived-table form. By key, the same owner: PostgreSQL 27 ms,
+        # YugabyteDB 74-90 ms. The cost is a key lookup per kept row: a 50-memory owner's 20 kept rows took
+        # 1.8 ms on PostgreSQL as before, and 2.95 ms on YugabyteDB against 1.8-2.2 (its selective queries 1.0 ms
+        # against 0.9). Measured: scratchpad ms1/ms1-m2-*.raw (before), ms1-m4-*.raw (derived table), ms1-m5-*.raw
+        # (by key); held by packages/agent/memory/tests/integration/test_keyword_arm_plans.py.
         rank = quote_identifier(nearest.rank)
         selected = [selected_column(column) for column in columns]
         key = primary_key(table)
