@@ -20,6 +20,9 @@ imported none of the removed names; the claim was false and is corrected there.
 re-taken at 73996c83e (2026-11-16) by `scripts/record_host_imports.py`, whose header names that commit. A new test
 imports every name on a host's production list from the root the host names it on, from the recorded list alone.
 
+**Added:** a shipped example of `run.update_template`: the courier host renames a stratum that already has a name
+and retires a scenario through it (`tests/fixtures/courierhost/`), the two things only it does.
+
 **For hosts:** nothing to change for `check_after`: `from threetears.evals.schema import check_after` imports as it did
 at 7b2e0afeb. The three names Discodon's tests import that left their roots stay removed; their ports are in the
 entry below.

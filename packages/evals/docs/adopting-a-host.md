@@ -2074,7 +2074,9 @@ where it was, so no run reads the template as edited. Each template filled is re
 boot writes nothing. The template write is not conditional, so a name an operator gives through `update_template`
 between the seed's read and its write can be lost, the same race two `update_template` calls have. A host pass at
 boot that fills these names through `update_template` can be dropped; `update_template` stays the seam for an
-operator's own names, which the seed then leaves alone. `reset_definitions` runs the same pass after its writes, on
+operator's own names, which the seed then leaves alone, and for archiving a template outright: the courier host's
+operator steps ([`tests/fixtures/courierhost/`](../tests/fixtures/courierhost/__init__.py), section 8) rename a
+stratum that already has a name and retire a scenario through it. `reset_definitions` runs the same pass after its writes, on
 every corpus template reading `current` after the reset (named in the call or not), so a release step's reset leaves
 no template waiting for the next boot for its names; it reports them under `DefinitionReset.presentation_named` and
 `DefinitionReset.presentation_fill_failed`, the same shapes as the seed's, and `DefinitionReset.render()` prints a
