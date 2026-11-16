@@ -1303,7 +1303,6 @@ __all__ = [
     "PREFERENCE_MIN_ITEMS",
     "BlindAgreementReading",
     "BlindClose",
-    "PassFailCounts",
     "agreed_pairs",
     "blind_sheet",
     "check_answer",
