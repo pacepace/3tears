@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### enforcement: a consumer's in-checkout environment is read as 3tears, the dependency
+
+`no_whole_reads` reads the installed 3tears sources for the indexes and keys a consumer's table list copies from it, and
+skipped every tree inside the repo root, so a consumer whose `.venv` sits in its checkout (`uv sync`, CI and laptops
+alike) read none: each 3tears index its table list copies (`scope_epochs_pending`, `source_tokens_by_signal_c`, ...)
+was judged as its own and refused for naming no purpose. A tree under `site-packages` / `dist-packages` is now the
+dependency's wherever it sits; only 3tears' own source trees are skipped in its own repo.
+
 ### core: a bulk delete and a listened collection's write hold the event loop a few milliseconds at most
 
 `delete_rows` of 33,786 keys (seven key columns, a hub answering at once) held the serving loop 250 ms: every key made
