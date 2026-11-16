@@ -19,11 +19,18 @@ whitespace (`ticket 7`) or a long hex string, and call that case by its place (`
 `results()` call it by its id (`case 1042`). A case's stored id and every recording key are as before.
 
 The place is the one the runs stored: where the case first stands in the member runs' frozen case lists
-(`EvalRun.test_case_ids`), in the order the runs were created. It is the same for an `Eval`'s case and a host's, and
-no number is read off a case's id, so a host case `invoice-2024` that its runs list first is `case 1`. Each trial row of
-a report's bundle carries it, as `TrialRow.case_place` (additive and optional). A page over a bundle that carries no
-place, such as one frozen with an analysis stored before this change, numbers its cases by their place among the cases
-it lists, in the Trials table's order, and says so under its Cases table.
+(`EvalRun.test_case_ids`), chained in the order the runs were created. Where every run holds one list (an `Eval`'s
+arms, the usual host campaign), that is the case's line in it, so a host case `invoice-2024` that its runs list first
+is `case 1`. Where the runs' lists differ (a case added or dropped between runs, a run reordered, runs sharded), it is
+the order the campaign first launched its cases in: no two cases share a number, but no one run's list need hold the
+case at that line, and the page says so under its Cases table. It is the same rule for an `Eval`'s case and a host's,
+and no number is read off a case's id, on the page, its first line, the console or an error line. Each trial row of a
+report's bundle carries it, as `TrialRow.case_place`, and the bundle carries `case_lists_differ` where the lists
+differ (both additive and optional, outside every fingerprint). A page over a bundle that carries no place, such as
+one frozen with an analysis stored before this change, numbers its cases by their place among the cases it lists, in
+the Trials table's order, and says so under its Cases table. A host's own `callable_kind`, which holds no case list,
+names a case with no `name` by its stored id where a grader's value contradicts its declaration (it read a number off
+the id, and refused an id ending in none with an unrelated error).
 
 **Fixed:** an arm whose runner raised on every case printed `Accuracy: 0%, 0 of 3 trials` beside another measure
 `not shown, carried by no result`. No answer was graded, so every measure of such an arm now reads one way,

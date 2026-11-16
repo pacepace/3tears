@@ -1165,6 +1165,7 @@ Its top-level fields, in declaration order; each one's type is described in the 
 | `negative_values` | `list[NegativeValues]` | `[]` | Per measure declared non-negative and per arm, the results that recorded a value below zero on it: a host bug, which the measure's intervals (clamped at zero) would otherwise hide. |
 | `trials` | `list[TrialRow]` | `[]` | One row per trial — one case run once on one arm — with how it ended and why: its failed checks, the judge's scores and reasons, what the case asked, the tail of what the judge was handed and the recorded error, each capped. |
 | `trials_omitted` | `int` | `0` | Trials beyond the cap, left out of `trials`; the scoreboard counts every one. |
+| `case_lists_differ` | `bool` | `False` | Whether the member runs' frozen case lists (`EvalRun.test_case_ids`) differ, so each trial's `case_place` is the order the campaign first launched its cases in, not one run's line, and a page says so where it numbers a case. |
 | `case_sets` | `list[CaseSetRef]` | `[]` | The named, versioned case sets the member runs were launched against, distinct and sorted. |
 | `design_frozen_at` | `str \| None` | `None` | When the campaign's design froze (ISO-8601): its first member run's `created_at`, archived runs included, after which a design edit is refused. |
 | `first_result_at` | `str \| None` | `None` | When the aspect's readings could first be seen (ISO-8601): the earliest `scored_at` among the results of the runs it reads. |

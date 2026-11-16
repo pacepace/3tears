@@ -6,7 +6,8 @@
   bundle holds as well; the first line once numbered the failed cases from 1 and the misses under it from 0, and the
   page numbered them by the order of their labels, then by their place among the cases its bundle held, then by a
   number read off the case's id. The place is the one the runs stored (``EvalRun.test_case_ids``), for a host's case
-  as for an ``Eval``'s; a page over a bundle that carries none numbers the cases it holds and says so.
+  as for an ``Eval``'s, and so is an error line's; where the runs' lists differ, the order the campaign first launched
+  its cases in, and the page says so; a page over a bundle that carries none numbers the cases it holds and says so.
 - **No rate over nothing graded.** An arm whose runner raised on every case had no answer graded, so every measure of
   it reads ``none (no answer was graded)``, a classifier's accuracy as much as a function grader's, and no label's
   precision or recall is printed: never ``Accuracy: 0%, 0 of 3 trials`` beside another measure left unshown. The
@@ -35,11 +36,15 @@ from threetears.evals.analysis import (
     campaign_report_markdown,
     report_markdown,
 )
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import campaign_readings
+from threetears.evals.kernel import CandidateKindDefect
+from threetears.evals.kernel.candidate_kind import VariantConfig
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.quick import EXIT_OK, EXIT_REFUSED, EXIT_RUN_DID_NOT_COMPLETE
 from threetears.evals.quick.files import main
-from threetears.evals.schema.models import EvalCaseStratum, GoalStateOutcome
+from threetears.evals.quick.one_call import callable_kind
+from threetears.evals.schema.models import EvalCaseStratum, EvalTestCase, GoalStateOutcome, WorldSeed
 from packages.evals.tests.campaign_support import ASKED_AT, ASSEMBLED_AT, QUESTION
 from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.factories import (
@@ -52,11 +57,19 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from packages.evals.tests.scripted_table import FakeCellSink
 
-#: What a page says where it numbers its cases by their place among those it holds (``held_places_note``).
+#: What a page says where it numbers its cases by their place among those it holds (``case_numbering_note``).
 HELD_PLACES = (
     "A case without a name is numbered here by its place among the cases this report lists, not by its place in the "
     "list its runs were given, which this report's evidence does not hold."
+)
+
+
+#: What a page says where its runs held different case lists (``case_numbering_note``).
+LAUNCH_ORDER = (
+    "A case without a name is numbered here in the order the campaign first launched its cases; its runs held "
+    "different case lists, so a case's number need not be its line in any one run's list."
 )
 
 
@@ -144,6 +157,7 @@ async def test_past_the_bundle_cap_a_case_keeps_its_place_in_the_list() -> None:
 HOST_CASES = ["invoice-2024", "invoice-7", "invoice-12"]
 HOST_CHECK = "state.shop.cart.length >= 1"
 HOST_STAMP = "2026-10-01T00:00:00+00:00"
+HOST_STAMP_NEXT_DAY = "2026-10-02T00:00:00+00:00"
 
 
 class _BillingStrata(ToyhostStorage):
@@ -154,10 +168,13 @@ class _BillingStrata(ToyhostStorage):
         return [EvalCaseStratum(id=case, stratum="billing") for case in test_case_ids]
 
 
-def _host_page(*, strip_places: bool = False) -> tuple[str, str]:
-    """A host-shaped campaign over :data:`HOST_CASES`: production loses ``invoice-12`` to its test setup, candidate
-    fails ``invoice-2024`` and ``invoice-12``. Its campaign page and its aspect's page, as markdown; with
-    ``strip_places``, over the bundle as one frozen before a case's place was carried."""
+def _host_page(
+    *, strip_places: bool = False, candidate_cases: Sequence[str] = HOST_CASES
+) -> tuple[str, str, AnalysisContextBundle]:
+    """A host-shaped campaign: production runs :data:`HOST_CASES` and loses ``invoice-12`` to its test setup;
+    candidate, launched a day later, runs ``candidate_cases`` and fails every one but ``invoice-7``. Its campaign page
+    and its aspect's page, as markdown, and the bundle; with ``strip_places``, over the bundle as one frozen before a
+    case's place was carried."""
     template = make_template(id="tpl-1", goal_state_checks=[HOST_CHECK], created_at=HOST_STAMP, updated_at=HOST_STAMP)
     arms = [
         CampaignArm(
@@ -170,9 +187,12 @@ def _host_page(*, strip_places: bool = False) -> tuple[str, str]:
     ]
     runs = [
         make_eval_run(
-            id=f"run-{arm}", status="completed", candidate_model=arm, test_case_ids=HOST_CASES, created_at=HOST_STAMP
+            id=f"run-{arm}", status="completed", candidate_model=arm, test_case_ids=list(cases), created_at=stamp
         )
-        for arm in ("production", "candidate")
+        for arm, cases, stamp in (
+            ("production", HOST_CASES, HOST_STAMP),
+            ("candidate", candidate_cases, HOST_STAMP_NEXT_DAY),
+        )
     ]
     results = {
         run.id: [
@@ -182,11 +202,11 @@ def _host_page(*, strip_places: bool = False) -> tuple[str, str]:
                 scope_id=run.scope_id,
                 model=run.candidate_model,
                 test_case_id=case,
-                scored_at=HOST_STAMP,
+                scored_at=run.created_at,
                 goal_state_outcomes=[GoalStateOutcome(expression=HOST_CHECK, passed=index == 0 or case == "invoice-7")],
                 infra_error="the sandbox timed out" if index == 0 and case == "invoice-12" else None,
             )
-            for case in HOST_CASES
+            for case in run.test_case_ids
         ]
         for index, run in enumerate(runs)
     }
@@ -218,7 +238,7 @@ def _host_page(*, strip_places: bool = False) -> tuple[str, str]:
         bundle, assembled_at=ASSEMBLED_AT, campaign_name="places", arm_labels=readings.arm_labels()
     )
     page = build_campaign_report(campaign, readings, {"Invoices": report})
-    return campaign_report_markdown(page), report_markdown(report)
+    return campaign_report_markdown(page), report_markdown(report), bundle
 
 
 def _named_rows(page: str, section: str) -> list[tuple[str, str]]:
@@ -233,7 +253,7 @@ def _named_rows(page: str, section: str) -> list[tuple[str, str]]:
 
 
 def test_a_host_case_is_numbered_by_its_stored_place_never_by_its_id() -> None:
-    campaign_page, aspect_page = _host_page()
+    campaign_page, aspect_page, _bundle = _host_page()
 
     # invoice-2024 is first in the runs' list, invoice-7 second and invoice-12 third: each is called by that place on
     # the campaign page's first line, the aspect page's first line and every table, never by a number in its id.
@@ -257,10 +277,11 @@ def test_a_host_case_is_numbered_by_its_stored_place_never_by_its_id() -> None:
     ]
     assert not re.search(r"case (2024|2025|7|8|12|13)\b", campaign_page + aspect_page)
     assert HELD_PLACES not in campaign_page, "the places are the runs' own, so nothing says otherwise"
+    assert LAUNCH_ORDER not in campaign_page + aspect_page, "both runs held one list, so a number is its line in it"
 
 
 def test_a_bundle_with_no_stored_place_numbers_the_cases_it_holds_and_says_so() -> None:
-    campaign_page, aspect_page = _host_page(strip_places=True)
+    campaign_page, aspect_page, _bundle = _host_page(strip_places=True)
 
     # Held in the Trials table's order, invoice-7 is first, invoice-12 second, invoice-2024 third: one numbering on
     # the whole page, said once where the cases are listed.
@@ -275,6 +296,44 @@ def test_a_bundle_with_no_stored_place_numbers_the_cases_it_holds_and_says_so() 
     assert aspect_page.count(HELD_PLACES) == 1
 
 
+def test_where_the_runs_held_different_lists_a_case_is_numbered_in_launch_order_and_the_page_says_so() -> None:
+    # Production, launched first, runs invoice-2024, invoice-7, invoice-12; candidate, a day later, drops invoice-2024,
+    # adds invoice-31 and reorders: invoice-12, invoice-31, invoice-7. A case is numbered where it first stands in the
+    # two lists chained in launch order, so invoice-31 is case 4, though it is line 2 of the one run that ran it, and
+    # invoice-12 is case 3, though it is line 1 of candidate's.
+    campaign_page, aspect_page, bundle = _host_page(candidate_cases=["invoice-12", "invoice-31", "invoice-7"])
+
+    assert bundle.case_lists_differ
+    assert {trial.case_id: trial.case_place for trial in bundle.trials} == {
+        "invoice-2024": 1,
+        "invoice-7": 2,
+        "invoice-12": 3,
+        "invoice-31": 4,
+    }
+    # The page calls each case by that number everywhere: production lost invoice-12 (case 3); candidate failed
+    # invoice-12 and invoice-31 (case 4); invoice-2024 (case 1) ran on production alone, invoice-31 on candidate alone.
+    lead = next(line for line in campaign_page.splitlines() if line.startswith("**"))
+    assert lead.endswith("Not graded on production: case 3 (the test setup failed: `the sandbox timed out`).**")
+    assert _named_rows(campaign_page, "Cases") == [
+        ("case 1", "no usable trial"),
+        ("case 3", "no usable trial"),
+        ("case 4", "no usable trial"),
+        ("case 2", "—"),
+    ]
+    assert _named_rows(campaign_page, "Trials") == [
+        ("T4", "case 3"),
+        ("T5", "case 4"),
+        ("T3", "case 3"),
+        ("T1", "case 2"),
+        ("T2", "case 2"),
+        ("T6", "case 1"),
+    ]
+    # Said once where the cases are listed, on the campaign page and on the aspect's own.
+    assert campaign_page.count(LAUNCH_ORDER) == 1
+    assert aspect_page.count(LAUNCH_ORDER) == 1
+    assert HELD_PLACES not in campaign_page + aspect_page
+
+
 async def test_an_error_line_calls_the_case_by_its_place_from_1() -> None:
     async def refuses_the_second(case: Mapping[str, Any]) -> str:
         if case["text"] == "ticket 2":
@@ -285,6 +344,42 @@ async def test_an_error_line_calls_the_case_by_its_place_from_1() -> None:
 
     assert result.summary.errors == ["case 2: the candidate raised RuntimeError: no"]
     assert "  error: case 2: the candidate raised RuntimeError: no" in result.render().splitlines()
+
+
+def no_verdict_on_b(case, out):
+    """A check (no annotation) that falls off its end on the case whose text is ``b``: a value no check can hold."""
+    if case["text"] != "b":
+        return True
+
+
+async def test_a_grader_contradicting_its_declaration_names_the_case_by_its_stored_place() -> None:
+    result = await Eval(
+        [{"text": "a", "queue": "x"}, {"text": "b", "queue": "x"}, {"text": "c", "queue": "x"}],
+        hasty,
+        [no_verdict_on_b],
+        k=1,
+    ).run(store=":memory:")
+
+    # The second case in the list the run stored: case 2, read off that list, as every other line calls it.
+    assert "the grader no_verdict_on_b returned None on case 2," in result.summary.errors[-1]
+
+
+async def test_a_host_s_own_kind_names_a_case_by_its_stored_id_never_a_number_read_off_it() -> None:
+    # A host's kind holds no case list: a case with no name is called by its id, never by a number parsed out of it
+    # (``invoice-12`` was "case 13"; an id ending in no number failed with an unrelated error).
+    kind = callable_kind(hasty, [no_verdict_on_b])
+    prepared = await kind.prepare(
+        subject_snapshot=None,
+        variant_config=VariantConfig(candidate_model="m"),
+        world_seed=WorldSeed(),
+        span_window=None,  # type: ignore[arg-type]
+        cassettes=None,
+        world=None,
+    )
+    for case_id in ("invoice-12", "invoice-twelve"):
+        case = EvalTestCase(id=case_id, scope_id="s", template_id="t", host_payload={"case": {"text": "b"}})
+        with pytest.raises(CandidateKindDefect, match=rf"returned None on case {case_id}, "):
+            await kind.invoke(prepared, case, FakeCellSink())
 
 
 async def test_a_case_refused_before_the_run_is_called_by_its_place_from_1() -> None:

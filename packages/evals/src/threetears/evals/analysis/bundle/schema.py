@@ -2737,10 +2737,12 @@ class TrialRow(EvalDocumentModel):
         default=None,
         ge=1,
         description=(
-            "The case's place in the list its runs were given, from 1: where it first stands in the member runs' "
-            "frozen case lists (`EvalRun.test_case_ids`), read in the bundle's run order. A page numbers a case it "
-            "names by no label by this. None in a bundle assembled before it was carried, or for a case no member "
-            "run's list holds; a page then numbers every case by its place among the cases it holds, and says so."
+            "The case's place from 1: where it first stands in the member runs' frozen case lists "
+            "(`EvalRun.test_case_ids`), chained in the bundle's run order. Where every run holds one list, its line "
+            "in that list; where they differ (`AnalysisContextBundle.case_lists_differ`), the order the campaign "
+            "first launched its cases in, which no one run's list need hold. A page numbers a case it names by no "
+            "label by this. None in a bundle assembled before it was carried, or for a case no member run's list "
+            "holds; a page then numbers every case by its place among the cases it holds, and says so."
         ),
     )
     stratum: str | None = Field(default=None, description="The case's stratum; None when it declares none.")
@@ -3118,6 +3120,7 @@ class AnalysisContextBundle(EvalDocumentModel):
     # ruling, 2026-10-28), so a bundle over unchanged runs fingerprints as it did.
     # Unmoved by case places: each trial's `case_place` (#1209) is additive and optional, read off the member runs'
     # frozen case lists, which the evidence already holds, and no part of a version 2 pre-image (`_ADDED_SINCE_V2`).
+    # Nor is `case_lists_differ`, written only when those lists differ, a top-level field outside `_V2_FIELDS`.
     schema_version: int = Field(
         default=66, ge=1, description="Bundle-shape version, for future evolution + fingerprint clarity."
     )
@@ -3587,6 +3590,15 @@ class AnalysisContextBundle(EvalDocumentModel):
     )
     trials_omitted: int = Field(
         default=0, ge=0, description="Trials beyond the cap, left out of `trials`; the scoreboard counts every one."
+    )
+    case_lists_differ: bool = Field(
+        default=False,
+        exclude_if=lambda differ: not differ,
+        description=(
+            "Whether the member runs' frozen case lists (`EvalRun.test_case_ids`) differ, so each trial's "
+            "`case_place` is the order the campaign first launched its cases in, not one run's line, and a page says "
+            "so where it numbers a case. Written only when they differ; no part of the fingerprint."
+        ),
     )
     case_sets: list[CaseSetRef] = Field(
         default_factory=list,

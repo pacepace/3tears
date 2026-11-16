@@ -770,7 +770,7 @@ def callable_kind(
     landing each score as a host measure under the scorer's name. A candidate that raises fails its cell; a scorer that
     raises excludes it; one returning a value its declaration cannot hold
     (:func:`~threetears.evals.quick.graders.declares_a_check`: no finite number, one outside its range, or anything but
-    a bool from a check) fails the run.
+    a bool from a check) fails the run, naming the case by its ``name``, else by its stored id.
 
     :param candidate: The callable under test.
     :ptype candidate: Candidate | ToolUsingCandidate
@@ -860,6 +860,7 @@ class CallableKind:
         tools: Mapping[str, Tool] | None = None,
         recording: ToolRecording | None = None,
         ranges: Mapping[str, tuple[float, float]] | None = None,
+        positions: Mapping[str, int] | None = None,
     ) -> None:
         """Bind the candidate and its scorers.
 
@@ -882,8 +883,14 @@ class CallableKind:
         :ptype recording: ToolRecording | None
         :param ranges: Each scorer's declared range, by its name, which every score it returns must lie in.
         :ptype ranges: Mapping[str, tuple[float, float]] | None
+        :param positions: Each case's index in the case list its runs store (``EvalRun.test_case_ids``), by its stored
+            id, which an error line names a case given no ``id`` by (:func:`_case_called`): the quick path passes the
+            cases it stores, in their order. ``None`` (a host's own kind, :func:`callable_kind`) names such a case by
+            its stored id.
+        :ptype positions: Mapping[str, int] | None
         """
         self._candidate = candidate
+        self._positions = dict(positions or {})
         self._ranges = dict(ranges or {})
         self._tools = dict(tools) if tools is not None else None
         self._scorers = tuple(scorers)
@@ -1033,7 +1040,7 @@ class CallableKind:
                 )
             # Held to its declaration first: a function grader's every value is a verdict or a reading, never a cell
             # to drop, so one its declaration cannot hold fails the run.
-            if (contradicted := self._contradiction(name, score, _case_called(test_case))) is not None:
+            if (contradicted := self._contradiction(name, score, _case_called(test_case, self._positions))) is not None:
                 raise _GraderContradictsItsDeclaration(
                     contradicted,
                     kind=CALLABLE_KIND if self._judge is None else JUDGED_CALLABLE_KIND,
@@ -1159,10 +1166,14 @@ def _reserved_keys_held(test_case: EvalTestCase) -> frozenset[str]:
     return frozenset(key for key, carried in held.items() if carried)
 
 
-def _case_called(test_case: EvalTestCase) -> str:
-    """What a quick case is called in an error line: its own ``id``, else its place from 1 (:func:`_case_names`),
-    read off its stored id, ``<template>-<position>``."""
-    return test_case.name if test_case.name is not None else _place(int(test_case.id.rsplit("-", 1)[-1]))
+def _case_called(test_case: EvalTestCase, positions: Mapping[str, int]) -> str:
+    """What a case is called in an error line: its own ``id`` (``name``), else its place from 1 in the case list its
+    runs store, read off ``positions`` (:func:`_case_names` calls it the same), else, where the kind was handed no
+    order (a host's own kind), its stored id. No number is read off a case's id."""
+    if test_case.name is not None:
+        return test_case.name
+    position = positions.get(test_case.id)
+    return test_case.id if position is None else _place(position)
 
 
 def _missed(expected: str) -> dict[str, bool | float | str]:
@@ -2052,8 +2063,10 @@ def _kind_factory(
     world: World | None,
     recording: ToolRecording | None,
     ranges: Mapping[str, tuple[float, float]],
+    positions: Mapping[str, int],
 ) -> KindFactory:
-    """The factory building each cell's kind: one :class:`CallableKind` for every cell, or a world cell's own kind."""
+    """The factory building each cell's kind: one :class:`CallableKind` for every cell, or a world cell's own kind,
+    each naming a case by its index in ``positions``, the stored case list (:func:`_case_called`)."""
     if world is None or not world.stateful:
         kind = CallableKind(
             cast(Candidate | ToolUsingCandidate, candidate),
@@ -2064,12 +2077,21 @@ def _kind_factory(
             tools=None if world is None else world.functions,
             recording=recording,
             ranges=ranges,
+            positions=positions,
         )
         return lambda _cell: kind
     stateful = world
 
     def over(acting: Candidate) -> CallableKind:
-        return CallableKind(acting, scorers, classifies=classifies, label_field=label_field, judge=judge, ranges=ranges)
+        return CallableKind(
+            acting,
+            scorers,
+            classifies=classifies,
+            label_field=label_field,
+            judge=judge,
+            ranges=ranges,
+            positions=positions,
+        )
 
     def cell_kind(context: CellContext) -> WorldCellKind:
         return WorldCellKind(stateful, cast(WorldAgent, candidate), over, context)
@@ -2087,12 +2109,22 @@ def _logged_kind_factory(
     label_field: str | None,
     judge: Judge | None,
     ranges: Mapping[str, tuple[float, float]],
+    positions: Mapping[str, int],
 ) -> KindFactory:
-    """The factory building each cell's kind for a logged runner: the cell's case and repeat served from the log."""
+    """The factory building each cell's kind for a logged runner: the cell's case and repeat served from the log,
+    each naming a case by its index in ``positions``, the stored case list (:func:`_case_called`)."""
 
     def cell_kind(context: CellContext) -> CallableKind:
         served = log.runner(logged, case_of[context.test_case.id], context.k_iteration)
-        return CallableKind(served, scorers, classifies=classifies, label_field=label_field, judge=judge, ranges=ranges)
+        return CallableKind(
+            served,
+            scorers,
+            classifies=classifies,
+            label_field=label_field,
+            judge=judge,
+            ranges=ranges,
+            positions=positions,
+        )
 
     return cell_kind
 
@@ -2307,6 +2339,9 @@ async def run_arms(
         recording.begin()
     # A logged runner's outputs, read once as the run starts: every cell is served from the same reading.
     case_of = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+    # Each case's index in the list every arm's run stores as its `test_case_ids` (these cases, in this order), which
+    # an error line names a case given no id by.
+    positions = {test_case.id: index for index, test_case in enumerate(test_cases)}
     logged = {
         id(arm.candidate): await run_blocking(host.blocking_executor, arm.candidate.outputs)
         for arm in arms
@@ -2325,6 +2360,7 @@ async def run_arms(
                 label_field=label_field,
                 judge=judge,
                 ranges=ranges,
+                positions=positions,
             )
             if isinstance(arm.candidate, Log)
             else _kind_factory(
@@ -2336,6 +2372,7 @@ async def run_arms(
                 world=world,
                 recording=recording,
                 ranges=ranges,
+                positions=positions,
             ),
             arm=arm.arm,
             shared_subject=subject,

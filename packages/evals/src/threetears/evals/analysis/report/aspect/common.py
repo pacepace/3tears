@@ -334,22 +334,34 @@ def _unit_on(text: str, ruler: MeasureRuler) -> str:
 
 #: What a page says where it numbers its cases by their place among the cases it holds: its bundle carries no case's
 #: place in its runs' case lists (it was frozen with an analysis before places were carried, or a case is in no member
-#: run's list), so a case's number is not its place in the list it was given (:func:`held_places_note`).
+#: run's list), so a case's number is not its place in the list it was given (:func:`case_numbering_note`).
 _NUMBERED_AS_HELD = (
     "A case without a name is numbered here by its place among the cases this report lists, not by its place in the "
     "list its runs were given, which this report's evidence does not hold."
 )
 
+#: What a page says where its runs held different case lists, so a case's number is the order the campaign first
+#: launched its cases in, which no one run's list need hold at that line (:func:`case_numbering_note`).
+_NUMBERED_AS_LAUNCHED = (
+    "A case without a name is numbered here in the order the campaign first launched its cases; its runs held "
+    "different case lists, so a case's number need not be its line in any one run's list."
+)
+
 
 def case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
-    """Each case's number, by case id: its place in the list its runs were given, from 1, as its runs stored it
-    (:attr:`~threetears.evals.analysis.bundle.schema.TrialRow.case_place`), so the first case in the list, the first
-    line of a cases file, is ``case 1`` on the page, on its first line and on its console alike, however many of the
-    run's trials the bundle holds past its cap. No number is read off a case's id.
+    """Each case's number, by case id, as its runs stored it
+    (:attr:`~threetears.evals.analysis.bundle.schema.TrialRow.case_place`): where it first stands in the member runs'
+    frozen case lists (``EvalRun.test_case_ids``), chained in the bundle's run order (created, then id), from 1. Where
+    every run holds one list (an ``Eval``'s every arm, the usual host campaign), that is its line in the list, the
+    first line of a cases file ``case 1``, on the page, on its first line and on its console alike, however many of
+    the run's trials the bundle holds past its cap. Where the runs' lists differ, it is the order the campaign first
+    launched its cases in: no two cases share a number, but no one run's list need hold the case at that line (a
+    second run over the next 38 cases numbers its first case 39), and the page says so (:func:`case_numbering_note`).
+    No number is read off a case's id.
 
     Where any case the bundle holds carries no place (a bundle frozen with an analysis before places were carried),
     every case is numbered by its place among the cases the bundle holds, in the Trials table's order, so one page
-    holds one numbering, and the page says so (:func:`held_places_note`).
+    holds one numbering, and the page says so (:func:`case_numbering_note`).
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
@@ -363,27 +375,30 @@ def case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
     return {case: number for number, case in enumerate(places, start=1)}
 
 
-def held_places_note(bundle: AnalysisContextBundle) -> str | None:
-    """The sentence a page says where it numbers a case it names by no label by its place among the cases it holds,
-    not by its place in the list given (:func:`case_numbers`); None where every case it holds carries its place, or
-    where every case reads by its label, so no number is printed.
+def case_numbering_note(bundle: AnalysisContextBundle) -> str | None:
+    """The sentence a page says of how it numbers a case it names by no label, where that number is not the case's
+    line in the one list its runs were given (:func:`case_numbers`): numbered among the cases it holds, where a case
+    carries no place; else numbered in the order the campaign first launched its cases, where its runs' case lists
+    differ. None where every case carries its place and the runs held one list, or where every case reads by its
+    label, so no number is printed.
 
     :param bundle: The aspect's evidence.
     :ptype bundle: AnalysisContextBundle
     :return: The sentence, or None.
     :rtype: str | None
     """
-    if all(trial.case_place is not None for trial in bundle.trials):
-        return None
     if all(humanize("case", trial.case_label) for trial in bundle.trials):
         return None
-    return _NUMBERED_AS_HELD
+    if any(trial.case_place is None for trial in bundle.trials):
+        return _NUMBERED_AS_HELD
+    return _NUMBERED_AS_LAUNCHED if bundle.case_lists_differ else None
 
 
 def case_namer(bundle: AnalysisContextBundle) -> Callable[[str], str]:
     """Name a case as every table, the verdict and the console do: by the name its author gave it where its label
-    reads as one (``double-charge``), else ``case N``, N its place in the list its runs were given, from 1
-    (:func:`case_numbers`) — never its first input."""
+    reads as one (``double-charge``), else ``case N``, N its place from 1 in its runs' stored case lists, chained in
+    run order: its line in the one list where they agree, the order the campaign first launched its cases in where
+    they differ (:func:`case_numbers`) — never its first input, never a number in its id."""
     labels = {trial.case_id: trial.case_label for trial in bundle.trials}
     numbers = case_numbers(bundle)
 
@@ -404,5 +419,5 @@ __all__ = [
     "NO_STRATUM",
     "case_namer",
     "case_numbers",
-    "held_places_note",
+    "case_numbering_note",
 ]

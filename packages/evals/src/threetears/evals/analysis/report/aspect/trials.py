@@ -13,7 +13,7 @@ from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, Trial
 from threetears.evals.analysis.report.aspect.common import (
     case_namer,
     case_numbers,
-    held_places_note,
+    case_numbering_note,
     _control_key,
     _printed_strata,
     _stratum_word,
@@ -127,8 +127,8 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
             total_rows=len(rows),
         )
     ]
-    if (held := held_places_note(bundle)) is not None:
-        blocks.append(DisclosureBlock(section="cases", source="runs", text=held))
+    if (numbering := case_numbering_note(bundle)) is not None:
+        blocks.append(DisclosureBlock(section="cases", source="runs", text=numbering))
     if bundle.trials_omitted:
         blocks.append(
             DisclosureBlock(
