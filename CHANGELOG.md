@@ -26,13 +26,16 @@ does: no `total spend` line, and the same `spend cap` line (none for a run with 
 only spend a result reports, and no result reported any` after a cap).
 
 A usage row holding only unanswered calls is no longer read as an answer anywhere a reader reads one
-(`usage_answers_nothing`, new in `threetears.evals.kernel`, the rule of `RoleUsage.answers_nothing` read off a stored
-row or a reading): it is no call whose served model went unrecorded (a contestant's served-model reading, and a
+(`RoleUsage.answers_nothing`, the one statement of the rule, which a reading of the row now carries:
+`UsageReading.answers_nothing` and `UsageView.answers_nothing`, new): it is no call whose served model went unrecorded (a contestant's served-model reading, and a
 `runs_attest` statement, which it no longer admits), no candidate model a judge shares, no simulator call whose
 request settings went unverified (the disclosure and the rig's `simulator_sent_settings`), no token count left
 unreported (the bundle's token rollup), no model a role ran on (a lever read off what ran), and no production row
 that left its calls uncounted: an arm's priced share (`ArmScoreboard.pricing`) and its unanswered census's answered
-calls and share (`RoleUnanswered.calls`, `.share`) stay counted, the row adding no answered call.
+calls and share (`RoleUnanswered.calls`, `.share`) stay counted, the row adding no answered call. The census's
+providers read the same rule: a model row that reported no call, token or dollar and counted no unanswered call (a
+row that counted nothing) is read as a row whose provider was or was not recorded, as any answered row is, where it
+was skipped before; an arm with such a row beside rows that named a provider reads `providers_in_part`.
 
 **For hosts:** nothing to do.
 

@@ -23,8 +23,8 @@ never answered. They stand beside the row's spend and never inside it. Contracts
 - **not counted is never zero**: where a role counted only one kind, the bare count and the share are refused as not
   counted, and the kind it counted reads alone; where some trials counted none, every count the cell and the flag
   state reads "at least";
-- **a row standing for no answer** (``RoleUsage.answers_nothing``, read off a stored row or a reading alike through
-  ``usage_answers_nothing``) is never read as an answer: it names no model that served a call, no model a judge
+- **a row standing for no answer** (``RoleUsage.answers_nothing``, the one statement of the rule, which a reading of
+  the row carries) is never read as an answer: it names no model that served a call, no model a judge
   shares, no request settings left unverified, no token count left unreported, and no model a role's lever ran on.
 """
 
@@ -64,7 +64,7 @@ from threetears.evals.analysis.report_input_build import report_input
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CandidateTelemetry, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
-from threetears.evals.kernel import EvalStorage, RoleUsageLedger, UsageReading, usage_answers_nothing
+from threetears.evals.kernel import EvalStorage, RoleUsageLedger, UsageReading
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.sweepables import SHARED_CORE
 from threetears.evals.kernel.result_reading import SharedValues
@@ -656,22 +656,64 @@ _ANSWERED_CANDIDATE = RoleUsage(
 )
 
 
+#: A judge row counting one call lost unanswered and nothing else: the row the owner's rule says answered nothing.
+_LOST: dict[str, Any] = {"role": "judge", "model": "j", "unanswered_lost": 1}
+
+
 @pytest.mark.parametrize(
-    "row",
+    ("fields", "expected"),
     [
-        _UNANSWERED_CANDIDATE,
-        RoleUsage(role="judge", model="j", unanswered_retried=0, unanswered_lost=2),
-        RoleUsage(role="judge", model="j", unanswered_lost=1, call_count=1, cost_usd=0.001),
-        RoleUsage(role="external", provider="p", provider_unit="credits", provider_units=3, unanswered_lost=1),
-        RoleUsage(role="judge", model="j"),
-        _ANSWERED_CANDIDATE,
+        # The unanswered clause: either count, a zero included, makes the row one of unanswered calls; neither is a
+        # row that counted nothing, which is no row of unanswered calls.
+        (_LOST, True),
+        ({"role": "judge", "model": "j", "unanswered_retried": 1}, True),
+        ({"role": "judge", "model": "j", "unanswered_retried": 0}, True),
+        ({"role": "judge", "model": "j", "unanswered_retried": 1, "unanswered_lost": 2}, True),
+        ({"role": "judge", "model": "j"}, False),
+        # Each answered clause alone, beside a counted unanswered call: the row answered something.
+        ({**_LOST, "call_count": 1}, False),
+        ({**_LOST, "cost_usd": 0.0}, False),
+        ({**_LOST, "prompt_tokens": 1}, False),
+        ({**_LOST, "completion_tokens": 1}, False),
+        ({**_LOST, "reasoning_tokens": 1}, False),
+        ({**_LOST, "provider_unit": "credits", "provider_units": 1}, False),
+        # An external row is held to the same rule: its units are its answered clause.
+        ({"role": "external", "provider": "p", "unanswered_lost": 1}, True),
+        (
+            {
+                "role": "external",
+                "provider": "p",
+                "provider_unit": "credits",
+                "provider_units": 3,
+                "unanswered_lost": 1,
+            },
+            False,
+        ),
     ],
-    ids=["lost", "retried-and-lost", "answered-beside", "units-beside", "counted-nothing", "answered"],
+    ids=[
+        "lost",
+        "retried",
+        "retried-zero",
+        "retried-and-lost",
+        "counted-nothing",
+        "calls-beside",
+        "dollars-beside",
+        "prompt-tokens-beside",
+        "completion-tokens-beside",
+        "reasoning-tokens-beside",
+        "units-beside",
+        "external-lost",
+        "external-units-beside",
+    ],
 )
-def test_a_reading_of_a_row_answers_nothing_exactly_where_the_stored_row_does(row: RoleUsage) -> None:
-    """One rule read off either row: a reader of readings reads a row as no answer exactly where the stored row says."""
-    assert usage_answers_nothing(row) is row.answers_nothing
-    assert usage_answers_nothing(UsageReading.of(row, SharedValues())) is row.answers_nothing
+def test_a_row_answers_nothing_only_where_it_counts_unanswered_calls_and_nothing_answered(
+    fields: dict[str, Any], expected: bool
+) -> None:
+    """``RoleUsage.answers_nothing`` is the one statement of the rule, each clause varied alone; a reading of the row
+    carries its value, so a reader of readings reads a row as no answer exactly where the stored row says."""
+    row = RoleUsage.model_validate(fields)
+    assert row.answers_nothing is expected
+    assert UsageReading.of(row, SharedValues()).answers_nothing is expected
 
 
 def test_a_row_that_answered_nothing_names_no_call_whose_served_model_went_unrecorded() -> None:

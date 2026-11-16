@@ -410,7 +410,6 @@ from threetears.evals.kernel.result_reading import (
     SharedValues,
     UsageReading,
     UsageView,
-    usage_answers_nothing,
 )
 from threetears.evals.kernel.run_pages import ResultKey, UnreadableResultKey
 from threetears.evals.kernel.surface import (
@@ -756,7 +755,6 @@ __all__ = [
     "SharedValues",
     "UsageReading",
     "UsageView",
-    "usage_answers_nothing",
     "ResultStore",
     "ResultCondition",
     "ResultOutcome",

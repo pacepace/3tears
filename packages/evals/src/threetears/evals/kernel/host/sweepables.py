@@ -65,7 +65,6 @@ from threetears.evals.schema.values import (
     SweepableValue,
 )
 from threetears.evals.schema.models import ROLE_MODEL_ORIGINS
-from threetears.evals.kernel.result_reading import usage_answers_nothing
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.result_reading import ResultView
@@ -1802,7 +1801,7 @@ def _simulator_sent_settings(_run: EvalRun, results: Sequence[ResultView]) -> li
 
     Read off the ``simulator`` role's usage rows (``RoleUsage.sent_settings``, which already folds every call a row
     counts), never off the run's ``simulator_asked_settings``. A row holding only unanswered calls
-    (:func:`~threetears.evals.kernel.result_reading.usage_answers_nothing`) sent no request a reply came back under,
+    (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) sent no request a reply came back under,
     so it is read as no call, never as one that left its settings unverified.
 
     :param _run: Unused — the run records what it asked, not what was sent.
@@ -1817,7 +1816,7 @@ def _simulator_sent_settings(_run: EvalRun, results: Sequence[ResultView]) -> li
     for result in results:
         for row in result.usage:
             # A row holding only unanswered calls sent no request a reply came back under: no settings to read.
-            if row.role != "simulator" or (row.sent_settings is None and usage_answers_nothing(row)):
+            if row.role != "simulator" or (row.sent_settings is None and row.answers_nothing):
                 continue
             if row.sent_settings is None:
                 return None

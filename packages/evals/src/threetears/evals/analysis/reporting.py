@@ -74,7 +74,6 @@ from threetears.evals.kernel.scoring import (
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.analysis.completeness import degraded_run_disclosures
 from threetears.evals.kernel.usage_capture import count_substituted_deliveries
-from threetears.evals.kernel.result_reading import usage_answers_nothing
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.result_reading import GoalView, ResultView
@@ -244,7 +243,7 @@ def served_reading(result: ResultView) -> ResultServedReading | None:
 
     :param result: The result.
     :ptype result: ResultView
-    A row holding only unanswered calls (:func:`~threetears.evals.kernel.result_reading.usage_answers_nothing`) is
+    A row holding only unanswered calls (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) is
     read as no answer: no model served it, so it names none and is never a call whose served model went unrecorded.
 
     :param result: The result.
@@ -253,9 +252,7 @@ def served_reading(result: ResultView) -> ResultServedReading | None:
         no claim is made about it.
     :rtype: ResultServedReading | None
     """
-    rows = [
-        row for row in result.usage if row.role == "candidate" and (row.served_model or not usage_answers_nothing(row))
-    ]
+    rows = [row for row in result.usage if row.role == "candidate" and (row.served_model or not row.answers_nothing)]
     if not rows:
         return None
     return ResultServedReading(
@@ -951,7 +948,7 @@ class RequestSettingsTally:
         reported = [
             row.sent_settings
             for row in result.usage
-            if row.role == "simulator" and (row.sent_settings is not None or not usage_answers_nothing(row))
+            if row.role == "simulator" and (row.sent_settings is not None or not row.answers_nothing)
         ]
         if reported:
             # One unit per result: unverified when any of its rows is, else every distinct value its rows hold.
@@ -2082,7 +2079,7 @@ class SelfJudgingTally:
 
     def add(self, result: ResultView) -> None:
         """Read the models one result's scores name as judging it and its candidate rows name as answering; a row
-        holding only unanswered calls (:func:`~threetears.evals.kernel.result_reading.usage_answers_nothing`) names
+        holding only unanswered calls (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) names
         a model that answered nothing.
 
         :param result: The result.
@@ -2092,7 +2089,7 @@ class SelfJudgingTally:
         self._candidates |= {
             model
             for row in result.usage
-            if row.role == "candidate" and not usage_answers_nothing(row)
+            if row.role == "candidate" and not row.answers_nothing
             for model in (row.model, row.served_model)
             if model
         }

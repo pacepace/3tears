@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from threetears.evals.analysis.reporting import ScoreRecord, self_judging_models
 from threetears.evals.analysis.lenses.program_budget import ProgramBudget
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.result_reading import ResultView, UsageView, usage_answers_nothing
+from threetears.evals.kernel.result_reading import ResultView, UsageView
 from threetears.evals.kernel.provider import sum_optional_tokens
 from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.kernel.usage_capture import (
@@ -78,7 +78,7 @@ def _token_count_unreported(row: UsageView) -> bool:
     whatever the role meters, where reading it as unmetered would claim sums complete that may not be.
 
     A row holding only unanswered calls
-    (:func:`~threetears.evals.kernel.result_reading.usage_answers_nothing`) left no count out: no call it counts was
+    (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) left no count out: no call it counts was
     answered, so no token was spent to report.
 
     :param row: One usage row.
@@ -86,7 +86,7 @@ def _token_count_unreported(row: UsageView) -> bool:
     :return: ``True`` when the row's prompt or completion count is missing from the sums.
     :rtype: bool
     """
-    if row.role == "external" or usage_answers_nothing(row):
+    if row.role == "external" or row.answers_nothing:
         return False
     # Every other role is token-metered: the roles this build knows, and one a newer build recorded.
     return row.prompt_tokens is None or row.completion_tokens is None
