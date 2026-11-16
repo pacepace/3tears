@@ -103,7 +103,7 @@ from threetears.core.exceptions import (
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger, set_span_attribute, traced
 from threetears.observe.metrics import counter
-from threetears.core.eviction import Declared, Policy, Tier, policies_declared
+from threetears.core.eviction import HITS, MISSES, Declared, Policy, Tier, policies_declared
 from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 if TYPE_CHECKING:
@@ -177,6 +177,9 @@ def _note_undeclared_tenancy(table: str) -> None:
 
 
 EntityT = TypeVar("EntityT", bound=BaseEntity)
+
+#: the L2 kind every collection's entries are held under (:class:`threetears.core.l2_sizes.L2Kind`)
+_L2_KIND: Final = "collections"
 
 #: the JetStream KV key grammar enforced by ``nats-server`` (``kv.go``).
 #: a key (or, here, a key *body*) that falls outside this character set
@@ -3512,6 +3515,10 @@ class BaseCollection(ABC, Generic[EntityT]):
         # through from L3 again; the drop count says whether another drop landed during this read.
         drops_before = self._table_drops
         lookup = await self._l2_lookup(entity_id, distrust_row=self._distrusts_l2(entity_id))
+        if self._nats_client is not None:
+            # the cache family's L2 hit or miss (threetears.core.eviction), under the one bucket every collection
+            # shares; a collection with no L2 asked none
+            (HITS if lookup.row is not None else MISSES).labels(tier=Tier.L2.value, name=_L2_KIND).inc()
         if lookup.row is not None:
             record_tier_read(self.table_name, ReadTier.L2)
             if self._l1 is not None:

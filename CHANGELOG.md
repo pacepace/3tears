@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: the L2 (NATS) on the cache family -- every bucket declares its eviction policy, and its sizes are gauges
+
+- `threetears.core.l2_sizes`: every bucket a 3tears package names declares EVICTABLE or KEEP with its reason
+  (`L2Kind`; only `collections` is a cache), `kind_of(stream, namespace=)` names a live stream's kind (its name
+  without the `KV_`/`OBJ_` prefix, the namespace and a pod's scope; an agent's own coordination bucket is
+  `agent-coordination`), and `L2Sizes` reads every stream once a minute (`STREAM.LIST`) into
+  `threetears_cache_held_bytes`/`_held_entries`/`_budget_bytes{tier="l2"}` per kind and policy, the tier's budget
+  (NATS's own: `max_memory_store x servers / replicas`), and `threetears_cache_sizing_failures_total` when what must
+  be kept reaches a bucket's bound or the tier's budget. A product runs it from the one process that may list every
+  stream (the hub) and declares its own kinds the same way.
+- A collection's L2 read counts `threetears_cache_hits_total`/`_misses_total{tier="l2", name="collections"}`, and a
+  write refused for room (`full`, `exhausted`) `threetears_cache_refusals_total{tier="l2"}`.
+
 ### core: shared memory evicts what is only cached before it refuses; one eviction vocabulary; shared-memory autosize
 
 **Added:** `threetears.core.eviction`, the one vocabulary of the cache tiers (L1, shared memory, L2): `Policy`

@@ -279,3 +279,54 @@ class TestTierReadsAreAPrometheusCounter:
 
         assert REGISTRY.get_sample_value("threetears_tier_reads_total", {"table": table, "tier": "l1"}) == 2
         assert REGISTRY.get_sample_value("threetears_tier_reads_total", {"table": table, "tier": "l3"}) == 1
+
+
+def _family(metric: str) -> float:
+    return REGISTRY.get_sample_value(metric, {"tier": "l2", "name": "collections"}) or 0.0
+
+
+class TestTheCacheFamilyCountsTheL2:
+    """the one cache family (``threetears.core.eviction``) counts the L2 as it counts the L1 and shared memory."""
+
+    @pytest.mark.parametrize(
+        ("error", "refused"),
+        [
+            (KvFullError("full", bucket="b"), True),
+            (KvStoreExhaustedError("out of store", bucket="b"), True),
+            (KvValueTooLargeError("too big", bucket="b"), False),
+            (KvError("connection closed"), False),
+        ],
+    )
+    def test_a_write_with_no_room_is_a_refusal(self, error: KvError, refused: bool) -> None:
+        before = _family("threetears_cache_refusals_total")
+        degrade_l2(error, table=_unique("refusals"), op="put", what="L2 cache write failed")
+        assert _family("threetears_cache_refusals_total") == before + (1 if refused else 0)
+
+    async def test_a_read_l2_answers_is_a_hit_and_one_it_does_not_a_miss(self, registry: CollectionRegistry) -> None:
+        held: dict[str, bytes] = {}
+        bucket = AsyncMock()
+
+        async def get_latest(*, key: str) -> tuple[bytes | None, int]:
+            return held.get(key), 1 if key in held else 0
+
+        async def put(*, key: str, value: bytes, ttl: object = None) -> int:
+            held[key] = value
+            return 1
+
+        bucket.get_latest = AsyncMock(side_effect=get_latest)
+        bucket.put = AsyncMock(side_effect=put)
+        bucket.create = AsyncMock(side_effect=put)
+        async def update(*, key: str, value: bytes, revision: int, ttl: object = None) -> int:
+            return await put(key=key, value=value)
+
+        bucket.update = AsyncMock(side_effect=update)
+        nats = AsyncMock()
+        nats.kv_bucket = AsyncMock(return_value=bucket)
+        coll = _Rows(registry, nats, l3_rows={"e1": {"id": "e1", "score": 1}})
+        hits, misses = _family("threetears_cache_hits_total"), _family("threetears_cache_misses_total")
+
+        assert await coll.get("e1") is not None  # not in L2: a miss, read from L3 and written back
+        assert _family("threetears_cache_misses_total") == misses + 1
+        coll._l1 = None  # the next read reaches L2 rather than this process's L1
+        assert await coll.get("e1") is not None
+        assert _family("threetears_cache_hits_total") == hits + 1

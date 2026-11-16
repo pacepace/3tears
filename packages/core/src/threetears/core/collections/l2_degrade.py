@@ -8,7 +8,10 @@ quiet. :func:`degrade_l2` is the one place every such site sends its failure, an
   ``exhausted`` (the server out of storage), ``too_large`` (the value over a size limit), ``transport``
   (the broker unreachable, slow, or the connection gone) or ``other`` (the server refused for another
   cause), since each has a different remedy and a full bucket must never read as an outage;
-- counts it on ``threetears_l2_degraded_total{table, op, reason}``, which is what an alert reads;
+- counts it on ``threetears_l2_degraded_total{table, op, reason}``, which is what an alert reads, and a
+  ``full`` or ``exhausted`` one also on the cache family's ``threetears_cache_refusals_total{tier="l2",
+  name="collections"}`` (:mod:`threetears.core.eviction`): a write the bucket's (or the servers') memory had no
+  room for, the L2's refusal beside the L1's and shared memory's;
 - logs a WARNING at most once a minute for each table, operation and
   reason, carrying how many it held back since the last, so a sustained failure does not bury every
   other line in the log;
@@ -22,6 +25,7 @@ import threading
 import time
 from typing import Final, Literal
 
+from threetears.core.eviction import REFUSALS, Tier
 from threetears.nats.errors import KvError, KvFullError, KvStoreExhaustedError, KvValueTooLargeError
 from threetears.observe import BuildOnce, get_logger
 from threetears.observe.metrics import counter
@@ -32,6 +36,9 @@ log = get_logger(__name__)
 
 #: the kinds of L2 failure, the counter's ``reason`` label
 type _Reason = Literal["full", "exhausted", "too_large", "transport", "other"]
+
+#: the L2 kind every collection's entries are held under (:class:`threetears.core.l2_sizes.L2Kind`)
+_COLLECTIONS_KIND: Final = "collections"
 
 #: the fewest seconds between two WARNINGs for one table, operation and reason
 _LOG_INTERVAL_SECONDS: Final = 60.0
@@ -129,6 +136,9 @@ def degrade_l2(
     counter(_DEGRADED_NAME, description=_DEGRADED_HELP, label_names=("table", "op", "reason")).labels(
         table=table, op=op, reason=reason
     ).inc()
+    if reason in ("full", "exhausted"):
+        # every collection shares the one ``{ns}-collections`` bucket, the L2 kind its refusals are counted under
+        REFUSALS.labels(tier=Tier.L2.value, name=_COLLECTIONS_KIND).inc()
     if l2_is_the_store:
         if refused_as is not None:
             raise refused_as from exc
