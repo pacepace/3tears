@@ -177,11 +177,15 @@ class _Copy:
         self.last = name
 
     def swept(self) -> None:
-        """the sweep a publish leaves behind, run to its end.
+        """the sweep a publish leaves behind, run to its end: the store's own thread's (:meth:`SharedArrowStore.settle`)
+        and then one on this thread. Nothing of one publish then runs beside what is measured next: a sweep left on the
+        store's thread ran beside every bare write (9 rounds of 9, 2026-11-16) and, on a busy host, into the next
+        publish, contending for the interpreter lock.
 
         :return: nothing
         :rtype: None
         """
+        self.store.settle()
         self.store.sweep()
 
 
@@ -276,13 +280,6 @@ BARE_MULTIPLE = 2.0
 #: stretches the sizes and the bare write unevenly (:func:`~threetears.core.testing.loop_lateness.quietly`)
 HOST_MAY_BE_LATE = 0.020
 
-#: the threads the rounds run on: the publishing thread, and the store's own, which runs the sweep each publish leaves
-#: beside the next round. The rounds are judged only when that many cores were free before and after them
-#: (``quietly(threads=)``): a host whose cores are taken stretches every round while a 1 ms idle loop stays on time --
-#: a whole loop_timing session on 2026-11-16 read every publish round at twice its usual time (fastest 2.37 ms against
-#: 1.6 ms; medians 5.9 ms) and the bare write's fastest at its usual 1.18 ms, its idle loop on time
-ROUND_THREADS = 2
-
 
 def _timed_rounds(small: _Copy, large: _Copy, bare_dir: Path) -> dict[str, list[float]]:
     """each round's publish at N parts, at ten N, and the bare write, measured in turn, after one round to warm.
@@ -319,9 +316,7 @@ class TestAPublishTakesAsLongAsWhatItChanges:
         small, large = copies
         bare_dir = tmp_path / "bare"
         bare_dir.mkdir()
-        times = quietly(
-            lambda: _timed_rounds(small, large, bare_dir), host_may_be_late=HOST_MAY_BE_LATE, threads=ROUND_THREADS
-        )
+        times = quietly(lambda: _timed_rounds(small, large, bare_dir), host_may_be_late=HOST_MAY_BE_LATE)
         # each side's fastest round, as best_seconds_interleaved judges a path against its bare: the host only ever
         # adds time to a round (a thread taken off its core for a few ms, which a 20 ms idle-loop limit does not see),
         # and adds it unevenly; the fastest round is the closest each side comes to its own cost. Measured 2026-11-16
