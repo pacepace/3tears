@@ -92,7 +92,15 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
             f"INSERT INTO {notes} (table_name) "  # noqa: S608 - test identifiers
             f"SELECT 'table_' || g FROM generate_series(0, {_TABLES - 1}, {_WHOLE_EVERY}) g"
         )
+        # ANALYZE reads every seeded note, so each run's plans see the same statistics. At the default target it
+        # samples 30,000 of the 50,010 notes, and how many of the 10 whole-table notes the sample holds decides the
+        # whole-note look's plan: with none or one (about 1 run in 600) the planner reads the joined-key index's NULL
+        # entries instead of the partial whole-note index (null_frac 0 and 1/30000 chose threetears_change_notes_0_key,
+        # cost 8.06 and 12.08 against 12.29; 2/30000 and up chose _whole: PG, 2026-11-16). ANALYZE samples 300 rows
+        # per point of the target, so 1000 reads the whole table.
+        await conn.execute("SET default_statistics_target = 1000")
         await conn.execute(f"ANALYZE {notes}")
+        await conn.execute("RESET default_statistics_target")
         yield _Ring(conn=conn, schema=schema)
     finally:
         await conn.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")

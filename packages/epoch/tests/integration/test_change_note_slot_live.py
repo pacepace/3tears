@@ -139,6 +139,12 @@ class TestNoSaveReadsTheRingRow:
         self, ring: tuple[asyncpg.Pool, str, str], db_container: str
     ) -> None:
         pool, schema, table = ring
+        # "Once per refresh, never per save" needs the 30 saves inside one refresh. The fixture's 4 s fence makes
+        # a refresh due every second (a quarter of the fence), and on a loaded YugabyteDB the saves' 50 round trips
+        # took longer: a second, correct refresh read the ring row (2 reads, 24-minute YB run, 2026-11-15). The
+        # fence writers are told is the ring row's, so tell them the default ten minutes: one refresh then covers
+        # 150 s and the database honours the copy for 300 s, so the count no longer depends on the machine's speed.
+        await pool.execute(f"UPDATE {schema}.{RING_TABLE} SET fence_seconds = 600")
         slot = ChangeNoteSlot(notes_schema=schema)
         writer = await _slot_pool(db_container, schema, slot)
         try:
