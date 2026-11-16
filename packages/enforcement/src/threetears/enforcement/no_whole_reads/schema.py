@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
+import threetears
+
 from threetears.core.authored_yaml import safe_load_authored
 from threetears.enforcement.common import (
     dotted,
@@ -62,6 +64,7 @@ __all__ = [
     "purposes",
     "collect_schema",
     "index_findings",
+    "installed_dependency_roots",
 ]
 
 #: the namespace of a local copy's relations (``snapshot.relation(NAME)``): keyed only by the repo's declared local
@@ -70,6 +73,30 @@ COPY_PREFIX: Final[str] = "copy."
 #: the namespace of a relation a declared relation producer yields at run time (``NoWholeReadsConfig.
 #: relation_producers``): judged by the keys the declaration names, as a declared table is by its own
 PRODUCED_PREFIX: Final[str] = "produced."
+
+#: the directories an environment installs packages into: a tree under one is installed, never the repo's own source
+_INSTALLED_PARTS: Final[frozenset[str]] = frozenset({"site-packages", "dist-packages"})
+
+
+def installed_dependency_roots(repo_root: Path) -> tuple[Path, ...]:
+    """the source trees of the installed 3tears packages, read for their table declarations: every one but the repo's
+    own sources. An environment inside the checkout (a consumer's ``.venv``, as ``uv sync`` makes it in CI and on a
+    laptop) is still the dependency's: skipping it read every 3tears index a consumer's table list copies as the
+    consumer's own, refused for naming no purpose (reports' 0.95 relock, 2026-11-16). Only 3tears' own repo, whose
+    packages are installed from its own trees, reads no tree as a dependency.
+
+    :param repo_root: the repo root
+    :ptype repo_root: Path
+    :return: the trees
+    :rtype: tuple[Path, ...]
+    """
+    root = repo_root.resolve()
+    return tuple(
+        Path(entry)
+        for entry in getattr(threetears, "__path__", [])
+        if not Path(entry).resolve().is_relative_to(root) or _INSTALLED_PARTS & set(Path(entry).resolve().parts)
+    )
+
 
 #: the columns that name a tenant on every table: a key prefix of only these reads a whole tenant
 TENANT_COLUMNS: Final[frozenset[str]] = frozenset({"row_scope", "customer_id"})

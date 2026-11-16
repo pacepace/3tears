@@ -210,7 +210,7 @@ async def test_a_nearest_read_orders_by_the_distance_alone_under_its_limit() -> 
     conn = _Sent()
     await read_nearest(
         conn,
-        "memories",
+        "recalled",
         by={"agent_id": "a", "user_id": "u"},
         nearest=Nearest("embedding", "[1,0]", similarity="similarity"),
         limit=4,
@@ -221,17 +221,17 @@ async def test_a_nearest_read_orders_by_the_distance_alone_under_its_limit() -> 
     distance = 't."embedding" OPERATOR(public.<=>) $4::text::public.vector'
     assert sql == (
         f'SELECT n."memory_id", n."similarity" FROM (SELECT t."memory_id", 1 - ({distance}) AS "similarity", '
-        f'{distance} AS "_nearest_distance" FROM "memories" AS t WHERE t."agent_id" = $1 AND t."user_id" = $2 AND '
+        f'{distance} AS "_nearest_distance" FROM "recalled" AS t WHERE t."agent_id" = $1 AND t."user_id" = $2 AND '
         f'(t.salience >= $3) ORDER BY {distance} LIMIT $5) AS n ORDER BY n."_nearest_distance"'
     )
     assert params == ("a", "u", 0.5, "[1,0]", 4)
     conn.calls.clear()
     # every column (none named): the row travels whole through the wrapper and is spread again; a Selected column is
     # answered under its own name; no similarity named, none answered
-    await read_nearest(conn, "memories", by={"agent_id": "a"}, nearest=Nearest("embedding", "[1]"), limit=2)
+    await read_nearest(conn, "recalled", by={"agent_id": "a"}, nearest=Nearest("embedding", "[1]"), limit=2)
     await read_nearest(
         conn,
-        "memories",
+        "recalled",
         by={"agent_id": "a"},
         nearest=Nearest("embedding", "[1]"),
         limit=2,
@@ -241,7 +241,7 @@ async def test_a_nearest_read_orders_by_the_distance_alone_under_its_limit() -> 
     distance = 't."embedding" OPERATOR(public.<=>) $2::text::public.vector'
     assert whole == (
         f'SELECT (n."_nearest_row").* FROM (SELECT t AS "_nearest_row", {distance} AS "_nearest_distance" FROM '
-        f'"memories" AS t WHERE t."agent_id" = $1 ORDER BY {distance} LIMIT $3) AS n ORDER BY n."_nearest_distance"'
+        f'"recalled" AS t WHERE t."agent_id" = $1 ORDER BY {distance} LIMIT $3) AS n ORDER BY n."_nearest_distance"'
     )
     assert named.startswith('SELECT n."embedding" FROM (SELECT embedding::text AS "embedding", ')
     assert named.endswith('LIMIT $3) AS n ORDER BY n."_nearest_distance"')
@@ -252,10 +252,12 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
     order by that rank descending (best first, as ``ORDER BY fts_rank DESC`` read it) with the query text bound once
     past them and its LIMIT last, or evaluates the columns before that LIMIT rather than over the kept rows alone,
     re-sorted by the rank (WHY at ``read_nearest_statement``)."""
+    # a table no test declares a key for: a declared key makes the read keyed, and the key registry is the process's
+    # ("memories", read here once, is declared by test_schema_backed and failed this test run after it in one worker)
     conn = _Sent()
     await read_nearest(
         conn,
-        "memories",
+        "recalled",
         by={"agent_id": "a", "user_id": "u"},
         nearest=TextRank("search_vector", "red apples"),
         limit=3,
@@ -265,7 +267,7 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
     [(sql, params)] = conn.calls
     rank = "ts_rank_cd(t.\"search_vector\", websearch_to_tsquery('english', $4))"
     assert sql == (
-        f'SELECT t."memory_id", t."fts_rank" FROM (SELECT t.*, {rank} AS "fts_rank" FROM "memories" AS t WHERE '
+        f'SELECT t."memory_id", t."fts_rank" FROM (SELECT t.*, {rank} AS "fts_rank" FROM "recalled" AS t WHERE '
         't."agent_id" = $1 AND t."user_id" = $2 AND ((t.search_vector @@ websearch_to_tsquery(\'english\', $3)) IS '
         f'TRUE) ORDER BY {rank} DESC LIMIT $5) AS t ORDER BY t."fts_rank" DESC'
     )

@@ -95,8 +95,6 @@ from pathlib import Path
 from collections.abc import Mapping
 from typing import Final
 
-import threetears
-
 from threetears.enforcement.common import dotted
 from threetears.enforcement.no_whole_reads.bounded import BoundBy
 from threetears.enforcement.no_whole_reads.declarations import DECLARATIONS_NAME, apply_index_declarations
@@ -106,6 +104,7 @@ from threetears.enforcement.no_whole_reads.schema import (
     SchemaCatalog,
     collect_schema,
     index_findings,
+    installed_dependency_roots,
 )
 from threetears.enforcement.no_whole_reads.use_the_helper import statement_counts, statement_findings
 from threetears.enforcement.no_whole_reads.walker import (
@@ -130,7 +129,6 @@ __all__ = [
     "BoundBy",
     "NoWholeReadsConfig",
     "declaration_defects",
-    "dependency_roots",
     "no_whole_reads_findings",
     "use_the_helper_counts",
     "use_the_helper_findings",
@@ -411,30 +409,6 @@ def _proving_test_defect(
     return defect
 
 
-#: the directories an environment installs packages into: a tree under one is installed, never the repo's own source
-_INSTALLED_PARTS: Final[frozenset[str]] = frozenset({"site-packages", "dist-packages"})
-
-
-def dependency_roots(repo_root: Path) -> tuple[Path, ...]:
-    """the source trees of the installed 3tears packages, read for their table declarations: every one but the repo's
-    own sources. An environment inside the checkout (a consumer's ``.venv``, as ``uv sync`` makes it in CI and on a
-    laptop) is still the dependency's: skipping it read every 3tears index a consumer's table list copies as the
-    consumer's own, refused for naming no purpose (reports' 0.95 relock, 2026-11-16). Only 3tears' own repo, whose
-    packages are installed from its own trees, reads no tree as a dependency.
-
-    :param repo_root: the repo root
-    :ptype repo_root: Path
-    :return: the trees
-    :rtype: tuple[Path, ...]
-    """
-    root = repo_root.resolve()
-    return tuple(
-        Path(entry)
-        for entry in getattr(threetears, "__path__", [])
-        if not Path(entry).resolve().is_relative_to(root) or _INSTALLED_PARTS & set(Path(entry).resolve().parts)
-    )
-
-
 def _keys_of(declared: tuple[str, ...] | tuple[tuple[str, ...], ...]) -> tuple[tuple[str, ...], ...]:
     """a declaration's keys: one key (its columns), or several.
 
@@ -459,7 +433,7 @@ def _schema_of(config: NoWholeReadsConfig) -> SchemaCatalog:
     catalog = collect_schema(
         config.repo_root,
         (*config.src_roots, *config.schema_roots),
-        dependency_roots=dependency_roots(config.repo_root) if config.dependency_schema else (),
+        dependency_roots=installed_dependency_roots(config.repo_root) if config.dependency_schema else (),
         excluded_prefixes=config.excluded_prefixes,
         table_lists=config.table_lists,
     )
