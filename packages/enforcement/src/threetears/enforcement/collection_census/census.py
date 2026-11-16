@@ -15,6 +15,9 @@ For each class:
   ``write_generation`` as the class resolves it; ``reason`` is an opt-out's reason.
 - ``ancestors``: every other census class it subclasses, by qualified name.
 - ``framework``: whether the class is the 3tears framework's rather than the trees' own.
+- ``unnoted_switched_tables`` (once, beside the classes): every table a class switches on (a write generation, or
+  cached absences) that no change-note trigger can note, with why (two keys, or none readable): the reconciler can
+  never name such a table's missed writes (``no_notes``), so followers stay behind on it until they restart.
 - ``transaction_read_gap``: whether the class reads its store its own way (overrides
   ``fetch_from_store``) where the database may decide columns of a write (it inherits a
   ``columns_decided_by_store`` other than ``BaseCollection``'s, which answers none), yet reads
@@ -265,10 +268,15 @@ def census(roots: list[Path], *, framework: bool = False) -> dict[str, Any]:
                 **_tenancy_of(cls),
             }
         )
+    from threetears.core.collections.generation import switched_tables_not_noted
+
     return {
         "classes": sorted(records, key=lambda record: str(record["name"])),
         "import_failures": failures,
         "framework_import_failures": framework_failures,
+        # every table these classes switch on whose change notes no trigger writes, with why: its missed writes are
+        # never named, and every follower is behind on it until a restart (RC2, 2026-11-16)
+        "unnoted_switched_tables": switched_tables_not_noted(),
     }
 
 

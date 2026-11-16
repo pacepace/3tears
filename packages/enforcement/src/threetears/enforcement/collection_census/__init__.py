@@ -15,6 +15,11 @@ inside one of them sees the other. So:
   same write generation. A concrete class of the trees' own whose table cannot be read off the class
   is listed with why, in ``named_per_instance``.
 
+- :func:`find_unnoted_switched_tables` lists every table a class switches on (``tables_with_write_generation``) that
+  no change-note trigger notes (not in ``noted_tables``): two classes naming it with different keys, or none naming a
+  readable key. The write-mark reconciler can never name such a table's missed writes (``no_notes``), so every
+  follower stays behind on it until it restarts.
+
 - :func:`find_transaction_read_gaps` lists the trees' own classes that read their store their own
   way (``fetch_from_store``), may leave columns of a write to the database
   (``columns_decided_by_store``), and read nothing on a caller's transaction
@@ -32,7 +37,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__all__ = ["find_census_problems", "find_transaction_read_gaps", "run_census"]
+__all__ = ["find_census_problems", "find_transaction_read_gaps", "find_unnoted_switched_tables", "run_census"]
 
 
 def run_census(roots: list[Path], *, framework: bool = False) -> dict[str, Any]:
@@ -145,3 +150,33 @@ def find_transaction_read_gaps(census: dict[str, Any]) -> list[str]:
         for record in census["classes"]
         if record.get("transaction_read_gap", False) and not record.get("framework", False)
     ]
+
+
+def find_unnoted_switched_tables(census: dict[str, Any], allowed: dict[str, str] | None = None) -> list[str]:
+    """every table a census's classes switch on that no change-note trigger notes, with why.
+
+    ``tables_with_write_generation`` must be a subset of ``noted_tables``: a switched-on table with no note has its
+    lost advances recorded keys unknown with no notes bracket (``no_notes``), and every follower stays behind on it
+    until it restarts. With ``framework=True`` the framework's tables are in both sets too, so a product class naming a
+    framework table with another key is caught here.
+
+    :param census: what :func:`run_census` found
+    :ptype census: dict[str, Any]
+    :param allowed: tables known unnoted, each with why, which a caller lists rather than fixes; a listed table the
+        census no longer finds unnoted is reported, so the list only shrinks
+    :ptype allowed: dict[str, str] | None
+    :return: one line per table, sorted
+    :rtype: list[str]
+    """
+    listed = allowed or {}
+    unnoted: dict[str, str] = census.get("unnoted_switched_tables", {})
+    found = [
+        f"table {table!r} has a write generation and no change note: {why}"
+        for table, why in sorted(unnoted.items())
+        if table not in listed
+    ]
+    found.extend(
+        f"listed as unnoted, but {table!r} is noted now (or no longer switched on): drop it from the list"
+        for table in sorted(set(listed) - set(unnoted))
+    )
+    return found

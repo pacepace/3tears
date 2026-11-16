@@ -27,7 +27,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from threetears.core.collections.change_notes import noted_keys_page, noted_rows_since
+from threetears.core.collections.change_notes import NotedRows, noted_keys_page, noted_rows_since, whole_noted_change
 from threetears.core.ddl.change_notes import NOTE_RING_SIZE, RING_TABLE, note_table
 from threetears.core.sql_fragments import quote_identifier
 from threetears.core.testing.note_ring import install_note_ring
@@ -170,7 +170,7 @@ class _Kept:
 async def test_noted_rows_since_answers_what_the_hand_written_statement_answered(ring: _Ring) -> None:
     """Flips if noted_rows_since (read_row_beside over the ring row and one keyed leg a slot) reads other notes than
     the old one statement, or decides otherwise (unavailable, not covered, no notes, too many), over randomized
-    rings; each decision is reached."""
+    rings; each decision is reached. Past the cap it names every whole-table note the old statement holds uncapped."""
     rng = random.Random(20261115)
     owner = quote_identifier(ring.schema)
     reached: set[str] = set()
@@ -181,7 +181,7 @@ async def test_noted_rows_since_answers_what_the_hand_written_statement_answered
             old = await ring.conn.fetch(_old_noted_rows_sql(owner), _ASKED, since, cap + 1)
             kept = _Kept(ring.conn)
             answer = await noted_rows_since(kept, notes_schema=ring.schema, table=_ASKED, since=since, cap=cap)
-            [new] = kept.answers
+            new = kept.answers[0]
             assert bool(old) == bool(new), case
             if not old:
                 continue
@@ -191,14 +191,35 @@ async def test_noted_rows_since_answers_what_the_hand_written_statement_answered
             assert reach == ring_row["reach"], (case, reach, ring_row["reach"])
             decided = _decided(old, covered, cap)
             reached.add(decided)
-            assert (answer if isinstance(answer, str) else "notes") == decided, (case, cap, answer, decided)
+            too_many = isinstance(answer, NotedRows) and answer.too_many_rows
+            said = "too_many_rows" if too_many else answer if isinstance(answer, str) else "notes"
+            assert said == decided, (case, cap, answer, decided)
+            if too_many:
+                # past the cap the whole-table notes are read alone, after the statement (a look a slot, then those in
+                # reach by their keys; RC2, 2026-11-16: the answer was "too_many_rows" and named none of them, so a
+                # truncate in the window was never recorded): every one the old statement reads with no cap, each
+                # tenant's folded into one change
+                assert isinstance(answer, NotedRows) and not answer.rows
+                assert len(kept.answers) >= 2, case
+                every = await ring.conn.fetch(_old_noted_rows_sql(owner), _ASKED, since, 1_000_000)
+                reaches: dict[str | None, list[Any]] = {}
+                for row in every:
+                    if row["noted"] and row["key_text"] is None:
+                        reaches.setdefault(row["tenant"], []).append(row["columns"])
+                expected = [whole_noted_change(_ASKED, tenant, held) for tenant, held in reaches.items()]
+                assert sorted(map(repr, answer.whole)) == sorted(map(repr, expected)), (case, cap)
+                assert answer.whole_table == bool(expected), case
+                if expected:
+                    reached.add("too_many_rows_with_whole")
+            else:
+                assert len(kept.answers) == 1, case
             if cap == 1_000:
                 # the same notes, each once
                 assert _notes(new, 5) == _notes(old, 3), (case, cap)
             else:
                 # past the cap which notes come is the database's, as it was: the same count
                 assert len([r for r in new if r["noted"]]) == len([r for r in old if r["noted"]]), (case, cap)
-    assert reached >= {"not_covered", "no_notes", "too_many_rows", "notes"}, reached
+    assert reached >= {"not_covered", "no_notes", "too_many_rows", "too_many_rows_with_whole", "notes"}, reached
 
 
 async def test_a_noted_keys_pages_ring_read_answers_what_the_hand_written_statement_answered(ring: _Ring) -> None:

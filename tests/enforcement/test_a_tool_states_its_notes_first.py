@@ -88,6 +88,10 @@ NOTE_BUILT_AFTER_ON_PURPOSE: dict[str, str] = {
         "no note: the change-note ring's slot table name (note_table, a note TABLE), schema-qualified for the keyed "
         "scan of that slot; nothing a tool returns"
     ),
+    "packages/core/src/threetears/core/collections/change_notes.py:_noted_whole_since:note_table(slot)": (
+        "no note: the change-note ring's slot table name (note_table, a note TABLE), schema-qualified for the keyed "
+        "scan of that slot's whole-table notes; nothing a tool returns"
+    ),
     "packages/search/src/threetears/search/bind_answer.py:_head:notes": (
         "the one-line attribution AR-G2 requires first, naming whose synthesis follows; the note comes right "
         "under it, before the answer text and its sources"

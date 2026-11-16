@@ -42,7 +42,10 @@ from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections import WRITE_GENERATION, BaseCollection, CollectionRegistry
 from threetears.core.collections.change_note_keeper import ChangeNoteKeeper, ScrubPass
-from threetears.core.collections.change_notes import RESTORE_BUDGET_RATIO
+from threetears.core.collections.change_notes import (
+    RESTORE_BUDGET_RATIO,
+    PoolNotedKeysReader,
+)
 from threetears.core.collections.epoch_change import RESET_REASON, ChangedRow, key_text, read_epoch_change_body
 from threetears.core.collections.generation import NotedTable, tenancy_of_table
 from threetears.core.collections.l2_first import run_l2_first_worker
@@ -51,6 +54,7 @@ from threetears.core.collections.schema_backed import STRING_TYPE, TableSchema, 
 from threetears.core.collections.schema_backed import Column as SchemaColumn
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.ddl.change_notes import (
+    WHOLE_COPY_ROWS,
     NOTE_REACH_SETTING,
     NOTE_RING_SIZE,
     NOTE_TRIGGER,
@@ -1016,6 +1020,151 @@ class TestTheReconcilerKeysEachSchemasChange:
                 assert read_epoch_change_body(entry.value, table, f"log:{entry.seq}").keys_unknown
         finally:
             await pool.execute(f"DROP SCHEMA IF EXISTS {other} CASCADE")
+
+
+class TestAReconciledWriteTooLargeToRecordReachesAFollower:
+    async def test_the_follower_applies_every_noted_key_and_is_current_without_a_restart(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        """Flips if the reconciler records a lost write of more rows than one record names as keys unknown with no notes
+        bracket: every follower is then behind on the table until it restarts, and the rows stay stale in it."""
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        await _keeper(pool, schema, table, source)
+        for statement in write_marks_ddl(schema):
+            await pool.execute(statement)
+        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
+        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reader = EpochGenerationReader(bus)
+
+        # a follower whose reader names a commit's keys from its notes, as a pod's broker transport does
+        registry = CollectionRegistry()
+        registry.follow_generation(table)
+        registry.set_noted_keys_reader(PoolNotedKeysReader(pool, notes_schema=schema))
+        heard: set[str] = set()
+        dropped: list[bool] = []
+        registry.register_derived_cache(
+            table, on_row=lambda message: heard.add(str(message.ids[0])), on_table_dropped=lambda: dropped.append(True)
+        )
+        await pool.execute(f"INSERT INTO {table} VALUES ('seed', 'o', '1')")
+        await reconciler.run_pass()
+        await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+        assert registry.behind_reason(table) is None
+
+        # one transaction writes more rows than one record names, and its writer dies before its advance
+        many = WHOLE_COPY_ROWS + 1
+        await pool.execute(
+            f"INSERT INTO {table} SELECT 'many-' || g, 'o', '1' FROM generate_series(1, $1::int) g",  # noqa: S608
+            many,
+        )
+        assert (await reconciler.run_pass()).advanced == (table,)
+        for _ in range(2):
+            # a second pass changes nothing: the follower is current, not behind until its next start
+            await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+            assert registry.behind_reason(table) is None
+        assert heard >= {f"many-{g}" for g in range(1, many + 1)}, "every row the lost advance changed is evicted"
+        assert not dropped, "never by dropping the table"
+
+    async def test_a_truncate_in_the_window_is_recorded_whole_beside_the_bracket(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        """Flips if a whole-table note inside a window of more rows than one record names is dropped: the truncate's
+        own advance was lost too, so the bracket's keys alone leave every row the truncate removed in a follower (red on
+        3d221b26e: only the bracket was recorded)."""
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        await _keeper(pool, schema, table, source)
+        for statement in write_marks_ddl(schema):
+            await pool.execute(statement)
+        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
+        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reader = EpochGenerationReader(bus)
+        registry = CollectionRegistry()
+        registry.follow_generation(table)
+        registry.set_noted_keys_reader(PoolNotedKeysReader(pool, notes_schema=schema))
+        heard: set[str] = set()
+        dropped: list[bool] = []
+        registry.register_derived_cache(
+            table, on_row=lambda message: heard.add(str(message.ids[0])), on_table_dropped=lambda: dropped.append(True)
+        )
+        await pool.execute(f"INSERT INTO {table} VALUES ('seed', 'o', '1')")
+        await reconciler.run_pass()
+        await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+        seen = await reader.read(table)
+
+        # a truncate and a reload of more rows than one record names, in one transaction, whose advance was lost
+        many = WHOLE_COPY_ROWS + 1
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(f"TRUNCATE {table}")
+            await conn.execute(
+                f"INSERT INTO {table} SELECT 'many-' || g, 'o', '1' FROM generate_series(1, $1::int) g",  # noqa: S608
+                many,
+            )
+        assert (await reconciler.run_pass()).advanced == (table,)
+        token = await reader.read(table)
+        assert token is not None and seen is not None
+        walk = await reader.changes_after(table, seen, token)
+        kinds = sorted("whole" if change.whole_table else "bracket" for change in walk.changes)
+        # the truncate's whole table (a platform table's: _all, every row) covers the bracket's keys, so it alone
+        assert kinds == ["whole"], "the truncate recorded whole, and no bracket under the tenant it covers"
+        await registry.catch_up_generation(table, token, changes=reader)
+        assert registry.behind_reason(table) is None
+        assert dropped, "the truncate reaches the follower: 'seed' is gone from it"
+
+
+class TestAFollowerOnADirectPoolReadsTheNotesItself:
+    async def test_a_bracketed_keys_unknown_record_is_applied_from_the_notes_and_the_follower_converges(
+        self, ring: tuple[asyncpg.Pool, str, str]
+    ) -> None:
+        """Flips if a registry on a direct L3 pool (the hub's own followers: access tables, registry auth) has no
+        noted-keys reader: a keys-unknown record carrying its notes bracket then leaves it behind on the table on
+        every catch-up pass until it restarts, the lost write's rows stale in it (RC1, 2026-11-16)."""
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus)
+        await source.start_log()
+        await _keeper(pool, schema, table, source)
+        for statement in write_marks_ddl(schema):
+            await pool.execute(statement)
+        await install_write_mark_triggers(pool, marks_schema=schema, tables=[table])
+        reconciler = WriteMarkReconciler(pool, generation_source=source, marks_schema=schema, tables=lambda: [table])
+        reader = EpochGenerationReader(bus)
+
+        # wired as the hub wires its own registries: on the direct pool, with a reader of the notes over it
+        registry = CollectionRegistry()
+        registry.configure(l3_pool=pool)
+        registry.set_noted_keys_reader(PoolNotedKeysReader(pool, notes_schema=schema, every_tenant=True))
+        registry.follow_generation(table)
+        heard: set[str] = set()
+        dropped: list[bool] = []
+        registry.register_derived_cache(
+            table, on_row=lambda message: heard.add(str(message.ids[0])), on_table_dropped=lambda: dropped.append(True)
+        )
+        await pool.execute(f"INSERT INTO {table} VALUES ('seed', 'o', '1')")
+        await reconciler.run_pass()
+        await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+        assert registry.behind_reason(table) is None
+
+        # a write of more rows than one record names, whose advance was lost: recorded keys unknown with its bracket
+        many = WHOLE_COPY_ROWS + 1
+        await pool.execute(
+            f"INSERT INTO {table} SELECT 'many-' || g, 'o', '1' FROM generate_series(1, $1::int) g",  # noqa: S608
+            many,
+        )
+        assert (await reconciler.run_pass()).advanced == (table,)
+        token = await reader.read(table)
+        assert token is not None
+        record = await reader.change(table, token)
+        assert record.keys_unknown and record.noted_between is not None
+        for _ in range(2):
+            await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+            assert registry.behind_reason(table) is None, "current from the notes, not behind until a restart"
+        assert heard >= {f"many-{g}" for g in range(1, many + 1)}, "every row the lost write changed is evicted"
+        assert not dropped, "never by dropping the table"
 
 
 class TestANoteCarriesItsTenant:
