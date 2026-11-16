@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from threetears.core.testing import calibrate
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.testing.plans import StatementPlan, looped_seq_scans, plan_problems, rows_scanned
 
@@ -91,9 +92,24 @@ def test_a_budget_is_twice_its_calibrated_baseline(took: float, baseline: float,
     assert (budget_problem("path", took, baseline) is not None) is fails
 
 
-async def test_the_two_sides_of_a_budget_run_turn_about() -> None:
+class _QuietHost:
+    """a :class:`~threetears.core.testing.loop_lateness.HostTicker` whose idle loop is never late: what this test asks
+    of the timing is the order of its sides, never the host's quiet (tests/timing_suite.py)."""
+
+    def __init__(self) -> None:
+        self.ticks: list[tuple[float, float]] = []
+
+    def __enter__(self) -> _QuietHost:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+async def test_the_two_sides_of_a_budget_run_turn_about(monkeypatch: pytest.MonkeyPatch) -> None:
     """Flips if the interleaved timing runs one side's runs all before the other's (the load then lands on one side
     only), or answers the sides swapped."""
+    monkeypatch.setattr(calibrate, "HostTicker", _QuietHost)
     order: list[str] = []
 
     async def bare() -> None:

@@ -180,6 +180,8 @@ def test_threaded_and_backend_reads_bind_through_arrow_too(conn: duckdb.DuckDBPy
         backend.reset()
 
 
+# times against the host's quiet (best_seconds_interleaved): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 def test_a_long_list_binds_at_real_size_within_twice_the_statement_on_keys_duckdb_holds() -> None:
     """Flips if a page of keys bound to an InlineDuckDB statement is bound value by value: DuckDB tries
     ``import pandas`` twice per value and, pandas absent, each try searches the whole import path (10,000 keys took

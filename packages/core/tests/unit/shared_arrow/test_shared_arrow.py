@@ -104,15 +104,28 @@ async def single(store: SharedArrowStore) -> AsyncIterator[SharedArrowPool]:
     await made.close()
 
 
-async def _until(condition: Callable[[], bool], what: str, seconds: float = 30.0) -> None:
-    """wait until ``condition()`` holds.
+async def _until(
+    condition: Callable[[], bool], what: str, seconds: float | None = 30.0, *, unless: asyncio.Future[Any] | None = None
+) -> None:
+    """wait until ``condition()`` holds, or until ``unless`` (a run the condition waits on) ends first: then the wait
+    ends with what the run raised, or says it returned.
 
+    :param seconds: the most to wait; None to wait on the condition and the run alone, with no clock: a run that
+        hangs is caught by the test's timeout (pyproject's ``timeout``), which prints every thread's stack
+    :ptype seconds: float | None
+    :param unless: a run whose end means the condition never will hold
+    :ptype unless: asyncio.Future[Any] | None
     :return: nothing
     :rtype: None
     """
-    deadline = time.monotonic() + seconds
+    deadline = None if seconds is None else time.monotonic() + seconds
     while not condition():
-        if time.monotonic() > deadline:
+        if unless is not None and unless.done():
+            if unless.cancelled():
+                raise AssertionError(f"never: {what} (the run was cancelled first)")
+            unless.result()  # what the run raised, as it raised it
+            raise AssertionError(f"never: {what} (the run returned {unless.result()!r} first)")
+        if deadline is not None and time.monotonic() > deadline:
             raise AssertionError(f"never: {what}")
         await asyncio.sleep(0.01)
 
@@ -371,7 +384,11 @@ class TestResultsComeBackMapped:
         running = asyncio.ensure_future(
             single.run(jobs.write_on_signal, str(signals), read=False, result_bytes=1 << 20)
         )
-        await _until(lambda: (signals / "started").exists(), "the worker started")
+        # waited on the worker's own signal, or the run's end, never a clock: a 30 s wait here once ran out on
+        # brooks-5950x (2026-11-15) at load1 12 of 32 cores, 0.18 cores of outside load, so not a starved host (a spawn
+        # to this signal takes 0.7-1.3 s idle, 1.4-2.4 s beside 4x as many busy processes as cores). A run that failed
+        # ends the wait with its own error; one that hangs meets the test's timeout, with every thread's stack
+        await _until(lambda: (signals / "started").exists(), "the worker started", seconds=None, unless=running)
         running.cancel()
         (signals / "go").touch()
         await _until(lambda: store.status()["slots_open"] == 0, "the abandoned slot discarded")

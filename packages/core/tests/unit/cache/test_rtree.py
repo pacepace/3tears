@@ -153,6 +153,8 @@ _OLD_JOIN = (
 )
 
 
+# times against the host's quiet (best_seconds_interleaved): run apart, never beside other work (tests/timing_suite.py)
+@pytest.mark.loop_timing
 @pytest.mark.parametrize(
     ("what", "box"),
     [
