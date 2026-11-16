@@ -10,6 +10,9 @@ a later result that fits applies. A part bigger than one piece is the only hard 
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
+import textwrap
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -199,3 +202,47 @@ class TestAFullStore:
         finally:
             done.segment.close()
         assert store.current is not None and store.current.name == "v2"
+
+
+#: a store whose piece server's answer held it last: freed on the server's own thread as the answer ends
+_FREED_ON_THE_SERVERS_THREAD = textwrap.dedent(
+    """
+    import gc, multiprocessing.connection, threading
+    from threetears.core.shared_arrow import _PieceServer
+    gc.disable()
+    answering, go = threading.Event(), threading.Event()
+
+    class Store:
+        def answer(self, request):
+            answering.set()
+            go.wait()
+            return {"piece": 1}
+
+    store = Store()
+    server = _PieceServer(store, store.answer)
+    client = multiprocessing.connection.Client(server.address, family="AF_UNIX", authkey=server.authkey)
+    client.send({})
+    answering.wait(10)
+    del store
+    go.set()
+    print(client.recv() if client.poll(10) else "no answer", flush=True)
+    client.close()
+    server._thread.join(20)
+    print("stopped" if not server.serving else "hung", flush=True)
+    """
+)
+
+
+class TestAStoreFreedOnItsServersThread:
+    def test_the_server_answers_and_stops(self) -> None:
+        # the store's finalizer wakes its server with a connection, whose handshake the server answers: run on the
+        # server's own thread (its answer held the store last) it waited for its own answer for ever (2026-11-16)
+        child = subprocess.run(
+            [sys.executable, "-c", _FREED_ON_THE_SERVERS_THREAD],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert child.returncode == 0, child.stderr
+        assert child.stdout.splitlines() == ["{'piece': 1}", "stopped"], child.stdout + child.stderr

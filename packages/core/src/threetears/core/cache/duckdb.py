@@ -14,6 +14,7 @@ from __future__ import annotations
 import enum
 import hashlib
 import json
+import queue
 import threading
 import time
 import weakref
@@ -598,12 +599,19 @@ class _Checkpointer:
     """
 
     def __init__(self, backend: DuckDBBackend) -> None:
-        self._wanted = threading.Event()
+        #: the wakes: a ``SimpleQueue``, not an Event, because the backend's finalizer wakes the thread to end, and a
+        #: finalizer runs inside whatever its collection interrupted: an ``Event.set`` there took the Event's plain
+        #: lock, which this thread holds in its own ``wait`` and ``clear``, so a collection of the backend on this
+        #: thread waited on itself for ever. ``put`` takes no lock (the hang an L1 file's finalizer had, 2026-11-16)
+        self._wanted: queue.SimpleQueue[None] = queue.SimpleQueue()
+        #: a request's wake is queued and not yet taken: any number of requests before the thread takes it queue one,
+        #: as an Event's sets made one wake
+        self._asked = False
         self._stopping = False
         held = weakref.ref(backend)
         self._thread = threading.Thread(
             target=_checkpoint_when_asked,
-            args=(held, self._wanted, lambda: self._stopping),
+            args=(held, self._wanted, self._taken, lambda: self._stopping),
             name=_CHECKPOINTER_THREAD,
             daemon=True,
         )
@@ -616,7 +624,13 @@ class _Checkpointer:
         :return: nothing
         :rtype: None
         """
-        self._wanted.set()
+        if not self._asked:
+            self._asked = True
+            self._wanted.put(None)
+
+    def _taken(self) -> None:
+        # before the checkpoint it starts: a request whose wake this was not queued is still covered by it
+        self._asked = False
 
     def stop(self) -> None:
         """end the thread, after any checkpoint it is running.
@@ -629,29 +643,35 @@ class _Checkpointer:
 
     def _wake_to_end(self) -> None:
         self._stopping = True
-        self._wanted.set()
+        self._wanted.put(None)
 
 
 def _checkpoint_when_asked(
-    backend: Callable[[], DuckDBBackend | None], wanted: threading.Event, stopping: Callable[[], bool]
+    backend: Callable[[], DuckDBBackend | None],
+    wanted: queue.SimpleQueue[None],
+    taken: Callable[[], None],
+    stopping: Callable[[], bool],
 ) -> None:
     """a compressed backend's checkpointer thread (:meth:`DuckDBBackend.request_checkpoint`): wait to be asked, then
-    checkpoint once. The wake is cleared before the stop is read, so a stop set at any moment -- even between the wake
-    and its clear -- is seen before the next wait; and the backend is held only while it checkpoints, so one dropped
-    without a reset is collected and the thread ends.
+    checkpoint once for every wake queued by then. The wakes are taken before the stop is read, and a stop is set
+    before its wake is queued, so a stop set at any moment is seen before the next wait; and the backend is held only
+    while it checkpoints, so one dropped without a reset is collected and the thread ends.
 
     :param backend: the backend, or None once it is gone (a weak reference)
     :ptype backend: Callable[[], DuckDBBackend | None]
-    :param wanted: set by each request (and by a stop)
-    :ptype wanted: threading.Event
+    :param wanted: a wake queued by each request (and by a stop)
+    :ptype wanted: queue.SimpleQueue[None]
+    :param taken: called as a wake is taken, before the checkpoint it starts (the next request queues a wake again)
+    :ptype taken: Callable[[], None]
     :param stopping: whether the thread is to end
     :ptype stopping: Callable[[], bool]
     :return: nothing
     :rtype: None
     """
     while True:
-        wanted.wait()
-        wanted.clear()
+        wanted.get()
+        taken()
+        _take_queued(wanted)
         if stopping():
             return
         held = backend()
@@ -659,6 +679,21 @@ def _checkpoint_when_asked(
             return
         held.checkpoint()
         del held
+
+
+def _take_queued(wanted: queue.SimpleQueue[None]) -> None:
+    """take every wake queued: one checkpoint answers them all.
+
+    :param wanted: the wakes
+    :ptype wanted: queue.SimpleQueue[None]
+    :return: nothing
+    :rtype: None
+    """
+    while True:
+        try:
+            wanted.get_nowait()
+        except queue.Empty:  # NOSILENT: none left is the end of the taking
+            return
 
 
 class DuckDBBackend:

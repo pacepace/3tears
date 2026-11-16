@@ -205,7 +205,10 @@ class SQLiteBackend:
         self._initialized: bool = False
         self._schema_info: dict[str, dict[str, str]] = {}
         self._local: threading.local = threading.local()
-        self._pool_lock: threading.Lock = threading.Lock()
+        #: re-entrant: a finalizer run on a thread holding it (a collection inside reset's close of every connection)
+        #: may make that thread's connection here, as a collected FeatureCache's R-Tree drop does; a plain lock waited
+        #: on itself for ever there (the hang an L1 file's finalizer had, 2026-11-16)
+        self._pool_lock: threading.RLock = threading.RLock()
         self._pooled_connections: list[sqlite3.Connection] = []
         #: every table's declared policy (:mod:`threetears.core.eviction`); an undeclared table is refused
         self._policies: dict[str, Declared] = {}
@@ -280,7 +283,8 @@ class SQLiteBackend:
         self._anchor_conn = anchor
         # a backend dropped without reset() gives its file back when it is collected, as a memdb database went with
         # its last connection: a test suite builds thousands, and /dev/shm is memory
-        self._release = weakref.finalize(self, l1_file.release, self._path)
+        # collected: a finalizer runs inside whatever the collection interrupted, l1_file's own lock held included
+        self._release = weakref.finalize(self, l1_file.collected, self._path)
         self.budget.join(self, directory)
 
     def declare(self, table: str, policy: Declared) -> None:
@@ -1102,7 +1106,9 @@ class SQLiteBackend:
         if self._path is not None:
             self.budget.leave(self)
             if self._release is not None:
-                self._release()
+                # the reset's own release, waiting for the lock as any caller does; the finalizer is spent
+                self._release.detach()
+                l1_file.release(self._path)
             self._release = None
             self._path = None
         self._initialized = False

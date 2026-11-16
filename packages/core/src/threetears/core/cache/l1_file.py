@@ -46,6 +46,7 @@ import atexit
 import contextlib
 import fcntl
 import os
+import queue
 import re
 import secrets
 import tempfile
@@ -58,6 +59,7 @@ from threetears.observe import BuildOnce, contain, get_logger
 
 __all__ = [
     "acquire",
+    "collected",
     "l1_directory",
     "release",
     "sweep",
@@ -106,6 +108,9 @@ class _L1File:
 
 _LOCK = threading.Lock()
 _FILES: dict[str, _L1File] = {}
+#: the files whose holder was collected while :data:`_LOCK` was held (:func:`collected`), given back by the next
+#: :func:`acquire` or :func:`release`; a ``SimpleQueue`` because its ``put`` takes no lock a finalizer could wait on
+_COLLECTED: queue.SimpleQueue[Path] = queue.SimpleQueue()
 _SWEPT: set[str] = set()
 #: this process's pid and token, made on its first L1 file; keyed by pid, so a forked child makes its own
 _ME: BuildOnce[int, str] = BuildOnce()
@@ -202,6 +207,7 @@ def acquire(db_name: str, directory: Path | None = None) -> Path:
     path = where / f"{_PREFIX}{_me()}-{_SAFE.sub('_', db_name)}.sqlite"
     key = str(path)
     with _LOCK:
+        _give_back_collected()
         held = _FILES.get(key)
         if held is None:
             if str(where) not in _SWEPT:
@@ -235,14 +241,65 @@ def release(path: Path) -> None:
     :rtype: None
     """
     with _LOCK:
-        held = _FILES.get(str(path))
-        if held is None:
+        _let_go(path)
+        _give_back_collected()
+
+
+def collected(path: Path) -> None:
+    """:func:`release` for a holder the collector freed: a backend's finalizer, never a caller's own release.
+
+    A collection runs on whatever thread allocated when it came due, and runs the finalizers of what it frees
+    there: inside :func:`acquire`'s or :func:`release`'s hold of :data:`_LOCK`, a finalizer that waited for the lock
+    waited on its own thread for ever (a unit run's ``SQLiteBackend.initialize`` sat 600 s, until pytest-timeout's
+    alarm was raised inside the finalizer, which the collector swallowed; 2026-11-16). So the lock is only tried:
+    when held, here or on another thread, the file is queued and given back by the next :func:`acquire` or
+    :func:`release`, or at exit.
+
+    :param path: the database file, as :func:`acquire` answered it
+    :ptype path: Path
+    :return: nothing
+    :rtype: None
+    """
+    if not _LOCK.acquire(blocking=False):
+        _COLLECTED.put(path)
+        return
+    try:
+        _let_go(path)
+        _give_back_collected()
+    finally:
+        _LOCK.release()
+
+
+def _let_go(path: Path) -> None:
+    """one holder of ``path`` lets go; the last removes the file. :data:`_LOCK` held.
+
+    :param path: the database file
+    :ptype path: Path
+    :return: nothing
+    :rtype: None
+    """
+    held = _FILES.get(str(path))
+    if held is None:
+        return
+    held.holders -= 1
+    if held.holders > 0:
+        return
+    del _FILES[str(path)]
+    _close(held)
+
+
+def _give_back_collected() -> None:
+    """let go of every file queued by :func:`collected`. :data:`_LOCK` held.
+
+    :return: nothing
+    :rtype: None
+    """
+    while True:
+        try:
+            path = _COLLECTED.get_nowait()
+        except queue.Empty:  # NOSILENT: nothing queued is the usual answer
             return
-        held.holders -= 1
-        if held.holders > 0:
-            return
-        del _FILES[str(path)]
-        _close(held)
+        _let_go(path)
 
 
 def _close(held: _L1File) -> None:
@@ -257,6 +314,7 @@ def _close(held: _L1File) -> None:
 def _remove_all() -> None:
     """a clean exit leaves no file behind."""
     with _LOCK:
+        _give_back_collected()
         for held in _FILES.values():
             # NOSILENT: at exit nothing can be said; a file left behind is swept by the next process's first L1
             with contextlib.suppress(OSError):

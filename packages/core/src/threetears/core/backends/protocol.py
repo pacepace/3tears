@@ -116,7 +116,8 @@ class L3Page:
     statement's first rows in its order, so a keyset read takes it as a short page and steps past its last
     row, and sizes its next page's rows to the cap (:mod:`threetears.core.keyset`).
 
-    :ivar rows: the rows: dicts from ``fetch_page``, a ``pyarrow.Table`` from ``fetch_arrow_page``
+    :ivar rows: the rows: a list of dicts of its own from ``fetch_page`` (no other holder; a reader keeps them as they
+        are), a ``pyarrow.Table`` from ``fetch_arrow_page``
     :ivar truncated: the transport answered fewer rows than the statement matched
     :ivar reply_bytes: the reply's size as the broker cuts it (an Arrow reply's: what its JSON would take), from
         which the next page's rows are sized; 0 when unknown (an Arrow reply that does not say), and the next page

@@ -114,6 +114,112 @@ def _child(directory: Path, mode: str) -> subprocess.Popen[str]:
     return child
 
 
+_COLLECTED_WHILE_OPENING = textwrap.dedent(
+    """
+    import gc, sys
+    from pathlib import Path
+    from sqlalchemy import Column, MetaData, String, Table
+    from threetears.core.cache import l1_file
+    from threetears.core.cache.l1_lru import L1Ledger
+    from threetears.core.cache.sqlite import SQLiteBackend
+    from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+    directory = Path(sys.argv[1])
+
+    def backend(name):
+        metadata = MetaData()
+        Table("files_rows", metadata, Column("id", String, primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
+        made = SQLiteBackend(db_name=name, directory=directory, budget=L1Ledger(1 << 30, thread=False))
+        made.initialize(metadata)
+        return made
+
+    dropped = backend("dropped")
+    dropped.itself = dropped  # a reference cycle: only a collection frees it
+    del dropped
+    # a collection runs wherever an allocation sets it off: here, inside the next open's hold of the files' lock
+    owner_path = l1_file._owner_path
+    def collecting(path):
+        gc.collect()
+        return owner_path(path)
+    l1_file._owner_path = collecting
+    opened = backend("opened")
+    l1_file._owner_path = owner_path
+    print("opened", flush=True)
+    opened.reset()
+    names = sorted(entry.name for entry in directory.iterdir() if entry.name.startswith("threetears-l1-"))
+    print("left", names, flush=True)
+    """
+)
+
+
+class TestABackendCollectedWhileAnotherOpens:
+    def test_the_open_finishes_and_the_collected_file_goes_at_the_next_release(self, tmp_path: Path) -> None:
+        # a backend dropped without reset gives its file back from its finalizer, which a collection runs on
+        # whichever thread allocated: run inside an open's hold of the files' lock, the finalizer waited on that
+        # lock, held by its own thread, for ever (a unit run's test sat 600 s, until pytest-timeout's alarm was raised
+        # in the finalizer and swallowed there; 2026-11-16)
+        child = subprocess.run(
+            [sys.executable, "-c", _COLLECTED_WHILE_OPENING, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert child.returncode == 0, child.stderr
+        assert child.stdout.splitlines() == ["opened", "left []"], child.stdout + child.stderr
+
+
+#: a finalizer that makes its thread's connection to a backend (a collected FeatureCache's R-Tree drop), run by a
+#: collection inside the backend's reset, on a thread with no connection of its own, as the reset closes the others
+_COLLECTED_WHILE_RESETTING = textwrap.dedent(
+    """
+    import gc, sys, threading, weakref
+    from pathlib import Path
+    from sqlalchemy import MetaData
+    from threetears.core.cache.l1_lru import L1Ledger
+    from threetears.core.cache.rtree import SQLiteRTree
+    from threetears.core.cache.sqlite import SQLiteBackend
+    gc.disable()  # the one collection is the reset's
+    backend = SQLiteBackend(db_name="pool", directory=Path(sys.argv[1]), budget=L1Ledger(1 << 30, thread=False))
+    backend.initialize(MetaData())
+    tree = SQLiteRTree(backend, "owned_rtree", "owned_map")
+    tree.create()
+
+    class Owner:
+        pass
+
+    owner = Owner()
+    owner.itself = owner  # a reference cycle: only a collection frees it
+    weakref.finalize(owner, tree.drop)  # as a FeatureCache's finalizer drops its R-Tree
+    del owner
+
+    class Collecting:
+        def close(self):
+            gc.collect()
+
+    backend._pooled_connections.append(Collecting())
+    resetting = threading.Thread(target=backend.reset, daemon=True)
+    resetting.start()
+    resetting.join(20)
+    print("reset" if not resetting.is_alive() else "hung", flush=True)
+    """
+)
+
+
+class TestAFinalizerConnectingDuringAReset:
+    def test_the_reset_finishes(self, tmp_path: Path) -> None:
+        # a finalizer runs inside whatever its collection interrupted: one making its thread's connection inside the
+        # reset's hold of the backend's pool lock waited on that lock, held by its own thread, for ever (2026-11-16)
+        child = subprocess.run(
+            [sys.executable, "-c", _COLLECTED_WHILE_RESETTING, str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert child.returncode == 0, child.stderr
+        assert child.stdout.splitlines() == ["reset"], child.stdout + child.stderr
+
+
 class TestNoFileOutlivesItsProcess:
     def test_a_clean_exit_removes_its_files(self, tmp_path: Path) -> None:
         child = _child(tmp_path, "exit")

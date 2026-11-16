@@ -9,6 +9,10 @@ from __future__ import annotations
 
 import functools
 import gc
+import queue
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 import weakref
@@ -209,42 +213,102 @@ class TestTheCheckpointerEnds:
         thread.join(10)
         assert not thread.is_alive()
 
-    def test_a_stop_landing_between_the_wake_and_the_clear_is_seen(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """the window a reset can land in: the thread woke, and the stop and its wake arrive before the thread clears
-        the wake. The stop must still end the thread, never be cleared away with the wake."""
-        made: list[StopAtClear] = []
+    def test_a_stop_landing_between_the_wake_and_its_taking_is_seen(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """the window a reset can land in: the thread woke, and the stop and its wake arrive before the thread takes
+        the wakes queued. The stop must still end the thread, never be taken away with the wake."""
+        made: list[StopAtTake] = []
         resets: list[threading.Thread] = []
 
-        class StopAtClear(threading.Event):
-            """the checkpointer's wake (made by the first request): its first clear first lets a reset land (stop,
-            then its wake)."""
+        class StopAtTake(queue.SimpleQueue[None]):
+            """the checkpointer's wakes (made by the first request): its first taking of the queued wakes first lets a
+            reset land (stop, then its wake)."""
 
             def __init__(self) -> None:
                 super().__init__()
-                self.sets = 0
+                self.puts = 0
                 self.armed = True
                 made.append(self)
 
-            def set(self) -> None:
-                self.sets += 1
-                super().set()
+            def put(self, item: None, block: bool = True, timeout: float | None = None) -> None:
+                self.puts += 1
+                super().put(item, block, timeout)
 
-            def clear(self) -> None:
+            def get_nowait(self) -> None:
                 if self.armed:
                     self.armed = False
-                    before = self.sets
+                    before = self.puts
                     resetting = threading.Thread(target=backend.reset, daemon=True)
                     resets.append(resetting)
                     resetting.start()
-                    _until(lambda: self.sets > before, "the reset's stop and wake landed")
-                super().clear()
+                    _until(lambda: self.puts > before, "the reset's stop and wake landed")
+                return super().get_nowait()
 
         backend = DuckDBBackend(compressed=True, scope_keys=_STATE_SCOPES)
         backend.initialize(_metadata())
         with monkeypatch.context() as patched:
-            patched.setattr(threading, "Event", StopAtClear)
+            patched.setattr(queue, "SimpleQueue", StopAtTake)
             backend.request_checkpoint()
-        assert made, "the first request made the checkpointer's wake"
+        assert made, "the first request made the checkpointer's wakes"
         _until(lambda: bool(resets), "the checkpointer woke")
         resets[0].join(10)
-        assert not resets[0].is_alive(), "the stop was cleared with the wake: the thread waits forever"
+        assert not resets[0].is_alive(), "the stop was taken with the wake: the thread waits forever"
+
+
+#: a compressed backend dropped in a cycle, collected on its checkpointer's own thread as the thread takes its wake:
+#: an Event's ``clear`` or a queue's ``get_nowait``, whichever the checkpointer takes its wakes with, collects there
+_COLLECTED_ON_ITS_THREAD = textwrap.dedent(
+    """
+    import gc, queue, sys, threading
+    from sqlalchemy import Column, Integer, MetaData, Table
+    from threetears.core.cache.duckdb import _CHECKPOINTER_THREAD, DuckDBBackend
+    from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
+
+    gc.disable()  # the one collection is the checkpointer's own
+    dropped = threading.Event()
+
+    def collect_on_the_checkpointer():
+        if threading.current_thread().name == _CHECKPOINTER_THREAD:
+            dropped.wait()
+            gc.collect()
+
+    class CollectingEvent(threading.Event):
+        def clear(self):
+            with self._cond:
+                collect_on_the_checkpointer()
+                self._flag = False
+
+    class CollectingQueue(queue.SimpleQueue):
+        def get_nowait(self):
+            collect_on_the_checkpointer()
+            return super().get_nowait()
+
+    threading.Event = CollectingEvent
+    queue.SimpleQueue = CollectingQueue
+    metadata = MetaData()
+    Table("rows", metadata, Column("id", Integer, primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
+    backend = DuckDBBackend(compressed=True)
+    backend.initialize(metadata)
+    backend.itself = backend  # a reference cycle: only a collection frees it
+    backend.request_checkpoint()
+    (checkpointer,) = [thread for thread in threading.enumerate() if thread.name == _CHECKPOINTER_THREAD]
+    del backend
+    dropped.set()
+    checkpointer.join(20)
+    print("ended" if not checkpointer.is_alive() else "hung", flush=True)
+    """
+)
+
+
+class TestABackendCollectedOnItsCheckpointer:
+    def test_the_finalizers_wake_ends_the_thread(self) -> None:
+        # a finalizer runs inside whatever its collection interrupted: the backend's wake, run on the checkpointer's
+        # own thread inside its Event's lock (taken by wait and clear), waited on that lock for ever (2026-11-16)
+        child = subprocess.run(
+            [sys.executable, "-c", _COLLECTED_ON_ITS_THREAD],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert child.returncode == 0, child.stderr
+        assert child.stdout.splitlines() == ["ended"], child.stdout + child.stderr

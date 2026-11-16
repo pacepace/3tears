@@ -2671,16 +2671,27 @@ def _serve_pieces(answer: weakref.WeakMethod[Callable[[Mapping[str, Any]], dict[
         listener.close()
 
 
-def _stop_serving(address: str, authkey: bytes) -> None:
+def _stop_serving(address: str, authkey: bytes, listener: Any, server: threading.Thread) -> None:
     """wake a gone store's piece server so it stops (it finds the store gone).
+
+    A finalizer, run on whichever thread freed the store: on the server's own thread (its answer held the store last,
+    or a collection there freed it) a wake would wait for the server's own handshake for ever, so there the listener
+    is closed instead, and the server's next accept stops it.
 
     :param address: the server's socket
     :ptype address: str
     :param authkey: its key
     :ptype authkey: bytes
+    :param listener: the server's listening socket
+    :ptype listener: multiprocessing.connection.Listener
+    :param server: the server's thread
+    :ptype server: threading.Thread
     :return: nothing
     :rtype: None
     """
+    if threading.current_thread() is server:
+        listener.close()
+        return
     # NOSILENT: a server already stopped is what this asks for
     with contextlib.suppress(OSError, EOFError, multiprocessing.AuthenticationError):
         multiprocessing.connection.Client(address, family="AF_UNIX", authkey=authkey).close()
@@ -2707,7 +2718,7 @@ class _PieceServer:
             target=_serve_pieces, args=(weakref.WeakMethod(answer), listener), name="shared-arrow-pieces", daemon=True
         )
         self._thread.start()
-        stopping = weakref.finalize(store, _stop_serving, self.address, self.authkey)
+        stopping = weakref.finalize(store, _stop_serving, self.address, self.authkey, listener, self._thread)
         # at exit the daemon thread goes with the process; waking it there would only wait on it
         stopping.atexit = False
 

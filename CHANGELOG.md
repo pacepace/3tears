@@ -6,6 +6,43 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a read's long reply is decoded and its rows read off the event loop
+
+`fetch`, `fetchrow` and `fetch_page` on the L3 rail (`NatsProxyL3Backend`) decoded each reply's JSON and read its rows
+(`_deserialize_row`) on the serving loop. A keyed read of one state's 33,786 candidate rows at the production reply cap
+(12 MiB) is five statements of up to 10 MB, and held the loop 130 ms (a pool runner) to over 200 ms a reply; the
+decoded rows were freed on the loop too (5 ms for 10,000 rows). They now share a transaction's reader
+(`_read_rows_reply`, from the returning delete's change): a reply over 64 KiB is decoded and read on a worker thread
+taking turns with the loop, its decoded rows freed there; `fetchrow` reads only its first row. A keyset read
+(`keyset_pages`) keeps a page's rows as `fetch_page` answers them, dicts of their own, instead of copying each on the
+loop (11 ms for a 10,000-row page). A loop_timing budget at 33,786 rows read at the production cap (5 ms; the old
+reads held it 130.5 ms, the new 0.6-1.3 ms on a quiet host) and a counted check that the loop runs between stretches of rows read.
+
+### core: an L1 file's finalizer no longer deadlocks the thread that opens another
+
+A `SQLiteBackend` dropped without `reset()` gave its file back from a `weakref.finalize`, which took `l1_file`'s lock.
+A collection runs its finalizers on whichever thread set it off, so one that ran inside `l1_file.acquire`'s own hold
+of that lock waited on its own thread for ever: a unit run's `test_a_pod_following_the_table_drops_it_at_its_next_catch_up`
+sat 600 s in `initialize()` until pytest-timeout's alarm was raised inside the finalizer and swallowed there, and the
+test went on to pass. The finalizer now only tries the lock (`l1_file.collected`); when it is held the file is queued
+and given back by the next `acquire` or `release`, or at exit. `reset()` releases as before. Pinned by a subprocess
+test that collects a dropped backend inside an open's hold of the lock (it hung on the old code).
+
+Three more finalizers waited on something their collecting thread could hold, each now pinned by a subprocess test
+that hung on the old code:
+
+- `SQLiteBackend`'s connection pool lock is re-entrant: a collected `FeatureCache`'s R-Tree drop (geo) makes its
+  thread's connection under it, and a collection inside `reset()`'s close of every connection, on a thread with none,
+  waited on the reset's own hold.
+- A compressed `DuckDBBackend`'s checkpointer is woken through a `queue.SimpleQueue` (whose `put` takes no lock), not
+  an Event: the backend's finalizer set the Event, whose plain lock the checkpointer thread holds in its own wait and
+  clear. Requests still coalesce into one queued wake.
+- A shared Arrow store freed on its own piece server's thread (the server's answer held it last) closes the server's
+  listener there instead of connecting to it, which waited for the server's own handshake for ever.
+
+`shared_arrow`'s other finalizers (`_Pin`, a mapped file's pin, `_close_all`) only close descriptors; `evals`' reader
+close and `redshift_driver`'s cache drain take no lock of ours.
+
 ### core: a delete returning its rows holds the event loop a few milliseconds at most
 
 `delete_rows` of 33,786 keys on a collection that declares `invalidation_columns` (its delete returns the rows it

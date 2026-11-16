@@ -450,12 +450,14 @@ def _with_proof(encoded: bytes, body: Mapping[str, Any], sent: Mapping[str, Any]
 #: a reply longer than this has its JSON decoded and its rows read (:func:`_rows_reply`) on a worker thread taking turns
 #: with the loop: a ``DELETE ... RETURNING`` of 1,000 rows of 49 columns (a megabyte) decoded in 3.5 ms and its rows
 #: read in 3.1 ms more, on the loop for each statement of a 33,786-key delete (2026-11-16); this many bytes decode in
-#: about a quarter of a millisecond
+#: about a quarter of a millisecond. Measured 2026-11-16 (quiet host): a 64,602-byte reply of 64 rows read on the loop
+#: in 0.59 ms against a 0.72 ms round trip to a thread, 32 KB in 0.28 ms; the loop is held no longer than about one
+#: turn (0.5 ms) below this size, and a thread's round trip costs more than the read it saves
 _READ_ON_THREAD_BYTES: Final = 64 * 1024
 
 
 def _rows_reply(
-    subject: str, reply: bytes, loop: asyncio.AbstractEventLoop | None = None
+    subject: str, reply: bytes, loop: asyncio.AbstractEventLoop | None = None, keep: int | None = None
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """a reply's JSON and, when it succeeded, its rows each read as :func:`_deserialize_row` reads it; pure, for a
     thread, the thread's turns taken between rows as they are decoded and as they are read.
@@ -464,13 +466,19 @@ def _rows_reply(
     An ``object_hook`` brings each decoded object back to Python, the object itself unchanged, where the thread takes
     its turn.
 
+    The reply's ``rows`` become the rows read (when any are), and the rows as decoded are freed here, on the thread
+    when there is one: a 10,000-row reply's decoded rows freed as the caller dropped the reply held the loop 5 ms
+    (2026-11-16).
+
     :param subject: the request's subject, named in the error
     :ptype subject: str
     :param reply: the reply's body
     :ptype reply: bytes
     :param loop: the caller's event loop, handed the thread's turns (:class:`LoopTurns`); None on the loop itself
     :ptype loop: asyncio.AbstractEventLoop | None
-    :return: the reply, and its rows read (none for a reply that did not succeed)
+    :param keep: the most rows read, the first in the reply's order (``fetchrow``'s one); every row when None
+    :ptype keep: int | None
+    :return: the reply, its ``rows`` those read, and its rows read (none for a reply that did not succeed)
     :rtype: tuple[dict[str, Any], list[dict[str, Any]]]
     :raises DataLayerUnavailableError: when the reply is not JSON
     """
@@ -487,12 +495,46 @@ def _rows_reply(
         raise DataLayerUnavailableError(f"NATS request failed: subject={subject}: {exc}") from exc
     if not response.get("success", False):
         return response, []
-    raw: list[dict[str, Any]] = response.get("rows", [])
+    decoded_rows: list[dict[str, Any]] = response.get("rows") or []
+    if keep == 0 or not decoded_rows:
+        return response, []
+    raw = decoded_rows if keep is None else decoded_rows[:keep]
     if turns is None:
-        return response, [_deserialize_row(row) for row in raw]
+        rows = [_deserialize_row(row) for row in raw]
+        response["rows"] = rows
+        return response, rows
     # a turn looked at every STEP_ITEMS values, not rows: a row of 49 values read in 3 us
-    every = max(1, STEP_ITEMS // max(1, len(raw[0]) if raw else 1))
-    return response, [_deserialize_row(row) for row in stepped(raw, turns, every)]
+    every = max(1, STEP_ITEMS // max(1, len(raw[0])))
+    rows = [_deserialize_row(row) for row in stepped(raw, turns, every)]
+    response["rows"] = rows
+    del raw
+    # their last holder: freed a slice a turn, a slice of rows of ``every``'s values
+    while decoded_rows:
+        del decoded_rows[-every:]
+        turns.take()
+    return response, rows
+
+
+async def _read_rows_reply(
+    subject: str, reply: bytes, keep: int | None = None
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """:func:`_rows_reply` of a reply, read on a worker thread taking turns with the loop when the reply is longer than
+    :data:`_READ_ON_THREAD_BYTES`, on the loop when shorter: every read of rows a reply answers, a transaction's
+    (``tx.fetch``) and the backend's own (``fetch``, ``fetchrow``, ``fetch_page``), reads them here.
+
+    :param subject: the request's subject, named in the error
+    :ptype subject: str
+    :param reply: the reply's body
+    :ptype reply: bytes
+    :param keep: the most rows read; every row when None
+    :ptype keep: int | None
+    :return: the reply, and its rows read (none for a reply that did not succeed)
+    :rtype: tuple[dict[str, Any], list[dict[str, Any]]]
+    :raises DataLayerUnavailableError: when the reply is not JSON
+    """
+    if len(reply) > _READ_ON_THREAD_BYTES:
+        return await asyncio.to_thread(_rows_reply, subject, reply, asyncio.get_running_loop(), keep)
+    return _rows_reply(subject, reply, None, keep)
 
 
 def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -895,11 +937,11 @@ class NatsProxyL3Backend:
         :rtype: list[dict[str, Any]]
         :raises DataLayerUnavailableError: if broker returns error
         """
-        response = await self._send_query(query, list(params), "select", namespace, customer_scope=customer_scope)
+        response, rows = await self._query_reply(
+            query, list(params), "select", namespace, customer_scope=customer_scope, keep=None
+        )
         _uncut(response, query, "L3 query")
-        rows: list[dict[str, Any]] = response.get("rows", [])
-        result = [_deserialize_row(row) for row in rows]
-        return result
+        return rows
 
     async def hub_capabilities(self) -> frozenset[str]:
         """what the hub's broker says it can do: the capability names its ``l3.query`` reply carries
@@ -980,17 +1022,12 @@ class NatsProxyL3Backend:
         if statement_operation(query) != "select":
             raise ValueError("fetch_page reads: its statement is a SELECT")
         payload = self._query_payload(query, list(params), "select", namespace)
-        reply = await self.nats_request_bytes(
-            Subjects.l3_query(namespace=self.ns).path, payload, idempotent=is_resendable(query)
-        )
-        try:
-            response: dict[str, Any] = json.loads(reply)
-        except ValueError as exc:
-            raise DataLayerUnavailableError(f"L3 query: an unreadable reply: {exc}") from exc
+        subject = Subjects.l3_query(namespace=self.ns).path
+        reply = await self.nats_request_bytes(subject, payload, idempotent=is_resendable(query))
+        response, rows = await _read_rows_reply(subject, reply)
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "L3 query")
         record_reply_generations(response, ends_write=False)
-        rows = [_deserialize_row(row) for row in response.get("rows") or ()]
         return L3Page(
             rows=rows,
             truncated=bool(response.get("truncated")),
@@ -1132,10 +1169,10 @@ class NatsProxyL3Backend:
         :raises DataLayerUnavailableError: if broker returns error
         """
         # the first row alone: a cut answer still carries it
-        response = await self._send_query(query, list(params), "select", namespace, customer_scope=customer_scope)
-        rows: list[dict[str, Any]] = response.get("rows", [])
-        result: dict[str, Any] | None = _deserialize_row(rows[0]) if rows else None
-        return result
+        _response, rows = await self._query_reply(
+            query, list(params), "select", namespace, customer_scope=customer_scope, keep=1
+        )
+        return rows[0] if rows else None
 
     async def fetchval(
         self,
@@ -1674,7 +1711,39 @@ class NatsProxyL3Backend:
         *,
         customer_scope: UUID | None = None,
     ) -> dict[str, Any]:
-        """build and send single query request to broker.
+        """build and send single query request to broker: :meth:`_query_reply`, no row read.
+
+        :param query: SQL query string
+        :ptype query: str
+        :param params: query parameters
+        :ptype params: list[Any]
+        :param operation: SQL operation type
+        :ptype operation: str
+        :param namespace: target namespace
+        :ptype namespace: str | None
+        :param customer_scope: as :meth:`_query_reply` takes it
+        :ptype customer_scope: UUID | None
+        :return: parsed response dict
+        :rtype: dict[str, Any]
+        :raises DataLayerUnavailableError: if broker returns error
+        """
+        response, _rows = await self._query_reply(
+            query, params, operation, namespace, customer_scope=customer_scope, keep=0
+        )
+        return response
+
+    async def _query_reply(
+        self,
+        query: str,
+        params: list[Any],
+        operation: str,
+        namespace: str | None,
+        *,
+        customer_scope: UUID | None = None,
+        keep: int | None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """build and send single query request to broker, and read its reply and rows (:func:`_read_rows_reply`:
+        a long reply on a worker thread taking turns with the loop).
 
         :param query: SQL query string
         :ptype query: str
@@ -1689,8 +1758,10 @@ class NatsProxyL3Backend:
             ``conv_customer_id`` payload field only when set, so a ``None``
             scope leaves the wire payload identical to the pre-task shape.
         :ptype customer_scope: UUID | None
-        :return: parsed response dict
-        :rtype: dict[str, Any]
+        :param keep: the most rows read, the reply's first; every row when None
+        :ptype keep: int | None
+        :return: parsed response dict, and its rows read
+        :rtype: tuple[dict[str, Any], list[dict[str, Any]]]
         :raises DataLayerUnavailableError: if broker returns error
         """
         offload = _offloaded(params)
@@ -1709,7 +1780,8 @@ class NatsProxyL3Backend:
         # a read sent again changes nothing; a statement that may write, ``RETURNING`` and a writing CTE
         # included, is never resent
         reads = operation == "select" and is_resendable(query)
-        response = await self.nats_request(subject, payload, offload_encode=offload, idempotent=reads)
+        reply = await self.nats_request_bytes(subject, payload, offload_encode=offload, idempotent=reads)
+        response, rows = await _read_rows_reply(subject, reply, keep)
 
         if not response.get("success", False):
             self.raise_for_failed_reply(response, "L3 query")
@@ -1718,7 +1790,7 @@ class NatsProxyL3Backend:
         # it, whether it was sent to execute or, with ``RETURNING``, to fetch; a read names none, and
         # ends no earlier write's scope.
         record_reply_generations(response, ends_write=operation != "select" or statement_operation(query) != "select")
-        return response
+        return response, rows
 
     async def nats_request(
         self,
@@ -2418,11 +2490,7 @@ class _ProxyConnection:
         )
         subject = Subjects.l3_tx("fetch", namespace=self._backend.ns).path
         reply = await self._backend.nats_request_bytes(subject, payload, offload_encode=offload)
-        response, rows = (
-            await asyncio.to_thread(_rows_reply, subject, reply, asyncio.get_running_loop())
-            if len(reply) > _READ_ON_THREAD_BYTES
-            else _rows_reply(subject, reply)
-        )
+        response, rows = await _read_rows_reply(subject, reply)
         if not response.get("success", False):
             self._backend.raise_for_failed_reply(response, "tx.fetch")
         _uncut(response, query, "tx.fetch")

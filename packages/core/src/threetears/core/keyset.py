@@ -431,7 +431,9 @@ class _DictReads:
             kept = [dict(row) for row in page[: self._page_size]]
             return kept, len(page) > self._page_size and bool(kept), rows
         answered = await self._l3.fetch_page(*statement.page(cursor, rows=rows))
-        kept = [dict(row) for row in answered.rows[:rows]]
+        # a page's rows are dicts of its own (L3Page), kept as answered: a copy of each, on the loop, held it 11 ms
+        # for a page of 10,000 rows of 49 columns (a 12 MiB reply cap's page; 2026-11-16)
+        kept = answered.rows if len(answered.rows) <= rows else answered.rows[:rows]
         # a cut page is the statement's first rows in key order: more may follow its last
         more = (answered.truncated or len(answered.rows) > rows) and bool(kept)
         return kept, more, _next_rows(answered, len(answered.rows), rows)
