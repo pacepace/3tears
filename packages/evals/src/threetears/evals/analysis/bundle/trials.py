@@ -70,6 +70,7 @@ from threetears.evals.kernel.usage_capture import (
     production_rows,
 )
 from threetears.evals.kernel.provider import sum_optional_tokens
+from threetears.evals.kernel.result_reading import usage_answers_nothing
 from threetears.evals.schema.models import USAGE_ROLES, rubric_dim_scale
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
@@ -470,11 +471,18 @@ def _pricing(results: Sequence[ResultView]) -> ArmPricing | None:
 
     :param results: The arm's trials.
     :ptype results: Sequence[ResultView]
-    :return: The pricing; None where no trial recorded a production row.
+    A row holding only unanswered calls (:func:`~threetears.evals.kernel.result_reading.usage_answers_nothing`)
+    priced nothing and counted no answered call, so it is no row of the cost's: never one that left its calls
+    uncounted.
+
+    :return: The pricing; None where no trial recorded a production row of an answered call.
     :rtype: ArmPricing | None
     """
     rows = [
-        row for result in results for row in production_rows(result.usage or [], candidate_kind=result.candidate_kind)
+        row
+        for result in results
+        for row in production_rows(result.usage or [], candidate_kind=result.candidate_kind)
+        if not usage_answers_nothing(row)
     ]
     if not rows:
         return None
@@ -514,7 +522,8 @@ def _unanswered(results: Sequence[ResultView]) -> list[RoleUnanswered]:
 
     Sums what each row counted (``RoleUsage.unanswered_retried``, ``unanswered_lost``, ``unanswered_reasons``) and
     never adds a row that counted nothing as zero: a role no row counted in is absent, and a trial whose row in a
-    counting role counted nothing (any of its rows there) is ``results_uncounted``. ``calls`` sums the counting rows' answered calls, and is
+    counting role counted nothing (any of its rows there) is ``results_uncounted``. ``calls`` sums the counting rows' answered calls (none on a row
+    holding only unanswered calls), and is
     None once one of them did not count its calls, since a share over a partial denominator would overstate.
 
     :param results: The arm's trials.
@@ -539,7 +548,10 @@ def _unanswered(results: Sequence[ResultView]) -> list[RoleUnanswered]:
             retried = sum_optional_tokens(retried, row.unanswered_retried)
             lost = sum_optional_tokens(lost, row.unanswered_lost)
             reasons.update(row.unanswered_reasons or {})
-            calls = None if calls is None or row.call_count is None else calls + row.call_count
+            # A row holding only unanswered calls answered none (usage_answers_nothing): 0 answered calls, never
+            # a row that left its answered calls uncounted.
+            answered = 0 if usage_answers_nothing(row) else row.call_count
+            calls = None if calls is None or answered is None else calls + answered
         uncounted = sum(
             1
             for result in results

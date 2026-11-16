@@ -746,3 +746,24 @@ async def test_a_row_that_answered_nothing_is_no_silent_row_a_statement_of_the_s
         await attest_served_model(
             toyhost_host(storage=storage), [run.id], run.scope_id, f"{FAST}-2026", attested_by="person:host"
         )
+
+
+def test_a_row_that_answered_nothing_leaves_the_arms_pricing_counted() -> None:
+    """It counted no answered call and priced nothing: read as a production row that left its calls uncounted, it
+    made the arm's priced share not counted."""
+    usage = [[_ANSWERED_CANDIDATE, _UNANSWERED_CANDIDATE]] * CASES
+    _, bundle, _ = aspect_bundle(_trials(usage))
+    (fast,) = [row for row in bundle.scoreboard if row.unanswered]
+    pricing = fast.pricing
+    assert pricing is not None and (pricing.calls, pricing.priced_calls) == (CASES, CASES)
+
+
+def test_a_row_that_answered_nothing_adds_no_answered_call_and_leaves_the_share_counted() -> None:
+    """Its answered calls are none, never uncounted: read as a row that did not count them, it left the arm's answered
+    calls and its share of every call sent not counted."""
+    lost = RoleUsage(role="candidate", model=_FALLBACK, unanswered_retried=0, unanswered_lost=1)
+    _, bundle, _ = aspect_bundle(_trials([[_counting(retried=0, lost=0), lost]] * CASES))
+    (fast,) = [row for row in bundle.scoreboard if row.unanswered]
+    (entry,) = fast.unanswered
+    assert (entry.calls, entry.lost, entry.results_uncounted) == (3 * CASES, CASES, 0)
+    assert entry.share == pytest.approx(CASES / (3 * CASES + CASES))

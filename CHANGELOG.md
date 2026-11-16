@@ -30,7 +30,9 @@ A usage row holding only unanswered calls is no longer read as an answer anywher
 row or a reading): it is no call whose served model went unrecorded (a contestant's served-model reading, and a
 `runs_attest` statement, which it no longer admits), no candidate model a judge shares, no simulator call whose
 request settings went unverified (the disclosure and the rig's `simulator_sent_settings`), no token count left
-unreported (the bundle's token rollup), and no model a role ran on (a lever read off what ran).
+unreported (the bundle's token rollup), no model a role ran on (a lever read off what ran), and no production row
+that left its calls uncounted: an arm's priced share (`ArmScoreboard.pricing`) and its unanswered census's answered
+calls and share (`RoleUnanswered.calls`, `.share`) stay counted, the row adding no answered call.
 
 **For hosts:** nothing to do.
 
