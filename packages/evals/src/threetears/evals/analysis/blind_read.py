@@ -60,7 +60,7 @@ from threetears.evals.analysis.agreement import (
     judge_self_agreement,
     person_scores_by_result,
 )
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, bounded_separation_p, cohen_kappa
+from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, bounded_separation_p
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier, agreement_statistic, calibration_criterion
 from threetears.evals.schema.blind_read import (
     PREFERENCE_MIN_ITEMS,
@@ -679,26 +679,6 @@ def single_verdicts(table: BlindVerdictTable) -> tuple[int | None, int | None]:
     return (rows[0] if len(rows) == 1 else None, columns[0] if len(columns) == 1 else None)
 
 
-def table_kappa(table: BlindVerdictTable, scale: RubricScale) -> float | None:
-    """Cohen's kappa over a table's pairs, quadratic-weighted on 1-5, read at load from the stored counts. Only the
-    quick path's print still states it; no host surface serves it (#1208).
-
-    :param table: A stored table.
-    :ptype table: BlindVerdictTable
-    :param scale: The criterion's scale.
-    :ptype scale: RubricScale
-    :return: The kappa; None where undefined.
-    :rtype: float | None
-    """
-    pairs = [
-        (reader, judge)
-        for reader, row in zip(table.scores, table.counts, strict=True)
-        for judge, count in zip(table.scores, row, strict=True)
-        for _ in range(count)
-    ]
-    return cohen_kappa(pairs, list(table.scores), weights="quadratic" if scale == "ordinal" else "none")
-
-
 def _table(
     scores: Mapping[tuple[str, str], Sequence[int]],
     by_id: Mapping[str, EvalResult],
@@ -724,12 +704,13 @@ def _table(
 
 @dataclass(frozen=True)
 class BlindAgreementReading:
-    """One stored agreement (its counts) beside what the quick path's print still reads at close: kappa with its
-    bounds against the bar, and the tier.
+    """One stored agreement (its counts) beside what the quick result's calibrations and the report page still read
+    at close: kappa with its bounds against the bar, and the tier.
 
     Computed when a read is closed, from its answers and the results, and never stored or served by a host's door
-    (#1208: a judge's agreement is stated as counts). The figures are kept here only for the quick path's console
-    lines, which a later change converts; the stored document holds :attr:`counts` alone.
+    (#1208: a judge's agreement is stated as counts). The console prints the counts alone; the figures are kept here
+    only for the page and the quick result's calibrations, which a later change converts (#1231). The stored document
+    holds :attr:`counts` alone.
 
     :ivar counts: The stored agreement: who read, how many pairs, and the table.
     :ivar exact_agreement: The share of pairs where both sides gave the same score.
@@ -1354,5 +1335,4 @@ __all__ = [
     "read_sample",
     "shares_family",
     "single_verdicts",
-    "table_kappa",
 ]

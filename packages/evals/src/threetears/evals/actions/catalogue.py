@@ -54,9 +54,10 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, get_args
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from threetears.evals.actions import render
+from threetears.evals.actions.params import NullIsOmitted
 from threetears.evals.kernel.errors import (
     EvalServiceError,
     RefusedInput,
@@ -256,7 +257,7 @@ class Action:
 
         :raises ValueError: The name is not ``noun_verb``; the summary is blank or more than one line; the
             class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
-            nested model; a destructive action declares no required ``confirm``; ``long_running``
+            nested model, or is required and declares ``null`` not given; a destructive action declares no required ``confirm``; ``long_running``
             disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
             declares no ``render`` of its own; a spend action declares no ``happy_path``; the cut is not a
             lowercase identifier; a paged action declares no ``offset`` or its result no ``next_offset`` or no
@@ -285,6 +286,12 @@ class Action:
         if "$defs" in self.params.model_json_schema():
             raise ValueError(
                 f"{where}: parameters are flat — a nested model has no place in one tool's flat parameter list"
+            )
+        required_omitted = sorted(name for name in _null_is_omitted(self.params) if declared[name].is_required())
+        if required_omitted:
+            raise ValueError(
+                f"{where}: {', '.join(required_omitted)} declares null not given (NullIsOmitted) but is required; "
+                "only a parameter with a default can be left out"
             )
         if self.permission == "destructive" and not ("confirm" in declared and declared["confirm"].is_required()):
             raise ValueError(f"{where}: a destructive action declares a required `confirm`, echoing what it destroys")
@@ -789,6 +796,14 @@ class MountedTool:
         else the handler raises propagates: it is a defect, and the transport's error path is where a defect
         belongs.
 
+        Every argument is held to its parameter in one place (:func:`_validated`), for every action: a value that
+        does not fit (``null`` where a value is required, a wrong type, a list where a string is expected) is
+        refused ``validation_failed`` naming the parameter and the type it takes, so a model can call again, however
+        pydantic raised it. ``null`` is that parameter not given only where the parameter declares so
+        (:class:`~threetears.evals.actions.params.NullIsOmitted`); elsewhere it is a value, held to the parameter as
+        any other. A ``TypeError`` raised by the package's own code while validating, like one its handler raises,
+        propagates as the defect it is.
+
         :param arguments: The call's arguments, ``action`` among them.
         :ptype arguments: Mapping[str, Any]
         :param host: The host the action works in.
@@ -813,11 +828,12 @@ class MountedTool:
             recovery = self._form(action, undeclared)
             return _refused(render.refuse_undeclared(self, action, undeclared), _CALL_REFUSAL, recovery, name)
         try:
-            params = action.params.model_validate(given)
-        except ValidationError as invalid:
-            at_fault = list(dict.fromkeys(str(error["loc"][0]) for error in invalid.errors() if error["loc"]))
+            params = _validated(action, given)
+        except (ValidationError, _DoesNotFit) as invalid:
+            problems = _problems(invalid)
+            at_fault = list(dict.fromkeys(loc[0] for loc, _ in problems if loc))
             recovery = self._form(action, at_fault, valid_values=_enum(action, at_fault))
-            return _refused(render.refuse_invalid(self, action, invalid), _CALL_REFUSAL, recovery, name)
+            return _refused(render.refuse_invalid(self, action, problems), _CALL_REFUSAL, recovery, name)
         try:
             result = await action.handler(host, caller, params)
         except EvalServiceError as refused:
@@ -917,6 +933,114 @@ def _raise_site(error: BaseException) -> str:
         trace = trace.tb_next
     frame = trace.tb_frame
     return f"{frame.f_globals.get('__name__', '<unknown>')}:{frame.f_code.co_qualname}"
+
+
+#: The modules a parameter model's validation runs in that are pydantic's own, not this package's.
+_PYDANTIC_MODULES: Final = frozenset({"pydantic", "pydantic_core"})
+
+
+class _DoesNotFit(Exception):
+    """Arguments pydantic could not validate and raised no :class:`~pydantic.ValidationError` for: each one that does
+    not fit, with what it was given and what it takes, to be refused as one that did."""
+
+    def __init__(self, problems: tuple[tuple[tuple[str, ...], str], ...]) -> None:
+        super().__init__("; ".join(f"{'.'.join(loc) or '(the call)'}: {said}" for loc, said in problems))
+        self.problems = problems
+
+
+def _problems(invalid: ValidationError | _DoesNotFit) -> tuple[tuple[tuple[str, ...], str], ...]:
+    """Each value a call gave that does not fit, by where it is and what is wrong with it."""
+    if isinstance(invalid, _DoesNotFit):
+        return invalid.problems
+    return tuple((tuple(str(part) for part in error["loc"]), error["msg"]) for error in invalid.errors())
+
+
+def _validated(action: Action, given: Mapping[str, Any]) -> BaseModel:
+    """``given`` held to the action's parameters: the one place every call's arguments are validated.
+
+    The arguments are the caller's (a model's, a client's), so a value they hold that does not fit is the caller's to
+    fix, refused naming the parameter. Pydantic raises most such values as a :class:`~pydantic.ValidationError`, and
+    some as a bare ``TypeError``: a constraint applied to a value it cannot measure (a length constraint met by
+    ``null`` was one, on a parameter whose declaration put the constraint outside its optional). Such a ``TypeError``,
+    raised in pydantic's own frames, is the caller's value too, and is refused as the ``ValidationError`` would have
+    been, each parameter at fault named with the type it takes; one WARNING names the action and where it was raised,
+    since the declaration that let it through is this package's to fix.
+
+    ``null`` is dropped before validation only for a parameter that declares it the parameter not given
+    (:class:`~threetears.evals.actions.params.NullIsOmitted`), so that call reads exactly as one that left it out (its
+    next page's call included). For every other parameter ``null`` is a value: the action receives it as sent where
+    the parameter admits it, since an action may tell it from an omission (``campaign_update``'s
+    ``control_from_run_id: null`` clears the control), and it is refused as any value that does not fit where the
+    parameter does not.
+
+    A ``TypeError`` raised in this package's own frames (a parameter model's validator) is a defect, never the
+    caller's: it propagates as itself, as a defect in the action's handler does.
+
+    :raises ValidationError: A value does not fit its parameter.
+    :raises _DoesNotFit: A value does not fit its parameter, and pydantic raised a bare ``TypeError`` for it.
+    :raises TypeError: Package code raised it while validating: a defect.
+    """
+    omitted = _null_is_omitted(action.params)
+    given = {name: value for name, value in given.items() if not (value is None and name in omitted)}
+    try:
+        return action.params.model_validate(given)
+    except TypeError as unmeasured:
+        site = _raise_site(unmeasured)
+        if site.split(".", 1)[0].split(":", 1)[0] not in _PYDANTIC_MODULES:
+            raise
+        log.warning(
+            "action %s: validating its parameters raised TypeError in %s, a constraint applied to a value it cannot "
+            "measure; refused as validation_failed, and the parameter's declaration should keep the constraint from "
+            "values it does not fit",
+            action.name,
+            site,
+        )
+        raise _unfitting(action, given) from unmeasured
+
+
+def _null_is_omitted(params: type[BaseModel]) -> frozenset[str]:
+    """The parameters of ``params`` that declare ``null`` the parameter not given
+    (:class:`~threetears.evals.actions.params.NullIsOmitted`).
+
+    :param params: An action's parameter model.
+    :ptype params: type[BaseModel]
+    :return: Their names.
+    :rtype: frozenset[str]
+    """
+    return frozenset(
+        name
+        for name, info in params.model_fields.items()
+        if any(isinstance(marker, NullIsOmitted) for marker in info.metadata)
+    )
+
+
+def _unfitting(action: Action, given: Mapping[str, Any]) -> _DoesNotFit:
+    """The refusal of arguments whose validation raised a bare ``TypeError``: each one that does not validate alone
+    against its own parameter, named with the type it takes (``(the call)`` when none does alone)."""
+    problems: list[tuple[tuple[str, ...], str]] = []
+    for name, value in given.items():
+        info = action.params.model_fields.get(name)
+        if info is None:
+            continue
+        try:
+            TypeAdapter(info.rebuild_annotation()).validate_python(value)
+        except TypeError, ValidationError:
+            given_as, takes = _json_kind(value), render.parameter_type(action, name)
+            problems.append(((name,), f"Input given as {given_as} does not fit; it takes {takes}"))
+    return _DoesNotFit(tuple(problems) or (((), "the values do not fit; see what each parameter takes"),))
+
+
+def _json_kind(value: Any) -> str:
+    """The JSON kind of a value a call gave: ``null``, ``true or false``, a number, a string, a list or an object."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true or false"
+    if isinstance(value, int | float):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    return "a list" if isinstance(value, list | tuple) else "an object"
 
 
 def _enum(action: Action, at_fault: Sequence[str]) -> tuple[Any, ...] | None:

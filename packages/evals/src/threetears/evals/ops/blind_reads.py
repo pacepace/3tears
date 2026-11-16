@@ -46,14 +46,11 @@ from threetears.evals.analysis.blind_read import (
     check_answer,
     close_blind_read,
     draw_blind_read,
-    pass_fail_counts,
     read_preference,
     read_sample,
     shares_family,
-    single_verdicts,
 )
-from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.stats import exact_rate_interval
+from threetears.evals.analysis.report.blind_rates import StatedRate, blind_rates
 from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.kernel.declaration import CampaignArm, resolve_control_arm
 from threetears.evals.kernel.errors import (
@@ -394,17 +391,11 @@ def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
     )
 
 
-#: The words a pass/fail score is said in.
-_VERDICT_WORDS: Final = {0: "fail", 1: "pass"}
-
-
-def _rate(count: int, of: int, said: str) -> BlindReadRate:
-    """``count`` of ``of`` with its exact interval, said as ``said`` followed by the interval."""
-    interval = exact_rate_interval(count, of)
-    assert interval is not None  # of is at least 1
-    forms = PageForms.off_page()
-    low, high = forms.share(interval[0]).text, forms.share(interval[1]).text
-    return BlindReadRate(count=count, of=of, interval=interval, said=f"{said} (exact 95% interval {low} to {high})")
+def _rate(rate: StatedRate | None) -> BlindReadRate | None:
+    """A rate as the door serves it, in the words every door says it in (:func:`blind_rates`)."""
+    if rate is None:
+        return None
+    return BlindReadRate(count=rate.count, of=rate.of, interval=rate.interval, said=rate.said)
 
 
 def _rates(
@@ -414,37 +405,8 @@ def _rates(
 
     ``reader`` and ``judge`` are how the statements name the two sides.
     """
-    said: list[str] = []
-    one_reader, one_judge = single_verdicts(table)
-    cells = pass_fail_counts(table)
-
-    def verdict(score: int) -> str:
-        return _VERDICT_WORDS[score] if cells is not None else f"a {score}"
-
-    if one_reader is not None:
-        said.append(f"{reader} gave every answer one verdict, {verdict(one_reader)}")
-    if one_judge is not None:
-        said.append(f"{judge} gave every answer one verdict, {verdict(one_judge)}")
-    if cells is None:
-        said.append("a 1-5 criterion has no fixed pass, so no catch rate: the table counts every pair")
-        return None, None, said
-    failed = cells.both_fail + cells.reader_fail_judge_pass
-    passed = cells.both_pass + cells.reader_pass_judge_fail
-    catch = _rate(cells.both_fail, failed, f"caught {cells.both_fail} of {failed}") if failed else None
-    false_fail = (
-        _rate(
-            cells.reader_pass_judge_fail,
-            passed,
-            f"failed {cells.reader_pass_judge_fail} of the {passed} {reader} passed",
-        )
-        if passed
-        else None
-    )
-    if catch is None:
-        said.append(f"{reader} failed no answer: no catch rate")
-    if false_fail is None:
-        said.append(f"{reader} passed no answer: no false-fail rate")
-    return catch, false_fail, said
+    rates = blind_rates(table, reader=reader, judge=judge)
+    return _rate(rates.catch), _rate(rates.false_fail), rates.said
 
 
 def _check(entry: BlindAgreement) -> BlindReadCheck:

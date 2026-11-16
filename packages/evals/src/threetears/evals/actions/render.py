@@ -34,7 +34,7 @@ from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Final
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from threetears.evals.schema import GoalStateOutcome
 from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
@@ -79,6 +79,12 @@ def _type_word(schema: Mapping[str, Any]) -> str:
     if kind == "array":
         return f"list of {_type_word(schema.get('items', {}))}"
     return str(kind)
+
+
+def parameter_type(action: Action, name: str) -> str:
+    """One parameter's type as its help line says it (``optional string``, ``list of string``); ``any`` for a name the
+    action does not declare."""
+    return _type_word(action.params.model_json_schema().get("properties", {}).get(name, {}))
 
 
 def parameter_lines(action: Action) -> list[str]:
@@ -259,20 +265,11 @@ def refuse_undeclared(tool: MountedTool, action: Action, undeclared: Sequence[st
     return f"refused: {action.name} does not take {', '.join(undeclared)}.\n{_accepted(action)}"
 
 
-def refuse_invalid(tool: MountedTool, action: Action, invalid: ValidationError) -> str:
-    """A call whose values do not validate against the action's parameters."""
+def refuse_invalid(tool: MountedTool, action: Action, problems: Sequence[tuple[Sequence[str], str]]) -> str:
+    """A call whose values do not validate against the action's parameters: each by where it is and what is wrong."""
     del tool
-    problems = []
-    for error in invalid.errors():
-        where = ".".join(str(part) for part in error["loc"]) or "(the call)"
-        problems.append(f"- {where}: {error['msg']}")
-    return "\n".join(
-        [
-            f"refused: {action.name} was called with values it cannot take:",
-            *problems,
-            _accepted(action),
-        ]
-    )
+    lines = [f"- {'.'.join(where) or '(the call)'}: {one_line(said)}" for where, said in problems]
+    return "\n".join([f"refused: {action.name} was called with values it cannot take:", *lines, _accepted(action)])
 
 
 def refuse_by_engine(tool: MountedTool, action: Action, refused: EvalServiceError) -> str:

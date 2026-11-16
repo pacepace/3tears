@@ -456,13 +456,15 @@ def test_a_judged_dimension_reads_one_name_on_the_page_and_in_the_print(rungs: d
     # One name: a table's row prints it as a label, starting with a capital as every measure's row does; the print's
     # line, as the words open it.
     surfaces = _rendered(rungs["rung2"])
-    for dimension in ("answer.grounded", "answer.answers", "answer.safe"):
+    # Rung 2's judge, re-recorded under the grounded wording ruled on 2026-11-16, fails one grounded trial.
+    scored = {"answer.grounded": "97.5%, 39 of 40", "answer.answers": "100%, 40 of 40", "answer.safe": "100%, 40 of 40"}
+    for dimension, rate in scored.items():
         named = judged_heading(dimension)
         assert named == f"{dimension.replace('.', ' ')} (judged)"
         assert table_label(named) == named[:1].upper() + named[1:]
         assert (
             f"| {table_label(named)} |" in surfaces["aspect.md"]
-            and f"  {named}, scored pass/fail: 100%, 40 of 40 trials" in surfaces["print"]
+            and f"  {named}, scored pass/fail: {rate} trials" in surfaces["print"]
         )
         assert dimension not in surfaces["print"]
 
