@@ -195,11 +195,12 @@ async def test_noted_rows_since_answers_what_the_hand_written_statement_answered
             said = "too_many_rows" if too_many else answer if isinstance(answer, str) else "notes"
             assert said == decided, (case, cap, answer, decided)
             if too_many:
-                # past the cap the whole-table notes are read alone, a second statement (RC2, 2026-11-16: the answer
-                # was "too_many_rows" and named none of them, so a truncate in the window was never recorded): every
-                # one the old statement reads with no cap, each tenant's folded into one change
+                # past the cap the whole-table notes are read alone, after the statement (a look a slot, then those in
+                # reach by their keys; RC2, 2026-11-16: the answer was "too_many_rows" and named none of them, so a
+                # truncate in the window was never recorded): every one the old statement reads with no cap, each
+                # tenant's folded into one change
                 assert isinstance(answer, NotedRows) and not answer.rows
-                assert len(kept.answers) == 2, case
+                assert len(kept.answers) >= 2, case
                 every = await ring.conn.fetch(_old_noted_rows_sql(owner), _ASKED, since, 1_000_000)
                 reaches: dict[str | None, list[Any]] = {}
                 for row in every:

@@ -177,7 +177,8 @@ async def test_threetears_change_notes_0_whole_reads_the_whole_notes_past_the_re
         _Pool(recorded), notes_schema=ring.schema, table="table_0", since=now - timedelta(hours=1), cap=10
     )
     assert isinstance(found, NotedRows) and found.too_many_rows and found.whole_table and not found.rows, found
-    whole = [plan for plan in recorded.plans if "key_text IS NULL" in plan.sql]
+    # the look at the ring's current table (the one seeded); each slot's is its own statement
+    whole = [plan for plan in recorded.plans if "key_text IS NULL" in plan.sql and f'"{note_table(0)}"' in plan.sql]
     assert whole and all(plan_uses_index(plan, "threetears_change_notes_0_whole", partial=True) for plan in whole), [
         p.plan for p in recorded.plans
     ]

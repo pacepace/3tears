@@ -48,11 +48,13 @@ from threetears.core.ddl.change_notes import (
 )
 from threetears.core.keyed import (
     Derived,
+    KeyBatch,
     Step,
     Fragment,
     Selected,
     distinct,
     read_row,
+    read_keyed,
     read_row_beside,
     read_step,
     scan,
@@ -375,17 +377,18 @@ async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime
     answer past its cap.
 
     The slots are the ones its statement read (:data:`_SLOT_READ`, decided here from the ring row it read): the current
-    table, and the previous one while the reach is before the last switch's writes there could end. Each is read
-    through the whole-table notes' partial index (``(table_name, noted_at) WHERE key_text IS NULL``,
+    table, and the previous one while the reach is before the last switch's writes there could end. Each is looked at
+    through the whole-table notes' partial index (``(table_name, noted_at) INCLUDE (tenant) WHERE key_text IS NULL``,
     :func:`~threetears.core.ddl.change_notes.change_notes_ddl`), which holds those notes alone, so the many keyed notes
-    that took the read past its cap are never visited.
+    that took the read past its cap are never visited; the reach of each one from ``reach`` on is then read by its key.
 
-    WHY the time is compared here, not in the statement (RC2, 2026-11-16, ``test_change_note_ring_plans``): with
-    ``noted_at >= $2`` beside the table, YugabyteDB planned the read through the ``(table_name, noted_at)`` index of
-    every note, filtering ``key_text IS NULL``, and scanned all 101 notes of a table holding one whole note; Postgres
-    took the partial index either way. Pinned by the table alone, the read is the scrub's whole-table look, which both
-    plan through the partial index. A slot holds the few whole notes of its one switch period, so the ones before the
-    reach cost a row each.
+    WHY two reads, and the time compared here (RC2, 2026-11-16, ``test_change_note_ring_plans`` on YugabyteDB): read
+    in one statement with the reach (``columns``, which the partial index does not carry), or with ``noted_at >= $2``
+    beside the table, YugabyteDB answered it from the ``(table_name, noted_at)`` index that carries every column of
+    every note, filtering ``key_text IS NULL``: all 101 notes of a table holding one whole note. The look reads only what
+    the partial index holds (its key, its tenant, and the row's key every YugabyteDB index entry carries), as the scrub's
+    whole-table look does, which both engines plan through it. A slot holds the few whole notes of one switch period,
+    so those before the reach cost a row each, and a slot with none in reach costs no second read.
 
     :param pool: the L3 pool
     :ptype pool: Any
@@ -405,19 +408,22 @@ async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime
     slots = [current]
     if reach < ring["writes_previous_until"]:
         slots.append((current - 1 + NOTE_RING_SIZE) % NOTE_RING_SIZE)
-    legs = [
-        scan(
-            f"{schema}.{note_table(slot)}",
-            ("tenant", "noted_at", Selected("t.columns::text", "reach")),
-            where=[Fragment("t.key_text IS NULL AND t.table_name = $1", (table,))],
-        )
-        for slot in slots
-    ]
-    # the current slot alone once the previous one can hold no note from the reach on: a union names two or more
-    found = await read_step(pool, legs[0] if len(legs) == 1 else union(*legs, keep_all=True))
     reaches: dict[str | None, list[Any]] = {}
-    for note in found:
-        if note["noted_at"] >= reach:
+    for slot in slots:
+        notes = f"{schema}.{note_table(slot)}"
+        looked = await read_step(
+            pool,
+            scan(notes, ("id", "noted_at"), where=[Fragment("t.key_text IS NULL AND t.table_name = $1", (table,))]),
+        )
+        held = [(str(note["id"]),) for note in looked if note["noted_at"] >= reach]
+        if not held:
+            continue
+        for note in await read_keyed(
+            pool,
+            notes,
+            keys=KeyBatch(("id",), held, casts=("uuid",)),
+            columns=("tenant", Selected("t.columns::text", "reach")),
+        ):
             reaches.setdefault(None if note["tenant"] is None else str(note["tenant"]), []).append(note["reach"])
     return tuple(whole_noted_change(table, tenant, reached) for tenant, reached in reaches.items())
 
