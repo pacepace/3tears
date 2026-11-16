@@ -6,6 +6,27 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: `schema.check_after` is public again, and the host's recorded import list is re-taken
+
+**Fixed:** `threetears.evals.schema.check_after` is exported again, `host-contract`, kind `invoked`. The entry
+"a public name is admitted by criteria" below removed it as a name no production code uses, working from Discodon's
+import list as recorded at a78b15b66 (2026-11-13). That list was stale: Discodon's production store
+(`discodon/evals/storage.py`) imports and calls `check_after` since its 7b2e0afeb pin. The name meets the admission
+criteria: every `DocumentStore` adapter that declares `after` calls it, every store the package ships does, the
+host guide teaches it again, and its meaning is the port's own refusal. That entry claimed Discodon's production code
+imported none of the removed names; the claim was false and is corrected there.
+
+**Changed:** Discodon's recorded lists (`tests/fixtures/host_imports/discodon.txt` and `host_test_imports/`) are
+re-taken at 73996c83e (2026-11-16) by `scripts/record_host_imports.py`, whose header names that commit. A new test
+imports every name on a host's production list from the root the host names it on, from the recorded list alone.
+
+**Added:** a shipped example of `run.update_template`: the courier host renames a stratum that already has a name
+and retires a scenario through it (`tests/fixtures/courierhost/`), the two things only it does.
+
+**For hosts:** nothing to change for `check_after`: `from threetears.evals.schema import check_after` imports as it did
+at 7b2e0afeb. The three names Discodon's tests import that left their roots stay removed; their ports are in the
+entry below.
+
 ### evals: looks are counted from stored facts, a plan of looks tightens every claim, and a reading past it says how often that errs (judges D1)
 
 **Added:** a look is an occasion on which a contrast's test could have been read again on more or different evidence.
@@ -321,8 +342,8 @@ the second, marked.
 **Changed:** a shipped page that names, as code, a name `MIGRATIONS.toml` records removed fails a test, unless the
 page marks it removed where it names it; a page that teaches a provisional name, the `@name(...)` spelling included,
 must mark it provisional there. `@measure(...)` is marked provisional on the two pages that teach it, and the pages that
-told a reader to call `check_after`, `check_names`, `judge_config_of` or `is_builtin_judge_config_id` now give the
-replacement inline.
+told a reader to call `check_names`, `judge_config_of` or `is_builtin_judge_config_id` now give the replacement
+inline.
 
 **Changed:** a host-contract name moves only with a `MIGRATIONS.toml` record naming its replacement, in a single
 cut-over with no shim (owner ruling, 2026-11-15). The host guide (its stability tiers and its upgrading section),
@@ -330,7 +351,7 @@ the README, the reference and `MIGRATIONS.toml`'s header said a deprecation cycl
 
 **Removed:** names no production code uses, from their public roots: `kernel.CassetteStore`,
 `kernel.DefinitionStore`, `kernel.RunRecordStore`, `kernel.production_replicating_cost`,
-`schema.sent_settings_of`, `schema.check_after`, `schema.is_builtin_judge_config_id`, `schema.judge_config_of`,
+`schema.sent_settings_of`, `schema.is_builtin_judge_config_id`, `schema.judge_config_of`,
 `schema.utc_now_iso`, `analysis.lint_prose`, `analysis.check_names` and `analysis.host_declarations_digest`. The
 engine still uses each inside; `MIGRATIONS.toml` records each released one with its port. `Log`, `quick.measure` and
 `quick.Measure` stay importable but are provisional now: `Eval`'s signature names `Log`, and the toy host declares its
@@ -347,7 +368,6 @@ imports against this map:
 - `schema.is_builtin_judge_config_id`: `config_id is not None and config_id.startswith("builtin:")`.
 - `schema.judge_config_of`: the part of a recorded `<config id>@<sha12>` before the `@`; `None` for a built-in one.
 - `schema.utc_now_iso`: `datetime.now(UTC).isoformat()`.
-- `schema.check_after`: refuse an `after` given without `order_by`, or one that is not a (scalar, `str` id) pair.
 - `kernel.production_replicating_cost` (Discodon's tests import it): read an arm's production cost off the bundle
   scoreboard, `ArmScoreboard.reply_cost_usd`.
 - `analysis.host_declarations_digest` (Discodon's tests import it): read `AnalysisContextBundle.host_declarations_digest`
@@ -356,7 +376,9 @@ imports against this map:
   in the template's `goal_check_names`.
 - `analysis.lint_prose`: no replacement; nothing imported it.
 
-Discodon's production code imports none of these. Nothing stored changes.
+Discodon's production code imports none of these, by its list as re-recorded at 73996c83e. Its tests import three:
+`kernel.production_replicating_cost`, `analysis.check_names` and `analysis.host_declarations_digest`. Nothing stored
+changes.
 
 ### evals: the one caveat list is filled and the first screen computed, with a typed next step per reason (#1192)
 

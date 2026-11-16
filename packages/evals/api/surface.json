@@ -311,6 +311,11 @@
       "signature": "CellTrace(spans: list[dict[str, Any]] = list(), total_ms: float | None = None, llm_ms: float | None = None, tool_ms: float | None = None)",
       "tier": "stable"
     },
+    "threetears.evals.schema.check_after": {
+      "kind": "function",
+      "signature": "check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None",
+      "tier": "host-contract"
+    },
     "threetears.evals.schema.check_grouping": {
       "kind": "function",
       "signature": "",
