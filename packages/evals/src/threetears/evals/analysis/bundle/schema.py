@@ -2146,11 +2146,12 @@ class ComparisonFamily(EvalDocumentModel):
         # Left out of the document while false, so a family read as before is this shape byte for byte.
         exclude_if=lambda rereadable: not rereadable,
         description=(
-            "Whether the mixture bet read this family's paired comparisons on a declared range (the aspect's design is "
-            "`rereadable`, `AspectDesign.rereadable`): each such comparison's p, equivalence p and interval are that "
-            "bet's, over its cases in the order they were added, valid however many times cases are added and the "
-            "family read again; a comparison no bet read (cost, latency, unpaired) is read once, as before. False "
-            "everywhere else."
+            "Whether the mixture bet read this family's paired comparisons on a declared range: a quick-path "
+            "comparison's (every result of a kind only the quick path launches, with no plan of looks), which the "
+            "quick path continues by running only the cases appended to it. Each such comparison's p, equivalence p "
+            "and interval are that bet's, over its cases in the order they were added, valid however many times cases "
+            "are added and the family read again; a comparison no bet read (cost, latency, unpaired), and every "
+            "guardrail, floor and per-arm rate, is read at the cases it holds. False everywhere else."
         ),
     )
     comparisons: list[FamilyComparison] = Field(
@@ -4290,8 +4291,7 @@ _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
     # #1209: each trial's case's place in its runs' case lists (`trials[].case_place`), which only names a case.
     | {"case_place"}
     # Whether a family's paired readings on a range were read by the mixture bet (`ComparisonFamily.rereadable`),
-    # written only where an aspect's design is `rereadable` (`AspectDesign.rereadable`, which a bundle carrying the
-    # declaration holds as well).
+    # written only on a quick-path comparison (decided from its results' kinds, which the bundle holds as well).
     | {"rereadable"}
 )
 

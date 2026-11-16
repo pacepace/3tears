@@ -458,11 +458,12 @@ class Result:
         kept_at = None if kept is None else Path(kept)
 
         def recorded() -> tuple[BlindRead, tuple[CalibrationRating, ...], list[EvalResult], list[BlindAnswer]]:
-            closed, outside = read_blind(judge, self.host, self.arms, self.control, self.scope_id, self.name)
+            runs = self._arm_runs()
+            closed, outside = read_blind(judge, self.host, self.arms, self.control, self.scope_id, self.name, runs=runs)
             if closed is None:
                 raise ValueError("the stored answers no longer hold a judged answer to read blind")
             drawn = closed.read
-            results = _results_of(self.host, self.arms, self.scope_id)
+            results = _results_of(self.host, self.arms, self.scope_id, runs)
             if kept_at is None or not kept_at.is_file():
                 return drawn, outside, results, []
             # Only answers on this very draw are read back: an answer to another draw is asked for again.
@@ -526,6 +527,18 @@ class Result:
             return replace(self, reviews_kept=kept_at, **blind_reading(judge, again, self.arms, kept_at))
 
         return await run_blocking(self.host.blocking_executor, closed)
+
+    def _arm_runs(self) -> dict[str, list[str]]:
+        """Each arm's runs, as its campaign holds them, oldest first: one, or a continued comparison's every run
+        (:func:`~threetears.evals.quick.one_call.launch_arms`). Reads the store."""
+        campaign = get_campaign(self.host.storage, self.campaign_id, self.scope_id)
+        arm_of = {variant: arm for arm, variant in self.arm_variants.items()}
+        runs: dict[str, list[str]] = {arm: [] for arm in self.arms}
+        for run_id in campaign.aspects[0].run_ids:
+            arm = arm_of.get(variant_key_of_run(list_results(self.host.storage, run_id, self.scope_id)) or "")
+            if arm is not None:
+                runs[arm].append(run_id)
+        return {arm: held or [self.arms[arm].run_id] for arm, held in runs.items()}
 
     # --- the report --------------------------------------------------------------------------------------------------
 
@@ -1169,6 +1182,7 @@ class Result:
                 question=asked,
                 margin=held,
                 measure_order=self.grader_readings,
+                runs=self._arm_runs(),
             )
             return with_judge_examples(
                 replace(
@@ -1411,13 +1425,31 @@ def _exclusion_causes(summary: EvalSummary) -> list[str]:
     return [f"{count} x {error}" for error, count in counted.items()]
 
 
-def _results_of(host: EvalHost, arms: Mapping[str, EvalSummary], scope_id: str) -> list[EvalResult]:
-    """Every arm's results, arm by arm. Reads the store."""
-    return [result for summary in arms.values() for result in list_results(host.storage, summary.run_id, scope_id)]
+def _results_of(
+    host: EvalHost,
+    arms: Mapping[str, EvalSummary],
+    scope_id: str,
+    runs: Mapping[str, Sequence[str]] | None = None,
+) -> list[EvalResult]:
+    """Every arm's results, arm by arm: each arm's runs in ``runs`` (a continued comparison's every run), else its
+    summary's one run. Reads the store."""
+    return [
+        result
+        for arm, summary in arms.items()
+        for run_id in (runs or {}).get(arm, (summary.run_id,))
+        for result in list_results(host.storage, run_id, scope_id)
+    ]
 
 
 def read_blind(
-    judge: Judge | None, host: EvalHost, arms: Mapping[str, EvalSummary], control: str, scope_id: str, name: str
+    judge: Judge | None,
+    host: EvalHost,
+    arms: Mapping[str, EvalSummary],
+    control: str,
+    scope_id: str,
+    name: str,
+    *,
+    runs: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[BlindClose | None, tuple[CalibrationRating, ...]]:
     """Draw the run's blind read and read the labels ``judge`` names against it. Reads the store.
 
@@ -1433,7 +1465,7 @@ def read_blind(
     """
     if judge is None:
         return None, ()
-    results = _results_of(host, arms, scope_id)
+    results = _results_of(host, arms, scope_id, runs)
     evidence = {}
     for result in results:
         trace = get_result_trace(host.storage, result) if result.has_trace else None
@@ -1445,7 +1477,11 @@ def read_blind(
         evidence,
         judge.dims,
         [
-            BlindArm(key=arm, role="control" if arm == control else "candidate", run_ids=[arms[arm].run_id])
+            BlindArm(
+                key=arm,
+                role="control" if arm == control else "candidate",
+                run_ids=list((runs or {}).get(arm, (arms[arm].run_id,))),
+            )
             for arm in chosen
         ],
         scope_id=scope_id,
@@ -1605,6 +1641,7 @@ def declare(
     question: str | None = None,
     margin: float | None = None,
     measure_order: Sequence[str] = (),
+    runs: Mapping[str, Sequence[str]] | None = None,
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
@@ -1616,10 +1653,9 @@ def declare(
     grader's measure in the order the eval lists them (:attr:`Result.grader_readings`), filed on the aspect's design so
     the campaign's page leads on the first of them, as the printed line does; empty files none.
 
-    A comparison's design is filed ``rereadable`` (:attr:`~threetears.evals.kernel.declaration.AspectDesign.rereadable`):
-    a newcomer may add cases and run it again as often as they like, with nothing declared, and each paired contrast
-    on a declared range keeps its error over every such reading (the mixture bet,
-    :data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE`).
+    ``runs`` is each arm's runs, oldest first, where an arm reads more than its summary's one: a comparison continued
+    over cases appended to it (:func:`~threetears.evals.quick.one_call.launch_arms`), whose every run the campaign
+    holds. ``None`` files each summary's one run.
 
     ``declared_at`` is when the caller fixed the design and the control, where that was before its arms ran: an eval
     fixes both in the call that launches them, so the campaign filed once they have run is written once, dated then
@@ -1662,16 +1698,12 @@ def declare(
         design["guardrail_margins"] = [entry.model_dump() for entry in guardrail_margins]
     if measure_order:
         design["measure_order"] = list(dict.fromkeys(measure_order))
-    if len(arms) > 1:
-        # A newcomer adds cases and runs the eval again, as often as they like, with no plan declared: each paired
-        # contrast on a range is read by the mixture bet, which keeps its error however often it is read again.
-        design["rereadable"] = True
     # One aspect, the eval's: every arm ran the one template the eval authored, so the aspect names it (a judged
     # guardrail's margin is declared on a dimension of its rubric, which the declaration gate reads from it). A margin
     # on the pass rate is filed only where the eval's author wrote one; none is ever assumed.
     aspect: dict[str, Any] = {
         "label": aspect_label_for(behavior),
-        "run_ids": [summary.run_id for summary in arms.values()],
+        "run_ids": [run_id for arm, summary in arms.items() for run_id in (runs or {}).get(arm, (summary.run_id,))],
         "design": design,
     }
     refuse_an_unusable_margin(margin, question)
@@ -1685,7 +1717,7 @@ def declare(
         {
             "label": shown.get(arm, arm),
             "role": "control" if arm == control else "candidate",
-            "from_run_ids": [arms[arm].run_id],
+            "from_run_ids": list((runs or {}).get(arm, (arms[arm].run_id,))),
         }
         for arm in ordered
         if arm == control or arm in shown

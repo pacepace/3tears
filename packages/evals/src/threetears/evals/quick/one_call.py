@@ -50,6 +50,7 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.candidate_kind import CALLABLE_KIND, JUDGED_CALLABLE_KIND
 from threetears.evals.kernel.scoring import measure_catalog_of
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel import default_job_timeout
@@ -105,7 +106,7 @@ from threetears.evals.kernel.host import (
 from threetears.evals.schema import NominalScale, SubjectSnapshot, SweepableValue, TraceSink
 from threetears.evals.schema import WorldPlacement
 from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
-from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_run
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_runs
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.run import (
     CellContext,
@@ -127,6 +128,7 @@ from threetears.evals.run import (
     launch_as_group,
     launch_run,
     list_results,
+    set_run_archived,
     start_run,
 )
 from threetears.evals.run.authoring import active_judge_config_in, refuse_undeclared_judges, refuse_unsupplied_world
@@ -140,6 +142,14 @@ from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.kernel.runner_spend import cell_spend, spent
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.quick.answer import Answer, unwrap_answer
+from threetears.evals.quick.continuation import (
+    EarlierComparison,
+    canonical_json,
+    continued_sentence,
+    launched_as,
+    new_comparison_sentence,
+)
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExamples, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
@@ -176,12 +186,6 @@ ExpectedLabel = Callable[[Mapping[str, Any]], str]
 #: (``accuracy``). No scorer may take one: it would collide with a classifier's own measure, or be read
 #: under the core descriptor of a measure it is not.
 _CLASSIFIER_NAMES = frozenset({MATCH_MEASURE, CONFUSION_CELL_MEASURE, ACCURACY_MEASURE})
-
-#: The kind :class:`~threetears.evals.quick.contract.Eval` launches, as its template names it.
-CALLABLE_KIND = "callable"
-
-#: The kind :class:`~threetears.evals.quick.contract.Eval` launches when it is handed a judge: the callable, its answers judged as documents.
-JUDGED_CALLABLE_KIND = "callable-judged"
 
 #: The host :func:`callable_host` builds, by the id the engine prints in its logs and errors.
 CALLABLE_HOST_ID = "eval"
@@ -1514,6 +1518,12 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
         host.storage.save_template(
             template if stored is None else template.model_copy(update={"created_at": stored.created_at})
         )
+    _save_cases_unless_unchanged(host, test_cases)
+
+
+def _save_cases_unless_unchanged(host: EvalHost, test_cases: Sequence[EvalTestCase]) -> None:
+    """Store each case the store does not already hold unchanged (:func:`_save_unless_unchanged`'s cases): a stored
+    case's ``name`` is fill-only, and one that differs in anything but its stamps is saved with its ``created_at``."""
     for test_case in test_cases:
         kept = host.storage.load_test_case(test_case.id, test_case.scope_id)
         if kept is not None and kept.name is not None:
@@ -1524,6 +1534,89 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
             host.storage.save_test_case(
                 test_case if kept is None else test_case.model_copy(update={"created_at": kept.created_at})
             )
+
+
+def _what_changed(
+    host: EvalHost,
+    earlier: EarlierComparison,
+    keys: Sequence[tuple[str | None, str, str]],
+    control_index: int,
+    k: int,
+    cases: Sequence[EvalTestCase],
+    names: Sequence[str],
+    first_address: str,
+) -> str | None:
+    """What makes this launch another comparison than ``earlier``, as a clause; ``None`` where it continues it.
+
+    ``cases`` are this launch's cases as ``earlier``'s case set would store them, each at its place, and
+    ``first_address`` the address of the cases ``earlier`` first ran, read off this launch's (``_template_id``, which
+    covers their content, labels, seeds, rubric, intent and goal checks). Every case ``earlier`` ran must be stored at
+    its place as this launch holds it, and a case appended must not be stored there otherwise (another comparison in
+    the scope appended other cases to the same case set). Reads the store.
+    """
+    if k != earlier.k:
+        return "the repeats per case changed"
+    if set(keys) != set(earlier.arms) or len(keys) != len(earlier.arms):
+        return "the arms changed"
+    if keys[control_index] != earlier.control:
+        return "the control changed"
+    if len(cases) < len(earlier.case_ids):
+        return "a case run before was removed"
+    for index, case in enumerate(cases):
+        kept = host.storage.load_test_case(case.id, case.scope_id)
+        ran = index < len(earlier.case_ids)
+        if ran and earlier.case_ids[index] != case.id:
+            return "the cases run before are not in the order they ran"
+        if (ran or kept is not None) and (
+            kept is None
+            or kept.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS)
+            != case.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS)
+        ):
+            if ran:
+                return f"case {names[index]} was edited, moved or removed"
+            return f"another comparison in this scope added another case {names[index]} to the same cases"
+    if first_address != earlier.template_id:
+        return "the judge's rubric, the intent or the goal checks changed"
+    return None
+
+
+def _reads_otherwise(
+    host: EvalHost,
+    earlier: EarlierComparison,
+    keys: Sequence[tuple[str | None, str, str]],
+    runs: Sequence[EvalRun],
+    scope_id: str,
+) -> bool:
+    """Whether a run launched to continue ``earlier`` is not its arm's earlier runs measured alike: another variant
+    key, another measurement context (which holds the graders' and the judge's definitions), or other declarations
+    of the graders. Reads the store."""
+    for key, run in zip(keys, runs, strict=True):
+        arm = earlier.arms[key]
+        stored = host.storage.load_eval_run(run.id, scope_id)
+        if stored is None:
+            return True
+        declared = canonical_json(
+            {
+                "measures": {
+                    name: declared.model_dump(mode="json") for name, declared in stored.declared_measures.items()
+                },
+                "margins": stored.declared_margins,
+            }
+        )
+        if (
+            variant_key_of_run(list_results(host.storage, run.id, scope_id)) != arm.variant_key
+            or stored.context_key != arm.context_key
+            or declared != arm.declared
+        ):
+            return True
+    return False
+
+
+def _archive_run_ids(host: EvalHost, run_ids: Sequence[str], scope_id: str) -> None:
+    """Archive runs launched to continue a comparison they could not: kept, and restorable, but out of every listing
+    and reading."""
+    for run_id in run_ids:
+        set_run_archived(host.storage, run_id, scope_id, archived=True, profile=host.profile)
 
 
 def _seed_judge_examples(
@@ -2180,7 +2273,83 @@ async def run_arms(
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
 ) -> list[EvalSummary]:
+    """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order: what
+    :func:`launch_arms` launches with no earlier comparison to continue. Its parameters are that function's."""
+    launched = await launch_arms(
+        cases,
+        arms,
+        scorers,
+        scope_id=scope_id,
+        host=host,
+        template_name=template_name,
+        expected=expected,
+        label_field=label_field,
+        judge=judge,
+        intent=intent,
+        world=world,
+        goal_checks=goal_checks,
+        k=k,
+        max_cost_usd=max_cost_usd,
+        subject=subject,
+        margins=margins,
+        measure_latency=measure_latency,
+    )
+    return launched.summaries
+
+
+@dataclass(frozen=True)
+class Launched:
+    """What :func:`launch_arms` launched and reads, arm by arm in arm order.
+
+    :ivar summaries: Each arm's summary over every run it reads: one run, or a continued comparison's runs as one.
+    :ivar run_ids: Each arm's runs, oldest first.
+    :ivar launched: The runs this call launched, which a refusal after the run archives; none where a continued
+        comparison had no case to add.
+    :ivar continued: Whether it continued an earlier comparison.
+    :ivar said: The sentence saying how the comparison ran (:func:`~threetears.evals.quick.continuation.continued_sentence`
+        or :func:`~threetears.evals.quick.continuation.new_comparison_sentence`); ``None`` with no earlier comparison.
+    """
+
+    summaries: list[EvalSummary]
+    run_ids: list[tuple[str, ...]]
+    launched: list[str]
+    continued: bool = False
+    said: str | None = None
+
+
+async def launch_arms(
+    cases: Sequence[Mapping[str, Any]],
+    arms: Sequence[CallableArm],
+    scorers: Sequence[Scorer] = (),
+    *,
+    scope_id: str,
+    host: EvalHost,
+    template_name: str,
+    expected: ExpectedLabel | None = None,
+    label_field: str | None = None,
+    judge: Judge | None = None,
+    intent: str | None = None,
+    world: World | None = None,
+    goal_checks: Sequence[str] = (),
+    k: int = DEFAULT_LAUNCH_K_RUNS,
+    max_cost_usd: float | None = None,
+    subject: str | None = None,
+    margins: Mapping[str, float] | None = None,
+    measure_latency: bool = False,
+    earlier: EarlierComparison | None = None,
+    control_index: int = 0,
+    said: str | None = None,
+) -> Launched:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
+
+    **Continuing a comparison.** With ``earlier``, the comparison the quick path filed last under this eval's name
+    (:func:`~threetears.evals.quick.continuation.earlier_comparison`), the launch continues it where it is the same
+    comparison: the same arms (``control_index`` the control), the same repeats, and every case it ran still at its
+    place, unedited, with the same rubric, intent and goal checks over them. Then only the cases after them run, into
+    its case set, and each arm reads its earlier runs with its new one. A new run whose variant key, measurement
+    context or graders' declarations differ from its arm's earlier runs is archived, and every case runs again. Where
+    it is not the same comparison, every case runs, and :attr:`Launched.said` names what changed. ``said`` is a
+    sentence the caller found already (a design that changed), which the launch keeps.
 
     The arms share the template, the case set, the host and the launch: one launch group, every arm's run prepared
     (every refusal made) before any starts, and all of them started together
@@ -2274,9 +2443,8 @@ async def run_arms(
         models.append(model)
     graded_by = "every scorer grades" if judge is None else "the judge and every scorer grade"
     template_intent, intent_source = _template_intent(arms, graded_by, intent)
-    template_id = _template_id(
-        addressed, labels, judge, seeds, goal_checks, intent=template_intent if judge is not None else None
-    )
+    addressed_intent = template_intent if judge is not None else None
+    template_id = _template_id(addressed, labels, judge, seeds, goal_checks, intent=addressed_intent)
     template = EvalTemplate(
         id=template_id,
         scope_id=scope_id,
@@ -2286,21 +2454,62 @@ async def run_arms(
         rubric=list(judge.dims) if judge is not None else [],
         goal_state_checks=goal_checks,
     )
-    test_cases = [
-        EvalTestCase(
-            id=f"{template_id}-{index}",
-            scope_id=scope_id,
-            template_id=template_id,
-            stratum=None if strata is None else strata[index],
-            # The author's own id names the case on the page; a case called by its position gets no name there.
-            name=names[index] if "id" in plain_cases[index] else None,
-            variation_params=stored_variation(case),
-            host_payload=_case_payload(
-                case, None if labels is None else labels[index], None if seeds is None else seeds[index]
-            ),
+
+    def cases_of(template_id: str) -> list[EvalTestCase]:
+        """The cases as the case set ``template_id`` stores them, each at its place."""
+        return [
+            EvalTestCase(
+                id=f"{template_id}-{index}",
+                scope_id=scope_id,
+                template_id=template_id,
+                stratum=None if strata is None else strata[index],
+                # The author's own id names the case on the page; a case called by its position gets no name there.
+                name=names[index] if "id" in plain_cases[index] else None,
+                variation_params=stored_variation(case),
+                host_payload=_case_payload(
+                    case, None if labels is None else labels[index], None if seeds is None else seeds[index]
+                ),
+            )
+            for index, case in enumerate(stimulus)
+        ]
+
+    test_cases = cases_of(template_id)
+    # A comparison continued: its case set, its runs read again, and only the cases appended after them run.
+    reading: list[tuple[str, ...]] = [() for _ in arms]
+    to_run = test_cases
+    keys = [launched_as(arm.arm, model, arm.levers) for arm, model in zip(arms, models, strict=True)]
+    if earlier is not None:
+        stored = await run_blocking(host.blocking_executor, host.storage.load_template, earlier.template_id, scope_id)
+        changed = (
+            "the case set it ran is no longer stored"
+            if stored is None
+            else await run_blocking(
+                host.blocking_executor,
+                _what_changed,
+                host,
+                earlier,
+                keys,
+                control_index,
+                k,
+                cases_of(earlier.template_id),
+                names,
+                _template_id(
+                    addressed[: earlier.first_cases],
+                    None if labels is None else labels[: earlier.first_cases],
+                    judge,
+                    None if seeds is None else seeds[: earlier.first_cases],
+                    goal_checks,
+                    intent=addressed_intent,
+                ),
+            )
         )
-        for index, case in enumerate(stimulus)
-    ]
+        if changed is not None or stored is None:
+            said = new_comparison_sentence(changed or "the case set it ran is no longer stored")
+        else:
+            template, template_id = stored, earlier.template_id
+            test_cases = cases_of(template_id)
+            to_run = test_cases[len(earlier.case_ids) :]
+            reading = [earlier.arms[key].run_ids for key in keys]
     if world is not None and world.stateful:
         # The authoring gate itself, before anything is stored or run: the grammar, the paths, a string match
         # over model prose, a text comparison over a call parameter its schema does not close, and calls or
@@ -2321,7 +2530,12 @@ async def run_arms(
             )
         except ValidationFailedError as refused:
             raise ValueError(str(refused)) from refused
-    await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
+    continuing = any(reading)
+    if continuing:
+        # The template is the comparison's, stored when it first ran; only the cases appended after it are new.
+        await run_blocking(host.blocking_executor, _save_cases_unless_unchanged, host, to_run)
+    else:
+        await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
     if judge is not None and judge.examples:
         await run_blocking(host.blocking_executor, _seed_judge_examples, host, template, judge, expected)
     # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact. A
@@ -2384,7 +2598,7 @@ async def run_arms(
     launch_host = _launch_host(
         host,
         wired,
-        test_cases,
+        to_run,
         judge,
         world,
         max_cost_usd=max_cost_usd,
@@ -2417,33 +2631,64 @@ async def run_arms(
         preparing.clear()
         return prepared
 
-    runs = await launch_as_group(
-        launch_host,
-        len(arms),
-        settings=launch_host.settings(),
-        form=form,
-        prepare=prepare,
-        event="eval.quick",
-    )
-    try:
-        await launch_host.job_manager.wait_for([run.id for run in runs])
-    except asyncio.CancelledError:
-        # This call owns the runs it started: cancelled, it settles them as cancelled rather than
-        # leaving pending ones behind in a store that outlives it.
-        await launch_host.job_manager.shutdown()
-        raise
+    runs: list[EvalRun] = []
+    if to_run:
+        runs = await launch_as_group(
+            launch_host,
+            len(arms),
+            settings=launch_host.settings(),
+            form=form,
+            prepare=prepare,
+            event="eval.quick",
+        )
+        try:
+            await launch_host.job_manager.wait_for([run.id for run in runs])
+        except asyncio.CancelledError:
+            # This call owns the runs it started: cancelled, it settles them as cancelled rather than
+            # leaving pending ones behind in a store that outlives it.
+            await launch_host.job_manager.shutdown()
+            raise
+    if continuing and earlier is not None and runs:
+        # Each new run must be its arm's earlier runs measured alike: the same variant, the same measurement context
+        # (the graders' and the judge's definitions among it) and the same graders' declarations. Where one is not,
+        # the comparison cannot continue: the new runs are archived, and every case runs as a new comparison.
+        differs = await run_blocking(host.blocking_executor, _reads_otherwise, host, earlier, keys, runs, scope_id)
+        if differs:
+            await run_blocking(host.blocking_executor, _archive_run_ids, host, [run.id for run in runs], scope_id)
+            return await launch_arms(
+                cases,
+                arms,
+                scorers,
+                scope_id=scope_id,
+                host=host,
+                template_name=template_name,
+                expected=expected,
+                label_field=label_field,
+                judge=judge,
+                intent=intent,
+                world=world,
+                goal_checks=goal_checks,
+                k=k,
+                max_cost_usd=max_cost_usd,
+                subject=subject,
+                margins=margins,
+                measure_latency=measure_latency,
+                said=new_comparison_sentence("an arm, a grader or the judge reads otherwise"),
+            )
     by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+    read_runs = [(*held, *((runs[index].id,) if runs else ())) for index, held in enumerate(reading)]
 
     def summarized() -> list[EvalSummary]:
         return [
             _with_case_results(
                 host,
-                summarize_run(host, run.id, scope_id, case_names=by_id),
+                summarize_runs(host, run_ids, scope_id, case_names=by_id),
+                run_ids,
                 test_cases,
                 names,
                 behavior="classify" if expected is not None else "score",
             )
-            for run in runs
+            for run_ids in read_runs
         ]
 
     # Summarizing reads each run and its results back from the store, so it runs off the loop.
@@ -2456,14 +2701,26 @@ async def run_arms(
         else None
     )
     # The store keeps the intent but not where it came from; a judged run's summary carries both.
-    return [
-        _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
-        for summary, arm in zip(summaries, arms, strict=True)
-    ]
+    return Launched(
+        summaries=[
+            _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
+            for summary, arm in zip(summaries, arms, strict=True)
+        ],
+        run_ids=read_runs,
+        launched=[run.id for run in runs],
+        continued=continuing,
+        said=continued_sentence(len(test_cases) - len(to_run), len(to_run)) if continuing else said,
+    )
 
 
 def _with_case_results(
-    host: EvalHost, summary: EvalSummary, test_cases: list[EvalTestCase], names: list[str], *, behavior: str
+    host: EvalHost,
+    summary: EvalSummary,
+    run_ids: Sequence[str],
+    test_cases: list[EvalTestCase],
+    names: list[str],
+    *,
+    behavior: str,
 ) -> EvalSummary:
     """The summary carrying every result read for a person, so they outlive the store the run was in.
 
@@ -2474,7 +2731,7 @@ def _with_case_results(
     """
     order = {test_case.id: index for index, test_case in enumerate(test_cases)}
     stored = sorted(
-        list_results(host.storage, summary.run_id, summary.scope_id),
+        (result for run_id in run_ids for result in list_results(host.storage, run_id, summary.scope_id)),
         key=lambda result: (order.get(result.test_case_id, len(order)), result.k_iteration),
     )
     payloads = {test_case.id: test_case.host_payload for test_case in test_cases}
@@ -2537,6 +2794,7 @@ __all__ = [
     "JUDGED_CALLABLE_KIND",
     "JUDGED_CALLABLE_KIND_CONTRACT",
     "JUDGED_CALLABLE_UNSEATED",
+    "Launched",
     "RESERVED_CASE_KEYS",
     "SHARED_ARM_MODEL",
     "STRATUM_KEY",
@@ -2550,6 +2808,7 @@ __all__ = [
     "callable_kind",
     "callable_kind_contracts",
     "grade_judge_examples",
+    "launch_arms",
     "refuse_an_unusable_cap",
     "refuse_unusable_guardrails",
     "refuse_unusable_margins",

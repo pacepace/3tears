@@ -468,8 +468,8 @@ class _Tested(NamedTuple):
     value_range: tuple[float, float] | None = None
     #: Whether the reading is a rate (:func:`_is_rate`), whose contrast is drawn on the bounded interval.
     rate: bool = False
-    #: The paired samples in the order the cases were added, where the mixture bet read the comparison (an aspect
-    #: whose design is ``rereadable``, paired, on a declared range): its p and its interval are that bet's.
+    #: The paired samples in the order the cases were added, where the mixture bet read the comparison (a quick-path
+    #: comparison's, paired, on a declared range): its p and its interval are that bet's.
     bet_samples: tuple[list[float], list[float]] | None = None
 
 
@@ -525,8 +525,8 @@ def _compare(
         rather than that too few cases carried the reading.
     :ptype contended: tuple[str, ...]
     :param places: Each case's place in the order the campaign first launched its cases
-        (:func:`~threetears.evals.analysis.bundle.trials.case_places`), on an aspect whose design is ``rereadable``;
-        None otherwise. Where given, a paired reading on a declared range is read by the mixture bet over its cases in
+        (:func:`~threetears.evals.analysis.bundle.trials.case_places`), on a quick-path comparison (every result of a
+        kind only the quick path launches, read with no plan of looks); None otherwise. Where given, a paired reading on a declared range is read by the mixture bet over its cases in
         that order (:func:`_bet_samples`), its p, its equivalence p and its interval alike.
     :ptype places: Mapping[str, int] | None
     :return: The comparison with its adjusted p's, interval and verdict still unset, its raw p's (None where no
@@ -539,8 +539,8 @@ def _compare(
     # The separation test every surface reads a gap by (:func:`separation_test`): the t-test's where the values
     # have spread, and where they have none — every shared case moved by one amount, or each side constant — the
     # bounded test on the reading's declared range, decided on exact values. With no range a gap with no spread
-    # is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597). On a rereadable
-    # aspect the mixture bet reads a paired reading on its range whatever its spread, in the order cases were added.
+    # is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597). On a quick-path
+    # comparison the mixture bet reads a paired reading on its range whatever its spread, in the order cases were added.
     separation = (
         separation_test(a, b, paired=paired, value_range=value_range)
         if bet is None
@@ -641,7 +641,7 @@ def _bet_samples(
 ) -> tuple[list[float], list[float]] | None:
     """The paired samples the mixture bet reads, over the cases both sides ran in the order the campaign first launched
     them (a case with no place last, by id): None where no bet reads this comparison — no ``places`` (the aspect is not
-    ``rereadable``), no declared range, fewer than two shared cases, or a value outside the range, which bounds
+    a quick-path comparison), no declared range, fewer than two shared cases, or a value outside the range, which bounds
     nothing then.
 
     The order is the one a newcomer adds cases in: a case appended to the cases file is launched after every case
@@ -679,15 +679,20 @@ def _margin_of(
     return None, None
 
 
-#: What a comparison read by the mixture bet lets a reader do, and what it costs and leaves out: the one sentence
-#: every surface says it in (the print under a comparison's first line, the family's disclosure on its page), where
-#: the aspect's design is ``rereadable`` and the family's bet read a comparison. Each clause is held by a seeded
-#: simulation in ``tests/test_rereadable_bet.py``: the error at most α over re-reads as cases are added, and a single
-#: read's power against the bounded test read once at a fixed count.
+#: What a comparison read by the mixture bet lets a reader do, what it costs, and exactly what it leaves out: the one
+#: sentence every surface says it in (the print under a comparison's first line, the family's disclosure on its page),
+#: on a quick-path comparison whose family the bet read. It covers the family's comparisons the bet read, and only those:
+#: their verdicts, p's and intervals. A guardrail's held or undecided, a floor's held, each arm's own rate interval, the
+#: gate's exit status, cost and latency are read at the cases run so far, and it names each of them as not covered. The
+#: quick path continues one comparison by running only the cases appended to it (:mod:`threetears.evals.quick.continuation`),
+#: so a reading after more cases is the same bet read later. Each clause is held by a seeded simulation in
+#: ``tests/test_rereadable_bet.py``: the error at most α over re-runs of the quick path as cases are added, the same
+#: re-runs re-drawing every case exceeding it, and a single read's power against the bounded test read once.
 REREAD_SENTENCE = (
-    "Each verdict and interval on a pass rate or a score on its declared range stays valid however many times cases "
-    "are added and the comparison is read again; a single read gives up some power for that, and cost and latency "
-    "are read once, so they are not covered."
+    "Add cases to the end and run it again as often as you like: each comparison of the arms on a pass rate, or on a "
+    "score within its declared range, keeps its error however many times it is read, and a single read gives up some "
+    "power for that; guardrails, floors, each arm's own rate, cost, latency and the exit status are read at the cases "
+    "run so far, so reading them again is not covered."
 )
 
 
@@ -790,7 +795,7 @@ def _corrected_family(
     :ptype axes: list[MeritAxis]
     :param tested: The family's comparisons, tested and uncorrected.
     :ptype tested: list[_Tested]
-    **On a rereadable aspect** (``rereadable``) a comparison the mixture bet read (``bet_samples``) takes its p, its
+    **On a quick-path comparison** (``rereadable``) a comparison the mixture bet read (``bet_samples``) takes its p, its
     equivalence p and its interval from that bet, at the same ``1 − α/m``, so the interval excludes zero exactly where
     its raw p is at most ``α/m``. Holm stays the correction, and stays valid over every re-read as cases are added:
     each bet p is valid over all reads together, and a bet comparison's adjusted p is Holm's over the family with
@@ -806,7 +811,7 @@ def _corrected_family(
         :func:`~threetears.evals.analysis.significance.plan_kept` shows it (on the bounded test in the simulated
         setting, not on the t test). None reads at α.
     :ptype looks: int | None
-    :param rereadable: Whether the aspect's design is ``rereadable``, so the comparisons the mixture bet read are
+    :param rereadable: Whether the aspect is a quick-path comparison, read again as cases are appended, so the comparisons the mixture bet read are
         corrected as above and the disclosure says what that lets a reader do (:data:`REREAD_SENTENCE`).
     :ptype rereadable: bool
     :return: The corrected family.
@@ -1003,7 +1008,7 @@ def multiple_comparisons(
         read at α/L (:func:`~threetears.evals.analysis.significance.looks_alpha`) and a guardrail's ``held`` on the
         interval at :func:`~threetears.evals.analysis.significance.looks_confidence`. None reads every look at α.
     :ptype planned_looks: int | None
-    :param reread_order: On an aspect whose design is ``rereadable``, each case's place in the order the campaign first
+    :param reread_order: On a quick-path comparison, each case's place in the order the campaign first
         launched its cases (:func:`~threetears.evals.analysis.bundle.trials.case_places`): every paired comparison on
         a declared range is then read by the mixture bet over its cases in that order, so it keeps its error however
         often cases are added and it is read again (:func:`_corrected_family`). None reads every comparison as before.

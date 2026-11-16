@@ -176,6 +176,7 @@ from threetears.evals.analysis.bundle.comparisons import (
 )
 from threetears.evals.analysis.bundle.judges import judge_change
 from threetears.evals.analysis.bundle.trials import case_places, trials_and_census
+from threetears.evals.kernel.candidate_kind import QUICK_PATH_KINDS
 from threetears.evals.analysis.bundle.time_axis import time_axis
 from threetears.evals.analysis.bundle.surface import measure_catalog
 from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -962,11 +963,16 @@ def assemble_context_bundle(
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
         planned_looks=planned_looks,
-        # A rereadable design reads its paired contrasts on a range by the mixture bet, over the cases in the order the
-        # campaign first launched them: a case added later is bet on after every case before it.
+        # A quick-path comparison (every result of a kind only the quick path launches, and no plan of looks) reads its
+        # paired contrasts on a range by the mixture bet, over the cases in the order the comparison first ran them: the
+        # quick path continues one comparison by running only the cases appended to it, so a case added later is bet
+        # on after every case before it. Decided from the stored results alone, so every reader of a stored comparison
+        # reads it alike, and no declaration a host makes opts an engine campaign in.
         reread_order=(
             case_places([run.test_case_ids for run in runs])
-            if declared_design is not None and declared_design.rereadable
+            if planned_looks is None
+            and bool(results)
+            and all(result.candidate_kind in QUICK_PATH_KINDS for result in results)
             else None
         ),
     )

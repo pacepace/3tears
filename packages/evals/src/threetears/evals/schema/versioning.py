@@ -956,16 +956,7 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   type (every read selects by ``doc_type``); its operator wipe of durable documents leaves these in place, and its
 #:   deletes never reach them (a new doc type's two disclosed costs, above).
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-#: - **v17.5** — an aspect's design may say its contrasts are read again as cases are added:
-#:   ``AspectDesign.rereadable`` (default False), which an eval files on its campaign so each paired contrast on a
-#:   declared range is read by the mixture bet over its cases in the order first launched, valid however often it is
-#:   read. Written only when set, so a design not setting it is stored exactly as v17.4 stored it, and every campaign
-#:   stored before reads as not rereadable: none of its readings moves. A campaign bundle's fingerprint reads the
-#:   declaration without its defaults, so it moves only for a campaign filed at this minor that sets it. An older build
-#:   (v17.4 and earlier) reading a campaign at this minor keeps the field opaquely and writes it back, but reads its
-#:   contrasts at the cases they hold, as before the field: deploy this build to every reader first.
-#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 5
+DURABLE_SCHEMA_MINOR: int = 4
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 
