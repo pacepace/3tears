@@ -1,0 +1,3003 @@
+[
+ {
+  "answers": [
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "4cc8d15a64b7",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "242c0f3c5a5f",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "257a182322cf",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "799f97fc0ec5",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "637e2b7c11fa",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "cccbe62d5721",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "969b7b7fd1e5",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "dabb1379e915",
+    "made_by": "person",
+    "prefer": "tie",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "9c082e7f38b2",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "0c53e0f07487",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "35fec5fc94a5",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "6bb1fe7c8ccf",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   }
+  ],
+  "arms": [
+   {
+    "key": "v1",
+    "role": "control",
+    "run_ids": [
+     "run-ctrl"
+    ]
+   },
+   {
+    "key": "v2",
+    "role": "candidate",
+    "run_ids": [
+     "run-cand"
+    ]
+   }
+  ],
+  "ask": [
+   "verdicts",
+   "preference"
+  ],
+  "campaign_id": null,
+  "closed_at": "2026-11-16T11:00:00+00:00",
+  "closed_by": "agent:test",
+  "created_at": "2026-11-16T09:00:00+00:00",
+  "created_by": "agent:test",
+  "criteria": [
+   {
+    "axis": "capability",
+    "description": "Every fact is in the policy.",
+    "judge": null,
+    "name": "answer.grounded",
+    "scale": "pass_fail",
+    "scoring_guide": {}
+   }
+  ],
+  "doc_type": "blind_read",
+  "draw": {
+   "excluded": {},
+   "planned_items": 12,
+   "population": 12,
+   "population_digest": "280d1ca2aafc4f3b6f94208964a8c5aa52186ab0fbae2928bf9258ecb3a88b12",
+   "seed": 20261114
+  },
+  "id": "blind-eac3c41ad3fe",
+  "items": [
+   {
+    "case_id": "case-000",
+    "item": "4cc8d15a64b7",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 0",
+       "case_material": "Customer question number 0.",
+       "subject": null
+      },
+      "output_fingerprint": "bb8c63cb6b082c8a55977a4dde696da7b53735ca19d7b71c8f907de12ab8843a",
+      "result_id": "res-run-cand-0",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 0",
+       "case_material": "Customer question number 0.",
+       "subject": null
+      },
+      "output_fingerprint": "8a87da65a2c21f39d24c82b2d51af3ba3aa304c02c99f3d137b5ad15de4bce41",
+      "result_id": "res-run-ctrl-0",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-005",
+    "item": "242c0f3c5a5f",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 5",
+       "case_material": "Customer question number 5.",
+       "subject": null
+      },
+      "output_fingerprint": "b1c364c95c2722ea74312fb59cca1440b5a9f69d8f06ef09341c4922387dd2d7",
+      "result_id": "res-run-ctrl-5",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 5",
+       "case_material": "Customer question number 5.",
+       "subject": null
+      },
+      "output_fingerprint": "66cb61f98baaa7bed5e25c7a2b90c02bdad7e4eb98f5a6beae8c5817355c81f8",
+      "result_id": "res-run-cand-5",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-001",
+    "item": "257a182322cf",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 1",
+       "case_material": "Customer question number 1.",
+       "subject": null
+      },
+      "output_fingerprint": "13f0cbfe65807b0278d021f449043c699258d3531e3d015d4312980806d7c103",
+      "result_id": "res-run-ctrl-1",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 1",
+       "case_material": "Customer question number 1.",
+       "subject": null
+      },
+      "output_fingerprint": "27e4ee0c873bdacfebf749f46eaf48fc4c5ca1bb130a6af4b94b351f067eb4a8",
+      "result_id": "res-run-cand-1",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-010",
+    "item": "799f97fc0ec5",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 10",
+       "case_material": "Customer question number 10.",
+       "subject": null
+      },
+      "output_fingerprint": "d1372981a917d931a6e9fd23b5c2d5113dcfb329f2f99d5cbb9fc40581d072a6",
+      "result_id": "res-run-cand-10",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 10",
+       "case_material": "Customer question number 10.",
+       "subject": null
+      },
+      "output_fingerprint": "bc548e67622c18f194031c02b99a48f18def68723d69780cccfb66c7ee5eae15",
+      "result_id": "res-run-ctrl-10",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-006",
+    "item": "637e2b7c11fa",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 6",
+       "case_material": "Customer question number 6.",
+       "subject": null
+      },
+      "output_fingerprint": "76460ba07dabb631253a7bb84485d8b3988d9eae8c74f28c7c33bf10194c73f9",
+      "result_id": "res-run-ctrl-6",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 6",
+       "case_material": "Customer question number 6.",
+       "subject": null
+      },
+      "output_fingerprint": "069092885264f9ec46168231ba09c0eb616cfe6d1a7d0353686499be9f61e666",
+      "result_id": "res-run-cand-6",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-003",
+    "item": "cccbe62d5721",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 3",
+       "case_material": "Customer question number 3.",
+       "subject": null
+      },
+      "output_fingerprint": "28a65621fb04a0e31c29371535a905c1013aca7d4b733f4fd1ae48525e6d4461",
+      "result_id": "res-run-cand-3",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 3",
+       "case_material": "Customer question number 3.",
+       "subject": null
+      },
+      "output_fingerprint": "34d5aac39cfc1e045dcf4e09310c943d07f1c9cbfb3331bba20d802ed8dadbe3",
+      "result_id": "res-run-ctrl-3",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-004",
+    "item": "969b7b7fd1e5",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 4",
+       "case_material": "Customer question number 4.",
+       "subject": null
+      },
+      "output_fingerprint": "3e13a06ee04df356be4daf5ccd53112fd10cde5752c691945ccb98e0b9ec23f2",
+      "result_id": "res-run-cand-4",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 4",
+       "case_material": "Customer question number 4.",
+       "subject": null
+      },
+      "output_fingerprint": "c51a7c6029650548a7562d44313a173373b972f55c89db57dd74c00a97427b21",
+      "result_id": "res-run-ctrl-4",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-002",
+    "item": "dabb1379e915",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 2",
+       "case_material": "Customer question number 2.",
+       "subject": null
+      },
+      "output_fingerprint": "72056e77ced9f61a8ac755f8f8fcd549717575407ea5075026bcaf29541ee250",
+      "result_id": "res-run-ctrl-2",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 2",
+       "case_material": "Customer question number 2.",
+       "subject": null
+      },
+      "output_fingerprint": "dc1a56323133b3db399a5a7275181fad1dfc7257b0ac44af121d87064abe1077",
+      "result_id": "res-run-cand-2",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-011",
+    "item": "9c082e7f38b2",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 11",
+       "case_material": "Customer question number 11.",
+       "subject": null
+      },
+      "output_fingerprint": "001a5f73574c4a56c04b485bc761096d15a23a625f6055112fd0c1ac18780d54",
+      "result_id": "res-run-cand-11",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 11",
+       "case_material": "Customer question number 11.",
+       "subject": null
+      },
+      "output_fingerprint": "61b637ab41412d712bdbf39544fb8dea3139657b7e0e4d1e7b3fad17cc328eb6",
+      "result_id": "res-run-ctrl-11",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-009",
+    "item": "0c53e0f07487",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 9",
+       "case_material": "Customer question number 9.",
+       "subject": null
+      },
+      "output_fingerprint": "6c55c3707903dfe4aaceff3349083376309893482a57dfd0e36df598c95fff7c",
+      "result_id": "res-run-ctrl-9",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 9",
+       "case_material": "Customer question number 9.",
+       "subject": null
+      },
+      "output_fingerprint": "0a24f1951ad556ff0b5ebda199eb3aba015d6f8594e2394a7d392024def577c9",
+      "result_id": "res-run-cand-9",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-008",
+    "item": "35fec5fc94a5",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 8",
+       "case_material": "Customer question number 8.",
+       "subject": null
+      },
+      "output_fingerprint": "39c555de1270c647983714aec24cdd9d8deb6b3971a2c46b5afff91ca061fce9",
+      "result_id": "res-run-ctrl-8",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 8",
+       "case_material": "Customer question number 8.",
+       "subject": null
+      },
+      "output_fingerprint": "fc30a3d3048ff23c1f86d2c1edd5c92fb6ad1b36fe1fc06f42bcba4235212a33",
+      "result_id": "res-run-cand-8",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-007",
+    "item": "6bb1fe7c8ccf",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 7",
+       "case_material": "Customer question number 7.",
+       "subject": null
+      },
+      "output_fingerprint": "57011be1452bbf7e1ce125a13a447cd414da347c12b8f3561aff8fb6564fa4fd",
+      "result_id": "res-run-cand-7",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 7",
+       "case_material": "Customer question number 7.",
+       "subject": null
+      },
+      "output_fingerprint": "3470373bebae514a7618cc838bad28c557eaeb3f5ed45bae549689790a79d6b3",
+      "result_id": "res-run-ctrl-7",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   }
+  ],
+  "name": "sign, separated",
+  "report": {
+   "agreement": [
+    {
+     "anchor": "person",
+     "anchor_names": [
+      "ann"
+     ],
+     "blind_pairs": 24,
+     "cases": 12,
+     "dim": "answer.grounded",
+     "judge_model": "acme/judge-1",
+     "pairs": 24,
+     "random_pairs": 24,
+     "results": 0,
+     "scale": "pass_fail",
+     "served_model": null,
+     "table": {
+      "counts": [
+       [
+        0,
+        0
+       ],
+       [
+        0,
+        24
+       ]
+      ],
+      "scores": [
+       0,
+       1
+      ]
+     }
+    }
+   ],
+   "cases": 12,
+   "not_checked": {},
+   "other_ratings": 0,
+   "preferences": [
+    {
+     "anchor": "person",
+     "anchor_names": [
+      "ann"
+     ],
+     "answered": 12,
+     "candidate": "v2",
+     "control": "v1",
+     "items": 12,
+     "missing": 0,
+     "p": 0.01171875,
+     "planned": 12,
+     "prefer_candidate": 10,
+     "prefer_control": 1,
+     "random": true,
+     "served_model": null,
+     "slot_a": 5,
+     "slot_a_share": 0.45454545454545453,
+     "slot_choices": 11,
+     "state": null,
+     "test": "exact_sign",
+     "ties": 1,
+     "verdict": "improved"
+    }
+   ],
+   "reviewer_checks": [],
+   "reviews": [],
+   "samples": [
+    {
+     "answered": 12,
+     "items": 12,
+     "made_by": "person",
+     "partial": 0,
+     "rater": "ann",
+     "sample": "random",
+     "skipped": 0
+    }
+   ],
+   "unread": []
+  },
+  "reviews": [],
+  "schema_minor": 4,
+  "schema_version": 17,
+  "scope_id": "scope"
+ },
+ {
+  "answers": [
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "4cc8d15a64b7",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "4cc8d15a64b7",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "242c0f3c5a5f",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "242c0f3c5a5f",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "257a182322cf",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "257a182322cf",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "799f97fc0ec5",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "799f97fc0ec5",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "637e2b7c11fa",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "637e2b7c11fa",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "cccbe62d5721",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "cccbe62d5721",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "969b7b7fd1e5",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "969b7b7fd1e5",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "dabb1379e915",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "dabb1379e915",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "9c082e7f38b2",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "9c082e7f38b2",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "0c53e0f07487",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "0c53e0f07487",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "35fec5fc94a5",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "35fec5fc94a5",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "6bb1fe7c8ccf",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "6bb1fe7c8ccf",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "bo",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   }
+  ],
+  "arms": [
+   {
+    "key": "v1",
+    "role": "control",
+    "run_ids": [
+     "run-ctrl"
+    ]
+   },
+   {
+    "key": "v2",
+    "role": "candidate",
+    "run_ids": [
+     "run-cand"
+    ]
+   }
+  ],
+  "ask": [
+   "verdicts",
+   "preference"
+  ],
+  "campaign_id": null,
+  "closed_at": "2026-11-16T11:00:00+00:00",
+  "closed_by": "agent:test",
+  "created_at": "2026-11-16T09:00:00+00:00",
+  "created_by": "agent:test",
+  "criteria": [
+   {
+    "axis": "capability",
+    "description": "Every fact is in the policy.",
+    "judge": null,
+    "name": "answer.grounded",
+    "scale": "pass_fail",
+    "scoring_guide": {}
+   }
+  ],
+  "doc_type": "blind_read",
+  "draw": {
+   "excluded": {},
+   "planned_items": 12,
+   "population": 12,
+   "population_digest": "280d1ca2aafc4f3b6f94208964a8c5aa52186ab0fbae2928bf9258ecb3a88b12",
+   "seed": 20261114
+  },
+  "id": "blind-eac3c41ad3fe",
+  "items": [
+   {
+    "case_id": "case-000",
+    "item": "4cc8d15a64b7",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 0",
+       "case_material": "Customer question number 0.",
+       "subject": null
+      },
+      "output_fingerprint": "bb8c63cb6b082c8a55977a4dde696da7b53735ca19d7b71c8f907de12ab8843a",
+      "result_id": "res-run-cand-0",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 0",
+       "case_material": "Customer question number 0.",
+       "subject": null
+      },
+      "output_fingerprint": "8a87da65a2c21f39d24c82b2d51af3ba3aa304c02c99f3d137b5ad15de4bce41",
+      "result_id": "res-run-ctrl-0",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-005",
+    "item": "242c0f3c5a5f",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 5",
+       "case_material": "Customer question number 5.",
+       "subject": null
+      },
+      "output_fingerprint": "b1c364c95c2722ea74312fb59cca1440b5a9f69d8f06ef09341c4922387dd2d7",
+      "result_id": "res-run-ctrl-5",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 5",
+       "case_material": "Customer question number 5.",
+       "subject": null
+      },
+      "output_fingerprint": "66cb61f98baaa7bed5e25c7a2b90c02bdad7e4eb98f5a6beae8c5817355c81f8",
+      "result_id": "res-run-cand-5",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-001",
+    "item": "257a182322cf",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 1",
+       "case_material": "Customer question number 1.",
+       "subject": null
+      },
+      "output_fingerprint": "13f0cbfe65807b0278d021f449043c699258d3531e3d015d4312980806d7c103",
+      "result_id": "res-run-ctrl-1",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 1",
+       "case_material": "Customer question number 1.",
+       "subject": null
+      },
+      "output_fingerprint": "27e4ee0c873bdacfebf749f46eaf48fc4c5ca1bb130a6af4b94b351f067eb4a8",
+      "result_id": "res-run-cand-1",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-010",
+    "item": "799f97fc0ec5",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 10",
+       "case_material": "Customer question number 10.",
+       "subject": null
+      },
+      "output_fingerprint": "d1372981a917d931a6e9fd23b5c2d5113dcfb329f2f99d5cbb9fc40581d072a6",
+      "result_id": "res-run-cand-10",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 10",
+       "case_material": "Customer question number 10.",
+       "subject": null
+      },
+      "output_fingerprint": "bc548e67622c18f194031c02b99a48f18def68723d69780cccfb66c7ee5eae15",
+      "result_id": "res-run-ctrl-10",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-006",
+    "item": "637e2b7c11fa",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 6",
+       "case_material": "Customer question number 6.",
+       "subject": null
+      },
+      "output_fingerprint": "76460ba07dabb631253a7bb84485d8b3988d9eae8c74f28c7c33bf10194c73f9",
+      "result_id": "res-run-ctrl-6",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 6",
+       "case_material": "Customer question number 6.",
+       "subject": null
+      },
+      "output_fingerprint": "069092885264f9ec46168231ba09c0eb616cfe6d1a7d0353686499be9f61e666",
+      "result_id": "res-run-cand-6",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-003",
+    "item": "cccbe62d5721",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 3",
+       "case_material": "Customer question number 3.",
+       "subject": null
+      },
+      "output_fingerprint": "28a65621fb04a0e31c29371535a905c1013aca7d4b733f4fd1ae48525e6d4461",
+      "result_id": "res-run-cand-3",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 3",
+       "case_material": "Customer question number 3.",
+       "subject": null
+      },
+      "output_fingerprint": "34d5aac39cfc1e045dcf4e09310c943d07f1c9cbfb3331bba20d802ed8dadbe3",
+      "result_id": "res-run-ctrl-3",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-004",
+    "item": "969b7b7fd1e5",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 4",
+       "case_material": "Customer question number 4.",
+       "subject": null
+      },
+      "output_fingerprint": "3e13a06ee04df356be4daf5ccd53112fd10cde5752c691945ccb98e0b9ec23f2",
+      "result_id": "res-run-cand-4",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 4",
+       "case_material": "Customer question number 4.",
+       "subject": null
+      },
+      "output_fingerprint": "c51a7c6029650548a7562d44313a173373b972f55c89db57dd74c00a97427b21",
+      "result_id": "res-run-ctrl-4",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-002",
+    "item": "dabb1379e915",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 2",
+       "case_material": "Customer question number 2.",
+       "subject": null
+      },
+      "output_fingerprint": "72056e77ced9f61a8ac755f8f8fcd549717575407ea5075026bcaf29541ee250",
+      "result_id": "res-run-ctrl-2",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 2",
+       "case_material": "Customer question number 2.",
+       "subject": null
+      },
+      "output_fingerprint": "dc1a56323133b3db399a5a7275181fad1dfc7257b0ac44af121d87064abe1077",
+      "result_id": "res-run-cand-2",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-011",
+    "item": "9c082e7f38b2",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 11",
+       "case_material": "Customer question number 11.",
+       "subject": null
+      },
+      "output_fingerprint": "001a5f73574c4a56c04b485bc761096d15a23a625f6055112fd0c1ac18780d54",
+      "result_id": "res-run-cand-11",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 11",
+       "case_material": "Customer question number 11.",
+       "subject": null
+      },
+      "output_fingerprint": "61b637ab41412d712bdbf39544fb8dea3139657b7e0e4d1e7b3fad17cc328eb6",
+      "result_id": "res-run-ctrl-11",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-009",
+    "item": "0c53e0f07487",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 9",
+       "case_material": "Customer question number 9.",
+       "subject": null
+      },
+      "output_fingerprint": "6c55c3707903dfe4aaceff3349083376309893482a57dfd0e36df598c95fff7c",
+      "result_id": "res-run-ctrl-9",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 9",
+       "case_material": "Customer question number 9.",
+       "subject": null
+      },
+      "output_fingerprint": "0a24f1951ad556ff0b5ebda199eb3aba015d6f8594e2394a7d392024def577c9",
+      "result_id": "res-run-cand-9",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-008",
+    "item": "35fec5fc94a5",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 8",
+       "case_material": "Customer question number 8.",
+       "subject": null
+      },
+      "output_fingerprint": "39c555de1270c647983714aec24cdd9d8deb6b3971a2c46b5afff91ca061fce9",
+      "result_id": "res-run-ctrl-8",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 8",
+       "case_material": "Customer question number 8.",
+       "subject": null
+      },
+      "output_fingerprint": "fc30a3d3048ff23c1f86d2c1edd5c92fb6ad1b36fe1fc06f42bcba4235212a33",
+      "result_id": "res-run-cand-8",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-007",
+    "item": "6bb1fe7c8ccf",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 7",
+       "case_material": "Customer question number 7.",
+       "subject": null
+      },
+      "output_fingerprint": "57011be1452bbf7e1ce125a13a447cd414da347c12b8f3561aff8fb6564fa4fd",
+      "result_id": "res-run-cand-7",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 7",
+       "case_material": "Customer question number 7.",
+       "subject": null
+      },
+      "output_fingerprint": "3470373bebae514a7618cc838bad28c557eaeb3f5ed45bae549689790a79d6b3",
+      "result_id": "res-run-ctrl-7",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   }
+  ],
+  "name": "shares, two raters",
+  "report": {
+   "agreement": [
+    {
+     "anchor": "person",
+     "anchor_names": [
+      "ann",
+      "bo"
+     ],
+     "blind_pairs": 48,
+     "cases": 12,
+     "dim": "answer.grounded",
+     "judge_model": "acme/judge-1",
+     "pairs": 48,
+     "random_pairs": 48,
+     "results": 0,
+     "scale": "pass_fail",
+     "served_model": null,
+     "table": {
+      "counts": [
+       [
+        0,
+        0
+       ],
+       [
+        0,
+        48
+       ]
+      ],
+      "scores": [
+       0,
+       1
+      ]
+     }
+    }
+   ],
+   "cases": 12,
+   "not_checked": {},
+   "other_ratings": 0,
+   "preferences": [
+    {
+     "anchor": "person",
+     "anchor_names": [
+      "ann",
+      "bo"
+     ],
+     "answered": 12,
+     "candidate": "v2",
+     "control": "v1",
+     "items": 12,
+     "missing": 0,
+     "p": 0.07352433414651989,
+     "planned": 12,
+     "prefer_candidate": 9,
+     "prefer_control": 0,
+     "random": true,
+     "served_model": null,
+     "slot_a": 11,
+     "slot_a_share": 0.4583333333333333,
+     "slot_choices": 24,
+     "state": null,
+     "test": "bounded_share",
+     "ties": 3,
+     "verdict": "not_separated"
+    }
+   ],
+   "reviewer_checks": [],
+   "reviews": [],
+   "samples": [
+    {
+     "answered": 12,
+     "items": 12,
+     "made_by": "person",
+     "partial": 0,
+     "rater": "ann",
+     "sample": "random",
+     "skipped": 0
+    },
+    {
+     "answered": 12,
+     "items": 12,
+     "made_by": "person",
+     "partial": 0,
+     "rater": "bo",
+     "sample": "random",
+     "skipped": 0
+    }
+   ],
+   "unread": []
+  },
+  "reviews": [],
+  "schema_minor": 4,
+  "schema_version": 17,
+  "scope_id": "scope"
+ },
+ {
+  "answers": [
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "4730f7fd7901",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "aa8a7f92762f",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "742a34e238ba",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "fb628cb5cdb0",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "31249dd200b5",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "bd59416c1aa8",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "606158023b01",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "e5d9e090cd51",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "79bcb1b6af77",
+    "made_by": "person",
+    "prefer": "A",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "answered_at": "2026-11-16T10:00:00+00:00",
+    "collected_by": null,
+    "item": "c5b139e8ec61",
+    "made_by": "person",
+    "prefer": "B",
+    "rater": "ann",
+    "reviewer_effort": null,
+    "reviewer_served_model": null,
+    "skipped": false,
+    "verdicts": [
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "A"
+     },
+     {
+      "dim": "answer.grounded",
+      "reason": "",
+      "score": 1,
+      "slot": "B"
+     }
+    ]
+   }
+  ],
+  "arms": [
+   {
+    "key": "v1",
+    "role": "control",
+    "run_ids": [
+     "run-ctrl"
+    ]
+   },
+   {
+    "key": "v2",
+    "role": "candidate",
+    "run_ids": [
+     "run-cand"
+    ]
+   }
+  ],
+  "ask": [
+   "verdicts",
+   "preference"
+  ],
+  "campaign_id": null,
+  "closed_at": "2026-11-16T11:00:00+00:00",
+  "closed_by": "agent:test",
+  "closed_early": true,
+  "created_at": "2026-11-16T09:00:00+00:00",
+  "created_by": "agent:test",
+  "criteria": [
+   {
+    "axis": "capability",
+    "description": "Every fact is in the policy.",
+    "judge": null,
+    "name": "answer.grounded",
+    "scale": "pass_fail",
+    "scoring_guide": {}
+   }
+  ],
+  "doc_type": "blind_read",
+  "draw": {
+   "excluded": {},
+   "planned_items": 16,
+   "population": 16,
+   "population_digest": "e7814ee0f6f4e2726d5c16fa8276097db4edb21a02653528151d22888d12f8c8",
+   "seed": 20261114
+  },
+  "id": "blind-24fd26682f0f",
+  "items": [
+   {
+    "case_id": "case-010",
+    "item": "4730f7fd7901",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 10",
+       "case_material": "Customer question number 10.",
+       "subject": null
+      },
+      "output_fingerprint": "bc548e67622c18f194031c02b99a48f18def68723d69780cccfb66c7ee5eae15",
+      "result_id": "res-run-ctrl-10",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 10",
+       "case_material": "Customer question number 10.",
+       "subject": null
+      },
+      "output_fingerprint": "d1372981a917d931a6e9fd23b5c2d5113dcfb329f2f99d5cbb9fc40581d072a6",
+      "result_id": "res-run-cand-10",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-015",
+    "item": "aa8a7f92762f",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 15",
+       "case_material": "Customer question number 15.",
+       "subject": null
+      },
+      "output_fingerprint": "3b81a10dc7075b93fe8d0b4632a178fbd5139fa4893484ec26fc5e362a81bb72",
+      "result_id": "res-run-cand-15",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 15",
+       "case_material": "Customer question number 15.",
+       "subject": null
+      },
+      "output_fingerprint": "04525dde90dc6cd2d054a6d7a35de3c2b723a962299d6a9f8ee09e52e0292b59",
+      "result_id": "res-run-ctrl-15",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-003",
+    "item": "742a34e238ba",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 3",
+       "case_material": "Customer question number 3.",
+       "subject": null
+      },
+      "output_fingerprint": "34d5aac39cfc1e045dcf4e09310c943d07f1c9cbfb3331bba20d802ed8dadbe3",
+      "result_id": "res-run-ctrl-3",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 3",
+       "case_material": "Customer question number 3.",
+       "subject": null
+      },
+      "output_fingerprint": "28a65621fb04a0e31c29371535a905c1013aca7d4b733f4fd1ae48525e6d4461",
+      "result_id": "res-run-cand-3",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-006",
+    "item": "fb628cb5cdb0",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 6",
+       "case_material": "Customer question number 6.",
+       "subject": null
+      },
+      "output_fingerprint": "069092885264f9ec46168231ba09c0eb616cfe6d1a7d0353686499be9f61e666",
+      "result_id": "res-run-cand-6",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 6",
+       "case_material": "Customer question number 6.",
+       "subject": null
+      },
+      "output_fingerprint": "76460ba07dabb631253a7bb84485d8b3988d9eae8c74f28c7c33bf10194c73f9",
+      "result_id": "res-run-ctrl-6",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-014",
+    "item": "31249dd200b5",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 14",
+       "case_material": "Customer question number 14.",
+       "subject": null
+      },
+      "output_fingerprint": "11fde4f358ab3ac161777483bda6905868c8f6ce76bb99e7118189dfa380b062",
+      "result_id": "res-run-cand-14",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 14",
+       "case_material": "Customer question number 14.",
+       "subject": null
+      },
+      "output_fingerprint": "4fa7d90c5b0b0a51757b2c76f2ecff5a5ff4a5a8322d0fd871c738ebf7a7cf50",
+      "result_id": "res-run-ctrl-14",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-004",
+    "item": "bd59416c1aa8",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 4",
+       "case_material": "Customer question number 4.",
+       "subject": null
+      },
+      "output_fingerprint": "c51a7c6029650548a7562d44313a173373b972f55c89db57dd74c00a97427b21",
+      "result_id": "res-run-ctrl-4",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 4",
+       "case_material": "Customer question number 4.",
+       "subject": null
+      },
+      "output_fingerprint": "3e13a06ee04df356be4daf5ccd53112fd10cde5752c691945ccb98e0b9ec23f2",
+      "result_id": "res-run-cand-4",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-008",
+    "item": "606158023b01",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 8",
+       "case_material": "Customer question number 8.",
+       "subject": null
+      },
+      "output_fingerprint": "fc30a3d3048ff23c1f86d2c1edd5c92fb6ad1b36fe1fc06f42bcba4235212a33",
+      "result_id": "res-run-cand-8",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 8",
+       "case_material": "Customer question number 8.",
+       "subject": null
+      },
+      "output_fingerprint": "39c555de1270c647983714aec24cdd9d8deb6b3971a2c46b5afff91ca061fce9",
+      "result_id": "res-run-ctrl-8",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-002",
+    "item": "e5d9e090cd51",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 2",
+       "case_material": "Customer question number 2.",
+       "subject": null
+      },
+      "output_fingerprint": "72056e77ced9f61a8ac755f8f8fcd549717575407ea5075026bcaf29541ee250",
+      "result_id": "res-run-ctrl-2",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 2",
+       "case_material": "Customer question number 2.",
+       "subject": null
+      },
+      "output_fingerprint": "dc1a56323133b3db399a5a7275181fad1dfc7257b0ac44af121d87064abe1077",
+      "result_id": "res-run-cand-2",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-011",
+    "item": "79bcb1b6af77",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 11",
+       "case_material": "Customer question number 11.",
+       "subject": null
+      },
+      "output_fingerprint": "001a5f73574c4a56c04b485bc761096d15a23a625f6055112fd0c1ac18780d54",
+      "result_id": "res-run-cand-11",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 11",
+       "case_material": "Customer question number 11.",
+       "subject": null
+      },
+      "output_fingerprint": "61b637ab41412d712bdbf39544fb8dea3139657b7e0e4d1e7b3fad17cc328eb6",
+      "result_id": "res-run-ctrl-11",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-013",
+    "item": "c5b139e8ec61",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 13",
+       "case_material": "Customer question number 13.",
+       "subject": null
+      },
+      "output_fingerprint": "6a0b4268b3ff842e82f9268ee3298ae74286df55e1f6cda42757a3a10b999a83",
+      "result_id": "res-run-ctrl-13",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 13",
+       "case_material": "Customer question number 13.",
+       "subject": null
+      },
+      "output_fingerprint": "500efa2cbe34d05f08ef416fd933875c892b6bc54824d5feac89a585fd24ee7c",
+      "result_id": "res-run-cand-13",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-000",
+    "item": "43e59067942c",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 0",
+       "case_material": "Customer question number 0.",
+       "subject": null
+      },
+      "output_fingerprint": "bb8c63cb6b082c8a55977a4dde696da7b53735ca19d7b71c8f907de12ab8843a",
+      "result_id": "res-run-cand-0",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 0",
+       "case_material": "Customer question number 0.",
+       "subject": null
+      },
+      "output_fingerprint": "8a87da65a2c21f39d24c82b2d51af3ba3aa304c02c99f3d137b5ad15de4bce41",
+      "result_id": "res-run-ctrl-0",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-007",
+    "item": "574066bde6ba",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 7",
+       "case_material": "Customer question number 7.",
+       "subject": null
+      },
+      "output_fingerprint": "3470373bebae514a7618cc838bad28c557eaeb3f5ed45bae549689790a79d6b3",
+      "result_id": "res-run-ctrl-7",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 7",
+       "case_material": "Customer question number 7.",
+       "subject": null
+      },
+      "output_fingerprint": "57011be1452bbf7e1ce125a13a447cd414da347c12b8f3561aff8fb6564fa4fd",
+      "result_id": "res-run-cand-7",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-005",
+    "item": "385eb93829b8",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 5",
+       "case_material": "Customer question number 5.",
+       "subject": null
+      },
+      "output_fingerprint": "b1c364c95c2722ea74312fb59cca1440b5a9f69d8f06ef09341c4922387dd2d7",
+      "result_id": "res-run-ctrl-5",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 5",
+       "case_material": "Customer question number 5.",
+       "subject": null
+      },
+      "output_fingerprint": "66cb61f98baaa7bed5e25c7a2b90c02bdad7e4eb98f5a6beae8c5817355c81f8",
+      "result_id": "res-run-cand-5",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-001",
+    "item": "bb95a5ba0ddd",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 1",
+       "case_material": "Customer question number 1.",
+       "subject": null
+      },
+      "output_fingerprint": "27e4ee0c873bdacfebf749f46eaf48fc4c5ca1bb130a6af4b94b351f067eb4a8",
+      "result_id": "res-run-cand-1",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 1",
+       "case_material": "Customer question number 1.",
+       "subject": null
+      },
+      "output_fingerprint": "13f0cbfe65807b0278d021f449043c699258d3531e3d015d4312980806d7c103",
+      "result_id": "res-run-ctrl-1",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-009",
+    "item": "d241c01f6f8e",
+    "outputs": [
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 9",
+       "case_material": "Customer question number 9.",
+       "subject": null
+      },
+      "output_fingerprint": "6c55c3707903dfe4aaceff3349083376309893482a57dfd0e36df598c95fff7c",
+      "result_id": "res-run-ctrl-9",
+      "run_id": "run-ctrl",
+      "slot": "A"
+     },
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 9",
+       "case_material": "Customer question number 9.",
+       "subject": null
+      },
+      "output_fingerprint": "0a24f1951ad556ff0b5ebda199eb3aba015d6f8594e2394a7d392024def577c9",
+      "result_id": "res-run-cand-9",
+      "run_id": "run-cand",
+      "slot": "B"
+     }
+    ]
+   },
+   {
+    "case_id": "case-012",
+    "item": "0b71ebd3cf2a",
+    "outputs": [
+     {
+      "arm": "v2",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "new reply to 12",
+       "case_material": "Customer question number 12.",
+       "subject": null
+      },
+      "output_fingerprint": "646450e3579e97a419aabb163f405b3cec3548a490b1446d9c6b38cef756874b",
+      "result_id": "res-run-cand-12",
+      "run_id": "run-cand",
+      "slot": "A"
+     },
+     {
+      "arm": "v1",
+      "criterion_fingerprints": {
+       "answer.grounded": "fefb6e56b81721f4e45766d7ea2fa19da9569b7f14f53ce3b444305145030c15"
+      },
+      "evidence": {
+       "artifact": "old reply to 12",
+       "case_material": "Customer question number 12.",
+       "subject": null
+      },
+      "output_fingerprint": "2f6da61e08f4f951474fe562c0565258ba0bd05996cf6c510d84b3eb8a4643bd",
+      "result_id": "res-run-ctrl-12",
+      "run_id": "run-ctrl",
+      "slot": "B"
+     }
+    ]
+   }
+  ],
+  "name": "anytime, closed early",
+  "report": {
+   "agreement": [
+    {
+     "anchor": "person",
+     "anchor_names": [
+      "ann"
+     ],
+     "blind_pairs": 20,
+     "cases": 10,
+     "dim": "answer.grounded",
+     "judge_model": "acme/judge-1",
+     "pairs": 20,
+     "random_pairs": 20,
+     "results": 0,
+     "scale": "pass_fail",
+     "served_model": null,
+     "table": {
+      "counts": [
+       [
+        0,
+        0
+       ],
+       [
+        0,
+        20
+       ]
+      ],
+      "scores": [
+       0,
+       1
+      ]
+     }
+    }
+   ],
+   "cases": 16,
+   "not_checked": {},
+   "other_ratings": 0,
+   "preferences": [
+    {
+     "anchor": "person",
+     "anchor_names": [
+      "ann"
+     ],
+     "answered": 10,
+     "candidate": "v2",
+     "control": "v1",
+     "items": 10,
+     "missing": 0,
+     "p": 0.13892242064172278,
+     "planned": 16,
+     "prefer_candidate": 9,
+     "prefer_control": 1,
+     "random": true,
+     "served_model": null,
+     "slot_a": 6,
+     "slot_a_share": 0.6,
+     "slot_choices": 10,
+     "state": null,
+     "test": "anytime",
+     "ties": 0,
+     "verdict": "not_separated"
+    }
+   ],
+   "reviewer_checks": [],
+   "reviews": [],
+   "samples": [
+    {
+     "answered": 10,
+     "items": 16,
+     "made_by": "person",
+     "partial": 0,
+     "rater": "ann",
+     "sample": "random",
+     "skipped": 0
+    }
+   ],
+   "unread": []
+  },
+  "reviews": [],
+  "schema_minor": 4,
+  "schema_version": 17,
+  "scope_id": "scope"
+ }
+]

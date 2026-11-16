@@ -22,9 +22,10 @@ The shapes here are plain documents with no behaviour. The mechanism (drawing, t
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
 from threetears.evals.schema.base import CoreShapeModel, DurableDocumentModel, EvalDocumentModel
 from threetears.evals.schema.reading_states import Maker, SampleKind, StateOf
@@ -281,7 +282,14 @@ class BlindReviewerCheck(EvalDocumentModel, CoreShapeModel):
 
 
 class BlindPreference(EvalDocumentModel, CoreShapeModel):
-    """Which of a pair one kind of rater preferred, per case, and whether that separates the arms."""
+    """Which of a pair one kind of rater preferred, per case, and whether that separates the arms.
+
+    **Stored as counts; its p and verdict are read off them** (#1236, durable 17.5). A preference stores the facts its
+    test reads (``shares``, and on the anytime test ``stake_items``) and never its p or verdict, which
+    :func:`~threetears.evals.analysis.blind_read.read_preference` computes when the read is loaded or closed: every
+    reader gets them from that one computation. A preference stored before 17.5 holds no ``shares``, carries the p and
+    verdict its close computed, and reads and writes them as stored.
+    """
 
     anchor: Maker
     anchor_names: list[str] = Field(min_length=1)
@@ -309,12 +317,39 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
     prefer_control: int = Field(ge=0, description="Items where it is below a half.")
     ties: int = Field(ge=0, description="Items at exactly a half: counted, never split.")
     test: BlindPreferenceTest
-    p: float | None = Field(description="The two-sided p; None where too few items carry a preference to test.")
+    shares: list[float] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "Each pair item's candidate share, in the order the test reads them (the drawn order on the anytime test): "
+            "1 or 0 for one rater's choice, a half for a tie, the mean over several raters. What the p and verdict are "
+            "read off; empty while withheld. None on a preference stored before durable 17.5, which carries its own p "
+            "and verdict."
+        ),
+    )
+    stake_items: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description=(
+            "The anytime test only: the planned pair items its stakes were fixed for before the first answer, which its "
+            "p is read under. None on every other test, and on a preference stored before durable 17.5."
+        ),
+    )
+    p: float | None = Field(
+        default=None,
+        description=(
+            "The two-sided p; None where too few items carry a preference to test. Read off `shares` when the read is "
+            "loaded or closed, never written; a preference stored before durable 17.5 carries it as stored."
+        ),
+    )
     verdict: Literal["improved", "regressed", "not_separated"] | None = Field(
+        default=None,
         description=(
             "How it read, in a contrast's own verdict words: the candidate shown better or worse, or the two not "
-            "told apart; None where it was not read, and `state` says why."
-        )
+            "told apart; None where it was not read, and `state` says why. Read off `shares` as `p` is, never "
+            "written; a preference stored before durable 17.5 carries it as stored."
+        ),
     )
     state: StateOf | None = Field(
         default=None,
@@ -332,14 +367,22 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
     slot_a: int = Field(default=0, ge=0, description="The non-tie preferences given to slot A.")
     slot_choices: int = Field(ge=0, description="The non-tie preferences that share is over.")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _a_p_or_verdict_beside_the_shares_is_an_echo(cls, data: Any) -> Any:
+        """Discard a p or verdict given beside the shares they are read off: an echo, never believed or refused, which
+        :func:`~threetears.evals.analysis.blind_read.read_preference` computes again (a stored one is never written)."""
+        if isinstance(data, Mapping) and data.get("shares") is not None and ("p" in data or "verdict" in data):
+            return {key: value for key, value in data.items() if key not in ("p", "verdict")}
+        return data
+
     @model_validator(mode="after")
     def _a_withheld_preference_gives_nothing_away(self) -> BlindPreference:
-        """Refuse a withheld preference that carries a count, a share or a p.
+        """Refuse a withheld preference that carries a count, a share or a p; a p or verdict on one not read; and
+        counts that are not the shares'.
 
         :raises ValueError: Naming the rule.
         """
-        if (self.verdict is None) == (self.state is None):
-            raise ValueError("a preference has a verdict, or the state that says why it has none, and never both")
         if self.state is not None and (self.state.state, self.state.reason) not in _UNREAD:
             raise ValueError("a preference that was not read is withheld as unfinished, or not available as too few")
         if self.withheld and (
@@ -350,9 +393,43 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
             or self.p is not None
             or self.slot_a_share is not None
             or self.slot_choices
+            or self.shares
         ):
             raise ValueError("a withheld preference states how far the read is, and no count, share or p")
+        if self.shares is None:
+            # Stored before durable 17.5: its close's p and verdict are carried, as stored.
+            if (self.verdict is None) == (self.state is None):
+                raise ValueError("a preference has a verdict, or the state that says why it has none, and never both")
+            return self
+        if self.state is not None and (self.p is not None or self.verdict is not None):
+            raise ValueError("a preference that was not read has no p or verdict, and its state says why")
+        if any(not 0.0 <= share <= 1.0 for share in self.shares):
+            raise ValueError("a preference's shares are each from 0 to 1")
+        if (self.items, self.prefer_candidate, self.prefer_control, self.ties) != (
+            len(self.shares),
+            sum(1 for share in self.shares if share > 0.5),
+            sum(1 for share in self.shares if share < 0.5),
+            sum(1 for share in self.shares if share == 0.5),
+        ):
+            raise ValueError("a preference's items and its counts for each side and of ties are its shares'")
+        if (self.test == "anytime") != (self.stake_items is not None) or (
+            self.stake_items is not None and self.stake_items < len(self.shares)
+        ):
+            raise ValueError(
+                "a preference read by the anytime test states the planned pair items its stakes were fixed for, no "
+                "fewer than its shares, and one read by any other test states none"
+            )
         return self
+
+    @model_serializer(mode="wrap")
+    def _no_p_or_verdict_beside_the_shares(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Write a preference holding its shares without its p and verdict, which are read off them; one stored
+        before durable 17.5 writes back the p and verdict it carries."""
+        dumped: dict[str, Any] = handler(self)
+        if self.shares is not None:
+            dumped.pop("p", None)
+            dumped.pop("verdict", None)
+        return dumped
 
     @property
     def withheld(self) -> bool:
@@ -425,8 +502,9 @@ class BlindReadReport(EvalDocumentModel, CoreShapeModel):
 class BlindRead(DurableDocumentModel):
     """A drawn, blinded order of judged outputs, the answers given to it, and its close.
 
-    **Stored, and durable** (durable v17.4): what a person answered is authored, so a read outlives a core baseline
-    reset as the ratings its close writes do; the runs and results it was drawn over are provenance and may dangle.
+    **Stored, and durable** (durable v17.4; since v17.5 its preferences store counts only): what a person answered is
+    authored, so a read outlives a core baseline reset as the ratings its close writes do; the runs and results it was
+    drawn over are provenance and may dangle.
     The quick path recomputes its read from the eval's files and never stores one; a host's actions store one per
     draw (:mod:`threetears.evals.ops.blind_reads`).
     """

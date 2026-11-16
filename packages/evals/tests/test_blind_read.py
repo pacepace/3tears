@@ -39,6 +39,7 @@ from threetears.evals.analysis.blind_read import (
     close_blind_read,
     draw_blind_read,
     exact_sign_test_p,
+    read_preference,
     read_sample,
 )
 from threetears.evals.quick import blind as files
@@ -592,6 +593,113 @@ def test_several_people_s_shares_are_read_by_the_bounded_test() -> None:
     (preference,) = report.preferences
     assert preference.test == "bounded_share" and preference.anchor_names == ["ann", "bo"]
     assert preference.prefer_candidate == 12 and preference.p is not None
+
+
+#: Blind reads a durable 17.4 build closed and stored, written by that build (``evals/main`` at ``be8de80cb``): one read
+#: by the exact sign test (separated), one by the bounded test on two raters' shares, one closed early and read by the
+#: anytime test. Each carries the p and verdict its close computed, as 17.4 stored them.
+STORED_AT_17_4 = Path(__file__).resolve().parent / "fixtures" / "blind_read_preferences" / "v17_4.json"
+
+#: The frozen durable corpus's 17.4 blind read, whose preference is too few to read.
+DURABLE_17_4 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v17" / "blind_read.json"
+
+
+def _stored_at_17_4() -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = json.loads(STORED_AT_17_4.read_text(encoding="utf-8"))
+    return [*documents, json.loads(DURABLE_17_4.read_text(encoding="utf-8"))]
+
+
+def _closed_again(read: BlindRead) -> BlindRead:
+    """``read``'s answers closed again by this build, by whom and when it was closed."""
+    reopened = read.model_copy(update={"report": None, "closed_at": None, "closed_by": None, "closed_early": False})
+    return close_blind_read(reopened, [], closed_by=read.closed_by, closed_at=read.closed_at).read
+
+
+def test_a_stored_preference_holds_its_counts_and_no_p_or_verdict() -> None:
+    """#1236: a preference stores what its test reads (each item's share, and the anytime test's planned pairs) and no
+    p or verdict. A read stored that way reads them off its counts, equal to what its close read."""
+    tests_seen: set[str] = set()
+    for document in _stored_at_17_4():
+        closed = _closed_again(BlindRead.from_dict(document))
+        assert closed.report is not None
+        (built,) = closed.report.preferences
+        (written,) = closed.to_dict()["report"]["preferences"]
+
+        assert "p" not in written and "verdict" not in written, "the judgement is read off the counts, never stored"
+        assert written["shares"] == built.shares and len(written["shares"]) == written["items"]
+        assert ("stake_items" in written) == (built.test == "anytime")
+        loaded = BlindRead.from_dict(closed.to_dict())
+        assert loaded.report is not None
+        (stored,) = loaded.report.preferences
+        assert (stored.p, stored.verdict) == (None, None), "a stored preference carries no p or verdict of its own"
+        read = read_preference(stored)
+        assert (read.p, read.verdict) == (built.p, built.verdict)
+        tests_seen.add(built.test)
+    assert tests_seen == {"exact_sign", "bounded_share", "anytime"}
+
+
+def test_p_and_verdict_read_off_the_counts_equal_what_a_17_4_build_stored() -> None:
+    """Every blind read a 17.4 build stored, closed again from its answers and stored as counts: the p and verdict read
+    off those counts are the ones 17.4 stored, to the bit, on each test."""
+    verdicts: set[str | None] = set()
+    for document in _stored_at_17_4():
+        (as_stored,) = document["report"]["preferences"]
+        again = BlindRead.from_dict(_closed_again(BlindRead.from_dict(document)).to_dict())
+        assert again.report is not None
+        (recomputed,) = again.report.preferences
+
+        read = read_preference(recomputed)
+
+        assert (read.p, read.verdict) == (as_stored["p"], as_stored["verdict"]), document["name"]
+        assert (read.prefer_candidate, read.prefer_control, read.ties) == (
+            as_stored["prefer_candidate"],
+            as_stored["prefer_control"],
+            as_stored["ties"],
+        )
+        verdicts.add(read.verdict)
+    assert verdicts == {"improved", "not_separated", None}, "a separated, an unseparated and an unread preference"
+
+
+def test_a_preference_a_17_4_build_stored_reads_and_writes_the_p_and_verdict_it_carries() -> None:
+    """A 17.4 preference holds no shares, so nothing is recomputed: it reads with the p and verdict it stored, even
+    where its counts would read otherwise, and writes them back as stored."""
+    for document in _stored_at_17_4():
+        (as_stored,) = document["report"]["preferences"]
+        read = BlindRead.from_dict(document)
+        assert read.report is not None
+        (stored,) = read.report.preferences
+
+        assert stored.shares is None and (stored.p, stored.verdict) == (as_stored["p"], as_stored["verdict"])
+        assert read_preference(stored) is stored
+        assert read.to_dict()["report"]["preferences"] == [as_stored], "written back byte for byte"
+    sign = json.loads(STORED_AT_17_4.read_text(encoding="utf-8"))[0]
+    (preference,) = sign["report"]["preferences"]
+    assert (preference["test"], preference["verdict"]) == ("exact_sign", "improved")
+    preference.update(p=0.5, verdict="not_separated")
+    believed_read = BlindRead.from_dict(sign)
+    assert believed_read.report is not None
+    (believed,) = believed_read.report.preferences
+    assert (read_preference(believed).p, read_preference(believed).verdict) == (0.5, "not_separated"), (
+        "what 17.4 stored is what it reads, never recomputed"
+    )
+
+
+def test_a_p_or_verdict_beside_the_shares_is_an_echo_and_counts_must_be_the_shares() -> None:
+    results, evidence = _campaign(12)
+    read = _draw(results, evidence)
+    closed = close_blind_read(_with(read, [_answer(read, n) for n in range(12)]), results).read
+    assert closed.report is not None
+    (built,) = closed.report.preferences
+    written = built.to_dict()
+
+    echoed = BlindPreference.model_validate({**written, "p": 0.9, "verdict": "regressed"})
+
+    assert (echoed.p, echoed.verdict) == (None, None), "discarded, never believed"
+    assert (read_preference(echoed).p, read_preference(echoed).verdict) == (built.p, built.verdict)
+    with pytest.raises(ValidationError, match="counts for each side"):
+        BlindPreference.model_validate({**written, "prefer_candidate": written["prefer_candidate"] - 1})
+    with pytest.raises(ValidationError, match="anytime test states the planned pair items"):
+        BlindPreference.model_validate({**written, "stake_items": 12})
 
 
 def test_an_answer_the_read_does_not_ask_is_refused() -> None:

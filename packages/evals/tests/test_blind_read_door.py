@@ -856,6 +856,16 @@ async def test_an_early_close_reads_the_preference_by_the_anytime_test() -> None
     (preference,) = closed.structured["preferences"]
     assert (preference["made_by"], preference["test"], preference["prefer_candidate"]) == ("person", "anytime", 9)
     assert preference["verdict"] in ("improved", "not_separated") and preference["p"] is not None
+    # Stored as its counts (#1236): the door reads its p and verdict off them when it loads the read, as the close did.
+    stored, _ = _stored(host, read.id)
+    assert stored.report is not None
+    (kept,) = stored.report.preferences
+    assert (kept.p, kept.verdict, kept.stake_items) == (None, None, len(pairs))
+    assert not {"p", "verdict"} & set(kept.to_dict()), "the stored preference carries no p or verdict"
+    loaded = await _call(host, "blind_read_get", read_id=read.id)
+    assert not loaded.is_error, loaded.text
+    (served,) = loaded.structured["preferences"]
+    assert (served["p"], served["verdict"]) == (preference["p"], preference["verdict"])
 
 
 async def test_a_reviewer_s_preference_is_served_once_per_served_model_with_the_model_named() -> None:

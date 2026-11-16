@@ -47,6 +47,7 @@ from threetears.evals.analysis.blind_read import (
     close_blind_read,
     draw_blind_read,
     pass_fail_counts,
+    read_preference,
     read_sample,
     shares_family,
     single_verdicts,
@@ -364,7 +365,8 @@ def _line(read: BlindRead, earlier: int, **close: object) -> BlindReadLine:
             verdict=entry.verdict,
             state=entry.state,
         )
-        for entry in (report.preferences if report is not None else [])
+        # Its p and verdict are read off its stored counts here, by the computation a close reads them by (#1236).
+        for entry in (read_preference(stored) for stored in (report.preferences if report is not None else []))
     ]
     return BlindReadLine(
         read_id=read.id,

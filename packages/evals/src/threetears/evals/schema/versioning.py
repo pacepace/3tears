@@ -956,7 +956,20 @@ DURABLE_SCHEMA_VERSION: int = 17
 #:   type (every read selects by ``doc_type``); its operator wipe of durable documents leaves these in place, and its
 #:   deletes never reach them (a new doc type's two disclosed costs, above).
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-DURABLE_SCHEMA_MINOR: int = 4
+#: - **v17.5** — a blind read's preference stores its counts only, and its p and verdict are read off them when the
+#:   read is loaded or closed (#1236, owner ruling 2026-11-17: store facts, derive judgements, as #1208 ruled for a
+#:   judge's agreement). ``BlindPreference.shares`` (each pair item's candidate share, in the order its test reads
+#:   them) and ``BlindPreference.stake_items`` (the anytime test's planned pair items, its stakes fixed for them before
+#:   the first answer) are written by every preference a close builds, which writes no ``p`` or ``verdict``:
+#:   ``threetears.evals.analysis.blind_read.read_preference`` computes both, for the close and for the door's response
+#:   alike. A preference stored at v17.4 holds no ``shares``; it reads with the ``p`` and ``verdict`` it carries, and
+#:   writes them back as stored. **The sentence below is false for a v17.4 build's read of a blind read closed at this
+#:   minor**: its ``p`` and ``verdict`` are required there, so that build refuses the document by name (a validation
+#:   error on ``report.preferences.*.p``) and never misreads it. No host stores 17.4 blind reads (unreleased), so no
+#:   fleet mixes the two; a host that pinned a 17.4 build rolls every pod past it before closing a read. No other
+#:   durable shape moves, and every document v17.4 stored is read and written byte for byte as before.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+DURABLE_SCHEMA_MINOR: int = 5
 """The durable minor this build writes; a read of its durable major at a newer minor keeps what it does not know."""
 
 

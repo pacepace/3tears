@@ -25,7 +25,8 @@ agreement with each other is reported, since the anchor is itself a measurement.
 **The preference** is over cases. Each pair item gives the candidate's share: 1, 0, or a half for a tie. With one
 answer per item the test is the exact two-sided sign test over the non-tie items (:func:`exact_sign_test_p`), valid
 at every n; with several raters the shares are fractions and the bounded test on shares against a half is used,
-which treats the raters as fixed.
+which treats the raters as fixed. A preference stores those shares and never its p or verdict, which
+:func:`read_preference` computes off them wherever a read is closed or loaded (#1236): one computation for every reader.
 
 **The preference is read once, at a length fixed when the read was drawn** (``BlindDraw.planned_items``): over the
 first that-many items of the order and no others, and only from a rater who has answered all of them. Before that it
@@ -922,8 +923,7 @@ def _preference(
             prefer_control=0,
             ties=0,
             test="exact_sign",
-            p=None,
-            verdict=None,
+            shares=[],
             state=StateOf(state="withheld", reason="unfinished"),
             slot_a_share=None,
             slot_choices=0,
@@ -953,22 +953,8 @@ def _preference(
     decided = for_candidate + for_control
     one_each = all(len(given) == 1 for given in shares.values())
     test: BlindPreferenceTest = "exact_sign" if one_each else "bounded_share"
-    verdict: Literal["improved", "regressed", "not_separated"] | None = None
-    state: StateOf | None = None
-    p: float | None = None
-    if decided < PREFERENCE_MIN_ITEMS:
-        state = StateOf(state="not_available", reason="too_few")
-    else:
-        p = (
-            exact_sign_test_p(for_candidate, decided)
-            if one_each
-            else bounded_separation_p([0.5] * len(means), means, paired=True, value_range=(0.0, 1.0))
-        )
-        if p is None or p >= SIGNIFICANCE_ALPHA or for_candidate == for_control:
-            verdict = "not_separated"
-        else:
-            verdict = "improved" if for_candidate > for_control else "regressed"
-    return BlindPreference(
+    state = StateOf(state="not_available", reason="too_few") if decided < PREFERENCE_MIN_ITEMS else None
+    stored = BlindPreference(
         anchor=kind,
         served_model=served_model,
         anchor_names=done,
@@ -983,13 +969,13 @@ def _preference(
         prefer_control=for_control,
         ties=len(means) - decided,
         test=test,
-        p=p,
-        verdict=verdict,
+        shares=means,
         state=state,
         slot_a_share=slot_a / slot_choices if slot_choices else None,
         slot_a=slot_a,
         slot_choices=slot_choices,
     )
+    return read_preference(stored)
 
 
 def _anytime_preference(
@@ -1030,19 +1016,9 @@ def _anytime_preference(
     for_candidate = sum(1 for mean in means if mean > 0.5)
     for_control = sum(1 for mean in means if mean < 0.5)
     decided = for_candidate + for_control
-    verdict: Literal["improved", "regressed", "not_separated"] | None = None
-    state: StateOf | None = None
-    p: float | None = None
-    if decided < PREFERENCE_MIN_ITEMS:
-        state = StateOf(state="not_available", reason="too_few")
-    else:
-        p = bounded_separation_p([0.5] * len(means), means, paired=True, value_range=(0.0, 1.0), planned_n=len(pairs))
-        if p is None or p >= SIGNIFICANCE_ALPHA or for_candidate == for_control:
-            verdict = "not_separated"
-        else:
-            verdict = "improved" if for_candidate > for_control else "regressed"
+    state = StateOf(state="not_available", reason="too_few") if decided < PREFERENCE_MIN_ITEMS else None
     raters = sorted(by_rater)
-    return BlindPreference(
+    stored = BlindPreference(
         anchor=kind,
         served_model=served_model,
         anchor_names=raters or sorted({answer.rater for answer in answers}),
@@ -1057,13 +1033,53 @@ def _anytime_preference(
         prefer_control=for_control,
         ties=len(means) - decided,
         test="anytime",
-        p=p,
-        verdict=verdict,
+        shares=means,
+        stake_items=len(pairs),
         state=state,
         slot_a_share=slot_a / slot_choices if slot_choices else None,
         slot_a=slot_a,
         slot_choices=slot_choices,
     )
+    return read_preference(stored)
+
+
+def read_preference(preference: BlindPreference) -> BlindPreference:
+    """``preference`` as it reads: its p and verdict computed off its stored counts. The one computation of either:
+    a close reads its preferences through it, and a door reads a loaded read's through it (#1236).
+
+    A preference stored since durable 17.5 holds the shares its test reads, in the order it reads them, and on the
+    anytime test the planned pair items its stakes were fixed for; never a p or verdict. The test is the one it names:
+    the exact sign test over the non-tie items (one answer per item), the bounded test on shares against a half
+    (several raters), or the anytime test, the bounded test on shares in the drawn order with its stakes fixed for
+    ``stake_items``. A preference not read (``state``: withheld, or too few) has neither, and one stored before 17.5
+    (no ``shares``) carries the p and verdict its close computed: both are returned as they are.
+
+    :param preference: A preference as stored, or as a close built it.
+    :ptype preference: BlindPreference
+    :return: The preference with its p and verdict; ``preference`` itself where it has none to compute.
+    :rtype: BlindPreference
+    """
+    shares = preference.shares
+    if shares is None or preference.state is not None:
+        return preference
+    for_candidate, for_control = preference.prefer_candidate, preference.prefer_control
+    p = (
+        exact_sign_test_p(for_candidate, for_candidate + for_control)
+        if preference.test == "exact_sign"
+        else bounded_separation_p(
+            [0.5] * len(shares),
+            shares,
+            paired=True,
+            value_range=(0.0, 1.0),
+            planned_n=preference.stake_items if preference.test == "anytime" else None,
+        )
+    )
+    verdict: Literal["improved", "regressed", "not_separated"]
+    if p is None or p >= SIGNIFICANCE_ALPHA or for_candidate == for_control:
+        verdict = "not_separated"
+    else:
+        verdict = "improved" if for_candidate > for_control else "regressed"
+    return preference.model_copy(update={"p": p, "verdict": verdict})
 
 
 def _reviewer_checks(
@@ -1335,6 +1351,7 @@ __all__ = [
     "draw_blind_read",
     "exact_sign_test_p",
     "pass_fail_counts",
+    "read_preference",
     "read_sample",
     "shares_family",
     "single_verdicts",
