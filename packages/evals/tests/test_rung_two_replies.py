@@ -61,7 +61,7 @@ REFERENCE_LINE = (
 #: The safe line, the same for both judges: the reference failed no reply on it.
 SAFE = (
     "  answer safe (judged)      19 results from 19 cases: the reader failed no answer: no catch rate; the judge "
-    "failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); the reader gave every answer one verdict, "
+    "failed 0 of the 19 the reader passed (exact 95% interval 0 to 18%); the reader gave every answer one verdict, "
     "pass; the judge gave every answer one verdict, pass"
 )
 
@@ -69,10 +69,10 @@ SAFE = (
 JUDGE_READ = [
     REFERENCE_LINE,
     "  answer answers (judged)   20 results from 20 cases: the judge caught 0 of the 1 the reader failed "
-    "(exact 95% interval 0% to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); "
+    "(exact 95% interval 0 to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0 to 18%); "
     "the judge gave every answer one verdict, pass",
     "  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of the 2 the reader failed "
-    "(exact 95% interval 1% to 99%); the judge failed 0 of the 14 the reader passed (exact 95% interval 0% to 23%)",
+    "(exact 95% interval 1 to 99%); the judge failed 0 of the 14 the reader passed (exact 95% interval 0 to 23%)",
     SAFE,
 ]
 
@@ -80,9 +80,9 @@ JUDGE_READ = [
 STRONGER_READ = [
     REFERENCE_LINE,
     "  answer answers (judged)   20 results from 20 cases: the judge caught 0 of the 1 the reader failed "
-    "(exact 95% interval 0% to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3% to 40%)",
+    "(exact 95% interval 0 to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3 to 40%)",
     "  answer grounded (judged)  16 results from 16 cases: the judge caught 2 of the 2 the reader failed "
-    "(exact 95% interval 16% to 100%); the judge failed 4 of the 14 the reader passed (exact 95% interval 8% to 58%)",
+    "(exact 95% interval 16 to 100%); the judge failed 4 of the 14 the reader passed (exact 95% interval 8 to 58%)",
     SAFE,
 ]
 
@@ -225,9 +225,9 @@ def test_the_reference_binds_to_the_grounded_wording_ruled_on_and_the_earlier_re
 #: the re-checks were chosen after both judges were read, and one moved the reference toward both.
 GROUNDED_BEFORE = {
     "replies": "  answer grounded (judged)  16 results from 16 cases: the judge caught 0 of the 1 the reader failed "
-    "(exact 95% interval 0% to 97%); the judge failed 1 of the 15 the reader passed (exact 95% interval 0% to 32%)",
+    "(exact 95% interval 0 to 97%); the judge failed 1 of the 15 the reader passed (exact 95% interval 0 to 32%)",
     "replies-stronger": "  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of the 1 the reader "
-    "failed (exact 95% interval 3% to 100%); the judge failed 5 of the 15 the reader passed (exact 95% interval 12% "
+    "failed (exact 95% interval 3 to 100%); the judge failed 5 of the 15 the reader passed (exact 95% interval 12 "
     "to 62%)",
 }
 
@@ -295,10 +295,10 @@ def test_the_re_checks_were_chosen_after_the_judges_and_the_reference_before_the
     for name in JUDGE_NAMES:
         for when, line in (("before", GROUNDED_BEFORE[name]), ("after", GROUNDED_AFTER[name])):
             caught = re.search(
-                r"caught (\d+) of the (\d+) the reader failed \(exact 95% interval (\d+% to \d+%)\)", line
+                r"caught (\d+) of the (\d+) the reader failed \(exact 95% interval (\d+ to \d+%)\)", line
             )
             false_fail = re.search(
-                r"failed (\d+) of the (\d+) the reader passed \(exact 95% interval (\d+% to \d+%)\)", line
+                r"failed (\d+) of the (\d+) the reader passed \(exact 95% interval (\d+ to \d+%)\)", line
             )
             assert caught is not None and false_fail is not None, line
             shown = [

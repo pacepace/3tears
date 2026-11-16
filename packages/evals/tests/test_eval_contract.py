@@ -563,7 +563,7 @@ async def test_a_judge_is_a_grader_its_answers_written_to_read_blind_and_read_ba
     # Counts and exact rates (#1208): no kappa, tier word or count of results still needed.
     assert lines[1] == (
         "  answer billing (judged)  4 results from 4 cases: the judge caught 2 of the 2 the reader failed "
-        "(exact 95% interval 16% to 100%); the judge failed 0 of the 2 the reader passed (exact 95% interval 0% to 84%)"
+        "(exact 95% interval 16 to 100%); the judge failed 0 of the 2 the reader passed (exact 95% interval 0 to 84%)"
     )
     assert len(lines) == 2
 

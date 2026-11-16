@@ -13,6 +13,7 @@ from typing import Final
 
 from threetears.evals.analysis.blind_read import pass_fail_counts, single_verdicts
 from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.unit_once import interval_alone
 from threetears.evals.analysis.stats import exact_rate_interval
 from threetears.evals.schema.blind_read import BlindVerdictTable
 
@@ -50,12 +51,14 @@ class BlindRates:
 
 
 def _stated_rate(count: int, of: int, said: str) -> StatedRate:
-    """``count`` of ``of`` with its exact interval, said as ``said`` followed by the interval."""
+    """``count`` of ``of`` with its exact interval, said as ``said`` followed by the interval, which stands alone and
+    so writes its ``%`` once, after its high end (``0 to 52%``)."""
     interval = exact_rate_interval(count, of)
     assert interval is not None  # of is at least 1
     forms = PageForms.off_page()
-    low, high = forms.share(interval[0]).text, forms.share(interval[1]).text
-    return StatedRate(count, of, interval, f"{said} (exact 95% interval {low} to {high})")
+    low, high = forms.share(interval[0]), forms.share(interval[1])
+    ends = interval_alone(low.digits, high.digits, high.unit)
+    return StatedRate(count, of, interval, f"{said} (exact 95% interval {ends})")
 
 
 def blind_rates(table: BlindVerdictTable, *, reader: str, judge: str) -> BlindRates:

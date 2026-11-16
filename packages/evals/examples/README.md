@@ -138,10 +138,10 @@ re-checks, beside those after (`answers` and `safe` were not re-checked):
 
 | Judge | Dimension | Reference failed, of those read | Judge failed of those | Judge failed of the rest |
 |---|---|---|---|---|
-| `gemini-2.5-flash-lite`, before | grounded | 1 of 16 | 0 of 1 (0% to 97%) | 1 of 15 (0% to 32%) |
-| `gemini-2.5-flash-lite`, after | grounded | 2 of 16 | 1 of 2 (1% to 99%) | 0 of 14 (0% to 23%) |
-| `claude-sonnet-5-5`, before | grounded | 1 of 16 | 1 of 1 (3% to 100%) | 5 of 15 (12% to 62%) |
-| `claude-sonnet-5-5`, after | grounded | 2 of 16 | 2 of 2 (16% to 100%) | 4 of 14 (8% to 58%) |
+| `gemini-2.5-flash-lite`, before | grounded | 1 of 16 | 0 of 1 (0 to 97%) | 1 of 15 (0 to 32%) |
+| `gemini-2.5-flash-lite`, after | grounded | 2 of 16 | 1 of 2 (1 to 99%) | 0 of 14 (0 to 23%) |
+| `claude-sonnet-5-5`, before | grounded | 1 of 16 | 1 of 1 (3 to 100%) | 5 of 15 (12 to 62%) |
+| `claude-sonnet-5-5`, after | grounded | 2 of 16 | 2 of 2 (16 to 100%) | 4 of 14 (8 to 58%) |
 
 The run prints each judge against the reference as counts, with exact 95% intervals
 ([the print](../docs/ladder.md#rung-2-a-judge-checked-against-a-person)). `stronger_eval` judges the same replies on
@@ -149,12 +149,12 @@ the same words with `claude-sonnet-5-5`, one tier up:
 
 | Judge | Dimension | Reference failed, of those read | Judge failed of those | Judge failed of the rest |
 |---|---|---|---|---|
-| `gemini-2.5-flash-lite` | grounded | 2 of 16 | 1 of 2 (1% to 99%) | 0 of 14 (0% to 23%) |
-| | answers | 1 of 20 | 0 of 1 (0% to 97%) | 0 of 19 (0% to 18%) |
-| | safe | 0 of 19 | no catch rate | 0 of 19 (0% to 18%) |
-| `claude-sonnet-5-5` | grounded | 2 of 16 | 2 of 2 (16% to 100%) | 4 of 14 (8% to 58%) |
-| | answers | 1 of 20 | 0 of 1 (0% to 97%) | 3 of 19 (3% to 40%) |
-| | safe | 0 of 19 | no catch rate | 0 of 19 (0% to 18%) |
+| `gemini-2.5-flash-lite` | grounded | 2 of 16 | 1 of 2 (1 to 99%) | 0 of 14 (0 to 23%) |
+| | answers | 1 of 20 | 0 of 1 (0 to 97%) | 0 of 19 (0 to 18%) |
+| | safe | 0 of 19 | no catch rate | 0 of 19 (0 to 18%) |
+| `claude-sonnet-5-5` | grounded | 2 of 16 | 2 of 2 (16 to 100%) | 4 of 14 (8 to 58%) |
+| | answers | 1 of 20 | 0 of 1 (0 to 97%) | 3 of 19 (3 to 40%) |
+| | safe | 0 of 19 | no catch rate | 0 of 19 (0 to 18%) |
 
 With at most two reference failures per dimension, no catch rate here says how often either judge catches a bad
 reply, and neither judge is shown to. Both are read on the 20 replies the reference was built from, against one person's

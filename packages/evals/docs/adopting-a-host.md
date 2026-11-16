@@ -1825,7 +1825,7 @@ quick path's `blind_read.html` uses:
 the reviewer as one served model): `agreed` of `pairs`, the `table` of every pair by the reader's score (rows) and the
 judge's (columns), and on a pass/fail criterion `catch` (of the answers the reader failed, how many the judge failed
 too) and `false_fail` (of those the reader passed, how many the judge failed), each a count with its exact 95%
-interval and a sentence, `caught 0 of the 2 the reader failed (exact 95% interval 0% to 84%)`. `said` states plainly
+interval and a sentence, `caught 0 of the 2 the reader failed (exact 95% interval 0 to 84%)`. `said` states plainly
 where one side gave every answer one verdict, and where the reader failed (or passed) nothing, so that rate does not
 exist. No kappa, bar or tier is served: where one side gives a single verdict, kappa is 0 or undefined at any agreement. A result judged on
 other wording of a criterion than the read shows (a template edited since) is left out of the draw and counted in

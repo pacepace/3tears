@@ -509,8 +509,8 @@ def test_a_judge_that_passes_everything_is_shown_by_the_table_where_kappa_says_n
     assert lines[0] == "judge: 30 of 30 cases read blind by owner, in the drawn order (a random sample)"
     # #1208: counts, the catch rate and the false-fail rate with exact intervals, and the one verdict the judge gave.
     assert lines[1].endswith(
-        "30 results from 30 cases: the judge caught 0 of the 3 the reader failed (exact 95% interval 0% to "
-        "71%); the judge failed 0 of the 27 the reader passed (exact 95% interval 0% to 13%); the judge gave every "
+        "30 results from 30 cases: the judge caught 0 of the 3 the reader failed (exact 95% interval 0 to "
+        "71%); the judge failed 0 of the 27 the reader passed (exact 95% interval 0 to 13%); the judge gave every "
         "answer one verdict, pass"
     )
     # No kappa, bar, tier word or estimate of results still needed is printed.
@@ -801,8 +801,8 @@ def test_a_reference_reviewer_is_read_apart_and_its_ratings_are_never_a_person_s
     assert lines[1] == f"  checked against a model ({reviewer}), not yet against people:"
     # A pair read: two results of each case, so the exact intervals' independence is said not to hold.
     assert lines[2].endswith(
-        "48 results from 24 cases: the judge caught 8 of the 8 the model failed (exact 95% interval 63% to "
-        "100%); the judge failed 0 of the 40 the model passed (exact 95% interval 0% to 9%); the intervals count "
+        "48 results from 24 cases: the judge caught 8 of the 8 the model failed (exact 95% interval 63 to "
+        "100%); the judge failed 0 of the 40 the model passed (exact 95% interval 0 to 9%); the intervals count "
         "each answer as independent, which answers on one case are not"
     )
     # No tier value or kappa is printed for a judge checked against a model: the line says what it was checked against.

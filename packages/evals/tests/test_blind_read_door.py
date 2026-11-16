@@ -651,8 +651,8 @@ async def test_a_pass_fail_check_is_served_as_counts_and_exact_rates_with_a_plai
     catch = constant["catch"]
     assert (catch["count"], catch["of"]) == (0, 2)
     assert catch["interval"] == [0.0, pytest.approx(0.8419, abs=1e-4)], "exact, not Wilson's 0.66"
-    assert catch["said"] == "caught 0 of the 2 the reader failed (exact 95% interval 0% to 84%)"
-    assert constant["false_fail"]["said"] == "failed 0 of the 18 the reader passed (exact 95% interval 0% to 19%)"
+    assert catch["said"] == "caught 0 of the 2 the reader failed (exact 95% interval 0 to 84%)"
+    assert constant["false_fail"]["said"] == "failed 0 of the 18 the reader passed (exact 95% interval 0 to 19%)"
     assert constant["said"] == ["the judge gave every answer one verdict, pass"]
     assert nothing_failed["catch"] is None
     assert nothing_failed["said"] == [

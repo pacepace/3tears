@@ -178,10 +178,10 @@ as they stood before the re-checks, beside the rows after (the full table is und
 
 | Judge | Dimension | Reference: failed / read | Judge failed of those the reference failed | Judge failed of those it passed |
 |---|---|---|---|---|
-| `gemini-2.5-flash-lite`, before | grounded | 1 / 16 | 0 of 1 (0% to 97%) | 1 of 15 (0% to 32%) |
-| `gemini-2.5-flash-lite`, after | grounded | 2 / 16 | 1 of 2 (1% to 99%) | 0 of 14 (0% to 23%) |
-| `claude-sonnet-5-5`, before | grounded | 1 / 16 | 1 of 1 (3% to 100%) | 5 of 15 (12% to 62%) |
-| `claude-sonnet-5-5`, after | grounded | 2 / 16 | 2 of 2 (16% to 100%) | 4 of 14 (8% to 58%) |
+| `gemini-2.5-flash-lite`, before | grounded | 1 / 16 | 0 of 1 (0 to 97%) | 1 of 15 (0 to 32%) |
+| `gemini-2.5-flash-lite`, after | grounded | 2 / 16 | 1 of 2 (1 to 99%) | 0 of 14 (0 to 23%) |
+| `claude-sonnet-5-5`, before | grounded | 1 / 16 | 1 of 1 (3 to 100%) | 5 of 15 (12 to 62%) |
+| `claude-sonnet-5-5`, after | grounded | 2 / 16 | 2 of 2 (16 to 100%) | 4 of 14 (8 to 58%) |
 
 `answers` and `safe` were not re-checked, and their rows are the same before and after.
 
@@ -200,9 +200,9 @@ What it printed:
 ```text
 replies: reply passed 39 of 40 trials on 20 cases. Cases that failed a trial: locked-out.
 judge: 55 label(s) in labels.csv by Brooks (adjudicated by the person reader; no independent adjudicator; 3 grounded items re-checked after the judges were read) are not on this run's draw (the answers changed since, or it is an older sheet): kept, each paired with the same output, and not drawn at random
-  answer answers (judged)   20 results from 20 cases: the judge caught 0 of the 1 the reader failed (exact 95% interval 0% to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); the judge gave every answer one verdict, pass
-  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of the 2 the reader failed (exact 95% interval 1% to 99%); the judge failed 0 of the 14 the reader passed (exact 95% interval 0% to 23%)
-  answer safe (judged)      19 results from 19 cases: the reader failed no answer: no catch rate; the judge failed 0 of the 19 the reader passed (exact 95% interval 0% to 18%); the reader gave every answer one verdict, pass; the judge gave every answer one verdict, pass
+  answer answers (judged)   20 results from 20 cases: the judge caught 0 of the 1 the reader failed (exact 95% interval 0 to 97%); the judge failed 0 of the 19 the reader passed (exact 95% interval 0 to 18%); the judge gave every answer one verdict, pass
+  answer grounded (judged)  16 results from 16 cases: the judge caught 1 of the 2 the reader failed (exact 95% interval 1 to 99%); the judge failed 0 of the 14 the reader passed (exact 95% interval 0 to 23%)
+  answer safe (judged)      19 results from 19 cases: the reader failed no answer: no catch rate; the judge failed 0 of the 19 the reader passed (exact 95% interval 0 to 18%); the reader gave every answer one verdict, pass; the judge gave every answer one verdict, pass
 judge: 4 of 4 examples graded as they must be on every one of 2 repeats ($0.00090 over 8 call(s))
 40 result(s): 40 scored, 0 excluded
   answer grounded (judged), scored pass/fail: 97.5%, 39 of 40 trials
@@ -232,19 +232,19 @@ stronger_eval = Eval("emails.jsonl", runner=reply_again, grader=[stronger], k=2,
 ```text
 replies-stronger: reply_again passed 30 of 40 trials on 20 cases. Cases that failed a trial: monthly-refund, annual-late-refund, annual-early-refund, locked-out, send-password, and 5 more.
 ...
-  answer answers (judged)   20 results from 20 cases: the judge caught 0 of the 1 the reader failed (exact 95% interval 0% to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3% to 40%)
-  answer grounded (judged)  16 results from 16 cases: the judge caught 2 of the 2 the reader failed (exact 95% interval 16% to 100%); the judge failed 4 of the 14 the reader passed (exact 95% interval 8% to 58%)
+  answer answers (judged)   20 results from 20 cases: the judge caught 0 of the 1 the reader failed (exact 95% interval 0 to 97%); the judge failed 3 of the 19 the reader passed (exact 95% interval 3 to 40%)
+  answer grounded (judged)  16 results from 16 cases: the judge caught 2 of the 2 the reader failed (exact 95% interval 16 to 100%); the judge failed 4 of the 14 the reader passed (exact 95% interval 8 to 58%)
 ...
 ```
 
 | Judge | Dimension | Reference: failed / read | Judge failed of those the reference failed | Judge failed of those it passed |
 |---|---|---|---|---|
-| `gemini-2.5-flash-lite` | grounded | 2 / 16 | 1 of 2 (1% to 99%) | 0 of 14 (0% to 23%) |
-| | answers | 1 / 20 | 0 of 1 (0% to 97%) | 0 of 19 (0% to 18%) |
-| | safe | 0 / 19 | no catch rate | 0 of 19 (0% to 18%) |
-| `claude-sonnet-5-5` | grounded | 2 / 16 | 2 of 2 (16% to 100%) | 4 of 14 (8% to 58%) |
-| | answers | 1 / 20 | 0 of 1 (0% to 97%) | 3 of 19 (3% to 40%) |
-| | safe | 0 / 19 | no catch rate | 0 of 19 (0% to 18%) |
+| `gemini-2.5-flash-lite` | grounded | 2 / 16 | 1 of 2 (1 to 99%) | 0 of 14 (0 to 23%) |
+| | answers | 1 / 20 | 0 of 1 (0 to 97%) | 0 of 19 (0 to 18%) |
+| | safe | 0 / 19 | no catch rate | 0 of 19 (0 to 18%) |
+| `claude-sonnet-5-5` | grounded | 2 / 16 | 2 of 2 (16 to 100%) | 4 of 14 (8 to 58%) |
+| | answers | 1 / 20 | 0 of 1 (0 to 97%) | 3 of 19 (3 to 40%) |
+| | safe | 0 / 19 | no catch rate | 0 of 19 (0 to 18%) |
 
 **What these numbers cannot show.** The reference failed two replies on `grounded`, one on `answers` and none on
 `safe`, so no catch rate here says how often either judge catches a bad reply: two catches of two read 16% to 100%,
