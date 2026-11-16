@@ -19,13 +19,17 @@ every case as a new comparison, and the print says which in one sentence (`quick
 its name, model and levers, and a grader by its name and declaration (a judge by its model and criteria), never by
 its code: a runner or a grader function edited under the same name continues the comparison, its new cases pooled
 with the ones run before, as the continuation's sentence says; give the eval a new name (or run it in another scope or
-store) to compare an edit afresh. A run that stopped (its cost cap, a replay miss) gave no verdict, so running it
-again, the cap raised, sets that launch aside and runs its cases again after the cases before them, and the
-comparison finishes as any other.
+store) to compare an edit afresh. A run that stopped or was cancelled (its cost cap, a replay miss, an interrupt, a
+person who stopped it after watching its results) is kept as it ran: every result it recorded counts where it was
+observed, and running it again, the cap raised, runs only the cases no arm reached, after them, and the comparison
+finishes as any other. A case it reached on some arms or repeats only is never run again: it stays as it ran, and the
+print counts it. A comparison whose call is cancelled files its campaign before the cancel goes on, so what it
+recorded is kept. Discarding a stopped run's results and drawing its cases again would let a stop chosen after looking
+choose what the bet reads; kept, a stop at any time and for any reason is a pause in the one bet.
 
 Each paired contrast on a declared range (a pass rate, a score on its scale) of a quick-path comparison is read by a
-mixture bet: the mean of ten bets staking fixed shares of the cap, over the cases in the order they were first run,
-hedged over the two directions (`stats.bounded_separation_p`, `bounded_difference_interval`, `bounded_mean_p` and
+mixture bet: the mean of ten bets staking fixed shares of the cap, over the cases in the order they were observed
+(launch by launch, each launch's cases in the order of the cases file), hedged over the two directions (`stats.bounded_separation_p`, `bounded_difference_interval`, `bounded_mean_p` and
 `paired_equivalence` gain `mixture`; `separation_test` too). No stake depends on a declared count, and the quick path
 never runs a case of the comparison twice, so a newcomer may add cases and run it again as often as they like, and
 each such verdict, p and interval keeps its error over every reading. Holm stays the correction: a bet reading's
@@ -37,12 +41,15 @@ in memory (`store=":memory:"`), where nothing is left to continue, the print's l
 is a new comparison (`continuation.UNKEPT_SENTENCE`). Seeded simulations driving `Eval.run` itself, two arms passing
 50% each, k = 1: run again as cases are added (adds sized from the data, up to five runs), 32 of 1,000 newcomers
 separate (3.2%, 95% upper bound 4.5%) at α = 5%, where re-running every case on each run, read by the same bet,
-separates 36 of 400 (9.0%, lower bound 6.4%). A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
+separates 36 of 400 (9.0%, lower bound 6.4%); cancelling a run as soon as the running count favours an arm, then
+continuing, CANCEL_FIGURES. A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
 the time where the reading it replaces did 43.6%. A quick-path comparison is one the quick path filed
 (`EvalCampaign.created_by` is `kernel.candidate_kind.QUICK_PATH_FILER`) over runs of kinds only it launches
-(`QUICK_PATH_KINDS`), no arm running a case in two runs, with no plan of looks (`trials.bet_places`): a campaign a host
+(`QUICK_PATH_KINDS`), no arm observing a case in two runs, with no plan of looks (`trials.bet_places`): a campaign a host
 files over the same runs (`campaign_create`) reads as every engine campaign does, α or α/L, and no declaration opts
-one in.
+one in. In such a comparison a launch that stopped is a pause once a later launch ran (`trials.taken_up`): it is not
+listed among the bundle's `incomplete_runs`, so the page and the print open on the newest launch's ending, and what it
+delivered short of its matrix is still said in `short_runs`.
 
 Quick-path comparisons read differently from this version on; a stored quick campaign reads the new way on upgrade.
 An older build reads the same stored campaign the old way, so two builds can give different verdicts on it. Readings
@@ -52,7 +59,8 @@ and rung 3b's `total` no longer reads equivalent within its 20-point margin on 3
 **For hosts:** nothing to do, in either order. No stored or served shape gains a field: the bet's sentence is carried
 in the family's existing `disclosure`, so a build from before this change reads every bundle, frozen analysis and
 `bundle:<aspect>` file this one writes, and this one reads every document an older build wrote. A rollback reads stored
-quick campaigns the old way again; a host's own campaigns read as before on both builds.
+quick campaigns the old way again; a host's own campaigns read as before on both builds. A host that cancels an
+`Eval.run` comparison finds its campaign filed, its runs cancelled, as a budget stop's is.
 
 ### evals: a scoreboard block and a run's summary read an arm's or a role's unanswered calls without raising
 

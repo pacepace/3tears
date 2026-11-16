@@ -107,7 +107,7 @@ from threetears.evals.kernel.host import (
 from threetears.evals.schema import NominalScale, SubjectSnapshot, SweepableValue, TraceSink
 from threetears.evals.schema import WorldPlacement
 from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
-from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_runs
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_run, summarize_runs
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.run import (
     CellContext,
@@ -1576,20 +1576,21 @@ def _what_changed(
         return "a grader's margin, range or guard changed"
     if len(cases) < len(earlier.case_ids):
         return "a case run before was removed"
+    unrun = set(earlier.unrun)
     for index, case in enumerate(cases):
         kept = host.storage.load_test_case(case.id, case.scope_id)
-        ran = index < len(earlier.case_ids)
-        if ran and earlier.case_ids[index] != case.id:
+        held = index < len(earlier.case_ids)
+        if held and earlier.case_ids[index] != case.id:
             return "the cases run before are not in the order they ran"
-        if (ran or kept is not None) and (
+        if (held or kept is not None) and (
             kept is None
             or kept.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS)
             != case.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS)
         ):
-            if ran:
-                return f"case {names[index]} was edited, moved or removed"
-            if index < len(earlier.case_ids) + earlier.set_aside:
+            if held and case.id in unrun:
                 return f"case {names[index]}, which the run that stopped held, was edited, moved or removed"
+            if held:
+                return f"case {names[index]} was edited, moved or removed"
             return f"another comparison in this scope added another case {names[index]} to the same cases"
     if first_address != earlier.template_id:
         return "the judge's rubric, the intent or the goal checks changed"
@@ -2280,6 +2281,8 @@ class Launched:
     :ivar continued: Whether it continued an earlier comparison.
     :ivar said: The sentence saying how the comparison ran (:func:`~threetears.evals.quick.continuation.continued_sentence`
         or :func:`~threetears.evals.quick.continuation.new_comparison_sentence`); ``None`` with no earlier comparison.
+    :ivar cancelled: Whether the call was cancelled while its runs ran (``keep_cancelled``): its runs are settled
+        cancelled, every result they recorded kept, and the caller files them and re-raises the cancel.
     """
 
     summaries: list[EvalSummary]
@@ -2287,6 +2290,7 @@ class Launched:
     launched: list[str]
     continued: bool = False
     said: str | None = None
+    cancelled: bool = False
 
 
 async def launch_arms(
@@ -2311,16 +2315,18 @@ async def launch_arms(
     earlier: EarlierComparison | None = None,
     control_index: int = 0,
     said: str | None = None,
+    keep_cancelled: bool = False,
 ) -> Launched:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
 
     **Continuing a comparison.** With ``earlier``, the comparison the quick path filed last under this eval's name
     (:func:`~threetears.evals.quick.continuation.earlier_comparison`), the launch continues it where it is the same
     comparison: the same arms (``control_index`` the control), the same repeats, and every case it ran still at its
-    place, unedited, with the same rubric, intent and goal checks over them. Then only the cases after them run, into
-    its case set, and each arm reads its earlier runs with its new one. The cases of a launch of it that did not finish
-    are among those (:attr:`~threetears.evals.quick.continuation.EarlierComparison.set_aside`): it gave no verdict, so
-    they run again. A new run whose variant key, measurement
+    place, unedited, with the same rubric, intent and goal checks over them. Then only the cases no arm ran run, into
+    its case set: those a launch of it that stopped or was cancelled never reached
+    (:attr:`~threetears.evals.quick.continuation.EarlierComparison.unrun`), then the cases appended; and each arm reads
+    its earlier runs with its new one. A case that ran on any arm is never run again, so every result a stopped launch
+    observed counts where it observed it. A new run whose variant key, measurement
     context or graders' declarations differ from its arm's earlier runs is archived, and every case runs again. Where
     it is not the same comparison, every case runs, and :attr:`Launched.said` names what changed. ``said`` is a
     sentence the caller found already (a design that changed), which the launch keeps.
@@ -2375,6 +2381,10 @@ async def launch_arms(
     :ptype margins: Mapping[str, float] | None
     :param measure_latency: Declare latency under test: the cases run one at a time.
     :ptype measure_latency: bool
+    :param keep_cancelled: A cancel while the runs run settles them, and is then delivered as
+        :attr:`Launched.cancelled` with what they recorded, for the caller to file before it re-raises the cancel (a
+        comparison's: the results it observed are kept). ``False`` re-raises it once the runs are settled.
+    :ptype keep_cancelled: bool
     :return: Each arm's finished run's summary, read back from the store, in arm order.
     :rtype: list[EvalSummary]
     :raises ValueError: The cases, the arms, the graders, the cap or the world refused, each naming why; a host of the
@@ -2492,7 +2502,11 @@ async def launch_arms(
         else:
             template, template_id = stored, earlier.template_id
             test_cases = cases_of(template_id)
-            to_run = test_cases[len(earlier.case_ids) :]
+            # The cases no arm ran (a launch that stopped before it reached them), then the cases appended: a case
+            # that ran is read as it ran and never run again.
+            unrun = set(earlier.unrun)
+            held = len(earlier.case_ids)
+            to_run = [case for case in test_cases[:held] if case.id in unrun] + test_cases[held:]
             reading = [earlier.arms[key].run_ids for key in keys]
     if world is not None and world.stateful:
         # The authoring gate itself, before anything is stored or run: the grammar, the paths, a string match
@@ -2616,6 +2630,7 @@ async def launch_arms(
         return prepared
 
     runs: list[EvalRun] = []
+    cancelled = False
     if to_run:
         runs = await launch_as_group(
             launch_host,
@@ -2629,9 +2644,12 @@ async def launch_arms(
             await launch_host.job_manager.wait_for([run.id for run in runs])
         except asyncio.CancelledError:
             # This call owns the runs it started: cancelled, it settles them as cancelled rather than
-            # leaving pending ones behind in a store that outlives it.
+            # leaving pending ones behind in a store that outlives it. A comparison's caller files them before the
+            # cancel goes on, so what they recorded is kept and a run again runs only the cases they never reached.
             await launch_host.job_manager.shutdown()
-            raise
+            if not keep_cancelled:
+                raise
+            cancelled = True
     if continuing and earlier is not None and runs:
         # Each new run must be its arm's earlier runs measured alike: the same variant, the same measurement context
         # (the graders' and the judge's definitions among it) and the same graders' declarations. Where one is not,
@@ -2639,6 +2657,9 @@ async def launch_arms(
         differs = await run_blocking(host.blocking_executor, _reads_otherwise, host, earlier, keys, runs, scope_id)
         if differs:
             await run_blocking(host.blocking_executor, _archive_run_ids, host, [run.id for run in runs], scope_id)
+            if cancelled:
+                # Archived, the runs are another comparison's and no part of this one: nothing is left to keep.
+                raise asyncio.CancelledError
             return await launch_arms(
                 cases,
                 arms,
@@ -2658,6 +2679,7 @@ async def launch_arms(
                 margins=margins,
                 measure_latency=measure_latency,
                 said=new_comparison_sentence("an arm's levers, a grader's declaration or the judge changed"),
+                keep_cancelled=keep_cancelled,
             )
     by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
     read_runs = [(*held, *((runs[index].id,) if runs else ())) for index, held in enumerate(reading)]
@@ -2666,7 +2688,9 @@ async def launch_arms(
         return [
             _with_case_results(
                 host,
-                summarize_runs(host, run_ids, scope_id, case_names=by_id),
+                _ended_as_newest(host, summarize_runs(host, run_ids, scope_id, case_names=by_id), run_ids, scope_id)
+                if len(run_ids) > 1
+                else summarize_runs(host, run_ids, scope_id, case_names=by_id),
                 run_ids,
                 test_cases,
                 names,
@@ -2693,15 +2717,47 @@ async def launch_arms(
         run_ids=read_runs,
         launched=[run.id for run in runs],
         continued=continuing,
+        cancelled=cancelled,
         said=(
             continued_sentence(
                 len(test_cases) - len(to_run),
                 len(to_run),
-                again=min(earlier.set_aside, len(to_run)) if earlier is not None else 0,
+                unreached=len(earlier.unrun) if earlier is not None else 0,
+                incomplete=earlier.incomplete if earlier is not None else 0,
             )
             if continuing
             else said
         ),
+    )
+
+
+def _ended_as_newest(host: EvalHost, pooled: EvalSummary, run_ids: Sequence[str], scope_id: str) -> EvalSummary:
+    """A continued comparison's arm over every launch of it, as it stands: its results every run's together, its ending
+    its newest run's, and its cases each once.
+
+    A launch of it that stopped or was cancelled was taken up by the launches after it, which ran every case it never
+    reached (:func:`~threetears.evals.analysis.bundle.trials.taken_up`, which the campaign's page reads alike), so the
+    arm ends as its newest run ends: completed once that run completed, and stopped while it is stopped. A case a
+    launch never reached is in a later run's cases too, and counts once.
+
+    :param host: The host whose store holds the runs.
+    :ptype host: EvalHost
+    :param pooled: The arm's runs summarised as one (:func:`~threetears.evals.analysis.summarize_runs`).
+    :ptype pooled: EvalSummary
+    :param run_ids: Its runs, oldest first.
+    :ptype run_ids: Sequence[str]
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :return: The summary.
+    :rtype: EvalSummary
+    """
+    newest = summarize_run(host, run_ids[-1], scope_id)
+    cases: dict[str, None] = {}
+    for run_id in run_ids:
+        run = host.storage.load_eval_run(run_id, scope_id)
+        cases.update(dict.fromkeys(run.test_case_ids if run is not None else ()))
+    return pooled.model_copy(
+        update={"status": newest.status, "stopped_because": newest.stopped_because, "n_cases": len(cases)}
     )
 
 

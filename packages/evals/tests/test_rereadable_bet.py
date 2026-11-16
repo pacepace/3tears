@@ -14,25 +14,31 @@ Held here:
 - the bet alone, over rows appended and kept: re-reading separates at most α under the null;
 - the product: a comparison run again runs only the cases appended and reads the rest as they ran; anything else is a
   new comparison that runs every case and says what changed; the case order is append-only;
+- a run stopped by its cost cap or cancelled keeps every result it recorded, where it recorded it, and a run again
+  runs only the cases no arm reached: no case runs twice on an arm, and each reading's p is the one bet read later;
 - the product under the null, ``Eval.run`` itself over a scripted runner whose arms are equal in distribution: run
   again as cases are added it separates at most α, and re-running every case on each run (as the quick path did
-  before), read by the same bet, exceeds α;
+  before), read by the same bet, exceeds α; cancelling a run as soon as the running count favours an arm, then
+  continuing, it separates at most α;
 - at one stated alternative, a single read's power against the reading it replaces;
 - the rung 3 comparison prints the one sentence that says so, and reads cost by its t test, once.
 
-Each simulation is seeded, so a run is one fixed draw; its docstring states the rate it holds and the bound it is
-checked against. The product null's shards past the first of each are ``long_simulation`` (about two CPU-minutes
-each): the unit suite runs the bound and one shard of each, and the pool's ``simulation`` suite runs the rest,
-``testament run --no-fallback --suite simulation``, whenever the reading they simulate changes.
+Each simulation is seeded, so a run is one fixed draw, except the cancelling one, whose cancels land where the
+product's order of a launch's cells (drawn from the launch's id) puts them; each docstring states the rate it holds and
+the bound it is checked against. The product null's shards past the first of each are ``long_simulation`` (about two CPU-minutes
+each), and so is the cancelling simulation (one test, several CPU-minutes): the unit suite runs the bound and one
+shard of each, and the pool's ``simulation`` suite runs the rest, ``testament run --no-fallback --suite simulation``,
+whenever a file the suite's comment in ``.testament.toml`` names changes.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import random
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +47,13 @@ import pytest
 from threetears.evals import Answer, Eval, Result, grader
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.actions.catalogue import Caller
-from threetears.evals.analysis import ComparisonFamily, assemble_context_bundle, get_campaign
+from threetears.evals.analysis import (
+    AnalysisContextBundle,
+    ComparisonFamily,
+    assemble_context_bundle,
+    get_campaign,
+    list_campaigns,
+)
 from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
@@ -50,6 +62,7 @@ from threetears.evals.analysis.stats import (
     composite_significance,
     exact_rate_interval,
     holm_adjust,
+    separation_test,
 )
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
@@ -57,6 +70,8 @@ from threetears.evals.kernel.declaration import AspectDesign
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.quick import as_host
 from threetears.evals.quick.continuation import UNKEPT_SENTENCE, continued_sentence, new_comparison_sentence
+from threetears.evals.quick.one_call import launched_as_run
+from threetears.evals.run import list_results
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -462,21 +477,33 @@ def test_no_host_declares_a_design_into_the_bet() -> None:
         minimal_aspect_design(rereadable=True)
 
 
-def _kinded_family(kind: str, *, created_by: str = QUICK_PATH_FILER, rerun: bool = False) -> ComparisonFamily:
-    """One question's family over two arms' judged scores on twelve shared cases, every run and result of ``kind``, in
+def _kinded_bundle(
+    kind: str, *, created_by: str = QUICK_PATH_FILER, rerun: bool = False, stopped: bool = False, resumed: bool = False
+) -> AnalysisContextBundle:
+    """One question's bundle over two arms' judged scores on twelve shared cases, every run and result of ``kind``, in
     a campaign filed by ``created_by``; ``rerun`` gives the contrast arm a second run over the first six cases again,
-    so it ran those cases twice."""
+    so it ran those cases twice. ``stopped`` makes the arms' one launch a cancelled one that recorded only the first
+    six cases; ``resumed`` adds a second launch over the six it never reached, which completed, as the quick path
+    continues a comparison."""
     runs = []
     results: dict[str, list[EvalResult]] = {}
-    lists = [("control-model", range(12)), ("contrast-model", range(12))]
+    held = range(12)
+    recorded = range(6) if stopped else held
+    lists = [("control-model", held, recorded, "a"), ("contrast-model", held, recorded, "a")]
     if rerun:
-        lists.append(("contrast-model", range(6)))
-    for model, cases in lists:
+        lists.append(("contrast-model", range(6), range(6), "b"))
+    if resumed:
+        lists += [
+            ("control-model", range(6, 12), range(6, 12), "b"),
+            ("contrast-model", range(6, 12), range(6, 12), "b"),
+        ]
+    for model, cases, ran, launch in lists:
         run = make_eval_run(
-            status="completed",
+            status="cancelled" if stopped and launch == "a" else "completed",
             candidate_model=model,
             candidate_kind=kind,
             test_case_ids=[f"tc-{case:02d}" for case in cases],
+            launch_group_id=f"launch-{launch}",
         )
         runs.append(run)
         results[run.id] = [
@@ -498,7 +525,7 @@ def _kinded_family(kind: str, *, created_by: str = QUICK_PATH_FILER, rerun: bool
                     )
                 ],
             )
-            for case in cases
+            for case in ran
         ]
     asked = min(run.created_at for run in runs)
     campaign = make_aspect_campaign(
@@ -516,8 +543,12 @@ def _kinded_family(kind: str, *, created_by: str = QUICK_PATH_FILER, rerun: bool
         subject_kind="s",
         created_by=created_by,
     )
-    bundle = assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
-    (family,) = bundle.multiple_comparisons.families
+    return assemble_context_bundle(campaign, storage=ToyhostStorage(runs, results), profile=toyhost_profile())
+
+
+def _kinded_family(kind: str, *, created_by: str = QUICK_PATH_FILER, rerun: bool = False) -> ComparisonFamily:
+    """The family of :func:`_kinded_bundle`."""
+    (family,) = _kinded_bundle(kind, created_by=created_by, rerun=rerun).multiple_comparisons.families
     return family
 
 
@@ -535,6 +566,23 @@ def test_the_bet_reads_a_campaign_the_quick_path_filed_over_its_own_runs_and_no_
         _kinded_family(sorted(QUICK_PATH_KINDS)[0], rerun=True),
     ):
         assert not read_by_bet(family) and REREAD_SENTENCE not in family.disclosure
+
+
+def test_a_launch_that_stopped_is_read_where_it_recorded_and_is_a_pause_once_a_later_launch_ran() -> None:
+    """A quick-path comparison whose first launch was cancelled after six of its twelve cases, and whose second launch
+    ran the six it never reached, is read by the bet over all twelve, and opens on its newest launch's ending: the
+    cancelled launch is not listed unfinished. Before the second launch, the cancelled one is unfinished, and the reading opens on it. The same runs in a campaign a host
+    filed take nothing up."""
+    kind = sorted(QUICK_PATH_KINDS)[0]
+    resumed = _kinded_bundle(kind, stopped=True, resumed=True)
+    (family,) = resumed.multiple_comparisons.families
+    assert read_by_bet(family)
+    assert {len(compared.case_values[0]) for compared in family.comparisons if compared.case_values is not None} == {12}
+    assert not resumed.incomplete_runs
+    stopped = _kinded_bundle(kind, stopped=True)
+    assert set(stopped.incomplete_runs.values()) == {"cancelled"} and len(stopped.incomplete_runs) == 2
+    hosted = _kinded_bundle(kind, created_by="host-operator", stopped=True, resumed=True)
+    assert set(hosted.incomplete_runs.values()) == {"cancelled"} and len(hosted.incomplete_runs) == 2
 
 
 async def test_a_host_s_campaign_over_quick_runs_reads_as_an_engine_campaign_at_alpha_over_its_looks() -> None:
@@ -626,12 +674,52 @@ def _priced(tag: str, arm: str, rate: float, calls: Counter[tuple[int, str]]) ->
     return run
 
 
-async def test_a_comparison_whose_run_stopped_finishes_when_run_again_with_the_cap_raised() -> None:
+def _observed(result: Result) -> dict[str, dict[int, float]]:
+    """Each arm's cases its reading holds a result for, by the case's ``n``: 1 where it answered right."""
+    return {
+        arm: {case.input["n"]: 1.0 if case.answer == "right" else 0.0 for case in summary.case_results}
+        for arm, summary in result.arms.items()
+    }
+
+
+def _bet_p(launches: list[Mapping[str, Mapping[int, float]]]) -> float | None:
+    """The mixture bet's p over a comparison's launches as the rule reads them: each launch's cases both arms observed
+    and no launch before it ran, in the order of the cases file, chained launch by launch. ``launches`` is each launch's
+    observed cases by arm (:func:`_observed` of the reading it closed on, which holds every launch before it too)."""
+    order: list[int] = []
+    ran: set[int] = set()
+    for observed in launches:
+        paired = sorted((set(observed["a"]) & set(observed["b"])) - ran)
+        order += paired
+        ran |= set(observed["a"]) | set(observed["b"])
+    final = launches[-1]
+    if len(order) < 2:
+        return None
+    return separation_test(
+        [final["a"][n] for n in order], [final["b"][n] for n in order], paired=True, value_range=_RATE, mixture=True
+    ).p
+
+
+def _correct_p(result: Result) -> float | None:
+    """The raw p of the comparison on ``_correct`` its reading holds where the bet read it (paired, in a family the bet
+    read); ``None`` where too few cases are paired for the bet, whatever another test read."""
+    (family,) = result.report.bundle.multiple_comparisons.families
+    (compared,) = [comparison for comparison in family.comparisons if comparison.name == "_correct"]
+    return compared.p_raw if compared.test == "paired" and read_by_bet(family) else None
+
+
+def _incomplete(observed: Mapping[str, Mapping[int, float]]) -> int:
+    """How many cases one arm observed and the other did not (``k`` is 1)."""
+    return len(set(observed["a"]) ^ set(observed["b"]))
+
+
+async def test_a_comparison_whose_run_stopped_keeps_what_it_observed_and_runs_only_what_it_never_reached() -> None:
     """A cost cap stops a comparison's run partway, and its print opens on the stop and exits 1. Run again with the cap
-    raised, it finishes and exits as a run that completed does. A first run that stopped had nothing read, so the run
-    again is a first comparison over every case. A continuation that stopped is set aside: the cases run before it are
-    read as they ran, its cases run again after them, and the bet reads every case in the order first run, over the
-    first launch's runs and the new ones only, so it is one bet read later."""
+    raised, it continues: every result the stopped run recorded is kept and read where it was observed, only the cases
+    no arm reached run, and it finishes as a run that completed does. Stopped again partway through a continuation and
+    run again, the same holds. No case runs twice on any arm, and the bet is one capital read four times: each reading's
+    p is the mixture bet's over every case observed by then, launch by launch, each launch's cases in the order of the
+    cases file, so a later reading is the earlier one's bet read later."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
     arms = {"a": _priced("stopped", "a", 0.5, calls), "b": _priced("stopped", "b", 0.5, calls)}
@@ -641,33 +729,116 @@ async def test_a_comparison_whose_run_stopped_finishes_when_run_again_with_the_c
 
     stopped = await compare(20, 1.0).run(store=store, scope="s")
     assert stopped.exit_code() == 1 and {summary.status for summary in stopped.arms.values()} == {"budget_stopped"}
+    assert set(stopped.report.bundle.incomplete_runs.values()) == {"budget_stopped"}
+    observed = [_observed(stopped)]
+    ran = set(observed[0]["a"]) | set(observed[0]["b"])
+    assert 2 <= len(ran) < 20
+
     first = await compare(20, 10.0).run(store=store, scope="s")
     assert first.exit_code() in (0, 4) and {summary.status for summary in first.arms.values()} == {"completed"}
-    assert _how_it_ran(first) == [] and all(summary.n_results == 20 for summary in first.arms.values())
+    # The stopped launch is a pause its continuation took up: the page opens on a verdict, not on the stop.
+    assert not first.report.bundle.incomplete_runs
+    unreached = 20 - len(ran)
+    assert _how_it_ran(first) == [
+        continued_sentence(len(ran), unreached, unreached=unreached, incomplete=_incomplete(observed[0]))
+    ]
+    observed.append(_observed(first))
 
     again = await compare(30, 1.0).run(store=store, scope="s")
-    assert again.exit_code() == 1 and _how_it_ran(again) == [continued_sentence(20, 10)]
-    before = dict(calls)
+    assert again.exit_code() == 1
+    assert _how_it_ran(again) == [continued_sentence(20, 10, incomplete=_incomplete(observed[1]))]
+    observed.append(_observed(again))
+    ran = set(observed[2]["a"]) | set(observed[2]["b"])
+    assert 20 < len(ran) < 30
     finished = await compare(30, 10.0).run(store=store, scope="s")
-    assert finished.exit_code() in (0, 4)
+    assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
     assert {summary.status for summary in finished.arms.values()} == {"completed"}
-    assert _how_it_ran(finished) == [continued_sentence(20, 10, again=10)]
-    # The cases the first comparison ran are not run again; the stopped launch's ten are, once more on each arm.
-    assert {key: calls[key] - before.get(key, 0) for key in calls if calls[key] != before.get(key, 0)} == {
-        (n, arm): 1 for n in range(20, 30) for arm in "ab"
-    }
+    assert {summary.n_cases for summary in finished.arms.values()} == {30}
+    assert _how_it_ran(finished) == [
+        continued_sentence(
+            len(ran),
+            30 - len(ran),
+            unreached=30 - len(ran),
+            incomplete=_incomplete(observed[2]),
+        )
+    ]
+    observed.append(_observed(finished))
+    # No case ran twice on any arm, and every case ran on some arm.
+    assert set(calls.values()) == {1} and {n for n, _ in calls} == set(range(30))
+    # Every result a reading held, the stopped ones' included, is held as it ran by every reading after it.
+    for earlier, later in zip(observed, observed[1:]):
+        for arm in "ab":
+            assert earlier[arm].items() <= later[arm].items()
+    for index, reading in enumerate((stopped, first, again, finished)):
+        assert _correct_p(reading) == _bet_p(observed[: index + 1])
     (aspect,) = off_loop(get_campaign, finished.host.storage, finished.campaign_id, "s").aspects
-    (kept,) = off_loop(get_campaign, first.host.storage, first.campaign_id, "s").aspects
-    (set_aside,) = off_loop(get_campaign, again.host.storage, again.campaign_id, "s").aspects
-    assert set(kept.run_ids) < set(aspect.run_ids) and len(aspect.run_ids) == 4
-    assert not set(aspect.run_ids) & (set(set_aside.run_ids) - set(kept.run_ids))
+    assert len(aspect.run_ids) == 8
     (family,) = finished.report.bundle.multiple_comparisons.families
-    (paired,) = [comparison for comparison in family.comparisons if comparison.name == "_correct"]
-    assert read_by_bet(family) and paired.case_values is not None and len(paired.case_values[0]) == 30
-    assert {trial.case_place for trial in finished.report.bundle.trials} == set(range(1, 31))
+    assert read_by_bet(family)
+
+
+async def test_a_cancelled_comparison_is_filed_and_run_again_runs_only_what_it_never_recorded() -> None:
+    """A comparison cancelled while its runs run (the call's task cancelled, as an interrupt does) still raises the
+    cancel, and files its campaign first, its runs settled cancelled: every result they recorded is kept. Run again,
+    it continues: only the cases with no recorded result run (a cell the cancel cut before its result was written runs
+    again, its answer never recorded), no case holds two results on one arm, and the bet reads the cancelled run's
+    cases first, then the new ones."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    running: list[asyncio.Task[Result]] = []
+    coins = {"a": _coin("cancelled", "a", 0.5, calls), "b": _coin("cancelled", "b", 0.5, calls)}
+
+    def interrupting(arm: str) -> Callable[[Mapping[str, Any]], Any]:
+        async def run(case: Mapping[str, Any]) -> str:
+            answer = await coins[arm](case)
+            if arm == "b" and sum(count for (_, side), count in calls.items() if side == "b") == 8 and running:
+                asyncio.get_running_loop().call_soon(running[0].cancel)
+            return answer
+
+        run.__name__ = arm
+        return run
+
+    arms = {arm: interrupting(arm) for arm in "ab"}
+    running.append(asyncio.create_task(Eval(_cases(20), arms, [_correct], k=1, name="cut").run(store=store, scope="s")))
+    with pytest.raises(asyncio.CancelledError):
+        await running[0]
+    running.clear()
+    host = as_host([Eval(_cases(20), arms, [_correct], k=1, name="cut")], store=store)
+    (campaign,) = off_loop(list_campaigns, host.storage, "s", subject_id="cut")
+    assert campaign.created_by == QUICK_PATH_FILER
+    (aspect,) = campaign.aspects
+    cut_runs = [off_loop(host.storage.load_eval_run, run_id, "s") for run_id in aspect.run_ids]
+    assert {run.status for run in cut_runs if run is not None} == {"cancelled"}
+    recorded = {
+        run.id: {result.test_case_id: result for result in off_loop(list_results, host.storage, run.id, "s")}
+        for run in cut_runs
+        if run is not None
+    }
+    assert any(recorded.values()) and sum(len(held) for held in recorded.values()) < 40
+
+    finished = await Eval(_cases(30), arms, [_correct], k=1, name="cut").run(store=store, scope="s")
+    assert {summary.status for summary in finished.arms.values()} == {"completed"}
+    assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
+    case_n = {case.case_id: case.input["n"] for summary in finished.arms.values() for case in summary.case_results}
+    final = _observed(finished)
+    # Each arm's cases the cancelled run recorded, at the values the finished reading holds for them: each was drawn
+    # once (below), so a value held is the value recorded.
+    cut: dict[str, dict[int, float]] = {}
+    for run in cut_runs:
+        assert run is not None
+        arm = str(launched_as_run(run)[0])
+        cut[arm] = {case_n[case]: final[arm][case_n[case]] for case in recorded[run.id]}
+    ran = set(cut["a"]) | set(cut["b"])
+    assert _how_it_ran(finished) == [
+        continued_sentence(len(ran), 30 - len(ran), unreached=20 - len(ran), incomplete=_incomplete(cut))
+    ]
     for arm in "ab":
-        ran = {(result.case, result.answer) for result in first.arms[arm].case_results}
-        assert ran < {(result.case, result.answer) for result in finished.arms[arm].case_results}
+        # One result per case on the arm: a case recorded before the cancel is read as it was, never run again, and a
+        # case no arm recorded ran once more on every arm.
+        assert sorted(case.input["n"] for case in finished.arms[arm].case_results) == sorted(set(final[arm]))
+        assert all(calls[n, arm] == 1 for n in cut[arm])
+        assert set(final[arm]) == set(cut[arm]) | (set(range(30)) - ran)
+    assert _correct_p(finished) == _bet_p([cut, final])
 
 
 # --- the null, through the product -----------------------------------------------------------------------------------
@@ -698,6 +869,99 @@ async def _newcomer(tag: str, *, continued: bool) -> bool:
         ]
         n += 10 + int(90 * (1.0 - min(1.0, min(ps, default=1.0))))
     return False
+
+
+def _separated_on_correct(families: Sequence[ComparisonFamily]) -> tuple[bool, float]:
+    """Whether a reading separates the arms on ``_correct``, and its raw p there (1 where it has none)."""
+    compared = [c for family in families for c in family.comparisons if c.name == "_correct"]
+    return (
+        any(comparison.verdict in ("improved", "regressed") for comparison in compared),
+        min((c.p_raw for c in compared if c.p_raw is not None), default=1.0),
+    )
+
+
+async def _canceller(tag: str) -> bool:
+    """One newcomer under the null who cancels a run when the data look good, through ``Eval.run`` into one store: two
+    arms answering right at one rate (0.5, k = 1), each call a fresh seeded draw. Run 20 cases; in each run, once at
+    least five cases have been answered on both arms in it, cancel the call (as an interrupt does) as soon as the
+    running count of cases answered right, over every case answered on both arms so far, favours either arm by two;
+    read the comparison as it stands (the run's print where it finished, the filed campaign where it was cancelled);
+    while nothing separates, append cases and run again, at most five runs in all, each adding ten cases plus up to
+    ninety more the closer the reading's p came to α. Separated: a verdict of improved or regressed on ``_correct`` in
+    any reading. The cancel is chosen after looking, at the point the data favour an arm; the product keeps what the
+    cancelled run recorded and runs only what it never reached."""
+    calls: Counter[tuple[int, str]] = Counter()
+    answered: dict[tuple[int, str], float] = {}
+    running: list[asyncio.Task[Result]] = []
+    fresh: set[int] = set()
+
+    def watched(arm: str) -> Callable[[Mapping[str, Any]], Any]:
+        coin = _coin(tag, arm, 0.5, calls)
+
+        async def run(case: Mapping[str, Any]) -> str:
+            answer = await coin(case)
+            n = case["n"]
+            answered[n, arm] = 1.0 if answer == "right" else 0.0
+            if running and (n, "a") in answered and (n, "b") in answered:
+                fresh.add(n)
+                both = [m for m, side in answered if side == "a" and (m, "b") in answered]
+                lead = sum(answered[m, "b"] - answered[m, "a"] for m in both)
+                if len(fresh) >= 5 and abs(lead) >= 2:
+                    asyncio.get_running_loop().call_soon(running.pop().cancel)
+            return answer
+
+        run.__name__ = arm
+        return run
+
+    arms = {arm: watched(arm) for arm in "ab"}
+    store = InMemoryDocumentStore()
+    n = 20
+    for _ in range(5):
+        compare = Eval(_cases(n), arms, [_correct], k=1, name="watched")
+        fresh.clear()
+        running.append(asyncio.create_task(compare.run(store=store, scope="s")))
+        try:
+            families: Sequence[ComparisonFamily] = (await running[0]).report.bundle.multiple_comparisons.families
+        except asyncio.CancelledError:
+            host = as_host([compare], store=store)
+            filed = off_loop(list_campaigns, host.storage, "s", subject_id="watched")
+            campaign = max(filed, key=lambda each: (each.created_at, each.id))
+            bundle = off_loop(assemble_context_bundle, campaign, storage=host.storage, profile=host.profile)
+            families = bundle.multiple_comparisons.families
+        running.clear()
+        separated, p = _separated_on_correct(families)
+        if separated:
+            return True
+        n += 10 + int(90 * (1.0 - min(1.0, p)))
+    return False
+
+
+#: Newcomers the cancelling simulation runs, in one test: the product orders each launch's cells by its launch's id, so
+#: which cases a cancel finds recorded differs from one run of the test to the next, and no shard's count can be pinned.
+#: The bound is read on the count the test draws.
+_CANCELLERS = 600
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(3600)
+async def test_under_the_null_a_comparison_cancelled_when_the_data_look_good_and_continued_separates_at_most_alpha() -> (
+    None
+):
+    """The claim under a cancel chosen after looking: :data:`_CANCELLERS` newcomers (:func:`_canceller`), each
+    cancelling a run as soon as the running count favours an arm, then continuing, at α = 5%, two arms passing 50%
+    each, k = 1, up to five runs with adds sized from the data, stopping at the first separation. The product keeps a
+    cancelled run's recorded results and runs only the cases it never reached, so the cancel is a pause in one bet: the
+    Clopper-Pearson 95% upper bound on the false-separation rate is below α.
+
+    Its count is not pinned (the product orders a launch's cells by its launch's id, so a cancel finds a different set
+    recorded on each run of the test); as run for this change, 9 of 600 separated (1.5%, 95% interval 0.7% to 2.8%).
+    The test fails only where the upper bound reaches α, which needs a count of 20 or more."""
+    separated = 0
+    for index in range(_CANCELLERS):
+        separated += await _canceller(f"cancelled-{index}")
+    bound = exact_rate_interval(separated, _CANCELLERS)
+    assert bound is not None
+    assert bound[1] < SIGNIFICANCE_ALPHA, f"cancelled and continued {separated}/{_CANCELLERS} {bound}"
 
 
 #: Newcomers per shard: each shard is one seeded test, so the pool runs them side by side.

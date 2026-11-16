@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import annotationlib
 import ast
+import asyncio
 import csv
 import inspect
 import json
@@ -47,7 +48,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import CONFUSION_CELL_MEASURE, GuardrailMargin, confusion_of
 from threetears.evals.kernel.host import CompletionClients, EvalHost
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, GraderPlan, expected_label, plan_graders
 from threetears.evals.quick.levers import refuse_unusable_lever_names
@@ -677,18 +678,23 @@ class Eval:
             earlier=earlier,
             control_index=control_index,
             said=said,
+            # A comparison cancelled while it runs is filed as a stopped one is, before the cancel goes on: every result
+            # it recorded is kept, and a run again runs only the cases it never reached.
+            keep_cancelled=self.comparison,
         )
         summaries = launched.summaries
         if (
-            refused := _a_field_no_answer_carries(self.plan, self.cases, summaries, world=self.world is not None)
-        ) is not None:
+            not launched.cancelled
+            and (refused := _a_field_no_answer_carries(self.plan, self.cases, summaries, world=self.world is not None))
+            is not None
+        ):
             # The runs measured the author's wiring, not the product: archived, as an operator retires a contaminated
             # run, so no listing, history or frontier reads them, and no campaign is filed. A continued comparison's
             # earlier runs stay as they were: only the runs this call launched are archived.
             await run_blocking(host.blocking_executor, _archive_runs, host, launched.launched, scope_id)
             raise ValueError(refused)
         examples = None
-        if judge is not None and judge.examples and summaries[0].template_id is not None:
+        if not launched.cancelled and judge is not None and judge.examples and summaries[0].template_id is not None:
             # Graded once for the eval, after its arms, through the judge every arm's answers were graded by, each
             # example judged as a cell's answer is (the classifier's label hidden alike), and held to what the arms
             # left of the eval's cap. A grading that fails is said on the reading, so the arms' results still land.
@@ -715,13 +721,8 @@ class Eval:
             for arm, summary, run_ids in zip(self.arms, summaries, launched.run_ids, strict=True)
         }
 
-        def declared() -> Result:
-            said = (
-                ((launched.said,) if launched.said is not None else ())
-                + disclosures
-                + tuple(_silent_served_model(host, keyed, scope_id, self.arms))
-            )
-            result = declare(
+        def filed() -> Result:
+            return declare(
                 host,
                 keyed,
                 factors,
@@ -750,6 +751,27 @@ class Eval:
                 measure_order=self.plan.readings,
                 runs=runs_of,
             )
+
+        if launched.cancelled:
+            # Filed as a stopped comparison is, and nothing more is read or asked of a model: the cancel goes on.
+            try:
+                await run_blocking(host.blocking_executor, filed)
+            except Exception as exc:
+                contain(
+                    exc,
+                    log=log,
+                    what="a cancelled comparison's runs could not be filed; a run again starts a new comparison",
+                    level="error",
+                )
+            raise asyncio.CancelledError
+
+        def declared() -> Result:
+            said = (
+                ((launched.said,) if launched.said is not None else ())
+                + disclosures
+                + tuple(_silent_served_model(host, keyed, scope_id, self.arms))
+            )
+            result = filed()
             closed, _loose = read_blind(judge, host, keyed, control, scope_id, self.name, runs=runs_of)
             drawn.extend([closed.read.id] if closed is not None else [])
             return with_judge_examples(

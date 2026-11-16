@@ -214,9 +214,8 @@ that ran and why in both. `tests/test_ci_unit_pool_script.py` pins the script's 
 **What the pool runs.** `testament run --suite default --fresh --no-cache --no-fallback -- -m "not
 loop_timing"`. `.testament.toml`'s unit suite, `default` (the manifest is version 3, one table per
 suite; `test.sh` names it too), selects `packages/` and `tests/` with `-m "not integration and not loop_timing
-and not docker and not secrets"`: the tests `ci-unit-tests.sh` partitions, less the `loop_timing`
-ones (below), which this `-m`
-names again. `--fresh` runs every batch in a container started cold from the project's image (one
+and not docker and not secrets and not long_simulation"`: the tests `ci-unit-tests.sh` partitions, less the
+`loop_timing` ones and the `long_simulation` shards (both below); this `-m` names `loop_timing` again. `--fresh` runs every batch in a container started cold from the project's image (one
 per runner, removed when the run ends), so nothing an earlier run left in a warm container reaches
 the required check; it costs a cold start and a full `[setup]` (`uv sync`) on each runner it
 reaches. `--fresh` does not turn off the cache, so `--no-cache` makes every test run rather than
@@ -233,6 +232,12 @@ serving an earlier passing result on the same tree. Every difference from the sh
   does. When the pool is lost mid-run it skips that step, since the shards run them. The manifest
   leaves them out of every pool run too, so a local `test.sh` pool run never meets them;
   `./scripts/ci-unit-tests.sh --loop-timing` runs them serially here.
+- **`long_simulation`** shards are left out of the pool's unit suite, and the shards collect them. Each is one
+  shard of a seeded simulation of minutes of CPU, past the one shard the unit suite keeps beside the bound it feeds,
+  and a pool batch of several would pass `batch_timeout_s`. The manifest's `simulation` suite runs them on the pool,
+  side by side: `testament run --no-fallback --suite simulation`. Run it when a file its comment in `.testament.toml`
+  names changes (the reading the simulation holds, and the quick path that files and continues the comparisons it
+  drives); a `default` run never starts it.
 - **`docker` and `secrets`** are left out on the pool; the shards collect them. Every `docker` test
   is also an integration test, so the shards leave it out too. The `secrets` tests outside the
   integration set (the live Claude CLI batch, the live Tavily call) skip on the shards, which have

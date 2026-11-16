@@ -524,8 +524,8 @@ def _compare(
         bundle withheld (:mod:`~threetears.evals.analysis.contention`) — so an untested comparison says that,
         rather than that too few cases carried the reading.
     :ptype contended: tuple[str, ...]
-    :param places: Each case's place in the order the campaign first launched its cases
-        (:func:`~threetears.evals.analysis.bundle.trials.case_places`), on a quick-path comparison (every result of a
+    :param places: Each case's place in the order the campaign observed its cases
+        (:func:`~threetears.evals.analysis.bundle.trials.bet_places`), on a quick-path comparison (every result of a
         kind only the quick path launches, read with no plan of looks); None otherwise. Where given, a paired reading on a declared range is read by the mixture bet over its cases in
         that order (:func:`_bet_samples`), its p, its equivalence p and its interval alike.
     :ptype places: Mapping[str, int] | None
@@ -639,13 +639,14 @@ def _bet_samples(
     value_range: tuple[float, float] | None,
     places: Mapping[str, int] | None,
 ) -> tuple[list[float], list[float]] | None:
-    """The paired samples the mixture bet reads, over the cases both sides ran in the order the campaign first launched
-    them (a case with no place last, by id): None where no bet reads this comparison — no ``places`` (the aspect is not
+    """The paired samples the mixture bet reads, over the cases both sides ran in the order the campaign observed them
+    (a case with no place last, by id): None where no bet reads this comparison — no ``places`` (the aspect is not
     a quick-path comparison), no declared range, fewer than two shared cases, or a value outside the range, which bounds
     nothing then.
 
     The order is the one a newcomer adds cases in: a case appended to the cases file is launched after every case
-    before it, so a later reading's bet is the earlier one's with the new cases after it, one capital read again.
+    before it, and a case a stopped launch never reached runs in a later launch, after every case observed before it,
+    so a later reading's bet is the earlier one's with the new cases after it, one capital read again.
     """
     if places is None or value_range is None:
         return None
@@ -1029,8 +1030,8 @@ def multiple_comparisons(
         read at α/L (:func:`~threetears.evals.analysis.significance.looks_alpha`) and a guardrail's ``held`` on the
         interval at :func:`~threetears.evals.analysis.significance.looks_confidence`. None reads every look at α.
     :ptype planned_looks: int | None
-    :param reread_order: On a quick-path comparison, each case's place in the order the campaign first
-        launched its cases (:func:`~threetears.evals.analysis.bundle.trials.case_places`): every paired comparison on
+    :param reread_order: On a quick-path comparison, each case's place in the order the campaign observed its
+        cases (:func:`~threetears.evals.analysis.bundle.trials.bet_places`): every paired comparison on
         a declared range is then read by the mixture bet over its cases in that order, so it keeps its error however
         often cases are added and it is read again (:func:`_corrected_family`). None reads every comparison as before.
     :ptype reread_order: Mapping[str, int] | None

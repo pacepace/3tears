@@ -400,9 +400,14 @@ def case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
 def bet_places(
     created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView], *, planned_looks: int | None
 ) -> dict[str, int] | None:
-    """Each case's place in the order a quick-path comparison first ran its cases (:func:`case_places`), which the
-    mixture bet reads its paired contrasts in; ``None`` where the campaign is not one, and every reading is as an
-    engine campaign's.
+    """Each case's place in the order a quick-path comparison observed its cases, which the mixture bet reads its
+    paired contrasts in; ``None`` where the campaign is not one, and every reading is as an engine campaign's.
+
+    The order is the runs' in the bundle's order (launch by launch), each run's cases that hold a result in its own
+    case list's order (:func:`case_places` over those lists): a case its run never reached holds no place there, so
+    where a launch stopped or was cancelled partway, the cases it observed are bet on where it observed them, and the
+    cases it never reached, which the quick path runs in a later launch (:mod:`threetears.evals.quick.continuation`),
+    are bet on after them.
 
     A quick-path comparison is decided from stored facts only, so every reader of a stored campaign reads it alike:
 
@@ -411,8 +416,9 @@ def bet_places(
       runs (``campaign_create``, filed as its caller) is not one;
     - every run is of a kind only the quick path launches
       (:data:`~threetears.evals.kernel.candidate_kind.QUICK_PATH_KINDS`), and it holds a result;
-    - no arm ran a case in two runs: each arm's runs hold disjoint case lists, chained in launch order, which is how
-      the quick path continues one comparison (its cases appended, never run again), so the bet is one process;
+    - no arm observed a case in two runs: each arm's runs hold results for disjoint cases, chained in launch order,
+      which is how the quick path continues one comparison (a case that holds a result is never run again, and only
+      the cases appended or never reached run), so the bet is one process;
     - no plan of looks is in force (``planned_looks``), which reads α/L instead.
 
     :param created_by: Who filed the campaign.
@@ -434,17 +440,52 @@ def bet_places(
     ):
         return None
     arms_of: dict[str, set[str]] = {}
+    observed: dict[str, set[str]] = {}
     for result in results:
         arms_of.setdefault(result.eval_run_id, set()).add(result.variant_key)
+        observed.setdefault(result.eval_run_id, set()).add(result.test_case_id)
     ran: dict[str, set[str]] = {}
     for run in runs:
-        cases = set(run.test_case_ids)
+        cases = observed.get(run.id, set())
         for arm in arms_of.get(run.id, set()):
             held = ran.setdefault(arm, set())
             if held & cases:
                 return None
             held |= cases
-    return case_places([run.test_case_ids for run in runs])
+    return case_places([[case for case in run.test_case_ids if case in observed.get(run.id, ())] for run in runs])
+
+
+def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView]) -> frozenset[str]:
+    """The member runs of a quick-path comparison that did not finish and that a later launch of the comparison took up:
+    every run that did not reach ``completed`` in any launch before the newest, where the bet reads the comparison
+    (:func:`bet_places`, with no plan of looks; empty otherwise).
+
+    The quick path continues a comparison by running every case its launches never reached, after the cases they
+    recorded, which it keeps (:mod:`threetears.evals.quick.continuation`). So a launch that stopped, whoever stopped it
+    and whenever, is a pause in the comparison once a later launch has run: no case of it is left unread except one it
+    reached on some arms or repeats only, which stays as it ran, and whether the comparison opens with a verdict is the
+    newest launch's ending alone. A launch is a launch group (``EvalRun.launch_group_id``); a run with none takes up
+    nothing and is taken up by nothing.
+
+    :param created_by: Who filed the campaign.
+    :ptype created_by: str
+    :param runs: The member runs, in the bundle's run order.
+    :ptype runs: Sequence[EvalRun]
+    :param results: Their results.
+    :ptype results: Sequence[ResultView]
+    :return: The runs taken up, by id.
+    :rtype: frozenset[str]
+    """
+    if not runs or bet_places(created_by, runs, results, planned_looks=None) is None:
+        return frozenset()
+    newest = runs[-1].launch_group_id
+    if newest is None:
+        return frozenset()
+    return frozenset(
+        run.id
+        for run in runs
+        if run.status != "completed" and run.launch_group_id is not None and run.launch_group_id != newest
+    )
 
 
 def _whole(
