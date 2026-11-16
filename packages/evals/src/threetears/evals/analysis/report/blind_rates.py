@@ -8,7 +8,8 @@ serves each rate under its own field, ``catch`` or ``false_fail``.
 
 from __future__ import annotations
 
-from typing import Final, NamedTuple
+from dataclasses import dataclass
+from typing import Final
 
 from threetears.evals.analysis.blind_read import pass_fail_counts, single_verdicts
 from threetears.evals.analysis.report.forms import PageForms
@@ -22,7 +23,8 @@ _VERDICT_WORDS: Final = {0: "fail", 1: "pass"}
 _ORDINAL: Final = "a 1-5 criterion has no fixed pass, so no catch rate: the table counts every pair"
 
 
-class StatedRate(NamedTuple):
+@dataclass(frozen=True)
+class StatedRate:
     """A rate read off a check's counts: of ``of`` answers, ``count``, with its exact 95% interval and its words."""
 
     count: int
@@ -31,7 +33,8 @@ class StatedRate(NamedTuple):
     said: str
 
 
-class BlindRates(NamedTuple):
+@dataclass(frozen=True)
+class BlindRates:
     """A stored check's catch and false-fail rates, and the plain statements beside them."""
 
     catch: StatedRate | None

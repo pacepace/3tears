@@ -40,7 +40,7 @@ from threetears.evals.analysis.blind_read import (
     exact_sign_test_p,
     pass_fail_counts,
 )
-from threetears.evals.analysis.report.blind_rates import blind_rates
+from threetears.evals.analysis.report.blind_rates import BlindRates, blind_rates
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.words import judged_heading
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
@@ -709,10 +709,15 @@ def _counts_clause(table: BlindVerdictTable, *, reader: str, judge: str) -> str:
             f"the same score on {agreed_pairs(table)} of {total}; by {reader}'s score, {judge}'s 1 to 5: {rows}"
         )
     else:
-        for rate, none in ((rates.catch, rates.no_catch), (rates.false_fail, rates.no_false_fail)):
-            said.append(f"{judge} {rate.said}" if rate is not None else str(none))
+        said += _rate_clauses(rates, judge)
     said.extend(rates.single)
     return "; ".join(said)
+
+
+def _rate_clauses(rates: BlindRates, judge: str) -> list[str]:
+    """A pass/fail check's two rates, each named for ``judge``, or in its place why that rate does not exist."""
+    pairs = ((rates.catch, rates.no_catch), (rates.false_fail, rates.no_false_fail))
+    return [f"{judge} {rate.said}" if rate is not None else str(none) for rate, none in pairs]
 
 
 def _agreement_clause(reading: BlindAgreementReading) -> str:
