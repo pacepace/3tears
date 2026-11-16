@@ -12,6 +12,7 @@ from typing import Protocol
 
 from threetears.evals.analysis.arms import arm_names, multi_rig_variants, short_digest
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.trials import trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import UnresolvableReference
 from threetears.evals.analysis.quantities import PERCENT, is_money
@@ -333,14 +334,20 @@ def _unit_on(text: str, ruler: MeasureRuler) -> str:
 
 
 def _case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
-    """Each case's number, as the cases table orders it: by label, from 1."""
-    labels = {trial.case_id: trial.case_label for trial in bundle.trials}
-    return {case: index for index, case in enumerate(sorted(labels, key=lambda case: (labels[case], case)), start=1)}
+    """Each case's number: its place in the order the cases were given, from 1, as the Trials table lists them
+    (:func:`~threetears.evals.analysis.bundle.trials.trial_order`). An ``Eval``'s case is stored as
+    ``<template>-<position>``, so the first case in its list, the first line of its cases file, is ``case 1`` here,
+    on its console and in its listing alike; never a place in the order of the cases' labels, which a reader cannot
+    count to."""
+    cases = dict.fromkeys(trial.case_id for trial in bundle.trials)
+    ordered = sorted(cases, key=lambda case: trial_order(case, 0, 0))
+    return {case: index for index, case in enumerate(ordered, start=1)}
 
 
 def case_namer(bundle: AnalysisContextBundle) -> Callable[[str], str]:
-    """Name a case as every table does: by the name its author gave it where its label reads as one
-    (``double-charge``), else ``case N`` — never its first input."""
+    """Name a case as every table, the verdict and the console do: by the name its author gave it where its label
+    reads as one (``double-charge``), else ``case N``, N its place in the order the cases were given, from 1
+    (:func:`_case_numbers`) — never its first input."""
     labels = {trial.case_id: trial.case_label for trial in bundle.trials}
     numbers = _case_numbers(bundle)
 

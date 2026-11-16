@@ -222,7 +222,7 @@ add `not-separated,untested`. `--reading` gates only the readings it names. A ca
 | Code | Name | Meaning |
 |---|---|---|
 | `0` | `EXIT_OK` | done |
-| `1` | `EXIT_RUN_DID_NOT_COMPLETE` | a launched run did not complete |
+| `1` | `EXIT_RUN_DID_NOT_COMPLETE` | a launched run did not complete; from an eval file, also an eval no arm of which had an answer graded (its runner raised on every case, or every trial was lost) |
 | `2` | `EXIT_REFUSED` | refused: a host that cannot be loaded, a template that is not there, a launch the engine refuses, a malformed command line |
 | `3` | `EXIT_FAILED` | failed on an error nothing anticipated — a host factory, launcher or host command raising — with its traceback on stderr |
 | `4` | `EXIT_GATE_FAILED` | `gate` read an outcome `--fail-on` names |

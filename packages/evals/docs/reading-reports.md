@@ -261,7 +261,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   instead of the models.`, the arm, the cause, the fix; `The test setup failed or the provider declined every
   call, so every trial was lost.` when every arm's run failed having measured nothing); one arm (`triage passed 70 of
   90 trials on 30 cases. Cases that failed a trial: double-charge, …`, each case by the name its author gave it, else
-  `case N`); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
+  `case N`, N its place in the list of cases from 1); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
   first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what the measure was on each arm, in its own verb
   (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed") and what the interval allows the candidate to be (`Over 30 paired cases, the
   interval allows v2 to be as much as 20 points worse or 18 better.`, its level the table's header), then what
@@ -358,7 +358,9 @@ document's appendix lists its Checks after Method, each name defined by its expr
   failed and lost ones first. The Flag column reads `regression` only where a candidate passed a smaller share of
   its usable trials on the case than the control (`✓ ✓ ✗` against `✓ ✓ ✓`); a tie or a gain never flags, and
   `no usable trial` marks a case an arm has none on. A case is named as its author named it (an `Eval`'s case `id`) where that reads as a
-  name — one token, not a generated id, not a bare number — and `case N` otherwise. Then the trials' census in one
+  name — one token, not a generated id, not a bare number — and `case N` otherwise, N its place in the order the cases
+  were given, from 1 (an `Eval`'s first case, the first line of its cases file, is `case 1`), as the console and
+  `results()` call it. Then the trials' census in one
   line (`180 trials ran. Of them 161 passed and 19 failed.`) and only what went wrong: one row per failed or lost
   trial, the failed first, each naming its stored result (`Stored result`, read with `result_get`) and carrying the
   trial's id, so a link to the trial lands on its row. The full record of each is opt-in, because the records are

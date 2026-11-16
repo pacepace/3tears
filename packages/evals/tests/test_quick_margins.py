@@ -352,7 +352,7 @@ class TestADeclaredRange:
         ).arms["current"]
         assert summary.status == "failed"
         assert any(
-            "the grader overrated returned 7.0 on case 0, outside the range 1 to 5 declared for it" in error
+            "the grader overrated returned 7.0 on case 1, outside the range 1 to 5 declared for it" in error
             for error in summary.errors
         )
 

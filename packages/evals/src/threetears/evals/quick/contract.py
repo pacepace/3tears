@@ -122,7 +122,8 @@ def load_cases(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str]) -> l
         loaded = list(cases)
     if not loaded:
         raise ValueError("an eval needs at least one case")
-    if bad := [index for index, case in enumerate(loaded) if not isinstance(case, Mapping)]:
+    # Each by its place in the list from 1, as every line names a case with no id.
+    if bad := [index + 1 for index, case in enumerate(loaded) if not isinstance(case, Mapping)]:
         raise ValueError(f"case(s) {', '.join(map(str, bad))} are not JSON objects; each case maps a field to a value")
     return [dict(case) for case in loaded]
 
@@ -832,7 +833,8 @@ def _refuse_a_case_a_field_grader_cannot_read(plan: GraderPlan, cases: Sequence[
                     else f"; it carries {', '.join(sorted(case))}: grade one of those, or give every case its {name!r} "
                     "(null where the answer should carry none)"
                 )
-                raise ValueError(f"case {case.get('id', index)}: {unreadable}{fix}") from None
+                # A case is called by its id, else by its place in the list from 1, as every line names it.
+                raise ValueError(f"case {case.get('id', index + 1)}: {unreadable}{fix}") from None
 
 
 def _archive_runs(host: EvalHost, summaries: Sequence[EvalSummary], scope_id: str) -> None:

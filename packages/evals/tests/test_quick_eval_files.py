@@ -1,7 +1,8 @@
 """``python -m threetears.evals FILE``: every eval a Python file defines is run, printed, reported, and exits with a code.
 
-The exit codes are the host command line's: 0 done, 1 a run did not complete, 2 refused, 3 an error nothing
-anticipated, 4 a comparison's gate failed. Anything that is not an eval file is the host command line, unchanged.
+The exit codes are the host command line's: 0 done, 1 a run did not complete (or, from an eval file, no arm had an
+answer graded: ``test_quick_one_reading_of_a_case.py``), 2 refused, 3 an error nothing anticipated, 4 a comparison's
+gate failed. Anything that is not an eval file is the host command line, unchanged.
 """
 
 from __future__ import annotations

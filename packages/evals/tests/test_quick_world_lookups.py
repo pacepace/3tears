@@ -132,7 +132,7 @@ async def test_an_ask_the_recording_does_not_hold_on_one_case_fails_the_run_nami
     assert (replay.status, replay.n_scored, replay.n_candidate_failed, replay.n_excluded) == ("failed", 2, 0, 1)
     # The cell's record and the run's failure, each naming the call that missed.
     cell, failed = replay.errors
-    assert cell.startswith("case 1: apparatus: ToolRecordingMiss: ")
+    assert cell.startswith("case 2: apparatus: ToolRecordingMiss: ")
     assert 'roll({"sides": 100}) asked 1 time(s)' in cell and 'roll({"sides": 100}) asked 1 time(s)' in failed
 
 

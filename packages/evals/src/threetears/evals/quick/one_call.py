@@ -1160,8 +1160,9 @@ def _reserved_keys_held(test_case: EvalTestCase) -> frozenset[str]:
 
 
 def _case_called(test_case: EvalTestCase) -> str:
-    """What a quick case is called in an error line: its own ``id``, else its position (:func:`_case_names`)."""
-    return test_case.name if test_case.name is not None else test_case.id.rsplit("-", 1)[-1]
+    """What a quick case is called in an error line: its own ``id``, else its place from 1 (:func:`_case_names`),
+    read off its stored id, ``<template>-<position>``."""
+    return test_case.name if test_case.name is not None else _place(int(test_case.id.rsplit("-", 1)[-1]))
 
 
 def _missed(expected: str) -> dict[str, bool | float | str]:
@@ -1370,27 +1371,34 @@ def _refuse_undeclared_measures(host: EvalHost, scorers: Sequence[Scorer]) -> No
         )
 
 
+def _place(index: int) -> str:
+    """A case called by its place in the list given, from 1: the line of a cases file it is on, and the number the
+    report page calls it by (:func:`~threetears.evals.analysis.report.aspect.common.case_namer`), never its index."""
+    return str(index + 1)
+
+
 def _case_names(cases: list[dict[str, Any]]) -> list[str]:
-    """What each case is called in its results and in every error line: its own ``id``, else its position.
+    """What each case is called in its results and in every error line: its own ``id``, else its place from 1
+    (:func:`_place`).
 
     :raises ValueError: An ``id`` that is not a non-blank string or an int, or two cases called alike.
     """
     names: list[str] = []
     for index, case in enumerate(cases):
         if "id" not in case:
-            names.append(str(index))
+            names.append(_place(index))
             continue
         given = case["id"]
         if isinstance(given, bool) or not isinstance(given, str | int) or not str(given).strip():
             raise ValueError(
-                f"case {index}'s id is {given!r}; a case's id names it in its results and errors, so it is a "
+                f"case {_place(index)}'s id is {given!r}; a case's id names it in its results and errors, so it is a "
                 "non-blank string or an int"
             )
         names.append(str(given))
     if repeated := sorted({name for name in names if names.count(name) > 1}):
         raise ValueError(
             f"more than one case is called {', '.join(map(repr, repeated))}; a case is called by its id, or by its "
-            "position in the list when it has none, and each name must be one case's"
+            "place in the list (from 1) when it has none, and each name must be one case's"
         )
     return names
 
@@ -1402,7 +1410,7 @@ def _plain_cases(cases: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     plain: list[dict[str, Any]] = []
     for index, case in enumerate(cases):
         if not isinstance(case, Mapping) or not all(isinstance(key, str) for key in case):
-            raise ValueError(f"case {index} is not a mapping with string keys: {case!r}")
+            raise ValueError(f"case {_place(index)} is not a mapping with string keys: {case!r}")
         plain.append(dict(case))
     return plain
 

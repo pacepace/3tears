@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: one name per case on every line; no rate over nothing graded; an eval that graded nothing exits 1
+
+**Fixed:** one result numbered the same cases two ways: the first line from 1 (`Cases that failed a trial: case 2,
+case 4.`) and the top misses under it from 0 (`case 1 (repeat 1)`, `case 3 (repeat 1)`), while the report page
+numbered them by the order of their labels. A case is now called by its own `id` where it has one, else by its place
+in the list given, from 1, the line of the cases file it is on: on the first line, the top misses, the `error:` lines,
+`results()` and `misses()` (`CaseResult.case` is `"1"` for the first case, was `"0"`), every refusal that names a case,
+and the page's Cases and Trials tables, which now number every host's unnamed cases in the order they were given, not
+by label. A case's stored id and every recording key are as before.
+
+**Fixed:** an arm whose runner raised on every case printed `Accuracy: 0%, 0 of 3 trials` beside another measure
+`not shown, carried by no result`. No answer was graded, so every measure of such an arm now reads one way,
+`Accuracy: none (no answer was graded)`, in the quiet and the full print, and no label's precision or recall is
+printed for it. What is stored is unchanged (a raise is still the classifier's miss, which an arm that answered some
+cases is counted against), so a result stored before reads the new way. The report page's readings tables still show
+such an arm's accuracy as `0% (0 of 3 cases)` under its lead `... so no answer was graded`.
+
+**Changed:** `python -m threetears.evals FILE` (and `Result.exit_code()`) exits 1, not 0, for an eval in which no arm
+had an answer graded: its runner raised on every case, or every trial was lost. Its first line says why. An eval with
+some answers graded, and a comparison in which one arm answered nothing, keep their codes.
+
+**For hosts:** a CI step that gates on the file door's exit code now fails on an eval that measured nothing, where it
+passed before. Code that reads `CaseResult.case` or an error line's case number for a case with no `id` reads it one
+higher.
+
 ### evals: `schema.check_after` is public again, and the host's recorded import list is re-taken
 
 **Fixed:** `threetears.evals.schema.check_after` is exported again, `host-contract`, kind `invoked`. The entry
