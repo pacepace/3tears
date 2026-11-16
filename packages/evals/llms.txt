@@ -76,9 +76,9 @@ A comparison's first line says whether the evidence tells the arms apart. Rung 3
 Below it: each measure's rate, the top misses with why each missed, and where the report page is. A
   refusal before anything runs goes to stderr with exit 2; an action that refuses answers with
   refused: and a remedy: saying what to do instead.
-  Exit codes: 0 Every run completed; 1 A run did not complete; 2 Refused before it ran: the file, or
-    what it declares; 3 An error nothing anticipated, its traceback printed; 4 A comparison's gate
-    failed, with a line saying why.
+  Exit codes: 0 Every run completed and graded an answer; 1 A run did not complete, or no arm had an
+    answer graded; 2 Refused before it ran: the file, or what it declares; 3 An error nothing
+    anticipated, its traceback printed; 4 A comparison's gate failed, with a line saying why.
 
 LATER TASKS, BY RUNG (https://github.com/pacepace/3tears/blob/<tag>/packages/evals/docs/ladder.md)
   Rung 2, a judge, checked against a person: Judge, Example

@@ -12,7 +12,8 @@ from typing import TypedDict
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, TrialRow
 from threetears.evals.analysis.report.aspect.common import (
     case_namer,
-    _case_numbers,
+    case_numbers,
+    case_numbering_note,
     _control_key,
     _printed_strata,
     _stratum_word,
@@ -63,7 +64,7 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
         return []
     control = _control_key(bundle)
     arms = [board.variant_key for board in bundle.scoreboard]
-    numbers = _case_numbers(bundle)
+    numbers = case_numbers(bundle)
     case_name = case_namer(bundle)
     by_case: dict[str, list[TrialRow]] = {}
     for trial in bundle.trials:
@@ -126,6 +127,8 @@ def _case_blocks(bundle: AnalysisContextBundle, arm: Callable[[str], str], forms
             total_rows=len(rows),
         )
     ]
+    if (numbering := case_numbering_note(bundle)) is not None:
+        blocks.append(DisclosureBlock(section="cases", source="runs", text=numbering))
     if bundle.trials_omitted:
         blocks.append(
             DisclosureBlock(

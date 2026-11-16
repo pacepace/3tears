@@ -77,15 +77,22 @@ from threetears.evals.schema.models import DECLARED_NAME_CHARS
 from threetears.evals.schema.aspect_label import aspect_label_for
 from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.bundle.trials import trial_order
+from threetears.evals.analysis.bundle.trials import pass_count, trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
 from threetears.evals.analysis.run_ending import stopped_short
 from threetears.evals.analysis.summary import CaseResult, DimensionSummary, EvalSummary
 from threetears.evals.analysis.quantities import PERCENT
-from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor, reads_as_rate, reads_as_share
+from threetears.evals.kernel.metrics import (
+    METRIC_DESCRIPTORS,
+    MetricDescriptor,
+    describe_measure,
+    goal_check_of,
+    reads_as_rate,
+    reads_as_share,
+)
 from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
 from threetears.evals.analysis.report.figures import report_rulers
 from threetears.evals.analysis.report.forms import PageForms
@@ -111,7 +118,7 @@ from threetears.evals.run.blind_review import REVIEWER_PURPOSE, plan_review
 from threetears.evals.quick.judged import BorrowedJudgeClient, Judge, JudgeExamples, judge_client
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
 from threetears.evals.run import get_result_trace, list_results
-from threetears.evals.analysis.style import measure_name_of
+from threetears.evals.analysis.style import measure_name, measure_name_of
 
 #: Who an eval's campaign and its control are recorded as created by, unless the caller says.
 CREATED_BY = "eval"
@@ -550,7 +557,7 @@ class Result:
         if full:
             return "\n\n".join(
                 [
-                    *(self._full_summary(forms, summary, totals, roles) for summary in self.arms.values()),
+                    *(self._full_summary(forms, arm, summary, totals, roles) for arm, summary in self.arms.items()),
                     campaign_report_markdown(self.page),
                 ]
             )
@@ -569,7 +576,8 @@ class Result:
             # an operator's reason for a cancel, a predicted label, a refused check's reason: each can run over lines
             lines += [f"  {one_line(line)}" for line in (summary.stopped_text,) if line is not None]
             lines += [f"  {one_line(line)}" for line in self._measure_texts(forms, summary, arm)]
-            if summary.confusion:
+            # A label's precision and recall over no answer graded are no rates either (:meth:`_answered_nothing`).
+            if summary.confusion and not self._answered_nothing(arm):
                 lines.append("  per label:")
                 lines += [f"    {one_line(_label_text(forms, statistics))}" for statistics in summary.labels]
             lines += [f"  {one_line(_dimension_text(forms, dimension))}" for dimension in summary.judged]
@@ -652,6 +660,14 @@ class Result:
         In a comparison a guardrail's line says what the comparison decided on it for ``arm``; alone, that a guardrail
         is decided only in one.
         """
+        if self._answered_nothing(arm):
+            # No answer was graded, so no measure has a figure: each reads none, for the one reason, never 0%; those
+            # some result carries first, the rest where the line counting them would stand, as the full print has them.
+            return [
+                f"{self._unscored_name(measure.name)}: {_NOTHING_GRADED}"
+                for measure in sorted(summary.measure_lines, key=lambda measure: measure.state == "not_carried")
+                if measure.name != CONFUSION_CELL_MEASURE
+            ]
         texts: list[str] = []
         lines = (
             summary.measure_lines if len(self.arms) == 1 else summary.compared_measure_lines(self._guardrail_said(arm))
@@ -678,13 +694,18 @@ class Result:
             texts.append(omitted)
         return texts
 
-    def _full_summary(self, forms: PageForms, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler) -> str:
+    def _full_summary(
+        self, forms: PageForms, arm: str, summary: EvalSummary, totals: MoneyRuler, roles: MoneyRuler
+    ) -> str:
         """An arm's whole summary as the full print writes it: the run summary's lines
         (:meth:`~threetears.evals.analysis.summary.EvalSummary.render`), each figure in the form the quiet print and
         the page state it (the review's P43, A4): a measure, its strata's included, under the page's name, a rate in
         percent with its count of trials; each label's precision and recall in percent with their intervals; a judged
         dimension as the quiet print says it; every amount of spend in the form of its set, a total as the page's test
-        cost. Every other line is the summary's own."""
+        cost. Every other line is the summary's own. Where the arm graded no answer (:meth:`_answered_nothing`), every
+        measure reads :data:`_NOTHING_GRADED`, as the quiet print says it, and no label's precision or recall is
+        printed."""
+        nothing = self._answered_nothing(arm)
         said: dict[str, str] = {}
         said.update(
             zip(summary.label_lines, (_label_text(forms, statistics) for statistics in summary.labels), strict=True)
@@ -701,10 +722,19 @@ class Result:
             said[summary.total_spend_text] = f"total spend: {total}, the results' cost"
         spent = {role.role: role.cost_usd for role in summary.spend if role.cost_usd is not None}
         lines = []
+        dropped = {"per label:", *summary.label_lines} if nothing else set()
+        uncarried = [measure.name for measure in summary.measure_lines if measure.state == "not_carried"]
         for line in summary.render().splitlines():
             body = line.lstrip()
             indent = line[: len(line) - len(body)]
-            if body in said:
+            if body in dropped:
+                continue
+            if nothing and body == summary.uncarried_text:
+                lines += [f"{indent}{self._unscored_name(name)}: {_NOTHING_GRADED}" for name in uncarried]
+                continue
+            if nothing and (measured := _FULL_MEASURE.fullmatch(body)) is not None:
+                body = f"{self._unscored_name(measured['name'])}: {_NOTHING_GRADED}"
+            elif body in said:
                 body = said[body]
             elif (measured := _FULL_MEASURE.fullmatch(body)) is not None:
                 body = self._full_measure(forms, measured)
@@ -726,6 +756,28 @@ class Result:
             forms, name, measured["said"], mean, int(measured["n"]), rate=rate, counted=counted, level=level
         )
         return f"{self._printed_name(name)}{said}"
+
+    def _answered_nothing(self, arm: str) -> bool:
+        """Whether ``arm``'s runner failed every graded trial without answering, so no grader read an answer of its:
+        the one decision the first line says it by (``... so no answer was graded``,
+        :attr:`~threetears.evals.analysis.bundle.trials.PassCount.none_answered`), which every measure line of the arm
+        then reads none by, never 0%."""
+        board = self._board(arm)
+        return board is not None and pass_count(self.report.bundle, board).none_answered
+
+    def _graded_nothing(self, arm: str) -> bool:
+        """Whether no answer of ``arm``'s was graded: its runner raised on every graded trial
+        (:meth:`_answered_nothing`), or no trial of its was graded at all (each lost to the test setup, or none ran)."""
+        board = self._board(arm)
+        if board is None:
+            return True
+        count = pass_count(self.report.bundle, board)
+        return count.graded == count.candidate_failed
+
+    def _board(self, arm: str) -> ArmScoreboard | None:
+        """``arm``'s row in the bundle's scoreboard, its census; None where it ran no trial the bundle holds."""
+        variant = self.arm_variants.get(arm)
+        return next((board for board in self.report.bundle.scoreboard if board.variant_key == variant), None)
 
     def _verdict_line(self) -> str:
         """The first line: the eval's name, then its aspect's verdict line as its page prints it
@@ -797,6 +849,14 @@ class Result:
         key = ACCURACY_MEASURE if measure == MATCH_MEASURE and self._classifier is not None else measure
         return measure_name_of(self.report.bundle, key)
 
+    def _unscored_name(self, measure: str) -> str:
+        """A measure of an arm that graded no answer, as :meth:`_printed_name` names it where it scored: one no trial
+        scored is in no catalog the bundle holds, so it is named as the host declares it (``Right score``), never by
+        its key."""
+        if measure == MATCH_MEASURE or measure in self.report.bundle.measure_catalog or goal_check_of(measure):
+            return self._printed_name(measure)
+        return measure_name(measure, describe_measure(measure, self.host.profile.measures).reader_name)
+
     def write(self, out_dir: Path | str) -> dict[str, Path]:
         """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle, and the
         judged answers to read blind.
@@ -820,11 +880,17 @@ class Result:
         return written
 
     def exit_code(self) -> int:
-        """What a command line exits with for this result: 0, 1 when a run did not complete, 4 when a gate failed.
+        """What a command line exits with for this result: 0, 1 when a run did not complete or no arm had an answer
+        graded, 4 when a gate failed.
 
-        A comparison is gated on its verdicts (:meth:`gate`, the default outcomes); one arm has nothing to gate.
+        A run in which no trial was graded on any arm (every runner raised on every case, or every trial was lost to
+        the test setup) measured nothing, so it has not done its job: 1, its first line the reason. An arm with some
+        answers graded, or a comparison with one arm that answered nothing, keeps its code. A comparison is gated on
+        its verdicts (:meth:`gate`, the default outcomes); one arm has nothing to gate.
         """
         if any(summary.status != "completed" for summary in self.arms.values()):
+            return 1
+        if all(self._graded_nothing(arm) for arm in self.arms):
             return 1
         if len(self.arms) > 1 and self.report.verdicts and self.gate().failed:
             return 4
@@ -1158,6 +1224,10 @@ def _refuse_an_unknown_arm(arms: Mapping[str, Any], arm: str) -> None:
     if arm not in arms:
         raise ValueError(f"{arm!r} names no arm; the arms are {', '.join(map(repr, arms))}")
 
+
+#: What a measure of an arm that graded no answer reads, in place of a figure (:meth:`Result._answered_nothing`): a rate
+#: over no answer is no rate, so every measure of it, carried or not, reads this one way, never 0%.
+_NOTHING_GRADED = "none (no answer was graded)"
 
 #: A measure's line as the summary writes it: its mean, its count, its range, anything left out, and what follows.
 _MEASURE_LINE = re.compile(

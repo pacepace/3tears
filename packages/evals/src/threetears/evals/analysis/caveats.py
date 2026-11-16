@@ -141,7 +141,8 @@ from threetears.evals.analysis.separation import (
     level_share,
     stat_spread,
 )
-from threetears.evals.analysis.significance import MeasuredRate, looks_false_separation, plan_kept
+from threetears.evals.analysis.checks import Looks
+from threetears.evals.analysis.significance import MeasuredRate, SeparationTest, looks_false_separation, plan_kept
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, SMALL_N_BAND_FLOOR
 from threetears.evals.kernel.declaration import CampaignCall
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
@@ -936,16 +937,62 @@ def _aspect_claims(report_input: ReportInput, aspect: Aspect) -> list[str]:
     return found
 
 
-def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
-    """A caveat per aspect whose test was looked at more often than its plan allows, whose plan's keeping is not shown,
-    or whose looks were not recorded.
+class UnkeptPlan(NamedTuple):
+    """Why the level an aspect's looks are read for is not shown to hold over them (:func:`unkept_plan`).
 
-    **Counted looks** (recorded, or recorded since durable 17.3 where earlier ones were not: ``Looks.taken``) raise it
-    where more were taken than planned (more than one with no plan in force; a plan declared after the first look is
-    none, ``Looks.late_plan``); where a plan is in force and the count is a lower bound, so looks past it cannot be
-    ruled out; and where looks within the plan are not shown to hold α for a test the aspect's readings use
-    (:func:`~threetears.evals.analysis.significance.plan_kept`: batches fixed in advance by the union bound, extends
-    sized by the planner only where the reference rate's upper bound is at most α).
+    :ivar planned: The looks the plan in force allows; None with none.
+    :ivar taken: The looks taken; None where they were not recorded.
+    :ivar why: More taken than planned (``past``), a count that may be short (``uncounted``), or within the plan a test
+        :func:`~threetears.evals.analysis.significance.plan_kept` does not show (``sized``).
+    :ivar tests: The tests it is not shown on: for ``sized`` those ``plan_kept`` does not show, else every test given.
+    """
+
+    planned: int | None
+    taken: int | None
+    why: Literal["past", "uncounted", "sized"]
+    tests: tuple[SeparationTest, ...]
+
+
+def unkept_plan(
+    looks: Looks, tests: Iterable[SeparationTest] | None = None, *, planned: int | None = None
+) -> UnkeptPlan | None:
+    """Whether an aspect's looks are shown to hold the level they are read for, the one decision of it: the caveat on
+    looks (:func:`_looks`) is raised where not, and a page prints a plan's level only where it is. Shown where the looks
+    taken are at most the plan (one, with none), exactly counted, and kept on each test (``plan_kept``); looks not
+    recorded where the stored evidence changed at most once. It decides what is said, never how a reading was read.
+
+    :param looks: The aspect's looks.
+    :ptype looks: Looks
+    :param tests: The tests the readings in question use; None for ``Looks.tests``.
+    :ptype tests: Iterable[SeparationTest] | None
+    :param planned: The plan the readings were read under where not the aspect's own
+        (``CampaignReadings.planned_looks``); None for the aspect's.
+    :ptype planned: int | None
+    :return: Why the level is not shown; None where it is.
+    :rtype: UnkeptPlan | None
+    """
+    plan = planned if planned is not None else looks.planned
+    used = tuple(looks.tests if tests is None else sorted(set(tests)))
+    taken = looks.taken
+    if taken is None:
+        # Looks not recorded: a single change of the stored evidence is one look; more could be any number.
+        return UnkeptPlan(plan, taken, "uncounted", used) if (looks.evidence_changes or 0) > 1 else None
+    if taken > (plan or 1):
+        return UnkeptPlan(plan, taken, "past", used)
+    if plan is None:
+        return None
+    if looks.lower_bound:
+        return UnkeptPlan(plan, taken, "uncounted", used)
+    unshown = tuple(test for test in used if not plan_kept(test, plan, taken))
+    return UnkeptPlan(plan, taken, "sized", unshown) if unshown else None
+
+
+def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
+    """A caveat per aspect whose looks are not shown to hold the level they are read for (:func:`unkept_plan`): looked
+    at more often than its plan allows, its plan's keeping not shown, or its looks not recorded.
+
+    **Counted looks** (``Looks.taken``, recorded, or recorded since durable 17.3) raise it as :func:`unkept_plan`
+    decides; a plan declared after the first look is none (``Looks.late_plan``).
 
     It carries, per test the aspect's readings are read by (``Looks.tests``), a reference false-separation rate with
     the setting it was simulated in (:func:`~threetears.evals.analysis.significance.looks_false_separation`), for
@@ -968,19 +1015,13 @@ def _looks(report_input: ReportInput) -> Iterator[CaveatEntry]:
     asked = asked_aspects(report_input)
     for aspect in report_input.aspects:
         looks = aspect.looks
-        if looks is None:
+        if looks is None or unkept_plan(looks) is None:
             continue
         claims = _aspect_claims(report_input, aspect)
         readings = claims or [f"{aspect.id}/{_PASSED}"]
-        if looks.taken is None:
-            if (looks.evidence_changes or 0) > 1:
-                yield _entry(report_input, f"looks:{aspect.id}", "looks", "method", readings=readings, looks=looks)
-            continue
         planned, taken = looks.planned, looks.taken
-        past = taken > (planned or 1)
-        unshown = looks.lower_bound and planned is not None
-        unkept = planned is not None and not past and any(not plan_kept(test, planned, taken) for test in looks.tests)
-        if not (past or unshown or unkept):
+        if taken is None:
+            yield _entry(report_input, f"looks:{aspect.id}", "looks", "method", readings=readings, looks=looks)
             continue
         reach: CaveatReach
         if not claims or (not looks.plannable and looks.recorded):

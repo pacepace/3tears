@@ -128,6 +128,7 @@ from threetears.evals.analysis.quantities import MONEY, PERCENT, POINTS
 from threetears.evals.analysis.report.keys.levers import arm_settings
 from threetears.evals.analysis.report.keys.resolve import figure_unit
 from threetears.evals.analysis.report.keys.separation import correction_words, pairing_contrast
+from threetears.evals.analysis.report.keys.vocabulary import looks_of
 from threetears.evals.analysis.report_input import Contrast, PreferenceRow, Reading, ReportInput, Stat, Stratum, Task
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.analysis.report.rows import lever_arms, query_aspect, query_rows
@@ -1273,7 +1274,9 @@ def _family_level(context: ChartContext) -> str:
         )
         aspects = {contrast.aspect for contrast in paired if contrast is not None}
     families = [family for family in context.report_input.contrast_families if family.aspect in aspects]
-    return context.forms.confidence(context.level, families[0] if len(families) == 1 else None).text
+    family = families[0] if len(families) == 1 else None
+    looks = looks_of(context.report_input, family.aspect) if family is not None else None
+    return context.forms.confidence(context.level, family, looks).text
 
 
 #: The fewest changes a change chart draws (#1124): one change belongs in a sentence or a table, which state it

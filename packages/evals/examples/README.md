@@ -334,8 +334,8 @@ process, so helpers in two rung directories need distinct names.
 
 | Code | Meaning |
 |---|---|
-| 0 | Every run completed |
-| 1 | A run did not complete |
+| 0 | Every run completed and graded an answer |
+| 1 | A run did not complete, or no arm had an answer graded |
 | 2 | Refused before it ran: the file, or what it declares |
 | 3 | An error nothing anticipated, its traceback printed |
 | 4 | A comparison's gate failed, with a line saying why |

@@ -460,8 +460,9 @@ class CaseResult(BaseModel):
     What :meth:`EvalSummary.results` and :meth:`EvalSummary.misses` return, one per result, so a run's answers
     can be read after it ends without the store it ran in.
 
-    :ivar case: The case's name: its own ``id`` when the case carries one, else its position in the list given
-        (``"0"`` is the first). The summary's :attr:`EvalSummary.errors` name cases the same way.
+    :ivar case: The case's name: its own ``id`` when the case carries one, else its place in the list given, from 1
+        (``"1"`` is the first, the first line of a cases file), the number the report page calls it by. The summary's
+        :attr:`EvalSummary.errors` name cases the same way.
     :ivar case_id: The stored test case's id, which the page's Trials table orders its trials by.
     :ivar input: The case, as given.
     :ivar expected: A classifier's expected label for the case; ``None`` when the run classified nothing.
@@ -851,7 +852,7 @@ class EvalSummary(BaseModel):
     :ivar errors: Each failed or excluded result's error, and each result the cost cap left unjudged, prefixed by its
         case, then the run's own. A case is named
         as the caller that summarised the run named it (an eval: its own
-        ``id``, else its position), else by its stored test case id.
+        ``id``, else its place from 1), else by its stored test case id.
     :ivar arm_schedule: How the run's arm shared time and provider capacity with the other arms of its launch, as the
         run records it (``EvalRun.arm_schedule``): ``interleaved``, ``sequential`` or ``concurrent``, the last
         co-loading its providers with every arm at once; ``None`` for a run that records none.
