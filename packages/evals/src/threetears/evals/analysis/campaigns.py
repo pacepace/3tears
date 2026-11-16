@@ -1637,18 +1637,28 @@ def _departure(storage: CampaignStore, run_id: str, scope_id: str, *, at: str) -
     """
     run = storage.load_eval_run(run_id, scope_id)
     scored: list[tuple[datetime, str]] = []
+    unordered: list[str] = []
     for key in storage.query_eval_result_keys_by_run(run_id, scope_id) if run is not None else ():
         try:
             scored.append((aware_instant(key.scored_at, "a result's scored_at"), key.scored_at))
         except ValueError:
-            # A time that cannot be ordered dates no look; the departure then records none, and the count reads as
-            # the lower bound it is.
-            continue
+            unordered.append(key.scored_at)
+    if unordered:
+        # Which result came first is then not known, so the departure records no first result and the aspect's
+        # looks read as the lower bound they are; the operator is told which stored times could not be ordered.
+        log.warning(
+            "eval.membership_departure run=%s scope=%s left with %d result time(s) that cannot be ordered (%s): "
+            "its first result is not recorded, so the aspect's looks are a lower bound",
+            run_id,
+            scope_id,
+            len(unordered),
+            ", ".join(repr(stamp) for stamp in unordered[:3]),
+        )
     return MembershipChange(
         run_id=run_id,
         change="left",
         at=at,
-        first_result_at=min(scored)[1] if scored else None,
+        first_result_at=min(scored)[1] if scored and not unordered else None,
         launch=run.launch_group_id if run is not None else None,
     )
 

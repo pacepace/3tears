@@ -177,6 +177,9 @@ the document, so extending one is a major. Each, and why:
 - ``VariationAxis.generator``, ``ConversationSpec.turn_scheduler`` — instructions an older build must carry out.
 - ``BudgetStop.currency`` — what a per-run ceiling counts; a stop in a currency an older build cannot name would be
   stated in a unit it cannot read, and its dollars and its calls are not one quantity.
+- ``MembershipChange.change`` — the engine records it, never a host, and the looks at a contrast are counted by it
+  (a join after the results is a look, a departure keeps the look the run made); a change an older build cannot name
+  would be counted as neither, and a look erased.
 - ``RaterKind`` — calibration reads a person as ground truth.
 - ``Maker`` — whether a person or a model made a call; a reader states it, and a maker an older build cannot name
   would be stated as neither.

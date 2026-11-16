@@ -1227,7 +1227,9 @@ def aspect_looks(
     :ptype plannable: bool
     :param unread: Whether a member run is archived or did not resolve, so its evidence is not read here.
     :ptype unread: bool
-    :return: The looks; None where no two arms hold a result, so there is no contrast.
+    :return: The looks; None where no two arms hold a result, so there is no contrast, or where they say nothing past
+        one look with no plan (:func:`_one_look_and_nothing_else`), so a bundle that could only have been read once
+        is written as it was before looks were counted.
     :rtype: Looks | None
     """
     by_id = {run.id: run for run in runs}
@@ -1341,7 +1343,7 @@ def aspect_looks(
     in_force = planned is not None and declared is not None and declared <= first_compared
     # Not recorded: the first comparison and the looks recorded since, a lower count, where any were.
     recorded_since = max(since, default=1)
-    return Looks(
+    looks = Looks(
         planned=planned if in_force else None,
         taken=taken if recorded else (recorded_since if recorded_since > 1 else None),
         plannable=plannable,
@@ -1352,6 +1354,16 @@ def aspect_looks(
         largest_step=max((step for _, step in sizes), default=None),
         late_plan=planned if planned is not None and not in_force else None,
     )
+    return None if _one_look_and_nothing_else(looks) else looks
+
+
+def _one_look_and_nothing_else(looks: Looks) -> bool:
+    """Whether the looks say nothing past one look: no plan stated (in time or late), no count known only as a lower
+    bound, and one look counted (or, unrecorded, one change of the evidence). Such looks qualify no reading and raise
+    nothing, so a bundle leaves them out and is written as it was before looks were counted."""
+    if looks.planned is not None or looks.late_plan is not None or looks.lower_bound:
+        return False
+    return looks.taken == 1 if looks.recorded else looks.taken is None and (looks.evidence_changes or 0) <= 1
 
 
 def aspect_tests(

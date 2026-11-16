@@ -340,9 +340,14 @@ def _counted(bundle: AnalysisContextBundle) -> Looks | None:
     return None if looks is None else looks.model_copy(update={"tests": [], "launched": None, "largest_step": None})
 
 
-def test_a_campaign_launched_once_reads_one_look_and_none_planned() -> None:
+def test_a_campaign_launched_once_with_no_plan_states_no_looks_and_is_written_as_before() -> None:
+    """One look and no plan qualify no reading, so the bundle leaves its looks out, as every bundle did before looks
+    were counted; with a plan stated, the one look is carried beside it."""
     bundle, _, _ = _bundle([("g1", 0, range(20))])
-    assert _counted(bundle) == Looks(planned=None, taken=1)
+    assert bundle.reading_scope.looks is None
+    assert "looks" not in bundle.to_dict()["reading_scope"]
+    planned, _, _ = _bundle([("g1", 0, range(20))], planned=_PLAN)
+    assert _counted(planned) == Looks(planned=_PLAN, taken=1)
 
 
 def test_a_campaign_that_added_cases_and_read_again_reads_two_looks() -> None:
@@ -363,7 +368,7 @@ def test_one_re_judge_pass_over_both_arms_is_one_look_and_a_lower_bound() -> Non
 
 def test_judge_repeats_change_no_value_the_test_reads_and_are_no_look() -> None:
     bundle, _, _ = _bundle([("g1", 0, range(20))], repeats=2)
-    assert _counted(bundle) == Looks(planned=None, taken=1)
+    assert bundle.reading_scope.looks is None, "one look, as with no repeat"
 
 
 def test_an_old_run_joined_after_the_first_look_is_a_look_when_it_joins() -> None:
@@ -439,7 +444,7 @@ def test_unrecorded_looks_carry_no_count_and_recorded_looks_no_evidence_changes(
 
 def test_the_tests_an_aspect_s_readings_use_ride_with_its_looks() -> None:
     """Accuracy on the t test, the pass rate on the bounded one; a cost per reply on the t test."""
-    rated, _, _ = _bundle([("g1", 0, range(20))], pass_rates=(0.8, 0.8))
+    rated, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], pass_rates=(0.8, 0.8))
     assert rated.reading_scope.looks is not None and rated.reading_scope.looks.tests == ["bounded", "t"]
     families = rated.multiple_comparisons.families
     bases = {comparison.interval_basis for family in families for comparison in family.comparisons}
@@ -464,7 +469,7 @@ def test_a_campaign_created_before_looks_were_counted_says_its_looks_could_not_h
     bundle, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))], stamped=False)
     assert _counted(bundle) == Looks(planned=None, taken=2, plannable=False)
     assert _counted(bundle).model_dump() == {"planned": None, "taken": 2, "plannable": False}  # type: ignore[union-attr]
-    stamped, _, _ = _bundle([("g1", 0, range(20))])
+    stamped, _, _ = _bundle([("g1", 0, range(20)), ("g2", 120, range(20, 40))])
     assert "plannable" not in stamped.to_dict()["reading_scope"]["looks"], "a stamped campaign's looks say no more"
 
 
@@ -900,7 +905,7 @@ def test_a_campaign_whose_looks_were_not_recorded_says_so_with_no_rate_and_no_co
 
 def test_a_campaign_whose_looks_were_not_recorded_and_whose_evidence_changed_once_raises_nothing() -> None:
     built = _built(*_bundle([("g1", 0, range(20))], recorded=False, **_TWO_LOOKS_AND_A_GAIN)[:2])  # type: ignore[arg-type]
-    assert built.aspects[0].looks is not None and built.aspects[0].looks.evidence_changes == 1
+    assert built.aspects[0].looks is None, "one change of the evidence and no plan: nothing to state"
     assert not _looks_caveats(built)
 
 
