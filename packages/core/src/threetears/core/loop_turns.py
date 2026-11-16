@@ -108,42 +108,55 @@ def stepped(items: Iterable[_Item], turns: LoopTurns, every: int = STEP_ITEMS) -
         yield item
 
 
-def emptied(lists: Iterable[list[Any]], loop: asyncio.AbstractEventLoop | None = None) -> None:
-    """empty each of ``lists`` in place, a slice of :data:`STEP_ITEMS` at a time with the thread's turns between: what
-    they alone hold is freed here, on the thread, and never in one stretch. Blocking: run it on a thread.
+def emptied(
+    collections: Iterable[list[Any] | set[Any] | dict[Any, Any]], loop: asyncio.AbstractEventLoop | None = None
+) -> None:
+    """empty each of ``collections`` (lists, sets or dicts) in place, with the thread's turns between: what they alone
+    hold is freed here, on the thread, and never in one stretch. A list loses a slice of :data:`STEP_ITEMS` at a time;
+    a set or dict, which has no slices, an item at a time (``pop`` / ``popitem``), its turn looked at every
+    :data:`STEP_ITEMS` items (:func:`stepped`). Blocking: run it on a thread.
 
     A write's last reference to its rows' values dropped where it happened to: a bulk upsert's 33,786 rows' parameters
-    (179 a row), freed as the call returned, held the loop 10-15 ms (the WD2 bench, 2026-11-16).
+    (179 a row), freed as the call returned, held the loop 10-15 ms (the WD2 bench, 2026-11-16). A set or dict is no
+    different: a state's keys (a set of 100k tuples) dropped by their last reference are one deallocation in C holding
+    the interpreter lock throughout, the loop waiting on it whichever thread drops them; emptied a slice at a time on a
+    thread that never handed the loop a turn (2,000 items a step), the loop still waited out the switch interval
+    between slices (the reports pod's ``release_in_slices``, retired 2026-11-16).
 
-    :param lists: the lists
-    :ptype lists: Iterable[list[Any]]
+    :param collections: the lists, sets and dicts
+    :ptype collections: Iterable[list[Any] | set[Any] | dict[Any, Any]]
     :param loop: the caller's event loop, handed the turns; None off any loop
     :ptype loop: asyncio.AbstractEventLoop | None
     :return: nothing
     :rtype: None
     """
     turns = LoopTurns(loop)
-    for each in lists:
-        while each:
-            del each[-STEP_ITEMS:]
-            turns.take()
+    for each in collections:
+        if isinstance(each, list):
+            while each:
+                del each[-STEP_ITEMS:]
+                turns.take()
+        else:
+            pop: Callable[[], object] = each.popitem if isinstance(each, dict) else each.pop
+            for _ in stepped(range(len(each)), turns):
+                pop()
 
 
-async def emptied_off_loop(lists: Iterable[list[Any]]) -> None:
-    """:func:`emptied` on a worker thread taking turns with the running loop: for a reader done with rows it alone
-    holds, whose last reference dropped on the loop would free them there in one stretch.
+async def emptied_off_loop(collections: Iterable[list[Any] | set[Any] | dict[Any, Any]]) -> None:
+    """:func:`emptied` on a worker thread taking turns with the running loop: for a reader done with rows (or keys) it
+    alone holds, whose last reference dropped on the loop would free them there in one stretch.
 
     A list of rows read from L3 is freed slowly for its size: 33,786 rows of 49 columns (``read_l3_rows`` of one
     state's candidates) held the loop 17-22 ms as their reader dropped them, and a refill's page of about 10,000 rows
     6.5 ms (a 10-core Apple host, 2026-11-16). A thread's round trip is about 0.7 ms, so a list of fewer than about a
     thousand such rows is cheaper dropped where it is.
 
-    :param lists: the lists, each emptied in place; what else holds their items keeps them
-    :ptype lists: Iterable[list[Any]]
+    :param collections: the lists, sets and dicts, each emptied in place; what else holds their items keeps them
+    :ptype collections: Iterable[list[Any] | set[Any] | dict[Any, Any]]
     :return: nothing
     :rtype: None
     """
-    await asyncio.to_thread(emptied, list(lists), asyncio.get_running_loop())
+    await asyncio.to_thread(emptied, list(collections), asyncio.get_running_loop())
 
 
 async def called_in_turns(items: Sequence[_Item], call: Callable[[_Item], None], every: int = STEP_ITEMS) -> None:
