@@ -380,6 +380,13 @@ async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime
     :func:`~threetears.core.ddl.change_notes.change_notes_ddl`), which holds those notes alone, so the many keyed notes
     that took the read past its cap are never visited.
 
+    WHY the time is compared here, not in the statement (RC2, 2026-11-16, ``test_change_note_ring_plans``): with
+    ``noted_at >= $2`` beside the table, YugabyteDB planned the read through the ``(table_name, noted_at)`` index of
+    every note, filtering ``key_text IS NULL``, and scanned all 101 notes of a table holding one whole note; Postgres
+    took the partial index either way. Pinned by the table alone, the read is the scrub's whole-table look, which both
+    plan through the partial index. A slot holds the few whole notes of its one switch period, so the ones before the
+    reach cost a row each.
+
     :param pool: the L3 pool
     :ptype pool: Any
     :param schema: the schema holding the ring
@@ -401,18 +408,17 @@ async def _noted_whole_since(pool: Any, schema: str, table: str, reach: datetime
     legs = [
         scan(
             f"{schema}.{note_table(slot)}",
-            ("tenant", Selected("t.columns::text", "reach")),
-            where=[Fragment("t.key_text IS NULL AND t.table_name = $1 AND t.noted_at >= $2", (table, reach))],
+            ("tenant", "noted_at", Selected("t.columns::text", "reach")),
+            where=[Fragment("t.key_text IS NULL AND t.table_name = $1", (table,))],
         )
         for slot in slots
     ]
     # the current slot alone once the previous one can hold no note from the reach on: a union names two or more
-    found = await read_step(
-        pool, distinct(legs[0] if len(legs) == 1 else union(*legs, keep_all=True), ("tenant", "reach"))
-    )
+    found = await read_step(pool, legs[0] if len(legs) == 1 else union(*legs, keep_all=True))
     reaches: dict[str | None, list[Any]] = {}
     for note in found:
-        reaches.setdefault(None if note["tenant"] is None else str(note["tenant"]), []).append(note["reach"])
+        if note["noted_at"] >= reach:
+            reaches.setdefault(None if note["tenant"] is None else str(note["tenant"]), []).append(note["reach"])
     return tuple(whole_noted_change(table, tenant, reached) for tenant, reached in reaches.items())
 
 
