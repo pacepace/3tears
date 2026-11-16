@@ -545,7 +545,7 @@ class L1Ledger:
         return {"keep": kept, "evictable": evictable, "overhead": overhead}
 
     def status(self) -> dict[str, int]:
-        """the tallies, for autosize (:func:`threetears.core.shm_autosize.pod_measure`): never the file system.
+        """the tallies, for autosize (:class:`threetears.core.shm_autosize.ShmAutosize`): never the file system.
 
         :return: ``kept_bytes`` (``KEEP``, last measured), ``max_bytes`` (the budget) and ``evictable_bytes``
         :rtype: dict[str, int]

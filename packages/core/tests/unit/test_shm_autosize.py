@@ -25,7 +25,6 @@ from threetears.core.shm_autosize import (
     Sample,
     ShmAutosize,
     SizeRequest,
-    pod_measure,
 )
 
 GIB = 1 << 30
@@ -214,22 +213,31 @@ class TestTheMonitor:
 
 
 class TestMeasuringThePod:
-    def test_it_reads_the_volume_and_a_cgroup_v2_memory(self, tmp_path: Path) -> None:
+    """the pod as ShmAutosize measures it by default (no fake): its volume and its cgroup's memory, on the gauges."""
+
+    def test_it_reads_the_volume_and_a_cgroup_v2_memory(self, tmp_path: Path, product: str) -> None:
         cgroup = tmp_path / "cgroup"
         cgroup.mkdir()
         (cgroup / "memory.current").write_text("3221225472\n")
         (cgroup / "memory.max").write_text("8589934592\n")
-        sample = pod_measure(tmp_path, cgroup_root=cgroup)
-        assert sample.volume_size_bytes > 0 and 0 <= sample.volume_used_bytes <= sample.volume_size_bytes
-        assert (sample.memory_used_bytes, sample.memory_limit_bytes) == (3 * GIB, 8 * GIB)
+        ShmAutosize(_on(product), _Actuator(), volume=tmp_path, cgroup_root=cgroup).sample_once()
+        size = _gauge("threetears_cache_volume_size_bytes", product)
+        used = _gauge("threetears_cache_volume_used_bytes", product)
+        assert size is not None and used is not None and size > 0 and 0 <= used <= size
+        assert _gauge("threetears_cache_rss_bytes", product) == 3 * GIB
+        assert _gauge("threetears_cache_memory_limit_bytes", product) == 8 * GIB
 
-    def test_no_memory_limit_reads_as_none(self, tmp_path: Path) -> None:
+    def test_no_memory_limit_reads_as_none(self, tmp_path: Path, product: str) -> None:
         cgroup = tmp_path / "cgroup"
         cgroup.mkdir()
         (cgroup / "memory.current").write_text("1024\n")
         (cgroup / "memory.max").write_text("max\n")
-        assert pod_measure(tmp_path, cgroup_root=cgroup).memory_limit_bytes is None
+        ShmAutosize(_on(product), _Actuator(), volume=tmp_path, cgroup_root=cgroup).sample_once()
+        assert _gauge("threetears_cache_rss_bytes", product) == 1024
+        assert _gauge("threetears_cache_memory_limit_bytes", product) == 0
 
-    def test_with_no_cgroup_it_reads_the_process(self, tmp_path: Path) -> None:
-        sample = pod_measure(tmp_path, cgroup_root=tmp_path / "none")
-        assert sample.memory_used_bytes > 0 and sample.memory_limit_bytes is None
+    def test_with_no_cgroup_it_reads_the_process(self, tmp_path: Path, product: str) -> None:
+        ShmAutosize(_on(product), _Actuator(), volume=tmp_path, cgroup_root=tmp_path / "none").sample_once()
+        rss = _gauge("threetears_cache_rss_bytes", product)
+        assert rss is not None and rss > 0
+        assert _gauge("threetears_cache_memory_limit_bytes", product) == 0

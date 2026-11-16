@@ -868,7 +868,7 @@ class SQLiteBackend:
             return 0
 
     def status(self) -> dict[str, int]:
-        """the process's L1 tallies for autosize (:func:`threetears.core.shm_autosize.pod_measure`).
+        """the process's L1 tallies for autosize (:class:`threetears.core.shm_autosize.ShmAutosize`).
 
         :return: ``kept_bytes`` and ``max_bytes`` (and ``evictable_bytes``), from the ledger's tallies
         :rtype: dict[str, int]

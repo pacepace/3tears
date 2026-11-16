@@ -22,7 +22,7 @@ for the volume doubled per step until the peak sits under the threshold, and the
 growth (the volume's pages are the container's memory). One need is one record (``request_id``, the product and the
 size), handed once however often it is measured; the actuator acts on an id at most once.
 
-**The measure** (:func:`pod_measure`) is a ``statvfs`` of the volume and two small cgroup file reads, on a thread of its own
+**The measure** (:func:`_pod_measure`) is a ``statvfs`` of the volume and two small cgroup file reads, on a thread of its own
 every ``interval_seconds`` (10 s), never the event loop: about 30 us a sample on a laptop (2026-11-15), nothing at 10 s.
 
 **Metrics** (the cache family, ``tier="shared"``, ``name`` the product): ``threetears_cache_volume_used_bytes``,
@@ -54,7 +54,6 @@ __all__ = [
     "Sample",
     "ShmAutosize",
     "SizeRequest",
-    "pod_measure",
 ]
 
 log = get_logger(__name__)
@@ -222,7 +221,7 @@ def _process_resident() -> int:
     return peak if os.uname().sysname == "Darwin" else peak * 1024
 
 
-def pod_measure(volume: Path | str, *, cgroup_root: Path = _CGROUP_ROOT, stores: Sequence[object] = ()) -> Sample:
+def _pod_measure(volume: Path | str, *, cgroup_root: Path = _CGROUP_ROOT, stores: Sequence[object] = ()) -> Sample:
     """measure the pod: the volume's use and size (``statvfs``), the container's memory and limit (cgroup v2
     ``memory.current``/``memory.max``, else v1 ``memory/memory.usage_in_bytes``/``memory.limit_in_bytes``, else this
     process's resident memory and no limit), and each store's ``KEEP`` bytes against its budget (its ``status()``,
@@ -322,8 +321,10 @@ class ShmAutosize:
     :ptype volume: Path | str
     :param stores: the shared Arrow stores on it, whose ``KEEP`` bytes against their budgets also ask for room
     :ptype stores: Sequence[object]
-    :param measure: what measures the pod (a test's fake); None for :func:`pod_measure` over ``volume`` and ``stores``
+    :param measure: what measures the pod (a test's fake); None for :func:`_pod_measure` over ``volume`` and ``stores``
     :ptype measure: Callable[[], Sample] | None
+    :param cgroup_root: where the cgroup filesystem is mounted, for :func:`_pod_measure`
+    :ptype cgroup_root: Path | str
     :raises ValueError: when enabled with no actuator or no product, or with a threshold outside (0, 1) or a limit
         that is not positive
     """
@@ -336,6 +337,7 @@ class ShmAutosize:
         volume: Path | str = "/dev/shm",
         stores: Sequence[object] = (),
         measure: Callable[[], Sample] | None = None,
+        cgroup_root: Path | str = _CGROUP_ROOT,
     ) -> None:
         if settings.enabled:
             if actuator is None:
@@ -350,7 +352,7 @@ class ShmAutosize:
             raise ValueError("an autosize limit must be positive")
         self._settings = settings
         self._actuator = actuator
-        self._measure: Callable[[], Sample] = measure or (lambda: _measured(volume, stores))
+        self._measure: Callable[[], Sample] = measure or (lambda: _measured(volume, stores, Path(cgroup_root)))
         self._peak = 0
         #: the needs handed, by id: never twice
         self._handed: set[str] = set()
@@ -438,14 +440,16 @@ class ShmAutosize:
             self._stop.wait(self._settings.interval_seconds)
 
 
-def _measured(volume: Path | str, stores: Sequence[object]) -> Sample:
-    """:func:`pod_measure` over the volume and stores, with the default cgroup root.
+def _measured(volume: Path | str, stores: Sequence[object], cgroup_root: Path) -> Sample:
+    """:func:`_pod_measure` over the volume, the stores and the cgroup root.
 
     :param volume: the volume
     :ptype volume: Path | str
     :param stores: the stores
     :ptype stores: Sequence[object]
+    :param cgroup_root: where the cgroup filesystem is mounted
+    :ptype cgroup_root: Path
     :return: the sample
     :rtype: Sample
     """
-    return pod_measure(volume, stores=stores)
+    return _pod_measure(volume, cgroup_root=cgroup_root, stores=stores)
