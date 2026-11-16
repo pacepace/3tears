@@ -63,7 +63,6 @@ from threetears.evals.schema.blind_read import (
     BlindVerdict,
     BlindVerdictTable,
 )
-from threetears.evals.schema.reading_states import StateOf
 from threetears.evals.schema.models import (
     builtin_judge_config_id,
     CaseSet,
@@ -334,7 +333,7 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
     ),
     # A pair read closed early: one person's answer, a declared reviewer's review, the judge's scores against the person
     # and against the reviewer as one served model (counts only), the reviewer against the person, and a preference
-    # too few to read, stored as its shares and its stakes' planned pair items with no p or verdict (#1236).
+    # too few to read, stored as its shares and its stakes' planned pair items with no p, verdict or state (#1236).
     "BlindRead": lambda: BlindRead(
         id="blind-0b5b9abb32a0",
         scope_id="uni-1",
@@ -451,7 +450,6 @@ _SAMPLES: dict[str, Callable[[], EvalBaseModel]] = {
                     test="anytime",
                     shares=[1.0],
                     stake_items=1,
-                    state=StateOf(state="not_available", reason="too_few"),
                     slot_a_share=1.0,
                     slot_a=1,
                     slot_choices=1,

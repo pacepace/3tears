@@ -10,14 +10,17 @@ packages (bumped in lock-step).
 
 **Changed (a durable minor):** a closed blind read stores each preference as its counts only: `BlindPreference.shares`
 (each pair item's candidate share, in the order its test reads them) and, on the anytime test,
-`BlindPreference.stake_items` (the planned pair items its stakes were fixed for). It no longer writes `p` or `verdict`;
-both are computed off the counts by one function, `threetears.evals.analysis.blind_read.read_preference`, which the
-close and the door's responses (`blind_read_get`, `blind_reads_list`, `blind_read_close`) read through, so every
-response and the quick path's console line state the same p and verdict as before. A preference a 17.4 build stored
-holds no shares and reads with the p and verdict it carries, written back as stored. The minor carries a recorded
+`BlindPreference.stake_items` (the planned pair items its stakes were fixed for). It no longer writes `p`, `verdict`
+or a too-few `state`; all three are computed off the counts by one function, which the close and the door's responses
+(`blind_read_get`, `blind_reads_list`, `blind_read_close`) read through, so every response and the quick path's console
+line state the same p, verdict and state as before. A preference a 17.4 build stored holds no shares and reads with the
+p, verdict and state it carries, written back as stored; a stored too-few state its counts contradict is refused, as is
+a sign-test share other than 0, a half or 1. The minor carries a recorded
 exception, for this step only (owner ruling 2026-11-17): an older build that cannot read a newer document would make it
-a major, and 17.4 never reached a released host. For hosts: a build on a 17.4 SHA cannot read a blind read closed at
-this minor; no released host is affected.
+a major, and 17.4 never reached a released host. For hosts: read a preference's p, verdict and state from the door's
+`blind_read_get`, `blind_reads_list` or `blind_read_close` response (a closed read's `preferences`), not off a stored
+document's `report.preferences`; a build on a 17.4 SHA cannot
+read a blind read closed at this minor; no released host is affected.
 
 ### evals: a page prints a plan of looks' level only where keeping the plan is shown
 

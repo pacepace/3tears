@@ -63,6 +63,7 @@ from threetears.evals.analysis.agreement import (
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, bounded_separation_p, cohen_kappa
 from threetears.evals.kernel.evidence_tiers import JudgeEvidenceTier, agreement_statistic, calibration_criterion
 from threetears.evals.schema.blind_read import (
+    PREFERENCE_MIN_ITEMS,
     BlindAgreement,
     BlindReviewerCheck,
     BlindAnswer,
@@ -102,10 +103,6 @@ from threetears.evals.schema.models import (
 
 #: The seed a read is drawn by unless its caller names one: fixed, so a door that stores no draw recomputes it.
 BLIND_READ_SEED: Final = 20261114
-
-#: The fewest non-tie items a preference is tested over; below it the reading is not available, as too few.
-#: Five cannot separate at the two-sided 5% level: five of five has p 0.0625.
-PREFERENCE_MIN_ITEMS: Final = 6
 
 #: The most items a read's preference is planned over unless its caller fixes another length.
 PLANNED_ITEMS_DEFAULT: Final = 30
@@ -953,7 +950,6 @@ def _preference(
     decided = for_candidate + for_control
     one_each = all(len(given) == 1 for given in shares.values())
     test: BlindPreferenceTest = "exact_sign" if one_each else "bounded_share"
-    state = StateOf(state="not_available", reason="too_few") if decided < PREFERENCE_MIN_ITEMS else None
     stored = BlindPreference(
         anchor=kind,
         served_model=served_model,
@@ -970,7 +966,6 @@ def _preference(
         ties=len(means) - decided,
         test=test,
         shares=means,
-        state=state,
         slot_a_share=slot_a / slot_choices if slot_choices else None,
         slot_a=slot_a,
         slot_choices=slot_choices,
@@ -1016,7 +1011,6 @@ def _anytime_preference(
     for_candidate = sum(1 for mean in means if mean > 0.5)
     for_control = sum(1 for mean in means if mean < 0.5)
     decided = for_candidate + for_control
-    state = StateOf(state="not_available", reason="too_few") if decided < PREFERENCE_MIN_ITEMS else None
     raters = sorted(by_rater)
     stored = BlindPreference(
         anchor=kind,
@@ -1035,7 +1029,6 @@ def _anytime_preference(
         test="anytime",
         shares=means,
         stake_items=len(pairs),
-        state=state,
         slot_a_share=slot_a / slot_choices if slot_choices else None,
         slot_a=slot_a,
         slot_choices=slot_choices,
@@ -1044,15 +1037,18 @@ def _anytime_preference(
 
 
 def read_preference(preference: BlindPreference) -> BlindPreference:
-    """``preference`` as it reads: its p and verdict computed off its stored counts. The one computation of either:
-    a close reads its preferences through it, and a door reads a loaded read's through it (#1236).
+    """``preference`` as it reads: its p and verdict computed off its stored counts, or that too few items carry a
+    preference to test them. The one computation of each: a close reads its preferences through it, and a door reads
+    a loaded read's through it (#1236).
 
     A preference stored since #1236's durable minor holds the shares its test reads, in the order it reads them, and on the
     anytime test the planned pair items its stakes were fixed for; never a p or verdict. The test is the one it names:
     the exact sign test over the non-tie items (one answer per item), the bounded test on shares against a half
     (several raters), or the anytime test, the bounded test on shares in the drawn order with its stakes fixed for
-    ``stake_items``. A preference not read (``state``: withheld, or too few) has neither, and one stored before it
-    (no ``shares``) carries the p and verdict its close computed: both are returned as they are.
+    ``stake_items``. Under :data:`~threetears.evals.schema.blind_read.PREFERENCE_MIN_ITEMS` items that prefer a side,
+    it is not read: ``state`` says ``too_few``, with no p or verdict. A withheld preference (the read unfinished) has
+    neither, and one stored before it (no ``shares``) carries the p, verdict and state its close computed: both are
+    returned as they are.
 
     :param preference: A preference as stored, or as a close built it.
     :ptype preference: BlindPreference
@@ -1060,9 +1056,12 @@ def read_preference(preference: BlindPreference) -> BlindPreference:
     :rtype: BlindPreference
     """
     shares = preference.shares
-    if shares is None or preference.state is not None:
+    if shares is None or preference.withheld:
         return preference
     for_candidate, for_control = preference.prefer_candidate, preference.prefer_control
+    if for_candidate + for_control < PREFERENCE_MIN_ITEMS:
+        too_few = StateOf(state="not_available", reason="too_few")
+        return preference.model_copy(update={"p": None, "verdict": None, "state": too_few})
     p = (
         exact_sign_test_p(for_candidate, for_candidate + for_control)
         if preference.test == "exact_sign"
@@ -1079,7 +1078,7 @@ def read_preference(preference: BlindPreference) -> BlindPreference:
         verdict = "not_separated"
     else:
         verdict = "improved" if for_candidate > for_control else "regressed"
-    return preference.model_copy(update={"p": p, "verdict": verdict})
+    return preference.model_copy(update={"p": p, "verdict": verdict, "state": None})
 
 
 def _reviewer_checks(

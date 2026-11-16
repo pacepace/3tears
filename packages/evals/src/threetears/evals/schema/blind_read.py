@@ -23,7 +23,7 @@ The shapes here are plain documents with no behaviour. The mechanism (drawing, t
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import Field, SerializerFunctionWrapHandler, model_serializer, model_validator
 
@@ -52,6 +52,11 @@ BlindAsk = Literal["verdicts", "preference"]
 #: raters), or, for a read closed before its planned length, ``anytime``: the bounded test on shares in the drawn
 #: order with its stakes fixed for the planned length, whose p holds at whatever item the read was stopped.
 BlindPreferenceTest = Literal["exact_sign", "bounded_share", "anytime"]
+
+#: The fewest non-tie items a preference is tested over; below it the reading is not available, as too few.
+#: Five cannot separate at the two-sided 5% level: five of five has p 0.0625. A fact of the test, read when a preference
+#: is (``threetears.evals.analysis.blind_read.read_preference``) and when a stored one is checked against its counts.
+PREFERENCE_MIN_ITEMS: Final = 6
 
 
 class BlindArm(EvalDocumentModel, CoreShapeModel):
@@ -287,8 +292,10 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
     **Stored as counts; its p and verdict are read off them** (#1236, a durable minor). A preference stores the facts its
     test reads (``shares``, and on the anytime test ``stake_items``) and never its p or verdict, which
     :func:`~threetears.evals.analysis.blind_read.read_preference` computes when the read is loaded or closed: every
-    reader gets them from that one computation. A preference stored before that minor (at v17.4) holds no ``shares``, carries the p and
-    verdict its close computed, and reads and writes them as stored.
+    reader gets them from that one computation, and so is whether too few items carry a preference to test (``state``
+    ``too_few``, never written beside the shares). A preference stored before that minor (at v17.4) holds no
+    ``shares``, carries the p, verdict and state its close computed, and reads and writes them as stored; a stored
+    state that its counts contradict is refused.
     """
 
     anchor: Maker
@@ -358,7 +365,9 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
             "its planned length, so no direction, count or p is given (a preference read after every item and "
             "stopped when it separates is wrong far more often than its level says, and a running count tells the "
             "rater which arm is ahead while they are still reading). `not_available`, `too_few`: too few items "
-            "carry a preference to test. None where it was read."
+            "carry a preference to test, read off the counts as `p` is and never written beside `shares` (a preference "
+            "stored before #1236's durable minor carries it as stored, and one its counts contradict is refused). "
+            "None where it was read."
         ),
     )
     slot_a_share: float | None = Field(
@@ -378,8 +387,9 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
 
     @model_validator(mode="after")
     def _a_withheld_preference_gives_nothing_away(self) -> BlindPreference:
-        """Refuse a withheld preference that carries a count, a share or a p; a p or verdict on one not read; and
-        counts that are not the shares'.
+        """Refuse a withheld preference that carries a count, a share or a p; a p or verdict on one not read; a
+        too-few state its counts contradict; counts that are not the shares', or that shares the test cannot have
+        given.
 
         :raises ValueError: Naming the rule.
         """
@@ -396,15 +406,30 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
             or self.shares
         ):
             raise ValueError("a withheld preference states how far the read is, and no count, share or p")
+        decided = self.prefer_candidate + self.prefer_control
+        if self.too_few and decided >= PREFERENCE_MIN_ITEMS:
+            raise ValueError(
+                f"a preference is too few to test only below {PREFERENCE_MIN_ITEMS} items that prefer a side, and this "
+                f"one has {decided}"
+            )
         if self.shares is None:
-            # Stored before #1236's durable minor: its close's p and verdict are carried, as stored.
+            # Stored before #1236's durable minor: its close's p, verdict and state are carried, as stored.
             if (self.verdict is None) == (self.state is None):
                 raise ValueError("a preference has a verdict, or the state that says why it has none, and never both")
+            if self.state is None and decided < PREFERENCE_MIN_ITEMS:
+                raise ValueError(
+                    f"a preference with fewer than {PREFERENCE_MIN_ITEMS} items that prefer a side is too few to test, "
+                    "and has no verdict"
+                )
             return self
         if self.state is not None and (self.p is not None or self.verdict is not None):
             raise ValueError("a preference that was not read has no p or verdict, and its state says why")
         if any(not 0.0 <= share <= 1.0 for share in self.shares):
             raise ValueError("a preference's shares are each from 0 to 1")
+        if self.test == "exact_sign" and any(share not in (0.0, 0.5, 1.0) for share in self.shares):
+            raise ValueError(
+                "a preference read by the exact sign test has one answer per item, so each share is 1, 0 or a half"
+            )
         if (self.items, self.prefer_candidate, self.prefer_control, self.ties) != (
             len(self.shares),
             sum(1 for share in self.shares if share > 0.5),
@@ -423,12 +448,14 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
 
     @model_serializer(mode="wrap")
     def _no_p_or_verdict_beside_the_shares(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """Write a preference holding its shares without its p and verdict, which are read off them; one stored
-        before #1236's durable minor writes back the p and verdict it carries."""
+        """Write a preference holding its shares without its p, verdict or too-few state, which are read off them;
+        one stored before #1236's durable minor writes back the p, verdict and state it carries."""
         dumped: dict[str, Any] = handler(self)
         if self.shares is not None:
             dumped.pop("p", None)
             dumped.pop("verdict", None)
+            if self.too_few:
+                dumped["state"] = None
         return dumped
 
     @property
@@ -438,7 +465,8 @@ class BlindPreference(EvalDocumentModel, CoreShapeModel):
 
     @property
     def too_few(self) -> bool:
-        """Whether too few items carry a preference to test."""
+        """Whether too few items carry a preference to test: on a preference holding its shares, once it is read
+        (:func:`~threetears.evals.analysis.blind_read.read_preference`), which is when that is decided."""
         return self.state is not None and self.state.reason == "too_few"
 
 
