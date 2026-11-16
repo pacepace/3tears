@@ -32,7 +32,7 @@ import pytest
 
 from threetears.evals import gen, kernel, run
 from threetears.evals.kernel import AdmittedCall, PlannedCall
-from threetears.evals.quick import blind
+from threetears.evals.run import blind_review
 
 _SOURCE = Path(kernel.__file__).resolve().parent.parent
 
@@ -107,7 +107,10 @@ def _takes(function: Callable[..., Any]) -> list[Any]:
 OUT_OF_RUN_CALLERS: Mapping[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
     "rubric proposer (capability and boundary)": (gen.plan_draft, gen.propose_draft),
     "case generation (an llm variation axis)": (kernel.plan_variation_calls, gen.generate_variations),
-    "a model reading a blind read (the quick path)": (blind.plan_review, blind.answer_sheet),
+    "a model reading a blind read (the quick path and a host's review job)": (
+        blind_review.plan_review,
+        blind_review.answer_sheet,
+    ),
 }
 
 #: Out-of-run work the engine itself starts as a job: its builder admits every call before the first is made and

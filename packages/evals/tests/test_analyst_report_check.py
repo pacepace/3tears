@@ -492,7 +492,16 @@ def _served(tool: MountedTool) -> list[str]:
 #: help had said it was written to each such row. No other action's text moved.
 #: The evals tool moved again when a frontier came to store that its contestants' definitions differ (#1187): the
 #: frontier lens's help lists ``definitions_apart`` among the fields ``FrontierResult`` returns. No other text moved.
-_EVALS_BYTES = "8b2dd9578777df03b2e148c83486493d8fd5592c0ff89124e04ddf0974cd1a92"
+#: The evals tool moved again when it gained the blind read's host door (#1178, chunk A2): seven actions
+#: (blind_read_create, _sheet, _answer, _review, _close, _get, blind_reads_list), each a help page and a help-index line
+#: with its parameters in the input schema; and campaign_record says who made the call (made_by, person, call_model,
+#: on_behalf_of: its summary, detail, parameters and example). Nothing else it serves moved.
+#: The evals tool moved again when blind_read_close's help page gained one sentence, the recovery a caller can find
+#: from the door: "A close whose ratings were not all written (the store refused one) is completed by closing again,
+#: which writes the ones missing." Diffed against the text served before: nothing else moved.
+#: Taken again over runs_attest's text (#1187) when both met: diffed against the text served without the door, the
+#: only lines that moved are the door's and campaign_record's above.
+_EVALS_BYTES = "3d319028771cf338e1500fa725bd63c1d73e62a1df89a6341e87389fbe1db626"
 #: The editor's and the analyst's moved again when arms_compare's help came to say a paired row cites the cases its
 #: contrast's test read (``cases``), and when the figure-key grammar's line on money per reply came to say a bare key
 #: reads per 1,000 replies under a cent and in plain dollars from a cent up (one money form per figure type).

@@ -16,8 +16,9 @@ over several, or the coordinate is ``unrecorded``, which matches nothing. A reas
 it.
 
 Nothing here reads an eval's kind, a campaign's shape or a measure's name, and the module imports nothing from the
-package. It sits with the stored shapes because every layer holds these values: a blind read's preference, the
-bundle and the report input alike.
+package but the stored shapes' base. It sits with the stored shapes because every layer holds these values: a blind
+read's preference (stored on a durable blind read, so :class:`StateOf` keeps a newer minor's fields as every shape a
+stored document embeds does), the bundle and the report input alike.
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ from types import MappingProxyType
 from typing import Final, Literal, Self, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from threetears.evals.schema.base import CoreShapeModel
 
 __all__ = [
     "ArmIdentity",
@@ -151,7 +154,7 @@ def check_state(state: str, reason: str | None, coordinate: str | None = None) -
         raise ValueError(f"{coordinate!r} is not a coordinate: one of {', '.join(get_args(Coordinate))}")
 
 
-class StateOf(BaseModel):
+class StateOf(CoreShapeModel):
     """The state of one reading, contrast, interval or pair, where it is not simply counted.
 
     A holder with none reads ``counted``. The three fields are checked together (:func:`check_state`) when the value is
