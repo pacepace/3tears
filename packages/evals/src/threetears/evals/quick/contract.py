@@ -63,7 +63,13 @@ from threetears.evals.quick.one_call import (
     launch_arms,
     refuse_an_unusable_cap,
 )
-from threetears.evals.quick.continuation import MEMORY_WHERE, design_facts, earlier_comparison, new_comparison_sentence
+from threetears.evals.quick.continuation import (
+    MEMORY_WHERE,
+    design_facts,
+    earlier_comparison,
+    new_comparison_sentence,
+    same_margin,
+)
 from threetears.evals.quick.result import (
     CREATED_BY,
     Result,
@@ -631,12 +637,15 @@ class Eval:
         control_index = list(self.arms).index(self.control) if self.control in self.arms else 0
         if self.comparison:
             earlier = await run_blocking(host.blocking_executor, earlier_comparison, host, scope_id, self.name)
-            if earlier is not None and earlier.design != design_facts(
-                self.plan.readings,
-                judge.guard_margins if judge is not None else {},
-                self.measure_latency,
-                self.question,
-                self.margin,
+            if earlier is not None and (
+                earlier.design
+                != design_facts(
+                    self.plan.readings,
+                    judge.guard_margins if judge is not None else {},
+                    self.measure_latency,
+                    self.question,
+                )
+                or not same_margin(earlier.margin, self.margin)
             ):
                 earlier, said = (
                     None,

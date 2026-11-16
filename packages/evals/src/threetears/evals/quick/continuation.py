@@ -29,6 +29,7 @@ under the same name continues the comparison; the sentence says that as well.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -79,7 +80,8 @@ class EarlierComparison:
     :ivar control: The control arm's ``launched_as``.
     :ivar arms: Each arm, keyed by ``launched_as``.
     :ivar design: What its campaign declared that a continuation must declare alike: the graders in order, the
-        guardrails' margins, latency under test, the question and its margin, as JSON.
+        guardrails' margins, latency under test and the question, as JSON.
+    :ivar margin: The question's margin, a share of 0 to 1; ``None`` declares none.
     """
 
     campaign_id: str
@@ -91,6 +93,7 @@ class EarlierComparison:
     control: tuple[str | None, str, str]
     arms: Mapping[tuple[str | None, str, str], EarlierArm]
     design: str
+    margin: float | None
 
 
 def launched_as(arm: str | None, model: str, levers: Mapping[str, Any] | None) -> tuple[str | None, str, str]:
@@ -113,19 +116,25 @@ def design_facts(
     guardrail_margins: Mapping[str, float],
     measure_latency: bool,
     question: str | None,
-    margin: float | None,
 ) -> str:
     """What a comparison declares that a continuation must declare alike, as JSON: graders in order, guardrails'
-    margins, latency under test, the question and its margin (in points, as its campaign stores it)."""
+    margins, latency under test and the question. Its margin is compared beside it (:func:`same_margin`)."""
     return canonical_json(
         {
             "measure_order": list(dict.fromkeys(measure_order)),
             "guardrail_margins": dict(sorted(guardrail_margins.items())),
             "measure_latency": bool(measure_latency),
             "question": question or "",
-            "margin": None if margin is None else round(100 * margin, 10),
         }
     )
+
+
+def same_margin(stored: float | None, given: float | None) -> bool:
+    """Whether a comparison's stored margin (its share of 0 to 1, read back from the points its campaign stores) is the
+    one ``given`` now: both none, or one share to within float rounding."""
+    if stored is None or given is None:
+        return stored is given
+    return math.isclose(stored, given, rel_tol=1e-9, abs_tol=1e-12)
 
 
 def earlier_comparison(host: EvalHost, scope_id: str, name: str) -> EarlierComparison | None:
@@ -211,8 +220,8 @@ def earlier_comparison(host: EvalHost, scope_id: str, name: str) -> EarlierCompa
             {entry.dimension: entry.margin for entry in design.guardrail_margins} if design is not None else {},
             design.measure_latency if design is not None else False,
             campaign.question or None,
-            None if aspect.margin is None else aspect.margin / 100,
         ),
+        margin=None if aspect.margin is None else aspect.margin / 100,
     )
 
 
@@ -255,7 +264,6 @@ def new_comparison_sentence(changed: str) -> str:
 __all__ = [
     "MEMORY_WHERE",
     "UNKEPT_SENTENCE",
-    "EarlierArm",
     "EarlierComparison",
     "canonical_json",
     "continued_sentence",
@@ -263,4 +271,5 @@ __all__ = [
     "earlier_comparison",
     "launched_as",
     "new_comparison_sentence",
+    "same_margin",
 ]
