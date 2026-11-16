@@ -2076,7 +2076,10 @@ between the seed's read and its write can be lost, the same race two `update_tem
 boot that fills these names through `update_template` can be dropped; `update_template` stays the seam for an
 operator's own names, which the seed then leaves alone, and for archiving a template outright: the courier host's
 operator steps ([`tests/fixtures/courierhost/`](../tests/fixtures/courierhost/__init__.py), section 8) rename a
-stratum that already has a name and retire a scenario through it. `reset_definitions` runs the same pass after its writes, on
+stratum that already has a name and retire a scenario through it. Archiving a template this way stamps its
+`updated_at`, so today no run launched before it can be re-judged, its run summary drops the template's intent and its
+judges' criteria read as unknown; renaming a stratum leaves `updated_at` where it was and does none of this.
+`reset_definitions` runs the same pass after its writes, on
 every corpus template reading `current` after the reset (named in the call or not), so a release step's reset leaves
 no template waiting for the next boot for its names; it reports them under `DefinitionReset.presentation_named` and
 `DefinitionReset.presentation_fill_failed`, the same shapes as the seed's, and `DefinitionReset.render()` prints a

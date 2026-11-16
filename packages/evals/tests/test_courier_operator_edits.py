@@ -106,10 +106,17 @@ async def test_a_renamed_stratum_reads_by_its_new_name_with_every_result_where_i
 async def test_a_retired_scenario_leaves_the_listing_and_its_runs_still_read() -> None:
     host, campaign = await _stratified_campaign()
     before = off_loop(inspect_campaign_bundle, host, campaign.id, COURIER_SCOPE).bundle
+    stored = off_loop(host.storage.load_template, COURIER_TEMPLATE_ID, COURIER_SCOPE)
+    assert stored is not None
 
     retired = off_loop(retire_scenario, host, COURIER_TEMPLATE_ID)
 
     assert retired.archived
+    # What the host guide states: archiving stamps updated_at past every earlier run's launch, the stamp re-judge,
+    # a run summary's intent and a judge's criteria read as an edit after launch (a rename leaves it, above).
+    runs = [off_loop(host.storage.load_eval_run, run_id, COURIER_SCOPE) for run_id in before.run_ids]
+    assert retired.updated_at > stored.updated_at
+    assert all(run is not None and retired.updated_at > run.created_at for run in runs)
     active = off_loop(templates_list, host, COURIER_SCOPE)
     archived = off_loop(templates_list, host, COURIER_SCOPE, archived=True)
     assert COURIER_TEMPLATE_ID not in [line.id for line in active.templates], "a retired scenario is still offered"

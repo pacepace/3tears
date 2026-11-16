@@ -586,6 +586,8 @@ def retire_scenario(host: EvalHost, template_id: str) -> EvalTemplate:
     :raises NotFoundError: No such scenario in the courier's scope.
     """
     # update_template is the only door to archiving a template outright; a reset archives only what it supersedes.
+    # It stamps the template's updated_at, so today no earlier run of it can be re-judged, its run summary drops the
+    # template's intent and its judges' criteria read as unknown; rename_stratum leaves updated_at alone.
     return update_template(host, template_id, COURIER_SCOPE, {"archived": True})
 
 
