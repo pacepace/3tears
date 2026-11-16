@@ -130,7 +130,7 @@ Each line is a name, `threetears.evals.` dropped, and the first sentence of its 
 - `providers.describe_failure`: What the engine may know of a call through the client that raised: the host's `failure_describer`.
 - `providers.Model`: the same as `Model`.
 
-## Functions a host's code calls: 75
+## Functions a host's code calls: 76
 
 Each is `invoked`: your code imports it and calls it. None is an action; the actions follow.
 
@@ -138,9 +138,10 @@ Each is `invoked`: your code imports it and calls it. None is an action; the act
 
 - `surface_tier`: A public name's stability tier in the installed build, by `root.name`.
 
-### `schema` (5)
+### `schema` (6)
 
 - `schema.bind_cell_identity`: Make `identity` the answer of `current_cell_identity` for the extent of the block.
+- `schema.check_after`: Return `DocumentStore.by_doc_type`'s `after` checked, as a pair — the calls every implementation refuses.
 - `schema.current_cell_identity`: Return the cell the calling task is working for, or `None` outside any cell.
 - `schema.field_in_values`: Return `field_in` checked and each field's values with repeats dropped — the meaning of `field_in`.
 - `schema.label_key_of`: The label key of one judgement: `evidence` read on `dim`.
@@ -777,10 +778,10 @@ wave as a trend. The goals are the adopter's, a first eval's names and rung 3's.
 | `typed` | 12 | a newcomer writes it in an eval file |
 | `bound` | 93 | a host implements it or hands it to the engine |
 | `action` | 17 | the function behind an action of the catalogue, which an agent or operator invokes by name |
-| `invoked` | 91 | a function a host's own code calls, to make the engine act or do one step its way |
+| `invoked` | 92 | a function a host's own code calls, to make the engine act or do one step its way |
 | `received` | 258 | a value someone is handed and reads |
 | `tests` | 17 | a kit, recorder or guard a host runs in its own tests |
-| all | 488 | |
+| all | 489 | |
 
 Of these, 22 await demotion and 4 need a shipped example
 (issue #1199), each listed in its register's section above.

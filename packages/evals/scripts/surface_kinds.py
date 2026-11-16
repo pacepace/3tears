@@ -184,6 +184,7 @@ KIND_ENTRIES: Mapping[str, Kind] = MappingProxyType(
         # wire reader): each is used by a host's production code or a shipped example's (criterion 2).
         "threetears.evals.surface_tier": "invoked",
         "threetears.evals.schema.bind_cell_identity": "invoked",
+        "threetears.evals.schema.check_after": "invoked",
         "threetears.evals.schema.current_cell_identity": "invoked",
         "threetears.evals.schema.field_in_values": "invoked",
         "threetears.evals.schema.label_key_of": "invoked",
