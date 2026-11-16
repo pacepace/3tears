@@ -104,7 +104,7 @@ if TYPE_CHECKING:  # the lazy names, re-imported so type checkers resolve them
         mint_user_jwt,
     )
 
-    from threetears.nats.kv import NatsChangeLog, NatsKvBucket
+    from threetears.nats.kv import AgedMarkerPurge, NatsChangeLog, NatsKvBucket
     from threetears.nats.kv_listing import live_kv_keys
     from threetears.nats.object_store import NatsObjectStore, ObjectInfo
     from threetears.nats.oplog import AppendResult, OpLog, OpRecord
@@ -341,7 +341,7 @@ _LAZY_SUBMOD_ATTRS: Final[dict[str, tuple[str, ...]]] = {
         "PrincipalResolver",
         "ResolvedPrincipal",
     ),
-    "kv": ("NatsChangeLog", "NatsKvBucket"),
+    "kv": ("AgedMarkerPurge", "NatsChangeLog", "NatsKvBucket"),
     "kv_listing": ("live_kv_keys",),
     "object_store": ("NatsObjectStore", "ObjectInfo"),
     "oplog": ("AppendResult", "OpLog", "OpRecord"),
@@ -576,6 +576,7 @@ __all__ = [
     "probe_connection",
     "require_system_account",
     # KV
+    "AgedMarkerPurge",
     "NatsChangeLog",
     "NatsKvBucket",
     "PersistedCopyBucket",

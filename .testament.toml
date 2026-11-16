@@ -218,6 +218,7 @@ default_selection = [
     "packages/nats/tests/integration/test_forward_grants_live.py",
     "packages/nats/tests/integration/test_forward_round_trip.py",
     "packages/nats/tests/integration/test_hitl_grant_silent_failure_live.py",
+    "packages/nats/tests/integration/test_kv_aged_marker_purge_live.py",
     "packages/nats/tests/integration/test_kv_bucket_not_found_live.py",
     "packages/nats/tests/integration/test_kv_bucket_reconcile_live.py",
     "packages/nats/tests/integration/test_kv_cas_delete_round_trip.py",

@@ -42,6 +42,26 @@ page at a time and evicts exactly those rows, as it does for a commit too large 
 table is read whole. A follower with no noted-keys reader (a registry on a direct L3 pool) is still behind on such a
 record, as on any keys-unknown one. When the notes cannot name the rows at all (no ring, `no_notes`, `not_covered`), the record is
 keys unknown with no bracket, as before, and followers stay behind on the table until they restart.
+### nats, core: the collections bucket's old delete markers are purged, a page at a time
+
+Every delete in `{ns}-collections` left a marker the bucket kept forever: on cobalt on 2026-11-16 markers were
+113,348 of 119,598 keys on dev and 168,066 of 179,878 on prod (about 16 MB and 23 MB, in the 14 days since the bucket
+was created), and the bucket refuses new keys at its bound. `NatsKvBucket.purge_aged_removal_markers(before=...,
+from_sequence=..., max_messages=...)` walks the bucket's stream by sequence, one `DIRECT.GET` of the next message at
+a time (no `STREAM.INFO` subject listing, which at 180,000 keys is two 9 MB answers of about 40 ms of `json.loads`
+each on the event loop), stops at the first message stored at or after the cutoff, and purges each marker below its
+own sequence plus one, so a write that lands after the walk read it is kept. It answers `AgedMarkerPurge`, whose
+`next_sequence` the next page starts at.
+
+`threetears.core.collections.marker_purge.RemovalMarkerPurger` runs it for a bucket's owner: one pass at a time
+across replicas under a `KVLease`, resuming at the sequence the last pass stopped at, at most 50,000 messages a pass,
+and over again from the first message when the stream was created again. A marker is purged once it is older than
+`L2_MARKER_PURGE_AGE` (24 hours): a marker is a revision the L2 fences on (a read seeds its L3 row at the revision it
+took before its query; a save and an L2-first commit write at the one they read), and purging one inside such a
+window lets an older row land at revision 0. The longest bounded window is the hub pool's 30 s `command_timeout`; a
+day covers any stalled process short of a day, and costs a day of markers (1.1-1.7 MB at the 2026-11-16 rates).
+Metrics: `threetears_kv_marker_purge_passes_total{bucket,outcome}`, `threetears_kv_markers_purged_total{bucket}`,
+`threetears_kv_marker_purge_pass_seconds{bucket}`, `threetears_kv_marker_oldest_age_seconds{bucket}`.
 
 ### core: an L2 refill's pages are read-coerced and freed off the event loop
 
