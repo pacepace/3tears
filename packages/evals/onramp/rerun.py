@@ -1,8 +1,9 @@
 """Re-run an agent's eval file in this process and print what it read, as JSON: ``python rerun.py EVAL_FILE [--nothing]``.
 
 Run by the docs build's own interpreter in a grading copy of the app, so it imports only what that build ships, and
-only from the package's public root. The file is loaded as the eval door loads it (its directory first on
-``sys.path``, its relative paths read beside it), and its first ``Eval`` is run into memory. With ``--nothing`` the
+only from the package's public root. It is run from the app's directory, and the file is loaded as the eval door
+loads it from there (:func:`load`): an eval kept in ``tests/`` imports the app as the door's run of it did. Its first
+``Eval`` is run into memory. With ``--nothing`` the
 same eval is run again with every arm swapped for a runner that returns ``None``: the share of cases it then fails.
 
 Prints ``{"refused": why}`` and exits 2 when the file does not load, the eval refuses to run, or the build lacks a
@@ -104,16 +105,29 @@ def read(result: Result, declared: Mapping[str, bool | None]) -> dict[str, Any]:
     }
 
 
-async def main(path: Path, *, nothing_too: bool) -> dict[str, Any]:
+def load(path: Path, module: Any, loader: Any) -> None:  # Any: the module and its loader, as importlib makes them
+    """Run the eval file's module as the door does from the app's directory (the working directory): that directory
+    and the file's own on ``sys.path`` (the file's first), and the paths the file names read beside it while it loads
+    (the working directory is the file's then, and the app's again after)."""
+    root = Path.cwd()
+    for directory in (str(root), str(path.parent)):
+        if directory not in sys.path:
+            sys.path.insert(0, directory)
     os.chdir(path.parent)
-    sys.path.insert(0, str(path.parent))
+    try:
+        loader.exec_module(module)
+    finally:
+        os.chdir(root)
+
+
+async def main(path: Path, *, nothing_too: bool) -> dict[str, Any]:
     spec = importlib.util.spec_from_file_location(f"onramp_rerun_{path.stem}", path)
     if spec is None or spec.loader is None:
         return {"refused": f"{path.name} cannot be imported"}
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     try:
-        spec.loader.exec_module(module)
+        load(path, module, spec.loader)
         evals = [value for value in vars(module).values() if isinstance(value, Eval)]
         if not evals:
             return {"refused": f"{path.name} defines no Eval at module level"}

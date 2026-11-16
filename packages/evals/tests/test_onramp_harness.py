@@ -44,8 +44,10 @@ from packages.evals.onramp.agent import (
     done_report,
     errors_hit,
     metered_call,
+    prompt,
     read_reply,
     parse_report,
+    scored_door_turns,
     stuck_point,
 )
 from packages.evals.onramp.checks import REGRADE_BUDGET_S, eval_runs, measures_the_app, read_right
@@ -59,6 +61,7 @@ from packages.evals.onramp.campaign import (
     clopper_pearson,
     failure_causes,
     preflight_refusal,
+    spend_line,
     live_refusal,
     main,
     quote,
@@ -1118,7 +1121,7 @@ def test_what_the_harness_caused_is_told_apart_where_it_can_be_told_mechanically
     guide = "THE FIRST EXAMPLE (1-triage/triage.py of the examples fetched below)"
     refused_reply = Step(3, None, Observation(ok=False, text="the reply was not one tool call: ..."))
     assert cause(refused_reply) == "harness"
-    assert cause(_step(2, "run", False, command="ls /app", first_error="ls: /app is no directory in the app or the "
+    assert cause(_step(2, "run", False, command="ls /app", first_error="ls: /app is not in the app's directory or the "
                        "installed package")) == "harness"  # fmt: skip
     assert cause(_step(4, "read", False, first_error="examples/1-triage/triage.py: no such file"), guide) == "docs"
     assert cause(_step(4, "read", False, first_error="tests/__init__.py: no such file"), guide) == "cannot tell"
@@ -1129,8 +1132,17 @@ def test_what_the_harness_caused_is_told_apart_where_it_can_be_told_mechanically
 
     door = {"turn": 6, "command": "python -m threetears.evals e.py", "door": True}
     failed = {"eval_runs": 0.0, "measures_the_app": 0.0, "read_right": 0.0}
-    walled = {"scores": failed, "record": {"stopped": "wall", "commands": []}}
+    # The wall is the harness's when the run had a working eval it had no time to report; else cannot tell.
+    walled = {"scores": failed, "record": {"stopped": "wall", "commands": [door], "scored_door_turns": [6]}}
     assert failure_causes(walled) == dict.fromkeys(failed, "harness")
+    stuck = {"scores": failed, "record": {"stopped": "wall", "commands": [door], "scored_door_turns": []}}
+    assert failure_causes(stuck) == dict.fromkeys(failed, "cannot tell")
+    made_up = {"scores": failed, "record": {"stopped": "done", "commands": [], "checks": {
+        "eval_file": "evals.py", "problem": "evals.py is not in the app's directory"}}}  # fmt: skip
+    assert failure_causes(made_up) == dict.fromkeys(failed, "agent"), "a report sent with no eval written"
+    crashed = {"scores": failed, "record": {"stopped": "done", "commands": [door], "report": {}, "checks": {
+        "problem": "", "door_exit": 0, "app": {"refused": "Traceback (most recent call last):"}}}}  # fmt: skip
+    assert failure_causes(crashed) == dict.fromkeys(failed, "harness"), "the regrade crashed on an eval the door ran"
     lost = {"scores": {**failed, "eval_runs": 1.0}, "record": {"stopped": "done", "commands": [door], "report": None,
             "format_error_turns": [7]}}  # fmt: skip
     assert failure_causes(lost) == {"measures_the_app": "cannot tell", "read_right": "harness"}
@@ -1231,3 +1243,107 @@ async def test_a_run_logs_its_directorys_state_after_every_turn_that_may_change_
     assert logged[1] is not None and logged[3] is not None and logged[4] is not None
     first, last = logged[1]["a.py"], logged[4]["a.py"]
     assert first != last and last == sandbox.manifest()["a.py"]
+
+
+# --- the comparison's harness causes (analysis 1116, section 5) --------------------------------------------------------
+
+
+async def test_ls_takes_its_flags_and_several_paths_and_refuses_other_flags_naming_those_it_takes(
+    tmp_path: Path,
+) -> None:
+    sandbox = Sandbox.create(tmp_path / "app", "glossator", _build(tmp_path))
+    listing = await sandbox.run("ls -la")
+    assert listing.ok and "tests/" in listing.text and "glossator.py" in listing.text
+    sized = (sandbox.root / "glossator.py").stat().st_size
+    assert any(
+        line.startswith("- ") and line.endswith("glossator.py") and str(sized) in line
+        for line in listing.text.splitlines()
+    )
+    both = await sandbox.run("ls . tests")
+    assert both.ok and ".:\n" in both.text and "tests:\nfixtures/" in both.text, both.text
+    assert (await sandbox.run("ls -1 tests/fixtures")).ok
+    refused = await sandbox.run("ls -R")
+    assert not refused.ok and refused.first_error == "ls: -R is not taken; ls takes -a, -l, -1"
+    outside = await sandbox.run("ls /app")
+    assert not outside.ok and "is not in the app's directory" in outside.first_error
+    mixed = await sandbox.run("ls tests /etc")
+    assert not mixed.ok and "fixtures/" in mixed.text, "what can be listed is listed, and what cannot is said"
+
+
+def test_reading_a_directory_says_it_is_one(tmp_path: Path) -> None:
+    sandbox = Sandbox.create(tmp_path / "app", "glossator", _build(tmp_path))
+    observation = sandbox.read("tests")
+    assert not observation.ok and observation.first_error == "tests is a directory: `ls tests` lists it"
+    assert "is a directory" in sandbox.read("tests/fixtures").first_error
+
+
+def test_an_eval_kept_in_a_subdirectory_is_re_run_from_the_apps_directory_as_the_door_runs_it(tmp_path: Path) -> None:
+    """The re-grade crashed on a right eval kept in tests/ (cand glossator r3): it ran from the file's directory, where
+    the app does not import. It now runs from the app's, as the door does."""
+    app = tmp_path / "app"
+    (app / "tests" / "fixtures").mkdir(parents=True)
+    (app / "shop.py").write_text("def price(case):\n    return case['n'] * 2\n", encoding="utf-8")
+    (app / "tests" / "fixtures" / "cases.jsonl").write_text('{"n": 1, "want": 2}\n{"n": 2, "want": 5}\n', "utf-8")
+    (app / "tests" / "eval_shop.py").write_text(
+        "from threetears.evals import Eval\n\nfrom shop import price\n\n\n"
+        "def right(case, out) -> bool:\n"
+        '    """The price is the one wanted."""\n'
+        "    return out == case['want']\n\n\n"
+        'shop = Eval("fixtures/cases.jsonl", runner=price, grader=[right], k=1)\n',
+        encoding="utf-8",
+    )
+    done = subprocess.run(
+        [sys.executable, str(RERUN), "tests/eval_shop.py"], cwd=app, capture_output=True, text=True, check=True
+    )
+    reading = json.loads(done.stdout.splitlines()[-1])
+    assert reading["means"] == {"right": 0.5} and reading["scored"] == 2, reading
+
+
+async def test_the_agent_is_told_how_long_it_has_and_warned_before_the_wall(tmp_path: Path) -> None:
+    assert "The task stops after {wall:.0f} seconds or {turns} turns" in SYSTEM
+    assert "[time]" not in prompt([]) and "[time] 42 seconds are left" in prompt([], 42.4)
+    asked: list[str] = []
+
+    class Slow:
+        model = "slow"
+
+        async def ceiling(self, system: str, user: str) -> float | None:
+            return 0.0
+
+        async def next(self, system: str, user: str, steps: Sequence[Step]) -> Turn:
+            asked.append(user)
+            await asyncio.sleep(0.25)
+            return Turn(Act(tool="run", path="", start=1, text="", command="ls"), Usage(1, 1, 0.0))
+
+    run = await attempt(_isolated(tmp_path), Slow(), Caps(wall_s=1.5))
+    assert run.stopped == "wall"
+    assert "[time]" not in asked[0] and any("[time]" in user for user in asked[-2:]), "warned past 80% of the wall"
+
+
+def _door_step(turn: int, text: str, ok: bool = True) -> Step:
+    return _step(turn, "run", ok, text=text, command="python -m threetears.evals e.py")
+
+
+def test_a_door_run_that_scored_nothing_is_a_failed_turn_and_the_stuck_point_names_it() -> None:
+    """H10 of the analysis: a door run exiting 0 with every case failed by the candidate is where a run is stuck."""
+    nothing = "exit 0\n3 result(s): 0 scored, 3 failed by the candidate\nKeyError: 'id'"
+    steps = [
+        _step(1, "read", False, first_error="surface.md: no such file"),
+        _step(2, "read", True),
+        _door_step(3, nothing),
+        _door_step(4, nothing),
+        _door_step(5, nothing),
+        _door_step(6, "exit 0\n3 result(s): 3 scored"),
+    ]
+    stuck = stuck_point(steps)
+    assert stuck is not None and (stuck["from_turn"], stuck["to_turn"], stuck["failed_turns"]) == (1, 5, 4)
+    assert scored_door_turns(steps) == [6]
+
+
+def test_the_spend_line_states_the_charged_bound_beside_the_reported_cost() -> None:
+    rows = [{"record": {"cost_usd": 0.01, "charged_usd": 0.01}}, {"record": {"cost_usd": 0.02, "charged_usd": 0.05}}]
+    assert (
+        spend_line(rows)
+        == "spend: $0.030 reported by the provider; at most $0.060 billed (each cut-off call at its ceiling)"
+    )
+    assert "unpriced" in spend_line([{"record": {"cost_usd": None, "charged_usd": 0.05}}])

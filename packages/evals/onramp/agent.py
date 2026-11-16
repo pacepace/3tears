@@ -53,7 +53,8 @@ the tool does not read left empty ("" or 1).
 Your working directory is the app's directory, shown as `.`: give paths relative to it. Nothing outside it and the \
 installed package can be read. 3tears-evals is installed at {package}; its guide for agents is {llms}. Your \
 commands run in a container with no network and no API key; the app runs offline. A reply holds at most {tokens} \
-tokens, your reasoning included."""
+tokens, your reasoning included. The task stops after {wall:.0f} seconds or {turns} turns, whichever comes first, \
+with no report unless you have sent done; each turn takes 10 to 40 seconds."""
 
 #: How many of the latest steps the prompt shows whole; older ones are cut to their first lines.
 RECENT_STEPS = 6
@@ -419,8 +420,13 @@ class Attempt:
         return None if any(count is None for count in counts) else sum(counts)
 
 
-def prompt(steps: Sequence[Step]) -> str:
-    """The user message for the next turn: the task, then every step, the latest :data:`RECENT_STEPS` whole."""
+#: The share of the wall cap past which each prompt says how much time is left.
+WARN_AT = 0.8
+
+
+def prompt(steps: Sequence[Step], left_s: float | None = None) -> str:
+    """The user message for the next turn: the task, then every step, the latest :data:`RECENT_STEPS` whole, and, when
+    ``left_s`` is given, how many seconds are left before the wall cap stops the run."""
     parts = [TASK]
     for step in steps:
         act = "(no tool call)" if step.act is None else step.act.model_dump_json()
@@ -428,6 +434,11 @@ def prompt(steps: Sequence[Step]) -> str:
         if len(steps) - step.turn >= RECENT_STEPS:
             act, said = (_cut(text) for text in (act, said))
         parts.append(f"[turn {step.turn}] {act}\n{said}")
+    if left_s is not None:
+        parts.append(
+            f"[time] {max(left_s, 0.0):.0f} seconds are left before the task stops with no report: if you have run "
+            "your eval, send done with its report now."
+        )
     return "\n\n".join(parts)
 
 
@@ -484,6 +495,8 @@ async def attempt(sandbox: Sandbox, brain: Brain, caps: Caps, *, log: Path | Non
         package=sandbox.build.shown_package_dir,
         llms=sandbox.build.shown_llms_txt,
         tokens=REPLY_TOKENS,
+        wall=caps.wall_s,
+        turns=caps.turns,
     )
     run = Attempt()
     started = time.monotonic()
@@ -498,9 +511,13 @@ async def attempt(sandbox: Sandbox, brain: Brain, caps: Caps, *, log: Path | Non
 
 
 async def _turns(sandbox: Sandbox, brain: Brain, caps: Caps, system: str, run: Attempt, log: Path | None) -> None:
-    """The run's turns, into ``run``; a model call cut off by the wall is charged as an unknown cost first."""
+    """The run's turns, into ``run``; a model call cut off by the wall is charged as an unknown cost first. Past
+    :data:`WARN_AT` of the wall cap, each prompt says how many seconds are left (a recording of a run that got there
+    replays up to that turn)."""
+    started = time.monotonic()
     for turn in range(1, caps.turns + 1):
-        user = prompt(run.steps)
+        elapsed = time.monotonic() - started
+        user = prompt(run.steps, caps.wall_s - elapsed if elapsed >= WARN_AT * caps.wall_s else None)
         bound: float | None = None
         if caps.cost_usd is not None:
             bound, charged = await brain.ceiling(system, user), run.charged()
@@ -584,23 +601,48 @@ def errors_hit(steps: Sequence[Step]) -> dict[str, int]:
     return hit
 
 
+#: What a door run prints when it scored no result: every case failed by the candidate.
+NOTHING_SCORED = re.compile(r"\d+ result\(s\): 0 scored\b")
+
+
+def scored_nothing(step: Step) -> bool:
+    """Whether a turn ran the eval door and it scored no result (exit 0, every case failed by the candidate)."""
+    return (
+        step.act is not None
+        and step.act.tool == "run"
+        and is_door(step.act.command.split())
+        and bool(NOTHING_SCORED.search(step.observation.text))
+    )
+
+
 def failed(step: Step) -> bool:
-    """Whether a turn failed: a reply that was no tool call, a call refused, or a run that ended badly."""
-    return not step.observation.ok
+    """Whether a turn failed: a reply that was no tool call, a call refused, a run that ended badly, or a door run that
+    scored nothing (it exits 0 with every case failed)."""
+    return not step.observation.ok or scored_nothing(step)
+
+
+def scored_door_turns(steps: Sequence[Step]) -> list[int]:
+    """The turns whose door run worked and scored a result: where the agent had an eval that measured something."""
+    return [
+        step.turn
+        for step in steps
+        if step.act is not None and step.act.tool == "run" and is_door(step.act.command.split())
+        and step.observation.ok and not scored_nothing(step)
+    ]  # fmt: skip
 
 
 #: What caused a failure, as far as the harness can tell it mechanically: the harness's own rules and limits (a reply
 #: that was no tool call, a sandbox path, a refused command, a token or time limit, a model call that failed), the docs
-#: (a file the guide names that is not there), or :data:`CANNOT_TELL`. The package's messages and the agent's own
-#: mistakes are told apart only by reading the run.
-HARNESS, DOCS, CANNOT_TELL = "harness", "docs", "cannot tell"
-CAUSES = (HARNESS, DOCS, CANNOT_TELL)
+#: (a file the guide names that is not there), the agent (a report sent with no eval written), or :data:`CANNOT_TELL`.
+#: The package's messages and most of the agent's own mistakes are told apart only by reading the run.
+HARNESS, DOCS, AGENT, CANNOT_TELL = "harness", "docs", "agent", "cannot tell"
+CAUSES = (HARNESS, DOCS, AGENT, CANNOT_TELL)
 #: What a failed turn's first error says when the harness's own rules or limits failed it.
 _HARNESS_SAID = (
     "the reply was not one tool call",
     "the reply stopped short",
     "the model call failed",
-    "is no directory in the app or the installed package",
+    "is not in the app's directory or the installed package",
     "is outside the app's directory and the installed package",
     "is not a file in the app's directory",
     "run takes python",
@@ -629,7 +671,7 @@ def stuck_point(steps: Sequence[Step], guide: str = "") -> dict[str, Any] | None
     """The longest span of consecutive failing turns, the message that opened it and its :func:`cause`; ``None`` when
     none failed.
 
-    Only a run of the eval door that worked ends a span. Anything else that worked (a read, a write, ``ls``, ``cat``, a
+    Only a run of the eval door that worked and scored ends a span (one that scored nothing is a failed turn). Anything else that worked (a read, a write, ``ls``, ``cat``, a
     probe script) neither extends nor ends it: it is the agent looking for help, or trying a fix. Ties go to the
     earliest span.
     """
@@ -639,6 +681,7 @@ def stuck_point(steps: Sequence[Step], guide: str = "") -> dict[str, Any] | None
         if failed(step):
             current.append(step)
         elif step.act is not None and step.act.tool == "run" and is_door(step.act.command.split()) and current:
+            # failed() was false: a door run that worked and scored, which ends the span.
             spans.append(current)
             current = []
     if current:

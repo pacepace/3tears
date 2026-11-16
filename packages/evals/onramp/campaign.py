@@ -33,6 +33,7 @@ from typing import Any
 from threetears.evals import Eval, Model, Result
 
 from .agent import (
+    AGENT,
     CANNOT_TELL,
     CAUSES,
     HARNESS,
@@ -46,6 +47,7 @@ from .agent import (
     errors_hit,
     format_error_turns,
     parse_report,
+    scored_door_turns,
     stuck_point,
 )
 from .checks import GRADERS, regrade
@@ -214,6 +216,7 @@ def adopter(build: DocsBuild, brains: Callable[[Sandbox], Brain], *, workdir: Pa
             "written": sandbox.written,
             "stuck": stuck_point(run.steps, guide),
             "format_error_turns": format_error_turns(run.steps),
+            "scored_door_turns": scored_door_turns(run.steps),
             "report": report,
             "report_from": run.report_from,
             "report_problem": problem,
@@ -261,14 +264,29 @@ def trials(result: Result) -> list[dict[str, Any]]:  # Any: each trial's stored 
 def failure_causes(row: Mapping[str, Any]) -> dict[str, str]:  # Any: a trial's stored row
     """What caused each check a trial failed, as far as the harness can tell mechanically (:data:`~.agent.CAUSES`).
 
-    The harness's: every check of a run its own limits stopped (the wall, the dollar cap, a model call that failed);
-    and the reading of a run that gave no report while a reply of its, after its last door run, was refused as no tool
-    call (the report may have been in it). Anything else cannot be told without reading the run.
+    The harness's: every check of a run the wall stopped after a door run of it had scored (it had a working eval and
+    no time to finish), or the dollar cap or a failed model call stopped; every check of a regrade that crashed or ran
+    past its budget on an eval the door ran; and the reading of a run that gave no report while a reply of its, after
+    its last door run, was refused as no tool call. The agent's: every check of a run that sent done with no eval file
+    in its directory (a made-up report, or none). Anything else cannot be told without reading the run.
     """
     record = row.get("record")
     record = record if isinstance(record, Mapping) else {}
     failed = [grader.__name__ for grader in GRADERS if row["scores"].get(grader.__name__, 1.0) != 1.0]
-    if record.get("stopped") in ("wall", "cap", "error"):
+    checks = record.get("checks") if isinstance(record.get("checks"), Mapping) else {}
+    stopped = record.get("stopped")
+    if stopped in ("cap", "error") or (stopped == "wall" and record.get("scored_door_turns")):
+        return dict.fromkeys(failed, HARNESS)
+    if stopped == "done" and str(checks.get("problem", "")).startswith(
+        ("the agent named no eval", f"{checks.get('eval_file')} is not")
+    ):
+        return dict.fromkeys(failed, AGENT)
+    crashed = any(
+        str(reading.get("refused", "")).startswith("Traceback")
+        for reading in (checks.get("app"), checks.get("twin"))
+        if isinstance(reading, Mapping)
+    )
+    if "ran past its" in str(checks.get("problem", "")) or (crashed and checks.get("door_exit") in (0, 4)):
         return dict.fromkeys(failed, HARNESS)
     doors = [command["turn"] for command in record.get("commands", []) if command["door"]]
     late_format = [turn for turn in record.get("format_error_turns", []) if turn > max(doors, default=0)]
@@ -446,6 +464,7 @@ def _finish(ev: Eval, run_dir: Path) -> int:
     print(result.render())
     written = result.write(run_dir / "report")
     rows = trials(result)
+    print(spend_line(rows))
     (run_dir / "trials.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     for row in rows:
         record = row["record"] if isinstance(row["record"], dict) else {}
@@ -463,6 +482,17 @@ def _finish(ev: Eval, run_dir: Path) -> int:
             print(f"unfinished: {unfinished} (its steps.jsonl holds every step it took)")
     print(f"report: {written['html']}\ntrials: {run_dir / 'trials.jsonl'}")
     return result.exit_code()
+
+
+def spend_line(rows: Sequence[Mapping[str, Any]]) -> str:  # Any: a trial's stored row
+    """The most the run can have been billed, beside what the provider reported: the package's spend line sums priced
+    calls only, and a call the wall cut off, or a send that broke, may have been billed at up to its ceiling."""
+    records = [row["record"] for row in rows if isinstance(row["record"], Mapping)]
+    reported = [record.get("cost_usd") for record in records]
+    charged = [record.get("charged_usd") for record in records]
+    said = "unpriced" if any(c is None for c in reported) else f"${sum(c for c in reported if c is not None):.3f}"
+    bound = "unbounded" if any(c is None for c in charged) else f"${sum(c for c in charged if c is not None):.3f}"
+    return f"spend: {said} reported by the provider; at most {bound} billed (each cut-off call at its ceiling)"
 
 
 def clopper_pearson(passed: int, n: int, level: float = 0.95) -> tuple[float, float]:

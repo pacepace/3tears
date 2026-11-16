@@ -29,11 +29,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .agent import Act, done_report, parse_report, read_reply
+from .agent import Act, Step, done_report, parse_report, read_reply, scored_door_turns
 from .campaign import CASES, failure_causes, slug
 from .checks import GRADERS, regrade
 from .isolation import Container
-from .sandbox import DocsBuild, Sandbox
+from .sandbox import DocsBuild, Observation, Sandbox
 
 
 def _replies(run_dir: Path, arm: str) -> dict[tuple[str, int], list[str]]:
@@ -112,8 +112,18 @@ async def _rebuilt(
     return sandbox, REBUILT_EXACT if sandbox.manifest() == state else REBUILT_DIFFERS
 
 
-async def _rescore(row: Mapping[str, Any], replies: Sequence[str], docs: Path) -> dict[str, Any]:  # Any: JSON
+def _steps(logged: Sequence[Mapping[str, Any]]) -> list[Step]:  # Any: a logged step
+    """The logged turns as steps: their acts and what each did."""
+    return [
+        Step(int(step["turn"]), None if step.get("act") is None else Act.model_validate(step["act"]),
+             Observation(**step["observation"]))
+        for step in logged
+    ]  # fmt: skip
+
+
+async def _rescore(row: Mapping[str, Any], replies: Sequence[str], images: Path) -> dict[str, Any]:  # Any: JSON
     record = row["record"]
+    docs = images / f"docs-{record['build']['image'].rsplit(':', 1)[-1]}"
     trial = Path(record["sandbox"]).parent
     logged = [json.loads(line) for line in (trial / "steps.jsonl").read_text(encoding="utf-8").splitlines()]
     steps = [step for step in logged if "observation" in step]
@@ -142,10 +152,12 @@ async def _rescore(row: Mapping[str, Any], replies: Sequence[str], docs: Path) -
         sandbox.written = list(record["written"])
     checks = await regrade(sandbox, out, report, ran)
     took = round(time.monotonic() - started, 1)
+    acts = _steps(steps)
     rescored = {
         **record,
         "stopped": "done" if ended is not None else record["stopped"],
         "commands": ran,
+        "scored_door_turns": scored_door_turns([step for step in acts if ended is None or step.turn < ended]),
         "format_error_turns": again["refused"],
         "report": report,
         "report_problem": problem,
@@ -158,7 +170,11 @@ async def _rescore(row: Mapping[str, Any], replies: Sequence[str], docs: Path) -
         "trial": trial.name,
         "app": record["app"],
         "repeat": row["repeat"],
+        "arm": row["arm"],
         "before": row["scores"],
+        "before_causes": failure_causes(
+            {"record": {**record, "scored_door_turns": scored_door_turns(acts)}, "scores": row["scores"]}
+        ),
         "after": scores,
         "causes": failure_causes({"record": rescored, "scores": scores}),
         "ended_on": ended,
@@ -176,40 +192,44 @@ async def _rescore(row: Mapping[str, Any], replies: Sequence[str], docs: Path) -
 def rescore(run_dir: Path) -> list[str]:
     """Grade every stored trial of ``run_dir`` again (see the module); the lines it prints, also in ``rescore.txt``."""
     rows = [json.loads(line) for line in (run_dir / "trials.jsonl").read_text(encoding="utf-8").splitlines()]
-    docs = next((run_dir.parent / "images").glob("docs-*"), run_dir)
+    images = run_dir.parent / "images"
     replies = {arm: _replies(run_dir, arm) for arm in {row["arm"] for row in rows}}
 
     async def every() -> list[dict[str, Any]]:  # Any: JSON
         return [
-            await _rescore(row, replies[row["arm"]].get((row["record"]["app"], row["repeat"]), []), docs)
+            await _rescore(row, replies[row["arm"]].get((row["record"]["app"], row["repeat"]), []), images)
             for row in rows
         ]
 
     done = asyncio.run(every())
     (run_dir / "rescore.jsonl").write_text("".join(json.dumps(item) + "\n" for item in done), encoding="utf-8")
-    apart = [item for item in done if item["state"] not in COMPARABLE]
-    kept = [item for item in done if item["state"] in COMPARABLE]
-    named = ", ".join(item["trial"] for item in apart)
     lines = [
-        f"| check | before | after, all {len(done)} | after, the {len(kept)} comparable | "
-        "after, failures the harness caused |",
+        "| arm | check | before (harness-caused failures) | after (harness-caused) | after, comparable trials only |",
         "|---|---|---|---|---|",
     ]
-    for grader in GRADERS:
-        name = grader.__name__
-        before = sum(1 for item in done if item["before"].get(name) == 1.0)
-        after = sum(1 for item in done if item["after"][name] == 1.0)
-        comparable = sum(1 for item in kept if item["after"][name] == 1.0)
-        harness = sum(1 for item in done if item["causes"].get(name) == "harness")
-        lines.append(
-            f"| {name} | {before} of {len(done)} | {after} of {len(done)} | {comparable} of {len(kept)} | {harness} |"
-        )
+    for arm in sorted({item["arm"] for item in done}):
+        ours = [item for item in done if item["arm"] == arm]
+        kept = [item for item in ours if item["state"] in COMPARABLE]
+        for grader in GRADERS:
+            name = grader.__name__
+            before = sum(1 for item in ours if item["before"].get(name) == 1.0)
+            was = sum(1 for item in ours if item["before_causes"].get(name) == "harness")
+            after = sum(1 for item in ours if item["after"][name] == 1.0)
+            now = sum(1 for item in ours if item["causes"].get(name) == "harness")
+            comparable = sum(1 for item in kept if item["after"][name] == 1.0)
+            lines.append(
+                f"| {arm} | {name} | {before} of {len(ours)} ({was}) | {after} of {len(ours)} ({now}) | "
+                f"{comparable} of {len(kept)} |"
+            )
+    apart = [item["trial"] for item in done if item["state"] not in COMPARABLE]
     if apart:
-        lines.append(f"not comparable ({named}): graded on a rebuild of the directory at the turn it now ends on")
+        lines.append(
+            f"not comparable ({', '.join(apart)}): graded on a rebuild of the directory at the turn it ends on"
+        )
     for item in done:
         moved = [name for name in item["after"] if item["after"][name] != item["before"].get(name)]
         lines.append(
-            f"{item['trial']}: ends on turn {item['ended_on']}, report from {item['report_from'] or 'nowhere'}, "
+            f"{item['arm']} {item['trial']}: ends on turn {item['ended_on']}, report from {item['report_from'] or 'nowhere'}, "
             f"graded on {item['state']}, regrade {item['regrade_s']}s"
             + (f"; moved: {', '.join(moved)}" if moved else "")
             + (f"; turns read now as acts never made: {item['unmade_turns']}" if item["unmade_turns"] else "")

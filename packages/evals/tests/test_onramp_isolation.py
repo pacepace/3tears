@@ -29,7 +29,7 @@ import pytest
 
 from packages.evals.onramp.agent import Caps, ScriptedBrain
 from packages.evals.onramp.campaign import CONTROL_REF, adopter, isolation_refusal, onramp_eval, preflight, trials
-from packages.evals.onramp.isolation import COPY_BYTES, ENVIRONMENT, GRADING
+from packages.evals.onramp.isolation import COPY_BYTES, ENVIRONMENT, GRADING, LABELS, build_image
 from packages.evals.onramp.sandbox import HERE, DocsBuild, Sandbox
 
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
@@ -306,3 +306,37 @@ def test_the_scripted_pre_flight_passes_every_app_on_the_control_wheel(control: 
     """The guard every agent run passes first: the fixed transcripts succeed on each arm's wheel, in its containers,
     3 of 3 apps on every check; a wheel the harness reads wrong is refused there (the offline test holds the refusal)."""
     assert preflight([control], tmp_path) is None
+
+
+@pytest.mark.timeout(600)
+def test_an_image_builds_where_the_callers_docker_credential_helper_fails(
+    control: DocsBuild, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clean environment's Docker config can name a credential helper that cannot answer (the dev container's, with
+    no session behind it): the SDK's build asks it first and fails with StoreError; the harness builds without it."""
+    import docker  # the SDK: only these Docker tests need it
+    import docker.credentials.errors
+
+    config = tmp_path / "docker-config"
+    config.mkdir()
+    (config / "config.json").write_text(json.dumps({"credsStore": "onramp-helper-that-is-not-there"}), "utf-8")
+    monkeypatch.setenv("DOCKER_CONFIG", str(config))
+    context = tmp_path / "context"
+    context.mkdir()
+    assert control.image is not None
+    (context / "Dockerfile").write_text(f"FROM {control.image}\nLABEL onramp.credtest=1\n", encoding="utf-8")
+    tag = f"onramp-trial:credtest-{os.getpid()}"
+    client = docker.from_env()
+    try:
+        # The SDK's own build, asking the helper first: it warns the helper is not there, then fails.
+        with pytest.raises(docker.credentials.errors.StoreError), pytest.warns(UserWarning, match="not installed"):
+            client.images.build(path=str(context), tag=tag)
+        build_image(client, context, tag)
+        built = client.images.get(tag)
+        assert built.labels.get("onramp.credtest") == "1" and all(built.labels.get(k) == v for k, v in LABELS.items())
+    finally:
+        try:
+            client.images.remove(tag, force=True)
+        except docker.errors.ImageNotFound:
+            pass  # it never built: the assertion above says why
+        client.close()

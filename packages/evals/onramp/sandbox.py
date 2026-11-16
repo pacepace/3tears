@@ -33,6 +33,8 @@ SHOWN_CHARS = 6000
 COMMAND_TIMEOUT_S = 180.0
 #: What ``run`` admits, by program.
 PROGRAMS = ("python", "python3", "ls", "cat")
+#: The flags ``ls`` takes: ``-a`` (every entry is shown anyway), ``-l`` (sizes), ``-1`` (one a line, as it lists).
+LS_FLAGS = ("a", "l", "1")
 #: Exit codes a run of the eval door ends well on: 0, or 4 (a comparison's gate failed, which is a finding).
 DOOR_EXITS_OK = (0, 4)
 
@@ -218,6 +220,9 @@ class Sandbox:
         target = self.readable(path)
         if target is None:
             return refused(f"{path} is outside the app's directory and the installed package")
+        if target.is_dir():
+            why = f"{path} is a directory: `ls {path}` lists it"
+            return Observation(ok=False, text=why, first_error=why)
         if not target.is_file():
             return Observation(ok=False, text=f"{path}: no such file", first_error=f"{path}: no such file")
         with target.open("rb") as handle:
@@ -294,12 +299,32 @@ class Sandbox:
         return Observation(ok=ok, text=text, exit_code=code, first_error=first_error)
 
     def _ls(self, args: list[str]) -> Observation:
-        target = self.readable(args[0] if args else ".")
-        if target is None or not target.is_dir():
-            why = f"ls: {args[0] if args else '.'} is no directory in the app or the installed package"
+        """``ls [FLAGS] [PATH ...]``: each path's entries, or the file itself, as ``ls`` lists them; the flags of
+        :data:`LS_FLAGS` only. Every entry is shown, hidden ones too, so ``-a`` changes nothing; ``-l`` adds each
+        entry's size in bytes; ``-1`` is how it lists anyway."""
+        flags = "".join(arg[1:] for arg in args if arg.startswith("-") and len(arg) > 1)
+        paths = [arg for arg in args if not (arg.startswith("-") and len(arg) > 1)] or ["."]
+        if unknown := sorted(set(flags) - set(LS_FLAGS)):
+            why = f"ls: -{''.join(unknown)} is not taken; ls takes {', '.join(f'-{flag}' for flag in LS_FLAGS)}"
             return Observation(ok=False, text=why, exit_code=2, first_error=why)
-        names = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir() if p.name != "__pycache__")
-        return Observation(ok=True, text="\n".join(names), exit_code=0)
+        listed, missing = [], []
+        for path in paths:
+            target = self.readable(path)
+            if target is None or not target.exists():
+                missing.append(f"ls: {path} is not in the app's directory or the installed package")
+                continue
+            entries = sorted(target.iterdir()) if target.is_dir() else [target]
+            lines = [self._entry(entry, long="l" in flags) for entry in entries if entry.name != "__pycache__"]
+            listed.append((f"{path}:\n" if len(paths) > 1 else "") + "\n".join(lines))
+        text = "\n\n".join([*listed, *missing])
+        if missing:
+            return Observation(ok=False, text=text, exit_code=2, first_error=missing[0])
+        return Observation(ok=True, text=text, exit_code=0)
+
+    @staticmethod
+    def _entry(entry: Path, *, long: bool) -> str:
+        name = entry.name + ("/" if entry.is_dir() else "")
+        return f"{'d' if entry.is_dir() else '-'} {entry.stat().st_size:>10}  {name}" if long else name
 
     def _cat(self, args: list[str]) -> Observation:
         if len(args) != 1:

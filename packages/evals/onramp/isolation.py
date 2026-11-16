@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -199,12 +200,47 @@ def trial_image(wheel: Path) -> str:
         with tempfile.TemporaryDirectory(prefix="onramp-image-") as context:
             shutil.copy2(wheel, Path(context) / wheel.name)
             shutil.copy2(DOCKERFILE, Path(context) / "Dockerfile")
-            client.images.build(path=context, tag=tag, labels=dict(LABELS), rm=True, forcerm=True)
+            build_image(client, Path(context), tag)
     except DOCKER_FAILURES as failed:
         raise IsolationUnavailable(f"the trial image did not build: {failed}") from failed
     finally:
         client.close()
     return tag
+
+
+def build_image(client: docker.DockerClient, context: Path, tag: str) -> None:
+    """Build ``context`` (a directory holding a ``Dockerfile``) as ``tag``, labelled :data:`LABELS`.
+
+    Sent to the daemon's build endpoint as it is, with no registry credentials: the image pulls only public layers,
+    and the SDK's own build reads every credential the caller's Docker config names first, through its credential
+    helper, which a clean environment (a dev container's helper with no session behind it) fails with
+    ``StoreError`` before anything is built. What the daemon says is read as it streams; an error in it fails the
+    build.
+
+    :raises IsolationUnavailable: The daemon reported the build failed.
+    """
+    with tempfile.TemporaryFile() as archive:
+        with tarfile.open(fileobj=archive, mode="w") as packed:
+            for path in sorted(context.iterdir()):
+                packed.add(path, arcname=path.name)
+        archive.seek(0)
+        params = {"t": tag, "labels": json.dumps(dict(LABELS)), "rm": "1", "forcerm": "1"}
+        response = client.api.post(
+            f"{client.api.base_url}/v{client.api.api_version}/build",
+            params=params,
+            data=archive,
+            headers={"Content-Type": "application/x-tar"},
+            stream=True,
+            timeout=(COPY_STALL_S, None),
+        )
+        try:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                said = json.loads(line) if line.strip() else {}
+                if "error" in said:
+                    raise IsolationUnavailable(f"the trial image did not build: {said['error'].strip()}")
+        finally:
+            response.close()
 
 
 def package_dir(image: str) -> str:
