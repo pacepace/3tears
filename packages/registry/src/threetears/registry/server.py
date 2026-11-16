@@ -119,6 +119,15 @@ _logger = get_logger(__name__)
 # future tolerance alone.
 _POP_NONCE_TTL_SECONDS = 120
 
+#: the pop_nonces bucket's byte bound. One nonce per proof-carrying call, each kept 120 s, so the bucket
+#: holds (calls a second) x 120 x (bytes a stored nonce takes) and never grows past it. Measured through
+#: ``aibots cluster exec`` reads of ``/jsz`` (NATS2, 2026-11-16): about 155 bytes a nonce, and the busiest
+#: rate either cluster has seen is cobalt prod's 5,601 a day since 2026-11-02 (0.065 a second; dev 706 a
+#: day; overnight 12 an hour on both), so the bucket holds about 1.2 KB. 1 MiB holds 56 calls a second
+#: sustained, 870 times prod's average: a burst that passes it is refused on this bucket alone (the proof
+#: is denied, failing closed) rather than filling the NATS servers' shared memory store.
+_POP_NONCES_MAX_BYTES = 1 << 20
+
 #: how often a starting replica looks whether the copies its catalog warm-loaded are routable again
 _LOADED_COPIES_POLL_SECONDS = 0.25
 
@@ -867,6 +876,7 @@ class RegistryServer:
             nc,
             bucket_name="pop_nonces",
             ttl_seconds=_POP_NONCE_TTL_SECONDS,
+            max_bytes=_POP_NONCES_MAX_BYTES,
             # the proxy accepts a pop iat up to the platform's future tolerance ahead of its clock;
             # the guard's wipe check is sized for exactly that, and CallProxy refuses a guard that
             # is not. FIVE seconds, so after a broker restart wipes this bucket the guard refuses
