@@ -16,6 +16,7 @@ from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid7
 
+import pyarrow as pa
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -543,11 +544,17 @@ class _CountingNatsClient(_FakeNatsClient):
         self.out -= 1
         return DatasourceQueryResponse(success=False, error_code="ACCESS_DENIED", error_message="no grant")
 
+    async def request_raw(self, **kwargs: Any) -> bytes:
+        """an Arrow ask (``query_arrow``), counted as :meth:`request` counts it, answered the same refusal."""
+        refusal = await self.request(**kwargs)
+        return refusal.model_dump_json().encode()
+
 
 #: one call of every ask the client offers. A coroutine the client gains is added here, or the test
 #: below fails naming it: it must be shown to take its turn too
 _EVERY_ASK: dict[str, Any] = {
     "query": lambda client: client.query("warehouse", "SELECT 1"),
+    "query_arrow": lambda client: client.query_arrow("warehouse", "SELECT 1 AS one", types={"one": pa.int64()}),
     "relation_fingerprint": lambda client: client.relation_fingerprint("warehouse", relation="s.t", key=["a"]),
     "relation_fingerprint_groups": lambda client: client.relation_fingerprint_groups(
         "warehouse", relation="s.t", key=["a"], group_by="state"

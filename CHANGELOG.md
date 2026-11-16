@@ -16,6 +16,19 @@ mimalloc stalled the serving thread 5-15 ms in about a quarter of Arrow builds a
 heaps; spawned workers keep mimalloc as before.
 The registry (`python -m threetears.registry`) makes the same switch at its start, after logging.
 
+### core: `SchemaBackedCollection.save_arrow` / `delete_arrow` -- an Arrow table written through the hub's Arrow write door
+
+**Added:** `save_arrow(rows, conn=, copy=False)` and `delete_arrow(keys, conn=)` write a `pyarrow.Table` on a caller's
+transaction as `save_rows` / `delete_rows` would (same checks, stamps, columns, conflict clause, L1 eviction and
+settlement; a key twice refused client-side), but send the rows as Arrow: only the key columns (and declared
+`invalidation_columns`) become Python. To a hub whose `tx.begin` announces `write_arrow` the rows go as an Arrow
+`l3.tx.copy` naming `on_conflict`/`conflict_columns`/`update_columns` (upsert) or `delete`, typed columns cast to the
+door's types (`write_type`), cut by Arrow slices against the copy budget, the Arrow work on threads. Without the
+announcement, on a direct connection, or for rows the door cannot carry (jsonb/vector columns, `uint64`, `timestamp[ns]`,
+binary, a `raise` conflict clause), they fall back to `save_rows(rows.to_pylist())` / `delete_rows` (read a slice at a
+time on a thread). New store seam `ArrowWritingStore` (`SqlL3Backend.arrow_write_plan`, `write_arrow`);
+`_ProxyConnection.write_arrow_rows`; `schema_sql.bulk_update_columns`.
+
 ### core: pyarrow stays optional -- the change-note keeper moves to its own module, behind the new `arrow` extra
 
 **Changed (import path):** `ChangeNoteKeeper`, `run_change_note_keeper`, `KeeperPass`, `ScrubPass` and

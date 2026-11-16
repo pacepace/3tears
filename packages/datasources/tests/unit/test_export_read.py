@@ -28,6 +28,7 @@ from threetears.datasources.export_read import (
     ExportNotDeletedError,
     IncompleteExportError,
     export_part,
+    export_part_arrow,
     export_select,
     read_export,
 )
@@ -282,6 +283,71 @@ class TestExportPart:
         assert [found["key"] for found in prints] == [["race", "votes"], ["race", "votes"]]
         ((select, _),) = [answer for kind, answer in client.calls if kind == "export"]
         assert select.startswith(f'SELECT race, votes, {hashed.expression} AS "{ROW_HASH_COLUMN}" FROM ')
+
+    @pytest.mark.asyncio
+    async def test_a_part_read_as_arrow_is_proven_and_deleted_as_its_dict_read_is(self) -> None:
+        """Flips if export_part_arrow skips a fingerprint or the delete, or answers other rows than export_part."""
+        client = _Client([_print(3), _print(3)], exported=3)
+        table = await export_part_arrow(
+            client,  # type: ignore[arg-type]
+            _Store(_export([_ROWS])),
+            "warehouse",
+            relation="reporting_prod.results",
+            columns=["race", "votes", "at"],
+            where={"state": "VA"},
+            destination="enr/r1/VA",
+            bucket=_BUCKET,
+        )
+        assert table.to_pylist() == _ROWS
+        assert [kind for kind, _ in client.calls] == ["fingerprint", "export", "fingerprint", "delete"]
+
+    @pytest.mark.asyncio
+    async def test_a_part_read_as_arrow_from_several_files_is_one_table_of_the_rows_export_part_answers(self) -> None:
+        """Flips if a file is missed, the files are joined out of the manifest's order, files whose decimals differ in
+        precision are refused, or a value is typed otherwise than export_part answers it."""
+        objects = _export([_ROWS[:2], _ROWS[2:]])
+        table = await export_part_arrow(
+            _Client([_print(3), _print(3)], exported=3),  # type: ignore[arg-type]
+            _Store(objects),
+            "warehouse",
+            relation="reporting_prod.results",
+            columns=["race", "votes", "at"],
+            where={"state": "VA"},
+            destination="enr/r1/VA",
+            bucket=_BUCKET,
+        )
+        assert isinstance(table, pa.Table)
+        assert table.to_pylist() == await _part(_Client([_print(3), _print(3)], exported=3), _Store(objects)) == _ROWS
+
+    @pytest.mark.asyncio
+    async def test_a_part_read_as_arrow_short_of_the_warehouses_count_is_refused(self) -> None:
+        with pytest.raises(IncompleteExportError, match="hold 2 rows"):
+            await export_part_arrow(
+                _Client([_print(3), _print(3)], exported=3),  # type: ignore[arg-type]
+                _Store(_export([_ROWS[:2]], counts=False)),
+                "warehouse",
+                relation="reporting_prod.results",
+                columns=["race", "votes", "at"],
+                where={"state": "VA"},
+                destination="enr/r1/VA",
+                bucket=_BUCKET,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_part_read_as_arrow_that_moved_during_the_export_is_refused_and_deleted(self) -> None:
+        client = _Client([_print(3, "a"), _print(3, "b")], exported=3)
+        with pytest.raises(IncompleteExportError, match="changed while it was exported"):
+            await export_part_arrow(
+                client,  # type: ignore[arg-type]
+                _Store(_export([_ROWS])),
+                "warehouse",
+                relation="reporting_prod.results",
+                columns=["race", "votes", "at"],
+                where={"state": "VA"},
+                destination="enr/r1/VA",
+                bucket=_BUCKET,
+            )
+        assert client.calls[-1] == ("delete", "enr/r1/VA")
 
     @pytest.mark.asyncio
     async def test_a_part_that_moved_during_the_export_is_refused(self) -> None:

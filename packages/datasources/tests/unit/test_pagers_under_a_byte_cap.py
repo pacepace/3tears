@@ -13,12 +13,27 @@ import re
 from typing import Any
 
 import duckdb
+import pyarrow as pa
 import pydantic_core
 import pytest
+from threetears.core.backends.arrow_reply import reply_rows
 from uuid_utils.compat import uuid7
 
-from threetears.datasources.partitioned_read import read_partitions, read_parts
-from threetears.datasources.query_client import DatasourceQueryResult, IncompleteReadError, read_all, read_counted
+from threetears.datasources.partitioned_read import (
+    read_partitions,
+    read_partitions_arrow,
+    read_parts,
+    read_parts_arrow,
+)
+from threetears.datasources.query_client import (
+    DatasourceArrowResult,
+    DatasourceQueryResponse,
+    DatasourceQueryResult,
+    IncompleteReadError,
+    read_all,
+    read_all_arrow,
+    read_counted,
+)
 
 _STATES = ["AK", "AL", "AZ"]
 
@@ -281,3 +296,88 @@ async def test_a_reply_cut_inside_one_key_reads_on_when_a_bounded_count_finds_th
     assert _sorted(rows) == _EVERY_ROW
     counts = [statement for statement in hub.statements if statement.startswith("SELECT count(*)")]
     assert counts and all(statement.endswith(" LIMIT 2) AS held") for statement in counts), counts
+
+
+class _ArrowByteCappedHub(_ByteCappedHub):
+    """:class:`_ByteCappedHub` that answers ``query_arrow`` as the hub does: the JSON reply it would send, its rows
+    read as Arrow by the client's own JSON parse (the hub's Arrow reply is that table, by its contract)."""
+
+    def __init__(self, max_bytes: int | None) -> None:
+        super().__init__(max_bytes)
+        self.arrow_asks = 0
+
+    async def query_arrow(
+        self, datasource_name: str, query: str, params: list[Any] | None = None, *, types: Any, **_: Any
+    ) -> DatasourceArrowResult:
+        self.arrow_asks += 1
+        page = await self.query(datasource_name, query, params)
+        reply = DatasourceQueryResponse(
+            success=True,
+            rows=page.rows,
+            row_count=page.row_count,
+            truncated=page.truncated,
+            max_reply_bytes=page.max_reply_bytes,
+            correlation_id=page.correlation_id,
+        )
+        sent = reply.model_dump_json().encode()
+        parsed = reply_rows(sent, types, bytes_mark=False)
+        return DatasourceArrowResult(
+            rows=parsed.rows,
+            truncated=parsed.truncated,
+            max_reply_bytes=parsed.reply_cap,
+            rows_bytes=len(sent),
+            correlation_id=page.correlation_id,
+        )
+
+
+_TYPES = {"state": pa.string(), "race": pa.int64(), "note": pa.string()}
+
+
+@pytest.mark.parametrize("max_bytes", [None, 2000, 400, 120, 60])
+async def test_every_pager_reads_as_arrow_the_rows_it_reads_as_dicts(max_bytes: int | None) -> None:
+    """Flips if an Arrow read (read_all_arrow, read_parts_arrow, read_partitions_arrow) answers
+    other rows, or in another order, than its dict read through the same cut replies, or asks a page as dicts."""
+    hub = _ArrowByteCappedHub(max_bytes)
+    common: dict[str, Any] = {"columns": _COLUMNS, "relation": "s.results"}
+
+    whole = await read_all(hub, "w", key=_KEY, page_size=50, **common)  # type: ignore[arg-type]
+    whole_arrow = await read_all_arrow(hub, "w", key=_KEY, page_size=50, types=_TYPES, **common)  # type: ignore[arg-type]
+    assert whole_arrow.schema == pa.schema(list(_TYPES.items()))
+    assert whole_arrow.to_pylist() == whole
+
+    parts = [{"state": state} for state in _STATES]
+    by_part = await read_parts(hub, "w", key=["race"], parts=parts, page_size=50, **common)  # type: ignore[arg-type]
+    by_part_arrow = await read_parts_arrow(hub, "w", key=["race"], parts=parts, page_size=50, types=_TYPES, **common)  # type: ignore[arg-type]
+    assert [table.to_pylist() for table in by_part_arrow] == by_part
+
+    partitioned: dict[str, Any] = {
+        "key": ["state", "race"],
+        "partition_by": "state",
+        "parts": _STATES,
+        "page_size": 10,
+        "counts": {state: 40 for state in _STATES},
+        **common,
+    }
+    dicts = [(part, rows) async for part, rows in read_partitions(hub, "w", **partitioned)]  # type: ignore[arg-type]
+    asked_as_dicts = hub.arrow_asks
+    tables = [(part, rows) async for part, rows in read_partitions_arrow(hub, "w", types=_TYPES, **partitioned)]  # type: ignore[arg-type]
+    assert [(part, rows.to_pylist()) for part, rows in tables] == dicts
+    assert hub.arrow_asks > asked_as_dicts
+
+
+async def test_an_arrow_read_of_nothing_is_an_empty_table_of_its_types() -> None:
+    """Flips if a filter that matches nothing answers a list, or a table of other types, from an Arrow read."""
+    hub = _ArrowByteCappedHub(None)
+
+    empty = await read_all_arrow(
+        hub,  # type: ignore[arg-type]
+        "w",
+        columns=_COLUMNS,
+        relation="s.results",
+        key=_KEY,
+        where_in={"state": []},
+        types=_TYPES,
+    )
+
+    assert empty.num_rows == 0
+    assert empty.schema == pa.schema(list(_TYPES.items()))

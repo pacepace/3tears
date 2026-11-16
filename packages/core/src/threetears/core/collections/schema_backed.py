@@ -64,9 +64,11 @@ from threetears.interfaces.keyed.keys import (
     partial_predicate,
 )
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
+from threetears.core.backends.arrow_copy import arrow_python_columns, arrow_python_rows, with_constant_columns
 from threetears.core.backends.protocol import (
     ANALYZE_AFTER_ROWS,
     AnalyzingStore,
+    ArrowWritingStore,
     BulkDeletingStore,
     ManyKeyReadingStore,
     ReturningDeletingStore,
@@ -2694,6 +2696,111 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
         )
         return written
 
+    async def save_arrow(self, rows: Any, *, conn: Any, copy: bool = False) -> int:
+        """:meth:`save_rows` for rows already in an Arrow table: upserted (or, with ``copy``, inserted) as they are,
+        through the store's Arrow write door, never a Python value a row.
+
+        The same write as ``save_rows(rows.to_pylist(), conn=conn, copy=copy)``: the same checks, the same stamps
+        (``date_created`` and ``date_updated``, the write's time, added as constant Arrow columns), the same columns
+        and conflict clause, every key leaving L1 now and enrolled to settle with the caller's transaction, a key
+        twice refused. Only the key columns (and the collection's :attr:`invalidation_columns`) become Python, for
+        the duplicate check, the enrolment and the L1 eviction. The rows go to the hub as Arrow, cut by Arrow slices
+        against the request budget (:meth:`~threetears.core.backends.sql.SqlL3Backend.write_arrow`); the hub stages
+        them and merges them in one statement a request, so row triggers and change notes fire as for the bulk
+        ``INSERT ... VALUES``.
+
+        **Falls back to** :meth:`save_rows` (the rows read into Python a slice at a time on a thread, today's cost)
+        when the store has no Arrow write door or declines these rows
+        (:meth:`~threetears.core.backends.sql.SqlL3Backend.arrow_write_plan`): a direct connection, a hub that
+        announced no ``write_arrow``, a jsonb or vector column, a column type the door does not carry, a table whose
+        conflict clause is ``raise``.
+
+        :param rows: the rows, a column each; a nullable column may be absent
+        :ptype rows: pyarrow.Table
+        :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
+        :ptype conn: Any
+        :param copy: insert with ``COPY`` rather than upsert; a key already held fails the write
+        :ptype copy: bool
+        :return: how many rows were submitted
+        :rtype: int
+        :raises ValueError: as :meth:`save_rows`: no :class:`CallerTransaction` open on ``conn``; no durable store, a
+            collection that caches absences, defers its L3 writes or fences with a null-safe CAS; two rows sharing a
+            key
+        :raises KeyError: when the rows lack a key column, or a required column
+        """
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.save_arrow")
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(f"{type(self).__name__}.save_arrow: {self.table_name} has no durable store to write to")
+        if self._negative_cache_writes_advance or self._defers_l3_writes or self.schema.cas_null_safe:
+            raise ValueError(
+                f"{type(self).__name__}.save_arrow: a bulk upsert cannot keep this collection's write "
+                f"contract (it caches absences, defers its L3 writes, or fences with a null-safe CAS)"
+            )
+        missing = [name for name in self.schema.pk_columns if name not in rows.column_names]
+        if missing:
+            raise KeyError(f"{self.table_name}.save_arrow: the rows have no key column {missing[0]!r}")
+        if not rows.num_rows:
+            return 0
+        now = datetime.now(UTC)
+        stamps = {name: now for name in ("date_created", "date_updated") if self.schema.get_column(name) is not None}
+        arrow_store = store if isinstance(store, ArrowWritingStore) else None
+        plan = None
+        stamped = rows
+        if arrow_store is not None:
+            stamped = await asyncio.to_thread(with_constant_columns, rows, stamps)
+            plan = arrow_store.arrow_write_plan(
+                self.table_name,
+                stamped.column_names,
+                stamped.schema.types,
+                kind="copy" if copy else "upsert",
+                conn=conn,
+            )
+        if arrow_store is None or plan is None:
+            # no door for these rows: today's write, the rows read into Python off the loop
+            return await self.save_rows(await asyncio.to_thread(arrow_python_rows, rows), conn=conn, copy=copy)
+        keys, seen = await self._arrow_keys(stamped)
+        if len(set(keys)) != len(keys):
+            raise ValueError(
+                f"{type(self).__name__}.save_arrow: two rows share a key; one statement upserts a key once"
+            )
+        for key, row in zip(keys, seen, strict=True):
+            # enrolled before the write, so a write whose outcome is unknown is settled with the rest
+            transaction.enroll(self, key, row=row)
+        # every key leaves L1 in one write before the store's, not one write a key
+        await self._evict_l1_many_off_loop(keys)
+        await arrow_store.write_arrow(self.table_name, stamped, plan, conn=conn)
+        log.debug(
+            "Arrow bulk copy written on the caller's transaction"
+            if copy
+            else "Arrow bulk upsert written on the caller's transaction",
+            extra={"extra_data": {"table": self.table_name, "rows": int(stamped.num_rows)}},
+        )
+        return int(stamped.num_rows)
+
+    async def _arrow_keys(self, rows: Any) -> tuple[list[Any], list[dict[str, Any] | None]]:
+        """each row's key, as :meth:`save_rows` enrols it, and the row its settling message reads its
+        :attr:`invalidation_columns` from (None for a collection that declares none): the only columns of an Arrow
+        write that become Python, read on a thread a slice at a time.
+
+        :param rows: the rows
+        :ptype rows: pyarrow.Table
+        :return: the keys (a value, or a tuple for a key of many columns) and the rows, in row order
+        :rtype: tuple[list[Any], list[dict[str, Any] | None]]
+        """
+        key_columns = list(self.schema.pk_columns)
+        named = [name for name in self.invalidation_columns if name in rows.column_names]
+        read = [*key_columns, *(name for name in named if name not in key_columns)]
+        columns = dict(zip(read, await asyncio.to_thread(arrow_python_columns, rows, read), strict=True))
+        values = [columns[name] for name in key_columns]
+        keys: list[Any] = list(zip(*values, strict=True)) if len(values) > 1 else values[0]
+        seen: list[dict[str, Any] | None] = (
+            [dict(zip(named, each, strict=True)) for each in zip(*(columns[name] for name in named), strict=True)]
+            if named
+            else [None] * len(keys)
+        )
+        return keys, seen
+
     async def _copy_rows(
         self,
         store: DurableStore,
@@ -3215,6 +3322,68 @@ class SchemaBackedCollection(BaseCollection[EntityT], Generic[EntityT]):
             extra={"extra_data": {"table": self.table_name, "rows": deleted}},
         )
         return deleted
+
+    async def delete_arrow(self, keys: Any, *, conn: Any) -> int:
+        """:meth:`delete_rows` for keys already in an Arrow table: deleted through the store's Arrow write door, the
+        keys sent as Arrow and merged by one ``DELETE ... USING`` a request.
+
+        As :meth:`delete_rows`: on the caller's transaction only, every key leaving L1 now and settled with the rest
+        when the transaction ends. The keys become Python only for the enrolment and the eviction. **Falls back to**
+        :meth:`delete_rows` when the store has no Arrow door or declines the keys
+        (:meth:`~threetears.core.backends.sql.SqlL3Backend.arrow_write_plan`), and for a collection that declares
+        :attr:`invalidation_columns`, whose messages need each row read as it goes.
+
+        :param keys: the keys, a column for each of the table's key columns (other columns are not sent)
+        :ptype keys: pyarrow.Table
+        :param conn: the caller's connection, its transaction opened by :class:`CallerTransaction`
+        :ptype conn: Any
+        :return: how many keys were named (a key no row holds is not an error)
+        :rtype: int
+        :raises ValueError: as :meth:`delete_rows`: no :class:`CallerTransaction` open on ``conn``; no durable store,
+            a collection that caches absences or defers its L3 writes; and when the keys lack a key column
+        """
+        transaction = CallerTransaction.join(conn, writer=f"{type(self).__name__}.delete_arrow")
+        store = self._durable_store()
+        if store is None:
+            raise ValueError(
+                f"{type(self).__name__}.delete_arrow: {self.table_name} has no durable store to delete from"
+            )
+        if self._negative_cache_writes_advance or self._defers_l3_writes:
+            raise ValueError(
+                f"{type(self).__name__}.delete_arrow: a bulk delete cannot keep this collection's write "
+                f"contract (it caches absences or defers its L3 writes)"
+            )
+        key_columns = list(self.schema.pk_columns)
+        missing = [name for name in key_columns if name not in keys.column_names]
+        if missing:
+            raise ValueError(f"{self.table_name}.delete_arrow: the keys have no key column {missing[0]!r}")
+        if not keys.num_rows:
+            return 0
+        values = await asyncio.to_thread(arrow_python_columns, keys, key_columns)
+        named = list(zip(*values, strict=True))
+        arrow_store = store if isinstance(store, ArrowWritingStore) and not self.invalidation_columns else None
+        plan = (
+            arrow_store.arrow_write_plan(
+                self.table_name, keys.column_names, keys.schema.types, kind="delete", conn=conn
+            )
+            if arrow_store is not None
+            else None
+        )
+        if arrow_store is None or plan is None:
+            # no door for these keys, or messages that carry each row's columns: today's delete
+            return await self.delete_rows(named, conn=conn)
+        entity_keys = [key if len(key) > 1 else key[0] for key in named]
+        for entity_key in entity_keys:
+            # enrolled before the delete, so a delete whose outcome is unknown is settled with the rest
+            transaction.enroll(self, entity_key, row=None)
+        # every key leaves L1 in one write before the store's delete, not one write a key
+        await self._evict_l1_many_off_loop(entity_keys)
+        await arrow_store.write_arrow(self.table_name, keys, plan, conn=conn)
+        log.debug(
+            "Arrow bulk delete written on the caller's transaction",
+            extra={"extra_data": {"table": self.table_name, "rows": len(named)}},
+        )
+        return len(named)
 
     async def _delete_rows_returning(
         self,

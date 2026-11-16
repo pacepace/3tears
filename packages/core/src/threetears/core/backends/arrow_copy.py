@@ -33,13 +33,15 @@ import operator
 import struct
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any, Final
 
 from threetears.core.backends.schema_sql import json_default, transport_param
 
 try:
     import pyarrow as pa
+    import pyarrow.compute as pc
     import pyarrow.ipc as pa_ipc
 
     _PYARROW = True
@@ -65,15 +67,27 @@ if _PYARROW:
     del _value, _kind
 
 __all__ = [
+    "CONFLICT_COLUMNS_FIELD",
     "COPY_ARROW_FIELD",
+    "DELETE_FIELD",
     "JSON_COLUMNS_FIELD",
+    "ON_CONFLICT_FIELD",
     "ROWS_DIGEST_FIELD",
+    "UPDATE_COLUMNS_FIELD",
+    "WRITE_ARROW_FIELD",
     "ArrowCopyRows",
     "arrow_copy_available",
+    "arrow_python_columns",
+    "arrow_python_rows",
     "copy_rows_arrow",
+    "first_request_rows",
     "framed_copy_request",
+    "planned_write_table",
     "rows_digest",
     "split_copy_request",
+    "with_constant_columns",
+    "write_request_rows",
+    "write_type",
 ]
 
 #: the first bytes of an ``l3.tx.copy`` request whose rows are Arrow; a JSON request starts ``{``
@@ -81,6 +95,25 @@ _COPY_ARROW_MAGIC: Final = b"L3COPYA1"
 
 #: the ``tx.begin`` reply's field by which a hub announces it reads Arrow copy requests
 COPY_ARROW_FIELD: Final = "copy_arrow"
+
+#: the ``tx.begin`` reply's field by which a hub announces it reads an Arrow ``l3.tx.copy`` that upserts or deletes its
+#: rows (:data:`ON_CONFLICT_FIELD`, :data:`DELETE_FIELD`) and Arrow columns typed ``decimal128``, ``timestamp[us, UTC]``,
+#: ``timestamp[us]`` and ``date32`` (:func:`write_type`). Never send either to a hub without it: one that ignored the
+#: fields would insert the rows meant for an upsert or a delete
+WRITE_ARROW_FIELD: Final = "write_arrow"
+
+#: the envelope's field making its rows an upsert: ``"update"``, with :data:`CONFLICT_COLUMNS_FIELD` and
+#: :data:`UPDATE_COLUMNS_FIELD`; absent for new rows
+ON_CONFLICT_FIELD: Final = "on_conflict"
+
+#: an upsert's conflict target, the table's primary key, each among the request's columns
+CONFLICT_COLUMNS_FIELD: Final = "conflict_columns"
+
+#: the columns an upsert's ``DO UPDATE`` sets from ``EXCLUDED``; none makes it ``DO NOTHING``
+UPDATE_COLUMNS_FIELD: Final = "update_columns"
+
+#: the envelope's field making its rows keys to delete: the request's columns are exactly the table's primary key
+DELETE_FIELD: Final = "delete"
 
 #: the envelope's field naming the rows' IPC stream's SHA-256, base64url without padding (:func:`rows_digest`)
 ROWS_DIGEST_FIELD: Final = "rows_sha256"
@@ -455,3 +488,202 @@ def split_copy_request(data: bytes | memoryview) -> tuple[memoryview, int] | Non
             raise ValueError("an Arrow copy request's envelope runs past its end")
         found = view[start : start + size], start + size
     return found
+
+
+# ── the write door (WRITE_ARROW_FIELD): a caller's Arrow table upserted, copied or deleted as it is ──────────────────
+
+#: the values one :func:`arrow_python_rows` / :func:`arrow_python_columns` call turns into Python objects: one
+#: ``to_pylist`` holds the interpreter lock for its whole length, so a table is read a slice at a time and the caller's
+#: event loop runs between them (8,192 values, ~1 ms)
+_PYTHON_VALUES: Final = 8192
+
+#: the timestamp units a timestamp column is widened from to microseconds, losing nothing (``ns`` would: refused)
+_WIDENED_UNITS: Final = frozenset({"s", "ms", "us"})
+
+
+def write_type(arrow_type: Any, *, as_utc: bool = False) -> Any:
+    """the Arrow type the write door carries a column of ``arrow_type`` as, the cast losing nothing; ``None`` when it
+    carries no such column (the caller writes the rows as Python values instead).
+
+    The door reads ``string``, ``int64``, ``float64``, ``bool``, ``decimal128``, ``timestamp[us, UTC]``,
+    ``timestamp[us]`` and ``date32`` (``WIRE.md`` section 4), each landing what its values sent as JSON land. So text
+    of any layout is ``string``; any signed integer and an unsigned one under 64 bits ``int64``; any float
+    ``float64``; a decimal of 38 digits or fewer ``decimal128``; a timestamp in seconds to microseconds is in
+    microseconds, at UTC when it carries a zone (the instant kept) and naive when not; ``date64`` is ``date32``; a
+    dictionary is its values'; a column of nulls only is ``string``. ``uint64`` (past ``int64``), a timestamp in
+    nanoseconds (finer than the door), binary, nested and every other type are carried by none.
+
+    :param arrow_type: the column's type
+    :ptype arrow_type: pyarrow.DataType
+    :param as_utc: the table's column is ``timestamptz``: a naive timestamp is read as UTC, as
+        :func:`~threetears.core.backends.schema_sql.coerce_datetime_for_write_tz` reads a naive datetime
+    :ptype as_utc: bool
+    :return: the type carried, or None
+    :rtype: pyarrow.DataType | None
+    """
+    types = pa.types
+    if types.is_dictionary(arrow_type):
+        arrow_type = arrow_type.value_type
+    carried: Any = None
+    if types.is_string(arrow_type) or types.is_large_string(arrow_type) or types.is_string_view(arrow_type):
+        carried = pa.string()
+    elif types.is_null(arrow_type):
+        carried = pa.string()
+    elif types.is_boolean(arrow_type):
+        carried = pa.bool_()
+    elif types.is_signed_integer(arrow_type) or (types.is_unsigned_integer(arrow_type) and arrow_type.bit_width < 64):
+        carried = pa.int64()
+    elif types.is_floating(arrow_type):
+        carried = pa.float64()
+    elif types.is_decimal(arrow_type) and arrow_type.precision <= 38:
+        carried = pa.decimal128(arrow_type.precision, arrow_type.scale)
+    elif types.is_timestamp(arrow_type) and arrow_type.unit in _WIDENED_UNITS:
+        carried = pa.timestamp("us", tz="UTC") if arrow_type.tz is not None or as_utc else pa.timestamp("us")
+    elif types.is_date(arrow_type):
+        carried = pa.date32()
+    return carried
+
+
+def with_constant_columns(table: Any, values: Mapping[str, datetime]) -> Any:
+    """``table`` with each of ``values`` as a column holding it in every row: replacing a column of that name, else
+    added after the rest. Laid out by Arrow, never a Python value a row. A write's stamps (``date_created``,
+    ``date_updated``), aware datetimes, as ``timestamp[us, UTC]``.
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :param values: each column's one value, an aware datetime
+    :ptype values: Mapping[str, datetime]
+    :return: the rows with them
+    :rtype: pyarrow.Table
+    """
+    for name, value in values.items():
+        column = pa.repeat(pa.scalar(value, pa.timestamp("us", tz="UTC")), table.num_rows, memory_pool=_POOL)
+        position = table.schema.get_field_index(name)
+        table = table.set_column(position, name, column) if position >= 0 else table.append_column(name, column)
+    return table
+
+
+def planned_write_table(
+    table: Any, columns: Sequence[tuple[str, str | None, Any]], *, sort_by: Sequence[str] = ()
+) -> Any:
+    """the request's table: each of ``columns`` cast to the type the door carries it as, or all nulls where the rows
+    supply none, in that order; ordered by ``sort_by`` (a copy's key, the order a bulk load into YugabyteDB wants).
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :param columns: each column sent: its name, the rows' column it is read from (None: nulls) and its type
+        (:func:`write_type`; None with no column read: text)
+    :ptype columns: Sequence[tuple[str, str | None, pyarrow.DataType | None]]
+    :param sort_by: the columns the rows are ordered by, ascending; none keeps the rows' order
+    :ptype sort_by: Sequence[str]
+    :return: the table
+    :rtype: pyarrow.Table
+    :raises pyarrow.ArrowInvalid: for a value its type cannot hold
+    """
+    arrays = []
+    for _name, source, carried in columns:
+        if source is None:
+            # text nulls: a null lands NULL whatever the table's column, as a JSON null does
+            arrays.append(pa.nulls(table.num_rows, carried or pa.string(), memory_pool=_POOL))
+        else:
+            column = table.column(source)
+            if pa.types.is_dictionary(column.type):
+                column = pc.cast(column, column.type.value_type, memory_pool=_POOL)
+            arrays.append(column if column.type == carried else pc.cast(column, carried, memory_pool=_POOL))
+    planned = pa.Table.from_arrays(arrays, names=[name for name, _source, _carried in columns])
+    if sort_by and planned.num_rows > 1:
+        order = pc.sort_indices(planned, sort_keys=[(name, "ascending") for name in sort_by], memory_pool=_POOL)
+        planned = pc.take(planned, order, memory_pool=_POOL)
+    return planned
+
+
+def first_request_rows(table: Any, limit: int) -> int:
+    """how many rows the first request of ``table`` tries: all of them when Arrow's layout of them fits ``limit``,
+    else their share of it, a tenth spare for what the stream adds (its schema, each buffer's padding).
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :param limit: the bytes one request's rows may come to
+    :ptype limit: int
+    :return: the rows, at least one
+    :rtype: int
+    """
+    size = int(table.nbytes)
+    rows = int(table.num_rows)
+    return rows if size <= limit else max(1, rows * limit * 9 // (10 * size))
+
+
+def write_request_rows(
+    table: Any, start: int, rows: int, limit: int, loop: asyncio.AbstractEventLoop | None = None
+) -> tuple[ArrowCopyRows, int]:
+    """one request's rows of ``table`` from ``start``: ``rows`` of them, fewer while their IPC stream is past
+    ``limit`` bytes. A statement cut by Arrow slices, never a Python value a row.
+
+    Blocking: run it on the copy build thread. The stream is written by Arrow and copied out with the build's turns
+    with the caller's loop (:func:`_ipc_stream`, :func:`_stream_bytes`).
+
+    :param table: the rows, every column as the door carries it (:func:`planned_write_table`)
+    :ptype table: pyarrow.Table
+    :param start: the first row
+    :ptype start: int
+    :param rows: the rows to try, at least one
+    :ptype rows: int
+    :param limit: the bytes one request's rows may come to
+    :ptype limit: int
+    :param loop: the caller's event loop, handed the build's turns; None off any loop
+    :ptype loop: asyncio.AbstractEventLoop | None
+    :return: the request's rows, and how many rows of ``table`` they are
+    :rtype: tuple[ArrowCopyRows, int]
+    :raises ImportError: without pyarrow
+    :raises ValueError: when one row alone is past ``limit``
+    """
+    if not _PYARROW:
+        raise ImportError("an Arrow write needs pyarrow: install 3tears[snapshot]")
+    turns = _Turns(loop)
+    while True:
+        piece = table.slice(start, rows)
+        stream = _ipc_stream(piece, turns)
+        if stream.size <= limit:
+            break
+        if piece.num_rows <= 1:
+            raise ValueError(f"one row's Arrow stream is {stream.size} bytes, past the request's {limit}")
+        rows = max(1, min(piece.num_rows - 1, piece.num_rows * limit * 9 // (10 * stream.size)))
+    ipc = _stream_bytes(stream, turns)
+    return ArrowCopyRows(ipc, rows_digest(ipc), []), int(piece.num_rows)
+
+
+def arrow_python_columns(table: Any, names: Sequence[str]) -> list[list[Any]]:
+    """the values of ``names`` in ``table`` as Python objects, a column each, read a slice at a time
+    (:data:`_PYTHON_VALUES`) so the caller's loop runs between them. Run it on a thread.
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :param names: the columns
+    :ptype names: Sequence[str]
+    :return: each column's values, in row order
+    :rtype: list[list[Any]]
+    """
+    columns: list[list[Any]] = []
+    for name in names:
+        column = table.column(name)
+        values: list[Any] = []
+        for start in range(0, len(column), _PYTHON_VALUES):
+            values.extend(column.slice(start, _PYTHON_VALUES).to_pylist())
+        columns.append(values)
+    return columns
+
+
+def arrow_python_rows(table: Any) -> list[dict[str, Any]]:
+    """``table``'s rows as Python dicts (``to_pylist``), read a slice of rows at a time so the caller's loop runs
+    between them. Run it on a thread.
+
+    :param table: the rows
+    :ptype table: pyarrow.Table
+    :return: the rows
+    :rtype: list[dict[str, Any]]
+    """
+    step = max(1, _PYTHON_VALUES // max(1, table.num_columns))
+    rows: list[dict[str, Any]] = []
+    for start in range(0, table.num_rows, step):
+        rows.extend(table.slice(start, step).to_pylist())
+    return rows

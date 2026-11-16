@@ -29,7 +29,7 @@ from uuid import UUID
 from threetears.core.backends.protocol import L3AnswerCutError
 from threetears.core.keyed import Dialect, Fragment, Selected, by_conditions
 from threetears.datasources.entities import DataSourceType
-from threetears.datasources.query_client import DatasourceQueryClient, read_scope_pages
+from threetears.datasources.query_client import DatasourceArrowResult, DatasourceQueryClient, read_scope_pages
 
 __all__ = ["DatasourceAnswerCut", "DatasourceReader"]
 
@@ -141,6 +141,36 @@ class DatasourceReader:
                 if row.get(column) is not None:
                     row[column] = turn(row[column])
         return rows
+
+    async def fetch_arrow(self, query: str, /, *params: Any, types: Mapping[str, Any]) -> Any:
+        """the query's rows as one Arrow table, never a Python object a row
+        (:meth:`~threetears.datasources.query_client.DatasourceQueryClient.query_arrow`): so a keyed helper's Arrow
+        read (:func:`~threetears.core.keyed.read_keyed_arrow`) reads a warehouse as it reads the L3 rail.
+
+        ``decode`` is not applied: ``types`` names each column as the reply's JSON carries it
+        (:func:`~threetears.datasources.arrow_rows.warehouse_arrow_types`).
+
+        :param query: the SELECT, ``$n`` placeholders
+        :ptype query: str
+        :param params: its parameters (a date, time, UUID or decimal is sent in its JSON form)
+        :ptype params: Any
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :return: the rows
+        :rtype: pyarrow.Table
+        :raises DatasourceAnswerCut: when the hub cut the answer (its row cap, or its reply's bytes)
+        :raises ReplyNotArrowError: when a value is not of its column's type
+        """
+        result: DatasourceArrowResult = await self._client.query_arrow(
+            self._datasource, query, [_wire(param) for param in params], types=types, user_identity_token=self._token
+        )
+        if result.truncated:
+            raise DatasourceAnswerCut(
+                f"{self._datasource}: the hub cut the answer after {result.rows.num_rows} rows (its row cap or its "
+                f"reply's bytes, {result.max_reply_bytes}); read fewer keys a statement",
+                rows=result.rows.num_rows,
+            )
+        return result.rows
 
     async def read_scope(
         self,

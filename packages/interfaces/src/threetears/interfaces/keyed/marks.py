@@ -16,10 +16,14 @@ class MarkedRead:
     :ptype rows: list[dict[str, Any]]
     :param marks: each stamp's mark to save next: the newest read, or the one given when none moved
     :ptype marks: dict[str, Any]
+    :param table: of an Arrow read (``read_past_marks_arrow``), the rows as one Arrow table (``rows`` is then empty);
+        None otherwise
+    :ptype table: pyarrow.Table | None
     """
 
     rows: list[dict[str, Any]]
     marks: dict[str, Any]
+    table: Any = None
 
 
 @dataclass(frozen=True)

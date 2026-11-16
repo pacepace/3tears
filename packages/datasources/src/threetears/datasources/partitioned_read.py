@@ -42,13 +42,26 @@ from threetears.datasources.query_client import (
     DatasourceQueryError,
     IncompleteReadError,
     RelationFingerprintResult,
+    _ask,
+    _count,
+    _group_start,
+    _head,
+    _joined,
+    _key_at,
+    _read_all,
     keyset_condition,
     plain_columns,
-    read_all,
     select_list,
 )
 
-__all__ = ["DEFAULT_PART_CONCURRENCY", "fingerprint_parts", "read_partitions", "read_parts"]
+__all__ = [
+    "DEFAULT_PART_CONCURRENCY",
+    "fingerprint_parts",
+    "read_partitions",
+    "read_partitions_arrow",
+    "read_parts",
+    "read_parts_arrow",
+]
 
 log = get_logger(__name__)
 
@@ -130,7 +143,7 @@ async def fingerprint_parts(
     return results
 
 
-async def read_parts(
+async def _read_parts(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
@@ -141,7 +154,8 @@ async def read_parts(
     concurrency: int = DEFAULT_PART_CONCURRENCY,
     page_size: int | None = None,
     prove: bool = False,
-) -> list[list[dict[str, Any]]]:
+    types: Mapping[str, Any] | None = None,
+) -> list[Any]:
     """read each part of a relation whole (:func:`~threetears.datasources.query_client.read_all`), several at once.
 
     Each part is read by keyset pages with no fingerprint; ``prove=True`` asks ``read_all``'s old proof
@@ -173,9 +187,17 @@ async def read_parts(
     """
     paging: dict[str, Any] = {} if page_size is None else {"page_size": page_size}
 
-    def one(part: Mapping[str, str]) -> Callable[[], Awaitable[list[dict[str, Any]]]]:
-        return lambda: read_all(
-            client, datasource_name, columns=columns, relation=relation, key=key, where=part, prove=prove, **paging
+    def one(part: Mapping[str, str]) -> Callable[[], Awaitable[Any]]:
+        return lambda: _read_all(
+            client,
+            datasource_name,
+            columns=columns,
+            relation=relation,
+            key=key,
+            where=part,
+            prove=prove,
+            types=types,
+            **paging,
         )
 
     results = await _bounded([one(part) for part in parts], concurrency)
@@ -281,7 +303,8 @@ async def _read_pages(
     part: str,
     starts: Sequence[tuple[Any, ...]],
     page_size: int,
-) -> list[Callable[[], Awaitable[list[dict[str, Any]]]]]:
+    types: Mapping[str, Any] | None = None,
+) -> list[Callable[[], Awaitable[Any]]]:
     """one call per page of a part, each reading from its start up to the next page's.
 
     :return: the calls, in key order
@@ -290,11 +313,11 @@ async def _read_pages(
     selected = select_list(columns)
     ordering = ", ".join(key)
 
-    def one(index: int) -> Callable[[], Awaitable[list[dict[str, Any]]]]:
-        async def page() -> list[dict[str, Any]]:
+    def one(index: int) -> Callable[[], Awaitable[Any]]:
+        async def page() -> Any:
             # a reply the hub cut (its bytes) holds a prefix of the page: the page reads on past the cut reply's
-            # last whole key group until a reply comes back whole
-            collected: list[dict[str, Any]] = []
+            # last whole key group until a reply comes back whole; each reply's kept rows, joined at the end
+            collected: list[Any] = []
             after: tuple[Any, ...] | None = None
             while True:
                 if after is None:
@@ -312,19 +335,18 @@ async def _read_pages(
                     f"SELECT {selected} FROM {relation} WHERE {partition_by} = $1 AND {lower}{upper} "  # noqa: S608 - trusted identifiers
                     f"ORDER BY {ordering} LIMIT {int(page_size) + 1}"
                 )
-                result = await client.query(datasource_name, sql, params=[part, *params])
+                result = await _ask(client, datasource_name, sql, [part, *params], types, {})
                 rows = result.rows
-                if len(collected) + len(rows) > page_size:
+                answered = len(rows)
+                if _count(collected) + answered > page_size:
                     raise IncompleteReadError(
                         f"{datasource_name}: {relation} {partition_by}={part}: a page held more than {page_size} "
                         "rows; rows were written during the read, or the key is not unique"
                     )
                 if not result.truncated:
-                    return collected + rows
-                kept = list(rows)
-                cut_key = tuple(kept[-1][column] for column in key) if kept else None
-                while kept and tuple(kept[-1][column] for column in key) == cut_key:
-                    kept.pop()
+                    return _joined([*collected, rows], types)
+                cut_key = _key_at(rows, answered - 1, key) if answered else None
+                kept = 0 if cut_key is None else _group_start(rows, answered, cut_key, key)
                 if not kept and cut_key is not None:
                     # one key a reply (wide rows): whole when the part holds no more rows of it, one keyed count says
                     same = " AND ".join(f"{column} = ${index}" for index, column in enumerate(key, 2))
@@ -333,15 +355,15 @@ async def _read_pages(
                         f"SELECT count(*) AS n FROM {relation} WHERE {partition_by} = $1 AND {same}",  # noqa: S608
                         params=[part, *cut_key],
                     )
-                    if counted.rows and int(counted.rows[0]["n"]) == len(rows):
-                        kept = list(rows)
+                    if counted.rows and int(counted.rows[0]["n"]) == answered:
+                        kept = answered
                 if not kept:
                     raise IncompleteReadError(
                         f"{datasource_name}: {relation} {partition_by}={part}: the hub cut a page within one value of "
                         f"{tuple(key)}: one key group is wider than one reply, so the page cannot be read whole"
                     )
-                collected.extend(kept)
-                after = tuple(kept[-1][column] for column in key)
+                collected.append(_head(rows, kept))
+                after = _key_at(rows, kept - 1, key)
 
         return page
 
@@ -369,7 +391,7 @@ def _batches(counts: Mapping[str, int], *, batch_rows: int, page_size: int) -> l
     return batches
 
 
-async def read_partitions(
+async def _read_partitions(
     client: DatasourceQueryClient,
     datasource_name: str,
     *,
@@ -383,7 +405,8 @@ async def read_partitions(
     batch_rows: int = _BATCH_ROWS,
     counts: Mapping[str, int] | None = None,
     prove: bool = False,
-) -> AsyncIterator[tuple[str, list[dict[str, Any]]]]:
+    types: Mapping[str, Any] | None = None,
+) -> AsyncIterator[tuple[str, Any]]:
     """every part of a relation (or the ``parts`` asked for) over the read rail, pages read side by side, one part at a time.
 
     **Why not part by part.** :func:`read_parts` pages each part from its start, one page after
@@ -462,6 +485,7 @@ async def read_partitions(
             page_size=page_size,
             batch_rows=batch_rows,
             counts=counts or {},
+            types=types,
         ):
             yield part, rows
         return
@@ -477,7 +501,7 @@ async def read_partitions(
 
     async def read_batch(
         members: list[str],
-    ) -> tuple[list[tuple[str, list[dict[str, Any]]]], dict[str | None, RelationFingerprintResult], str | None]:
+    ) -> tuple[list[tuple[str, Any]], dict[str | None, RelationFingerprintResult], str | None]:
         """one read of a batch: its parts' rows, their fingerprints after the read, and the first part that moved."""
         holding = [part for part in members if counts[part] > 0]
         starts = (
@@ -493,7 +517,7 @@ async def read_partitions(
             if holding
             else {}
         )
-        calls: list[Callable[[], Awaitable[list[dict[str, Any]]]]] = []
+        calls: list[Callable[[], Awaitable[Any]]] = []
         spans: dict[str, tuple[int, int]] = {}
         for part in holding:
             pages = await _read_pages(
@@ -506,6 +530,7 @@ async def read_partitions(
                 part=part,
                 starts=starts[part],
                 page_size=page_size,
+                types=types,
             )
             spans[part] = (len(calls), len(calls) + len(pages))
             calls += pages
@@ -519,7 +544,7 @@ async def read_partitions(
             pages_read = []
             spans = {}
             for part in holding:
-                rows = await read_all(
+                rows = await _read_all(
                     client,
                     datasource_name,
                     columns=columns,
@@ -527,6 +552,7 @@ async def read_partitions(
                     key=key,
                     where={partition_by: part},
                     page_size=page_size,
+                    types=types,
                 )
                 spans[part] = (len(pages_read), len(pages_read) + 1)
                 pages_read.append(rows)
@@ -541,10 +567,10 @@ async def read_partitions(
             if holding
             else {}
         )
-        read: list[tuple[str, list[dict[str, Any]]]] = []
+        read: list[tuple[str, Any]] = []
         for part in members:
             start, end = spans.get(part, (0, 0))
-            rows = [row for page in pages_read[start:end] for row in page]
+            rows = _joined(pages_read[start:end], types)
             if after.get(part) != before.get(part):
                 return read, after, part
             if len(rows) != counts[part]:
@@ -555,7 +581,7 @@ async def read_partitions(
             read.append((part, rows))
         return read, after, None
 
-    async def batch(members: list[str]) -> list[tuple[str, list[dict[str, Any]]]]:
+    async def batch(members: list[str]) -> list[tuple[str, Any]]:
         moved: str | None = None
         for attempt in range(1, CHANGED_READ_ATTEMPTS + 1):
             read, after, moved = await read_batch(members)
@@ -632,7 +658,8 @@ async def _read_named_partitions(
     page_size: int,
     batch_rows: int,
     counts: Mapping[str, int],
-) -> AsyncIterator[tuple[str, list[dict[str, Any]]]]:
+    types: Mapping[str, Any] | None = None,
+) -> AsyncIterator[tuple[str, Any]]:
     """:func:`read_partitions` over named parts, by key, with no fingerprint.
 
     A part with a count is batched by it; a part without one is a batch of its own, so a batch's rows
@@ -659,7 +686,7 @@ async def _read_named_partitions(
             parts=members,
             page_size=page_size,
         )
-        calls: list[Callable[[], Awaitable[list[dict[str, Any]]]]] = []
+        calls: list[Callable[[], Awaitable[Any]]] = []
         spans: dict[str, tuple[int, int]] = {}
         for part in members:
             pages = await _read_pages(
@@ -672,6 +699,7 @@ async def _read_named_partitions(
                 part=part,
                 starts=starts[part],
                 page_size=page_size,
+                types=types,
             )
             spans[part] = (len(calls), len(calls) + len(pages))
             calls += pages
@@ -684,7 +712,7 @@ async def _read_named_partitions(
                 raise
             pages_read = []
             for part in members:
-                rows = await read_all(
+                rows = await _read_all(
                     client,
                     datasource_name,
                     columns=columns,
@@ -692,12 +720,13 @@ async def _read_named_partitions(
                     key=key,
                     where={partition_by: part},
                     page_size=page_size,
+                    types=types,
                 )
                 spans[part] = (len(pages_read), len(pages_read) + 1)
                 pages_read.append(rows)
         for part in members:
             start, end = spans[part]
-            rows = [row for page in pages_read[start:end] for row in page]
+            rows = _joined(pages_read[start:end], types)
             if part in counted and len(rows) != counted[part]:
                 raise IncompleteReadError(
                     f"{datasource_name}: {relation} {partition_by}={part} counted {counted[part]} rows and the read "
@@ -717,3 +746,153 @@ async def _read_named_partitions(
             }
         },
     )
+
+
+async def read_parts(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str | Selected],
+    relation: str,
+    key: Annotated[Sequence[str], DeclaredKey],
+    parts: Sequence[Mapping[str, str]],
+    concurrency: int = DEFAULT_PART_CONCURRENCY,
+    page_size: int | None = None,
+    prove: bool = False,
+) -> list[list[dict[str, Any]]]:
+    """each part of a relation read whole, several parts at once (:func:`_read_parts` says how).
+
+    :return: each part's rows, as dicts, in the order of ``parts``
+    :rtype: list[list[dict[str, Any]]]
+    :raises IncompleteReadError: when a part cannot be shown whole
+    """
+    return await _read_parts(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=relation,
+        key=key,
+        parts=parts,
+        concurrency=concurrency,
+        page_size=page_size,
+        prove=prove,
+    )
+
+
+async def read_parts_arrow(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str | Selected],
+    relation: str,
+    key: Annotated[Sequence[str], DeclaredKey],
+    parts: Sequence[Mapping[str, str]],
+    types: Mapping[str, Any],
+    concurrency: int = DEFAULT_PART_CONCURRENCY,
+    page_size: int | None = None,
+    prove: bool = False,
+) -> list[Any]:
+    """:func:`read_parts`, each part's rows one Arrow table
+    (:func:`~threetears.datasources.query_client.read_all_arrow`).
+
+    :param types: column name -> its Arrow type as the reply's JSON carries it, every column selected, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :return: each part's rows, in the order of ``parts``
+    :rtype: list[pyarrow.Table]
+    :raises IncompleteReadError: when a part cannot be shown whole
+    :raises ReplyNotArrowError: when a value is not of its column's type
+    """
+    return await _read_parts(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=relation,
+        key=key,
+        parts=parts,
+        concurrency=concurrency,
+        page_size=page_size,
+        prove=prove,
+        types=types,
+    )
+
+
+async def read_partitions(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str | Selected],
+    relation: str,
+    key: Annotated[Sequence[str], DeclaredKey],
+    partition_by: KeyColumn,
+    parts: Sequence[str] | None = None,
+    concurrency: int = DEFAULT_PART_CONCURRENCY,
+    page_size: int = _PARTITION_PAGE_ROWS,
+    batch_rows: int = _BATCH_ROWS,
+    counts: Mapping[str, int] | None = None,
+    prove: bool = False,
+) -> AsyncIterator[tuple[str, list[dict[str, Any]]]]:
+    """a relation's parts read whole in bulk, a part at a time (:func:`_read_partitions` says how).
+
+    :return: each part and its rows, as dicts
+    :rtype: AsyncIterator[tuple[str, list[dict[str, Any]]]]
+    :raises IncompleteReadError: when a part cannot be shown whole
+    """
+    async for part, rows in _read_partitions(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=relation,
+        key=key,
+        partition_by=partition_by,
+        parts=parts,
+        concurrency=concurrency,
+        page_size=page_size,
+        batch_rows=batch_rows,
+        counts=counts,
+        prove=prove,
+    ):
+        yield part, rows
+
+
+async def read_partitions_arrow(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str | Selected],
+    relation: str,
+    key: Annotated[Sequence[str], DeclaredKey],
+    partition_by: KeyColumn,
+    types: Mapping[str, Any],
+    parts: Sequence[str] | None = None,
+    concurrency: int = DEFAULT_PART_CONCURRENCY,
+    page_size: int = _PARTITION_PAGE_ROWS,
+    batch_rows: int = _BATCH_ROWS,
+    counts: Mapping[str, int] | None = None,
+    prove: bool = False,
+) -> AsyncIterator[tuple[str, Any]]:
+    """:func:`read_partitions`, each part's rows one Arrow table: the same statements, each reply read by
+    :meth:`~threetears.datasources.query_client.DatasourceQueryClient.query_arrow`, so no row is a Python object.
+
+    :param types: column name -> its Arrow type as the reply's JSON carries it, every column selected, in order
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :return: each part and its rows
+    :rtype: AsyncIterator[tuple[str, pyarrow.Table]]
+    :raises IncompleteReadError: when a part cannot be shown whole
+    :raises ReplyNotArrowError: when a value is not of its column's type
+    """
+    async for part, rows in _read_partitions(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=relation,
+        key=key,
+        partition_by=partition_by,
+        parts=parts,
+        concurrency=concurrency,
+        page_size=page_size,
+        batch_rows=batch_rows,
+        counts=counts,
+        prove=prove,
+        types=types,
+    ):
+        yield part, rows

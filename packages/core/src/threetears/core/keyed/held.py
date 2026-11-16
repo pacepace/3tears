@@ -32,6 +32,7 @@ __all__ = [
     "HeldArrow",
     "HeldMapping",
     "hash_bytes",
+    "stamped_hashes",
 ]
 
 #: the separator between a key's parts, and the marks of a NULL part and a present one, in one key's text
@@ -70,6 +71,46 @@ def _encoded_key(texts: KeyTexts) -> str:
     """one key's canonical texts as one string (a NULL part kept apart from every text): what the Arrow form matches
     held keys to answered ones by."""
     return _SEPARATOR.join(_NULL_PART if text is None else _PRESENT + text for text in texts)
+
+
+def _encoded_keys(texts: Sequence[pa.Array]) -> pa.Array:
+    """each row's key, its columns' canonical texts as one string, as :func:`_encoded_key` spells one key."""
+    parts = [pc.fill_null(pc.binary_join_element_wise(pa.scalar(_PRESENT), text, ""), _NULL_PART) for text in texts]
+    return parts[0] if len(parts) == 1 else pc.binary_join_element_wise(*parts, _SEPARATOR)
+
+
+def stamped_hashes(
+    table: pa.Table,
+    key_columns: Sequence[str],
+    kinds: Sequence[HashColumn],
+    key_text: _KeyText,
+    hashes: Mapping[KeyTexts, Any],
+) -> pa.Array:
+    """each row's hash as an earlier read answered it, by its key: a changed row's full read stamps the hash its key
+    read answered, never selecting the hash again (the warehouse's md5 cost about 40 reply bytes a row, and an Arrow
+    read selecting it again put two of the 2026-11-03 night's uploads over the writer before the hash diff:
+    23:45:12 +28,038 B, 00:03:14 +55,788 B; tests/pod/test_reply_bytes_night.py in the reports repo).
+
+    :param table: the rows read, their key columns among them
+    :ptype table: pa.Table
+    :param key_columns: the key's columns, in the key's order
+    :ptype key_columns: Sequence[str]
+    :param kinds: each key column's kind, in the same order
+    :ptype kinds: Sequence[HashColumn]
+    :param key_text: one value's canonical text (:func:`~threetears.core.keyed.changed.key_text`)
+    :ptype key_text: _KeyText
+    :param hashes: each answered key's canonical texts -> its hash
+    :ptype hashes: Mapping[KeyTexts, Any]
+    :return: each row's hash, NULL for a key with none answered
+    :rtype: pa.Array
+    """
+    texts = [
+        _arrow_key_texts(table.column(name).combine_chunks(), kind.kind, kind.scale, key_text)
+        for name, kind in zip(key_columns, kinds, strict=True)
+    ]
+    answered = pa.array([_encoded_key(key) for key in hashes], pa.string())
+    held = pa.array([None if value is None else str(value) for value in hashes.values()], pa.string())
+    return held.take(pc.index_in(_encoded_keys(texts), value_set=answered))
 
 
 def hash_bytes(hashed: str) -> bytes:
@@ -319,10 +360,7 @@ class HeldArrow:
                 for name, kind in zip(key_columns, kinds, strict=True)
             ]
         )
-        parts = [
-            pc.fill_null(pc.binary_join_element_wise(pa.scalar(_PRESENT), text, ""), _NULL_PART) for text in self._texts
-        ]
-        self._encoded = parts[0] if len(parts) == 1 else pc.binary_join_element_wise(*parts, _SEPARATOR)
+        self._encoded = _encoded_keys(self._texts)
         self._hashes = table.column(ROW_HASH_COLUMN).combine_chunks()
 
     def _keys(self, mask: np.ndarray) -> list[tuple[Any, ...]]:

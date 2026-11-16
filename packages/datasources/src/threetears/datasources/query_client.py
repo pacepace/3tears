@@ -54,7 +54,7 @@ import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 from uuid import UUID, uuid7
 
 import pydantic_core
@@ -76,10 +76,12 @@ from threetears.core.security.door_request import (
     datasource_query_op,
     omit_absent_proof,
 )
+from threetears.core.backends.arrow_reply import arrow_schema_text, read_reply, reply_rows
 from threetears.core.declared import whole_read
 from threetears.core.keyed import Fragment, Selected, renumbered, selected_column
 from threetears.core.sql_fragments import FilterValue, as_written, filter_conditions
 from threetears.core.wire import TolerantWireModel
+from threetears.datasources.arrow_rows import joined_arrow
 from threetears.datasources.bounded_rows import json_with_rows
 from threetears.datasources.export import ExportResult, check_destination
 from threetears.nats.errors import RequestError
@@ -109,6 +111,7 @@ __all__ = [
     "DatasourceExportListResult",
     "DatasourceExportListUnsupportedError",
     "DatasourceExportRecord",
+    "DatasourceArrowResult",
     "DatasourceExportRequest",
     "DatasourceExportResult",
     "DatasourceQueryClient",
@@ -121,6 +124,7 @@ __all__ = [
     "RelationFingerprintRequest",
     "RelationFingerprintResult",
     "read_all",
+    "read_all_arrow",
     "read_scope_pages",
     "read_counted",
 ]
@@ -634,6 +638,25 @@ class DatasourceQueryRequest(ProvenDoorRequest, TolerantWireModel):
     #: ask refuses the field as unknown (``MALFORMED_REQUEST``), which the client reports as
     #: :class:`DatasourceExportListUnsupportedError`
     export_list: DatasourceExportListRequest | None = None
+    #: ``"arrow"`` asks a query's rows as one Arrow IPC stream behind the reply's envelope (``L3ARROW1``,
+    #: the ``l3.query`` rail's framing), typed by :attr:`arrow_schema`; a hub that answers so does it for a read
+    #: alone, and answers JSON for anything else. Off the wire when absent, so a JSON ask is byte for byte what it was;
+    #: an older hub ignores both fields (a tolerant reader) and answers JSON, which the client reads as Arrow itself
+    reply_format: Literal["json", "arrow"] | None = None
+    #: the rows' Arrow schema, its IPC serialization base64 (:func:`~threetears.core.backends.arrow_reply.arrow_schema_text`)
+    arrow_schema: str | None = None
+
+    @model_validator(mode="after")
+    def _arrow_names_its_schema(self) -> "DatasourceQueryRequest":
+        """require an Arrow ask to be a query naming its schema.
+
+        :return: the validated request
+        :rtype: DatasourceQueryRequest
+        :raises ValueError: when ``reply_format`` is ``arrow`` without ``arrow_schema``, or on an ask that is no query
+        """
+        if self.reply_format == "arrow" and (self.arrow_schema is None or self.query is None):
+            raise ValueError("an arrow reply_format is a query's, and names its arrow_schema")
+        return self
 
     @model_validator(mode="after")
     def _exactly_one_operation(self) -> "DatasourceQueryRequest":
@@ -694,7 +717,7 @@ class DatasourceQueryRequest(ProvenDoorRequest, TolerantWireModel):
         :rtype: dict[str, Any]
         """
         data: dict[str, Any] = handler(self)
-        for name in ("export", "export_delete", "export_list"):
+        for name in ("export", "export_delete", "export_list", "reply_format", "arrow_schema"):
             if getattr(self, name) is None:
                 data.pop(name, None)
         return omit_absent_proof(data)
@@ -813,6 +836,25 @@ class DatasourceQueryResult(BaseModel):
     truncated: bool
     correlation_id: UUID
     max_reply_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasourceArrowResult:
+    """what a successful :meth:`DatasourceQueryClient.query_arrow` hands the caller: the rows as one Arrow table.
+
+    :ivar rows: the rows, one column a type asked for, in that order: ``rows.to_pylist()`` equals the rows
+        :meth:`DatasourceQueryClient.query` answers for the same statement
+    :ivar truncated: whether the hub cut the result, as :attr:`DatasourceQueryResult.truncated`
+    :ivar max_reply_bytes: the bytes the hub cut this reply's rows at; None while it cuts at its row cap
+    :ivar rows_bytes: the bytes the hub's cap measured these rows by (their JSON's), for sizing a next page
+    :ivar correlation_id: the request's id
+    """
+
+    rows: Any
+    truncated: bool
+    max_reply_bytes: int | None
+    rows_bytes: int
+    correlation_id: UUID
 
 
 class DatasourceQueryError(RuntimeError):
@@ -1064,6 +1106,152 @@ class DatasourceQueryClient:
         return credential.presented(request, door=DATASOURCE_DOOR, op=datasource_query_op(subject))
 
     @traced
+    async def query_arrow(
+        self,
+        datasource_name: str,
+        query: str,
+        params: list[Any] | None = None,
+        *,
+        types: Mapping[str, Any],
+        user_identity_token: str | None = None,
+        correlation_id: UUID | None = None,
+    ) -> DatasourceArrowResult:
+        """:meth:`query`, its rows one Arrow table: the same rows, never one Python object a row.
+
+        The request asks the hub for the rows as Arrow (``reply_format``, ``arrow_schema``). A hub that answers so
+        sends them as one IPC stream behind the reply's envelope (the ``l3.query`` rail's ``L3ARROW1`` framing), read
+        in place; an older hub, or one that answers this read as JSON, sends JSON, which Arrow's own JSON reader
+        parses straight into the same table. Either is read on a thread, the JSON parse off the interpreter lock
+        (:func:`~threetears.core.backends.arrow_reply.read_reply`, the one parser of both rails), so the event loop
+        never decodes a row: :meth:`query` decodes its whole reply into Python rows on the loop (about 45 ms for 10,000
+        rows of 78 columns, measured 2026-11-15, AR1). Needs ``pyarrow``.
+
+        ``types`` names each column the statement selects and its Arrow type, in order, as the reply's JSON carries it
+        (:func:`~threetears.datasources.arrow_rows.datasource_arrow_types`): text for text, a decimal, a date or a
+        time; ``int64`` for an integer; ``float64`` for a float; ``bool`` for a boolean.
+
+        :param datasource_name: the datasource's name as the hub holds it
+        :ptype datasource_name: str
+        :param query: the SELECT
+        :ptype query: str
+        :param params: positional query parameters, JSON-native values only
+        :ptype params: list[Any] | None
+        :param types: column name -> its Arrow type, every column selected, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :param user_identity_token: the per-turn user assertion when a human is in the loop
+        :ptype user_identity_token: str | None
+        :param correlation_id: trace id for this query; minted when omitted
+        :ptype correlation_id: UUID | None
+        :return: the rows, with ``truncated`` set when the hub cut them
+        :rtype: DatasourceArrowResult
+        :raises ReplyNotArrowError: when a value is not of its column's type
+        :raises DatasourceQueryError: as :meth:`query` raises it
+        """
+        if not datasource_name:
+            raise DatasourceQueryError(
+                "INVALID_DATASOURCE_NAME",
+                "a datasource query needs the datasource's name; an empty name composes no subject",
+            )
+        request = DatasourceQueryRequest(
+            correlation_id=correlation_id if correlation_id is not None else uuid7(),
+            identity_token=SecretStr(self.forwarded_identity_token()),
+            user_identity_token=SecretStr(user_identity_token) if user_identity_token is not None else None,
+            query=query,
+            params=list(params) if params is not None else [],
+            reply_format="arrow",
+            arrow_schema=arrow_schema_text(types),
+        )
+        subject = Subjects.datasource_query(datasource_name)
+        try:
+            if self._turns is None:
+                reply, parsed = await self._send_arrow(subject, request, types)
+            else:
+                async with self._turns:
+                    reply, parsed = await self._send_arrow(subject, request, types)
+        except RequestError as exc:
+            log.warning(
+                "datasource query did not complete",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "correlation_id": f"{request.correlation_id}",
+                        "error": str(exc),
+                    }
+                },
+            )
+            raise DatasourceQueryError("REQUEST_FAILED", f"datasource query on {datasource_name!r}: {exc}") from exc
+        if not parsed.success:
+            refusal = _refusal(reply, parsed)
+            error_code = refusal.error_code or "UNKNOWN"
+            log.info(
+                "datasource query refused",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "correlation_id": f"{request.correlation_id}",
+                        "error_code": error_code,
+                    }
+                },
+            )
+            raise DatasourceQueryError(
+                error_code, refusal.error_message or f"datasource query on {datasource_name!r} refused"
+            )
+        if parsed.truncated:
+            log.warning(
+                "datasource query result was cut by the hub (its row cap or its reply's bytes); rows is a prefix",
+                extra={
+                    "extra_data": {
+                        "datasource": datasource_name,
+                        "correlation_id": f"{request.correlation_id}",
+                        "row_count": parsed.rows.num_rows,
+                        "max_reply_bytes": parsed.reply_cap,
+                    }
+                },
+            )
+        # the bytes the cap measured the rows by: an Arrow reply says them (json_bytes counts its envelope too, as the
+        # JSON reply's length does); a JSON reply is its own length
+        measured = len(reply) if parsed.json_bytes is None else parsed.json_bytes
+        return DatasourceArrowResult(
+            rows=parsed.rows,
+            truncated=parsed.truncated,
+            max_reply_bytes=parsed.reply_cap,
+            rows_bytes=measured,
+            correlation_id=request.correlation_id,
+        )
+
+    async def _send_arrow(
+        self, subject: Subject, request: DatasourceQueryRequest, types: Mapping[str, Any]
+    ) -> tuple[bytes, Any]:
+        """send an Arrow ask and read its reply on a thread; ask again while the hub answers ``DATASOURCE_BUSY``, as
+        :meth:`_send` does.
+
+        :param subject: the datasource's query subject
+        :ptype subject: Subject
+        :param request: the request
+        :ptype request: DatasourceQueryRequest
+        :param types: column name -> its Arrow type, in order
+        :ptype types: Mapping[str, pyarrow.DataType]
+        :return: the last reply's bytes, and its parse
+        :rtype: tuple[bytes, Any]
+        :raises RequestError: when the bus fails to deliver or answer
+        """
+        wait = BUSY_BACKOFF_SECONDS
+        attempts = 0
+        while True:
+            payload = self._proven(request, subject).model_dump_json().encode("utf-8")
+            reply = await self._nats_client.request_raw(subject=subject, payload=payload, timeout=self._timeout)
+            parsed = await asyncio.to_thread(read_reply, reply, types, _datasource_json_rows)
+            busy = not parsed.success and _refusal(reply, parsed).error_code == DATASOURCE_BUSY
+            if not busy or attempts >= BUSY_RETRIES:
+                return reply, parsed
+            attempts += 1
+            await asyncio.sleep(wait * random.uniform(0.5, 1.5))  # noqa: S311 - backoff jitter, not a secret
+            wait *= 2
+            log.info(
+                "datasource busy; asking again",
+                extra={"extra_data": {"subject": subject.path, "attempt": attempts, "retries": BUSY_RETRIES}},
+            )
+
     async def relation_fingerprint(
         self,
         datasource_name: str,
@@ -1648,6 +1836,28 @@ _DEFAULT_PAGE_SIZE: Final[int] = 500
 CHANGED_READ_ATTEMPTS: Final = 3
 
 
+def _datasource_json_rows(reply: bytes, types: Mapping[str, Any]) -> Any:
+    """a JSON reply's rows as Arrow: :func:`~threetears.core.backends.arrow_reply.reply_rows` with no bytes mark (this
+    rail writes a bytes value as bare hex)."""
+    return reply_rows(reply, types, bytes_mark=False)
+
+
+def _refusal(reply: bytes, parsed: Any) -> DatasourceQueryResponse:
+    """a failed reply's code and message: from an Arrow reply's envelope, or the JSON (a refusal carries no rows, so
+    decoding it is small).
+
+    :param reply: the reply's bytes
+    :ptype reply: bytes
+    :param parsed: its parse (:func:`~threetears.core.backends.arrow_reply.read_reply`)
+    :ptype parsed: Any
+    :return: the reply, as its model
+    :rtype: DatasourceQueryResponse
+    """
+    if parsed.envelope is not None:
+        return DatasourceQueryResponse.model_validate(parsed.envelope)
+    return DatasourceQueryResponse.model_validate_json(reply)
+
+
 class IncompleteReadError(RuntimeError):
     """a paged read could not be shown to have returned every row.
 
@@ -1675,6 +1885,83 @@ async def read_all(
     max_pages: int = 10_000,
     prove: bool = False,
 ) -> list[dict[str, Any]]:
+    """read an entire relation (or the part the filters name) by keyset pages, or raise; never return a prefix
+    (:func:`_read_all` says how).
+
+    :return: every row, as dicts
+    :rtype: list[dict[str, Any]]
+    :raises IncompleteReadError: when the read cannot be shown whole
+    """
+    rows: list[dict[str, Any]] = await _read_all(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=relation,
+        key=key,
+        where=where,
+        where_in=where_in,
+        page_size=page_size,
+        max_pages=max_pages,
+        prove=prove,
+    )
+    return rows
+
+
+async def read_all_arrow(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str | Selected],
+    relation: str,
+    key: Sequence[str],
+    types: Mapping[str, Any],
+    where: Mapping[str, FilterValue] | None = None,
+    where_in: Mapping[str, Sequence[FilterValue]] | None = None,
+    page_size: int = _DEFAULT_PAGE_SIZE,
+    max_pages: int = 10_000,
+    prove: bool = False,
+) -> Any:
+    """:func:`read_all`, its rows one Arrow table: the same pages, each read by
+    :meth:`DatasourceQueryClient.query_arrow`, so no row is ever a Python object; ``to_pylist()`` equals
+    :func:`read_all`'s rows. Needs ``pyarrow``.
+
+    :param types: column name -> its Arrow type as the reply's JSON carries it, every column selected, in order
+        (:func:`~threetears.datasources.arrow_rows.warehouse_arrow_types`)
+    :ptype types: Mapping[str, pyarrow.DataType]
+    :return: every row
+    :rtype: pyarrow.Table
+    :raises IncompleteReadError: when the read cannot be shown whole
+    :raises ReplyNotArrowError: when a value is not of its column's type
+    """
+    return await _read_all(
+        client,
+        datasource_name,
+        columns=columns,
+        relation=relation,
+        key=key,
+        where=where,
+        where_in=where_in,
+        page_size=page_size,
+        max_pages=max_pages,
+        prove=prove,
+        types=types,
+    )
+
+
+async def _read_all(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    *,
+    columns: Sequence[str | Selected],
+    relation: str,
+    key: Sequence[str],
+    where: Mapping[str, FilterValue] | None = None,
+    where_in: Mapping[str, Sequence[FilterValue]] | None = None,
+    page_size: int = _DEFAULT_PAGE_SIZE,
+    max_pages: int = 10_000,
+    prove: bool = False,
+    types: Mapping[str, Any] | None = None,
+) -> Any:
     """read an entire relation (or the part the filters name) by keyset pages, or raise. never return a prefix.
 
     **By default nothing is fingerprinted.** The pages are keyset pages with a sentinel row (below),
@@ -1807,7 +2094,7 @@ async def read_all(
     if not prove:
         filters = _Filters.of(where, where_in)
         if filters.reads_nothing:
-            return []
+            return _joined([], types)
         return await _pages(
             client,
             datasource_name,
@@ -1817,6 +2104,7 @@ async def read_all(
             filters=filters,
             page_size=page_size,
             max_pages=max_pages,
+            types=types,
         )
 
     # THE TOTAL IS THE PROOF. Everything below this line guards a specific way to
@@ -1837,7 +2125,7 @@ async def read_all(
     # function's promise is the whole relation or a raise.
     filters = _Filters.of(where, where_in)
     if filters.reads_nothing:
-        return []
+        return _joined([], types)
     for attempt in range(1, CHANGED_READ_ATTEMPTS + 1):
         before = await _fingerprint(client, datasource_name, relation, key, filters)
         rows = await _pages(
@@ -1849,6 +2137,7 @@ async def read_all(
             filters=filters,
             page_size=page_size,
             max_pages=max_pages,
+            types=types,
         )
         try:
             return await _proven(client, datasource_name, relation, key, rows, before, filters)
@@ -1917,7 +2206,7 @@ async def read_scope_pages(
     :raises IncompleteReadError: when paging cannot step past every row
     """
     _check_read(columns, key, page_size)
-    return await _pages(
+    rows: list[dict[str, Any]] = await _pages(
         client,
         datasource_name,
         columns=columns,
@@ -1928,6 +2217,7 @@ async def read_scope_pages(
         max_pages=max_pages,
         user_identity_token=user_identity_token,
     )
+    return rows
 
 
 async def read_counted(
@@ -2113,20 +2403,121 @@ def _remember_reply_rows(client: Any, read: tuple[str, str, str], rows: int | No
     _REPLY_ROWS[client] = held
 
 
-def _rows_a_reply_carries(rows: list[dict[str, Any]], max_reply_bytes: int) -> int:
-    """about how many rows like ``rows`` one reply cut at ``max_reply_bytes`` carries, with a margin.
+def _rows_a_reply_carries(page: DatasourceQueryResult | DatasourceArrowResult, max_reply_bytes: int) -> int:
+    """about how many rows like a page's one reply cut at ``max_reply_bytes`` carries, with a margin.
 
-    Measured as the hub measures its cut: pydantic's compact JSON, in UTF-8 bytes (the broker's ``reply_rows``).
+    Measured as the hub measures its cut: pydantic's compact JSON, in UTF-8 bytes (the broker's ``reply_rows``); an
+    Arrow page by the bytes its reply says the cap measured its rows by.
 
-    :param rows: a page's rows, as the hub sent them
-    :ptype rows: list[dict[str, Any]]
+    :param page: a page, as the hub sent it, holding at least one row
+    :ptype page: DatasourceQueryResult | DatasourceArrowResult
     :param max_reply_bytes: the hub's announced reply byte cap
     :ptype max_reply_bytes: int
     :return: the rows, at least 1
     :rtype: int
     """
-    per_row = len(pydantic_core.to_json(rows, serialize_unknown=True)) / len(rows)
+    if isinstance(page, DatasourceArrowResult):
+        per_row = max(1, page.rows_bytes) / page.rows.num_rows
+    else:
+        per_row = len(pydantic_core.to_json(page.rows, serialize_unknown=True)) / len(page.rows)
     return max(1, int(_CAP_FILL * max_reply_bytes / per_row))
+
+
+async def _ask(
+    client: DatasourceQueryClient,
+    datasource_name: str,
+    sql: str,
+    params: list[Any],
+    types: Mapping[str, Any] | None,
+    asserted: Mapping[str, Any],
+) -> DatasourceQueryResult | DatasourceArrowResult:
+    """one page's statement: its rows as dicts (:meth:`DatasourceQueryClient.query`), or as one Arrow table when
+    ``types`` names them (:meth:`DatasourceQueryClient.query_arrow`).
+
+    :return: the page
+    :rtype: DatasourceQueryResult | DatasourceArrowResult
+    """
+    if types is None:
+        return await client.query(datasource_name, sql, params=params, **asserted)
+    return await client.query_arrow(datasource_name, sql, params=params, types=types, **asserted)
+
+
+def _key_at(rows: Any, index: int, key: Sequence[str]) -> tuple[Any, ...]:
+    """one row's key values, of a page's dicts or its Arrow table (the row's key values alone made Python values).
+
+    :param rows: the page's rows
+    :ptype rows: list[dict[str, Any]] | pyarrow.Table
+    :param index: the row, from 0
+    :ptype index: int
+    :param key: the key's columns
+    :ptype key: Sequence[str]
+    :return: the values
+    :rtype: tuple[Any, ...]
+    """
+    if isinstance(rows, list):
+        return tuple(rows[index][column] for column in key)
+    return tuple(rows.column(column)[index].as_py() for column in key)
+
+
+def _group_start(rows: Any, end: int, group: tuple[Any, ...], key: Sequence[str]) -> int:
+    """how many of a page's first ``end`` rows are kept when the rows at their end sharing the key ``group`` are
+    dropped (re-read at the head of the next page, so a key group never straddles two).
+
+    :param rows: the page's rows
+    :ptype rows: list[dict[str, Any]] | pyarrow.Table
+    :param end: the rows considered
+    :ptype end: int
+    :param group: the key whose trailing rows are dropped
+    :ptype group: tuple[Any, ...]
+    :param key: the key's columns
+    :ptype key: Sequence[str]
+    :return: the rows kept, from the first
+    :rtype: int
+    """
+    kept = end
+    while kept and _key_at(rows, kept - 1, key) == group:
+        kept -= 1
+    return kept
+
+
+def _head(rows: Any, count: int) -> Any:
+    """a page's first ``count`` rows: a list's, or an Arrow table's slice (no copy).
+
+    :param rows: the page's rows
+    :ptype rows: list[dict[str, Any]] | pyarrow.Table
+    :param count: the rows
+    :ptype count: int
+    :return: the rows
+    :rtype: list[dict[str, Any]] | pyarrow.Table
+    """
+    return rows[:count] if isinstance(rows, list) else rows.slice(0, count)
+
+
+def _count(pieces: Sequence[Any]) -> int:
+    """the rows a read's kept pages hold.
+
+    :param pieces: each page's kept rows
+    :ptype pieces: Sequence[list[dict[str, Any]] | pyarrow.Table]
+    :return: their rows
+    :rtype: int
+    """
+    return sum(len(piece) for piece in pieces)
+
+
+def _joined(pieces: Sequence[Any], types: Mapping[str, Any] | None) -> Any:
+    """a read's kept pages as one answer: the dicts in order, or (``types`` given) one Arrow table of the pages'
+    tables, joined without a copy (an empty one of ``types`` when none was kept).
+
+    :param pieces: each page's kept rows, in order
+    :ptype pieces: Sequence[list[dict[str, Any]] | pyarrow.Table]
+    :param types: column name -> its Arrow type; None for dict rows
+    :ptype types: Mapping[str, pyarrow.DataType] | None
+    :return: the rows
+    :rtype: list[dict[str, Any]] | pyarrow.Table
+    """
+    if types is None:
+        return [row for piece in pieces for row in piece]
+    return joined_arrow(pieces, types)
 
 
 def select_list(columns: Sequence[str | Selected]) -> str:
@@ -2180,7 +2571,8 @@ async def _pages(
     page_size: int,
     max_pages: int,
     user_identity_token: str | None = None,
-) -> list[dict[str, Any]]:
+    types: Mapping[str, Any] | None = None,
+) -> Any:
     """every row of the filtered part, page after page in key order: the one paging loop.
 
     The sentinel row, the key group held back from a page's end, the halving of a page too large
@@ -2196,7 +2588,8 @@ async def _pages(
     # the user's assertion when a human is in the loop; the principal's own grants (nothing passed) otherwise
     asserted: dict[str, Any] = {} if user_identity_token is None else {"user_identity_token": user_identity_token}
 
-    rows: list[dict[str, Any]] = []
+    # the pages' kept rows, a page's at a time: dicts, or (``types`` given) Arrow tables joined at the end
+    rows: list[Any] = []
     cursor: tuple[Any, ...] | None = None
     previous_had_more = False
 
@@ -2227,7 +2620,7 @@ async def _pages(
         # question the hub is not being asked.
         sql = f"SELECT {selected} FROM {relation}{predicate} ORDER BY {ordering} LIMIT {int(size) + 1}"
         try:
-            page = await client.query(datasource_name, sql, params=params, **asserted)
+            page = await _ask(client, datasource_name, sql, params, types, asserted)
         except DatasourceQueryError as exc:
             # more bytes than one reply may carry: the same rows in smaller pages. Row counts
             # cannot bound bytes when one row can be a thousand times another (a polygon)
@@ -2250,26 +2643,25 @@ async def _pages(
             size = ceiling = page_size
             continue
 
-        if not page.rows:
+        answered = len(page.rows)
+        if not answered:
             if previous_had_more:
                 raise IncompleteReadError(
                     f"{datasource_name}: empty page after a page that had more. the previous page returned "
                     f"its sentinel row, so more rows existed a moment ago and this cannot be the end of the "
                     f"relation. either the ordering key {tuple(key)} is not unique and the cursor stepped "
-                    f"over duplicates, or rows were deleted mid-read. {len(rows)} rows were read and they "
+                    f"over duplicates, or rows were deleted mid-read. {_count(rows)} rows were read and they "
                     f"are NOT the whole relation."
                 )
-            return rows
+            return _joined(rows, types)
 
-        if page.truncated and len(page.rows) <= size:
+        if page.truncated and answered <= size:
             # THE HUB CUT THE REPLY (its bytes, or its row cap): the rows are a prefix of the page, so more rows
             # follow and this is never the end. The last row's key group may be cut short too, so it is dropped
             # and re-read at the head of the next page, as the sentinel's group is; the next page asks for about
             # as many rows as this reply could carry.
-            kept = list(page.rows)
-            cut_key = tuple(kept[-1][column] for column in key)
-            while kept and tuple(kept[-1][column] for column in key) == cut_key:
-                kept.pop()
+            cut_key = _key_at(page.rows, answered - 1, key)
+            kept = _group_start(page.rows, answered, cut_key, key)
             if not kept:
                 # every row of the reply shares one key (one row a reply, when rows are wide): it is whole when the
                 # part holds no more rows of that key, which one keyed count says
@@ -2284,7 +2676,7 @@ async def _pages(
                     client.query(
                         datasource_name,
                         f"SELECT count(*) AS n FROM (SELECT 1 AS one FROM {relation} WHERE {where_sql}"  # noqa: S608 - trusted identifiers
-                        f" ORDER BY {ordering} LIMIT {len(page.rows) + 1}) AS held",
+                        f" ORDER BY {ordering} LIMIT {answered + 1}) AS held",
                         params=[*values, *cut_key],
                         **asserted,
                     ),
@@ -2293,18 +2685,18 @@ async def _pages(
                     ruling="Pace 2026-11-12: unbounded_by_warehouse; coordinator 2026-11-15 (D8 brief): a read over a client warehouse relation may declare it, with the why at the code",
                     proof="packages/datasources/tests/unit/test_pagers_under_a_byte_cap.py::test_a_reply_cut_inside_one_key_reads_on_when_a_bounded_count_finds_the_key_whole",
                 )
-                if not counted.rows or int(counted.rows[0]["n"]) != len(page.rows):
+                if not counted.rows or int(counted.rows[0]["n"]) != answered:
                     raise IncompleteReadError(
                         f"{datasource_name}: the hub cut a page of {relation} at {page.max_reply_bytes or 'its'} "
                         f"reply bytes within one value of {tuple(key)}, so paging cannot step past it without "
-                        f"dropping rows: one key group is wider than one reply. {len(rows)} rows were read and they "
+                        f"dropping rows: one key group is wider than one reply. {_count(rows)} rows were read and they "
                         "are NOT the whole relation."
                     )
-                kept = list(page.rows)
-            rows.extend(kept)
-            cursor = tuple(kept[-1][column] for column in key)
+                kept = answered
+            rows.append(_head(page.rows, kept))
+            cursor = _key_at(page.rows, kept - 1, key)
             previous_had_more = True
-            size = max(1, len(page.rows) - 1)
+            size = max(1, answered - 1)
             ceiling = max(page_size, size)
             if page.max_reply_bytes is not None:
                 _remember_reply_rows(client, read, ceiling)
@@ -2321,12 +2713,12 @@ async def _pages(
             )
             continue
 
-        had_more = len(page.rows) > size
+        had_more = answered > size
         if not had_more:
             # No sentinel: the warehouse had nothing past this page, so every row
             # is safe to keep and there is no boundary to worry about.
-            rows.extend(page.rows)
-            return rows
+            rows.append(page.rows)
+            return _joined(rows, types)
 
         # A KEY GROUP MUST NOT STRADDLE THE BOUNDARY. The next page asks for rows
         # strictly greater than the cursor, so any row sharing the cursor's key is
@@ -2337,10 +2729,8 @@ async def _pages(
         # So the trailing group is dropped from this page and re-read at the head
         # of the next one. It costs re-reading at most one group per page and it
         # is what makes the promise hold for a key that is unique only by promise.
-        kept = page.rows[:size]
-        sentinel_key = tuple(page.rows[size][column] for column in key)
-        while kept and tuple(kept[-1][column] for column in key) == sentinel_key:
-            kept.pop()
+        sentinel_key = _key_at(page.rows, size, key)
+        kept = _group_start(page.rows, size, sentinel_key, key)
 
         if not kept:
             # Every row in the page shares the sentinel's key, so the group is
@@ -2354,7 +2744,7 @@ async def _pages(
                 f"that is."
             )
 
-        advanced = tuple(kept[-1][column] for column in key)
+        advanced = _key_at(page.rows, kept - 1, key)
         if cursor is not None and advanced == cursor:
             # Defensive: every row here should already satisfy `> cursor`, so this
             # can only fire if the warehouse returned rows the predicate excluded.
@@ -2364,19 +2754,19 @@ async def _pages(
                 f"the keyset predicate, so completeness cannot be established."
             )
 
-        rows.extend(kept)
+        rows.append(_head(page.rows, kept))
         cursor = advanced
         previous_had_more = had_more
         if page.max_reply_bytes is not None and not measured:
             # the hub cuts by bytes, and a whole page fitted: the next pages ask about what one reply carries
             measured = True
-            ceiling = max(page_size, _rows_a_reply_carries(page.rows, page.max_reply_bytes) - 1)
+            ceiling = max(page_size, _rows_a_reply_carries(page, page.max_reply_bytes) - 1)
             _remember_reply_rows(client, read, ceiling)
         # back toward the ceiling (one oversized stretch should not slow the rest); a byte-capped hub's ceiling at once
         size = ceiling if ceiling > page_size else min(page_size, size * 2)
 
     raise IncompleteReadError(
-        f"{datasource_name}: still reading after {max_pages} pages ({len(rows)} rows). raising rather than "
+        f"{datasource_name}: still reading after {max_pages} pages ({_count(rows)} rows). raising rather than "
         f"continuing, because an unbounded read against a growing relation never terminates."
     )
 

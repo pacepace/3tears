@@ -36,7 +36,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Any, TYPE_CHECKING
+from typing import Annotated, Any, Literal, TYPE_CHECKING
 from urllib.parse import urlparse, urlsplit
 from urllib.request import url2pathname
 
@@ -44,10 +44,12 @@ from threetears.interfaces.keyed.rows import DeclaredKey, KeyValues
 from threetears.observe import get_logger
 
 import threetears.core.backends.schema_sql as schema_sql
+from threetears.core.backends.arrow_copy import arrow_copy_available, planned_write_table, write_type
 from threetears.core.backends.arrow_reply import l3_fetch_arrow
 from threetears.core.backends.dialect import known_on_yugabyte
 from threetears.core.backends.protocol import (
     L3_RAIL_ROW_CAP,
+    ArrowWritePlan,
     L3AnswerCutError,
     L3Page,
     FileLoad,
@@ -1009,6 +1011,111 @@ class SqlL3Backend:
             await conn.copy_records_to_table(table, records=batch, columns=names)
             written += len(batch)
         _logger.debug("bulk copy", extra={"extra_data": {"table": table, "rows": written}})
+        return written
+
+    def arrow_write_plan(
+        self,
+        table: str,
+        columns: Sequence[str],
+        types: Sequence[Any],
+        *,
+        kind: Literal["upsert", "copy", "delete"],
+        conn: Any,
+    ) -> ArrowWritePlan | None:
+        """how an Arrow table's rows are written to ``table`` through the hub's Arrow write door on ``conn``; None
+        when they cannot be, and are written as Python values instead (:meth:`upsert_many`, :meth:`copy_many`,
+        :meth:`delete_many`).
+
+        The rows go as :meth:`upsert_many` or :meth:`copy_many` would send them: the columns
+        :func:`schema_sql.insert_columns_for_data` emits for them (a server-default column they leave out is left
+        out; a nullable one is sent all null; a required one is refused), an upsert's ``SET`` list the bulk
+        statement's (:func:`schema_sql.bulk_update_columns`), a copy ordered by key. A delete sends the key's columns
+        alone. None, the rows written as Python values: on a connection without the door (a direct connection, or a
+        hub that announced no ``write_arrow``), without pyarrow, for an upsert into a table whose conflict clause is
+        ``raise``, when a column sent is one a copy cannot write (jsonb, vector) or the rows' type for it is one the
+        door does not carry (:func:`~threetears.core.backends.arrow_copy.write_type`).
+
+        :param table: the table; its schema must be registered (:meth:`register_schema`)
+        :ptype table: str
+        :param columns: the rows' columns
+        :ptype columns: Sequence[str]
+        :param types: each column's Arrow type, in the order of ``columns``
+        :ptype types: Sequence[pyarrow.DataType]
+        :param kind: an upsert, a copy of new rows, or a delete of keys
+        :ptype kind: Literal["upsert", "copy", "delete"]
+        :param conn: the caller's connection, its transaction open
+        :ptype conn: Any
+        :return: the plan, or None
+        :rtype: ArrowWritePlan | None
+        :raises ValueError: when no schema is registered for ``table``
+        :raises KeyError: when the rows lack a key column, or a required column of an upsert or a copy
+        """
+        schema = self._schemas.get(table)
+        if schema is None:
+            raise ValueError(f"an Arrow write needs the schema of {table!r} registered")
+        given = dict(zip(columns, types, strict=True))
+        missing_key = [name for name in schema.pk_columns if name not in given]
+        if missing_key:
+            raise KeyError(f"{table}: the rows have no key column {missing_key[0]!r}")
+        if getattr(conn, "write_arrow", False) is not True or not arrow_copy_available():
+            return None
+        emitted = (
+            [column for name in schema.pk_columns if (column := schema.get_column(name)) is not None]
+            if kind == "delete"
+            else schema_sql.insert_columns_for_data(schema, given)
+        )
+        update = None if kind != "upsert" else schema_sql.bulk_update_columns(schema, emitted)
+        if (kind == "upsert" and update is None) or not all(schema_sql.copy_writes(column) for column in emitted):
+            return None
+        sent: list[tuple[str, str | None, Any]] = []
+        for column in emitted:
+            if column.name in given:
+                carried = write_type(given[column.name], as_utc=column.column_type == "datetimetz")
+                if carried is None:
+                    return None
+                sent.append((column.name, column.name, carried))
+            elif column.nullable:
+                sent.append((column.name, None, None))
+            else:
+                raise KeyError(f"{table}.save_to_store: required column {column.name!r} missing from data")
+        return ArrowWritePlan(
+            kind=kind,
+            columns=tuple(sent),
+            conflict_columns=tuple(schema.pk_columns) if kind == "upsert" else (),
+            update_columns=tuple(update or ()),
+            sort_by=tuple(schema.pk_columns) if kind == "copy" else (),
+        )
+
+    async def write_arrow(self, table: str, rows: Any, plan: ArrowWritePlan, *, conn: Any) -> int:
+        """write an Arrow table's rows to ``table`` as :meth:`arrow_write_plan` planned, on the caller's transaction:
+        the request's table built by Arrow on a thread (each column cast to the type the door carries, a copy ordered
+        by key), then sent through the connection's write door (``write_arrow_rows``), cut by Arrow slices against the
+        request budget. A failing request fails the caller's transaction.
+
+        :param table: the table
+        :ptype table: str
+        :param rows: the rows, of the columns and types the plan was made for
+        :ptype rows: pyarrow.Table
+        :param plan: the plan
+        :ptype plan: ArrowWritePlan
+        :param conn: the caller's connection, its transaction open and its hub's door announced
+        :ptype conn: Any
+        :return: the rows the hub's statements counted
+        :rtype: int
+        """
+        if not rows.num_rows:
+            return 0
+        planned = await asyncio.to_thread(planned_write_table, rows, plan.columns, sort_by=plan.sort_by)
+        written: int = await conn.write_arrow_rows(
+            table,
+            planned,
+            conflict_columns=plan.conflict_columns,
+            update_columns=plan.update_columns,
+            delete=plan.kind == "delete",
+        )
+        _logger.debug(
+            "Arrow write", extra={"extra_data": {"table": table, "kind": plan.kind, "rows": int(rows.num_rows)}}
+        )
         return written
 
     async def truncate(self, table: str, *, reason: str | None = None) -> None:
