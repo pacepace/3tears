@@ -147,7 +147,14 @@ from threetears.evals.quick.logged import Log
 from threetears.evals.quick.measures import Measure
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, declares_a_check, predicted_label
 from threetears.evals.quick.tools import CellTools, Tool, ToolRecording, ToolUsingCandidate
-from threetears.evals.quick.world import SEED_KEY, World, WorldAgent, WorldCellKind, WorldOutcome, world_case_payload
+from threetears.evals.quick.world import (
+    World,
+    WorldAgent,
+    WorldCellKind,
+    WorldOutcome,
+    carries_a_starting_state,
+    world_case_payload,
+)
 from threetears.evals.storage import InMemoryDocumentStore
 
 log = get_logger(__name__)
@@ -1135,14 +1142,21 @@ def _raised_words(whose: str, raised: Exception, test_case: EvalTestCase) -> str
     """
     said = f"{whose} raised {type(raised).__name__}: {raised}"
     key = raised.args[0] if isinstance(raised, KeyError) and len(raised.args) == 1 else None
+    if isinstance(key, str) and key in _reserved_keys_held(test_case):
+        said += f"; the case's {key!r} {_WITHHELD_WHY[key]}"
+    return said
+
+
+def _reserved_keys_held(test_case: EvalTestCase) -> frozenset[str]:
+    """The reserved keys (:data:`RESERVED_CASE_KEYS`) the case as its author wrote it held, each asked of the module
+    that owns where it is kept: ``id`` and ``stratum`` this module stores as the test case's ``name`` and ``stratum``;
+    ``world`` the world module keeps on the case's payload (:func:`~threetears.evals.quick.world.carries_a_starting_state`)."""
     held = {
         "id": test_case.name is not None,
         STRATUM_KEY: test_case.stratum is not None,
-        WORLD_KEY: SEED_KEY in test_case.host_payload,
+        WORLD_KEY: carries_a_starting_state(test_case),
     }
-    if isinstance(key, str) and held.get(key, False):
-        said += f"; the case's {key!r} {_WITHHELD_WHY[key]}"
-    return said
+    return frozenset(key for key, carried in held.items() if carried)
 
 
 def _case_called(test_case: EvalTestCase) -> str:
