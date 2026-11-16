@@ -196,7 +196,9 @@ def test_a_row_holding_only_unanswered_calls_leaves_the_providers_unread(upstrea
     lost = RoleUsage(role="candidate", model=FAST, unanswered_lost=1)
     trials = _trials([[_candidate(upstream=upstream), lost] for _ in range(CASES)])
     _, bundle, _ = aspect_bundle(trials)
-    # The lost row counts no answered call, so the candidate's arm is the one whose calls read uncounted.
-    (board,) = [row for row in bundle.scoreboard if row.pricing is not None and row.pricing.calls is None]
+    # The candidate's arm is the one whose rows counted unanswered calls. The lost row adds no answered call, so the
+    # arm's calls stay counted (usage_answers_nothing; #1238), and it names no provider.
+    (board,) = [row for row in bundle.scoreboard if row.unanswered]
     assert board.pricing is not None
+    assert (board.pricing.calls, board.pricing.priced_calls) == (2 * CASES, 2 * CASES)
     assert (board.pricing.providers, board.pricing.providers_in_part) == ([upstream] if upstream else [], False)
