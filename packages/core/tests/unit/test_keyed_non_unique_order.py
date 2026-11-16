@@ -27,6 +27,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.keyed import AnyOf, Dialect, InlineDuckDB, Sort, keyset_page, keyset_rows, keyset_cursor
 from threetears.interfaces.keyed.keys import TableKey, refuse_non_unique_order, register_table_keys
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 #: tables named for this module alone, so no other declaration's keys stand beside theirs
 _EVENTS = "o64_order_events"
@@ -38,6 +39,7 @@ TableSchema(
     name=_EVENTS,
     primary_key=("agent_id", "event_id"),
     columns=[Column("agent_id", UUID_TYPE), Column("event_id", UUID_TYPE), Column("created_at", DATETIMETZ_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 TableSchema(
     name=_GROUPS,
@@ -51,6 +53,7 @@ TableSchema(
     indexes=(
         Index("o64_order_groups_customer_name", "customer_id", "name", unique=True, where="customer_id IS NOT NULL"),
     ),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -58,6 +61,7 @@ TableSchema(
     name=_AUDIT,
     primary_key="event_id",
     columns=[Column("event_id", UUID_TYPE), Column("created_at", DATETIMETZ_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -65,6 +69,7 @@ TableSchema(
     name=_SOURCES,
     primary_key="id",
     columns=[Column("id", UUID_TYPE), Column("owner_agent_id", UUID_TYPE, nullable=True), Column("name", STRING_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 

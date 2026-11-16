@@ -72,6 +72,8 @@ from threetears.agent.skills.migrations.v004_add_tool_call_columns import (
 )
 
 from threetears.core.collections.schema_backed import register_sa_table_indexes
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 __all__ = [
     "agent_skill_invocations_table",
@@ -222,6 +224,9 @@ def agent_skills_table(metadata: MetaData) -> Table:
             "user_id",
             "enabled",
         ),
+        info={
+            L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills")
+        },
     )
 
 
@@ -314,6 +319,9 @@ def agent_skill_invocations_table(metadata: MetaData) -> Table:
                 "plan_test": "packages/agent/skills/tests/integration/test_index_plans.py::test_skill_invocations_conv_key",
             },
         ),
+        info={
+            L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills")
+        },
     )
 
 

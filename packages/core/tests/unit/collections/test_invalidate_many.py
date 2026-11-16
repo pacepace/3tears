@@ -25,6 +25,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
 def _schema(name: str) -> TableSchema:
@@ -36,6 +37,7 @@ def _schema(name: str) -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
             Column("date_updated", DATETIMETZ_TYPE),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
 
 

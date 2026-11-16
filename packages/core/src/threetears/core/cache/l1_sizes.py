@@ -30,9 +30,9 @@ import sqlite3
 import threading
 import weakref
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any, Final
+from typing import Final
 
+from threetears.core.cache.l1_pages import TableSize, measure
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.eviction import HELD_BYTES, HELD_ENTRIES, Tier, declared
 from threetears.observe import contain, get_logger
@@ -44,55 +44,6 @@ log = get_logger(__name__)
 #: how often a process measures its L1s: a size moves with loads, minutes apart; a sample of a 100k-row L1 costs
 #: about 13 ms of a thread (module docstring)
 _INTERVAL_SECONDS: Final = 60.0
-
-#: every b-tree's bytes and leaf cells, by b-tree name, in one walk of the database's pages
-_PAGES_SQL: Final = (
-    "SELECT name, sum(pgsize) AS bytes, sum(CASE WHEN pagetype = 'leaf' THEN ncell ELSE 0 END) AS cells "
-    "FROM dbstat GROUP BY name"
-)
-
-#: each b-tree's table: a table's own, an index's (autoindexes of a key included) the table it indexes
-_OWNERS_SQL: Final = "SELECT type, name, tbl_name FROM sqlite_schema WHERE type IN ('table', 'index')"
-
-
-@dataclass(frozen=True)
-class _TableSize:
-    """one L1 table's size.
-
-    :ivar rows: its rows
-    :ivar bytes: the bytes of its pages and of its indexes' pages
-    """
-
-    rows: int
-    bytes: int
-
-
-def measure(conn: Any) -> dict[str, _TableSize]:
-    """every table's size in one SQLite database, from its pages.
-
-    SQLite's own tables (``sqlite_*``) are left out.
-
-    :param conn: a connection to the database on the calling thread (a ``sqlite3.Connection``, or the L1's own
-        thread-local one, :meth:`~threetears.core.cache.sqlite.SQLiteBackend.get_connection`)
-    :ptype conn: Any
-    :return: table -> its size
-    :rtype: dict[str, _TableSize]
-    :raises sqlite3.OperationalError: when this SQLite was built without ``dbstat``
-    """
-    owners: dict[str, tuple[str, str]] = {
-        str(name): (str(kind), str(table)) for kind, name, table in conn.execute(_OWNERS_SQL).fetchall()
-    }
-    rows: dict[str, int] = {}
-    held: dict[str, int] = {}
-    for name, size, cells in conn.execute(_PAGES_SQL).fetchall():
-        kind, table = owners.get(str(name), ("", ""))
-        if not table or table.startswith("sqlite_"):
-            continue
-        held[table] = held.get(table, 0) + int(size or 0)
-        if kind == "table":
-            rows[table] = int(cells or 0)
-    # a table with no pages yet still has its root page, so every table appears above; keep the shape regardless
-    return {table: _TableSize(rows=rows.get(table, 0), bytes=size) for table, size in held.items()}
 
 
 class _L1Sizes:
@@ -141,32 +92,32 @@ class _L1Sizes:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self._interval)
 
-    def sample_once(self) -> dict[str, _TableSize]:
+    def sample_once(self) -> dict[str, TableSize]:
         """measure every watched L1 now and set the gauges: a table's sizes summed over the L1s holding one of its
         name.
 
         :return: table -> its size, every table measured (declared or not)
-        :rtype: dict[str, _TableSize]
+        :rtype: dict[str, TableSize]
         """
         with self._lock:
             backends = list(self._backends)
-        sizes: dict[str, _TableSize] = {}
+        sizes: dict[str, TableSize] = {}
         for backend in backends:
             for table, size in self._measured(backend).items():
-                was = sizes.get(table, _TableSize(rows=0, bytes=0))
-                sizes[table] = _TableSize(rows=was.rows + size.rows, bytes=was.bytes + size.bytes)
+                was = sizes.get(table, TableSize(rows=0, bytes=0))
+                sizes[table] = TableSize(rows=was.rows + size.rows, bytes=was.bytes + size.bytes)
         self._export(sizes)
         return sizes
 
-    def _measured(self, backend: SQLiteBackend) -> Mapping[str, _TableSize]:
+    def _measured(self, backend: SQLiteBackend) -> Mapping[str, TableSize]:
         """one L1's sizes; none for one not (or no longer) initialized, or one that fails mid-measure.
 
         :param backend: the L1
         :ptype backend: SQLiteBackend
         :return: table -> its size
-        :rtype: Mapping[str, _TableSize]
+        :rtype: Mapping[str, TableSize]
         """
-        found: Mapping[str, _TableSize] = {}
+        found: Mapping[str, TableSize] = {}
         if backend.is_initialized():
             try:
                 found = measure(backend.get_connection())
@@ -176,12 +127,12 @@ class _L1Sizes:
                 contain(exc, log=log, what="l1 sizes: an L1 could not be measured this sample")
         return found
 
-    def _export(self, sizes: Mapping[str, _TableSize]) -> None:
+    def _export(self, sizes: Mapping[str, TableSize]) -> None:
         """set each declared table's gauges, zero those of tables gone since the last sample, and log each
         undeclared table once.
 
         :param sizes: table -> its size
-        :ptype sizes: Mapping[str, _TableSize]
+        :ptype sizes: Mapping[str, TableSize]
         :return: nothing
         :rtype: None
         """

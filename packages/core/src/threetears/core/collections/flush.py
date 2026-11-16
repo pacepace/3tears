@@ -20,6 +20,8 @@ from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.backends.protocol import RowcountUnreadableError
 from threetears.core.exceptions import CorruptCacheEntry, GenerationUnavailableError
 from threetears.observe import contain, get_logger
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 __all__ = [
     "FlushStrategy",
@@ -45,6 +47,7 @@ _write_buffer_table = Table(
     Column("data", Text, nullable=False),
     Column("retries", Integer, nullable=False, default=0),
     Column("date_updated", String, nullable=True),
+    info={L1_EVICTION_INFO: Declared(Policy.KEEP, "writes waiting for L3: dropping one loses the write")},
 )
 
 # Retry budget for general flush failures (transient DB errors,

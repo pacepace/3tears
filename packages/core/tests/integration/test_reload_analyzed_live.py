@@ -45,6 +45,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -63,6 +64,7 @@ _SCHEMA = TableSchema(
         Column("date_updated", DATETIMETZ_TYPE, nullable=True),
     ],
     indexes=(Index("results_by_state", _STATE, _GEO, "office_key", "candidate", include=("votes",)),),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 

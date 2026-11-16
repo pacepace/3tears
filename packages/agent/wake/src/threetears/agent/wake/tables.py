@@ -92,6 +92,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.collections.schema_backed import register_sa_table_indexes
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 __all__ = [
     "agent_wake_schedules_table",
@@ -295,6 +297,9 @@ def agent_wake_schedules_table(metadata: MetaData) -> Table:
                 "reason": "agent_wake_schedules carries five indexes: the tick's due scan, the agent's and the user's reads",
             },
         ),
+        info={
+            L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills")
+        },
     )
 
 
@@ -461,6 +466,9 @@ def wake_fires_table(metadata: MetaData) -> Table:
                 "reason": "wake_fires carries five indexes: the reaper's in-flight sweep and the agent and user fire counts",
             },
         ),
+        info={
+            L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills")
+        },
     )
 
 
@@ -575,6 +583,9 @@ def webhook_subscriptions_table(metadata: MetaData) -> Table:
                 "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_webhook_subs_agent",
             },
         ),
+        info={
+            L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills")
+        },
     )
 
 
@@ -640,6 +651,9 @@ def webhook_refusals_table(metadata: MetaData) -> Table:
                 "plan_test": "packages/agent/wake/tests/integration/test_index_plans.py::test_webhook_refusals_sub_time",
             },
         ),
+        info={
+            L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills")
+        },
     )
 
 

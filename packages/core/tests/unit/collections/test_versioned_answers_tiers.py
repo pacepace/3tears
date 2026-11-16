@@ -26,6 +26,7 @@ from threetears.core.collections.versioned_answers import AnswerOutcome, Version
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 from threetears.nats.errors import KvError
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _SCOPE = "tool_pod-answerstiers"
 _TABLE = "tier_answers"
@@ -406,7 +407,7 @@ class TestAWriterReadsTheFloorPastItsL1:
 def _preinitialized(kind: str) -> Any:
     """an L1 backend a host has already initialized with tables of its own, as a pod's registry is."""
     held = MetaData()
-    Table("host_rows", held, SaColumn("id", Text, primary_key=True))
+    Table("host_rows", held, SaColumn("id", Text, primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
     backend: Any = SQLiteBackend(db_name=f"answers-l1-{uuid.uuid4().hex}") if kind == "sqlite" else DuckDBBackend()
     backend.initialize(held)
     return backend

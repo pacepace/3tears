@@ -26,6 +26,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.agent.memory.authorize import MemoryAuthorizerDependencies
 from threetears.agent.memory.collections import MemoriesCollection
 from threetears.agent.memory.entities import MemoryEntity
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _make_metadata() -> MetaData:
@@ -54,6 +55,7 @@ def _make_metadata() -> MetaData:
         Column("embedding", Text),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

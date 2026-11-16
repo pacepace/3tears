@@ -21,6 +21,7 @@ from threetears.core import (
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.flush import WriteBuffer
 from threetears.core.models import SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 # Module-level declarative base and composed model for mixin tests.
@@ -120,6 +121,7 @@ def _make_metadata() -> MetaData:
         Column("score", Integer),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

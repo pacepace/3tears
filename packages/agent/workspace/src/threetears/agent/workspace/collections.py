@@ -36,6 +36,7 @@ from threetears.core.config import CoreConfig
 from threetears.core.keyed import Sort, TableKey, keyset_page, read_by, read_row, register_table_keys
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "WorkspaceCollection",
@@ -90,6 +91,7 @@ class WorkspaceCollection(SchemaBackedCollection[Workspace]):
             Column("date_updated", DATETIMETZ_TYPE),
             Column("date_deleted", DATETIMETZ_TYPE, nullable=True),
         ],
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(
@@ -336,6 +338,7 @@ class WorkspaceFileCollection(SchemaBackedCollection[WorkspaceFile]):
                 "workspace_id",
             ),
         ),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(
@@ -526,6 +529,7 @@ class WorkspaceFileVersionCollection(SchemaBackedCollection[WorkspaceFileVersion
                 plan_test="tests/integration/test_index_plans_keys.py::test_workspace_file_versions_path_history",
             ),
         ),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(

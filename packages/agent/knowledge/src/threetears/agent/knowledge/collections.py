@@ -47,6 +47,7 @@ from threetears.knowledge import (
     build_table_ref,
     derive_scope,
 )
+from threetears.core.eviction import Declared, Policy
 
 #: Every table the concept visibility scan reads, and every table the access decision that narrows
 #: it reads. The access tables are not optional: the visibility clause JOINs role_assignments,
@@ -458,6 +459,7 @@ class PlaybookEntryCollection(SchemaBackedCollection[PlaybookEntryEntity]):
             ),
         ),
         cas_column="date_updated",
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -697,6 +699,7 @@ class ConceptCollection(SchemaBackedCollection[ConceptEntity]):
             ),
         ),
         cas_column="date_updated",
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property

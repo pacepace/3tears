@@ -27,6 +27,7 @@ from sqlalchemy import Column, MetaData, String, Table
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.nats import NatsClient, set_default_namespace
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -46,6 +47,7 @@ def _make_metadata() -> MetaData:
         metadata,
         Column("id", String(255), primary_key=True),
         Column("name", String(255)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

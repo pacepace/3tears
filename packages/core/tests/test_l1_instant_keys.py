@@ -30,6 +30,7 @@ from threetears.core.collections.epoch_change import key_text
 from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 #: a whole second, where ``isoformat`` drops the fraction the record's text carries
@@ -44,13 +45,20 @@ INSTANTS = pytest.mark.parametrize("instant", [WHOLE, SUB, ZONED], ids=["whole-s
 
 def _metadata() -> MetaData:
     md = MetaData()
-    Table("ticks", md, Column("at", DateTime(timezone=True), primary_key=True), Column("v", Integer))
+    Table(
+        "ticks",
+        md,
+        Column("at", DateTime(timezone=True), primary_key=True),
+        Column("v", Integer),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
     Table(
         "race_ticks",
         md,
         Column("race", String(64), primary_key=True),
         Column("at", DateTime(timezone=True), primary_key=True),
         Column("v", Integer),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return md
 

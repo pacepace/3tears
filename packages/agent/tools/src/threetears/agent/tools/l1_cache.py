@@ -39,6 +39,8 @@ from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.observe import get_logger
 
 from threetears.agent.tools.object_resolution_collection import OBJECT_RESOLUTIONS_TABLE
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 __all__ = [
     "TOOL_POD_L1_DB_NAME",
@@ -85,6 +87,11 @@ def register_tool_pod_runtime_tables(metadata: MetaData) -> MetaData:
             Column("category", String(255), nullable=True),
             Column("date_created", TIMESTAMP(timezone=True), nullable=False),
             Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
+            info={
+                L1_EVICTION_INFO: Declared(
+                    Policy.EVICTABLE, "a copy of the hub's mapping; a miss reads L2, then asks the hub"
+                )
+            },
         )
     return metadata
 

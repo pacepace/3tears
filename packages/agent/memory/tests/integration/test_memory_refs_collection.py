@@ -35,6 +35,7 @@ from threetears.agent.memory.collections import MemoryRefsCollection
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 pytestmark = pytest.mark.integration
@@ -66,6 +67,7 @@ def _l1_metadata() -> MetaData:
         Column("date_updated", TIMESTAMP),
         # the agent whose ref it is (find_by_conversation reads by it): the mirror carries every column of the table
         Column("agent_id", String(255)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return md
 

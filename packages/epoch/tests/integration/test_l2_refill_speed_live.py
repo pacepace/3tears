@@ -32,6 +32,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.keyset import keyset_pages
 from threetears.core.testing.calibrate import budget_problem
 from threetears.nats import NatsClient, set_default_namespace
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -73,6 +74,7 @@ def _schema(table: str) -> TableSchema:
             SchemaColumn("n", STRING_TYPE, nullable=True),
         ],
         on_conflict="update",
+        l1_eviction=TEST_L1_TABLE,
     )
 
 

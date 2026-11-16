@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from threetears.core.collections.schema_backed import MAX_INDEX_COLUMNS, STRING_TYPE, Column, Index, TableSchema
 from threetears.core.data.schema import IndexDef as DataIndexDef
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
 def _names(count: int, prefix: str = "c") -> list[str]:
@@ -37,11 +38,21 @@ class TestSchemaBackedIndex:
     def test_a_primary_key_over_the_limit_is_refused(self) -> None:
         names = _names(33)
         with pytest.raises(ValueError, match="primary_key lists 33 columns"):
-            TableSchema(name="wide", primary_key=tuple(names), columns=[Column(n, STRING_TYPE) for n in names])
+            TableSchema(
+                name="wide",
+                primary_key=tuple(names),
+                columns=[Column(n, STRING_TYPE) for n in names],
+                l1_eviction=TEST_L1_TABLE,
+            )
 
     def test_a_primary_key_at_the_limit_is_declared(self) -> None:
         names = _names(32)
-        schema = TableSchema(name="wide", primary_key=tuple(names), columns=[Column(n, STRING_TYPE) for n in names])
+        schema = TableSchema(
+            name="wide",
+            primary_key=tuple(names),
+            columns=[Column(n, STRING_TYPE) for n in names],
+            l1_eviction=TEST_L1_TABLE,
+        )
         assert len(schema.pk_columns) == 32
 
 

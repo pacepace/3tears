@@ -15,6 +15,7 @@ from pathlib import Path
 from threetears.core.collections.base import BaseCollection, tables_with_write_generation
 from threetears.core.collections.generation import WriteGeneration
 from threetears.core.collections.schema_backed import SchemaBackedCollection, TableSchema
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -89,8 +90,14 @@ def test_a_class_and_schema_that_disagree_are_reported() -> None:
     from threetears.core.collections.generation import WRITE_GENERATION, WRITE_GENERATION_UNDECLARED
     from threetears.core.collections.schema_backed import Column
 
-    off = TableSchema(name="t_off", primary_key="id", columns=[Column("id", "string")])
-    on = TableSchema(name="t_on", primary_key="id", columns=[Column("id", "string")], write_generation=WRITE_GENERATION)
+    off = TableSchema(name="t_off", primary_key="id", columns=[Column("id", "string")], l1_eviction=TEST_L1_TABLE)
+    on = TableSchema(
+        name="t_on",
+        primary_key="id",
+        columns=[Column("id", "string")],
+        write_generation=WRITE_GENERATION,
+        l1_eviction=TEST_L1_TABLE,
+    )
 
     # stand-ins with a collection's switch attributes, never registered as collections
     class SelfSwitched:

@@ -35,6 +35,7 @@ from threetears.core.keyed import (
     read_by,
     read_nearest,
 )
+from threetears.core.eviction import Declared, Policy
 
 if TYPE_CHECKING:
     from threetears.conversations.buffer import ConversationWriteBuffer
@@ -290,6 +291,7 @@ class ConversationsCollection(SchemaBackedCollection[Conversation]):
                 reason="conversations carries thirteen indexes: a family of refs on a channel, by their prefix",
             ),
         ),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(

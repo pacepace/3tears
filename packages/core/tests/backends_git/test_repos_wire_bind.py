@@ -42,6 +42,7 @@ from threetears.core.backends.git.wire import (
     encode_request,
     encode_result,
 )
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 T0 = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
 
@@ -169,6 +170,7 @@ def registry() -> Iterator[CollectionRegistry]:
         Column("look", String(255)),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     backend = SQLiteBackend(db_name=f"git_store_bind_{uuid.uuid4().hex[:8]}")
     backend.initialize(metadata)

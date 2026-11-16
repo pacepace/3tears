@@ -20,12 +20,22 @@ from threetears.core.cache.l1_sizes import L1_SIZES, measure
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.eviction import Declared, Policy, Tier
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _metadata(*tables: str) -> MetaData:
     md = MetaData()
     for table in tables:
-        Table(table, md, Column("id", String, primary_key=True), Column("pod", String), Column("n", Integer))
+        # every L1 table declares its policy to be created at all; the sampler's view of the declarations is the
+        # test's own (_declare), so a table can still be undeclared there
+        Table(
+            table,
+            md,
+            Column("id", String, primary_key=True),
+            Column("pod", String),
+            Column("n", Integer),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
+        )
     return md
 
 

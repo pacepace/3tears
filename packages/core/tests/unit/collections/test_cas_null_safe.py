@@ -43,6 +43,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 # ---------------------------------------------------------------------------
 # fixtures / stubs
@@ -209,6 +210,7 @@ class TestDefaultIsUnchanged:
             primary_key="id",
             columns=[Column("id", UUID_TYPE), Column("date_updated", DATETIMETZ_TYPE)],
             cas_column="date_updated",
+            l1_eviction=TEST_L1_TABLE,
         )
         assert schema.cas_null_safe is False
 
@@ -387,6 +389,7 @@ class TestNullSafeFenceGenerator:
             name="counters",
             primary_key="id",
             columns=[Column("id", UUID_TYPE), Column("count", INT_TYPE)],
+            l1_eviction=TEST_L1_TABLE,
         )
         with pytest.raises(RuntimeError, match="cas_column"):
             schema_sql.build_cas_upsert_sql(schema, {"id": uuid.uuid4(), "count": 1})
@@ -399,6 +402,7 @@ class TestNullSafeFenceGenerator:
             columns=[Column("id", UUID_TYPE), Column("date_updated", DATETIMETZ_TYPE)],
             cas_column="date_updated",
             on_conflict="ignore",
+            l1_eviction=TEST_L1_TABLE,
         )
         with pytest.raises(RuntimeError, match="on_conflict"):
             schema_sql.build_cas_upsert_sql(schema, {"id": uuid.uuid4(), "date_updated": None})
@@ -420,6 +424,7 @@ class TestOptInPreconditions:
                 primary_key="id",
                 columns=[Column("id", UUID_TYPE), Column("count", INT_TYPE)],
                 cas_null_safe=True,
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_requires_on_conflict_update(self) -> None:
@@ -447,6 +452,7 @@ class TestOptInPreconditions:
                 columns=[Column("date_updated", DATETIMETZ_TYPE), Column("count", INT_TYPE)],
                 cas_column="date_updated",
                 cas_null_safe=True,
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_rejects_a_server_default_cas_column(self) -> None:

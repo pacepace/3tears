@@ -34,6 +34,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.plans import on_yugabyte
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -48,6 +49,7 @@ _SCHEMA = TableSchema(
         Column("votes", BIGINT_TYPE, nullable=True),
     ],
     on_conflict="update",
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -175,6 +177,7 @@ _DOCS = TableSchema(
     primary_key=("doc_id", "shape"),
     columns=[Column("doc_id", STRING_TYPE), Column("shape", JSONB_TYPE)],
     on_conflict="update",
+    l1_eviction=TEST_L1_TABLE,
 )
 
 

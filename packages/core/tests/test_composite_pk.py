@@ -35,6 +35,7 @@ from threetears.core.collections.registry import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +58,7 @@ def _composite_metadata() -> MetaData:
         Column("note", String(255)),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     Table(
         "single_pk_table",
@@ -64,6 +66,7 @@ def _composite_metadata() -> MetaData:
         Column("id", String(255), primary_key=True),
         Column("name", String(255)),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return md
 

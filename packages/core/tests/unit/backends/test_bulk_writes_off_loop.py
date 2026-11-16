@@ -22,6 +22,7 @@ import threetears.core.backends.schema_sql as schema_sql
 from threetears.core.backends.nats_proxy import NatsProxyL3Backend
 from threetears.core.backends.sql import SqlL3Backend
 from threetears.core.collections.schema_backed import DATETIMETZ_TYPE, STRING_TYPE, Column, TableSchema
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _TX_ID = "019d9a00-0000-7000-8000-0000000000aa"
 _WHEN = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
@@ -30,6 +31,7 @@ SCHEMA = TableSchema(
     name="pages",
     primary_key=("race", "geo"),
     columns=[Column("race", STRING_TYPE), Column("geo", STRING_TYPE), Column("loaded_at", DATETIMETZ_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 

@@ -41,6 +41,7 @@ from threetears.agent.memory.collections import (
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 pytestmark = pytest.mark.integration
@@ -68,6 +69,7 @@ def _build_l1_metadata() -> MetaData:
         Column("embedding", Text),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     # v0.8.0: schemas widened to full prod shape; mirror the new
     # required columns in this embedded L1 DDL fixture. (Per the
@@ -97,6 +99,7 @@ def _build_l1_metadata() -> MetaData:
         Column("cloud_file_url", Text),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     Table(
         "media_content",
@@ -119,6 +122,7 @@ def _build_l1_metadata() -> MetaData:
         Column("cost", Text),
         Column("metadata_json", Text),
         Column("date_created", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     Table(
         "memory_chunks",
@@ -138,6 +142,7 @@ def _build_l1_metadata() -> MetaData:
         Column("message_id_start", String(255)),
         Column("message_id_end", String(255)),
         Column("date_created", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return meta
 

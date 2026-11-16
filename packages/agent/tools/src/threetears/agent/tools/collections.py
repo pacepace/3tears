@@ -38,6 +38,7 @@ from threetears.core.keyed import Count, Fragment, Sort, aggregate_keyed, keyset
 from threetears.core.data.migrations.backfill import backfill_pages
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import contain, get_logger
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "ContextItemCollection",
@@ -172,6 +173,7 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
                 nulls_not_distinct=True,
             ),
         ),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -384,11 +386,8 @@ class ContextItemCollection(SchemaBackedCollection[ContextItemEntity]):
         # Update L1 immediately. composite-pk row keyed on
         # (conversation_id, context_id) tuple per the partition layout.
         if self._l1 is not None:
-            row = self._l1.select_by_id(
-                self.table_name,
-                (conversation_id, cid),
-                self.primary_key_columns,
-            )
+            # through the one L1 read, so a row of a table being dropped is never read back and re-cached
+            row = self._select_from_l1((conversation_id, cid))
             if row is not None:
                 row["date_accessed"] = now
                 self._l1.upsert(self.table_name, row, self.primary_key_columns)

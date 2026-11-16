@@ -22,6 +22,7 @@ from threetears.agent.acl import AclCache
 from threetears.core.testing.kv import FakeKvBucket
 
 from threetears.agent.identity.authorize import IdentityAuthorizerDependencies
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 @pytest.fixture(scope="module")
@@ -105,6 +106,7 @@ def l1_metadata() -> MetaData:
         Column("consenter_user_id", String(255)),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return meta
 

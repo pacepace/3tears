@@ -25,8 +25,14 @@ from threetears.agent.knowledge.collections import (
 )
 
 
-#: what the caller's grants read answers in these tests: no customer, so only platform rows are visible
-_NO_GRANTS = {"is_all": False, "customer_ids": []}
+#: what the caller's grants read (:func:`threetears.agent.acl.visible_customers`, one ``fetch`` through
+#: ``role_assignments``) answers in these tests: no grant rows, so no customer and only platform rows are visible
+_NO_GRANTS: list[dict[str, Any]] = []
+
+
+def _is_grants_read(sql: str) -> bool:
+    """whether ``sql`` is the caller's grants read rather than the listing."""
+    return "role_assignments" in sql
 
 
 class _StubPool:
@@ -41,12 +47,10 @@ class _StubPool:
         self.customer_scope: Any = None
         self.grants_read = 0
 
-    async def fetchrow(self, sql: str, *params: Any, customer_scope: Any) -> dict[str, Any]:
-        assert "role_assignments" in sql, sql
-        self.grants_read += 1
-        return dict(_NO_GRANTS)
-
     async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[dict[str, Any]]:
+        if _is_grants_read(sql):
+            self.grants_read += 1
+            return list(_NO_GRANTS)
         self.sql = sql
         self.params = params
         self.customer_scope = customer_scope
@@ -309,7 +313,7 @@ class TestConceptCollectionSql:
 class _WriteLandsDuringReadPool:
     """L3 pool whose first read is overtaken by a write that commits while it is in flight.
 
-    The first ``fetch`` returns the row set as it stood BEFORE the write, and -- while
+    The first listing ``fetch`` (the grants read aside) returns the row set as it stood BEFORE the write, and -- while
     that read is still in flight -- runs the write's post-commit eviction exactly as
     :meth:`CollectionRegistry.publish_invalidation` runs it: ``drop_for_table`` on the
     pod's scan cache. Every later ``fetch`` returns the row set AFTER the write.
@@ -332,10 +336,9 @@ class _WriteLandsDuringReadPool:
         self._after = after
         self.fetches = 0
 
-    async def fetchrow(self, sql: str, *params: Any, customer_scope: Any) -> dict[str, Any]:
-        return dict(_NO_GRANTS)
-
     async def fetch(self, sql: str, *params: Any, customer_scope: Any) -> list[dict[str, Any]]:
+        if _is_grants_read(sql):
+            return list(_NO_GRANTS)
         self.fetches += 1
         if self.fetches == 1:
             self._scan_cache.drop_for_table(self._table)

@@ -45,6 +45,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.l1_tables import TEST_L1_KEEP
 
 _SCOPE = "server-filled-principal"
 _TABLE = "ledger_rows"
@@ -67,8 +68,10 @@ def _columns() -> list[Column]:
     ]
 
 
-_SCHEMA = TableSchema(name=_TABLE, primary_key="id", columns=_columns())
-_ORDERED_SCHEMA = TableSchema(name=_TABLE, primary_key="id", columns=[*_columns(), *l2_order_columns()])
+_SCHEMA = TableSchema(name=_TABLE, primary_key="id", columns=_columns(), l1_eviction=TEST_L1_KEEP)
+_ORDERED_SCHEMA = TableSchema(
+    name=_TABLE, primary_key="id", columns=[*_columns(), *l2_order_columns()], l1_eviction=TEST_L1_KEEP
+)
 
 
 class _Row(BaseEntity):

@@ -30,11 +30,15 @@ from threetears.core.backends import (
     parse_rowcount,
 )
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
 #: a registered table for the scan tests: a scan reads only a table whose key the store knows
 _WIDGETS = TableSchema(
-    name="widgets", primary_key="id", columns=[Column("id", STRING_TYPE), Column("kind", STRING_TYPE)]
+    name="widgets",
+    primary_key="id",
+    columns=[Column("id", STRING_TYPE), Column("kind", STRING_TYPE)],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -397,6 +401,7 @@ def _items_schema() -> object:
             Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
+        l1_eviction=TEST_L1_TABLE,
     )
 
 
@@ -623,7 +628,10 @@ class _CuttingSqlitePool:
 async def test_a_scan_of_a_registered_table_reads_every_row_in_pages_under_the_rail_s_cap() -> None:
     """a scan was one statement, which the L3 rail cuts at its cap: a registered table is read in pages of its key."""
     schema = TableSchema(
-        name="widgets", primary_key="id", columns=[Column("id", STRING_TYPE), Column("kind", STRING_TYPE)]
+        name="widgets",
+        primary_key="id",
+        columns=[Column("id", STRING_TYPE), Column("kind", STRING_TYPE)],
+        l1_eviction=TEST_L1_TABLE,
     )
     rows = [(f"w{i:02d}", "gadget" if i % 2 else "gizmo") for i in range(10)]
     backend = SqlL3Backend(_CuttingSqlitePool(rows))

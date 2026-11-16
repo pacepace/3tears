@@ -22,6 +22,7 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from threetears.agent.identity.collections import IdentityVersionsCollection
 from threetears.core.testing.sqla_parity import assert_tables_equivalent
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _reference_identity_versions_table(metadata: sa.MetaData) -> sa.Table:
@@ -101,6 +102,7 @@ def _reference_identity_versions_table(metadata: sa.MetaData) -> sa.Table:
             "date_created",
             postgresql_where=sa_text("status = 'proposed'"),
         ),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 

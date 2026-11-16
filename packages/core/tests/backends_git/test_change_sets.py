@@ -17,6 +17,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.backends.git import Change, ChangeConflictError, ChangeSet, GitDurableStore, HandEditPendingError
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 T0 = datetime(2026, 10, 17, 9, 0, tzinfo=UTC)
 
@@ -164,6 +165,7 @@ def _metadata() -> MetaData:
         Column("score", Integer),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     Table(
         "recipes",
@@ -172,6 +174,7 @@ def _metadata() -> MetaData:
         Column("look", String(255)),
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

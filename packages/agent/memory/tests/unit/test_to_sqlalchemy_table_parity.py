@@ -43,6 +43,7 @@ from threetears.agent.memory.collections import (
     MemoryRefsCollection,
 )
 from threetears.core.testing.sqla_parity import assert_tables_equivalent
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 # Embedding dimension carried by ``memories`` / ``media_content`` /
 # ``memory_chunks`` reference fixtures. Mirrors
@@ -170,6 +171,7 @@ def _reference_memories_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_using="gin",
         ),
         SAUniqueConstraint("memory_id", name="uq_memories_memory_id"),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 
@@ -253,6 +255,7 @@ def _reference_media_table(metadata: sa.MetaData) -> sa.Table:
             unique=True,
         ),
         SAUniqueConstraint("media_id", name="uq_media_media_id"),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 
@@ -327,6 +330,7 @@ def _reference_media_content_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
         SAUniqueConstraint("content_id", name="uq_media_content_content_id"),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 
@@ -394,6 +398,7 @@ def _reference_memory_chunks_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
         SAUniqueConstraint("chunk_id", name="uq_memory_chunks_chunk_id"),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 
@@ -435,6 +440,7 @@ def _reference_conversation_memory_refs_table(metadata: sa.MetaData) -> sa.Table
             sa_text("date_created DESC"),
             sa_text("item_id DESC"),
         ),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 
@@ -471,6 +477,7 @@ def _reference_memory_consolidations_table(metadata: sa.MetaData) -> sa.Table:
             ondelete="CASCADE",
         ),
         SAIndex("idx_memory_consolidations_source", "agent_id", "source_memory_id"),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 

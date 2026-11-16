@@ -21,6 +21,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from threetears.agent.tools.collections import ContextItemCollection
 from threetears.core.testing.sqla_parity import assert_tables_equivalent
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
@@ -78,6 +79,7 @@ def _reference_context_items_table(metadata: sa.MetaData) -> sa.Table:
             postgresql_where=sa_text("context_type = 'tool_result'"),
             postgresql_nulls_not_distinct=True,
         ),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
 
 

@@ -44,6 +44,7 @@ from threetears.core.config import CoreConfig
 from threetears.core.keyed import Sort, TableKey, read_by, register_table_keys
 from threetears.core.tenancy import TENANT_BY_SCHEMA
 from threetears.observe import get_logger
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "FolderCollection",
@@ -103,6 +104,7 @@ class FolderCollection(SchemaBackedCollection[Folder]):
         ],
         cas_column="date_updated",
         indexes=(SchemaIndex("idx_folders_user", "agent_id", "user_id"),),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(

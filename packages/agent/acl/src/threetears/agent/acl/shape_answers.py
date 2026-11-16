@@ -85,6 +85,7 @@ from threetears.agent.acl.collections import (
     RoleCollection,
 )
 from threetears.agent.acl.types import MemberType
+from threetears.core.eviction import Declared, Policy
 
 if TYPE_CHECKING:
     from threetears.core.collections.registry import CacheInvalidationMessage, CollectionRegistry
@@ -517,6 +518,7 @@ def _schema(table_name: str) -> TableSchema:
             Column("date_created", DATETIMETZ_TYPE, nullable=True),
             Column("date_updated", DATETIMETZ_TYPE, nullable=True),
         ],
+        l1_eviction=Declared(Policy.EVICTABLE, "an answer copied from L2; a miss reads L2 or computes it"),
     )
 
 

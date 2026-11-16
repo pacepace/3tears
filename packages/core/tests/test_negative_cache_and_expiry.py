@@ -39,6 +39,7 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 from threetears.nats import KvError
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _SCOPE = "test-principal"
 _OTHER_SCOPE = "other-principal"
@@ -58,6 +59,7 @@ def _metadata() -> MetaData:
             Column("expires_at", DateTime(timezone=True)),
             Column("date_created", DateTime(timezone=True)),
             Column("date_updated", DateTime(timezone=True)),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
     return metadata
 

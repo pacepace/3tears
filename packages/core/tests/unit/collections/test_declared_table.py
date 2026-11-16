@@ -38,6 +38,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _SCHEMA = TableSchema(
     name="price_rows",
@@ -50,6 +51,7 @@ _SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 
@@ -213,6 +215,7 @@ _IMMUTABLE_SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=TEST_L1_TABLE,
 )
 
 

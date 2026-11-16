@@ -25,6 +25,7 @@ from typing import Any
 import asyncpg
 import pytest
 from sqlalchemy import BigInteger, Column as SaColumn, MetaData, String, Table
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 duckdb = pytest.importorskip("duckdb")
 pytest.importorskip("pyarrow")
@@ -63,6 +64,7 @@ def _metadata() -> MetaData:
         SaColumn("state", String(8), primary_key=True),
         SaColumn("geo_id", BigInteger, primary_key=True),
         SaColumn("votes", BigInteger),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

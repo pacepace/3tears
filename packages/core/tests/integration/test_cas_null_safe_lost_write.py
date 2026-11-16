@@ -42,6 +42,7 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -74,6 +75,7 @@ class _CounterCollection(SchemaBackedCollection[_CounterEntity]):
         ],
         cas_column="date_updated",
         cas_null_safe=True,
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property

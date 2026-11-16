@@ -1,7 +1,10 @@
 """SQLite L1 cache backend with thread-local connections and type-aware serialization.
 
-Uses a named in-memory database (memdb VFS) so multiple connections can access
-the same data. The anchor connection keeps the database alive. Schema is derived
+Each backend is one WAL database file of this process on ``/dev/shm`` (:mod:`~threetears.core.cache.l1_file`:
+why a file and not memdb, with the numbers), shared by name within the process as the memdb was, and gone with the
+process. Threads keep their own connections; WAL lets readers read while one writer writes. Every table declares
+its eviction policy (:mod:`threetears.core.eviction`), and the process holds its L1 under one byte budget, evicting
+``EVICTABLE`` rows least recently used first (:mod:`~threetears.core.cache.l1_lru`). Schema is derived
 from SQLAlchemy metadata, with type-aware serialization/deserialization for
 UUID, datetime, date, time, JSON, boolean, vector, bytea and exact NUMERIC columns.
 
@@ -26,14 +29,17 @@ from __future__ import annotations
 
 import enum
 import json
+import os
 import sqlite3
 import threading
 import uuid
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, time
 from decimal import MAX_EMAX, MIN_EMIN, ROUND_CEILING, ROUND_FLOOR, Context, Decimal
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import Boolean, Date, DateTime, Float, Integer, LargeBinary, String, Text, Time
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, TSVECTOR, UUID
@@ -42,6 +48,17 @@ from sqlalchemy.sql.sqltypes import UUID as UuidType  # noqa: N811
 
 from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core.backends.schema_sql import PGVECTOR_TYPES, json_default
+from threetears.core.cache import l1_file
+from threetears.core.cache.l1_pages import measure as measure_pages
+from threetears.core.cache.l1_lru import (
+    L1_EVICTION_INFO,
+    POLICY_EPOCH,
+    L1Ledger,
+    TableCounters,
+    declare_l1_table,
+    ledger,
+    row_bytes,
+)
 from threetears.core.cache.base import (
     build_select_clause,
     bulk_columns,
@@ -52,6 +69,7 @@ from threetears.core.cache.base import (
     stored_instant_text,
     stored_time,
 )
+from threetears.core.eviction import Declared, Tier, declared, policy_of
 from threetears.core.sql_fragments import quote_identifier
 from threetears.observe import contain, get_logger
 
@@ -76,6 +94,13 @@ except ImportError:  # NOSILENT: the uuid-utils extra is optional; its values ne
 
 
 log = get_logger(__name__)
+
+#: how much of the file each connection maps (bytes): reads then copy nothing through SQLite's page cache. 256 MiB
+#: is what SQ1's benches ran (``bench_opts.py``); it is address space, not memory (the pages are the tmpfs file's)
+_MMAP_BYTES: Final = 256 * 1024 * 1024
+#: what the WAL is truncated back to after a checkpoint (bytes): the WAL is tmpfs memory too, and SQLite otherwise
+#: leaves it at its largest. 4 MiB is the default autocheckpoint's 1000 pages
+_WAL_KEEP_BYTES: Final = 4 * 1024 * 1024
 
 #: the type code of an exact ``NUMERIC`` column, before its ``_<scale>`` suffix
 _DECIMAL_CODE = "INTEGER_DECIMAL"
@@ -152,31 +177,85 @@ class _PooledConnection:
 
 
 class SQLiteBackend:
-    """L1 cache backend using SQLite named in-memory database.
+    """L1 cache backend: one WAL database file of this process, named ``db_name``, on ``/dev/shm``.
 
-    Instance-based (not classmethod-based) so multiple backends can coexist.
-    Each instance manages its own named in-memory database, anchor connection,
-    thread-local connections, and schema registry.
+    Instance-based (not classmethod-based) so multiple backends can coexist. Backends of one name in one process
+    share the file, as they shared the named in-memory database before; it is removed when the last resets, and at
+    a clean exit.
+
+    :param db_name: the database's name in this process
+    :ptype db_name: str
+    :param directory: where its file goes; :func:`~threetears.core.cache.l1_file.l1_directory` when ``None``
+    :ptype directory: Path | None
+    :param budget: the ledger it holds its rows under; the process's (:func:`~threetears.core.cache.l1_lru.ledger`)
+        when ``None``
+    :ptype budget: L1Ledger | None
     """
 
-    def __init__(self, db_name: str = "threetears_cache") -> None:
+    def __init__(
+        self, db_name: str = "threetears_cache", *, directory: Path | None = None, budget: L1Ledger | None = None
+    ) -> None:
         self._db_name = db_name
+        self._directory = directory
+        self._ledger = budget
+        self._path: Path | None = None
+        self._release: weakref.finalize[Any, Any] | None = None
         self._anchor_conn: sqlite3.Connection | None = None
         self._initialized: bool = False
         self._schema_info: dict[str, dict[str, str]] = {}
         self._local: threading.local = threading.local()
         self._pool_lock: threading.Lock = threading.Lock()
         self._pooled_connections: list[sqlite3.Connection] = []
+        #: every table's declared policy (:mod:`threetears.core.eviction`); an undeclared table is refused
+        self._policies: dict[str, Declared] = {}
+        #: the EVICTABLE tables, the only ones whose rows the ledger keeps a recency of
+        self._evictable_tables: set[str] = set()
+        self._policy_epoch = -1
+        #: each table's primary-key columns, as created
+        self._table_keys: dict[str, tuple[str, ...]] = {}
+        self._counters: dict[str, TableCounters] = {}
+
+    @property
+    def store_name(self) -> str:
+        """the database's name in this process.
+
+        :return: it
+        :rtype: str
+        """
+        return self._db_name
+
+    @property
+    def file_path(self) -> Path | None:
+        """the database file, once the first table is created; ``None`` before.
+
+        :return: the path
+        :rtype: Path | None
+        """
+        return self._path
+
+    @property
+    def budget(self) -> L1Ledger:
+        """the ledger this backend holds its rows under.
+
+        :return: it
+        :rtype: L1Ledger
+        """
+        if self._ledger is None:
+            self._ledger = ledger()
+        return self._ledger
 
     def _setup_connection(self, conn: sqlite3.Connection) -> None:
-        """Configure connection with busy timeout."""
+        """Configure a connection: busy timeout, no fsync, the file mapped (:mod:`~threetears.core.cache.l1_file`)."""
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute(f"PRAGMA mmap_size={_MMAP_BYTES}")
 
     def _make_connection(self) -> sqlite3.Connection:
-        """Create new connection to the named in-memory database."""
+        """Create a new connection to this backend's database file."""
+        if self._path is None:
+            raise RuntimeError("SQLite not initialized - call initialize() first")
         conn = sqlite3.connect(
-            f"file:/{self._db_name}?vfs=memdb",
-            uri=True,
+            str(self._path),
             check_same_thread=False,
             cached_statements=0,
             isolation_level=None,
@@ -184,10 +263,66 @@ class SQLiteBackend:
         self._setup_connection(conn)
         return conn
 
+    def _open(self) -> None:
+        """take this process's file for the name, make it a WAL database, and join the process's budget."""
+        directory = self._directory if self._directory is not None else l1_file.l1_directory()
+        self._path = l1_file.acquire(self._db_name, directory)
+        try:
+            anchor = self._make_connection()
+            # WAL is a property of the file: set once here, every later connection reads in it
+            anchor.execute("PRAGMA journal_mode=WAL")
+            anchor.execute(f"PRAGMA journal_size_limit={_WAL_KEEP_BYTES}")
+        except BaseException:  # prawduct:allow prawduct/broad-except -- gives the file back, then re-raises unchanged
+            l1_file.release(self._path)
+            self._path = None
+            raise
+        self._anchor_conn = anchor
+        # a backend dropped without reset() gives its file back when it is collected, as a memdb database went with
+        # its last connection: a test suite builds thousands, and /dev/shm is memory
+        self._release = weakref.finalize(self, l1_file.release, self._path)
+        self.budget.join(self, directory)
+
+    def declare(self, table: str, policy: Declared) -> None:
+        """declare the policy of a table made by its own DDL rather than :meth:`initialize` (an R-tree, its map).
+
+        :param table: the table's name
+        :ptype table: str
+        :param policy: its policy and why
+        :ptype policy: Declared
+        :return: nothing
+        :rtype: None
+        """
+        declare_l1_table(table, policy)
+        self._policies[table] = policy
+        self._policy_epoch = -1
+
+    @property
+    def _evictable(self) -> set[str]:
+        """the tables whose rows the ledger may evict: declared ``EVICTABLE``, and not since declared ``KEEP``.
+
+        :return: their names
+        :rtype: set[str]
+        """
+        if self._policy_epoch != POLICY_EPOCH[0]:
+            current = declared(Tier.L1)
+            self._evictable_tables = {
+                table for table in self._policies if (current.get(table) or self._policies[table]).evictable
+            }
+            self._policy_epoch = POLICY_EPOCH[0]
+        return self._evictable_tables
+
+    def table_policies(self) -> Mapping[str, Declared]:
+        """every table's declared policy.
+
+        :return: table -> policy
+        :rtype: Mapping[str, Declared]
+        """
+        return MappingProxyType(dict(self._policies))
+
     def initialize(self, sa_metadata: Any) -> None:
         """Initialize SQLite with schema from SQLAlchemy metadata.
 
-        Creates a named in-memory database and initializes all tables.
+        Opens this process's database file for the name and initializes all tables.
         The anchor connection is kept open to prevent garbage collection.
         Builds a schema registry for type-aware serialization.
 
@@ -197,14 +332,30 @@ class SQLiteBackend:
         initializations (the dynamic-collection path) compose on one
         shared backend exactly like a single all-tables metadata.
 
+        Every table declares its eviction policy (``Table.info["l1_eviction"]``, put there by
+        ``Table(info={L1_EVICTION_INFO: ...})`` or ``TableSchema(l1_eviction=...)``); there is no default.
+
         :raises UnsupportedL1ColumnError: when a column is one this L1 cannot hold exactly
+        :raises LookupError: when a table declares no eviction policy
         """
-        # a column this L1 cannot hold exactly refuses the whole call before anything is created
+        # a column this L1 cannot hold exactly, or a table with no policy, refuses the whole call before anything
+        # is created
+        policies: dict[str, Declared] = {}
         for table in sa_metadata.tables.values():
             for column in table.columns:
                 self._column_code(table.name, column)
+            policy = table.info.get(L1_EVICTION_INFO)
+            if policy is None:
+                # declared by name elsewhere (``declare_l1_table``), or refused: there is no default
+                policies[table.name] = policy_of(Tier.L1, table.name)
+            elif isinstance(policy, Declared):
+                declare_l1_table(table.name, policy)
+                policies[table.name] = policy
+            else:
+                raise TypeError(f"L1 table {table.name!r}: info[{L1_EVICTION_INFO!r}] must be a Declared")
         if self._anchor_conn is None:
-            self._anchor_conn = self._make_connection()
+            self._open()
+        assert self._anchor_conn is not None  # noqa: S101 -- _open sets it or raises
 
         new_tables = 0
         for table in sa_metadata.tables.values():
@@ -213,6 +364,8 @@ class SQLiteBackend:
                 continue
             ddl = self._generate_create_table(table)
             self._anchor_conn.execute(ddl)
+            self.declare(table.name, policies[table.name])
+            self._table_keys[table.name] = tuple(col.name for col in table.columns if col.primary_key)
             self._schema_info[table.name] = {col.name: self._column_code(table.name, col) for col in table.columns}
             new_tables += 1
             log.debug(f"Created SQLite table: {table.name}")
@@ -233,7 +386,7 @@ class SQLiteBackend:
         )
 
     def get_connection(self) -> _PooledConnection:
-        """Get a thread-local connection to the named in-memory database.
+        """Get a thread-local connection to this backend's database file.
 
         Returns a cached connection for the current thread, created once
         per thread and reused. The returned proxy makes close() a no-op.
@@ -373,6 +526,11 @@ class SQLiteBackend:
             )
             values = [tuple(self.serialize_value(row[c], schema.get(c, "TEXT")) for c in columns) for row in rows]
             self._in_write_transaction(lambda conn: conn.executemany(sql, values))
+            if table in self._evictable:
+                positions = [columns.index(c) for c in pk_cols]
+                self.budget.written(
+                    self, table, [(tuple(value[i] for i in positions), row_bytes(value)) for value in values]
+                )
         return len(rows)
 
     def column_types(self, table: str) -> Mapping[str, str]:
@@ -423,9 +581,28 @@ class SQLiteBackend:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, pk_vals)
         row = cursor.fetchone()
+        counters = self._counters.get(table) or self._table_counters(table)
         if row is None:
+            counters.misses.inc()
+            if table in self._evictable:
+                # a key the ledger still holds but the file does not (an eviction raced a rewrite) leaves it
+                self.budget.removed(self, table, (pk_vals,))
             return None
+        counters.hits.inc()
+        if table in self._evictable:
+            self.budget.touched(self, table, pk_vals)
         return self._deserialize_row(table, dict(row))
+
+    def _table_counters(self, table: str) -> TableCounters:
+        """a table's hit and miss counters, bound on its first read.
+
+        :param table: the table
+        :ptype table: str
+        :return: the counters
+        :rtype: TableCounters
+        """
+        bound = self._counters[table] = self.budget.counters(self, table)
+        return bound
 
     def select_batch(
         self,
@@ -476,7 +653,15 @@ class SQLiteBackend:
         conn = self.get_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(sql, params)
-        return [self._deserialize_row(table, dict(row)) for row in cursor.fetchall()]
+        found = cursor.fetchall()
+        counters = self._counters.get(table) or self._table_counters(table)
+        counters.hits.inc(len(found))
+        counters.misses.inc(len(entity_ids) - len(found))
+        if table in self._evictable:
+            budget = self.budget
+            for eid in entity_ids:
+                budget.touched(self, table, self._serialize_pk_values(table, pk_cols, self._pk_values(eid, pk_cols)))
+        return [self._deserialize_row(table, dict(row)) for row in found]
 
     def delete_by_id(
         self,
@@ -502,6 +687,8 @@ class SQLiteBackend:
         pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}"
         self._in_write_transaction(lambda conn: conn.execute(sql, pk_vals))
+        if table in self._evictable:
+            self.budget.removed(self, table, (pk_vals,))
 
     def delete_many_by_id(
         self,
@@ -535,6 +722,8 @@ class SQLiteBackend:
         pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
         sql = f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}"
         self._in_write_transaction(lambda conn: conn.executemany(sql, values))
+        if table in self._evictable:
+            self.budget.removed(self, table, values)
 
     def delete_many_by_id_across(self, deletes: Sequence[tuple[str, Sequence[Any], KeyColumn | KeyColumns]]) -> None:
         """delete many rows by primary key from several tables in one write transaction.
@@ -548,7 +737,7 @@ class SQLiteBackend:
         :return: nothing
         :rtype: None
         """
-        statements: list[tuple[str, list[Any]]] = []
+        statements: list[tuple[str, str, list[Any]]] = []
         for table, entity_ids, primary_key in deletes:
             if not entity_ids:
                 continue
@@ -558,15 +747,115 @@ class SQLiteBackend:
                 for entity_id in entity_ids
             ]
             pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
-            statements.append((f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}", values))
+            statements.append((table, f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}", values))
         if not statements:
             return
 
         def write(conn: Any) -> None:
-            for sql, values in statements:
+            for _table, sql, values in statements:
                 conn.executemany(sql, values)
 
         self._in_write_transaction(write)
+        for table, _sql, values in statements:
+            if table in self._evictable:
+                self.budget.removed(self, table, values)
+
+    def delete_all(self, table: str) -> int:
+        """delete every row of ``table``: one ``DELETE`` with no ``WHERE``, which SQLite does by dropping the table's
+        pages (its truncate optimization), never a row at a time; blocking, any thread (a table drop runs it off the
+        loop: :meth:`~threetears.core.collections.base.BaseCollection.drop_cached_table`).
+
+        :param table: the table
+        :ptype table: str
+        :return: how many rows it held
+        :rtype: int
+        """
+        sql = f"DELETE FROM {quote_identifier(table)}"  # noqa: S608 -- a registered table's quoted name
+        deleted: list[int] = []
+        self._in_write_transaction(lambda conn: deleted.append(conn.execute(sql).rowcount))
+        if table in self._evictable:
+            self.budget.emptied(self, table)
+        return deleted[0]
+
+    def evict_keys(self, table: str, keys: Sequence[tuple[Any, ...]]) -> None:
+        """delete rows the ledger evicted, by their keys as already serialized; blocking (the ledger's thread).
+
+        :param table: an ``EVICTABLE`` table
+        :ptype table: str
+        :param keys: serialized key tuples, as the ledger holds them
+        :ptype keys: Sequence[tuple[Any, ...]]
+        :return: nothing
+        :rtype: None
+        """
+        pk_cols = self._key_of(table)
+        if table not in self._evictable:
+            # declared KEEP since its rows were picked: never evicted, and the ledger forgets its recency
+            self.budget.emptied(self, table)
+            return
+        if not keys or not pk_cols or self._path is None:
+            return
+        pk_where = " AND ".join(f"{quote_identifier(c)} = ?" for c in pk_cols)
+        sql = f"DELETE FROM {quote_identifier(table)} WHERE {pk_where}"  # noqa: S608 -- quoted registered names
+        self._in_write_transaction(lambda conn: conn.executemany(sql, keys))
+
+    def _key_of(self, table: str) -> KeyColumns:
+        """the primary-key columns ``table`` was created with; empty for a table this backend did not create.
+
+        :param table: the table
+        :ptype table: str
+        :return: its key's columns
+        :rtype: KeyColumns
+        """
+        return self._table_keys.get(table, ())
+
+    def table_bytes(self) -> Mapping[str, int]:
+        """each table's real bytes in the file, its indexes' included (:func:`~threetears.core.cache.l1_pages.measure`,
+        the one ``dbstat`` walk the size gauges read too); blocking, a walk of the file's pages, so the ledger's
+        thread runs it.
+
+        :return: table -> bytes
+        :rtype: Mapping[str, int]
+        """
+        if self._path is None:
+            return {}
+        return {table: size.bytes for table, size in measure_pages(self.get_connection()).items()}
+
+    def side_bytes(self) -> int:
+        """the bytes of SQLite's files beside the database (the WAL and its index).
+
+        :return: bytes
+        :rtype: int
+        """
+        if self._path is None:
+            return 0
+        total = 0
+        for suffix in ("-wal", "-shm"):
+            try:
+                total += os.stat(f"{self._path}{suffix}").st_size
+            except FileNotFoundError:  # NOSILENT: no WAL yet is no bytes
+                continue
+        return total
+
+    def file_bytes(self) -> int:
+        """the database file's bytes plus its WAL and index: what the L1 holds of the volume now.
+
+        :return: bytes
+        :rtype: int
+        """
+        if self._path is None:
+            return 0
+        try:
+            return os.stat(self._path).st_size + self.side_bytes()
+        except FileNotFoundError:  # NOSILENT: reset under us; nothing held
+            return 0
+
+    def status(self) -> dict[str, int]:
+        """the process's L1 tallies for autosize (:func:`threetears.core.shm_autosize.measure`).
+
+        :return: ``kept_bytes`` and ``max_bytes`` (and ``evictable_bytes``), from the ledger's tallies
+        :rtype: dict[str, int]
+        """
+        return self.budget.status()
 
     def _in_write_transaction(self, write: Callable[[Any], object]) -> None:
         """run one write in an immediate transaction on this thread's connection.
@@ -792,8 +1081,19 @@ class SQLiteBackend:
         if self._anchor_conn is not None:
             self._anchor_conn.close()
         self._anchor_conn = None
+        if self._path is not None:
+            self.budget.leave(self)
+            if self._release is not None:
+                self._release()
+            self._release = None
+            self._path = None
         self._initialized = False
         self._schema_info = {}
+        self._policies = {}
+        self._evictable_tables = set()
+        self._policy_epoch = -1
+        self._table_keys = {}
+        self._counters = {}
 
     def is_initialized(self) -> bool:
         """Return True if the backend has been initialized."""

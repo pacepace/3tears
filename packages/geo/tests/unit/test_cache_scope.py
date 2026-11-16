@@ -24,6 +24,7 @@ from threetears.geo import FeatureCache, LayerDefinition, TileCollection, check_
 from threetears.geo.bands import AggregateSpec, FeatureSpec
 from threetears.geo.tiles import BoundingBox, tile_bounds, tile_for_point
 from threetears.object_store.filesystem import FilesystemObjectStore
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _LON, _LAT = -112.07, 33.45
 _TILE = tile_for_point(_LON, _LAT, 10)
@@ -70,6 +71,7 @@ def _shared_l1(name: str) -> SQLiteBackend:
             SAColumn("x", Integer, primary_key=True),
             SAColumn("y", Integer, primary_key=True),
             SAColumn("mvt", LargeBinary),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         Table(
             f"geo_features{suffix}",
@@ -77,6 +79,7 @@ def _shared_l1(name: str) -> SQLiteBackend:
             SAColumn("layer", String, primary_key=True),
             SAColumn("source_version", Integer, primary_key=True),
             SAColumn("feature_id", String, primary_key=True),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
     backend = SQLiteBackend(name)
     backend.initialize(metadata)

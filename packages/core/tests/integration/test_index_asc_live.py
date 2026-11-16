@@ -27,6 +27,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, Index, TableSchema
 from threetears.core.keyed import read_after
 from threetears.core.testing.plans import PlanRecorder, StatementPlan, on_yugabyte
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -40,6 +41,7 @@ def _schema(name: str, *, ranged: bool) -> TableSchema:
         primary_key="token_id",
         columns=[Column("token_id", STRING_TYPE), Column("expires_at", BIGINT_TYPE)],
         indexes=(Index(f"{name}_by_expiry", "expires_at", asc="expires_at" if ranged else ()),),
+        l1_eviction=TEST_L1_TABLE,
     )
 
 

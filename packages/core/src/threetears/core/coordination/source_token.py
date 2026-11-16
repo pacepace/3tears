@@ -43,6 +43,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.keyed.point import read_row
 from threetears.core.keyed.writes import delete_keyed
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "SOURCE_TOKENS_TABLE",
@@ -106,6 +107,9 @@ def source_tokens_schema(name: str = SOURCE_TOKENS_TABLE) -> TableSchema:
                     "test_a_prefix_clear_reads_the_c_ordered_index_as_a_range"
                 ),
             ),
+        ),
+        l1_eviction=Declared(
+            Policy.EVICTABLE, "the fence decides in L3 in one statement; L1 rows are read-through copies"
         ),
     )
 

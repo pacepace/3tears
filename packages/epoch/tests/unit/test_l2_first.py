@@ -53,6 +53,7 @@ from threetears.epoch import (
     generation_catchup_tick,
 )
 from threetears.nats import set_default_namespace
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 async def _restore(
@@ -85,6 +86,7 @@ def _metadata(table: str) -> MetaData:
         Column("votes", String(255)),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

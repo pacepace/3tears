@@ -26,6 +26,7 @@ from threetears.agent.workspace.collections import (
     WorkspaceFileVersionCollection,
 )
 from threetears.agent.workspace.entities import Workspace, WorkspaceFile, WorkspaceFileVersion
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 def _workspaces_metadata() -> MetaData:
@@ -44,6 +45,7 @@ def _workspaces_metadata() -> MetaData:
         Column("date_created", DateTime),
         Column("date_updated", DateTime),
         Column("date_deleted", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 
@@ -61,6 +63,7 @@ def _workspace_files_metadata() -> MetaData:
         Column("sha256", CHAR(64)),
         Column("version", Integer),
         Column("date_updated", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 
@@ -82,6 +85,7 @@ def _workspace_file_versions_metadata() -> MetaData:
         Column("actor_id", String(64)),
         Column("correlation_id", String(64)),
         Column("date_created", DateTime),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

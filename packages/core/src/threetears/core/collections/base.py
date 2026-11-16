@@ -103,6 +103,8 @@ from threetears.core.exceptions import (
 from threetears.nats.errors import KvError
 from threetears.observe import contain, get_logger, set_span_attribute, traced
 from threetears.observe.metrics import counter
+from threetears.core.eviction import Declared, Policy, Tier, declared
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 if TYPE_CHECKING:
     # annotation-only: importing these eagerly would load the NATS client into
@@ -205,6 +207,9 @@ Table(
     # only one that ever reads it. The cover for writers that predate the write marks, until the
     # recorded-absence age is contracted; nothing expires a marker by it.
     Column("deadline", Float, nullable=False),
+    info={
+        L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "a recorded absence; a miss asks L3 again and records it again")
+    },
 )
 
 
@@ -329,6 +334,24 @@ def _unadvanced_absence_error(table_name: str) -> GenerationUnavailableError:
         f"the write generation of {table_name!r} was not advanced after a committed write (the broker "
         f"advanced nothing for it); absences recorded under the unmoved generation would stay trusted"
     )
+
+
+async def _completed[T](work: Awaitable[T]) -> T:
+    """await ``work`` to its end, even when the waiter is cancelled, and answer what it answered; the cancel is
+    raised after (:func:`_to_completion`, for work that answers something).
+
+    :param work: the work, already running or about to
+    :ptype work: Awaitable[T]
+    :return: what it answered
+    :rtype: T
+    """
+    answer: list[T] = []
+
+    async def run() -> None:
+        answer.append(await work)
+
+    await _to_completion(run())
+    return answer[0]
 
 
 async def _to_completion(work: Awaitable[None]) -> None:
@@ -982,6 +1005,7 @@ class BaseCollection(ABC, Generic[EntityT]):
         self._l2_generation_lock = asyncio.Lock()
         self._refuse_unsound_negative_cache()
         self._refuse_an_unnamed_schema()
+        self._refuse_evicting_unwritten_rows()
         if self.l2_first is not None and self._nats_client is not None and self.l3_pool is None:
             raise ValueError(
                 f"{type(self).__name__} commits L2-first and has no L3 to save to: wire an L3 pool, or "
@@ -991,6 +1015,28 @@ class BaseCollection(ABC, Generic[EntityT]):
             self._l1.initialize(_ABSENT_MARKER_METADATA)
         # Auto-register
         registry.register(self)
+
+    def _refuse_evicting_unwritten_rows(self) -> None:
+        """refuse a collection that defers its L3 writes over an L1 table declared ``EVICTABLE``.
+
+        A deferred write lives in L1 (and L2) until the flush lands it in L3: evicting its row would make the next
+        read fall through to L3 and answer the value before the write (Pace's stale-OK-missing-P0 rule, read as
+        "never a wrong answer"). Such a table is ``KEEP``. Checked here when the table declared its policy where it
+        is declared (``TableSchema(l1_eviction=...)``), and again on the first L1 use (:meth:`_l1_holding_table`)
+        for a table declared through ``Table.info``.
+
+        :return: nothing
+        :rtype: None
+        :raises TypeError: when the table is ``EVICTABLE`` and this collection defers its L3 writes
+        """
+        if self._l1 is None or not self._declares_deferred_l3_writes:
+            return
+        policy = declared(Tier.L1).get(self.table_name)
+        if policy is not None and policy.policy is Policy.EVICTABLE:
+            raise TypeError(
+                f"{type(self).__name__} defers its L3 writes, and its L1 table {self.table_name!r} is declared "
+                f"EVICTABLE ({policy.why}): an evicted row would answer the value before its write. Declare it KEEP"
+            )
 
     def _refuse_unsound_negative_cache(self) -> None:
         """refuse, at construction, a negative-caching collection whose wiring would let a marker lie.
@@ -1669,7 +1715,8 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: dict[str, Any] | None
         """
         l1 = self._l1_holding_table()
-        if l1 is None:
+        if l1 is None or self._l1_drops_running:
+            # a table drop announced and still deleting: no row of the table is served (drop_cached_table)
             return None
         row: dict[str, Any] | None = l1.select_by_id(
             self.table_name,
@@ -2631,6 +2678,9 @@ class BaseCollection(ABC, Generic[EntityT]):
         l1 = self._l1
         has_table = getattr(l1, "has_table", None)
         if l1 is None or has_table is None or has_table(self.table_name):
+            if l1 is not None and not self.__dict__.get("_l1_policy_checked"):
+                self.__dict__["_l1_policy_checked"] = True
+                self._refuse_evicting_unwritten_rows()
             return l1
         if not self.__dict__.get("_l1_table_absence_said"):
             self.__dict__["_l1_table_absence_said"] = True
@@ -3621,30 +3671,111 @@ class BaseCollection(ABC, Generic[EntityT]):
                 entity_id=entity_id,
             )
 
-    def drop_cached_table(self) -> int:
+    def drop_cached_table(self) -> int | None:
         """drop every row of this table from this process's caches; the table-wide form of an eviction.
 
         Called by :meth:`CollectionRegistry.drop_table` when this process cannot say which row
-        changed. Every row leaves L1 through the one eviction path, so a read or write in flight
-        does not cache what it read before the drop and every L1 change listener hears each row
-        go. This process's own L2 entries for the table stop being trusted until each is read
-        through from L3 again (:meth:`_distrusts_l2`). Nothing is broadcast: the rows did not
-        change, this process only lost track of which did.
+        changed. A read or write in flight does not cache what it read before the drop (the fence
+        hears every key), and every L1 change listener hears each row go. This process's own L2
+        entries for the table stop being trusted until each is read through from L3 again
+        (:meth:`_distrusts_l2`). Nothing is broadcast: the rows did not change, this process only
+        lost track of which did.
 
-        :return: how many rows left L1
-        :rtype: int
+        **Off the loop** (SQ1 audit item 4a; Pace said yes 2026-11-15). On the loop the drop held it
+        for its whole walk and delete: 2.3 ms at 1k rows, 22 ms at 10k, 276 ms at 100k
+        (``scratchpad/sq1/bench1.log``). From a coroutine it now announces the drop on the loop
+        (the fence, the L2 distrust, and the table's *dropping* count, under which
+        :meth:`_select_from_l1` answers a miss for every key, so no row of the table is served
+        from L1 once the drop is announced) and deletes on a thread: one ``DELETE`` with no
+        ``WHERE`` (SQLite's truncate optimization) when nothing listens, else the keys walked
+        page by page and deleted in one write, then each listener told on the loop. A row
+        cached while the drop runs was read after it was announced, so it is current whether the
+        delete takes it or not. The SQLite L1 is a WAL file (:mod:`~threetears.core.cache.l1_file`),
+        so the loop's other reads never wait on the delete. :meth:`table_drops_settled` waits for it.
+        With no running loop (a synchronous caller) the drop runs here, as before.
+
+        :return: how many rows left L1 when the drop ran here; ``None`` when it runs on a thread
+        :rtype: int | None
         """
         self.__dict__["_table_drop_count"] = self._table_drops + 1
         self._l2_read_through.clear()
         self._l1_fence.changed_all()
-        dropped = 0
         l1 = self.l1_backend
-        if l1 is not None and (not hasattr(l1, "has_table") or l1.has_table(self.table_name)):
+        if l1 is None or (hasattr(l1, "has_table") and not l1.has_table(self.table_name)):
+            return 0
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # NOSILENT: a synchronous caller; the drop runs here
+            loop = None
+        if loop is None:
             columns = self.primary_key_columns
             keys = [tuple(row[column] for column in columns) for row in self._l1_keys(l1, columns)]
             self._evict_l1_many([key if len(key) > 1 else key[0] for key in keys])
-            dropped = len(keys)
+            return len(keys)
+        self.__dict__["_l1_drops_in_flight"] = self._l1_drops_running + 1
+        task = loop.create_task(self._drop_l1_table_on_a_thread(l1))
+        drops: set[asyncio.Task[int]] = self.__dict__.setdefault("_l1_drop_tasks", set())
+        drops.add(task)
+        task.add_done_callback(drops.discard)
+        return None
+
+    @property
+    def _l1_drops_running(self) -> int:
+        """how many table drops of this collection are deleting on a thread now (:meth:`drop_cached_table`).
+
+        :return: the count; while above zero every L1 read of the table is a miss
+        :rtype: int
+        """
+        return int(self.__dict__.get("_l1_drops_in_flight", 0))
+
+    async def table_drops_settled(self) -> int:
+        """wait for every table drop running on a thread to finish.
+
+        :return: how many rows they took from L1
+        :rtype: int
+        """
+        drops = tuple(self.__dict__.get("_l1_drop_tasks", ()))
+        return sum(await asyncio.gather(*drops)) if drops else 0
+
+    async def _drop_l1_table_on_a_thread(self, l1: Any) -> int:
+        """the delete of :meth:`drop_cached_table`, on a thread; the listeners after it, on the loop.
+
+        :param l1: this collection's L1, holding its table
+        :ptype l1: Any
+        :return: how many rows left L1
+        :rtype: int
+        """
+        listening = bool(getattr(self, "_l1_change_listeners", ()))
+        keys: list[Any] = []
+        try:
+            if listening or not hasattr(l1, "delete_all"):
+                keys = await _completed(asyncio.to_thread(self._walk_and_delete_l1_table, l1))
+                dropped = len(keys)
+            else:
+                dropped = await _completed(asyncio.to_thread(l1.delete_all, self.table_name))
+        finally:
+            self.__dict__["_l1_drops_in_flight"] = self._l1_drops_running - 1
+        for start in range(0, len(keys), L1_KEY_PAGE):
+            for entity_id in keys[start : start + L1_KEY_PAGE]:
+                self._l1_changed(entity_id)
+            # a turn for the loop between pages of listeners: 100k keys are many calls
+            await asyncio.sleep(0)
         return dropped
+
+    def _walk_and_delete_l1_table(self, l1: Any) -> list[Any]:
+        """every key of the table, walked page by page along its key, then deleted in one write; blocking.
+
+        :param l1: this collection's L1, holding its table
+        :ptype l1: Any
+        :return: the keys deleted (pk value, or tuple of pk values)
+        :rtype: list[Any]
+        """
+        columns = self.primary_key_columns
+        keys = [tuple(row[column] for column in columns) for row in self._l1_keys(l1, columns)]
+        entity_ids = [key if len(key) > 1 else key[0] for key in keys]
+        if entity_ids:
+            self._delete_l1_rows(l1, entity_ids)
+        return entity_ids
 
     def _l1_keys(self, l1: Any, columns: KeyColumns) -> list[dict[str, Any]]:
         """every key this collection's L1 table holds, read page by page in key order.

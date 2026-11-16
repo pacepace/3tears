@@ -39,6 +39,7 @@ from threetears.core.keyed import (
     serving_index,
 )
 from threetears.interfaces.keyed.keys import stated_literals
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 #: a table named for this module alone, so no other declaration's indexes stand beside its own
 _CONV = "o88_hint_conversations"
@@ -61,6 +62,7 @@ TableSchema(
         Index("o88_conv_open_named", "agent_id", "name", "conversation_id", where="status = 'open'"),
         Index("o88_conv_kept", "agent_id", "user_id", "name", where="status = 'open' AND name IS NOT NULL"),
     ),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 #: a conversation's schedules, as agent-wake declares them: the primary key (conversation_id, schedule_id) and a
@@ -77,6 +79,7 @@ TableSchema(
         Column("status", STRING_TYPE),
     ],
     indexes=(Index("a100_sched_conv_active", "conversation_id", where="status = 'active'"),),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 #: one agent's conversations by ref, as conversations declares them (v013, v015): a wide index of the ref in the
@@ -97,6 +100,7 @@ TableSchema(
         Index("d7_refs_created", "agent_id", "channel_type", "conversation_ref", "date_created", "conversation_id"),
         Index("d7_refs_c", "agent_id", "channel_type", "conversation_ref", collate=(("conversation_ref", "C"),)),
     ),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 #: one user's memories, as agent-memory declares them: by date, and the named ones (alias IS NOT NULL), each led by
@@ -117,6 +121,7 @@ TableSchema(
         Index("d7_mem_date", "agent_id", "user_id", "date_created"),
         Index("d7_mem_alias", "agent_id", "user_id", "alias", where="alias IS NOT NULL"),
     ),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 #: datasources as declared: a unique name (a UNIQUE constraint) and an index of the status
@@ -128,6 +133,7 @@ TableSchema(
     columns=[Column("id", UUID_TYPE), Column("name", STRING_TYPE), Column("status", STRING_TYPE)],
     indexes=(Index("d7_ds_status", "status"),),
     unique_constraints=(UniqueConstraint("d7_ds_name", "name"),),
+    l1_eviction=TEST_L1_TABLE,
 )
 
 _BY_STATUS = [Sort("status", descending=True), Sort("conversation_id", cast="uuid", descending=True)]
@@ -261,6 +267,7 @@ class TestASqlalchemyTableRegistersItsIndexes:
             sa.Column("status", sa.Text),
             sa.Column("name", sa.Text),
             sa.Column("date_created", sa.DateTime),
+            info={L1_EVICTION_INFO: TEST_L1_TABLE},
         )
         sa.Index("a100_sa_active", table.c.conversation_id, postgresql_where=sa.text("status = 'active'"))
         sa.Index("a100_sa_created", table.c.conversation_id, sa.text("date_created DESC"), table.c.schedule_id.desc())

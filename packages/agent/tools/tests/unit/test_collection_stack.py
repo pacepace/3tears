@@ -32,6 +32,7 @@ from threetears.agent.tools.l1_cache import TOOL_POD_L1_DB_NAME, create_tool_pod
 from threetears.nats import Principal, kv_key_scope_for
 from threetears.nats.errors import KvConfigMismatch, KvError
 from threetears.nats.subject_permissions import CROSS_PLATFORM_CACHE_INVALIDATE
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _POD_A: Final[str] = "01947100-0000-7000-8000-0000000000aa"
 _POD_B: Final[str] = "01947100-0000-7000-8000-0000000000bb"
@@ -44,7 +45,7 @@ def _tables() -> MetaData:
     :rtype: MetaData
     """
     metadata = MetaData()
-    Table("widgets", metadata, Column("id", String(64), primary_key=True))
+    Table("widgets", metadata, Column("id", String(64), primary_key=True), info={L1_EVICTION_INFO: TEST_L1_TABLE})
     return metadata
 
 

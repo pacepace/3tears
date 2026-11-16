@@ -43,6 +43,8 @@ from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from threetears.agent.acl import register_rbac_l1_tables
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.observe import get_logger
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 __all__ = [
     "REGISTRY_L1_METADATA",
@@ -83,6 +85,7 @@ pod_heartbeats_table = Table(
     Column("consecutive_misses", Integer, nullable=False),
     Column("date_created", TIMESTAMP(timezone=True), nullable=False),
     Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
+    info={L1_EVICTION_INFO: Declared(Policy.KEEP, "no L3: L1 and L2 hold it, so without L2 the L1 is its only copy")},
 )
 
 

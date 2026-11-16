@@ -32,6 +32,7 @@ from threetears.core.collections.base import BaseCollection
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 # canonical testcontainer harness -- single ``pytest_plugins`` entry
@@ -108,6 +109,7 @@ def _metadata() -> MetaData:
         Column("note", String(255)),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return md
 

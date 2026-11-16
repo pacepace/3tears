@@ -54,6 +54,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import GenerationUnavailableError
 from threetears.core.testing.kv import FakeNatsClient
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP
 
 _TABLE = "group_members"
 _SCOPE = "test-principal"
@@ -69,6 +70,7 @@ def _metadata(table: str = _TABLE) -> MetaData:
         Column("member_id", String(255)),
         Column("date_created", DateTime(timezone=True)),
         Column("date_updated", DateTime(timezone=True)),
+        info={L1_EVICTION_INFO: TEST_L1_KEEP},
     )
     return metadata
 
@@ -605,6 +607,7 @@ def _cas_metadata() -> MetaData:
         Column("date_updated", DateTime(timezone=True)),
         Column("l2_epoch", DateTime(timezone=True)),
         Column("l2_revision", BigInteger),
+        info={L1_EVICTION_INFO: TEST_L1_KEEP},
     )
     return metadata
 
@@ -843,6 +846,7 @@ _RESULTS = TableSchema(
         SchemaColumn("date_created", DATETIMETZ_TYPE, immutable=True),
         SchemaColumn("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=TEST_L1_KEEP,
 )
 
 

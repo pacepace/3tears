@@ -52,6 +52,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 
 from threetears.core.collections.schema_backed import register_sa_table_indexes
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 __all__ = [
     "job_fires_table",
@@ -164,6 +166,9 @@ def scheduled_jobs_table(metadata: MetaData) -> Table:
                 "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_scheduled_jobs_kind_name",
             },
         ),
+        info={
+            L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills")
+        },
     )
 
 
@@ -252,6 +257,9 @@ def job_fires_table(metadata: MetaData) -> Table:
                 "plan_test": "packages/scheduled-jobs/tests/integration/test_index_plans.py::test_job_fires_dispatching",
             },
         ),
+        info={
+            L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills")
+        },
     )
 
 

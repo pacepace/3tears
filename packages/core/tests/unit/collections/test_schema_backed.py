@@ -43,6 +43,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,7 @@ class _ItemCollection(SchemaBackedCollection[_StubEntity]):
             Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property
@@ -100,6 +102,7 @@ class _JournalCollection(SchemaBackedCollection[_StubEntity]):
             Column("date_created", DATETIMETZ_TYPE, immutable=True),
         ],
         on_conflict="raise",
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property
@@ -126,6 +129,7 @@ class _CompositeCollection(SchemaBackedCollection[_StubEntity]):
             Column("weight", INT_TYPE),
             Column("date_added", DATETIMETZ_TYPE, immutable=True),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property
@@ -162,6 +166,7 @@ class _TzCollection(SchemaBackedCollection[_StubEntity]):
             Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property
@@ -253,6 +258,7 @@ class TestTableSchemaValidation:
                 name="t",
                 primary_key="id",
                 columns=[Column("name", STRING_TYPE)],
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_rejects_missing_cas_column(self) -> None:
@@ -263,6 +269,7 @@ class TestTableSchemaValidation:
                 primary_key="id",
                 columns=[Column("id", UUID_TYPE)],
                 cas_column="date_updated",
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_composite_pk_normalizes_to_tuple(self) -> None:
@@ -271,6 +278,7 @@ class TestTableSchemaValidation:
             name="t",
             primary_key=("a", "b"),
             columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
+            l1_eviction=TEST_L1_TABLE,
         )
         assert schema.pk_columns == ("a", "b")
 
@@ -280,6 +288,7 @@ class TestTableSchemaValidation:
             name="t",
             primary_key="id",
             columns=[Column("id", UUID_TYPE)],
+            l1_eviction=TEST_L1_TABLE,
         )
         assert schema.pk_columns == ("id",)
 
@@ -293,6 +302,7 @@ class TestTableSchemaValidation:
                 Column("tag", STRING_TYPE, immutable=True),
                 Column("value", STRING_TYPE),
             ],
+            l1_eviction=TEST_L1_TABLE,
         )
         mutable = [c.name for c in schema.mutable_columns()]
         assert mutable == ["value"]
@@ -315,6 +325,7 @@ class TestPartitionColumnSchema:
                 Column("a", UUID_TYPE, partition=True),
                 Column("b", UUID_TYPE),
             ],
+            l1_eviction=TEST_L1_TABLE,
         )
         assert schema.partition_column == "a"
 
@@ -324,6 +335,7 @@ class TestPartitionColumnSchema:
             name="t",
             primary_key="id",
             columns=[Column("id", UUID_TYPE)],
+            l1_eviction=TEST_L1_TABLE,
         )
         assert schema.partition_column is None
 
@@ -337,6 +349,7 @@ class TestPartitionColumnSchema:
                     Column("id", UUID_TYPE),
                     Column("agent_id", UUID_TYPE, partition=True),
                 ],
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_only_one_partition_per_table(self) -> None:
@@ -350,6 +363,7 @@ class TestPartitionColumnSchema:
                     Column("b", UUID_TYPE, partition=True),
                     Column("c", UUID_TYPE),
                 ],
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_partition_implies_immutable(self) -> None:
@@ -362,6 +376,7 @@ class TestPartitionColumnSchema:
                 Column("b", UUID_TYPE),
                 Column("name", STRING_TYPE),
             ],
+            l1_eviction=TEST_L1_TABLE,
         )
         assert schema.column("a").immutable is True
         # mutable_columns excludes pk; partition should not appear
@@ -390,6 +405,7 @@ class TestPartitionEnforcementSubclass:
                     Column("id", UUID_TYPE),
                     Column("payload", STRING_TYPE),
                 ],
+                l1_eviction=TEST_L1_TABLE,
             )
 
             @property
@@ -424,6 +440,7 @@ class TestPartitionEnforcementSubclass:
                         Column("id", UUID_TYPE),
                         Column("payload", STRING_TYPE),
                     ],
+                    l1_eviction=TEST_L1_TABLE,
                 )
 
                 @property
@@ -450,6 +467,7 @@ class TestPartitionEnforcementSubclass:
                     Column("id", UUID_TYPE),
                     Column("payload", STRING_TYPE),
                 ],
+                l1_eviction=TEST_L1_TABLE,
             )
 
             @property
@@ -485,6 +503,7 @@ class TestPartitionEnforcementSubclass:
                     Column("agent_id", UUID_TYPE, partition=True),
                     Column("id", UUID_TYPE),
                 ],
+                l1_eviction=TEST_L1_TABLE,
             )
             # rationale: per-pod operational summary for monitoring
             partition_exempt_methods = frozenset({"count_total"})
@@ -695,6 +714,7 @@ class TestInsertSqlShape:
                     Column("date_created", DATETIMETZ_TYPE, immutable=True),
                 ],
                 on_conflict="ignore",
+                l1_eviction=TEST_L1_TABLE,
             )
 
             @property
@@ -1545,6 +1565,7 @@ class TestTableSchemaV080Validators:
                 primary_key="id",
                 columns=[Column("id", UUID_TYPE)],
                 foreign_keys=(ForeignKey("missing_col", "other", "other_id"),),
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_table_schema_indexes_must_reference_declared_columns(self) -> None:
@@ -1555,6 +1576,7 @@ class TestTableSchemaV080Validators:
                 primary_key="id",
                 columns=[Column("id", UUID_TYPE)],
                 indexes=(Index("ix_bad", "missing_col"),),
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_table_schema_duplicate_index_names_rejected(self) -> None:
@@ -1572,6 +1594,7 @@ class TestTableSchemaV080Validators:
                     Index("dup", "a"),
                     Index("dup", "b"),
                 ),
+                l1_eviction=TEST_L1_TABLE,
             )
 
     def test_table_schema_default_values_for_v080_fields(self) -> None:
@@ -1580,6 +1603,7 @@ class TestTableSchemaV080Validators:
             name="t",
             primary_key="id",
             columns=[Column("id", UUID_TYPE)],
+            l1_eviction=TEST_L1_TABLE,
         )
         assert schema.foreign_keys == ()
         assert schema.indexes == ()
@@ -1619,6 +1643,7 @@ class TestPartitionColumnCoercionV080:
                     server_default="'00000000-0000-0000-0000-000000000000'",
                 ),
             ],
+            l1_eviction=TEST_L1_TABLE,
         )
         coerced = schema.column("agent_id")
         assert coerced.partition is True
@@ -1666,6 +1691,7 @@ class _TsvectorCollection(SchemaBackedCollection[_StubEntity]):
             Column("date_updated", DATETIMETZ_TYPE),
         ],
         cas_column="date_updated",
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property
@@ -1927,6 +1953,7 @@ class _ServerDefaultCollection(SchemaBackedCollection[_StubEntity]):
             ),
         ],
         on_conflict="raise",
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property
@@ -1960,6 +1987,7 @@ class _NoDefaultCollection(SchemaBackedCollection[_StubEntity]):
             Column("kind", STRING_TYPE),
         ],
         on_conflict="raise",
+        l1_eviction=TEST_L1_TABLE,
     )
 
     @property

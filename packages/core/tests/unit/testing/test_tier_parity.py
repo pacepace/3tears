@@ -24,6 +24,7 @@ from threetears.core.collections.schema_backed import (
 )
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.tier_parity import tier_parity_findings
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
 class _Row(BaseEntity):
@@ -43,6 +44,7 @@ def _schema(name: str, precision: int) -> TableSchema:
             Column("flag", BOOL_TYPE),
             Column("blob", BYTES_TYPE, nullable=True),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
 
 
@@ -70,6 +72,7 @@ class _Widest(_Exact):
         name="tier_widest",
         primary_key="id",
         columns=[Column("id", UUID_TYPE), Column("amount", NUMERIC_TYPE, precision=38, scale=12)],
+        l1_eviction=TEST_L1_TABLE,
     )
 
 

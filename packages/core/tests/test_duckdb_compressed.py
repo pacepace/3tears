@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import Column, Integer, MetaData, String, Table
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 duckdb = pytest.importorskip("duckdb")
 pa = pytest.importorskip("pyarrow")
@@ -42,6 +43,7 @@ def _metadata() -> MetaData:
         Column("state", String(8)),
         Column("name", String(64)),
         Column("votes", Integer),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     return metadata
 

@@ -22,7 +22,7 @@ import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -87,8 +87,17 @@ def _declared_lazy_names() -> set[str]:
     return {name for names in _declared_lazy_table().values() for name in names}
 
 
+#: kept loaded through the re-import: ``threetears.observe`` holds the process's metric instruments, and prometheus's
+#: registry (outside ``sys.modules``) keeps every name they registered, so a fresh ``observe`` would register each
+#: module-level instrument (``threetears.core.eviction``'s, reached from the L1) a second time and raise
+#: ``Duplicated timeseries``. ``observe`` imports no NATS client, which the blocked finder still proves for the rest
+_KEPT: Final = ("threetears.observe",)
+
+
 def _purge(prefixes: Sequence[str]) -> None:
     for name in [n for n in sys.modules if n.split(".")[0] in prefixes]:
+        if any(name == kept or name.startswith(f"{kept}.") for kept in _KEPT):
+            continue
         del sys.modules[name]
 
 

@@ -76,6 +76,7 @@ from threetears.datasources.entities import (
     TableTemplateEntity,
 )
 from threetears.observe import get_logger
+from threetears.core.eviction import Declared, Policy
 
 log = get_logger(__name__)
 
@@ -148,6 +149,7 @@ _DATASOURCE_TABLES_SCHEMA = TableSchema(
         ),
     ),
     write_generation=WRITE_GENERATION,
+    l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
 #: ``datasource_columns`` as hub v001 and v006 leave it
@@ -183,6 +185,7 @@ _DATASOURCE_COLUMNS_SCHEMA = TableSchema(
             "column_name",
         ),
     ),
+    l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
 #: ``datasource_schema_digests`` as hub v029 leaves it: keyed by ``datasource_id``, no ``id`` column
@@ -197,6 +200,7 @@ _DATASOURCE_SCHEMA_DIGESTS_SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
 #: ``datasource_relations`` as hub v001, v055 and v056 leave it
@@ -216,6 +220,7 @@ _DATASOURCE_RELATIONS_SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, immutable=True),
         Column("date_updated", DATETIMETZ_TYPE),
     ],
+    l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
 #: ``table_templates`` as hub v006 and v007 leave it
@@ -235,6 +240,7 @@ _TABLE_TEMPLATES_SCHEMA = TableSchema(
     ],
     # a template a follower missed the change of is caught up from its epoch, as every datasource table is
     write_generation=WRITE_GENERATION,
+    l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
 
@@ -392,6 +398,7 @@ class CapabilitySourceCollection(SchemaBackedCollection[CapabilitySourceEntity])
             ),
         ),
         cas_column="date_updated",
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     @property
@@ -1251,4 +1258,5 @@ DATASOURCE_CUSTOMERS_SCHEMA = TableSchema(
         Column("granted_by_user_id", UUID_TYPE),
         Column("date_granted", DATETIMETZ_TYPE),
     ],
+    l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )

@@ -25,6 +25,8 @@ from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.observe import get_logger
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 __all__ = [
     "PRESENCE_L1_METADATA",
@@ -62,6 +64,7 @@ presence_connections_table = Table(
     Column("date_last_heartbeat", TIMESTAMP(timezone=True), nullable=False),
     Column("date_created", TIMESTAMP(timezone=True), nullable=False),
     Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
+    info={L1_EVICTION_INFO: Declared(Policy.KEEP, "no L3: L1 and L2 hold it, so without L2 the L1 is its only copy")},
 )
 
 
@@ -84,6 +87,11 @@ presence_rooms_table = Table(
     Column("members", JSONB, nullable=False),
     Column("date_created", TIMESTAMP(timezone=True), nullable=False),
     Column("date_updated", TIMESTAMP(timezone=True), nullable=False),
+    info={
+        L1_EVICTION_INFO: Declared(
+            Policy.KEEP, "no L3: L1 and L2 hold it, so without L2 the L1 is its only copy; rooms swap by CAS from it"
+        )
+    },
 )
 
 

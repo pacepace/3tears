@@ -22,6 +22,7 @@ from threetears.core.collections.schema_backed import (
     Column,
     TableSchema,
 )
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 _NOW = datetime(2026, 10, 25, tzinfo=UTC)
 
@@ -40,6 +41,7 @@ def _schema(*, cas_null_safe: bool = False) -> TableSchema:
         ],
         cas_column="date_updated",
         cas_null_safe=cas_null_safe,
+        l1_eviction=TEST_L1_TABLE,
     )
 
 

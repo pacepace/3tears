@@ -55,6 +55,8 @@ from threetears.observe import get_logger
 from threetears.core.backends.schema_sql import json_default
 from threetears.core import keyed
 from threetears.core.keyed import Sort, inline_l1, run_inline
+from threetears.core.eviction import Declared, Policy
+from threetears.core.cache.l1_lru import L1_EVICTION_INFO
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -74,6 +76,7 @@ _scan_cache_table = Table(
     Column("owner_table", Text, nullable=False),
     Column("depends_on", Text, nullable=False),
     Column("payload", Text, nullable=False),
+    info={L1_EVICTION_INFO: Declared(Policy.EVICTABLE, "a cached scan; a miss scans again")},
 )
 
 #: each stored entry's dependencies, one row a (table, entry): an eviction reads the entries of its table by this key
@@ -87,6 +90,12 @@ _scan_cache_deps_table = Table(
     SCAN_CACHE_METADATA,
     Column("dep_table", String, primary_key=True),
     Column("key", String, primary_key=True),
+    info={
+        L1_EVICTION_INFO: Declared(
+            Policy.KEEP,
+            "which scans depend on which table: an invalidation reads it to find the scans to drop, so it must be whole",
+        )
+    },
 )
 
 #: the entries one statement of an eviction reads (``keyset_rows``' page)

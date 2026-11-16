@@ -60,6 +60,7 @@ from threetears.observe import get_logger
 from threetears.scheduled_jobs.entities import JobFireEntity, ScheduledJobEntity
 from threetears.scheduled_jobs.reschedule import compute_next_fire_at
 from threetears.scheduled_jobs.types import ScheduleStatus
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "JOB_COUNT_CAP",
@@ -118,6 +119,7 @@ _SCHEDULED_JOBS_SCHEMA = TableSchema(
         Column("date_created", DATETIMETZ_TYPE, server_default="now()", immutable=True),
         Column("date_updated", DATETIMETZ_TYPE, server_default="now()"),
     ],
+    l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
 
@@ -139,6 +141,7 @@ _JOB_FIRES_SCHEMA = TableSchema(
         Column("error", STRING_TYPE, nullable=True),
         Column("date_created", DATETIMETZ_TYPE, server_default="now()", immutable=True),
     ],
+    l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
 )
 
 

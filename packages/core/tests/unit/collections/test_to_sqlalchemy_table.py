@@ -64,6 +64,7 @@ from threetears.core.collections.schema_backed import (
     UniqueConstraintDef,
 )
 from threetears.core.testing.sqla_parity import assert_tables_equivalent
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +84,7 @@ def test_to_sqla_idempotent() -> None:
             Column("a", UUID_TYPE),
             Column("b", STRING_TYPE, nullable=True),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     md = sa.MetaData()
     first = schema.to_sqlalchemy_table(md)
@@ -102,6 +104,7 @@ def test_to_sqla_composite_pk() -> None:
             Column("b", UUID_TYPE),
             Column("c", STRING_TYPE, nullable=True),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     pks = {c.name for c in t.primary_key.columns}
@@ -122,6 +125,7 @@ def test_to_sqla_single_pk() -> None:
             Column("a", UUID_TYPE),
             Column("b", STRING_TYPE, nullable=True),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     pks = {c.name for c in t.primary_key.columns}
@@ -147,6 +151,7 @@ def test_to_sqla_vector_dim_propagates() -> None:
                 nullable=True,
             ),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     emb_col = t.c.emb
@@ -172,6 +177,7 @@ def test_to_sqla_enum_creates_check_constraint() -> None:
                 enum_name="t_status_enum",
             ),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     status_col = t.c.status
@@ -196,6 +202,7 @@ def test_to_sqla_single_fk_inline() -> None:
                 foreign_key=("users", "user_id"),
             ),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     fks = list(t.c.user_id.foreign_keys)
@@ -223,6 +230,7 @@ def test_to_sqla_composite_fk_table_level() -> None:
                 on_delete="CASCADE",
             ),
         ),
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     composite_fks = [c for c in t.constraints if isinstance(c, sa.ForeignKeyConstraint) and len(c.column_keys) > 1]
@@ -251,6 +259,7 @@ def test_to_sqla_composite_fk_no_action_omits_ondelete() -> None:
             Column("b", UUID_TYPE),
         ],
         foreign_keys=(ForeignKey(("a", "b"), "parent", ("a", "b")),),
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     composite_fks = [c for c in t.constraints if isinstance(c, sa.ForeignKeyConstraint) and len(c.column_keys) > 1]
@@ -277,6 +286,7 @@ def test_to_sqla_partial_index_postgresql_where() -> None:
                 where="b IS NOT NULL",
             ),
         ),
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     by_name = {i.name: i for i in t.indexes}
@@ -303,6 +313,7 @@ def test_to_sqla_server_default_propagates() -> None:
                 server_default="image",
             ),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     sd = t.c.category.server_default
@@ -321,6 +332,7 @@ def test_to_sqla_server_default_is_the_expression_in_the_ddl() -> None:
             Column("tags", JSONB_TYPE, server_default="'[]'::jsonb"),
             Column("created", DATETIMETZ_TYPE, server_default="now()"),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     ddl = str(CreateTable(schema.to_sqlalchemy_table(sa.MetaData())).compile(dialect=postgresql.dialect()))
     assert "tags JSONB DEFAULT '[]'::jsonb" in ddl
@@ -378,6 +390,7 @@ def test_to_sqla_numeric_precision_scale() -> None:
                 nullable=True,
             ),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     cost_col = t.c.cost
@@ -408,6 +421,7 @@ def test_to_sqla_tsvector_immutable() -> None:
                 immutable=True,
             ),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     assert isinstance(t.c.search_vector.type, TSVECTOR)
@@ -427,6 +441,7 @@ def test_to_sqla_bool_and_bytes_types() -> None:
             Column("flag", BOOL_TYPE),
             Column("blob", BYTES_TYPE, nullable=True),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     assert isinstance(t.c.flag.type, Boolean)
@@ -450,6 +465,7 @@ def test_to_sqla_int_and_bigint_types() -> None:
             Column("small", INT_TYPE),
             Column("size_bytes", BIGINT_TYPE),
         ],
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     assert isinstance(t.c.small.type, Integer)
@@ -475,6 +491,7 @@ def test_to_sqla_unknown_column_type_raises_keyerror() -> None:
         name="t",
         primary_key="a",
         columns=[col],
+        l1_eviction=TEST_L1_TABLE,
     )
 
     with pytest.raises(KeyError, match="totally_unknown_tag"):
@@ -521,6 +538,7 @@ def test_parity_helper_catches_vector_dim_regression() -> None:
                     nullable=True,
                 ),
             ],
+            l1_eviction=TEST_L1_TABLE,
         )
         return schema.to_sqlalchemy_table(sa.MetaData())
 
@@ -550,6 +568,7 @@ def test_parity_helper_catches_enum_value_regression() -> None:
                     enum_name="t_status_enum",
                 ),
             ],
+            l1_eviction=TEST_L1_TABLE,
         )
         return schema.to_sqlalchemy_table(sa.MetaData())
 
@@ -580,6 +599,7 @@ def test_parity_helper_catches_numeric_scale_regression() -> None:
                     nullable=True,
                 ),
             ],
+            l1_eviction=TEST_L1_TABLE,
         )
         return schema.to_sqlalchemy_table(sa.MetaData())
 
@@ -618,6 +638,7 @@ def test_to_sqla_hnsw_index_using_ops() -> None:
                 pg_with={"m": "16", "ef_construction": "64"},
             ),
         ),
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     by_name = {i.name: i for i in t.indexes}
@@ -654,6 +675,7 @@ def test_to_sqla_gin_index_using() -> None:
                 using="gin",
             ),
         ),
+        l1_eviction=TEST_L1_TABLE,
     )
     t = schema.to_sqlalchemy_table(sa.MetaData())
     by_name = {i.name: i for i in t.indexes}
@@ -694,6 +716,7 @@ def test_parity_helper_catches_using_regression() -> None:
                     using=using,
                 ),
             ),
+            l1_eviction=TEST_L1_TABLE,
         )
         return schema.to_sqlalchemy_table(sa.MetaData())
 
@@ -714,6 +737,7 @@ def _keyed_by_optional(*, nulls_not_distinct: bool) -> sa.Table:
             Column("key", STRING_TYPE),
         ],
         indexes=(Index("ix_t_owner_key", "owner", "key", unique=True, nulls_not_distinct=nulls_not_distinct),),
+        l1_eviction=TEST_L1_TABLE,
     )
     return schema.to_sqlalchemy_table(sa.MetaData())
 
@@ -771,6 +795,7 @@ def test_to_sqla_unique_constraint_emits_sa_unique_constraint() -> None:
             Column("memory_id", UUID_TYPE),
         ],
         unique_constraints=(UniqueConstraint("uq_t_memory_id", "memory_id"),),
+        l1_eviction=TEST_L1_TABLE,
     )
     table = schema.to_sqlalchemy_table(sa.MetaData())
     uniques = [c for c in table.constraints if isinstance(c, sa.UniqueConstraint)]
@@ -803,6 +828,7 @@ def test_parity_helper_catches_unique_constraint_vs_unique_index() -> None:
         primary_key="a",
         columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
         unique_constraints=(UniqueConstraint("uq_t_b", "b"),),
+        l1_eviction=TEST_L1_TABLE,
     ).to_sqlalchemy_table(md1)
     # Schema B: unique INDEX (same name, same column)
     b = TableSchema(
@@ -810,6 +836,7 @@ def test_parity_helper_catches_unique_constraint_vs_unique_index() -> None:
         primary_key="a",
         columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
         indexes=(Index("uq_t_b", "b", unique=True),),
+        l1_eviction=TEST_L1_TABLE,
     ).to_sqlalchemy_table(md2)
     with pytest.raises(AssertionError, match="(unique-constraint|index-signature)"):
         assert_tables_equivalent(a, b)
@@ -837,6 +864,7 @@ def test_unique_constraint_def_rejects_unknown_column() -> None:
             primary_key="a",
             columns=[Column("a", UUID_TYPE)],
             unique_constraints=(UniqueConstraint("uq_t_missing", "nonexistent_col"),),
+            l1_eviction=TEST_L1_TABLE,
         )
 
 
@@ -851,6 +879,7 @@ def test_unique_constraint_def_rejects_name_collision_with_index() -> None:
             columns=[Column("a", UUID_TYPE), Column("b", UUID_TYPE)],
             indexes=(Index("dup_name", "b"),),
             unique_constraints=(UniqueConstraint("dup_name", "b"),),
+            l1_eviction=TEST_L1_TABLE,
         )
 
 
@@ -871,6 +900,7 @@ def _desc_schema(desc: tuple[str, ...] | str = ("date_created",), *columns: str)
             Column("date_created", DATETIMETZ_TYPE),
         ],
         indexes=(Index("ix_t_history", *(columns or ("agent_id", "date_created")), desc=desc),),
+        l1_eviction=TEST_L1_TABLE,
     )
 
 
@@ -941,11 +971,16 @@ def test_table_def_for_refuses_index_options_it_cannot_carry(options: dict[str, 
             Column("date_created", DATETIMETZ_TYPE),
         ],
         indexes=(Index("ix_t_history", "agent_id", "date_created", **options),),
+        l1_eviction=TEST_L1_TABLE,
     )
     with pytest.raises(ValueError, match="cannot carry"):
         table_def_for(schema)
     plain = TableSchema(
-        name="t", primary_key="a", columns=list(schema.columns), indexes=(Index("ix_t_history", "agent_id"),)
+        name="t",
+        primary_key="a",
+        columns=list(schema.columns),
+        indexes=(Index("ix_t_history", "agent_id"),),
+        l1_eviction=TEST_L1_TABLE,
     )
     assert [index.name for index in table_def_for(plain).indexes] == ["ix_t_history"]
 
@@ -982,5 +1017,6 @@ def test_parity_helper_reads_a_textual_desc_reference_as_descending() -> None:
         sa.Column("agent_id", PgUUID(as_uuid=True), nullable=False),
         sa.Column("date_created", sa.DateTime(timezone=True), nullable=False),
         sa.Index("ix_t_history", "agent_id", sa.text("date_created DESC")),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
     assert_tables_equivalent(reference, _desc_schema().to_sqlalchemy_table(sa.MetaData()))

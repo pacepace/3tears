@@ -23,6 +23,7 @@ from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.testing.loop_lateness import HostTicker, Tick, added_lateness, latest, ticks_while, trusted
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 #: past the count from which an eviction leaves the loop (64)
 _MANY = 200
@@ -31,7 +32,10 @@ _MANY = 200
 def _cached_collection() -> tuple[Any, SQLiteBackend]:
     """a collection over a real SQLite L1 holding its table, with no bus."""
     schema = TableSchema(
-        name="rows", primary_key="id", columns=[Column("id", STRING_TYPE), Column("payload", STRING_TYPE)]
+        name="rows",
+        primary_key="id",
+        columns=[Column("id", STRING_TYPE), Column("payload", STRING_TYPE)],
+        l1_eviction=TEST_L1_TABLE,
     )
     metadata = MetaData()
     schema.to_sqlalchemy_table(metadata)

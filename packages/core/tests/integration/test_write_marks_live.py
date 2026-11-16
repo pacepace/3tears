@@ -42,6 +42,7 @@ from threetears.core.collections.write_marks import (
     tables_missing_the_trigger,
     write_marks_ddl,
 )
+from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
 
@@ -349,6 +350,7 @@ _ROWS = TableSchema(
     primary_key="id",
     columns=[SchemaColumn("id", STRING_TYPE), SchemaColumn("n", BIGINT_TYPE, nullable=True)],
     on_conflict="update",
+    l1_eviction=TEST_L1_TABLE,
 )
 
 

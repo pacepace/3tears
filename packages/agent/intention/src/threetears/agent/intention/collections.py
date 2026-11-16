@@ -43,6 +43,7 @@ from threetears.observe import get_logger
 from threetears.agent.intention.entities import IntentionEntity
 from threetears.agent.intention.types import INTENTION_STATUS_VALUES, IntentionStatus
 from threetears.core.tenancy import TENANT_BY_SCHEMA
+from threetears.core.eviction import Declared, Policy
 
 __all__ = [
     "IntentionsCollection",
@@ -223,6 +224,7 @@ class IntentionsCollection(SchemaBackedCollection[IntentionEntity]):
                 ),
             ),
         ),
+        l1_eviction=Declared(Policy.EVICTABLE, "rows cached on a read by key; a miss reads L2/L3 and refills"),
     )
 
     def __init__(self, *args: Any, embedding_dim: int = DEFAULT_EMBEDDING_DIM, **kwargs: Any) -> None:

@@ -25,6 +25,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import BigInteger, Column as SaColumn, MetaData, String, Table
+from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 pa = pytest.importorskip("pyarrow")
 duckdb = pytest.importorskip("duckdb")
@@ -64,8 +65,14 @@ def _metadata(*, share: bool = False) -> MetaData:
     ]
     if share:
         columns.append(SaColumn("share", BigInteger))
-    Table(_VOTES, metadata, *columns)
-    Table(_RACES, metadata, SaColumn("race_id", BigInteger, primary_key=True), SaColumn("name", String(32)))
+    Table(_VOTES, metadata, *columns, info={L1_EVICTION_INFO: TEST_L1_TABLE})
+    Table(
+        _RACES,
+        metadata,
+        SaColumn("race_id", BigInteger, primary_key=True),
+        SaColumn("name", String(32)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
     # two tables an owner derives from the followed ones: one by state, one with no scope
     Table(
         _NEEDLES,
@@ -73,8 +80,15 @@ def _metadata(*, share: bool = False) -> MetaData:
         SaColumn("state", String(8), primary_key=True),
         SaColumn("geo_id", BigInteger, primary_key=True),
         SaColumn("votes", BigInteger),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
     )
-    Table(_TOTALS, metadata, SaColumn("race_id", BigInteger, primary_key=True), SaColumn("name", String(32)))
+    Table(
+        _TOTALS,
+        metadata,
+        SaColumn("race_id", BigInteger, primary_key=True),
+        SaColumn("name", String(32)),
+        info={L1_EVICTION_INFO: TEST_L1_TABLE},
+    )
     return metadata
 
 
