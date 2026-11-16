@@ -300,8 +300,8 @@ def distinct(
     statement = _Statement()
     source = statement.source(rel, "t")
     conditions = statement.fragments(where)
-    fence = " OFFSET 0" if fenced else ""
-    return statement.step(f"SELECT DISTINCT {_columns(columns)} FROM {source}{_where(conditions)}{fence}")
+    after = _where(conditions) + (" OFFSET 0" if fenced else "")
+    return statement.step(f"SELECT DISTINCT {_columns(columns)} FROM {source}{after}")
 
 
 def largest(column: str, *, cast: str | None = None, default: str | None = None, alias: str | None = None) -> Selected:
