@@ -47,7 +47,6 @@ if TYPE_CHECKING:
 __all__ = [
     "L2_MARKER_PURGE_AGE",
     "L2_MARKER_PURGE_INTERVAL",
-    "MarkerAgingBucket",
     "MarkerPurgePass",
     "RemovalMarkerPurger",
 ]
@@ -110,7 +109,7 @@ _OLDEST_AGE = gauge(
 )
 
 
-class MarkerAgingBucket(Protocol):
+class _MarkerAgingBucket(Protocol):
     """the slice of :class:`threetears.nats.NatsKvBucket` a purger needs."""
 
     @property
@@ -181,7 +180,7 @@ class RemovalMarkerPurger:
     pass that finds a new creation time starts over at the first message.
 
     :param bucket: the bucket, bound through its owner's connection (a stream purge is the owner's verb)
-    :ptype bucket: MarkerAgingBucket
+    :ptype bucket: _MarkerAgingBucket
     :param lease: one pass at a time across replicas; ``None`` runs without one (a one-shot command)
     :ptype lease: KVLease | None
     :param age: markers older than this are purged
@@ -196,7 +195,7 @@ class RemovalMarkerPurger:
 
     def __init__(
         self,
-        bucket: MarkerAgingBucket,
+        bucket: _MarkerAgingBucket,
         *,
         lease: KVLease | None,
         age: timedelta = L2_MARKER_PURGE_AGE,
@@ -207,7 +206,7 @@ class RemovalMarkerPurger:
         """bind the bucket and the lease; no I/O.
 
         :param bucket: the bucket
-        :ptype bucket: MarkerAgingBucket
+        :ptype bucket: _MarkerAgingBucket
         :param lease: the pass lease, or ``None``
         :ptype lease: KVLease | None
         :param age: the purge age
