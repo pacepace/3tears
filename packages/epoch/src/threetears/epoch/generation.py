@@ -1093,6 +1093,76 @@ class EpochGenerationSource(_ChangeLogReading):
             raise GenerationUnavailableError(
                 f"the epoch change log is not the restore of {lost!r} under {incarnation!r}: {state}"
             )
+        appended = await self._append_restored(changes, state, incarnation=incarnation, lost=lost)
+        try:
+            labelled = await self._log().label_restored(continues=(lost, covered_from))
+        except KvError as exc:
+            raise GenerationUnavailableError(f"the epoch change log could not be restored: {exc}") from exc
+        self._declared = labelled
+        return appended
+
+    async def put_back(
+        self,
+        changes: Sequence[NotedChange] | AsyncIterable[NotedChange],
+        *,
+        incarnation: str,
+        lost: str,
+    ) -> int:
+        """append one record per change into the log restored from ``lost``, and label nothing: a second ring's part.
+
+        One change log is shared by every database whose writers advance through it, and each database notes its
+        own writes in its own ring; the log's owner (the hub's keeper) puts a lost log back from its ring alone and
+        labels it (:meth:`begin_restore`, :meth:`finish_restore`). A ring in another database (identity-core's) puts
+        its own notes back with this, into the same log, while it is being restored or once it is labelled: the
+        label stays the owner's, so the log's lifecycle keeps one owner. A record appended after the label reaches a
+        follower that carried its mark over as any write's record does: it walks every record of the new log.
+
+        The same budget as :meth:`finish_restore`: at most :data:`RESTORE_BUDGET_RATIO` of ``max_bytes``, what the
+        log holds when this begins included (the owner's records already appended among them). Run again after an
+        interruption, it appends afresh; a record appended twice is evicted twice.
+
+        :param changes: what the ring's notes say changed, per table
+        :ptype changes: Sequence[NotedChange] | AsyncIterable[NotedChange]
+        :param incarnation: the restored log
+        :ptype incarnation: str
+        :param lost: the lost log's incarnation, the one the ring's notes cover
+        :ptype lost: str
+        :return: the records appended
+        :rtype: int
+        :raises RestoreTooLargeError: when the changes would pass the budget; a sequence appends nothing, a stream
+            stops before the append that would pass it
+        :raises GenerationUnavailableError: when the log is not ``lost``'s restore, or cannot be written
+        """
+        state = await self._state()
+        if state is None or state.incarnation != incarnation or lost not in (state.restoring, state.continues):
+            raise GenerationUnavailableError(
+                f"the epoch change log is not the restore of {lost!r} under {incarnation!r}: {state}"
+            )
+        return await self._append_restored(changes, state, incarnation=incarnation, lost=lost)
+
+    async def _append_restored(
+        self,
+        changes: Sequence[NotedChange] | AsyncIterable[NotedChange],
+        state: ChangeLogState,
+        *,
+        incarnation: str,
+        lost: str,
+    ) -> int:
+        """append one record per change into the restored log ``state`` names, within the restore's budget.
+
+        :param changes: what the notes say changed, per table
+        :ptype changes: Sequence[NotedChange] | AsyncIterable[NotedChange]
+        :param state: the log as read before the first append
+        :ptype state: ChangeLogState
+        :param incarnation: the restored log
+        :ptype incarnation: str
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :return: the records appended
+        :rtype: int
+        :raises RestoreTooLargeError: when the changes would pass the budget
+        :raises GenerationUnavailableError: when the log cannot be written
+        """
         budget = None if not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
         if isinstance(changes, Sequence):
             needed = _restored_bytes(_restored_records(changes))
@@ -1115,10 +1185,8 @@ class EpochGenerationSource(_ChangeLogReading):
                         )
                     await self._log().append(key, body, msg_id=f"restore-{incarnation}-{attempt}-{appended}")
                     appended += 1
-            labelled = await self._log().label_restored(continues=(lost, covered_from))
         except KvError as exc:
             raise GenerationUnavailableError(f"the epoch change log could not be restored: {exc}") from exc
-        self._declared = labelled
         return appended
 
     async def epoch_at(self, seq: int) -> EpochChange | None:

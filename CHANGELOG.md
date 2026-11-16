@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a ring beside the change log's owner puts its own notes back after a loss, and the owner's scrub judges only its own tables
+
+A lost change log was put back from the owner's ring alone (the hub's), so the epochs of identity-core's tables since
+the floor were not in it and a follower of them continued past them silently. Now a `ChangeNoteKeeper(keeps_log=False)`
+ring, once the log is a restore of the one it last saw (being restored or labelled), folds its own coverage and appends
+it into that log (`EpochGenerationSource.put_back`, the same budget as `finish_restore`), then takes the new log; the
+owner still declares, labels, marks and scrubs the log alone. A record appended after the label reaches a carried-over
+follower as any write's does. Where the ring's floor is after the label's `covered_from`, or its coverage does not fit,
+it is said at ERROR and counted (`threetears_change_notes_put_back_short_total{reason}`); each put-back is counted
+(`threetears_change_notes_put_backs_total`, `KeeperPass.put_back`). A ring beside no longer stalls behind a restore the
+owner refused (that log stays marked restoring). The scrub judges only epochs of tables its database notes into its
+ring (a table whose note trigger runs a function of the ring's schema, or any table of that schema); another
+database's epochs are skipped (`ScrubPass.others`) instead of each raising `threetears_change_notes_missing_total`.
+
 ### core: a second database keeps its own change-note ring beside the log the hub's keeper owns
 
 `ChangeNoteKeeper(keeps_log=False)` keeps a ring (install, switch, fence, empty) in a database whose writers advance

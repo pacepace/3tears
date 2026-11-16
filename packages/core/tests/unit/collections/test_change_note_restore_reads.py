@@ -4,7 +4,9 @@
 (the current and the previous ring tables) since a cut: what a lost log held is exactly those notes, so a restore
 reads them all (declared ``whole_read(kind="cold_start")``, Pace 2026-11-14). These hold that nothing else reaches
 them: each is called from one place, and the chain ends at ``_restore``, which ``run_pass`` calls only when the log is
-lost (no state while the ring names a log) or a restore of the ring's lost log was declared and never labelled.
+lost (no state while the ring names a log) or a restore of the ring's lost log was declared and never labelled, or at
+``_put_back``, a ring beside the log's owner putting its own notes back, which ``run_pass`` calls only for such a ring
+and only when the log is a restore of the one it last saw (RC5, 2026-11-16).
 """
 
 from __future__ import annotations
@@ -41,8 +43,8 @@ def _callers() -> dict[str, set[str]]:
     return callers
 
 
-def _guards_of_restore_calls() -> list[tuple[str, ...]]:
-    """the conditions guarding each ``self._restore(...)`` call in ``run_pass``, outermost first, as source text
+def _guards_of_restore_calls(method: str = "_restore") -> list[tuple[str, ...]]:
+    """the conditions guarding each ``self.<method>(...)`` call in ``run_pass``, outermost first, as source text
     (an else branch's condition prefixed ``not``)."""
     tree = ast.parse(_SOURCE.read_text(encoding="utf-8"))
     run_pass = next(
@@ -57,7 +59,7 @@ def _guards_of_restore_calls() -> list[tuple[str, ...]]:
                 walk(statement.orelse, (*guards, f"not {ast.unparse(statement.test)}"))
                 continue
             for call in ast.walk(statement):
-                if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "_restore":
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == method:
                     found.append(guards)
 
     walk(run_pass.body, ())
@@ -69,10 +71,19 @@ def test_the_coverage_is_read_whole_only_by_a_restore() -> None:
     but a restore: each is called only from the restore's own steps, the chain ends at ``_restore``, and ``run_pass`` calls ``_restore``
     only when the log is lost or a declared restore of the ring's lost log was never labelled."""
     callers = _callers()
-    # the count sizes the coverage before the stream (_restore) or beside it (_sized)
-    assert callers["_count_since"] == {"ChangeNoteKeeper._restore", "ChangeNoteKeeper._sized"}
-    # the estimate sizes the whole coverage (_fitting, or _sized beside the stream) or a cut of it (_cut)
-    assert callers["_estimate"] == {"ChangeNoteKeeper._fitting", "ChangeNoteKeeper._sized", "ChangeNoteKeeper._cut"}
+    # the count sizes the coverage before the stream (_restore) or beside it (_sized); a ring beside sizes its own
+    assert callers["_count_since"] == {
+        "ChangeNoteKeeper._restore",
+        "ChangeNoteKeeper._sized",
+        "ChangeNoteKeeper._put_back",
+    }
+    # the estimate sizes the whole coverage (_fitting, or _sized beside the stream, or a ring beside's) or a cut of it
+    assert callers["_estimate"] == {
+        "ChangeNoteKeeper._fitting",
+        "ChangeNoteKeeper._sized",
+        "ChangeNoteKeeper._cut",
+        "ChangeNoteKeeper._put_back",
+    }
     assert callers["_fitting"] == {"ChangeNoteKeeper._restore"}
     assert callers["_sized"] == {"ChangeNoteKeeper._restore"}
     assert callers["_cut"] == {"ChangeNoteKeeper._fitting", "ChangeNoteKeeper._restore"}
@@ -82,8 +93,15 @@ def test_the_coverage_is_read_whole_only_by_a_restore() -> None:
     assert callers["stream"] == {"_Gated._gate"}
     assert callers["_Gated"] == {"ChangeNoteKeeper._restore"}
     assert callers["_StreamedChanges"] == {"ChangeNoteKeeper._changes_since"}
-    assert callers["_changes_since"] == {"ChangeNoteKeeper._restore"}
+    assert callers["_changes_since"] == {"ChangeNoteKeeper._restore", "ChangeNoteKeeper._put_back"}
     assert callers["_restore"] == {"ChangeNoteKeeper.run_pass"}
+    assert callers["_put_back"] == {"ChangeNoteKeeper.run_pass"}
+    assert _guards_of_restore_calls("_put_back") == [
+        (
+            "not self._keeps_log",
+            "lost is not None and state.incarnation != lost and (lost in (state.restoring, state.continues))",
+        )
+    ]
     assert sorted(_guards_of_restore_calls()) == sorted(
         [
             ("state is None", "not ring.log_incarnation is None"),

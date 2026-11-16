@@ -92,25 +92,40 @@ it, re-applied.
 
 **The scrub.** Every tenth of the fence (``scrub_every``), not every pass, it checks that the epochs the
 log holds after the floor have their notes: one whose note is not where the coverage needs it is logged at
-ERROR and counted (``threetears_change_notes_missing_total``), for an alert. It reads up to ``scrub_batch``
+ERROR and counted (``threetears_change_notes_missing_total``), for an alert. It judges only the epochs of tables
+its own database notes: a table whose note trigger writes into this ring, or any table of the ring's own schema (so a
+table refused a trigger, or one that lost it, is still reported). The log is shared with other databases' writers
+(identity-core's), whose notes are in their own rings; their epochs are skipped (``ScrubPass.others``), never read as
+missing (RC5, 2026-11-16). It reads up to ``scrub_batch``
 records from the log, a few dozen at a time, and looks their notes up through the note tables'
 ``(key_text, table_name)`` index, so its cost follows the epochs checked, not the coverage's size. It only
 checks and reports; it never writes a note, reloads anything or repairs.
 
-**A ring beside a log another keeper keeps** (RC3, Pace 2026-11-16). One change log is shared by every database
-whose writers advance through it (the hub's platform database, identity-core's own), and one keeper, the hub's, owns
-it: it alone declares the log and puts a lost one back. A second database still needs its own ring, for what its
-notes name inside that database: its write-mark reconciler names a lost write's rows from them
+**A ring beside a log another keeper keeps** (RC3, Pace 2026-11-16; its restore and scrub RC5, 2026-11-16). One
+change log is shared by every database whose writers advance through it (the hub's platform database, identity-core's
+own), and one keeper, the hub's, owns its lifecycle: it alone declares the log, declares and labels a lost one's
+restore, marks the log's position and scrubs. A second database still needs its own ring, for what its notes name
+inside that database: its write-mark reconciler names a lost write's rows from them
 (:func:`~threetears.core.collections.change_notes.noted_rows_since`) instead of recording keys unknown, and its
 followers page a bracketed keys-unknown record's keys from them
 (:class:`~threetears.core.collections.change_notes.PoolNotedKeysReader`). Its keeper is built ``keeps_log=False``:
-it installs, switches, fences and empties its ring as the owner does, and never declares, restores or scrubs the log.
-Two keepers restoring one log from two rings would each put back only their own database's notes, and the second to
-label it would decide which half the followers keep; a scrub there would read every other database's epochs as
-missing notes. Its passes, while the log is absent or being put back, do nothing: the owner puts it back, and this
-ring adopts the new incarnation, its floor that log's start, at its next pass. Such a ring writes no position marks
-either (they serve only a restore). A lost log is therefore put back with the owner's database's notes alone; the
-other database's epochs since the floor are not in it, and a follower of its tables continues past them.
+it installs, switches, fences and empties its ring as the owner does, and never declares, labels, marks or scrubs the
+log. While the log is absent its passes do nothing: the owner declares the restore.
+
+What it does do is **put its own notes back**. Only this database's ring holds the notes of this database's writes;
+the owner reads its own ring and cannot reach another database's. So once the log is a restore of the one this ring
+last saw (being restored, or labelled), the ring's keeper folds its coverage as the owner's restore does and appends
+it into that log (``put_back``), then takes the new log as its own, its floor that log's start. Why not anything
+else: the owner waiting for every ring before its label would need to know every ring and would hold every follower
+behind while a ring's process is down; a second label would race the owner's. Appended before the label, a record is
+there when a follower carries its mark over; appended after it, the follower walks it as it walks any write's record
+after its carry-over, so the ring's tables converge a pass later, never silently. What the label vouches for is the
+owner's floor (``covered_from``). Where this ring's own floor is later, an epoch of its tables between the two may
+have no note here, and a follower whose mark lies between may have missed it: said at ERROR and counted
+(``threetears_change_notes_put_back_short_total``, ``reason=floor_after_label``), as is a coverage too big to put
+back (``reason=too_large``; such a ring writes no marks to cut it by, and its notes are a small database's). The
+owner's scrub, for its part, judges only the epochs of the tables its own database notes (below), so another
+database's epochs are never read as missing notes.
 
 **Which columns can be noted.** A note carries its key and invalidation columns as text, and a restore
 names rows by that text, as an epoch record does. Only uuid, text, varchar and integer columns spell a
@@ -121,7 +136,6 @@ ERROR names it.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections.abc import (
     AsyncGenerator,
@@ -410,6 +424,16 @@ _RESTORES_TRUNCATED = counter(
     "threetears_change_notes_restore_truncated_total",
     description="restores that put back only the newest notes that fit the log; followers older than its floor are behind",
 )
+_PUT_BACKS = counter(
+    "threetears_change_notes_put_backs_total",
+    description="restored change logs a ring beside the log's owner put its own notes back into",
+)
+_PUT_BACK_SHORT = counter(
+    "threetears_change_notes_put_back_short_total",
+    description="a ring beside the log's owner put back less than the restore's label vouches for: its floor is "
+    "after the label's covered_from (floor_after_label), or its coverage did not fit the log (too_large)",
+    label_names=("reason",),
+)
 _KEEPER_LAST_PASS = gauge(
     "threetears_change_notes_keeper_last_pass_timestamp_seconds",
     description="unix time of this process's last whole change-note keeper pass; alert when no process has moved it "
@@ -524,6 +548,28 @@ class _ChangeLogKeeping(Protocol):
         """
         ...
 
+    async def put_back(
+        self,
+        changes: Sequence[NotedChange] | AsyncIterable[NotedChange],
+        *,
+        incarnation: str,
+        lost: str,
+    ) -> int:
+        """append one record per change into the log restored from ``lost``, labelling nothing (a ring beside).
+
+        :param changes: what the ring's notes say changed, per table
+        :ptype changes: Sequence[NotedChange] | AsyncIterable[NotedChange]
+        :param incarnation: the restored log
+        :ptype incarnation: str
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :return: the records appended
+        :rtype: int
+        :raises RestoreTooLargeError: when the changes would not fit with headroom
+        :raises GenerationUnavailableError: when the log is not ``lost``'s restore, or cannot be written
+        """
+        ...
+
 
 class _Pool(Protocol):
     """what the keeper needs of the L3 pool (an ``asyncpg.Pool`` is one)."""
@@ -596,14 +642,16 @@ class NoteRingState:
 class ScrubPass:
     """what one scrub found.
 
-    :ivar checked: epochs checked
+    :ivar checked: epochs checked: those of tables this ring's database notes
     :ivar missing: epochs whose note was not where the coverage needs it
     :ivar position: the newest epoch checked, ``incarnation:seq``; ``None`` when none was
+    :ivar others: epochs read and skipped: of tables another database notes, in its own ring
     """
 
     checked: int = 0
     missing: int = 0
     position: str | None = None
+    others: int = 0
 
 
 @dataclass(slots=True)
@@ -614,6 +662,7 @@ class KeeperPass:
         ever seen one
     :ivar restored: the incarnation of a lost log the keeper put back from the notes
     :ivar adopted: the incarnation of a log the keeper found that it had not seen before
+    :ivar put_back: the incarnation of a restored log this ring, beside the log's owner, put its own notes back into
     :ivar fenced: the fence after the last switch passed in this pass
     :ivar emptied: the note table this pass finished emptying
     :ivar emptied_rows: notes this pass deleted from the idle table
@@ -625,6 +674,7 @@ class KeeperPass:
     started: str | None = None
     restored: str | None = None
     adopted: str | None = None
+    put_back: str | None = None
     fenced: bool = False
     emptied: int | None = None
     emptied_rows: int = 0
@@ -727,6 +777,18 @@ FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_namespace n ON n.
 WHERE g.tgname::text = ANY($1::text[])
 """
 
+#: which of the named tables this ring's database notes into this ring (the scrub judges only their epochs): a table
+#: whose note trigger runs a function of the ring's schema, or any table of the ring's schema, triggered or not
+_OWN_TABLES_SQL: Final = """
+SELECT c.relname::text AS table_name
+FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid JOIN pg_proc p ON p.oid = g.tgfoid
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE g.tgname::text = $2 AND n.nspname::text = $1 AND c.relname::text = ANY($3::text[])
+UNION
+SELECT t.table_name::text AS table_name FROM information_schema.tables t
+WHERE t.table_schema::text = $1 AND t.table_type = 'BASE TABLE' AND t.table_name::text = ANY($3::text[])
+"""
+
 _COLUMN_TYPES_SQL: Final = """
 SELECT c.table_schema::text AS table_schema, c.table_name::text AS table_name, c.column_name::text AS column_name,
        c.data_type::text AS data_type
@@ -814,7 +876,8 @@ class ChangeNoteKeeper:
         :ptype empty_budget: timedelta
         :param keeps_log: this keeper owns the change log: it declares it where no ring has seen one, puts a lost
             one back from its notes, marks its position and scrubs it. ``False`` for a ring in a second database
-            beside a log another keeper owns (module docstring): it keeps its ring only
+            beside a log another keeper owns (module docstring): it keeps its ring, and puts its own notes back into
+            a restore of the log the owner declared
         :ptype keeps_log: bool
         :return: nothing
         :rtype: None
@@ -865,6 +928,9 @@ class ChangeNoteKeeper:
         #: the newest epoch the scrub has checked, and the log's head at the previous pass (what it checks up to)
         self._scrubbed: tuple[str, int] | None = None
         self._seen: tuple[str, int] | None = None
+        #: a ring beside: the restored log it put its notes back into before the owner labelled it, the lost log, and
+        #: its own floor under that, so the label's covered_from is checked against the floor once it is written
+        self._unchecked: tuple[str, str, int | None] | None = None
         #: whether the ring's database is YugabyteDB, read once: an emptying steps through the notes in its key's
         #: own order, which there is the key's hash
         self._yugabyte: bool | None = None
@@ -1139,10 +1205,18 @@ class ChangeNoteKeeper:
         # the database's clock read before the log's state: a mark's time must not be later than its position
         read_at = ring.now
         state = await self._log.log_state()
-        if not self._keeps_log and (state is None or (state.restoring is not None and state.continues is None)):
-            # the log's owner declares it, or puts it back; this ring adopts what it finds at a later pass
-            _KEEPER_LAST_PASS.set(time.time())
-            return result
+        if not self._keeps_log:
+            if state is None:
+                # the log's owner declares it, or declares its restore; this ring puts its notes back at a later pass
+                _KEEPER_LAST_PASS.set(time.time())
+                return result
+            self._check_label(state)
+            lost = ring.log_incarnation
+            if lost is not None and state.incarnation != lost and lost in (state.restoring, state.continues):
+                # a restore of the log this ring last saw: the owner put back its own database's notes only
+                result.put_back = await self._put_back(ring, state, lost)
+                _KEEPER_LAST_PASS.set(time.time())
+                return result
         if state is None:
             if ring.log_incarnation is None:
                 result.started = await self._log.start_log()
@@ -1229,9 +1303,7 @@ class ChangeNoteKeeper:
                 floor=start,
                 fence_seq=None if ring.fence_seq is None else start,
             )
-        # a ring beside a log another keeper owns sees each of the owner's restores this way, which is no surprise
-        log.log(
-            logging.WARNING if self._keeps_log else logging.INFO,
+        log.warning(
             "the change log is under an incarnation the note keeper did not put back; its notes cover it from its start",
             extra={"extra_data": {"was": ring.log_incarnation, "now": state.incarnation}},
         )
@@ -1240,6 +1312,114 @@ class ChangeNoteKeeper:
             log_incarnation=state.incarnation,
             floor=start,
             fence_seq=None if ring.fence_seq is None else start,
+        )
+
+    async def _put_back(self, ring: NoteRingState, state: ChangeLogState, lost: str) -> str:
+        """a ring beside the log's owner: append its coverage's notes into the restore of ``lost``, then take that log.
+
+        The owner declared the restore and labels it from its own ring (module docstring); this ring puts back what
+        only its database's notes name, folded as the owner's restore folds them, and labels nothing. A coverage too
+        big for what the log has left is not put back: said at ERROR and counted. Interrupted before the ring's
+        update, the next pass puts it back again (a record appended twice is evicted twice).
+
+        :param ring: the ring, still at ``lost``
+        :ptype ring: NoteRingState
+        :param state: the restored log
+        :ptype state: ChangeLogState
+        :param lost: the lost log's incarnation, the one this ring's notes cover
+        :ptype lost: str
+        :return: the restored log's incarnation
+        :rtype: str
+        :raises GenerationUnavailableError: when the log cannot be written; the next pass puts back again
+        """
+        incarnation = state.incarnation
+        covered = _seq_under(ring.floor, lost)
+        if covered is None:
+            covered = _seq_under(ring.fence_seq, lost)
+        began = time.monotonic()
+        budget = None if not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
+        notes, bound = await self._count_since(ring, None)
+        appended = 0
+        tables = 0
+        if budget is not None and bound > budget and await self._estimate(ring, None) > budget:
+            _PUT_BACK_SHORT.labels(reason="too_large").inc()
+            log.error(
+                "a ring beside the change log's owner did NOT put its notes back into the restored log: they do not "
+                "fit what the log has left. A follower of this database's tables misses the epochs they name",
+                extra={"extra_data": {"lost": lost, "restored": incarnation, "notes": notes, "budget": budget}},
+            )
+        elif notes:
+            # the restore's worker exits when it ends (RestoreFolder), as the owner's restore's does
+            async with RestoreFolder() as folder:
+                folder.start()
+                changes = self._changes_since(ring, None, folder)
+                appended = await self._log.put_back(changes, incarnation=incarnation, lost=lost)
+                tables = changes.tables
+        after = await self._log.log_state()
+        head = after.last_seq if after is not None and after.incarnation == incarnation else 0
+        await self._update(
+            ring,
+            log_incarnation=incarnation,
+            floor=_token(incarnation, 0),
+            fence_seq=None if ring.fence_seq is None else _token(incarnation, head),
+        )
+        _PUT_BACKS.inc()
+        log.warning(
+            "a ring beside the change log's owner put its own notes back into the restored log",
+            extra={
+                "extra_data": {
+                    "lost": lost,
+                    "restored": incarnation,
+                    "coverage_floor": None if covered is None else _token(lost, covered),
+                    "notes": notes,
+                    "tables": tables,
+                    "records": appended,
+                    "seconds": round(time.monotonic() - began, 3),
+                }
+            },
+        )
+        self._unchecked = (incarnation, lost, covered)
+        if after is not None:
+            self._check_label(after)
+        return incarnation
+
+    def _check_label(self, state: ChangeLogState) -> None:
+        """once the owner labels the restore this ring put its notes back into, check what the label vouches for.
+
+        The label vouches for every epoch after ``covered_from``, the owner's floor. An epoch of this database's
+        tables after it and at or before this ring's own floor may have no note here, so a follower whose mark lies
+        between may have missed it: said at ERROR and counted. Checked by the process that put the notes back; a
+        restart between its put-back and the label skips the check.
+
+        :param state: the log as this pass read it
+        :ptype state: ChangeLogState
+        :return: nothing
+        :rtype: None
+        """
+        if self._unchecked is None:
+            return
+        incarnation, lost, floor = self._unchecked
+        if state.incarnation != incarnation:
+            self._unchecked = None  # lost again before its label: that restore's label never comes
+            return
+        if state.continues != lost:
+            return  # not yet labelled
+        self._unchecked = None
+        label = state.covered_from
+        if label is None or (floor is not None and floor <= label):
+            return
+        _PUT_BACK_SHORT.labels(reason="floor_after_label").inc()
+        log.error(
+            "a restored change log's label vouches for epochs this ring's notes may not cover: its floor is after the "
+            "label's covered_from. A follower of this database's tables whose mark lies between may have missed a write",
+            extra={
+                "extra_data": {
+                    "lost": lost,
+                    "restored": incarnation,
+                    "covered_from": _token(lost, label),
+                    "ring_floor": None if floor is None else _token(lost, floor),
+                }
+            },
         )
 
     # WHY BATCHED DELETES AND NEVER TRUNCATE (measured; docs/runbook-epoch-write-cost.md, "Recorded results": "The
@@ -1985,10 +2165,15 @@ class ChangeNoteKeeper:
         if end <= start:
             _SCRUB_BEHIND.set(max(0, state.last_seq - start))
             return ScrubPass(position=_token(incarnation, start))
-        records = await self._epochs_between(start, end)
+        read = await self._epochs_between(start, end)
+        # WHY only this database's tables (RC5, 2026-11-16): the log is shared with another database's writers
+        # (identity-core's), whose notes are in that database's ring; read here, each of their epochs was a missing
+        # note, raising threetears_change_notes_missing_total on every identity write
+        own = await self._own_tables({record.table for record in read})
+        records = [record for record in read if record.table in own]
         fence = _seq_under(ring.fence_seq, incarnation)
         found = await self.notes_found(ring, records)
-        result = ScrubPass(checked=len(records), position=_token(incarnation, end))
+        result = ScrubPass(checked=len(records), position=_token(incarnation, end), others=len(read) - len(records))
         for record in records:
             seq = int(record.token.rpartition(":")[2])
             where = (ring.current,) if fence is not None and seq > fence else (ring.current, ring.previous)
@@ -2012,6 +2197,19 @@ class ChangeNoteKeeper:
         self._scrubbed = (incarnation, end)
         _SCRUB_BEHIND.set(max(0, state.last_seq - end))
         return result
+
+    async def _own_tables(self, tables: set[str]) -> set[str]:
+        """which of ``tables`` this ring's database notes into this ring (:data:`_OWN_TABLES_SQL`).
+
+        :param tables: the tables the scrub's epochs name
+        :ptype tables: set[str]
+        :return: those whose epochs the scrub judges
+        :rtype: set[str]
+        """
+        if not tables:
+            return set()
+        rows = await self._pool.fetch(_OWN_TABLES_SQL, self._schema, NOTE_TRIGGER, sorted(tables))
+        return {str(row["table_name"]) for row in rows}
 
     async def _epochs_between(self, start: int, end: int) -> list[EpochChange]:
         """the records the log holds after ``start`` up to ``end``, read :data:`_SCRUB_READS_AT_ONCE` at a time.
@@ -2503,9 +2701,11 @@ class ChangeNoteKeeping:
 
     async def start(self) -> KeeperPass:
         """the start's one pass, before anything of this process writes an epoch: create the ring and the triggers,
-        then one keeper pass (the log's owner declares the log where no ring has seen one, or puts a lost one back).
+        then one keeper pass (the log's owner declares the log where no ring has seen one, or puts a lost one back; a
+        ring beside it puts its own notes back into such a restore).
 
-        Two replicas starting at once are safe: the log is declared or restored once, and the other finds it there.
+        Two replicas starting at once are safe: the log is declared or restored once, and the other finds it there; a
+        ring beside may put its notes back twice, and a record appended twice is evicted twice.
 
         :return: what the pass did
         :rtype: KeeperPass
