@@ -603,6 +603,14 @@ def _arm_of_run(run: EvalRun) -> str:
     return named if isinstance(named, str) and named else run.candidate_model
 
 
+def launched_as_run(run: EvalRun) -> tuple[str | None, str, str]:
+    """How a stored run's arm was launched, as a continued comparison compares it
+    (:func:`~threetears.evals.quick.continuation.launched_as`): the arm's name its launch stated on the run's payload
+    under this module's key (``None`` for an arm named by its model), its candidate model and its levers."""
+    named = (run.host_payload or {}).get(_ARM_PAYLOAD_KEY)
+    return launched_as(named if isinstance(named, str) and named else None, run.candidate_model, run.overlays)
+
+
 def _arm_levels(run: EvalRun) -> dict[str, SweepableValue]:
     """A run's level of :data:`ARM_LEVER`, the host's one lever of its own, keyed into its variant."""
     arm = _arm_of_run(run)
@@ -2824,6 +2832,7 @@ __all__ = [
     "callable_kind_contracts",
     "grade_judge_examples",
     "launch_arms",
+    "launched_as_run",
     "refuse_an_unusable_cap",
     "refuse_unusable_guardrails",
     "refuse_unusable_margins",

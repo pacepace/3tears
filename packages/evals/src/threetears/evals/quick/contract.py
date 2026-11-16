@@ -61,6 +61,7 @@ from threetears.evals.quick.one_call import (
     callable_host,
     grade_judge_examples,
     launch_arms,
+    launched_as_run,
     refuse_an_unusable_cap,
 )
 from threetears.evals.quick.continuation import (
@@ -636,7 +637,9 @@ class Eval:
         said: str | None = None
         control_index = list(self.arms).index(self.control) if self.control in self.arms else 0
         if self.comparison:
-            earlier = await run_blocking(host.blocking_executor, earlier_comparison, host, scope_id, self.name)
+            earlier = await run_blocking(
+                host.blocking_executor, earlier_comparison, host, scope_id, self.name, launched_as_run
+            )
             if earlier is not None and (
                 earlier.design
                 != design_facts(

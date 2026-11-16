@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -106,11 +106,6 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _launched_as_run(run: EvalRun) -> tuple[str | None, str, str]:
-    named = (run.host_payload or {}).get("arm")
-    return launched_as(named if isinstance(named, str) and named else None, run.candidate_model, run.overlays)
-
-
 def design_facts(
     measure_order: Sequence[str],
     guardrail_margins: Mapping[str, float],
@@ -137,7 +132,9 @@ def same_margin(stored: float | None, given: float | None) -> bool:
     return math.isclose(stored, given, rel_tol=1e-9, abs_tol=1e-12)
 
 
-def earlier_comparison(host: EvalHost, scope_id: str, name: str) -> EarlierComparison | None:
+def earlier_comparison(
+    host: EvalHost, scope_id: str, name: str, launched_as_run: Callable[[EvalRun], tuple[str | None, str, str]]
+) -> EarlierComparison | None:
     """The comparison the quick path filed last under ``name`` in ``scope_id``, or ``None`` where there is none to
     continue: none filed, one of a single arm, or one whose runs are not one quick-path case set run alike. Reads the
     store.
@@ -148,6 +145,10 @@ def earlier_comparison(host: EvalHost, scope_id: str, name: str) -> EarlierCompa
     :ptype scope_id: str
     :param name: The eval's name, which its campaign's subject is.
     :ptype name: str
+    :param launched_as_run: How a stored run's arm was launched (:func:`launched_as` of its arm's name, model and
+        levers), read by the module that writes a run's arm name
+        (:func:`~threetears.evals.quick.one_call.launched_as_run`).
+    :ptype launched_as_run: Callable[[EvalRun], tuple[str | None, str, str]]
     :return: The comparison, or ``None``.
     :rtype: EarlierComparison | None
     """
@@ -173,7 +174,7 @@ def earlier_comparison(host: EvalHost, scope_id: str, name: str) -> EarlierCompa
         return None
     grouped: dict[tuple[str | None, str, str], list[EvalRun]] = {}
     for run in runs:
-        grouped.setdefault(_launched_as_run(run), []).append(run)
+        grouped.setdefault(launched_as_run(run), []).append(run)
     if len(grouped) < 2:
         return None
     by_arm: dict[tuple[str | None, str, str], EarlierArm] = {}
