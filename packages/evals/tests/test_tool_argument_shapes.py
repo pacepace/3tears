@@ -2,9 +2,13 @@
 
 Every call's arguments are held to the action's parameters in one place (``MountedTool.call``), for every action:
 
-- **null for an optional parameter is that parameter not given.** The seven pairs that raised a bare ``TypeError`` on
-  ``null`` (an arm parameter whose length constraint sat outside its optional) answer exactly as the call that left it
-  out;
+- **null is what each parameter declares it to be, for every action.** The seven pairs that raised a bare
+  ``TypeError`` on ``null`` (an arm parameter whose length constraint sat outside its optional) declare ``null`` not
+  given (``NullIsOmitted``) and answer exactly as the call that left it out. Swept over every action of the catalogue
+  and every parameter it does not require: a parameter that declares so reads ``null`` as left out; one whose schema
+  admits ``null`` hands it to the action as sent, told from an omission (``campaign_update``'s
+  ``control_from_run_id: null`` clears the control, where leaving it out keeps it); one whose schema does not is
+  refused 422 naming it. None raises, and no ``null`` reaches a pydantic constraint unchecked (the #1249 shape);
 - **a value that does not fit is refused** ``validation_failed`` (422), naming the parameter and what it takes: a
   wrong type, a list where a string is expected, ``null`` for a required parameter, and a value pydantic raises as a
   bare ``TypeError`` rather than a ``ValidationError`` (a declaration that lets a constraint meet a value it cannot
@@ -18,14 +22,18 @@ Every call's arguments are held to the action's parameters in one place (``Mount
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Mapping
+from dataclasses import replace
 from typing import Annotated, Any, Final
 
 import pytest
-from pydantic import BeforeValidator, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator
 
+from packages.evals.tests.fixtures.toyhost.campaign import toyhost_aspect_design
 from packages.evals.tests.fixtures.writer_cases.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture
 from packages.evals.tests.report_writer_support import (
     FakeToolTurnClient,
     FakeTurnModel,
@@ -39,12 +47,15 @@ from packages.evals.tests.report_writer_support import (
 from threetears.evals.actions import (
     Action,
     ActionCatalogue,
+    ActionOutcome,
     Caller,
     MountedTool,
     ToolSpec,
     analyst_tools,
     eval_catalogue,
+    standard_tools,
 )
+from threetears.evals.actions.params import NullIsOmitted
 from threetears.evals.ops import OpsHost
 from threetears.evals.schema.base import EvalBaseModel
 
@@ -95,6 +106,165 @@ async def test_a_value_that_does_not_fit_is_refused_naming_its_parameter(given: 
     assert outcome.refusal is not None and (outcome.refusal.kind, outcome.refusal.status) == ("validation_failed", 422)
     assert outcome.recovery is not None and outcome.recovery.parameters == (parameter,)
     assert f"- {parameter}: Input should be a valid string" in outcome.text, outcome.text
+
+
+# --- null, swept over every action and every parameter it does not require ----------------------------------------------
+
+#: The catalogue's actions as a host gets them: the engine's and the analyst's.
+CATALOGUE: Final = eval_catalogue()
+
+#: Every action and every parameter it does not require, read from the catalogue itself, so an action or a parameter
+#: added later is swept without a line here.
+OPTIONAL: Final[list[tuple[Action, str]]] = [
+    (action, name)
+    for action in CATALOGUE.actions
+    for name, info in action.params.model_fields.items()
+    if not info.is_required()
+]
+
+
+class _Reached(Exception):
+    """The call validated and reached its action, which stops it here: with the parameters it was handed."""
+
+    def __init__(self, params: BaseModel) -> None:
+        super().__init__("reached the handler")
+        self.params = params
+
+
+async def _reached(host: OpsHost, caller: Caller, params: Any) -> Any:
+    raise _Reached(params)
+
+
+def _alone(action: Action) -> MountedTool:
+    """``action`` alone on a tool, its handler replaced by one that hands back what it was given."""
+    reaching = replace(action, handler=_reached)
+    spec = ToolSpec(
+        name="sweep",
+        description="Every optional parameter.",
+        permissions=frozenset({action.permission}),
+        cut=action.cut,
+    )
+    return ActionCatalogue([reaching]).mount(spec)
+
+
+async def _sent(tool: MountedTool, arguments: Mapping[str, Any], host: OpsHost) -> BaseModel | ActionOutcome:
+    """The parameters the action was handed, or the outcome of a call refused before it."""
+    try:
+        return await tool.call(arguments, host=host, caller=CALLER)
+    except _Reached as reached:
+        return reached.params
+
+
+def _said(answer: BaseModel | ActionOutcome) -> str:
+    return answer.text if isinstance(answer, ActionOutcome) else repr(answer)
+
+
+def _admits_null(schema: Mapping[str, Any]) -> bool:
+    """Whether a parameter's JSON schema, as its declaration generates it, admits ``null``."""
+    branches = [*schema.get("anyOf", ()), *schema.get("oneOf", ())]
+    if branches:
+        return any(_admits_null(branch) for branch in branches)
+    kind = schema.get("type")
+    if kind is None:
+        return not ({"enum", "const", "$ref", "allOf"} & schema.keys())
+    return kind == "null" or (isinstance(kind, list) and "null" in kind)
+
+
+def _null_is_omitted(action: Action, name: str) -> bool:
+    return any(isinstance(marker, NullIsOmitted) for marker in action.params.model_fields[name].metadata)
+
+
+@pytest.fixture(scope="module")
+def sweep_host() -> OpsHost:
+    """A host no swept call reaches: each is answered at validation or handed back from its handler."""
+    return seeded_host()
+
+
+@pytest.mark.parametrize(("action", "parameter"), OPTIONAL, ids=[f"{a.name}-{p}" for a, p in OPTIONAL])
+async def test_null_for_every_optional_parameter_is_its_declared_meaning_or_a_refusal_naming_it(
+    action: Action, parameter: str, sweep_host: OpsHost, caplog: pytest.LogCaptureFixture
+) -> None:
+    tool = _alone(action)
+    left_out = {"action": action.name, **{k: v for k, v in action.example.items() if k != parameter}}
+    with caplog.at_level(logging.WARNING, logger="threetears.evals.actions.catalogue"):
+        omitted = await _sent(tool, left_out, sweep_host)
+        nulled = await _sent(tool, {**left_out, parameter: None}, sweep_host)
+
+    assert not caplog.records, f"null met a constraint pydantic could not apply to it (#1249): {caplog.records}"
+    if not _admits_null(action.params.model_json_schema()["properties"][parameter]):
+        assert isinstance(nulled, ActionOutcome), f"{parameter}'s schema does not admit null, yet it validated"
+        assert nulled.refusal is not None and (nulled.refusal.kind, nulled.refusal.status) == ("validation_failed", 422)
+        assert nulled.recovery is not None and nulled.recovery.parameters == (parameter,), nulled.text
+        assert re.search(rf"^- {parameter}[:.]", nulled.text, re.MULTILINE), nulled.text
+    elif isinstance(omitted, ActionOutcome):
+        # The action takes this parameter or another (one of campaign_id or analysis_id), so leaving it out of the
+        # example is refused: null reads as that omission, refused alike and never raised.
+        assert omitted.refusal is not None and omitted.refusal.status == 422, omitted.text
+        assert isinstance(nulled, ActionOutcome), f"null validated where leaving {parameter} out does not"
+        assert (nulled.text, nulled.refusal, nulled.recovery) == (omitted.text, omitted.refusal, omitted.recovery)
+    elif _null_is_omitted(action, parameter):
+        assert isinstance(nulled, BaseModel), _said(nulled)
+        assert nulled.model_dump() == omitted.model_dump(), "declared not given: read as left out"
+        assert nulled.model_fields_set == omitted.model_fields_set, "and its next page's call sends what was left out"
+    else:
+        assert isinstance(nulled, BaseModel), f"{parameter}'s schema admits null: {_said(nulled)}"
+        assert getattr(nulled, parameter) is None and parameter in nulled.model_fields_set, "null, as sent"
+        assert nulled.model_dump(exclude={parameter}) == omitted.model_dump(exclude={parameter})
+        assert action.params.model_fields[parameter].default is None, "an action that reads no omission reads null so"
+
+
+def test_the_sweep_holds_every_kind_of_optional_parameter() -> None:
+    """The sweep is not vacuous: it meets each branch, and the seven #1249 pairs are the ones declared not given."""
+    declared = {(action.name, name) for action, name in OPTIONAL if _null_is_omitted(action, name)}
+    admitting = [
+        (action.name, name)
+        for action, name in OPTIONAL
+        if _admits_null(action.params.model_json_schema()["properties"][name])
+    ]
+    assert declared == {(action, parameter) for action, parameter, _ in NULL_PAIRS}
+    assert ("campaign_update", "control_from_run_id") in admitting and len(admitting) > len(declared)
+    assert len(OPTIONAL) > len(admitting), "and some optional parameter does not admit null"
+
+
+async def test_null_for_campaign_updates_control_clears_it_where_leaving_it_out_keeps_it() -> None:
+    """The meaning ``campaign_update`` gives ``control_from_run_id: null``: the control cleared, told from an update
+    that leaves it out, which keeps it (the declaration open again once its runs are gone)."""
+    fixture = off_loop(ops_fixture)
+    evals = CATALOGUE.mount_all(standard_tools())[0]
+    run, behavior = fixture.campaign.run_ids[0], fixture.campaign.behavior
+
+    async def sent(action: str, **arguments: Any) -> ActionOutcome:
+        outcome = await evals.call({"action": action, **arguments}, host=fixture.host, caller=CALLER)
+        assert not outcome.is_error, outcome.text
+        return outcome
+
+    def control() -> object:
+        campaign = off_loop(fixture.host.eval_host.storage.load_campaign, campaign_id, TOYHOST_SCOPE)
+        assert campaign is not None
+        return campaign.control
+
+    created = await sent(
+        "campaign_create",
+        name="null clears",
+        subject_id=TOYHOST_SUBJECT.subject_id,
+        behavior=behavior,
+        aspects=[{"label": behavior}],
+        exploratory=True,
+    )
+    assert created.structured is not None
+    campaign_id = created.structured["id"]
+    design = toyhost_aspect_design().model_dump(mode="json")
+    await sent("campaign_update", campaign_id=campaign_id, aspects=[{"label": behavior, "design": design}])
+    await sent("campaign_runs_add", campaign_id=campaign_id, run_ids=[run])
+    await sent("campaign_update", campaign_id=campaign_id, control_from_run_id=run)
+    await sent("campaign_runs_remove", campaign_id=campaign_id, run_ids=[run])
+
+    await sent("campaign_update", campaign_id=campaign_id, name="null clears, renamed")
+    kept = control()
+    await sent("campaign_update", campaign_id=campaign_id, control_from_run_id=None)
+
+    assert kept is not None, "an update that leaves control_from_run_id out keeps the control"
+    assert control() is None, "control_from_run_id: null clears it"
 
 
 # --- the one place every action's arguments are validated ---------------------------------------------------------------

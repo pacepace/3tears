@@ -57,6 +57,7 @@ from typing import Any, Final, Literal, get_args
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from threetears.evals.actions import render
+from threetears.evals.actions.params import NullIsOmitted
 from threetears.evals.kernel.errors import (
     EvalServiceError,
     RefusedInput,
@@ -256,7 +257,7 @@ class Action:
 
         :raises ValueError: The name is not ``noun_verb``; the summary is blank or more than one line; the
             class is not one of :data:`PERMISSION_CLASSES`; a parameter is reserved, undescribed or a
-            nested model; a destructive action declares no required ``confirm``; ``long_running``
+            nested model, or is required and declares ``null`` not given; a destructive action declares no required ``confirm``; ``long_running``
             disagrees with whether the result is ``JobsStarted``; an action whose result is anything else
             declares no ``render`` of its own; a spend action declares no ``happy_path``; the cut is not a
             lowercase identifier; a paged action declares no ``offset`` or its result no ``next_offset`` or no
@@ -285,6 +286,12 @@ class Action:
         if "$defs" in self.params.model_json_schema():
             raise ValueError(
                 f"{where}: parameters are flat — a nested model has no place in one tool's flat parameter list"
+            )
+        required_omitted = sorted(name for name in _null_is_omitted(self.params) if declared[name].is_required())
+        if required_omitted:
+            raise ValueError(
+                f"{where}: {', '.join(required_omitted)} declares null not given (NullIsOmitted) but is required; "
+                "only a parameter with a default can be left out"
             )
         if self.permission == "destructive" and not ("confirm" in declared and declared["confirm"].is_required()):
             raise ValueError(f"{where}: a destructive action declares a required `confirm`, echoing what it destroys")
@@ -792,9 +799,10 @@ class MountedTool:
         Every argument is held to its parameter in one place (:func:`_validated`), for every action: a value that
         does not fit (``null`` where a value is required, a wrong type, a list where a string is expected) is
         refused ``validation_failed`` naming the parameter and the type it takes, so a model can call again, however
-        pydantic raised it. ``null`` for an optional parameter is that parameter not given (its default). A
-        ``TypeError`` raised
-        by the package's own code while validating, like one its handler raises, propagates as the defect it is.
+        pydantic raised it. ``null`` is that parameter not given only where the parameter declares so
+        (:class:`~threetears.evals.actions.params.NullIsOmitted`); elsewhere it is a value, held to the parameter as
+        any other. A ``TypeError`` raised by the package's own code while validating, like one its handler raises,
+        propagates as the defect it is.
 
         :param arguments: The call's arguments, ``action`` among them.
         :ptype arguments: Mapping[str, Any]
@@ -958,10 +966,12 @@ def _validated(action: Action, given: Mapping[str, Any]) -> BaseModel:
     been, each parameter at fault named with the type it takes; one WARNING names the action and where it was raised,
     since the declaration that let it through is this package's to fix.
 
-    ``null`` for a parameter the action does not require is that parameter not given, whatever its type: a model
-    sends ``null`` for an optional parameter it means to leave out, and no parameter gives ``null`` a meaning its
-    default lacks. So it is dropped before validation, and the call reads exactly as one that left it out (its next
-    page's call included). ``null`` for a required parameter is refused as any value that does not fit.
+    ``null`` is dropped before validation only for a parameter that declares it the parameter not given
+    (:class:`~threetears.evals.actions.params.NullIsOmitted`), so that call reads exactly as one that left it out (its
+    next page's call included). For every other parameter ``null`` is a value: the action receives it as sent where
+    the parameter admits it, since an action may tell it from an omission (``campaign_update``'s
+    ``control_from_run_id: null`` clears the control), and it is refused as any value that does not fit where the
+    parameter does not.
 
     A ``TypeError`` raised in this package's own frames (a parameter model's validator) is a defect, never the
     caller's: it propagates as itself, as a defect in the action's handler does.
@@ -970,12 +980,8 @@ def _validated(action: Action, given: Mapping[str, Any]) -> BaseModel:
     :raises _DoesNotFit: A value does not fit its parameter, and pydantic raised a bare ``TypeError`` for it.
     :raises TypeError: Package code raised it while validating: a defect.
     """
-    fields = action.params.model_fields
-    given = {
-        name: value
-        for name, value in given.items()
-        if not (value is None and name in fields and not fields[name].is_required())
-    }
+    omitted = _null_is_omitted(action.params)
+    given = {name: value for name, value in given.items() if not (value is None and name in omitted)}
     try:
         return action.params.model_validate(given)
     except TypeError as unmeasured:
@@ -990,6 +996,22 @@ def _validated(action: Action, given: Mapping[str, Any]) -> BaseModel:
             site,
         )
         raise _unfitting(action, given) from unmeasured
+
+
+def _null_is_omitted(params: type[BaseModel]) -> frozenset[str]:
+    """The parameters of ``params`` that declare ``null`` the parameter not given
+    (:class:`~threetears.evals.actions.params.NullIsOmitted`).
+
+    :param params: An action's parameter model.
+    :ptype params: type[BaseModel]
+    :return: Their names.
+    :rtype: frozenset[str]
+    """
+    return frozenset(
+        name
+        for name, info in params.model_fields.items()
+        if any(isinstance(marker, NullIsOmitted) for marker in info.metadata)
+    )
 
 
 def _unfitting(action: Action, given: Mapping[str, Any]) -> _DoesNotFit:

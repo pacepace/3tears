@@ -392,7 +392,8 @@ class ToolSession:
     @property
     def last_call(self) -> str | None:
         """The last tool call the session made, as an operator's record names it: the tool, the action it named where
-        that is one the tool declares, and its arguments' names, never their values; ``None`` before any."""
+        that is one the tool declares, and its arguments' names where the tool declares them (the rest counted),
+        never their values; ``None`` before any."""
         return self._last_call
 
     def defect(self, error: Exception) -> PackageDefect | None:
@@ -431,14 +432,18 @@ class ToolSession:
         return await self._mount.call(arguments)
 
     def _spelled(self, tool: str, arguments: Mapping[str, Any]) -> str:  # Any: the call's JSON arguments
-        """A call as :attr:`last_call` names it: the action only where it is one the tool's schema declares, so no
-        text the model wrote is kept, and every argument by name alone."""
+        """A call as :attr:`last_call` names it, keeping no text the model wrote: the action only where it is one the
+        tool's schema declares, each argument by name alone where the schema declares that name, and the rest
+        counted, never named (a key is the model's text as much as a value is)."""
         (spec,) = self.tools
-        declared = spec.input_schema.get("properties", {}).get("action", {}).get("enum", ())
+        properties = spec.input_schema.get("properties", {})
+        declared = properties.get("action", {}).get("enum", ())
         action = arguments.get("action")
         named = f" action {action}" if isinstance(action, str) and action in declared else ""
-        names = ", ".join(str(name) for name in arguments) or "none"
-        return f"{tool}{named}, with arguments {names}"
+        names = [name for name in arguments if isinstance(name, str) and name in properties]
+        undeclared = len(arguments) - len(names)
+        listed = [*names, *([f"{undeclared} undeclared"] if undeclared else [])]
+        return f"{tool}{named}, with arguments {', '.join(listed) or 'none'}"
 
     def tools_digest(self) -> str:
         """The sha256 of the tool definitions every turn sends.

@@ -11,13 +11,18 @@ packages (bumped in lock-step).
 **Fixed (#1249):** a model's call to `evals_analyst` that sent `null` for `arm_filter` (on `readings_list`,
 `contrasts_list`, `measure_read`, `examples_list`, `measure_breakdown`, `price_tradeoff`) or for `price_tradeoff`'s
 `what_if` raised a bare `TypeError` from pydantic, which ended the report writer's loop and the paid run. Every call's
-arguments are now held to the action's parameters in one place (`MountedTool.call`), for every action: `null` for a
-parameter the action does not require is that parameter not given, so the call answers exactly as one that left it out;
-a value that does not fit (a wrong type, a list where a string is expected, `null` for a required parameter) is refused
-`validation_failed` (422) naming the parameter and what it takes, so the model calls again. A value pydantic raises as
-a bare `TypeError` is refused the same way, with one WARNING naming the action. A `TypeError` raised by the package's
+arguments are now held to the action's parameters in one place (`MountedTool.call`), for every action. Those seven
+parameters keep their constraints on the string, inside the optional, and declare `null` the parameter not given
+(`threetears.evals.actions.params.NullIsOmitted`), so such a call answers exactly as one that left it out. No other
+parameter's `null` changes meaning: where a parameter admits `null` the action receives it as sent
+(`campaign_update`'s `control_from_run_id: null` still clears the control), and where it does not, `null` is refused
+like any value that does not fit. A value that does not fit (a wrong type, a list where a string is expected, `null`
+for a required parameter) is refused `validation_failed` (422) naming the parameter and what it takes, so the model
+calls again. A value pydantic raises as a bare `TypeError` is refused the same way, with one WARNING naming the
+action. A `TypeError` raised by the package's
 own code (a parameter model's validator, the action's handler) is still a defect and propagates. The tools' published
-schemas are unchanged.
+schemas are unchanged. A host action's parameter may declare `NullIsOmitted` the same way; an action refuses it on a
+required parameter.
 
 **Fixed (#1248):** the report writer's loop filed any exception in its client-failure slot, so a defect in package
 code (a tool's handler, the submission check, a review's reading) reached the host's failure describer, which withheld
@@ -25,7 +30,8 @@ its text and the job ended refused as `provider_refused` (502). The loop now tel
 package's own by where it was raised: a failure that escaped the turn client keeps its classification, and any other is
 an internal error (`WritingOutcome.defect`, `EditorOutcome.defect`), never handed to the describer. Its record names the
 exception's type, where it was raised (`module:function`, with the package frame it came through), the session and
-round, and the session's last tool call by the tool, the action and the arguments' names, never their values. The
+round, and the session's last tool call by the tool, the action and the names of the arguments the tool declares
+(any other counted as undeclared, never named), never their values. The
 sessions stay on the outcome, the turns' spend on the attempt and the ledger, and the loop's log record carries the
 traceback as `exc_info`, as it did. No stored shape changes.
 
