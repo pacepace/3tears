@@ -10,8 +10,8 @@ The quiet print's lines, read through ``render()`` and the files ``write`` leave
 
 - **A miss shows the graded field**, never the whole answer object it was read from: a runner's answer can run to
   hundreds of characters, and the label is what was wrong.
-- **The judge's next step reads the blind read**: how many judged answers it holds per dimension, and how many more
-  judged answers the calibrated tier's floor needs when it holds fewer.
+- **The judge's next step is the blind read**: a judge nobody has read against is said to be not checked, with the
+  one step that checks it, and no tier word or count of answers still needed (#1208).
 - **Total spend splits by role** when more than one role spent, each role's dollars read off its usage rows.
 - **A comparison leads on its classifier, else its first grader**, never on a cost alone, with a guardrail not held
   said after the lead.
@@ -445,21 +445,16 @@ def _sheet(written: Mapping[str, Path]) -> Counter[str]:
         return Counter(row["dimension"] for row in csv.DictReader(read))
 
 
-async def test_the_judge_s_next_step_says_what_the_read_holds_and_how_many_more_answers_the_floor_needs(
-    tmp_path: Path,
-) -> None:
+async def test_the_judge_s_next_step_is_the_read_with_no_tier_word_or_count_still_needed(tmp_path: Path) -> None:
     labels = tmp_path / "labels.csv"
     result = await Eval(CASES, hasty, [QUEUE, Judge(FakeJudge(), RUBRIC, labels=labels)], k=1).run(
         store=":memory:", scope=SCOPE
     )
     sheet = _sheet(result.write(tmp_path / "report"))
     assert sheet == {"answer.billing": 3, "answer.plain": 3}, "one row per drawn answer per dimension"
-    needed = CALIBRATION_MIN_RESULTS - 3
     assert result.render().splitlines()[1] == (
-        f"judge: 0 of 3 cases read blind: judge uncalibrated ({labels.name} is not there yet); next step: open the "
-        f"blind_read.html the report writes, answer its cases from the top, and save its labels as {labels.name}; "
-        f"the calibrated tier's floor is {CALIBRATION_MIN_RESULTS} judged answers per dimension and the read holds 3, "
-        f"so it needs {needed} more"
+        f"judge: 0 of 3 cases read blind: judge not checked ({labels.name} is not there yet); next step: open the "
+        f"blind_read.html the report writes, answer its cases from the top, and save its labels as {labels.name}"
     )
 
 
@@ -470,7 +465,7 @@ async def test_a_read_at_the_floor_asks_only_for_the_read(tmp_path: Path) -> Non
     # Every case's answer is the one word "billing", so the read holds each case once, as its own item.
     assert set(sheet.values()) == {CALIBRATION_MIN_RESULTS}
     assert result.calibration_lines() == [
-        f"judge: 0 of {CALIBRATION_MIN_RESULTS} cases read blind: judge uncalibrated (Judge(labels=...) names the "
+        f"judge: 0 of {CALIBRATION_MIN_RESULTS} cases read blind: judge not checked (Judge(labels=...) names the "
         "labels file); next step: open the blind_read.html the report writes, answer its cases from the top, and "
         "save its labels where Judge(labels=...) names"
     ]

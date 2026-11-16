@@ -153,6 +153,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "analysis/report/gates.py": {},
     "analysis/report/rows.py": {},
     "analysis/report/fact_arms.py": {},
+    "analysis/report/blind_rates.py": {},
     "analysis/report/build.py": {},
     "analysis/report/aspect/__init__.py": {},
     "analysis/report/aspect/common.py": {},

@@ -15,7 +15,15 @@ from pydantic import BeforeValidator, Field
 
 from threetears.evals.actions.analyst_analyses import ANALYSES_WORKFLOW
 from threetears.evals.actions.catalogue import Action, Caller
-from threetears.evals.actions.params import ARM_FORMS, ArmFilter, Offset, SizedLimit, SnapshotId, written_arm
+from threetears.evals.actions.params import (
+    ARM_FORMS,
+    ArmFilter,
+    NullIsOmitted,
+    Offset,
+    SizedLimit,
+    SnapshotId,
+    written_arm,
+)
 from threetears.evals.actions.render import page_sizing, render_cited
 from threetears.evals.ops.analyst_price import PRICE_PAGE, PriceTradeoff, price_tradeoff
 from threetears.evals.ops.host import OpsHost
@@ -47,15 +55,15 @@ class PriceParams(EvalBaseModel):
             "the slice's own figures; omitted prices overall.",
         ),
     ] = None
+    # The arm's constraints sit on the string, inside the optional, and null is declared none (ArmFilter's note).
     what_if: Annotated[
-        str | None,
-        BeforeValidator(written_arm),
+        Annotated[str, BeforeValidator(written_arm), Field(min_length=1)] | None,
         Field(
-            min_length=1,
             description="Also price this option the gates remove or leave undecided, as if it passed, named "
             + ARM_FORMS
             + ": a labelled what-if, never a recommendation; omitted for none.",
         ),
+        NullIsOmitted(),
     ] = None
     limit: SizedLimit = None
     offset: Offset = 0

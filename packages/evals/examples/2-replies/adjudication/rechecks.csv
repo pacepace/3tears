@@ -1,0 +1,4 @@
+item,dimension,ruling,ruled_on,reason,why_chosen
+ded39e41e5fa,answer.grounded,fail,2026-11-17,re-ruled by the owner under the new wording: it asserts an unlock the policy allows only after an email check nothing shows happened,"chosen after both judges were read, because claude-sonnet-5-5 failed this reply (gemini-2.5-flash-lite did too); the re-ruling moved the reference toward both judges"
+5050d620fcb5,answer.grounded,pass,2026-11-17,re-checked by the owner under the new wording: keeps the adjudication,"chosen after both judges were read, because claude-sonnet-5-5 failed this reply"
+897bcf0a55b3,answer.grounded,excluded,2026-11-17,borderline under the new wording; excluded by the owner,"chosen after both judges were read; set aside before they ran, as the one grounded reply both readers failed under the earlier wording"
