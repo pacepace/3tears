@@ -204,7 +204,7 @@ def comparison_words(verdict: ComparisonVerdict, arm: str, control: str, *, high
 
 #: Where an arm stands against the control on a reading the bet read and did not decide: the lead's direction, said
 #: before its estimate, its interval and its evidence, never "cannot tell apart", which a reader takes for "the same".
-StandingSide = Literal["ahead", "behind", "level"]
+_StandingSide = Literal["ahead", "behind", "level"]
 
 #: Filled by :func:`standing_words`.
 _STANDING_WORDS = worded(
@@ -213,7 +213,7 @@ _STANDING_WORDS = worded(
         "behind": "{arm} behind {control}{better_end}, undecided",
         "level": "{arm} level with {control}, undecided",
     },
-    StandingSide,
+    _StandingSide,
     "an undecided standing",
 )
 
@@ -225,19 +225,19 @@ _ESTIMATE_WORDS = worded(
         "behind": "Over {cases} paired cases, {arm} is {size} behind {control}.",
         "level": "Over {cases} paired cases, {arm} and {control} are level.",
     },
-    StandingSide,
+    _StandingSide,
     "an estimate",
 )
 
 
-def standing_side(delta: float | None, *, higher_is_better: bool) -> StandingSide:
+def standing_side(delta: float | None, *, higher_is_better: bool) -> _StandingSide:
     """Which side of the control an arm's change puts it on, the better side ``ahead``."""
     if not delta:
         return "level"
     return "ahead" if (delta > 0) == higher_is_better else "behind"
 
 
-def standing_words(side: StandingSide, arm: str, control: str, *, higher_is_better: bool = True) -> str:
+def standing_words(side: _StandingSide, arm: str, control: str, *, higher_is_better: bool = True) -> str:
     """An undecided contrast the bet read, in words: ``v2 ahead of v1, undecided``.
 
     :param side: Where the arm stands (:func:`standing_side`).
@@ -250,7 +250,7 @@ def standing_words(side: StandingSide, arm: str, control: str, *, higher_is_bett
     return _STANDING_WORDS[side].format(arm=arm, control=control, better_end=better_end)
 
 
-def estimate_sentence(side: StandingSide, arm: str, control: str, *, cases: int, size: str) -> str:
+def estimate_sentence(side: _StandingSide, arm: str, control: str, *, cases: int, size: str) -> str:
     """The estimate's sentence: ``Over 8 paired cases, v2 is 29 points ahead of v1.``
 
     :param side: Where the arm stands (:func:`standing_side`).
@@ -910,7 +910,6 @@ __all__ = [
     "estimate_sentence",
     "standing_words",
     "standing_side",
-    "StandingSide",
     "CASES_READING",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",

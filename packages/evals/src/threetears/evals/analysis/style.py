@@ -621,11 +621,11 @@ EVIDENCE_TERM = "evidence"
 
 #: The graded evidence a bet holds, in the reader's words, from weakest: below the first of
 #: :data:`~threetears.evals.analysis.stats.EVIDENCE_STEPS` weak, from it moderate, from the second strong.
-EVIDENCE_GRADES: tuple[str, str, str] = ("weak", "moderate", "strong")
+_EVIDENCE_GRADES: tuple[str, str, str] = ("weak", "moderate", "strong")
 
 
 def evidence_grade(evidence: float) -> str:
-    """The word every surface says an e-value's strength in (:data:`EVIDENCE_GRADES`): ``weak`` below 3,
+    """The word every surface says an e-value's strength in (:data:`_EVIDENCE_GRADES`): ``weak`` below 3,
     ``moderate`` from 3, ``strong`` from 10 (:data:`~threetears.evals.analysis.stats.EVIDENCE_STEPS`). Never a
     verdict: a decision is the comparison's ``verdict``, read off the bet's capital at ``1/α``.
 
@@ -634,7 +634,7 @@ def evidence_grade(evidence: float) -> str:
     """
     moderate, strong = EVIDENCE_STEPS
     return (
-        EVIDENCE_GRADES[2] if evidence >= strong else EVIDENCE_GRADES[1] if evidence >= moderate else EVIDENCE_GRADES[0]
+        _EVIDENCE_GRADES[2] if evidence >= strong else _EVIDENCE_GRADES[1] if evidence >= moderate else _EVIDENCE_GRADES[0]
     )
 
 
@@ -960,7 +960,6 @@ __all__ = [
     "trial_dimension",
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
-    "EVIDENCE_GRADES",
     "EVIDENCE_TERM",
     "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",

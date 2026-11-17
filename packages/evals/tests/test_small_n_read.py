@@ -366,9 +366,9 @@ _ONCE_SEPARATED: dict[_Null, tuple[int, ...]] = {"binary": (1, 1), "onramp": (0,
 #: ever strong), as seeded.
 _CONTINUED_PER_SHARD = 150
 _CONTINUED: dict[_Null, tuple[tuple[int, int, int], ...]] = {
-    "binary": ((0, 0, 0),) * 10,
-    "onramp": ((0, 0, 0),) * 10,
-    "skewed": ((0, 0, 0),) * 10,
+    "binary": ((4, 4, 1), (3, 3, 2), (3, 5, 5), (4, 3, 3), (4, 4, 4), (3, 0, 2), (4, 6, 4), (3, 1, 1), (2, 4, 2), (3, 3, 4)),
+    "onramp": ((2, 4, 2), (0, 4, 1), (2, 0, 1), (0, 1, 2), (0, 1, 0), (0, 2, 1), (1, 1, 2), (0, 0, 1), (1, 4, 1), (0, 4, 1)),
+    "skewed": ((5, 3, 2), (10, 3, 2), (4, 4, 5), (4, 2, 4), (6, 3, 2), (3, 2, 1), (7, 6, 4), (6, 6, 6), (9, 5, 0), (4, 5, 2)),
 }
 
 #: The cases a single read reads.
@@ -427,7 +427,11 @@ def test_under_each_null_the_read_separates_at_most_alpha_and_the_evidence_is_st
     """The claims, read on the shards' seeded counts (each reproduced by its shard test above), on each Clopper-Pearson
     95% upper bound: a single read at twelve cases separates at most α; a comparison continued to three reads, each add
     sized from the reading, separates at most α; and over those reads the evidence for v2, and against it, each ever
-    reaches 10 at most one time in ten (Ville's inequality bounds it at 1/10 for an e-value read at any stops)."""
+    reaches 10 at most one time in ten (Ville's inequality bounds it at 1/10 for an e-value read at any stops). As
+    seeded, continued, of 1,500 newcomers a null: pass/fail 33 separate (2.2%, upper 3.1%), the on-ramp's shape 6 (0.4%,
+    upper 0.9%), the skewed null 58 (3.9%, upper 4.97%), the null that spends most of α; the evidence for v2 is strong
+    on 33, 21 and 39, against it on 28, 12 and 28 (upper bounds 3.1% or below). Once, at twelve cases, of 400: 2, 0
+    and 0."""
     once = exact_rate_interval(sum(_ONCE_SEPARATED[null]), _ONCE_PER_SHARD * len(_ONCE_SEPARATED[null]))
     replicates = _CONTINUED_PER_SHARD * len(_CONTINUED[null])
     sums = [sum(shard[column] for shard in _CONTINUED[null]) for column in range(3)]
