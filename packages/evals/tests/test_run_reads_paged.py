@@ -185,13 +185,16 @@ class TestASummaryReadsItsRunAPageAtATime:
 
 
 async def _cancelled(monkeypatch: pytest.MonkeyPatch, store: BatchRecordingStore) -> tuple[OpsHost, str]:
-    """The toy host's run of three cases × :data:`TAKE_UP_K`, cancelled once :data:`DONE_BEFORE` cells are stored."""
+    """The toy host's run of three cases × :data:`TAKE_UP_K`, cancelled twice once :data:`DONE_BEFORE` cells are stored,
+    so the cells in flight are cut."""
     gate = held_extraction(monkeypatch, passing=DONE_BEFORE)
     holder = off_loop(ops_fixture, store=store).host
     launch_id, run_id = await launched_arm(holder, TAKE_UP_K)
     rows = holder.eval_host.storage.query_eval_results_by_run
     await until(lambda: len(off_loop(rows, run_id, TOYHOST_SCOPE)) == DONE_BEFORE and gate.held >= 1)
     manager = holder.launch.job_manager
+    # Twice: the first lets the cells in flight finish, the second cuts them.
+    assert manager.cancel_job(run_id, reason="shipping a fix")
     assert manager.cancel_job(run_id, reason="shipping a fix")
     await until(lambda: not manager.is_active(run_id))
     gate.set()

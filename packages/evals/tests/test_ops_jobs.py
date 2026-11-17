@@ -130,6 +130,10 @@ async def test_cancelling_a_launch_stops_every_run_it_started(monkeypatch: pytes
         while not (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).run_ids:
             await asyncio.sleep(0.01)
 
+    # The first cancel lets the cells in flight finish: held, they keep the launch running. The second cuts them.
+    await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE, reason="wrong template")
+    await asyncio.sleep(0.05)
+    assert (await job_poll(fixture.host, job.job_id, TOYHOST_SCOPE)).state == "running", "the first cancel drains"
     await job_cancel(fixture.host, job.job_id, TOYHOST_SCOPE, reason="wrong template")
     cancelled = await settled(fixture.host, job.job_id)
 
@@ -383,7 +387,8 @@ async def test_a_generation_is_neither_polled_nor_cancelled_from_outside_its_cam
 
 
 async def test_a_live_run_is_cancelled_through_the_job_contract_and_converges(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``job_cancel`` asks the live job to stop; its own boundary writes ``cancelled``, which ``job_poll`` then reads."""
+    """``job_cancel`` asks the live job to stop: a first cancel lets its cells in flight finish, a second cuts them; its
+    own boundary writes ``cancelled``, which ``job_poll`` then reads."""
     gate = asyncio.Event()
     extract = ScriptedExtractionClient.extract
 
@@ -401,6 +406,10 @@ async def test_a_live_run_is_cancelled_through_the_job_contract_and_converges(mo
         while (await job_poll(fixture.host, job_id, TOYHOST_SCOPE)).status != "running":
             await asyncio.sleep(0.01)
 
+    # The first cancel lets the cell in flight finish: held, it keeps the run running. The second cuts it.
+    await job_cancel(fixture.host, job_id, TOYHOST_SCOPE, reason="operator stop")
+    await asyncio.sleep(0.05)
+    assert (await job_poll(fixture.host, job_id, TOYHOST_SCOPE)).state == "running", "the first cancel drains"
     await job_cancel(fixture.host, job_id, TOYHOST_SCOPE, reason="operator stop")
     cancelled = await settled(fixture.host, job_id)
 

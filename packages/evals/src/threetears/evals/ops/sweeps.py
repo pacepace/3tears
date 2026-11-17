@@ -894,9 +894,7 @@ class _SweepRun:
         if drain:
             second = await drain_then_cut(
                 lambda: [manager.cancel_job(run_id, reason=reason) for run_id in run_ids],
-                lambda: [
-                    manager.cut_job(run_id, reason=f"{reason} again: the cells running were cut") for run_id in run_ids
-                ],
+                lambda: [manager.cut_job(run_id, reason=reason) for run_id in run_ids],
                 [(lambda: manager.wait_for(run_ids), f"sweep {self.sweep.id}'s wait for its cancelled arms failed")],
             )
         else:

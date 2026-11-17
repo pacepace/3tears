@@ -165,7 +165,8 @@ async def _interrupted(monkeypatch: pytest.MonkeyPatch, how: str) -> tuple[OpsHo
 
     ``lost``: the holder stops renewing, as a killed process does; the store's clock passes the lease, another process
     reads the run lost, and then the dead holder's cells in flight finish and try to write. ``cancelled``: an operator
-    cancels it, and the cells the cancel cuts short are recorded ``cancelled``.
+    cancels it twice (the first lets the cells in flight finish, the second cuts them), and the cells the second cancel
+    cuts short are recorded ``cancelled``.
 
     :return: The holder, the run's id, the run as launched, and the store.
     """
@@ -185,6 +186,7 @@ async def _interrupted(monkeypatch: pytest.MonkeyPatch, how: str) -> tuple[OpsHo
         await until(lambda: gate.released >= in_flight and not manager.is_active(run_id))
         assert len(_rows(holder, run_id)) == DONE_BEFORE, "the dead holder's cells in flight finished and wrote nothing"
     else:
+        assert manager.cancel_job(run_id, reason="shipping a fix")
         assert manager.cancel_job(run_id, reason="shipping a fix")
         await until(lambda: not manager.is_active(run_id))
         assert "cancelled" in {row.termination for row in _rows(holder, run_id)}, "the cancel cut cells short"

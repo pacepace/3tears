@@ -91,6 +91,15 @@ _LAWS: tuple[_Law, ...] = ("alike-20x", "b-slower-4x", "b-slower-20x")
 #: The share of holdings interrupted, and the most holdings one launch has (the last runs to its end).
 _INTERRUPTED, _HOLDINGS = 0.8, 5
 
+#: How an operator interrupts a holding: ``drain``, one cancel (the engine lets the cells in flight finish and record);
+#: ``second``, one cancel and, in :data:`_SECOND` of the holdings interrupted, a second 5 ms after it, which cuts the
+#: cells still in flight; ``cut``, two cancels at once, so every interrupt cuts what is in flight, as the engine did
+#: before it drained (kept as the comparison that shows why it drains).
+_Stop = Literal["drain", "second", "cut"]
+
+#: The share of interrupted holdings an operator interrupts a second time, and how long after the first.
+_SECOND, _SECOND_AFTER_S = 0.3, 0.005
+
 #: The cases one comparison read at a fixed count runs; the cases each launch of a planned comparison adds, one look
 #: each (20, 40 and 60 cases at its three looks), and the looks it plans.
 _FIXED_CASES, _LOOK_CASES, _PLANNED = 40, 20, 3
@@ -264,10 +273,24 @@ class _Cuts:
     lost: Counter[tuple[str, bool]] = field(default_factory=Counter)
 
 
-async def _launched(engine: _Engine, rng: random.Random, cases: list[EvalTestCase], cuts: _Cuts) -> list[str]:
+async def _interrupt(engine: _Engine, job_id: str, finished: asyncio.Future[None]) -> None:
+    """One operator's ``job_cancel`` of a launch still running; a cancel that finds it ended is no interrupt."""
+    if finished.done():
+        return
+    try:
+        await job_cancel(engine.ops, job_id, _SCOPE, reason="interrupted")
+    except ValidationFailedError:
+        # The launch ended between its last answer landing and the cancel: nothing was left to interrupt.
+        assert finished.done() or (await job_poll(engine.ops, job_id, _SCOPE)).done
+
+
+async def _launched(
+    engine: _Engine, rng: random.Random, cases: list[EvalTestCase], cuts: _Cuts, stop: _Stop
+) -> list[str]:
     """Launch both arms over ``cases`` and hold the launch to its end as an operator would: each holding interrupted in
-    :data:`_INTERRUPTED` of them after a uniform count of the answers left to land (``job_cancel``), then taken up again
-    (``job_resume``), at most :data:`_HOLDINGS` holdings, the last run to its end. Returns the launch's runs, a then b."""
+    :data:`_INTERRUPTED` of them after a uniform count of the answers left to land (``job_cancel``, as ``stop`` says),
+    then taken up again (``job_resume``), at most :data:`_HOLDINGS` holdings, the last run to its end. Returns the
+    launch's runs, a then b."""
     for case in cases:
         off_loop(engine.ops.launch.eval_host.storage.save_test_case, case)
     engine.batch[:] = cases
@@ -291,12 +314,12 @@ async def _launched(engine: _Engine, rng: random.Random, cases: list[EvalTestCas
             reached = asyncio.ensure_future(landings.reached.wait())
             await asyncio.wait({finished, reached}, return_when=asyncio.FIRST_COMPLETED)
             reached.cancel()
-            if not finished.done():
-                try:
-                    await job_cancel(engine.ops, handle.job_id, _SCOPE, reason="interrupted")
-                except ValidationFailedError:
-                    # The launch ended between its last answer landing and the cancel: nothing was left to interrupt.
-                    assert finished.done() or (await job_poll(engine.ops, handle.job_id, _SCOPE)).done
+            await _interrupt(engine, handle.job_id, finished)
+            if stop == "cut":
+                await _interrupt(engine, handle.job_id, finished)
+            elif stop == "second" and rng.random() < _SECOND:
+                await asyncio.wait({finished}, timeout=_SECOND_AFTER_S)
+                await _interrupt(engine, handle.job_id, finished)
         await finished
         status = await job_poll(engine.ops, handle.job_id, _SCOPE)
         if status.state == "completed":
@@ -315,6 +338,9 @@ async def _launched(engine: _Engine, rng: random.Random, cases: list[EvalTestCas
         for row in rows:
             if runs_again(row):
                 cuts.again[row.model] += 1
+        if stop == "drain":
+            # One cancel drains: every cell the launch started finished and recorded its answer.
+            assert not any(runs_again(row) for row in rows), "a drained launch left a cell cut"
         left = 2 * len(cases) - len(recorded)
         await job_resume(engine.ops, handle.job_id, _SCOPE)
     else:
@@ -369,15 +395,23 @@ def _family(engine: _Engine, campaign_id: str) -> ComparisonFamily:
 
 
 def _separated(family: ComparisonFamily, grader: _Grader) -> bool:
-    """Whether the family separates the arms on the grader's reading, by the paired t test (never the bet): a check's
-    family holds it and the pass rate (``passed``), a grade's it alone."""
+    """Whether the family separates the arms on the grader's reading, by the paired t test (never the bet), read as a
+    family of that one reading: at the family's level (α, or α/L under the plan), uncorrected.
+
+    A grade's family holds it alone. A check's holds it beside the pass rate (``passed``), which an eval of one check
+    has case for case: one hypothesis counted twice, so Holm reads each at half the level. That double count is removed
+    from the family (the same ``multiple_comparisons`` reads it for every campaign); until a family read here drops it,
+    the read here is the corrected one: the check's own p at the family's level, asserted to be the pass rate's too."""
     name = _GRADERS[grader][0].__name__
-    assert sorted(comparison.name for comparison in family.comparisons) == (
-        ["correct", "passed"] if grader == "check" else ["grade"]
-    )
-    (compared,) = [comparison for comparison in family.comparisons if comparison.name == name]
+    names = sorted(comparison.name for comparison in family.comparisons)
+    assert names in ([name], [name, "passed"]) if grader == "check" else names == [name], names
+    by_name = {comparison.name: comparison for comparison in family.comparisons}
+    compared = by_name[name]
     assert compared.basis in (None, "t", "identical"), compared.basis
-    return compared.verdict in ("improved", "regressed")
+    if "passed" in by_name:
+        assert by_name["passed"].p_raw == compared.p_raw, "the pass rate is the check, case for case"
+    level = family.look_alpha if family.look_alpha is not None else family.alpha
+    return compared.p_raw is not None and compared.p_raw < level
 
 
 @dataclass(frozen=True)
@@ -389,13 +423,13 @@ class _Outcome:
     cuts: _Cuts
 
 
-async def _at_a_fixed_count(tag: str, law: _Law, grader: _Grader) -> _Outcome:
+async def _at_a_fixed_count(tag: str, law: _Law, grader: _Grader, stop: _Stop) -> _Outcome:
     """One comparison read once by the engine's default reading: :data:`_FIXED_CASES` cases launched, interrupted and
     taken up to their end, then filed as a campaign (control ``a``) and read at α."""
     rng = random.Random(tag)
     engine = _engine(rng, law, grader)
     cuts = _Cuts()
-    a, b = await _launched(engine, rng, _cases(0, _FIXED_CASES), cuts)
+    a, b = await _launched(engine, rng, _cases(0, _FIXED_CASES), cuts, stop)
     filed = await _act(
         engine,
         "campaign_create",
@@ -412,7 +446,7 @@ async def _at_a_fixed_count(tag: str, law: _Law, grader: _Grader) -> _Outcome:
     return _Outcome(_separated(family, grader), 1, cuts)
 
 
-async def _watched_over_planned_looks(tag: str, law: _Law, grader: _Grader) -> _Outcome:
+async def _watched_over_planned_looks(tag: str, law: _Law, grader: _Grader, stop: _Stop) -> _Outcome:
     """One comparison under a plan of :data:`_PLANNED` looks, declared before its first: each look launches
     :data:`_LOOK_CASES` new cases on both arms, held to its end as :func:`_launched` holds it, joins the campaign and is
     read at α/L; the watcher stops at the first look that separates."""
@@ -430,7 +464,7 @@ async def _watched_over_planned_looks(tag: str, law: _Law, grader: _Grader) -> _
     )
     campaign_id = str(planned["id"])
     for look in range(1, _PLANNED + 1):
-        a, b = await _launched(engine, rng, _cases((look - 1) * _LOOK_CASES, _LOOK_CASES), cuts)
+        a, b = await _launched(engine, rng, _cases((look - 1) * _LOOK_CASES, _LOOK_CASES), cuts, stop)
         await _act(engine, "campaign_runs_add", campaign_id=campaign_id, run_ids=[a, b])
         if look == 1:
             await _act(engine, "campaign_update", campaign_id=campaign_id, control_from_run_id=a)
@@ -445,12 +479,14 @@ async def _watched_over_planned_looks(tag: str, law: _Law, grader: _Grader) -> _
 _Reading = Literal["fixed", "looks"]
 
 
-async def _simulate(reading: _Reading, law: _Law, grader: _Grader, count: int, tag: str) -> tuple[int, _Cuts]:
+async def _simulate(
+    reading: _Reading, law: _Law, grader: _Grader, stop: _Stop, count: int, tag: str
+) -> tuple[int, _Cuts]:
     """How many of ``count`` comparisons separated, and their take-ups' cut rows by arm, summed."""
     simulate = _at_a_fixed_count if reading == "fixed" else _watched_over_planned_looks
     separated, total = 0, _Cuts()
     for index in range(count):
-        outcome = await simulate(f"{tag}-{reading}-{law}-{grader}-{index}", law, grader)
+        outcome = await simulate(f"{tag}-{reading}-{law}-{grader}-{stop}-{index}", law, grader, stop)
         separated += outcome.separated
         total.holdings += outcome.cuts.holdings
         for arm, again in outcome.cuts.again.items():
@@ -459,10 +495,12 @@ async def _simulate(reading: _Reading, law: _Law, grader: _Grader, count: int, t
     return separated, total
 
 
-def _said(reading: _Reading, law: _Law, grader: _Grader, separated: int, count: int, cuts: _Cuts) -> str:
+def _said(
+    reading: _Reading, law: _Law, grader: _Grader, stop: _Stop, separated: int, count: int, cuts: _Cuts
+) -> str:
     """The share, its 95% Clopper-Pearson interval, and what the take-ups ran again, for a report or a failure."""
     return (
-        f"{reading} {law} {grader}: {separated}/{count} separated, {exact_rate_interval(separated, count)}; "
+        f"{reading} {law} {grader} {stop}: {separated}/{count} separated, {exact_rate_interval(separated, count)}; "
         f"holdings {cuts.holdings}; rows run again a={cuts.again['a']} b={cuts.again['b']}; answers the cuts lost, "
         f"right/wrong: a {cuts.lost['a', True]}/{cuts.lost['a', False]}, b {cuts.lost['b', True]}/{cuts.lost['b', False]}"
     )

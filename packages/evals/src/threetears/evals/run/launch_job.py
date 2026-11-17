@@ -47,9 +47,6 @@ from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 #: The reason recorded on a run its launch's cancel stopped.
 LAUNCH_CANCEL_REASON = "its launch was cancelled"
 
-#: The reason recorded on a run whose launch was cancelled again while its cells in flight were finishing.
-_LAUNCH_CUT_REASON = "its launch was cancelled again: the cells running were cut"
-
 
 def _each(act: Callable[..., bool], run_ids: list[str], reason: str) -> None:
     """``act`` on each run (the job manager's ``cancel_job``, which drains a run its first time, or ``cut_job``)."""
@@ -211,7 +208,7 @@ def _launch_work(
             # cells in flight finishing and recorded; a further cancel of the launch, or a second Ctrl+C, cuts them.
             second = await drain_then_cut(
                 lambda: _each(manager.cancel_job, run_ids, LAUNCH_CANCEL_REASON),
-                lambda: _each(manager.cut_job, run_ids, _LAUNCH_CUT_REASON),
+                lambda: _each(manager.cut_job, run_ids, LAUNCH_CANCEL_REASON),
                 [(lambda: manager.wait_for(run_ids), f"launch {record.id}'s wait for its cancelled runs failed")],
             )
             if second is not None:

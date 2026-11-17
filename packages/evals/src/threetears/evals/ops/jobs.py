@@ -928,7 +928,7 @@ async def await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[
         # cells in flight finish and record; a second, a cancel or a Ctrl+C, cuts them.
         second = await drain_then_cut(
             lambda: cancel("its foreground caller was cancelled"),
-            lambda: cancel("its foreground caller was interrupted again: the cells running were cut"),
+            lambda: cancel("its foreground caller was cancelled"),
             [(lambda: manager.wait_for(record_ids), "a foreground wait for its cancelled jobs failed")],
         )
         if second is not None:
