@@ -544,7 +544,7 @@ def _where(site: str) -> str:
 
 
 #: Every attribute path each family reads of a result, over every campaign it is read over (see the module
-#: docstring for the path syntax). Sizes: bundle 197, aggregates 103, planning 130.
+#: docstring for the path syntax). Sizes: bundle 199, aggregates 103, planning 131.
 #:
 #: The measure walk reads each model type's declared fields, never the judge's prose
 #: (``analysis/bundle/measures.py``), so no family reads ``judge_reasoning``, ``world_events`` or ``kind_payload``
@@ -562,6 +562,7 @@ def _where(site: str) -> str:
 PINNED: dict[str, frozenset[str]] = {
     "bundle": frozenset(
         {
+            "account_refused",
             "async_deliveries",
             "async_deliveries[].acknowledged_turn",
             "async_deliveries[].cost_usd",
@@ -761,6 +762,7 @@ PINNED: dict[str, frozenset[str]] = {
             "usage[].maybe_billed_sends",
             "usage[].unanswered_retried",
             "variant_key",
+            "written_over",
         }
     ),
     "aggregates": frozenset(
@@ -1002,6 +1004,7 @@ PINNED: dict[str, frozenset[str]] = {
             "usage[].maybe_billed_sends",
             "usage[].unanswered_retried",
             "variant_key",
+            "written_over",
         }
     ),
 }
@@ -1231,7 +1234,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "judge_seconds[].scores[].second.score",
                 "judge_seconds[].scores[].second.served_model",
                 "model_copy()",
-                "model_unserved",
                 "judging_set_aside",
                 "outcome_score.axis",
                 "outcome_score.criterion_fingerprint",
@@ -1352,7 +1354,6 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
                 "latency.tool_ms",
                 "latency.total_ms",
                 "model_copy()",
-                "model_unserved",
                 "judging_set_aside",
                 "outcome_score.axis",
                 "outcome_score.criterion_fingerprint",
@@ -1716,6 +1717,7 @@ UNREAD: dict[str, dict[str, frozenset[str]]] = {
         ),
         "toyhost": frozenset(
             {
+                "written_over",
                 "async_deliveries",
                 "async_deliveries[].acknowledged_turn",
                 "async_deliveries[].cost_usd",

@@ -334,6 +334,7 @@ _RESULT: Final[Mapping[str, Any]] = {
             "cost_usd",
             "cost_roles",
             "superseded_spend_usd",
+            "written_over",
             "metered_calls",
             "metered_calls_refused",
             "covariates",

@@ -480,6 +480,9 @@ async def test_a_sweep_taken_up_where_its_list_cannot_be_read_says_the_check_was
     async with asyncio.timeout(10):
         while held.completions == 0:
             await asyncio.sleep(0.01)
+    # The first cancel lets the cells in flight finish: held, they keep the arm running. The second cuts them.
+    await job_cancel(holder, job.job_id, TOYHOST_SCOPE, reason="restarting the host")
+    await asyncio.sleep(0.05)
     await job_cancel(holder, job.job_id, TOYHOST_SCOPE, reason="restarting the host")
     assert (await settled(holder, job.job_id)).state == "cancelled"
     held.held.set()

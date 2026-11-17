@@ -191,6 +191,11 @@ async def test_a_run_another_process_runs_is_cancelled_from_there_with_its_reaso
     run_id = await _running_run(holder.host)
 
     assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running"
+    # The first cancel, heard at the holder's next renewal, lets the cells in flight finish: held, they keep the run
+    # running. The second, a later request on the record, is heard too and cuts them.
+    await job_cancel(elsewhere, run_job_id(run_id), TOYHOST_SCOPE, reason="wrong template")
+    await asyncio.sleep(0.3)
+    assert (await job_poll(elsewhere, run_job_id(run_id), TOYHOST_SCOPE)).state == "running", "the first drains"
     await job_cancel(elsewhere, run_job_id(run_id), TOYHOST_SCOPE, reason="wrong template")
     ended = await settled(elsewhere, run_job_id(run_id))
 
@@ -377,6 +382,8 @@ async def test_a_lost_run_cancelled_by_its_old_holder_keeps_the_loss(monkeypatch
     written = off_loop(_run, holder, run_id)
     heard.broadcasts.clear()
 
+    # Twice: the first lets the cells in flight finish, the second cuts them.
+    assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     await until(lambda: not holder.launch.job_manager.is_active(run_id))
 
@@ -462,11 +469,13 @@ async def test_a_graceful_shutdown_s_cancelled_cells_write_no_rows_into_the_run_
 
 
 async def test_an_operator_cancel_still_records_the_cells_it_cut_short(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A run cancelled on purpose is not lost: the cells the cancel cut short are recorded, with what they spent."""
+    """A run cancelled on purpose is not lost: the cells the cancel cut short are recorded, with what they spent. The
+    first cancel lets the cells in flight finish; the second cuts them."""
     held_extraction(monkeypatch)
     holder = off_loop(ops_fixture).host
     run_id = await _running_run(holder)
 
+    assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     assert holder.launch.job_manager.cancel_job(run_id, reason="operator said stop")
     await until(lambda: not holder.launch.job_manager.is_active(run_id))
 
@@ -936,6 +945,10 @@ async def test_a_sweep_another_process_runs_is_cancelled_from_there(monkeypatch:
     (job,) = (await sweep_launch(holder, _three_arm_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     await _first_arm_running(elsewhere, job.job_id)
 
+    # The first cancel lets the arm's cells in flight finish: held, they keep it running. The second, a later request
+    # on the record, cuts them. Each is heard at the holder's next renewal, a third of the lease.
+    await job_cancel(elsewhere, job.job_id, TOYHOST_SCOPE)
+    await asyncio.sleep(2.0)
     await job_cancel(elsewhere, job.job_id, TOYHOST_SCOPE)
     ended = await settled(elsewhere, job.job_id)
 
@@ -990,6 +1003,9 @@ async def test_an_interleaved_sweep_cancelled_part_way_stops_every_arm_it_starte
     (job,) = (await sweep_launch(holder, _interleaved_sweep(), TOYHOST_SCOPE, created_by="agent:test")).jobs
     await _every_arm_running(holder, job.job_id)
 
+    # The first cancel lets the cells in flight finish: held, they keep the arms running. The second cuts them.
+    await job_cancel(holder, job.job_id, TOYHOST_SCOPE)
+    await asyncio.sleep(0.05)
     await job_cancel(holder, job.job_id, TOYHOST_SCOPE)
     ended = await settled(holder, job.job_id)
 

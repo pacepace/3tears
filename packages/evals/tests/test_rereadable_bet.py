@@ -59,7 +59,7 @@ from threetears.evals.analysis import AnalysisContextBundle, ComparisonFamily, a
 from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.campaigns import list_campaigns
 from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet, redrawn_sentence
-from threetears.evals.analysis.bundle.trials import committed_order, redrawn_cells
+from threetears.evals.analysis.bundle.trials import RedrawnCells, committed_order, redrawn_cells
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
@@ -998,7 +998,7 @@ async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them
             12 - len(complete),
             unreached=len(unreached),
             incomplete=len(partial),
-            redrawn=(len(cut), len(cut)),
+            redrawn=RedrawnCells(continued=len(cut), continued_cut=len(cut)),
         )
     ]
     runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
@@ -1012,14 +1012,18 @@ async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them
     (family,) = finished.report.bundle.multiple_comparisons.families
     assert read_by_bet(family) and _same_p(_correct_p(finished), _reading_p(runs, results))
     # The report says it too: the family's disclosure, which the page and the bundle carry, in the one phrasing.
-    assert redrawn_sentence(len(cut), len(cut)) in family.disclosure
+    # Each cut cell ran again in the continuation, so the sentence says so in the past tense.
+    ran_again = redrawn_sentence(*RedrawnCells(continued=len(cut), continued_cut=len(cut)))
+    assert ran_again in family.disclosure
     page = json.dumps(finished.page.model_dump(mode="json"))
-    assert json.dumps(redrawn_sentence(len(cut), len(cut)))[1:-1] in page
+    assert json.dumps(ran_again)[1:-1] in page
 
     # Continued again with cases appended, nothing is cut or drawn again now: the count is the running total, and it
     # says so, unchanged.
     again_run = await Eval(_cases(16), arms, [_correct], k=1, name="twice").run(store=store, scope="s")
-    assert _how_it_ran(again_run) == [continued_sentence(12, 4, redrawn=(len(cut), len(cut)))]
+    assert _how_it_ran(again_run) == [
+        continued_sentence(12, 4, redrawn=RedrawnCells(continued=len(cut), continued_cut=len(cut)))
+    ]
     assert "a running total over its runs" in _how_it_ran(again_run)[0]
 
 
@@ -1063,7 +1067,11 @@ async def test_a_call_the_account_refused_or_a_model_not_served_runs_again_when_
     assert calls[3, "a"] == 2
     assert _how_it_ran(finished) == [
         continued_sentence(
-            len(complete), 10 - len(complete), unreached=len(unreached), incomplete=len(partial), redrawn=(1, 0)
+            len(complete),
+            10 - len(complete),
+            unreached=len(unreached),
+            incomplete=len(partial),
+            redrawn=RedrawnCells(continued=1),
         )
     ]
     runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
@@ -1079,14 +1087,18 @@ def test_the_cells_that_run_again_are_counted_once_each_however_many_rows_record
     cut = make_eval_result(eval_run_id="run-1", test_case_id="tc-1", variant_key="v-a", termination="cancelled")
     refused = make_eval_result(eval_run_id="run-2", test_case_id="tc-1", variant_key="v-a", account_refused=True)
     answered = make_eval_result(eval_run_id="run-3", test_case_id="tc-1", variant_key="v-a")
-    assert redrawn_cells([cut, refused, answered]) == (1, 1)
+    # The case answered in a later run ran again when the comparison was continued, and had been cut.
+    assert redrawn_cells([cut, refused, answered]) == RedrawnCells(continued=1, continued_cut=1)
     elsewhere = [
         make_eval_result(eval_run_id="run-4", test_case_id="tc-1", variant_key="v-b", model_unserved=True),
         make_eval_result(
             eval_run_id="run-1", test_case_id="tc-1", variant_key="v-a", k_iteration=2, account_refused=True
         ),
     ]
-    assert redrawn_cells([cut, refused, answered, *elsewhere]) == (3, 1)
+    # The other two have no answer yet: still to run again, neither cut.
+    assert redrawn_cells([cut, refused, answered, *elsewhere]) == RedrawnCells(
+        pending=2, pending_cut=0, continued=1, continued_cut=1
+    )
 
 
 @pytest.mark.parametrize(
@@ -1126,6 +1138,44 @@ def test_the_sentence_of_cells_run_again_agrees_with_its_cut_count(cells: int, c
     assert redrawn_sentence(cells, cut) == said
 
 
+@pytest.mark.parametrize(
+    ("redrawn", "said"),
+    [
+        (
+            RedrawnCells(taken_up=2, taken_up_cut=2),
+            "2 cells of this comparison were cut while running, by an interrupt or a shutdown, and ran again when its "
+            "run was taken up (a running total over its runs). A cut cell drawn afresh can lean the reading where a "
+            "slow answer is a wrong one.",
+        ),
+        (
+            RedrawnCells(taken_up=1),
+            "1 cell of this comparison recorded no answer (a call the account refused or the provider did not serve) "
+            "and ran again when its run was taken up (a running total over its runs).",
+        ),
+        (
+            RedrawnCells(continued=3, continued_cut=1),
+            "1 cell of this comparison was cut while running, by an interrupt or a shutdown, and ran again when the "
+            "comparison was continued (a running total over its runs). 2 cells of this comparison recorded no answer "
+            "(calls the account refused or the provider did not serve) and ran again when the comparison was "
+            "continued (a running total over its runs). A cut cell drawn afresh can lean the reading where a slow "
+            "answer is a wrong one.",
+        ),
+        (
+            RedrawnCells(pending=1, pending_cut=1, continued=1, continued_cut=1),
+            "1 cell of this comparison recorded no answer (a running total over its runs), and each runs again when it "
+            "is continued; it was cut while running, by an interrupt or a shutdown, and a cut cell drawn afresh can "
+            "lean the reading where a slow answer is a wrong one. 1 cell of this comparison was cut while running, by "
+            "an interrupt or a shutdown, and ran again when the comparison was continued (a running total over its "
+            "runs).",
+        ),
+    ],
+)
+def test_a_cell_that_ran_again_is_said_in_the_past_tense_by_how_it_ran(redrawn: RedrawnCells, said: str) -> None:
+    """A cell still to run again runs again when the comparison is continued; one a take-up ran again, or a later launch
+    answered, ran again, and the sentence says which. The lean is said once."""
+    assert redrawn_sentence(*redrawn) == said
+
+
 async def test_a_continuation_that_records_a_refused_cell_counts_it_on_its_print_as_its_page_does() -> None:
     """A continuation whose own launch records a row with no answer (a call the account refused) counts it on its print,
     as the comparison's page does: the print and the page give one count, this launch's rows included."""
@@ -1154,8 +1204,8 @@ async def test_a_continuation_that_records_a_refused_cell_counts_it_on_its_print
     assert len(refused) == 2
 
     def counted(text: str) -> int:
-        (found,) = re.findall(r"(\d+) cells? of this comparison recorded no answer", text)
-        return int(found)
+        # The cells still to run again and those that ran again are said apart; the count is their total.
+        return sum(int(found) for found in re.findall(r"(\d+) cells? of this comparison recorded no answer", text))
 
     (printed,) = _how_it_ran(again)
     (family,) = again.report.bundle.multiple_comparisons.families

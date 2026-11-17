@@ -215,13 +215,17 @@ platform = ["packages/**"]
 #   quick/contract.py quick/result.py quick/one_call.py quick/continuation.py quick/graders.py
 #   run/launch.py run/executor.py run/runner.py run/jobs.py run/lifecycle.py run/arm_schedule.py run/budget.py
 #   run/reads.py
+# test_engine_take_up_null.py drives the engine's launch, interrupt and take-up as an operator does, so run it too on
+# any change to those files or to these (also under packages/evals/src/threetears/evals/):
+#   ops/jobs.py ops/sweeps.py ops/resume.py ops/runs.py run/launch_job.py run/resume.py run/job_work.py
+#   kernel/job_leases.py kernel/offload.py analysis/bundle/trials.py analysis/bundle/comparisons.py
 # The suite's tests together outlast one pool execute window (1,800 s), so send each long one as its own request:
 # `testament run --no-fallback --suite simulation -- 'packages/evals/tests/test_rereadable_bet.py::<test>'`.
 # A path more than one suite holds runs in the unit suite, so this suite runs only when named.
 [suites.simulation]
 adapter = "pytest"
 command = ["uv", "run", "--frozen", "pytest", "-m", "long_simulation and not integration and not docker and not secrets"]
-default_selection = ["packages/evals/tests/test_rereadable_bet.py"]
+default_selection = ["packages/evals/tests/test_rereadable_bet.py", "packages/evals/tests/test_engine_take_up_null.py"]
 
 [suites.simulation.areas]
 evals = ["packages/evals/**"]

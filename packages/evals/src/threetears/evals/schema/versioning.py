@@ -150,6 +150,8 @@ the document, so extending one is a major. Each, and why:
 - ``ArmSchedule`` — whether a comparison's arms were co-loaded on their providers; a reader that cannot say which
   cannot say whether a difference between arms can be the host's capacity.
 - ``CellTermination`` — decides whether a cell is excluded from every figure.
+- ``WrittenOver`` — whether a cell that ran again was cut while it ran, which the count of cells run again names
+  apart, since only a cut can lean a reading.
 - ``ConversationStopCause`` — its members are split into a conversation ending on its own terms and a rig fault,
   which excludes the cell.
 - ``GoalCheckProof``, ``GoalCheckIntent`` — what a goal check proves, and how it is checked.
@@ -488,7 +490,18 @@ CORE_SCHEMA_VERSION: int = 15
 #:   byte for byte as before. Evidence in a bundle's fingerprint only where set. An older build reads such a repeat
 #:   without it, and reads its self-agreement as it did.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
-CORE_SCHEMA_MINOR: int = 22
+#: - **v15.23** — a row a run taken up again writes over its cell's stored row records what it replaced:
+#:   ``EvalResult.written_over`` (default None: written over nothing, or stored before the field existed), ``cut``
+#:   where some attempt it replaces was cut while it ran, else ``unanswered`` (a call the account refused, or a model
+#:   not served). The count of cells that ran again (``redrawn_cells``) reads it, since the take-up keeps no row of the
+#:   cut, and an engine family discloses that count. Left out of the document when unset, so a row written over
+#:   nothing is stored byte for byte as before. In no identity or key. Evidence in a bundle's fingerprint only where set,
+#:   so no stored fingerprint moves: a row taken up before this build carries none, and a bundle over it fingerprints as
+#:   it did (and counts fewer cells run again, a lower bound it does not flag); a row taken up under this build carries
+#:   it from its first write, so a bundle over it is fingerprinted with it from the start. An older build reads such a
+#:   row as the cell's one answer, which it is, and counts no cell run again for it, which only its disclosure misses.
+#:   An older build that ignores this field reads the document correctly, and its writes leave it true.
+CORE_SCHEMA_MINOR: int = 23
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""
 
 #: The sentence every minor's ledger entry ends with, verbatim: what makes trusting a newer minor legitimate. When

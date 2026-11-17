@@ -432,7 +432,7 @@ def _refuse_let_go(leases: JobLeases | None, kind: LeasedJobKind[Any], record_id
         )
 
 
-def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool:
+def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> str | None:
     """Ask a job to stop by writing the request on its record, from any process.
 
     The holder reads it at its next renewal and ends the job ``cancelled``; the write is unconditional and mints a
@@ -442,11 +442,13 @@ def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reas
     :param record_id: The job's record.
     :param scope_id: Its scope.
     :param reason: Why, when the asker said; recorded on the record and on a run's ``cancellation_reason``.
-    :return: Whether the record was written (False: there is no such document).
+    :return: The request as written (its ``cancel_requested_at``), which names this one cancel wherever it is heard;
+        ``None`` where there is no such document.
     :raises StorageError: The write failed.
     """
-    fields: dict[str, Any] = {"cancel_requested_at": store.store_time().isoformat(), "cancel_request_reason": reason}
-    return store.merge_job_record_fields(record_id, scope_id, fields)
+    requested = store.store_time().isoformat()
+    fields: dict[str, Any] = {"cancel_requested_at": requested, "cancel_request_reason": reason}
+    return requested if store.merge_job_record_fields(record_id, scope_id, fields) else None
 
 
 def write_held_record[R: EvalDocumentModel](
@@ -655,7 +657,12 @@ class _Held:
     #: The epoch of the lease this process was granted on the record: a stored lease at another epoch, or naming
     #: another holder, is no longer this holding's (:func:`_passed`).
     epoch: int = field(default=0)
-    cancel_delivered: bool = field(default=False)
+    #: The cancel request a read of the record last found on it (its ``cancel_requested_at``, set off the loop as the
+    #: read is made), and the last one handed to the job (:meth:`JobLeases._act_on`): a request written after the one
+    #: handed over is a further cancel, handed over too, which the job's own rule reads (a run's first cancel drains
+    #: it, a further one cuts it).
+    requested: object = field(default=None)
+    delivered: object = field(default=None)
     #: Why the last renewal failed, as ``<error type>: <message>``, until one succeeds: the fault the record is given
     #: when the failures cost the lease (:meth:`JobLeases._expire`).
     last_failure: str | None = field(default=None)
@@ -900,6 +907,8 @@ class JobLeases:
         save(out)
         if held is not None and extended is not None:
             asked = (leased.cancel_request_reason,) if leased.cancel_requested_at is not None else None
+            if asked is not None:
+                held.requested = leased.cancel_requested_at
             self._on_loop(self._renewed_by_own_write, held, issued, asked)
         return out
 
@@ -1006,8 +1015,9 @@ class JobLeases:
         :param kind: The record's type.
         :param record_id: The record — also the job's id in the manager.
         :param scope_id: Its scope.
-        :param cancel: Ends the job ``cancelled``, given the reason asked; called once, when a renewal finds a cancel
-            asked of it.
+        :param cancel: Asks the job to stop, given the reason asked; called once for each cancel request a renewal finds
+            on its record (each operator's ``job_cancel``, from any process), so a job whose rule reads a further cancel
+            otherwise (a run's: the first drains, a further one cuts) hears each.
         :param stop: Stops the job at once; called when a renewal finds its record ended by another or its lease
             lapsed or passed to another holding, after which the job's writes are refused.
         :param epoch: The epoch of the lease :meth:`grant` gave the record's write; a stored lease at another epoch has
@@ -1411,13 +1421,23 @@ class JobLeases:
             return False
         return await run_blocking(self._pool(), self._end_lost, held, cause)
 
+    def delivered(self, record_id: str) -> str | None:
+        """The cancel request last handed to a held job (its ``cancel_requested_at``), or ``None``: what the job's own
+        rule reads to count one request once, however many ways it arrives.
+
+        :param record_id: The job's record.
+        :return: The request, or ``None`` where none was handed over or the record is not held here.
+        """
+        held = self._held.get(record_id)
+        return held.delivered if held is not None and isinstance(held.delivered, str) else None
+
     def _act_on(self, held: _Held, verdict: _RenewalVerdict, reason: str | None, retry_in_s: float) -> None:
-        """Do what a renewal found: deliver a cancel once, or release and stop a job fenced off its record.
+        """Do what a renewal found: deliver each cancel request once, or release and stop a job fenced off its record.
 
         ``retry_in_s`` is the true wait before a contended renewal is tried again.
         """
-        if verdict == "cancel" and not held.cancel_delivered:
-            held.cancel_delivered = True
+        if verdict == "cancel" and held.requested != held.delivered:
+            held.delivered = held.requested
             log.info(
                 "eval.job_lease cancel asked of %s=%s scope=%s reason=%s",
                 held.kind.name,
@@ -1483,6 +1503,8 @@ class JobLeases:
             except ConflictError:
                 # NOSILENT: another writer (the job's own progress, a cancel request) moved the record; re-read
                 continue
+            if asked:
+                held.requested = leased.cancel_requested_at
             return ("cancel", leased.cancel_request_reason) if asked else ("renewed", None)
         return "contended", None
 
