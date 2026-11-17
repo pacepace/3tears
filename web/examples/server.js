@@ -24,6 +24,14 @@ export const SHELL = ["/app/", "/app/app.js", "/app/app.css", "/app/pwa/index.js
   "/app/pwa/manifest.js", "/app/pwa/media-session.js", "/app/pwa/push.js", "/app/pwa/update.js",
   "/app/pwa/wake-lock.js", "/app/pwa/safe-area.css", "/app/icon-192.png", "/app/icon-512.png"];
 
+/** The worker lab's files (basic/lab/). Its page and its script belong in a shell; its worker and
+ * worklet files do not, and /app/shell-lab.js lists them anyway, to show the shell worker never
+ * answers them: one named like a worker is dropped, the rest are passed through at run time. */
+export const LAB_PAGE = ["/app/lab/", "/app/lab/page.js"];
+export const LAB_WORKERS = ["/app/lab/engine.js", "/app/lab/engine-dep.js", "/app/lab/engine-late.js",
+  "/app/lab/engine-data.json", "/app/lab/classic.js", "/app/lab/classic-dep.js", "/app/lab/tone.js",
+  "/app/lab/tone-dep.js", "/app/lab/decoder-worker.js"];
+
 /**
  * @param {{ port?: number }} [options]
  * @returns {Promise<{ url: string, setVersion: (v: string) => void, hits: Map<string, number>, close: () => Promise<void> }>}
@@ -43,6 +51,10 @@ export async function startExample(options = {}) {
       const config = { version, cache: "example", shell: SHELL, never: ["^/app/api/", "^/app/login"] };
       return send(200, `self.SHELL_CONFIG = ${JSON.stringify(config)};\n`, TYPES[".js"]);
     }
+    if (path === "/app/shell-lab.js") {
+      const config = { version: `lab-${version}`, cache: "lab", shell: [...SHELL, ...LAB_PAGE, ...LAB_WORKERS], never: ["^/app/api/"] };
+      return send(200, `self.SHELL_CONFIG = ${JSON.stringify(config)};\n`, TYPES[".js"]);
+    }
     if (path === "/app/version.json") return send(200, JSON.stringify({ version }), TYPES[".json"]);
     if (path.startsWith("/app/api/")) return send(200, JSON.stringify({ at: Date.now(), version }), TYPES[".json"]);
     if (path === "/app/login") return send(302, "", "text/plain", { Location: "/app/" });
@@ -50,6 +62,7 @@ export async function startExample(options = {}) {
     let file;
     if (path.startsWith("/app/pwa/")) file = join(PWA, normalize(path.slice("/app/pwa/".length)));
     else if (path === "/app/" || path === "/app/index.html") file = join(APP, "index.html");
+    else if (path === "/app/lab/") file = join(APP, "lab", "index.html");
     else if (path.startsWith("/app/")) file = join(APP, normalize(path.slice("/app/".length)));
     if (!file || !(file.startsWith(APP) || file.startsWith(PWA))) return send(404, "not found", "text/plain");
     try {
