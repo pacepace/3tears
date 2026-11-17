@@ -658,7 +658,7 @@ async def test_a_decision_says_when_it_was_made_and_where_the_arm_stands_now() -
 #: Newcomers in each gate null simulation, and how many of them separated, as seeded: read once at sixteen cases, and
 #: continued up to five reads from eight.
 _GATE_ONCE_NEWCOMERS, _GATE_ONCE_SEPARATED = 600, 8
-_GATE_CONTINUED_NEWCOMERS, _GATE_CONTINUED_SEPARATED = 400, 14
+_GATE_CONTINUED_NEWCOMERS, _GATE_CONTINUED_SEPARATED = 60, 2
 
 
 async def _gate_newcomer(tag: str, *, start: int = 8, reads: int = 5) -> bool:
@@ -698,10 +698,11 @@ async def test_under_the_null_a_gate_question_read_once_separates_at_most_alpha(
 @pytest.mark.long_simulation
 @pytest.mark.timeout(900)
 async def test_under_the_null_a_continued_gate_question_separates_as_seeded() -> None:
-    """The same gate continued up to five reads from eight cases: 400 seeded newcomers separate as pinned, 14 (3.5%,
-    95% interval 1.9% to 5.8%). The bet is the one a question whether the arm does better reads, leaning the other way,
-    so its rate is that one's (2.7% of 1,500 continued pass/fail newcomers above); 400 is what one request runs, and
-    the bound at α over this plan is certified on more newcomers than one request holds."""
+    """The same gate continued up to five reads from eight cases: 60 seeded newcomers separate as pinned, 2. A gate's
+    page reads its margin on every read, so a newcomer here costs about five seconds; 60 is what one request runs well
+    inside its window, a guard on the product path. The bet is the one a question whether the arm does better reads,
+    leaning the other way (2.7% of 1,500 continued pass/fail newcomers above; 14 of the first 400 here, 3.5%), and the
+    bound at α over this plan is certified on more newcomers than one request holds."""
     separated = 0
     for index in range(_GATE_CONTINUED_NEWCOMERS):
         separated += await _gate_newcomer(f"gate-{index}")
