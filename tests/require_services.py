@@ -22,14 +22,6 @@ themselves, a cluster of child processes). Outside ``THREETEARS_TEST_SERVICES=pr
 integration job, a laptop's testcontainers run -- it is deselected, whatever named it, rather than
 run against the wrong services or skipped. ``scripts/test-integration.sh`` reads the same marker to
 leave such modules out of a run it takes off the pool.
-
-**``yugabyte_only``.** A test marked ``yugabyte_only`` asserts what only YugabyteDB, the platform's database, is held
-to (a speed budget set by its storage, a key-led plan). On any other engine -- the pool's child-process Postgres, a
-laptop's Postgres container -- it is deselected, never skipped: a runtime skip there read as a failure under the flag
-(the pool's integration suite, 2026-11-16) and as a pass without it. The run's engine is ``THREETEARS_TEST_ENGINE``
-when the run names one, else the server ``THREETEARS_TEST_POSTGRES_URL`` reaches
-(:func:`threetears.core.testing.fixtures.server_engine`), else Postgres (a run that names no server starts a Postgres
-one). The YugabyteDB runs (``THREETEARS_TEST_ENGINE=yugabyte``) run them.
 """
 
 from __future__ import annotations
@@ -39,8 +31,6 @@ from collections.abc import Generator
 
 import pytest
 
-from threetears.core.testing.fixtures import server_engine
-
 #: the flag the pool's integration suite sets
 REQUIRE_SERVICES_ENV = "THREETEARS_REQUIRE_SERVICES"
 
@@ -48,44 +38,9 @@ REQUIRE_SERVICES_ENV = "THREETEARS_REQUIRE_SERVICES"
 SERVICES_ENV = "THREETEARS_TEST_SERVICES"
 PROCESS_MODE = "process"
 
-#: the variable naming the engine a run means, and the one naming its server
-ENGINE_ENV = "THREETEARS_TEST_ENGINE"
-POSTGRES_URL_ENV = "THREETEARS_TEST_POSTGRES_URL"
-
-
-def run_engine() -> str:
-    """the engine this run's database is: the one the run names, else the one its server is, else ``postgres``.
-
-    :return: ``yugabyte`` or ``postgres``
-    :rtype: str
-    """
-    named = os.environ.get(ENGINE_ENV)
-    if named:
-        return named
-    url = os.environ.get(POSTGRES_URL_ENV)
-    return server_engine(url) if url else "postgres"
-
-
-def _deselect(config: pytest.Config, items: list[pytest.Item], marker: str) -> None:
-    """drop every test carrying ``marker`` from ``items``, reporting them deselected.
-
-    :param config: the session's config
-    :ptype config: pytest.Config
-    :param items: the collected tests, narrowed in place
-    :ptype items: list[pytest.Item]
-    :param marker: the marker
-    :ptype marker: str
-    :return: None
-    :rtype: None
-    """
-    deselected = [item for item in items if item.get_closest_marker(marker) is not None]
-    if deselected:
-        config.hook.pytest_deselected(items=deselected)
-        items[:] = [item for item in items if item.get_closest_marker(marker) is None]
-
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """deselect every ``process_only`` test outside process mode, and every ``yugabyte_only`` test off YugabyteDB.
+    """deselect every ``process_only`` test outside process mode.
 
     :param config: the session's config
     :ptype config: pytest.Config
@@ -94,11 +49,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     :return: None
     :rtype: None
     """
-    if os.environ.get(SERVICES_ENV) != PROCESS_MODE:
-        _deselect(config, items, "process_only")
-    # the engine is asked only when a test needs it: a run with none asks no server
-    if any(item.get_closest_marker("yugabyte_only") is not None for item in items) and run_engine() != "yugabyte":
-        _deselect(config, items, "yugabyte_only")
+    if os.environ.get(SERVICES_ENV) == PROCESS_MODE:
+        return
+    deselected = [item for item in items if item.get_closest_marker("process_only") is not None]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if item.get_closest_marker("process_only") is None]
 
 
 #: the directory part every package's integration tests live under
