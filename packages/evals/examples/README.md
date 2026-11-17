@@ -205,12 +205,12 @@ which 3b, 3c, 3d and the grid's low-effort cells replay too.
 come out equivalent, the one verdict that says "good enough". The margin comes from the decision, fixed before any
 reading: a person checks every total before it is paid, so a prompt worse on `total` by under 20 points would still
 ship on its other fields. It is never read off the interval the run produced. 30 invoices narrow the interval on
-`total` to 12 and 13 points either side, inside this margin; but the question asks about currency, so `total` is a
+`total` to 13 points either side, inside this margin; but the question asks about currency, so `total` is a
 secondary reading, shown against its margin and decided on nothing. A margin reads equivalent on the question's own
 reading:
 
 ```text
-| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -12 to +13 pts | v2 level with v1, undecided (a secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -13 to +13 pts | v2 level with v1, undecided (a secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
 ```
 
 ### Rung 3c: a guardrail, `3-invoices/guardrail.py`

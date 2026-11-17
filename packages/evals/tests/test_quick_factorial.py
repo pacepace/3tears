@@ -218,7 +218,7 @@ async def test_a_one_factor_comparison_is_read_against_another_control_too() -> 
     assert (row["contrast"], row["control"], row["verdict"]) == (
         "hasty",
         "careful",
-        "hasty worse than careful",
+        "hasty worse than careful, decided at 9 cases when the evidence reached 42",
     )
 
 

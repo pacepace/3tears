@@ -90,11 +90,11 @@ class TestTheReportCarriesTypedVerdicts:
         # Each cell is its verdict's words; an undecided one the bet read says where the arm stands, in the cell too.
         assert [(verdict.arm, verdict.words) for verdict in typed] == [
             ("same", "same level with current, undecided"),
-            ("worse", "worse worse than current"),
+            ("worse", "worse worse than current, decided at 13 cases when the evidence reached 132"),
         ]
         assert [row["verdict"] for row in table.values()] == [
             "same level with current, undecided",
-            "worse worse than current",
+            "worse worse than current, decided at 13 cases when the evidence reached 132",
         ]
         by_arm = {verdict.arm: verdict for verdict in typed}
         assert (by_arm["worse"].outcome, by_arm["worse"].reason) == ("regressed", "separated")
@@ -105,7 +105,9 @@ class TestTheReportCarriesTypedVerdicts:
     async def test_contrasts_rows_carry_the_typed_outcome_beside_the_words(self) -> None:
         comparison = await _compare({"current": 0, "worse": 30})
         (row,) = comparison.contrasts("correct")
-        assert row["outcome"] == "regressed" and row["verdict"] == "worse worse than current"
+        assert row["outcome"] == "regressed" and row["verdict"] == (
+            "worse worse than current, decided at 11 cases when the evidence reached 42"
+        )
         assert comparison.verdicts("Correct score") == comparison.verdicts("correct")
         assert comparison.verdicts("correct", kind="guardrail") == []
 

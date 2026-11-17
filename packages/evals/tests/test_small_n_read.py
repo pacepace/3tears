@@ -182,9 +182,9 @@ def _family(result: Result) -> ComparisonFamily:
             1,
             [0] * 8,
             [1] * 8,
-            "smalln: Passed score: v2 better than v1. Over 8 paired cases, v2 is 100 points ahead of v1. The interval "
-            "puts v2 between 21 and 100 points better. The evidence that v2 is better is strong (74), enough to "
-            "decide. Of 8 trials each, Passed score was met on 0 for v1 and 8 for v2.",
+            "smalln: Passed score: v2 better than v1, decided at 6 cases when the evidence reached 24. Now, over 8 "
+            "paired cases, v2 is 100 points ahead of v1. The interval puts v2 between 21 and 100 points better. The "
+            "evidence that v2 is better is strong (74). Of 8 trials each, Passed score was met on 0 for v1 and 8 for v2.",
         ),
         (
             3,

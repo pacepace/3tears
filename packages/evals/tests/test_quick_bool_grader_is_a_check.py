@@ -252,7 +252,9 @@ async def test_a_comparison_gates_on_a_bool_grader_with_no_annotation() -> None:
     result = await Eval(cases, {"good": good, "wrong": wrong}, [right], k=1, name="gated").run(store=":memory:")
 
     assert result.exit_code() == 4
-    assert (why := result.why_failed()) is not None and why.startswith("Right score: wrong worse than good.")
+    assert (why := result.why_failed()) is not None and why.startswith(
+        "Right score: wrong worse than good, decided at 7 cases when the evidence reached 42."
+    )
 
 
 async def test_a_result_stored_as_a_number_reads_back_as_a_check_through_the_bool_grader() -> None:

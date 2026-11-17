@@ -161,6 +161,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "ops/report_writer/writer_promotion.py:PromotionDecision",
     ),
     _KIND: (
+        "ComparisonFamily.lean",
         "analysis/bundle/schema.py:ComparisonReading",
         "analysis/bundle/schema.py:CriterionKind",
         "analysis/bundle/schema.py:FloorContrastReading",
