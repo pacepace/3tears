@@ -83,10 +83,9 @@ where `testament status --json` names the pool's `coordinator_version`), and non
 there leaves out the integration and `loop_timing` tests, the `docker` and `secrets` ones, and the
 `long_simulation` shards (`.testament.toml` selects `-m "not integration and not loop_timing and not
 docker and not secrets and not long_simulation"`; CI runs `loop_timing` serially on its own runner).
-A `long_simulation` test is a simulation, or one shard of one, that takes minutes of CPU, beyond the
-smoke check of it the unit suite keeps; the manifest's `simulation` suite runs
-them on the pool, `testament run --no-fallback --suite simulation`, and is run whenever the reading the
-simulation holds, or the path it drives, changes (the suite's comment states the rule and names the files). CI's GitHub shards still collect them. `docker` marks a test that drives a
+A `long_simulation` test is one shard of the statistics certification
+(`packages/evals/tests/test_certified_simulations.py`), which only the certification command runs, as the
+manifest's `simulation` suite ("Statistical simulations" below). CI's GitHub shards still collect them. `docker` marks a test that drives a
 Docker daemon itself, which the pool's image has none of, and `secrets` one that reads a
 credential, which never ships to a runner; both run on this machine
 (`tests/enforcement/test_docker_marker.py` and `test_secrets_marker.py` hold them to it). A
@@ -232,12 +231,10 @@ serving an earlier passing result on the same tree. Every difference from the sh
   does. When the pool is lost mid-run it skips that step, since the shards run them. The manifest
   leaves them out of every pool run too, so a local `test.sh` pool run never meets them;
   `./scripts/ci-unit-tests.sh --loop-timing` runs them serially here.
-- **`long_simulation`** tests are left out of the pool's unit suite, and the shards collect them. Each is a
-  simulation, or one shard of one, of minutes of CPU, past the smoke check the unit suite keeps, and a pool batch of
-  several would pass `batch_timeout_s`. The manifest's `simulation` suite runs them on the pool, side by side:
-  `testament run --no-fallback --suite simulation`. Run it on a change its comment in `.testament.toml` covers (the
-  reading the simulation holds, and every module of the path that launches, stops, files and continues the
-  comparisons it drives); a `default` run never starts it.
+- **`long_simulation`** tests are left out of the pool's unit suite, and the shards collect them. Each is one shard
+  of the statistics certification, which its command sends to the pool as the manifest's `simulation` suite and
+  reads back ("Statistical simulations" below); a `default` run never starts it, and a shard run alone certifies
+  nothing.
 - **`docker` and `secrets`** are left out on the pool; the shards collect them. Every `docker` test
   is also an integration test, so the shards leave it out too. The `secrets` tests outside the
   integration set (the live Claude CLI batch, the live Tavily call) skip on the shards, which have
@@ -315,6 +312,49 @@ Two things break under a parallel run that a serial one hides. A fixed `asyncio.
 waits for background work loses the race on a loaded machine: wait for the event itself. And a
 `conftest.py` fixture named like the root one replaces it rather than adding to it, which drops
 the root's per-test reset of process-wide state.
+
+## Statistical simulations
+
+A statistical claim (a comparison continued to five reads separates at most α; an interval covers what it states; an
+engine comparison its operator interrupts does not lean) needs tens of thousands of simulated newcomers to bound. They
+are not run on every build. Instead:
+
+- **Fast guards** run in the unit suite, each in seconds, and fail for a wrong formula: the bet's reading of every
+  sequence of up to twelve pass/fail signs, enumerated and pinned, with the exact single-read error rate it gives;
+  golden p values, e-values and intervals for fixed samples, through the statistics functions and through `Eval.run`'s
+  primary; the first shard of each claim, restated, pinned at the count the product gave it; the engine's exact
+  uninterrupted rates; and smoke runs holding a few newcomers, through the product, read for read to the restatement
+  (`packages/evals/tests/test_stats_guards.py`, `test_small_n_read.py`, `test_rereadable_bet.py`,
+  `test_engine_take_up_null.py`).
+- **Certified claims** are counted by the certification and written to
+  `packages/evals/tests/fixtures/stats_certificate.json`: each claim, its count, its Clopper-Pearson 95% bounds, its
+  seeds and the digest of the files that decide it (`packages/evals/tests/stats_certificate.py` names them in
+  `SOURCES`: `analysis/stats.py`, the quick read path, the runner's launch, cut and drain path, the engine's operator
+  path, and the simulations themselves). Most claims are counted on the reading restated over the bet alone
+  (`null_newcomers.py`: the package's own statistics functions over the same seeded answers, no `Eval.run`), which the
+  `restated-as-product` claims hold read for read to a few hundred newcomers through `Eval.run`. The claims that depend
+  on time (which cells an interrupt finds in flight) run through the product: a drained stop draws nothing afresh, so
+  its claims are exact (every drained engine comparison reads as the uninterrupted one on its first draws; every
+  drained quick-path watcher separates only where the bet over its whole committed path does, whose rate the `horizon`
+  claims bound); a stop that cuts is counted at the simulation's full size.
+- **`test_stats_certificate.py`**, in the unit suite, fails when any claim's files have changed since it was certified,
+  naming each stale claim, the files that moved and the command; and fails on any claim whose count does not clear its
+  target.
+
+**Re-certify** from the repository's root when that test says the certificate is stale, and commit the certificate it
+writes:
+
+```bash
+uv run python packages/evals/scripts/certify_stats.py
+```
+
+It takes about five minutes and at most fifteen: the restated shards run here, side by side in processes (about two
+minutes), while the product shards run on the testament pool as one request of the `simulation` suite, each shard an
+xdist group of its own so the pool spreads them; each shard records its counts as metrics named by the run's key, which
+the command reads back. It exits 1 if a claim fails its target, and the certificate it wrote then fails
+`test_stats_certificate.py` too: a claim that fails is reported with its evidence, never re-run until it passes. With
+the pool down, `--local` runs every shard here (an hour or more). A claim added to the certification is a `Claim` and its
+shards in `stats_certificate.py`, with a fast guard beside it that fails for a wrong formula.
 
 ## The integration suite
 

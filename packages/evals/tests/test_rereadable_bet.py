@@ -22,18 +22,17 @@ depends on a declared count, and the quick path continues one comparison by runn
   turned away by the account or the provider keeps every answer it recorded, and a run again runs only the cells no
   run recorded, a row recording no answer among them (``runs_again``), and says how many ran again: no recorded answer
   is drawn twice, and each reading's p is the bet over the longest complete prefix;
-- the product under the null, ``Eval.run`` itself over a scripted runner whose arms are equal in accuracy: run again as
-  cases are added it separates at most α, and re-running every case on each run, read by the same bet, exceeds α
-  (seeded and pinned, since every launch there completes and the committed order depends on the cases alone); stopped
-  by a watcher, with arms alike in speed and with arms of different speed whose slow arm is slower when wrong, drained
-  and cut, the product's share and the two earlier rules' over the same answers (drawn, since which cells a stop finds
-  in flight depends on time);
+- the product under the null, ``Eval.run`` itself over a scripted runner whose arms are equal in accuracy, run again
+  as cases are added or re-run whole on each run: a few newcomers here read, read for read, as the restatement over the
+  bet alone reads them (``null_newcomers.py``); stopped by a watcher, drained and cut, a few each, every reading the
+  bet over the longest complete prefix of the committed order;
 - at one stated alternative, a single read's power against the reading it replaces;
 - the rung 3 comparison prints the one sentence that says so, and reads cost by its t test, once.
 
-The long simulations are ``long_simulation`` (minutes of CPU each), each with a smoke check in the unit suite; the
-pool's ``simulation`` suite runs them, one request per test (``.testament.toml`` says how), on any change its comment
-covers: any file under ``analysis/``, ``quick/`` or ``run/``, or the kernel files it names.
+The claims those simulations hold over many newcomers (continued, at most α; re-run whole, above it; watched and
+drained, at most α; watched and cut, reported) are the statistics certificate's (``stats_certificate.py``), and
+``test_stats_guards.py`` holds the fast guards that fail for a wrong formula; ``docs/testing.md`` says how to
+re-certify.
 """
 
 from __future__ import annotations
@@ -46,9 +45,9 @@ import random
 import re
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 
@@ -67,7 +66,6 @@ from threetears.evals.analysis.stats import (
     composite_significance,
     exact_rate_interval,
     holm_adjust,
-    separation_test,
 )
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
@@ -78,7 +76,6 @@ from threetears.evals.providers import ProviderError
 from threetears.evals.quick import as_host
 from threetears.evals.quick.continuation import UNKEPT_SENTENCE, continued_sentence, new_comparison_sentence
 from threetears.evals.quick.one_call import launched_as_run
-from threetears.evals.run import list_results
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -92,6 +89,18 @@ from packages.evals.tests.factories import (
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.ladder_support import load, offline_copy
+from packages.evals.tests.null_newcomers import (
+    cases_by_state,
+    coin,
+    drained_held,
+    reading_p,
+    rereadable,
+    rereadable_product,
+    same_p,
+    same_reads,
+    stored,
+    watched,
+)
 from packages.evals.tests.off_loop import off_loop
 
 #: The pass rate's range, which the per-case shares and their differences are read on.
@@ -317,19 +326,6 @@ def _short(case: Mapping[str, Any], answer: str) -> bool:
     return len(answer) < 6
 
 
-def _coin(tag: str, arm: str, rate: float, calls: Counter[tuple[int, str]]) -> Callable[[Mapping[str, Any]], Any]:
-    """An arm answering ``right`` at ``rate``, each call a fresh seeded draw: a case run again draws again, so a product
-    that re-ran a case already run would read a new value for it. ``calls`` counts each case's calls on the arm."""
-
-    async def run(case: Mapping[str, Any]) -> str:
-        calls[case["n"], arm] += 1
-        draw = random.Random(f"{tag}-{case['n']}-{arm}-{calls[case['n'], arm]}").random()
-        return "right" if draw < rate else "wrong"
-
-    run.__name__ = arm
-    return run
-
-
 def _cases(n: int, start: int = 0) -> list[dict[str, Any]]:
     return [{"n": index} for index in range(start, n)]
 
@@ -345,7 +341,7 @@ async def test_a_comparison_run_again_runs_only_the_cases_appended_and_reads_eve
     they were added; and says so. Run again with no case added, nothing runs and the reading is the same."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
-    arms = {"a": _coin("continue", "a", 0.5, calls), "b": _coin("continue", "b", 0.5, calls)}
+    arms = {"a": coin("continue", "a", 0.5, calls), "b": coin("continue", "b", 0.5, calls)}
     first = await Eval(_cases(20), arms, [_correct], k=1, name="grows").run(store=store, scope="s")
     assert set(calls) == {(n, arm) for n in range(20) for arm in "ab"} and set(calls.values()) == {1}
     assert _how_it_ran(first) == []
@@ -424,7 +420,7 @@ async def test_what_changed_starts_a_new_comparison_that_runs_every_case_and_say
     before, edited or removed is a change."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
-    arms = {"a": _coin("changed", "a", 0.5, calls), "b": _coin("changed", "b", 0.5, calls)}
+    arms = {"a": coin("changed", "a", 0.5, calls), "b": coin("changed", "b", 0.5, calls)}
     variants = {
         "renamed": {"a": arms["a"], "c": arms["b"]},
         "swapped": {"b": arms["b"], "a": arms["a"]},
@@ -456,7 +452,7 @@ async def test_kept_in_memory_a_comparison_says_running_it_again_is_a_new_one() 
     sentence wherever they are read, say it of a store that outlives the run, so they license no re-read of a run kept
     in memory either: one sentence, true for every store."""
     calls: Counter[tuple[int, str]] = Counter()
-    arms = {"a": _coin("unkept", "a", 0.5, calls), "b": _coin("unkept", "b", 0.5, calls)}
+    arms = {"a": coin("unkept", "a", 0.5, calls), "b": coin("unkept", "b", 0.5, calls)}
     result = await Eval(_cases(20), arms, [_correct], k=1, name="unkept").run(store=":memory:")
     printed = str(result).splitlines()
     assert printed[1] == UNKEPT_SENTENCE and REREAD_SENTENCE not in printed
@@ -474,7 +470,7 @@ async def test_a_new_name_or_scope_is_a_fresh_comparison_and_says_nothing_of_the
     continues nothing; a store kept in memory keeps nothing between runs, so each run there is fresh too."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
-    arms = {"a": _coin("fresh", "a", 0.5, calls), "b": _coin("fresh", "b", 0.5, calls)}
+    arms = {"a": coin("fresh", "a", 0.5, calls), "b": coin("fresh", "b", 0.5, calls)}
     await Eval(_cases(20), arms, [_correct], k=1, name="one").run(store=store, scope="s")
     renamed = await Eval(_cases(25), arms, [_correct], k=1, name="two").run(store=store, scope="s")
     elsewhere = await Eval(_cases(25), arms, [_correct], k=1, name="one").run(store=store, scope="t")
@@ -607,7 +603,7 @@ async def test_a_host_s_campaign_over_quick_runs_reads_as_an_engine_campaign_at_
     over the same runs is read by the bet."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
-    arms = {"a": _coin("hosted", "a", 0.5, calls), "b": _coin("hosted", "b", 0.8, calls)}
+    arms = {"a": coin("hosted", "a", 0.5, calls), "b": coin("hosted", "b", 0.8, calls)}
     warm, later = (Eval(_cases(30), arms, [_correct], k=1, name=name) for name in ("warm", "later"))
     host = as_host([warm], store=store)
     tool, ops = eval_catalogue().mount_all(standard_tools())[0], OpsHost.reading(host)
@@ -673,7 +669,7 @@ def _priced(
 ) -> Callable[[Mapping[str, Any]], Any]:
     """:func:`_coin`'s arm, each answer priced at ``cost`` by one model, which it names as served, so a cost cap stops
     it between cells and its runs pool."""
-    draw = _coin(tag, arm, rate, calls)
+    draw = coin(tag, arm, rate, calls)
 
     async def run(case: Mapping[str, Any]) -> Answer:
         return Answer(
@@ -687,101 +683,6 @@ def _priced(
 
     run.__name__ = arm
     return run
-
-
-def _stored(storage: Any, campaign_id: str, scope: str = "s") -> tuple[list[Any], list[EvalResult]]:
-    """A filed comparison's runs, in the order they were launched, and every result they recorded. Reads the store."""
-    (aspect,) = get_campaign(storage, campaign_id, scope).aspects
-    runs = sorted(
-        (run for run_id in aspect.run_ids if (run := storage.load_eval_run(run_id, scope)) is not None),
-        key=lambda run: (run.created_at, run.id),
-    )
-    return runs, [result for run in runs for result in list_results(storage, run.id, scope)]
-
-
-def _cases_by_state(runs: Sequence[Any], results: Sequence[EvalResult]) -> tuple[set[str], set[str], set[str]]:
-    """The cases the runs held, as recorded (a row that runs again recording nothing): complete (every arm, every
-    repeat), reached on some arms or repeats only, and reached on none."""
-    held = {case for run in runs for case in run.test_case_ids}
-    every = set(range(1, runs[0].k_runs + 1))
-    variants = {result.variant_key for result in results}
-    repeats: dict[str, dict[str, set[int]]] = {}
-    for result in results:
-        if not runs_again(result):
-            repeats.setdefault(result.test_case_id, {}).setdefault(result.variant_key, set()).add(result.k_iteration)
-    complete = {
-        case
-        for case, on in repeats.items()
-        if set(on) == variants and len(variants) > 1 and all(r == every for r in on.values())
-    }
-    return complete, set(repeats) - complete, held - set(repeats)
-
-
-#: The rules a reading is recomputed by here: the product's (the longest complete prefix of the committed order), and
-#: the two rules before it, kept as comparisons (each case at its last cell's time; each case in the cases file's order
-#: within the launch that first recorded it).
-_Rule = Literal["prefix", "recorded", "filed"]
-
-
-def _reading_p(runs: Sequence[Any], results: Sequence[EvalResult], rule: _Rule = "prefix") -> float | None:
-    """The mixture bet's p on ``_correct`` over a comparison's recorded cells, each case's value its arm's mean over the
-    repeats recorded (a row that runs again recording nothing), read by ``rule``:
-
-    - ``prefix`` (the product): the cases of the committed order
-      (:func:`~threetears.evals.analysis.bundle.trials.committed_order` over the runs' launches) up to the first case
-      some arm has not recorded at every repeat;
-    - ``recorded`` (a comparison rule, never the product's): every complete case, in the order of its last cell's
-      ``scored_at``, launch by launch;
-    - ``filed`` (a comparison rule, never the product's): every case both arms recorded any repeat of, in the launch
-      that first recorded it, each launch's in the order of the cases file.
-
-    ``None`` with fewer than two cases."""
-    launch: dict[str, int] = {}
-    cases_of: dict[str, list[str]] = {}
-    for run in runs:
-        launch.setdefault(run.launch_group_id or run.id, len(launch))
-        cases_of.setdefault(run.launch_group_id or run.id, []).extend(run.test_case_ids)
-    launch_of = {run.id: launch[run.launch_group_id or run.id] for run in runs}
-    filed = {case: place for place, case in enumerate(dict.fromkeys(c for run in runs for c in run.test_case_ids))}
-    complete, _, _ = _cases_by_state(runs, results)
-    values: dict[str, dict[str, list[float]]] = {}
-    last: dict[str, tuple[int, str]] = {}
-    first: dict[str, int] = {}
-    for result in results:
-        if runs_again(result):
-            continue
-        case = result.test_case_id
-        when = (launch_of[result.eval_run_id], result.scored_at)
-        last[case] = max(when, last.get(case, when))
-        first[case] = min(when[0], first.get(case, when[0]))
-        value = result.host_measures.get("_correct")
-        if isinstance(value, float):
-            values.setdefault(case, {}).setdefault(result.variant_key, []).append(value)
-    variants = sorted({result.variant_key for result in results})
-    paired = [case for case, on in values.items() if all(on.get(variant) for variant in variants)]
-    if rule == "prefix":
-        order = []
-        for case in committed_order(runs[0].template_id, list(cases_of.values())):
-            if case not in complete:
-                break
-            order.append(case)
-        order = [case for case in order if case in paired]
-    elif rule == "recorded":
-        order = sorted((case for case in paired if case in complete), key=lambda case: (last[case], filed[case]))
-    else:
-        order = sorted(paired, key=lambda case: (first[case], filed[case]))
-    if len(order) < 2 or len(variants) != 2:
-        return None
-    a, b = ([sum(values[case][variant]) / len(values[case][variant]) for case in order] for variant in variants)
-    return separation_test(a, b, paired=True, value_range=_RATE, mixture=True).p
-
-
-def _same_p(read: float | None, recomputed: float | None) -> bool:
-    """Whether a reading's p is the one recomputed here, to float rounding (the product sums each case's repeats in
-    exact decimals)."""
-    if read is None or recomputed is None:
-        return read is recomputed
-    return math.isclose(read, recomputed, rel_tol=1e-9, abs_tol=1e-12)
 
 
 def _correct_p(result: Result) -> float | None:
@@ -814,8 +715,8 @@ async def test_a_comparison_whose_run_stopped_keeps_what_it_recorded_and_runs_on
     assert stopped.exit_code() == 1 and {summary.status for summary in stopped.arms.values()} == {"budget_stopped"}
     assert set(stopped.report.bundle.incomplete_runs.values()) == {"budget_stopped"}
     readings.append(stopped)
-    runs, results = off_loop(_stored, stopped.host.storage, stopped.campaign_id)
-    complete, partial, unreached = _cases_by_state(runs, results)
+    runs, results = off_loop(stored, stopped.host.storage, stopped.campaign_id)
+    complete, partial, unreached = cases_by_state(runs, results)
     assert 2 <= len(complete) < 20 and len(partial) <= 2
 
     first = await compare(20, 30.0).run(store=store, scope="s")
@@ -833,8 +734,8 @@ async def test_a_comparison_whose_run_stopped_keeps_what_it_recorded_and_runs_on
     assert again.exit_code() == 1
     assert _how_it_ran(again) == [continued_sentence(20, 10)]
     readings.append(again)
-    runs, results = off_loop(_stored, again.host.storage, again.campaign_id)
-    complete, partial, unreached = _cases_by_state(runs, results)
+    runs, results = off_loop(stored, again.host.storage, again.campaign_id)
+    complete, partial, unreached = cases_by_state(runs, results)
     assert 20 <= len(complete) < 30
     finished = await compare(30, 30.0).run(store=store, scope="s")
     assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
@@ -849,11 +750,11 @@ async def test_a_comparison_whose_run_stopped_keeps_what_it_recorded_and_runs_on
     # longest complete prefix of the committed order.
     held: set[tuple[str, str, int, str]] = set()
     for reading in readings:
-        runs, results = off_loop(_stored, reading.host.storage, reading.campaign_id)
+        runs, results = off_loop(stored, reading.host.storage, reading.campaign_id)
         now = {(r.variant_key, r.test_case_id, r.k_iteration, r.scored_at) for r in results}
         assert held <= now
         held = now
-        assert _same_p(_correct_p(reading), _reading_p(runs, results))
+        assert same_p(_correct_p(reading), reading_p(runs, results))
     (aspect,) = off_loop(get_campaign, finished.host.storage, finished.campaign_id, "s").aspects
     assert len(aspect.run_ids) == 8
     (family,) = finished.report.bundle.multiple_comparisons.families
@@ -878,8 +779,8 @@ async def test_a_comparison_stopped_after_reaching_every_case_finishes_when_run_
     stopped = await compare(10.0).run(store=store, scope="s")
     assert stopped.exit_code() == 1
     assert {arm: summary.status for arm, summary in stopped.arms.items()} == {"a": "budget_stopped", "b": "completed"}
-    runs, results = off_loop(_stored, stopped.host.storage, stopped.campaign_id)
-    complete, partial, unreached = _cases_by_state(runs, results)
+    runs, results = off_loop(stored, stopped.host.storage, stopped.campaign_id)
+    complete, partial, unreached = cases_by_state(runs, results)
     assert not unreached and partial
     missing = sum(3 - calls[n, "a"] for n in range(20))
     assert missing > 0 and {calls[n, "b"] for n in range(20)} == {3}
@@ -891,12 +792,12 @@ async def test_a_comparison_stopped_after_reaching_every_case_finishes_when_run_
         continued_sentence(len(complete), len(partial), unreached=0, incomplete=len(partial))
     ]
     assert set(calls.values()) == {3}
-    runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
-    assert _cases_by_state(runs, results)[0] == {case for run in runs for case in run.test_case_ids}
+    runs, results = off_loop(stored, finished.host.storage, finished.campaign_id)
+    assert cases_by_state(runs, results)[0] == {case for run in runs for case in run.test_case_ids}
     (family,) = finished.report.bundle.multiple_comparisons.families
     (compared,) = [comparison for comparison in family.comparisons if comparison.name == "_correct"]
     assert read_by_bet(family) and compared.case_values is not None and len(compared.case_values[0]) == 20
-    assert _same_p(_correct_p(finished), _reading_p(runs, results))
+    assert same_p(_correct_p(finished), reading_p(runs, results))
 
 
 async def test_an_interrupted_comparison_finishes_its_cells_in_flight_files_and_runs_only_what_it_never_recorded(
@@ -909,7 +810,7 @@ async def test_an_interrupted_comparison_finishes_its_cells_in_flight_files_and_
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
     running: list[asyncio.Task[Result]] = []
-    coins = {"a": _coin("drained", "a", 0.5, calls), "b": _coin("drained", "b", 0.5, calls)}
+    coins = {"a": coin("drained", "a", 0.5, calls), "b": coin("drained", "b", 0.5, calls)}
 
     def interrupting(arm: str) -> Callable[[Mapping[str, Any]], Any]:
         async def run(case: Mapping[str, Any]) -> str:
@@ -933,10 +834,10 @@ async def test_an_interrupted_comparison_finishes_its_cells_in_flight_files_and_
     host = as_host([Eval(_cases(20), arms, [_correct], k=1, name="cut")], store=store)
     (campaign,) = off_loop(list_campaigns, host.storage, "s", subject_id="cut")
     assert campaign.created_by == QUICK_PATH_FILER
-    cut_runs, cut_results = off_loop(_stored, host.storage, campaign.id)
+    cut_runs, cut_results = off_loop(stored, host.storage, campaign.id)
     assert {run.status for run in cut_runs} == {"cancelled"}
     assert cut_results and len(cut_results) < 40 and not any(runs_again(result) for result in cut_results)
-    complete, partial, unreached = _cases_by_state(cut_runs, cut_results)
+    complete, partial, unreached = cases_by_state(cut_runs, cut_results)
 
     finished = await Eval(_cases(30), arms, [_correct], k=1, name="cut").run(store=store, scope="s")
     assert {summary.status for summary in finished.arms.values()} == {"completed"}
@@ -946,9 +847,9 @@ async def test_an_interrupted_comparison_finishes_its_cells_in_flight_files_and_
     ]
     # Drained, nothing was cut: every case ran once on every arm.
     assert set(calls) == {(n, arm) for n in range(30) for arm in "ab"} and set(calls.values()) == {1}
-    runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
+    runs, results = off_loop(stored, finished.host.storage, finished.campaign_id)
     assert len({(r.variant_key, r.test_case_id, r.k_iteration) for r in results}) == len(results) == 60
-    assert _same_p(_correct_p(finished), _reading_p(runs, results))
+    assert same_p(_correct_p(finished), reading_p(runs, results))
 
 
 async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them_again_and_says_how_many() -> None:
@@ -958,7 +859,7 @@ async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
     running: list[asyncio.Task[Result]] = []
-    coins = {"a": _coin("twice", "a", 0.5, calls), "b": _coin("twice", "b", 0.5, calls)}
+    coins = {"a": coin("twice", "a", 0.5, calls), "b": coin("twice", "b", 0.5, calls)}
 
     def interrupting(arm: str) -> Callable[[Mapping[str, Any]], Any]:
         async def run(case: Mapping[str, Any]) -> str:
@@ -985,10 +886,10 @@ async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them
     assert cancelled.value.args == ("interrupted",)
     host = as_host([Eval(_cases(12), arms, [_correct], k=1, name="twice")], store=store)
     (campaign,) = off_loop(list_campaigns, host.storage, "s", subject_id="twice")
-    cut_runs, cut_results = off_loop(_stored, host.storage, campaign.id)
+    cut_runs, cut_results = off_loop(stored, host.storage, campaign.id)
     cut = [result for result in cut_results if runs_again(result)]
     assert cut and {result.termination for result in cut} == {"cancelled"}
-    complete, partial, unreached = _cases_by_state(cut_runs, cut_results)
+    complete, partial, unreached = cases_by_state(cut_runs, cut_results)
 
     finished = await Eval(_cases(12), arms, [_correct], k=1, name="twice").run(store=store, scope="s")
     assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
@@ -1001,7 +902,7 @@ async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them
             redrawn=RedrawnCells(continued=len(cut), continued_cut=len(cut)),
         )
     ]
-    runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
+    runs, results = off_loop(stored, finished.host.storage, finished.campaign_id)
     kept = [result for result in results if not runs_again(result)]
     assert len({(r.variant_key, r.test_case_id, r.k_iteration) for r in kept}) == len(kept) == 24
     # Each cut cell's case ran twice on its arm: once cut, once again; every other case once.
@@ -1010,7 +911,7 @@ async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them
     again = Counter((case_n[r.test_case_id], arm_of[r.eval_run_id]) for r in cut)
     assert all(calls[cell] == 1 + again[cell] for cell in calls)
     (family,) = finished.report.bundle.multiple_comparisons.families
-    assert read_by_bet(family) and _same_p(_correct_p(finished), _reading_p(runs, results))
+    assert read_by_bet(family) and same_p(_correct_p(finished), reading_p(runs, results))
     # The report says it too: the family's disclosure, which the page and the bundle carry, in the one phrasing.
     # Each cut cell ran again in the continuation, so the sentence says so in the past tense.
     ran_again = redrawn_sentence(*RedrawnCells(continued=len(cut), continued_cut=len(cut)))
@@ -1041,7 +942,7 @@ async def test_a_call_the_account_refused_or_a_model_not_served_runs_again_when_
     bet. Its print counts it among the cells that ran again."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
-    coins = {"a": _coin("turned", "a", 0.5, calls), "b": _coin("turned", "b", 0.5, calls)}
+    coins = {"a": coin("turned", "a", 0.5, calls), "b": coin("turned", "b", 0.5, calls)}
 
     def turned_away(arm: str) -> Callable[[Mapping[str, Any]], Any]:
         async def run(case: Mapping[str, Any]) -> str:
@@ -1056,10 +957,10 @@ async def test_a_call_the_account_refused_or_a_model_not_served_runs_again_when_
     arms = {arm: turned_away(arm) for arm in "ab"}
     stopped = await Eval(_cases(10), arms, [_correct], k=1, name="turned").run(store=store, scope="s")
     assert stopped.arms["a"].status == ending
-    runs, results = off_loop(_stored, stopped.host.storage, stopped.campaign_id)
+    runs, results = off_loop(stored, stopped.host.storage, stopped.campaign_id)
     turned = [result for result in results if runs_again(result)]
     assert len(turned) == 1 and turned[0].test_case_id.endswith("-3")
-    complete, partial, unreached = _cases_by_state(runs, results)
+    complete, partial, unreached = cases_by_state(runs, results)
 
     finished = await Eval(_cases(10), arms, [_correct], k=1, name="turned").run(store=store, scope="s")
     assert {summary.status for summary in finished.arms.values()} == {"completed"}
@@ -1074,10 +975,10 @@ async def test_a_call_the_account_refused_or_a_model_not_served_runs_again_when_
             redrawn=RedrawnCells(continued=1),
         )
     ]
-    runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
-    assert _cases_by_state(runs, results)[0] == {case for run in runs for case in run.test_case_ids}
+    runs, results = off_loop(stored, finished.host.storage, finished.campaign_id)
+    assert cases_by_state(runs, results)[0] == {case for run in runs for case in run.test_case_ids}
     (family,) = finished.report.bundle.multiple_comparisons.families
-    assert read_by_bet(family) and _same_p(_correct_p(finished), _reading_p(runs, results))
+    assert read_by_bet(family) and same_p(_correct_p(finished), reading_p(runs, results))
 
 
 def test_the_cells_that_run_again_are_counted_once_each_however_many_rows_recorded_no_answer() -> None:
@@ -1181,7 +1082,7 @@ async def test_a_continuation_that_records_a_refused_cell_counts_it_on_its_print
     as the comparison's page does: the print and the page give one count, this launch's rows included."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
-    coins = {"a": _coin("refused-again", "a", 0.5, calls), "b": _coin("refused-again", "b", 0.5, calls)}
+    coins = {"a": coin("refused-again", "a", 0.5, calls), "b": coin("refused-again", "b", 0.5, calls)}
     refused: list[int] = []
     launch = ["first"]
 
@@ -1224,7 +1125,7 @@ def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_raises_it
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
     running: list[asyncio.Task[Result]] = []
-    coins = {"a": _coin("keyboard", "a", 0.5, calls), "b": _coin("keyboard", "b", 0.5, calls)}
+    coins = {"a": coin("keyboard", "a", 0.5, calls), "b": coin("keyboard", "b", 0.5, calls)}
 
     class _SecondCtrlC:
         """stderr, whose drain notice is where the second Ctrl+C lands."""
@@ -1264,14 +1165,14 @@ def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_raises_it
     assert second.value.__cause__.args == ("interrupted",)
     host = as_host([Eval(_cases(12), arms, [_correct], k=1, name="keys")], store=store)
     (campaign,) = off_loop(list_campaigns, host.storage, "s", subject_id="keys")
-    cut_runs, cut_results = off_loop(_stored, host.storage, campaign.id)
+    cut_runs, cut_results = off_loop(stored, host.storage, campaign.id)
     assert {run.status for run in cut_runs} == {"cancelled"}
     cut = [result for result in cut_results if runs_again(result)]
     assert cut and {result.termination for result in cut} == {"cancelled"}
 
     finished = asyncio.run(Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s"))
     assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
-    runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
+    runs, results = off_loop(stored, finished.host.storage, finished.campaign_id)
     kept = [result for result in results if not runs_again(result)]
     assert len({(r.variant_key, r.test_case_id, r.k_iteration) for r in kept}) == len(kept) == 24
     case_n = {f"{runs[0].template_id}-{n}": n for n in range(12)}
@@ -1378,7 +1279,7 @@ async def test_a_comparison_plays_each_run_s_cells_case_by_case_in_the_committed
 
     stopped = await compare(12, 1.8).run(store=store, scope="s")
     assert stopped.exit_code() == 1
-    runs, _ = off_loop(_stored, stopped.host.storage, stopped.campaign_id)
+    runs, _ = off_loop(stored, stopped.host.storage, stopped.campaign_id)
     template = runs[0].template_id
     case_n = {f"{template}-{n}": n for n in range(20)}
     order = [case_n[case] for case in committed_order(template, [[f"{template}-{n}" for n in range(12)]])]
@@ -1400,345 +1301,41 @@ async def test_a_comparison_plays_each_run_s_cells_case_by_case_in_the_committed
     played(started, [*unfinished, *appended])
 
 
-# --- the null, through the product -----------------------------------------------------------------------------------
+# --- the null, through the product ---------------------------------------------------------------------------------
 
 
-async def _newcomer(tag: str, *, continued: bool) -> bool:
-    """One newcomer under the null, through ``Eval.run`` itself: two arms answering right at one rate (0.5, k = 1),
-    each call a fresh seeded draw. Run 20 cases; while nothing separates, append cases and run again, at most five runs
-    in all, each add ten cases plus up to ninety more the closer the reading's p came to α. ``continued`` runs every
-    time into one store, so the product continues the comparison; otherwise each run is into a store of its own, which
-    re-runs every case, as the quick path did before it continued a comparison, though read by the same bet. Separated:
-    a verdict of improved or regressed on any comparison the print reads."""
-    calls: Counter[tuple[int, str]] = Counter()
-    arms = {"a": _coin(tag, "a", 0.5, calls), "b": _coin(tag, "b", 0.5, calls)}
-    store = InMemoryDocumentStore()
-    n = 20
-    for _ in range(5):
-        if not continued:
-            store = InMemoryDocumentStore()
-        result = await Eval(_cases(n), arms, [_correct], k=1, name="null").run(store=store, scope="s")
-        compared = [c for family in result.report.bundle.multiple_comparisons.families for c in family.comparisons]
-        if any(comparison.verdict in ("improved", "regressed") for comparison in compared):
-            return True
-        ps = [
-            comparison.p_raw
-            for comparison in compared
-            if comparison.name == "_correct" and comparison.p_raw is not None
-        ]
-        n += 10 + int(90 * (1.0 - min(1.0, min(ps, default=1.0))))
-    return False
-
-
-#: Newcomers per shard: each shard is one seeded test, so the pool runs them side by side.
-_PER_SHARD = 50
-
-#: How many of each continued shard's fifty newcomers separated, as seeded (shard by shard). The committed order is
-#: fixed by the cases alone and every launch here completes, so each reading is reproducible and each shard test
-#: reproduces its count exactly; their sum is the product's count, and the bound below is read on it.
-_CONTINUED_SEPARATED: tuple[int, ...] = (
-        1, 2, 3, 1, 1, 4, 5, 2,
-        2, 4, 3, 2, 1, 2, 6, 3,
-        0, 2, 8, 1, 2, 4, 4, 2,
-        1, 1, 3, 1, 5, 1, 5, 1,
-        2, 1, 2, 3, 1, 0, 3, 1,
-        2, 2, 2, 0, 1, 2, 1, 1,
-        3, 2, 1, 0, 3, 0, 1, 4,
-        3, 4, 2, 1, 1, 2, 2, 1,
-        0, 4, 4, 6, 1, 4, 0, 2,
-        1, 2, 2, 5, 3, 1, 2, 3,
-        2, 2, 2, 2, 1, 1, 0, 3,
-        2, 2, 1, 3, 4, 1, 2, 2,
-        1, 1, 2, 2, 0, 0, 0, 3,
-        3, 2, 2, 1, 3, 0, 4, 1,
-        2, 1, 2, 1, 1, 3, 3, 2,
-        0, 2, 2, 0, 4, 2, 2, 2,
-        3, 2, 4, 2, 6, 2, 1, 3,
-        1, 2, 2, 2, 1, 0, 2, 2,
-        1, 1, 2, 6, 4, 1, 4, 1,
-        0, 3, 1, 0, 1, 1, 1, 3,
-        2, 2, 2, 3, 2, 4, 0, 5,
-        1, 2, 1, 1, 1, 2, 2, 2,
-        2, 0, 4, 1, 3, 1, 1, 0,
-        1, 2, 3, 0, 2, 2, 5, 2,
-        4, 1, 1, 1, 2, 1, 0, 2,
-    )
-
-#: How many of each re-run-everything shard's fifty newcomers separated, as seeded.
-_RERUN_SEPARATED: tuple[int, ...] = (4, 6, 6, 5, 7, 10, 6, 4, 9, 5, 2, 7)
-
-
-def _shards(n: int) -> list[Any]:
-    """Shards ``0`` to ``n - 1``: the first runs in the unit suite as a smoke check on the bound's inputs, and the
-    rest are ``long_simulation`` (a minute or two of CPU each), which the pool's ``simulation`` suite runs:
-    ``testament run --no-fallback --suite simulation``. Every shard is the bound's evidence, so all of them run
-    whenever the reading they simulate changes (``.testament.toml`` states the rule)."""
-    return [pytest.param(shard, marks=() if shard == 0 else pytest.mark.long_simulation) for shard in range(n)]
-
-
-@pytest.mark.timeout(1200)
-@pytest.mark.parametrize("shard", _shards(len(_CONTINUED_SEPARATED)))
-async def test_a_continued_comparison_s_newcomers_separate_as_seeded(shard: int) -> None:
-    """Fifty seeded newcomers (:func:`_newcomer`), each running ``Eval.run`` into one store, so the quick path continues
-    its comparison: as many separate as this shard's pinned count."""
-    separated = 0
-    for index in range(_PER_SHARD):
-        separated += await _newcomer(f"continued-{shard}-{index}", continued=True)
-    assert separated == _CONTINUED_SEPARATED[shard]
-
-
-@pytest.mark.timeout(1200)
-@pytest.mark.parametrize("shard", _shards(len(_RERUN_SEPARATED)))
-async def test_a_comparison_re_run_whole_each_time_separates_as_seeded(shard: int) -> None:
-    """Fifty seeded newcomers (:func:`_newcomer`), each run into a store of its own, so every case runs again on each
-    run: as many separate as this shard's pinned count."""
-    separated = 0
-    for index in range(_PER_SHARD):
-        separated += await _newcomer(f"rerun-{shard}-{index}", continued=False)
-    assert separated == _RERUN_SEPARATED[shard]
-
-
-def test_under_the_null_a_continued_comparison_separates_at_most_alpha_and_re_running_every_case_exceeds_it() -> None:
-    """The claim, read on the shards' seeded counts (each reproduced by its shard test above), at α = 5%, two arms
-    passing 50% each, k = 1, up to five runs with adds sized from the data, stopping at the first separation:
-
-    - continued (the quick path as it is): the Clopper-Pearson 95% upper bound on the false-separation rate is below α;
-    - re-run whole each time (the quick path's re-runs before it continued a comparison, read by the same bet): the 95%
-      lower bound is above α, so re-drawing every case on each run is not one bet and loses the bound.
-
-    As seeded: continued, 399 of 10,000 newcomers separate (4.0%, 95% interval 3.6% to 4.4%); re-run whole each time,
-    71 of 600 (11.8%, 9.4% to 14.7%). Read at 10,000 because the rate sits near α by construction: each reading's p is
-    one over the most the capital ever reached over every case read, so the reads together watch the capital
-    continuously, and a martingale watched until it settles reaches 1/α with probability approaching α. The stakes
-    weighted toward the larger ones settle sooner within the few hundred cases read, so they spend more of α than the
-    even weighting did: on the same 10,000 seeds the even grid separated 312 (3.1%). Every reading is the bet's, read
-    for read (:func:`_watched` checks it, and the newcomer restated over the bet alone reproduces every shard pinned
-    here).
-    """
-    replicates = _PER_SHARD * len(_CONTINUED_SEPARATED)
-    rerun_replicates = _PER_SHARD * len(_RERUN_SEPARATED)
-    continued, rerun = sum(_CONTINUED_SEPARATED), sum(_RERUN_SEPARATED)
-    kept = exact_rate_interval(continued, replicates)
-    lost = exact_rate_interval(rerun, rerun_replicates)
-    assert kept is not None and lost is not None
-    said = f"continued {continued}/{replicates} {kept}; re-run {rerun}/{rerun_replicates} {lost}"
-    assert kept[1] < SIGNIFICANCE_ALPHA, said
-    assert lost[0] > SIGNIFICANCE_ALPHA, said
+@pytest.mark.parametrize("continued", [True, False], ids=["continued", "re-run-whole"])
+async def test_a_few_newcomers_under_the_null_read_through_the_product_as_restated(continued: bool) -> None:
+    """A few newcomers under the null (two arms right half the time, k = 1, 20 cases and up to five runs, each add sized
+    from the reading), through ``Eval.run``: run again into one store, so the quick path continues its comparison, or
+    each run into a store of its own, so every case runs again. Each reads, read for read, as the restatement over the
+    bet alone reads the same answers (``null_newcomers.same_reads``). The counts the claims are held on (continued: at
+    most α; re-run whole: above it) are the certificate's (``stats_certificate.py``), read on that restatement."""
+    for index in range(3):
+        tag = f"smoke-{'continued' if continued else 'rerun'}-{index}"
+        product = await rereadable_product(tag, continued=continued)
+        restated = rereadable(tag, continued=continued)
+        assert same_reads(product, restated) is None, same_reads(product, restated)
 
 
 # --- watched and stopped, through the product ------------------------------------------------------------------------
 
-#: How long each arm's answer takes, as a law of the answer: both arms alike, latency apart from the answer (a coin of
-#: its own, 1 or 6 ms); both arms alike, a wrong answer slower (1 ms right, 6 ms wrong); or arms of different laws, arm
-#: ``a`` 0.4 ms whatever it answers and arm ``b`` five times slower when right (2 ms) and four or twenty times slower
-#: again when wrong (8 or 40 ms).
-_Latency = Literal["alike-apart", "alike-slow-wrong", "b-slower-4x", "b-slower-20x"]
-
-#: How a watcher stops a run: when the answers landed in it favour an arm by four (after ten on each arm), or at a point
-#: drawn apart from any answer, in four runs of five.
-_Stop = Literal["lead", "blind"]
-
-
-def _seconds(latency: _Latency, tag: str, arm: str, n: int, call: int, right: bool) -> float:
-    """How long ``arm``'s answer to case ``n`` (its ``call``-th) takes under ``latency``."""
-    if latency == "alike-apart":
-        return 0.006 if random.Random(f"{tag}-latency-{n}-{arm}-{call}").random() < 0.5 else 0.001
-    if latency == "alike-slow-wrong":
-        return 0.001 if right else 0.006
-    if arm == "a":
-        return 0.0004
-    return 0.002 if right else 0.002 * (4 if latency == "b-slower-4x" else 20)
-
-
-async def _watched(
-    tag: str, *, latency: _Latency, stop: _Stop, k: int, cut_share: float = 0.0, launches: int = 5
-) -> tuple[bool, bool, bool]:
-    """One newcomer under the null who watches each run's answers land and stops it, through ``Eval.run`` into one
-    store: two arms answering right at one rate (0.5) each call, ``k`` repeats, each answer taking as long as
-    ``latency`` says, the cells played as the product plays them (case by case in the committed order, the arms in
-    turn, four at a time).
-
-    Run 20 cases; stop each run as ``stop`` says (an interrupt: the run's task cancelled, so the cells in flight finish
-    and record), and, in ``cut_share`` of those stops, interrupt again 5 ms later, cutting the cells still in flight;
-    read the comparison as it stands (the run's print where it finished, the filed campaign where it was stopped);
-    while nothing separates, append cases and run again, at most ``launches`` runs in all, each adding ten cases plus up
-    to ninety more the closer the reading's p came to α. Each reading is checked to be the bet over the longest complete
-    prefix of the committed order, and read too by the two rules before it over the same stored answers
-    (:func:`_reading_p`'s ``recorded`` and ``filed``), at the product's family size (Holm's ``m``, ``_correct`` counted
-    where the product left it untested). It stops once all three have separated on ``_correct``.
-
-    :return: Whether the product separated, whether the record-order rule did, and whether the file-order rule did, in
-        any reading.
-    """
-    calls: Counter[tuple[int, str]] = Counter()
-    landed: list[tuple[str, float]] = []
-    running: list[asyncio.Task[Result]] = []
-    stop_at: list[int] = []
-    rules = random.Random(f"{tag}-stops")
-
-    def interrupt() -> None:
-        task = running.pop()
-        loop = asyncio.get_running_loop()
-        loop.call_soon(task.cancel)
-        if rules.random() < cut_share:
-            loop.call_later(0.005, task.cancel)
-
-    def watched(arm: str) -> Callable[[Mapping[str, Any]], Any]:
-        coin = _coin(tag, arm, 0.5, calls)
-
-        async def run(case: Mapping[str, Any]) -> str:
-            answer = await coin(case)
-            await asyncio.sleep(_seconds(latency, tag, arm, case["n"], calls[case["n"], arm], answer == "right"))
-            landed.append((arm, 1.0 if answer == "right" else 0.0))
-            if not running:
-                return answer
-            if stop == "blind":
-                if stop_at and len(landed) >= stop_at[0]:
-                    interrupt()
-            else:
-                mine = [v for side, v in landed if side == "a"], [v for side, v in landed if side == "b"]
-                if min(map(len, mine)) >= 10 and abs(sum(mine[1]) - sum(mine[0])) >= 4:
-                    interrupt()
-            return answer
-
-        run.__name__ = arm
-        return run
-
-    arms = {arm: watched(arm) for arm in "ab"}
-    store = InMemoryDocumentStore()
-    n = 20
-    separated = [False, False, False]
-    for _ in range(launches):
-        compare = Eval(_cases(n), arms, [_correct], k=k, name="watched")
-        landed.clear()
-        stop_at[:] = [rules.randint(1, 2 * k * n)] if rules.random() < 0.8 else []
-        running.append(asyncio.create_task(compare.run(store=store, scope="s")))
-        task = running[0]
-        host = as_host([compare], store=store)
-        try:
-            families: Sequence[ComparisonFamily] = (await task).report.bundle.multiple_comparisons.families
-        except asyncio.CancelledError:
-            filed = off_loop(list_campaigns, host.storage, "s", subject_id="watched")
-            campaign = max(filed, key=lambda each: (each.created_at, each.id))
-            bundle = off_loop(assemble_context_bundle, campaign, storage=host.storage, profile=host.profile)
-            families = bundle.multiple_comparisons.families
-        running.clear()
-        product, p = _separated_on_correct(families)
-        campaign = max(
-            off_loop(list_campaigns, host.storage, "s", subject_id="watched"),
-            key=lambda each: (each.created_at, each.id),
-        )
-        runs, results = off_loop(_stored, host.storage, campaign.id)
-        (family,) = families
-        (compared,) = [c for c in family.comparisons if c.name == "_correct"]
-        # The product's reading is the bet over the longest complete prefix of the committed order.
-        assert _same_p(compared.p_raw, _reading_p(runs, results))
-        m = family.family_size + (0 if compared.p_raw is not None else 1)
-        recorded, filed_order = (_reading_p(runs, results, rule) for rule in ("recorded", "filed"))
-        separated = [
-            separated[0] or product,
-            separated[1] or (recorded is not None and recorded * m < SIGNIFICANCE_ALPHA),
-            separated[2] or (filed_order is not None and filed_order * m < SIGNIFICANCE_ALPHA),
-        ]
-        if all(separated):
-            break
-        n += 10 + int(90 * (1.0 - min(1.0, p)))
-    return separated[0], separated[1], separated[2]
-
-
-def _separated_on_correct(families: Sequence[ComparisonFamily]) -> tuple[bool, float]:
-    """Whether a reading separates the arms on ``_correct``, and its raw p there (1 where it has none)."""
-    compared = [c for family in families for c in family.comparisons if c.name == "_correct"]
-    return (
-        any(comparison.verdict in ("improved", "regressed") for comparison in compared),
-        min((c.p_raw for c in compared if c.p_raw is not None), default=1.0),
-    )
-
-
-#: Watchers in each simulation of arms alike in speed (k = 3, up to five runs); stopped comparisons in each simulation
-#: of arms of different speed (k = 1, a run and its continuation, so the share's bound is read at a count the pool runs
-#: in one request); and each smoke check's.
-_ALIKE, _APART, _SMOKE = 300, 1000, 3
-
-
-async def _watch_many(tag: str, count: int, **how: Any) -> tuple[int, int, int]:
-    """How many of ``count`` newcomers (:func:`_watched`, with ``how``) the product, the record-order rule and the
-    file-order rule each separated."""
-    tally = [0, 0, 0]
-    for index in range(count):
-        for rule, separated in enumerate(await _watched(f"{tag}-{index}", **how)):
-            tally[rule] += separated
-    return tally[0], tally[1], tally[2]
-
-
-def _shares(tally: tuple[int, int, int], count: int) -> str:
-    """Each rule's count, share and 95% Clopper-Pearson interval, for a failure's message."""
-    return "; ".join(
-        f"{rule} {separated}/{count} {exact_rate_interval(separated, count)}"
-        for rule, separated in zip(("product", "record order", "file order"), tally, strict=True)
-    )
-
 
 async def test_a_few_watched_comparisons_of_arms_alike_and_apart_in_speed_read_their_prefix() -> None:
     """The unit suite's smoke check of every watched simulation: a few newcomers each, every reading checked to be the
-    bet over the longest complete prefix of the committed order (inside :func:`_watched`), and the product separating
-    at most one of each few, which at a rate of α happens with probability above 0.99."""
+    bet over the longest complete prefix of the committed order (inside ``null_newcomers.watched``), the product
+    separating at most one of each few, which at a rate of α happens with probability above 0.99; and, where every
+    interrupt drained, no cell drew twice and the product separated only where the bet over its whole committed path
+    did (``null_newcomers.drained_held``), which is what bounds the drained rate by the certificate's horizon claim."""
     for how in (
         {"latency": "alike-slow-wrong", "stop": "lead", "k": 3},
         {"latency": "b-slower-4x", "stop": "blind", "k": 1, "launches": 2},
         {"latency": "b-slower-20x", "stop": "blind", "k": 1, "cut_share": 0.3, "launches": 2},
     ):
-        product, _, _ = await _watch_many(f"smoke-{how['latency']}-{how['stop']}", _SMOKE, **how)
+        product = 0
+        for index in range(3):
+            seen = await watched(f"smoke-{how['latency']}-{how['stop']}-{index}", **how)  # type: ignore[arg-type]
+            product += seen.product
+            if not how.get("cut_share"):
+                assert drained_held(seen) is None, drained_held(seen)
         assert product <= 1, how
-
-
-@pytest.mark.long_simulation
-@pytest.mark.timeout(1700)
-@pytest.mark.parametrize("latency", ["alike-apart", "alike-slow-wrong"])
-async def test_under_the_null_arms_alike_in_speed_stopped_when_an_arm_leads_separate_at_most_alpha(
-    latency: _Latency,
-) -> None:
-    """:data:`_ALIKE` newcomers (:func:`_watched`) whose arms answer alike in speed, both apart from the answer or both
-    slower when wrong (exchangeable arms; arms of different speed are the next tests'), k = 3, each interrupting a run
-    as soon as the answers landed in it favour an arm by four, then continuing, up to five runs: the product's 95%
-    Clopper-Pearson upper bound on the false-separation rate is at most α. Drawn, not pinned: which cells an interrupt
-    finds in flight depends on time. As drawn for this change (95% Clopper-Pearson intervals), the product separated
-    0 of 300 with latency apart (upper 1.2%) and 1 of 300 with both arms slower when wrong (0.3%, upper 1.8%); the
-    record-order rule 0 and 1, the file-order rule 0 and 2."""
-    tally = await _watch_many(f"alike-{latency}", _ALIKE, latency=latency, stop="lead", k=3)
-    bound = exact_rate_interval(tally[0], _ALIKE)
-    assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, _shares(tally, _ALIKE)
-
-
-@pytest.mark.long_simulation
-@pytest.mark.timeout(1700)
-@pytest.mark.parametrize("latency", ["b-slower-4x", "b-slower-20x"])
-async def test_under_the_null_arms_of_different_speed_stopped_and_drained_separate_at_most_alpha(
-    latency: _Latency,
-) -> None:
-    """Arms of different speed, the slow one slower again when wrong (arm ``a`` 0.4 ms whatever it answers; arm ``b`` 2
-    ms when right and four or twenty times that when wrong): :data:`_APART` newcomers (:func:`_watched`), k = 1, each
-    run interrupted in four of five at a point drawn apart from any answer, the cells in flight drained, then continued
-    once (two runs). The product reads the longest complete prefix of an order fixed before any answer, so its 95%
-    Clopper-Pearson upper bound is at most α. As drawn for this change: at four times slower when wrong, the product 19
-    of 1,000 (1.9%, 1.1% to 3.0%); at twenty times, 17 (1.7%, 1.0% to 2.7%); the two comparison rules over the same
-    answers 19 and 19, and 20 and 11. Over three runs (800 newcomers each) the product drew 12 and 29, the latter 3.6%
-    with an upper bound of 5.1%, which does not clear α at that size: consistent with the bound (the plain five-run
-    flow draws 2.2% to 4.5%), and the test reads two runs so that it clears α at a count one pool request holds."""
-    tally = await _watch_many(f"drained-{latency}", _APART, latency=latency, stop="blind", k=1, launches=2)
-    bound = exact_rate_interval(tally[0], _APART)
-    assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, _shares(tally, _APART)
-
-
-@pytest.mark.long_simulation
-@pytest.mark.timeout(1700)
-@pytest.mark.parametrize("latency", ["b-slower-4x", "b-slower-20x"])
-async def test_under_the_null_arms_of_different_speed_whose_stops_cut_are_reported(latency: _Latency) -> None:
-    """The same, with a second interrupt 5 ms after three in ten of the stops, cutting the cells still in flight; a
-    continuation draws each cut cell afresh, which can lean the reading where a slow answer is a wrong one (the print
-    counts them). Reported as it is, as drawn for this change: at four times slower when wrong, the product 20 of
-    1,000 (2.0%, 1.2% to 3.1%), the record-order rule 21, the file-order rule 22; at twenty times, the product 14
-    (1.4%, 0.8% to 2.3%), the record-order rule 31 (3.1%, 2.1% to 4.4%), the file-order rule 18. The test fails only
-    where the product's share passes twice α."""
-    tally = await _watch_many(f"cut-{latency}", _APART, latency=latency, stop="blind", k=1, cut_share=0.3, launches=2)
-    assert tally[0] / _APART < 2 * SIGNIFICANCE_ALPHA, _shares(tally, _APART)

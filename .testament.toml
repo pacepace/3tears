@@ -200,32 +200,21 @@ core = ["packages/core/**"]
 agent = ["packages/agent/**"]
 platform = ["packages/**"]
 
-# The long simulations: simulations marked `long_simulation`, each minutes of CPU, which the unit suite leaves out so
-# its batches stay within `batch_timeout_s`. The unit suite keeps a smoke check of each; this suite runs the rest, side
-# by side on the pool. Run it whenever the reading it simulates, or the path that launches, runs, stops, files and
-# continues the comparisons it drives, changes: `testament run --no-fallback --suite simulation`. For
-# test_rereadable_bet.py, which drives `Eval.run` end to end, that is a change to ANY file under
-# packages/evals/src/threetears/evals/analysis/, quick/ or run/, or to kernel/candidate_kind.py,
-# kernel/result_condition.py, kernel/result_reading.py or kernel/offload.py. The files the simulations are known to drive, listed so a reader
-# can check the rule covers them (under packages/evals/src/threetears/evals/):
-#   analysis/stats.py analysis/significance.py analysis/summary.py analysis/campaigns.py analysis/run_ending.py
-#   analysis/contention.py analysis/bundle/assemble.py analysis/bundle/comparisons.py analysis/bundle/trials.py
-#   analysis/bundle/observations.py
-#   kernel/candidate_kind.py kernel/result_condition.py kernel/result_reading.py kernel/offload.py
-#   quick/contract.py quick/result.py quick/one_call.py quick/continuation.py quick/graders.py
-#   run/launch.py run/executor.py run/runner.py run/jobs.py run/lifecycle.py run/arm_schedule.py run/budget.py
-#   run/reads.py
-# test_engine_take_up_null.py drives the engine's launch, interrupt and take-up as an operator does, so run it too on
-# any change to those files or to these (also under packages/evals/src/threetears/evals/):
-#   ops/jobs.py ops/sweeps.py ops/resume.py ops/runs.py run/launch_job.py run/resume.py run/job_work.py
-#   kernel/job_leases.py kernel/offload.py analysis/bundle/trials.py analysis/bundle/comparisons.py
-# The suite's tests together outlast one pool execute window (1,800 s), so send each long one as its own request:
-# `testament run --no-fallback --suite simulation -- 'packages/evals/tests/test_rereadable_bet.py::<test>'`.
-# A path more than one suite holds runs in the unit suite, so this suite runs only when named.
+# The statistics certification's product shards (packages/evals/tests/test_certified_simulations.py), marked
+# `long_simulation` so the unit suite leaves them out. Never run this suite on its own: the one command
+# `uv run python packages/evals/scripts/certify_stats.py` sends it as one request, reads each shard's counts back from
+# the metrics it records, runs the restated shards on the submitting machine and writes
+# packages/evals/tests/fixtures/stats_certificate.json (docs/testing.md, "Statistical simulations"). Run that command
+# when packages/evals/tests/test_stats_certificate.py says the certificate is stale: it names each stale claim and the
+# files that moved, out of the files packages/evals/tests/stats_certificate.py names in SOURCES (the bet and its
+# reading, the quick read path, the runner's launch, cut and drain path, the engine's operator path, and the
+# simulations themselves). Otherwise the certificate is current and nothing here needs to run.
+# `--dist loadgroup` gives each shard its own unit (each is an xdist group of its own), so the pool runs them side by
+# side even where it has no recorded duration for them; without -n, pytest runs in one process as before.
 [suites.simulation]
 adapter = "pytest"
-command = ["uv", "run", "--frozen", "pytest", "-m", "long_simulation and not integration and not docker and not secrets"]
-default_selection = ["packages/evals/tests/test_rereadable_bet.py", "packages/evals/tests/test_engine_take_up_null.py"]
+command = ["uv", "run", "--frozen", "pytest", "--dist", "loadgroup", "-m", "long_simulation and not integration and not docker and not secrets"]
+default_selection = ["packages/evals/tests/test_certified_simulations.py"]
 
 [suites.simulation.areas]
 evals = ["packages/evals/**"]

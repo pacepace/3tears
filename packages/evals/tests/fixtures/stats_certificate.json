@@ -1,0 +1,1220 @@
+{
+ "command": "uv run python packages/evals/scripts/certify_stats.py",
+ "digest": "6edc8f54e25bfabce4bcaf648cf0a788cc98652d3487cb42325cdf425928d7a8",
+ "files": {
+  "packages/evals/src/threetears/evals/analysis/bundle/assemble.py": "17ec0c052a3e77d7aa7d26c7908742561aac73f10f2f399dc1d36ed54e0f48be",
+  "packages/evals/src/threetears/evals/analysis/bundle/comparisons.py": "a8c5b1cb912f42c5f77714df84c735c2ff494590d119f1981e7a9a0dcfb61cd8",
+  "packages/evals/src/threetears/evals/analysis/bundle/observations.py": "7ae9d98a828fe3e65fe1f3d7bf2ac686ecdc6ebcfbbf7bfe4b3fb8e92ecd1ba0",
+  "packages/evals/src/threetears/evals/analysis/bundle/trials.py": "b5f7cceccb9757ecc6757be10c0d212353ea902caf1943d66fabd8fb6f55e79d",
+  "packages/evals/src/threetears/evals/analysis/campaigns.py": "46b01562c2dc4b94b562bfe3491e292faacac899a446dae1db18eaa1f05f2335",
+  "packages/evals/src/threetears/evals/analysis/contention.py": "edcb45e6eb71bab0e5792363fc3944e218b2c59795ba9a6ec2f011dd7e7e737e",
+  "packages/evals/src/threetears/evals/analysis/run_ending.py": "a33171397c31865ca388121ae8b692fb0941bf89396b82d9c5e25be534efe9d3",
+  "packages/evals/src/threetears/evals/analysis/significance.py": "b2364503f42beb847517dadb0353cd9febb2a8eb13cd81f59bd15c9e46cabb5d",
+  "packages/evals/src/threetears/evals/analysis/stats.py": "f3d44f8ef08f0ca1e9f0b355a3b3d533d095ee1e51ee7f389b001c5989c9c78f",
+  "packages/evals/src/threetears/evals/analysis/summary.py": "f9902074a4b969bca03643340d4e599c9801dabb140d30fc706c1b95fe14407f",
+  "packages/evals/src/threetears/evals/kernel/candidate_kind.py": "ef8bd2fdbf042d1e1c2370c2f527fbb29dbe6d97badf9d51a7f953da198ad12d",
+  "packages/evals/src/threetears/evals/kernel/job_leases.py": "36637da36ae9811db9881d92ee90bb90fb56bb332a5bd98b5daf21388b7f9a91",
+  "packages/evals/src/threetears/evals/kernel/offload.py": "c6a5d021ce9d2beea833370e95016e25f77112710dda4da2b96ac981c5edec64",
+  "packages/evals/src/threetears/evals/kernel/result_condition.py": "cc5edd76fcc9b4cd27ad5ffb31a4d04ad73171bd75cf83acc0502c9b18a21923",
+  "packages/evals/src/threetears/evals/kernel/result_reading.py": "71f4d77ae758807031efced4b07a009cba643fce1255edc1cfe1361790fb078d",
+  "packages/evals/src/threetears/evals/ops/jobs.py": "54bef61058ef9191f2bb7955a00b3c7364ceae3af53793ea71b634c3ecb323a6",
+  "packages/evals/src/threetears/evals/ops/resume.py": "b7114fbb5ff15e33c10aaf64ba6fb46c5a6161755318ac35ea25cf5a3d91ad33",
+  "packages/evals/src/threetears/evals/ops/runs.py": "03f84517e5bf6bddbee3569614b5b6d05fdf81961489a93c20ecfb19bf8e813e",
+  "packages/evals/src/threetears/evals/ops/sweeps.py": "bef44a764437e1763826a6327ca479b435a9f53075412f1d3c5f1848c1d78319",
+  "packages/evals/src/threetears/evals/quick/continuation.py": "0cfeaddae7494ce0f99970f4d87f62d8031c5ac6a87855a2feb6ceaed846f0a6",
+  "packages/evals/src/threetears/evals/quick/contract.py": "982f0ce16f76ca541af7419c737a1016ac73dc47bebc0a0d5cd1879ba25b5294",
+  "packages/evals/src/threetears/evals/quick/graders.py": "ea8fbbd39551489ab675e7231a5938de06d5fa87aee924b9f4a08a7b25d79ed8",
+  "packages/evals/src/threetears/evals/quick/one_call.py": "8c8499502c6faa7ebe1fe3e4c17ed9a8f0471a5d358eb96f4898615746985ed2",
+  "packages/evals/src/threetears/evals/quick/result.py": "61ad306429eb1c6b932884eb7fce146644e6ff4b16b6b9007d53cd0e4a399c64",
+  "packages/evals/src/threetears/evals/run/arm_schedule.py": "a936e56efa711b0baf49d44b93f3b06639ddbdf6bcb82afce660a5b9c0f0d922",
+  "packages/evals/src/threetears/evals/run/budget.py": "eb8737dd46c89cfeaf471a5b27d63b7bdb56cc691f5dc6841a96b58390685e6b",
+  "packages/evals/src/threetears/evals/run/executor.py": "efcd8d0a343c8d77e89312ed63b6d392b23429725f5fe3a323ecb63d559b5d9c",
+  "packages/evals/src/threetears/evals/run/job_work.py": "2ed2153344e1e49352f4b12842d206558b968bcd3d2fd0552bc7c02fde6680de",
+  "packages/evals/src/threetears/evals/run/jobs.py": "d18c0fdd2d8659f7a8af474564ed127fea7e0d41834226975e9b202636e55035",
+  "packages/evals/src/threetears/evals/run/launch.py": "7125f2f60bc4b6d0712446eb5938b21d8be69f6258721122cc609f010b1e8f14",
+  "packages/evals/src/threetears/evals/run/launch_job.py": "a2cdd289a0f7e922dc88f069bd33b1d13ffdd427509e978fd84e8906a3dcc751",
+  "packages/evals/src/threetears/evals/run/lifecycle.py": "6e1047477fda41b9199466cfb80f8c2357b4645055ff4ea1ca62a4929cd0d289",
+  "packages/evals/src/threetears/evals/run/reads.py": "72ed25b68da6b25bea9f16fe94df0a3bbde57c2daa5f8ea6d9fe6edfc271fc4c",
+  "packages/evals/src/threetears/evals/run/resume.py": "3dcdbe373ceae414b1a3b8867373c83bd649173b1120129e98196bdd21ceaaf2",
+  "packages/evals/src/threetears/evals/run/runner.py": "374c962ea7b37427f50e828463ea442632b3dc659761216671a07268e0b36a27",
+  "packages/evals/src/threetears/evals/schema/hashing.py": "536ffbf619acc5e66bdeb4484f7a27bca40ad8ca948d7feb17c135aae2e6cb9c",
+  "packages/evals/tests/engine_take_up.py": "31109f3f2a8bc164f9ad0524cdee51501d4a4b7230cfe2d949c4cf4359c02566",
+  "packages/evals/tests/null_newcomers.py": "60aac089acaef7fe6c151cf6ac97bb9357d7bb488ca89825eff7915b235f74f2",
+  "packages/evals/tests/stats_certificate.py": "73e3caf244b735aedd18f07d7994f54e561428578722719e505e4d6207c46442",
+  "packages/evals/tests/test_certified_simulations.py": "81d982125df16dc8df97f175aed01bbd6cef50b855b988b1e6ce0d58176d9342"
+ },
+ "pool_request": "cb92ce07b1964346814cca5a211db083",
+ "wall_s": 197,
+ "claims": [
+  {
+   "id": "small-n.once.binary",
+   "says": "Under the binary null a question's primary read once at twelve cases separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 19,
+   "replicates": 4000,
+   "bounds": [
+    0.0028621598060565735,
+    0.007407816996075678
+   ],
+   "figure": 0.007407816996075678,
+   "holds": true,
+   "seeds": "once-binary-<shard>-<index>, shards 0-19 of 200, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.binary.separates",
+   "says": "Under the binary null a question's primary continued from eight cases to five reads, each add sized from the reading, separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 169,
+   "replicates": 6000,
+   "bounds": [
+    0.024127674878184686,
+    0.03267264092859151
+   ],
+   "figure": 0.03267264092859151,
+   "holds": true,
+   "seeds": "continued-binary-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.binary.strong-better",
+   "says": "Under the binary null, over those reads, the evidence for v2 ever reaches 10 at most one time in ten (Ville).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 168,
+   "replicates": 6000,
+   "bounds": [
+    0.02397313812547152,
+    0.03249404315316334
+   ],
+   "figure": 0.03249404315316334,
+   "holds": true,
+   "seeds": "continued-binary-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.binary.strong-worse",
+   "says": "Under the binary null, over those reads, the evidence against v2 ever reaches 10 at most one time in ten (Ville).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 189,
+   "replicates": 6000,
+   "bounds": [
+    0.02722615158476338,
+    0.03623691698833581
+   ],
+   "figure": 0.03623691698833581,
+   "holds": true,
+   "seeds": "continued-binary-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.once.onramp",
+   "says": "Under the onramp null a question's primary read once at twelve cases separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "once-onramp-<shard>-<index>, shards 0-19 of 200, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.onramp.separates",
+   "says": "Under the onramp null a question's primary continued from eight cases to five reads, each add sized from the reading, separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 90,
+   "replicates": 6000,
+   "bounds": [
+    0.012078566856499322,
+    0.018405777343596552
+   ],
+   "figure": 0.018405777343596552,
+   "holds": true,
+   "seeds": "continued-onramp-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.onramp.strong-better",
+   "says": "Under the onramp null, over those reads, the evidence for v2 ever reaches 10 at most one time in ten (Ville).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 134,
+   "replicates": 6000,
+   "bounds": [
+    0.018744753722895767,
+    0.02639608711899183
+   ],
+   "figure": 0.02639608711899183,
+   "holds": true,
+   "seeds": "continued-onramp-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.onramp.strong-worse",
+   "says": "Under the onramp null, over those reads, the evidence against v2 ever reaches 10 at most one time in ten (Ville).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 90,
+   "replicates": 6000,
+   "bounds": [
+    0.012078566856499322,
+    0.018405777343596552
+   ],
+   "figure": 0.018405777343596552,
+   "holds": true,
+   "seeds": "continued-onramp-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.once.skewed",
+   "says": "Under the skewed null a question's primary read once at twelve cases separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 0,
+   "replicates": 4000,
+   "bounds": [
+    0.0,
+    0.0009217947494841172
+   ],
+   "figure": 0.0009217947494841172,
+   "holds": true,
+   "seeds": "once-skewed-<shard>-<index>, shards 0-19 of 200, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.skewed.separates",
+   "says": "Under the skewed null a question's primary continued from eight cases to five reads, each add sized from the reading, separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 214,
+   "replicates": 6000,
+   "bounds": [
+    0.031117656464574102,
+    0.04067398946735362
+   ],
+   "figure": 0.04067398946735362,
+   "holds": true,
+   "seeds": "continued-skewed-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.skewed.strong-better",
+   "says": "Under the skewed null, over those reads, the evidence for v2 ever reaches 10 at most one time in ten (Ville).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 134,
+   "replicates": 6000,
+   "bounds": [
+    0.018744753722895767,
+    0.02639608711899183
+   ],
+   "figure": 0.02639608711899183,
+   "holds": true,
+   "seeds": "continued-skewed-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.continued.skewed.strong-worse",
+   "says": "Under the skewed null, over those reads, the evidence against v2 ever reaches 10 at most one time in ten (Ville).",
+   "test": "at_most",
+   "target": 0.1,
+   "count": 166,
+   "replicates": 6000,
+   "bounds": [
+    0.02366418250362412,
+    0.032136730707933714
+   ],
+   "figure": 0.032136730707933714,
+   "holds": true,
+   "seeds": "continued-skewed-<shard>-<index>, shards 0-39 of 150, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.interval.misses",
+   "says": "The primary's interval, read once at sixteen cases at a true difference of 0.3, misses it at most the 10% its 90% states.",
+   "test": "at_most",
+   "target": 0.09999999999999998,
+   "count": 97,
+   "replicates": 4000,
+   "bounds": [
+    0.019708070645416922,
+    0.029503734099089407
+   ],
+   "figure": 0.029503734099089407,
+   "holds": true,
+   "seeds": "cover-<shard>-<index>, shards 0-19 of 200, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.interval.misses-low",
+   "says": "Each end of that interval is a 95% one-sided bound: it misses with its lower end above the true difference at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 9,
+   "replicates": 4000,
+   "bounds": [
+    0.001029343313298005,
+    0.0042668850646617185
+   ],
+   "figure": 0.0042668850646617185,
+   "holds": true,
+   "seeds": "cover-<shard>-<index>, shards 0-19 of 200, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "small-n.interval.misses-high",
+   "says": "Each end of that interval is a 95% one-sided bound: it misses with its upper end below it at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 88,
+   "replicates": 4000,
+   "bounds": [
+    0.017681119484572058,
+    0.027035182632147714
+   ],
+   "figure": 0.027035182632147714,
+   "holds": true,
+   "seeds": "cover-<shard>-<index>, shards 0-19 of 200, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "rereadable.continued",
+   "says": "With no question, a comparison of arms passing half the time continued from 20 cases to five runs, each add sized from the reading, separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 399,
+   "replicates": 10000,
+   "bounds": [
+    0.03614841233661936,
+    0.043922455552674655
+   ],
+   "figure": 0.043922455552674655,
+   "holds": true,
+   "seeds": "continued-<shard>-<index>, shards 0-199 of 50, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "rereadable.rerun",
+   "says": "Re-running every case on each run instead, read by the same bet, separates more often than \u03b1: it is not one bet and loses the bound.",
+   "test": "above",
+   "target": 0.05,
+   "count": 244,
+   "replicates": 2000,
+   "bounds": [
+    0.10796831629065062,
+    0.13714997647433752
+   ],
+   "figure": 0.10796831629065062,
+   "holds": true,
+   "seeds": "rerun-<shard>-<index>, shards 0-39 of 50, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "restated-as-product.small-once",
+   "says": "Through Eval.run, a question's single read at twelve cases, under each null reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
+   "test": "every",
+   "target": 1.0,
+   "count": 120,
+   "replicates": 120,
+   "bounds": [
+    0.9697270274225804,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "the first newcomers of the restated claim's own seeds, through the product on the pool",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "restated-as-product.small-continued",
+   "says": "Through Eval.run, a question's comparison continued to five reads, under each null reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
+   "test": "every",
+   "target": 1.0,
+   "count": 90,
+   "replicates": 90,
+   "bounds": [
+    0.9598410803842248,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "the first newcomers of the restated claim's own seeds, through the product on the pool",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "restated-as-product.small-cover",
+   "says": "Through Eval.run, a question's interval at a true difference of 0.3 reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
+   "test": "every",
+   "target": 1.0,
+   "count": 60,
+   "replicates": 60,
+   "bounds": [
+    0.9403705077138325,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "the first newcomers of the restated claim's own seeds, through the product on the pool",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "restated-as-product.rereadable-continued",
+   "says": "Through Eval.run, a comparison continued with no question reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
+   "test": "every",
+   "target": 1.0,
+   "count": 60,
+   "replicates": 60,
+   "bounds": [
+    0.9403705077138325,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "the first newcomers of the restated claim's own seeds, through the product on the pool",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "restated-as-product.rereadable-rerun",
+   "says": "Through Eval.run, a comparison re-run whole with no question reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
+   "test": "every",
+   "target": 1.0,
+   "count": 30,
+   "replicates": 30,
+   "bounds": [
+    0.8842966917779722,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "the first newcomers of the restated claim's own seeds, through the product on the pool",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "watched.drained.horizon-k3",
+   "says": "A drained watcher (arms alike in speed, k = 3, stopped when an arm leads, up to five runs) separates at most \u03b1: the bet over any 420 pairs of the null, each case the mean of 3 fair coins, ever reaches 1/\u03b1 at most \u03b1, and each drained reading is a prefix of such a path (the watched.drained mechanism claims).",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 395,
+   "replicates": 10000,
+   "bounds": [
+    0.035767011895795564,
+    0.04350411345427113
+   ],
+   "figure": 0.04350411345427113,
+   "holds": true,
+   "seeds": "horizon-k3-<index>, 0-9999, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "watched.drained.horizon-k1",
+   "says": "A drained watcher (arms of different speed, k = 1, stopped blind, two runs) separates at most \u03b1: the bet over any 120 pairs of the null, each case the mean of 1 fair coins, ever reaches 1/\u03b1 at most \u03b1, and each drained reading is a prefix of such a path (the watched.drained mechanism claims).",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 383,
+   "replicates": 10000,
+   "bounds": [
+    0.03462345371082365,
+    0.04224844633099606
+   ],
+   "figure": 0.04224844633099606,
+   "holds": true,
+   "seeds": "horizon-k1-<index>, 0-9999, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "watched.drained.alike-apart",
+   "says": "Watchers whose arms are alike-apart, every stop drained, through Eval.run: every reading is the bet over the longest complete prefix of the committed order, no cell draws twice, and the product separates only where the bet over its whole committed path does.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "alike-alike-apart-<index>, through the product",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "watched.drained.alike-slow-wrong",
+   "says": "Watchers whose arms are alike-slow-wrong, every stop drained, through Eval.run: every reading is the bet over the longest complete prefix of the committed order, no cell draws twice, and the product separates only where the bet over its whole committed path does.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "alike-alike-slow-wrong-<index>, through the product",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "watched.drained.b-slower-4x",
+   "says": "Watchers whose arms are b-slower-4x, every stop drained, through Eval.run: every reading is the bet over the longest complete prefix of the committed order, no cell draws twice, and the product separates only where the bet over its whole committed path does.",
+   "test": "every",
+   "target": 1.0,
+   "count": 150,
+   "replicates": 150,
+   "bounds": [
+    0.9757074028338908,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "drained-b-slower-4x-<index>, through the product",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "watched.drained.b-slower-20x",
+   "says": "Watchers whose arms are b-slower-20x, every stop drained, through Eval.run: every reading is the bet over the longest complete prefix of the committed order, no cell draws twice, and the product separates only where the bet over its whole committed path does.",
+   "test": "every",
+   "target": 1.0,
+   "count": 150,
+   "replicates": 150,
+   "bounds": [
+    0.9757074028338908,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "drained-b-slower-20x-<index>, through the product",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "watched.cut.b-slower-4x",
+   "says": "Watchers whose arms are b-slower-4x, three stops in ten cut by a second interrupt, separate below 2\u03b1: a continuation draws each cut cell afresh, which can lean the reading, and the print counts them.",
+   "test": "share_below",
+   "target": 0.1,
+   "count": 22,
+   "replicates": 1000,
+   "bounds": [
+    0.013837414172072945,
+    0.03311966451498799
+   ],
+   "figure": 0.022,
+   "holds": true,
+   "seeds": "cut-b-slower-4x-<index>, 0-999, through the product",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "watched.cut.b-slower-20x",
+   "says": "Watchers whose arms are b-slower-20x, three stops in ten cut by a second interrupt, separate below 2\u03b1: a continuation draws each cut cell afresh, which can lean the reading, and the print counts them.",
+   "test": "share_below",
+   "target": 0.1,
+   "count": 35,
+   "replicates": 1000,
+   "bounds": [
+    0.024497527894758793,
+    0.04834238161422172
+   ],
+   "figure": 0.035,
+   "holds": true,
+   "seeds": "cut-b-slower-20x-<index>, 0-999, through the product",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "5698481404f84e55d97d60235d31b909b56403f63d05e5fb9e0a58d920c60484"
+  },
+  {
+   "id": "engine.drain.fixed.alike-20x.check",
+   "says": "An engine comparison (fixed, alike-20x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.05276: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-fixed-alike-20x-check-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.fixed.alike-20x.grade",
+   "says": "An engine comparison (fixed, alike-20x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.05276: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-fixed-alike-20x-grade-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.second.fixed.alike-20x.grade",
+   "says": "An engine comparison (fixed, alike-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.05276, one-sided at 0.001).",
+   "test": "no_lean",
+   "target": 0.05275542550583546,
+   "count": 37,
+   "replicates": 800,
+   "bounds": [
+    0.03277009874145988,
+    0.06318876149180358
+   ],
+   "figure": 0.8154790682110516,
+   "holds": true,
+   "seeds": "engine-fixed-alike-20x-grade-second-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.fixed.b-slower-20x.check",
+   "says": "An engine comparison (fixed, b-slower-20x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.05276: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-fixed-b-slower-20x-check-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.fixed.b-slower-20x.grade",
+   "says": "An engine comparison (fixed, b-slower-20x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.05276: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-fixed-b-slower-20x-grade-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.second.fixed.b-slower-20x.grade",
+   "says": "An engine comparison (fixed, b-slower-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.05276, one-sided at 0.001).",
+   "test": "no_lean",
+   "target": 0.05275542550583546,
+   "count": 52,
+   "replicates": 800,
+   "bounds": [
+    0.04892252617738847,
+    0.08436836222486171
+   ],
+   "figure": 0.07406075789307286,
+   "holds": true,
+   "seeds": "engine-fixed-b-slower-20x-grade-second-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.fixed.b-slower-4x.check",
+   "says": "An engine comparison (fixed, b-slower-4x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.05276: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-fixed-b-slower-4x-check-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.fixed.b-slower-4x.grade",
+   "says": "An engine comparison (fixed, b-slower-4x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.05276: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-fixed-b-slower-4x-grade-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.second.fixed.b-slower-4x.grade",
+   "says": "An engine comparison (fixed, b-slower-4x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.05276, one-sided at 0.001).",
+   "test": "no_lean",
+   "target": 0.05275542550583546,
+   "count": 33,
+   "replicates": 800,
+   "bounds": [
+    0.028561823291918226,
+    0.05744508151872613
+   ],
+   "figure": 0.9419976297340945,
+   "holds": true,
+   "seeds": "engine-fixed-b-slower-4x-grade-second-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.looks.alike-20x.check",
+   "says": "An engine comparison (looks, alike-20x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.04485: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-looks-alike-20x-check-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.looks.alike-20x.grade",
+   "says": "An engine comparison (looks, alike-20x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.04485: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-looks-alike-20x-grade-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.second.looks.alike-20x.grade",
+   "says": "An engine comparison (looks, alike-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
+   "test": "no_lean",
+   "target": 0.044852748968643524,
+   "count": 25,
+   "replicates": 500,
+   "bounds": [
+    0.03261518014932974,
+    0.07292762165047756
+   ],
+   "figure": 0.3177116682870147,
+   "holds": true,
+   "seeds": "engine-looks-alike-20x-grade-second-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.cut.looks.b-slower-20x.check",
+   "says": "An engine comparison (looks, b-slower-20x, check) whose interrupts every one cut leans the reading (exact rate 0.04485, one-sided at 0.001).",
+   "test": "leans",
+   "target": 0.044852748968643524,
+   "count": 67,
+   "replicates": 500,
+   "bounds": [
+    0.10537896426139429,
+    0.16702992361382224
+   ],
+   "figure": 2.8224383068675786e-15,
+   "holds": true,
+   "seeds": "engine-looks-b-slower-20x-check-cut-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.looks.b-slower-20x.check",
+   "says": "An engine comparison (looks, b-slower-20x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.04485: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-looks-b-slower-20x-check-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.cut.looks.b-slower-20x.grade",
+   "says": "An engine comparison (looks, b-slower-20x, grade) whose interrupts every one cut leans the reading (exact rate 0.04485, one-sided at 0.001).",
+   "test": "leans",
+   "target": 0.044852748968643524,
+   "count": 87,
+   "replicates": 500,
+   "bounds": [
+    0.1417799679894325,
+    0.21013083400901872
+   ],
+   "figure": 4.111834560295608e-27,
+   "holds": true,
+   "seeds": "engine-looks-b-slower-20x-grade-cut-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.looks.b-slower-20x.grade",
+   "says": "An engine comparison (looks, b-slower-20x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.04485: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-looks-b-slower-20x-grade-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.second.looks.b-slower-20x.grade",
+   "says": "An engine comparison (looks, b-slower-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
+   "test": "no_lean",
+   "target": 0.044852748968643524,
+   "count": 23,
+   "replicates": 500,
+   "bounds": [
+    0.029380175392402348,
+    0.06822542788123881
+   ],
+   "figure": 0.4805241197428548,
+   "holds": true,
+   "seeds": "engine-looks-b-slower-20x-grade-second-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.looks.b-slower-4x.check",
+   "says": "An engine comparison (looks, b-slower-4x, check) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.04485: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-looks-b-slower-4x-check-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.drain.looks.b-slower-4x.grade",
+   "says": "An engine comparison (looks, b-slower-4x, grade) whose interrupts drain draws every cell once and separates exactly where the uninterrupted reading of its first draws does, so it separates at the exact rate 0.04485: no lean.",
+   "test": "every",
+   "target": 1.0,
+   "count": 40,
+   "replicates": 40,
+   "bounds": [
+    0.9119026971211979,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "engine-looks-b-slower-4x-grade-drain-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  },
+  {
+   "id": "engine.second.looks.b-slower-4x.grade",
+   "says": "An engine comparison (looks, b-slower-4x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
+   "test": "no_lean",
+   "target": 0.044852748968643524,
+   "count": 24,
+   "replicates": 500,
+   "bounds": [
+    0.03099316879350482,
+    0.07058079625733021
+   ],
+   "figure": 0.3963097620653791,
+   "holds": true,
+   "seeds": "engine-looks-b-slower-4x-grade-second-<index>, through the engine",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "engine",
+    "engine-simulation",
+    "certification"
+   ],
+   "digest": "c7ec68e2b5839dd3be516ecc8f3d1d5b97f1729db7d1073cbd7d0456782a76f4"
+  }
+ ]
+}
