@@ -95,11 +95,11 @@ class TestTheReportCarriesTypedVerdicts:
         typed = comparison.verdicts(kind="contrast")
         # Each cell is its verdict's words; an undecided one the bet read says where the arm stands, in the cell too.
         assert [(verdict.arm, verdict.words) for verdict in typed] == [
-            ("same", "same level with current, not decided"),
+            ("same", "same level with current, undecided"),
             ("worse", "worse worse than current"),
         ]
         assert [row["verdict"] for row in table.values()] == [
-            "same level with current, not decided",
+            "same level with current, undecided",
             "worse worse than current",
         ]
         by_arm = {verdict.arm: verdict for verdict in typed}

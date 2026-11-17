@@ -69,7 +69,7 @@ CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encodi
 #: The result's sentences on every surface: the decision, then the figures it rests on, as the contrasts table
 #: prints them.
 _LEAD = (
-    "Accuracy: v2 behind v1, not decided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
     "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
     "was right on 90 for v1 and 89 for v2."
 )
@@ -164,8 +164,8 @@ async def test_3b_a_margin_lets_total_read_equivalent(monkeypatch: pytest.Monkey
         "not_separated"
     }
     assert (
-        "| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -12 to +13 pts | v2 level with v1, not decided (a "
-        "secondary reading, which the question does not decide); immaterial: the observed delta is inside the margin of "
+        "| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -12 to +13 pts | v2 level with v1, undecided (a "
+        "secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of "
         "±20 pts on Total score, which does not show the true difference is that small | 30 paired |"
     ) in campaign_report_markdown(result.page).splitlines()
 

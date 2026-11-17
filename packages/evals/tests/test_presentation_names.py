@@ -75,7 +75,7 @@ from threetears.evals.analysis.report.model import (
     TrialBlock,
 )
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.style import CANNOT_TELL_APART, CHECK_LINK_TITLE, GLOSSARY, lint_prose
+from threetears.evals.analysis.style import CANNOT_TELL_APART, CHECK_LINK_TITLE, EVIDENCE_TERM, GLOSSARY, lint_prose
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.report_doc import ReportDoc, ReportFinding
@@ -314,10 +314,10 @@ def test_the_lead_links_the_graded_evidence_and_the_verdict_header_links_verdict
     assert verdicts and all(f'title="{html.escape(GLOSSARY["verdict"])}"' in cell for cell in verdicts)
 
 
-def test_the_verdict_line_links_no_term_but_the_undecided_reading(rungs: dict[str, _Rung]) -> None:
+def test_the_verdict_line_links_no_term_but_the_graded_evidence(rungs: dict[str, _Rung]) -> None:
     """Discodon's 0.94.0 pass: a one-arm page's bold verdict ("deepseek-v4.1-flash passed 152 of 180 trials on 60
     cases") linked "passed" and "cases", a link inside the page's answer. The verdict links no term of art but the
-    undecided reading (rung 3's, which the lead must define where it is first read); each other term is linked at its
+    graded evidence (rung 3's, which the lead must define where it is first read); each other term is linked at its
     next use. A goal check's name there still links the check's entry
     (``test_a_lead_s_name_links_its_glossary_entry_and_no_attribute_carries_the_expression``)."""
     page = rungs["rung1"].html
@@ -329,11 +329,11 @@ def test_the_verdict_line_links_no_term_but_the_undecided_reading(rungs: dict[st
         link for verdict in verdicts for link in re.findall(r'<a [^>]*title="([^"]*)"', verdict) if link in definitions
     ], verdicts
     assert _first_uses(page).get("passed") == "linked", "passed is linked where it is next read"
-    undecided = html.escape(GLOSSARY[CANNOT_TELL_APART])
+    graded = html.escape(GLOSSARY[EVIDENCE_TERM])
     rung3 = rungs["rung3"].html
     (lead,) = re.findall(r'<p class="verdict"[^>]*>.*?</p>', rung3[: rung3.index("</header>")], flags=re.DOTALL)
     links = [link for link in re.findall(r'<a [^>]*title="([^"]*)"', lead) if link in definitions]
-    assert links and set(links) == {undecided}, links
+    assert links and set(links) == {graded}, links
 
 
 def test_the_first_screen_s_judge_line_links_the_judged_scale(rungs: dict[str, _Rung]) -> None:

@@ -153,7 +153,7 @@ class TestHowManyCasesEquivalenceTakes:
         graders = [*(["label"] if expected else []), grader(correct, margin=margin)]
         scope = f"how-many-{margin}-{expected}"
         assert (await self._verdict(first - 1, graders, reading="correct", scope=scope)).startswith(
-            "cheaper level with current, not decided"
+            "cheaper level with current, undecided"
         )
         assert (await self._verdict(first, graders, reading="correct", scope=scope)).startswith(
             "cheaper and current equivalent"
@@ -163,7 +163,7 @@ class TestHowManyCasesEquivalenceTakes:
         """A 1-to-5 score within 0.5, the only reading the family tests."""
         graders = [grader(rating, margin=0.5, range=(1, 5))]
         assert (await self._verdict(31, graders, reading="rating", scope="how-many-rating")).startswith(
-            "cheaper level with current, not decided"
+            "cheaper level with current, undecided"
         )
         assert (await self._verdict(32, graders, reading="rating", scope="how-many-rating")).startswith(
             "cheaper and current equivalent"
@@ -198,7 +198,7 @@ class TestAPassFailInterval:
 class TestNoMargin:
     async def test_no_contrast_reads_equivalent_and_the_report_says_why_in_one_line(self) -> None:
         comparison = await _compare()
-        assert _row(comparison, "correct")["verdict"].startswith("cheaper behind current, not decided")
+        assert _row(comparison, "correct")["verdict"].startswith("cheaper behind current, undecided")
         (line,) = _no_margin_lines(comparison)
         assert "cannot tell apart never means the arms are alike" in line
         # One sentence, then each reading once in a table, with how it takes a margin.

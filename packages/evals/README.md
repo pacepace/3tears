@@ -94,7 +94,7 @@ pip install, fetch the examples from the repository first
 
 - **A verdict, not a mean.** Every version is run over the same frozen cases and tested case by case against a control,
   and a small test still gets a fair read: where the candidate stands, by how much, the interval, and how strong the
-  evidence is ("v2 ahead of v1, not decided ... the evidence that v2 is better is moderate"), never "no difference"
+  evidence is ("v2 ahead of v1, undecided ... the evidence that v2 is better is moderate"), never "no difference"
   ([why](docs/design.md#numbers)).
 - **Guardrails apart from capability.** What a version must never do is decided on its own, so a gain cannot pay for
   a breach ([why](docs/design.md#guardrails-are-a-pillar-apart-from-capability)).

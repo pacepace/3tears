@@ -9,7 +9,7 @@ packages (bumped in lock-step).
 ### evals: a small comparison gets a fair read: where the arm stands, how strongly, and when it is decided
 
 **Changed:** a comparison an `Eval` runs leads on the estimate, its interval and the direction, and grades its
-evidence every time, at any number of cases. Its first line reads `Accuracy: v2 ahead of v1, not decided. Over 8
+evidence every time, at any number of cases. Its first line reads `Accuracy: v2 ahead of v1, undecided. Over 8
 paired cases, v2 is 29 points ahead of v1. The interval allows v2 to be as much as 24 points worse or 60 better. The
 evidence that v2 is better is moderate (3.6).`, never "the evidence cannot tell v2 and v1 apart". The evidence is the
 e-value the bet holds now (`stats.bet_evidence`, new): weak below 3, moderate from 3, strong from 10

@@ -650,7 +650,7 @@ def _contrast_words(
 ) -> str:
     """A tested contrast's verdict in words: the verdict naming the arm and the control (``arms``) by label, why where
     there is more to say, its margin, materiality. An undecided contrast the bet read, and every secondary reading of a
-    family decided on its primary, says where the arm stands (``v2 ahead of v1, not decided``), never that the evidence
+    family decided on its primary, says where the arm stands (``v2 ahead of v1, undecided``), never that the evidence
     cannot tell the arms apart."""
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
     undecided_bet = comparison.verdict == "not_separated" and (comparison.evidence_better is not None or secondary)

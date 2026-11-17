@@ -209,9 +209,9 @@ StandingSide = Literal["ahead", "behind", "level"]
 #: Filled by :func:`standing_words`.
 _STANDING_WORDS = worded(
     {
-        "ahead": "{arm} ahead of {control}{better_end}, not decided",
-        "behind": "{arm} behind {control}{better_end}, not decided",
-        "level": "{arm} level with {control}, not decided",
+        "ahead": "{arm} ahead of {control}{better_end}, undecided",
+        "behind": "{arm} behind {control}{better_end}, undecided",
+        "level": "{arm} level with {control}, undecided",
     },
     StandingSide,
     "an undecided standing",
@@ -238,7 +238,7 @@ def standing_side(delta: float | None, *, higher_is_better: bool) -> StandingSid
 
 
 def standing_words(side: StandingSide, arm: str, control: str, *, higher_is_better: bool = True) -> str:
-    """An undecided contrast the bet read, in words: ``v2 ahead of v1, not decided``.
+    """An undecided contrast the bet read, in words: ``v2 ahead of v1, undecided``.
 
     :param side: Where the arm stands (:func:`standing_side`).
     :param arm: The arm read against the control, as the page names it.

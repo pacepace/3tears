@@ -99,6 +99,47 @@ def test_the_evidence_is_graded_in_one_owner_s_words_at_three_and_ten() -> None:
     ]
 
 
+def _tilted_newcomer(rng: random.Random, null: _Null) -> bool:
+    """The bet alone, staked toward the asked side, over a newcomer's differences appended and kept: read at eight
+    pairs and, while it does not separate, after each add of four pairs plus up to sixteen more the nearer its p came
+    to zero, at most five reads. Pass/fail once a case at a share drawn from 0.1 to 0.5 on both arms, or the skewed
+    null's differences (+1/3 three cases in four, -1 the fourth)."""
+    diffs: list[float] = []
+    n = 8
+    for _ in range(5):
+        while len(diffs) < n:
+            if null == "skewed":
+                diffs.append(-1.0 if rng.random() < 0.25 else 1 / 3)
+            else:
+                share = rng.uniform(0.1, 0.5)
+                diffs.append(float(rng.random() < share) - float(rng.random() < share))
+        control, arm = [max(0.0, -d) for d in diffs], [max(0.0, d) for d in diffs]
+        p = bounded_separation_p(
+            control, arm, paired=True, value_range=_RATE, mixture=True, toward=DECLARED_DIRECTION_SHARE
+        )
+        assert p is not None
+        if p < SIGNIFICANCE_ALPHA:
+            return True
+        n += 4 + int(16 * (1.0 - min(1.0, p)))
+    return False
+
+
+@pytest.mark.parametrize(("null", "seeded_at"), [("binary", 136), ("skewed", 149)])
+def test_the_tilted_bet_alone_read_up_to_five_times_separates_under_the_null_at_most_alpha(
+    null: _Null, seeded_at: int
+) -> None:
+    """The bet itself, over many newcomers (the product's own reads are simulated below, through ``Eval.run``): 5,000
+    seeded newcomers a null, each reading up to five times with adds sized from the data, separate no more often than
+    α on the Clopper-Pearson 95% upper bound. As seeded: 136 of 5,000 pass/fail (2.7%, upper 3.2%) and 149 under the
+    skewed null (3.0%, upper 3.5%), pinned to two either side so a change to the bet that moves them is seen."""
+    rng = random.Random(f"tilted-alone-{null}")
+    replicates = 5000
+    separated = sum(_tilted_newcomer(rng, null) for _ in range(replicates))
+    bounds = exact_rate_interval(separated, replicates)
+    assert bounds is not None and bounds[1] < SIGNIFICANCE_ALPHA
+    assert abs(separated - seeded_at) <= 2
+
+
 # --- the first screen at eight cases ---------------------------------------------------------------------------------
 
 
@@ -148,7 +189,7 @@ def _family(result: Result) -> ComparisonFamily:
             3,
             [1, 0, 1, 2, 0, 1, 2, 1],
             [3, 1, 2, 2, 1, 3, 1, 2],
-            "smalln: Passed score: v2 ahead of v1, not decided. Over 8 paired cases, v2 is 29 points ahead of v1. The "
+            "smalln: Passed score: v2 ahead of v1, undecided. Over 8 paired cases, v2 is 29 points ahead of v1. The "
             "interval allows v2 to be as much as 24 points worse or 60 better. The evidence that v2 is better is "
             "moderate (3.6). Of 24 trials each, Passed score was met on 8 for v1 and 15 for v2.",
         ),
@@ -156,7 +197,7 @@ def _family(result: Result) -> ComparisonFamily:
             3,
             [1, 2, 1, 0, 2, 1, 1, 0],
             [2, 1, 1, 1, 2, 0, 2, 0],
-            "smalln: Passed score: v2 ahead of v1, not decided. Over 8 paired cases, v2 is 4 points ahead of v1. The "
+            "smalln: Passed score: v2 ahead of v1, undecided. Over 8 paired cases, v2 is 4 points ahead of v1. The "
             "interval allows v2 to be as much as 39 points worse or 44 better. The evidence that v2 is better is weak "
             "(1.1). Of 24 trials each, Passed score was met on 8 for v1 and 9 for v2.",
         ),
@@ -183,7 +224,7 @@ async def test_with_no_question_the_read_stays_two_sided_and_still_leads_on_the_
     """With no question asked nothing is declared: the even hedge at α, its interval at 95%, and the same lead."""
     result = await _tallied_result(3, [1, 0, 1, 2, 0, 1, 2, 1], [3, 1, 2, 2, 1, 3, 1, 2], question=None)
     printed = str(result).splitlines()[0]
-    assert printed.startswith("smalln: Exploratory: Passed score: v2 ahead of v1, not decided. Over 8 paired cases")
+    assert printed.startswith("smalln: Exploratory: Passed score: v2 ahead of v1, undecided. Over 8 paired cases")
     family = _family(result)
     assert family.primary is None and family.interval_level == pytest.approx(0.95)
 

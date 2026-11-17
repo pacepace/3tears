@@ -1266,7 +1266,7 @@ _PER_SHARD = 50
 _CONTINUED_SEPARATED: tuple[int, ...] = (1, 3, 2, 2, 0, 1, 1, 2, 1, 2, 2, 2, 1, 1, 4, 2, 1, 1, 3, 0)
 
 #: How many of each re-run-everything shard's fifty newcomers separated, as seeded.
-_RERUN_SEPARATED: tuple[int, ...] = (2, 2, 6, 6, 4, 2, 3, 4, 9, 4, 3, 5)
+_RERUN_SEPARATED: tuple[int, ...] = (4, 6, 6, 5, 7, 10, 6, 4, 9, 5, 2, 7)
 
 
 def _shards(n: int) -> list[Any]:

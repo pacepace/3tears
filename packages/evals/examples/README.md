@@ -186,10 +186,11 @@ own `Model`, since a replay serves each recorded call once per model: `grid.py` 
 the first is the control, and v2 is read against it on every reading: the delta, its interval and a verdict.
 `question="Does v2 read the currency an invoice charges in right more often than v1?"` is the one sentence it
 answers, asked before any reading is seen: its measure is the first grader, `currency`, and the page quotes it. What
-the recorded run said: accuracy did not separate v2 from v1, and nothing else did.
+the recorded run said: v2 is a point behind v1 on accuracy, the evidence weak and nothing decided; the other readings
+are shown with their evidence and decide nothing, since the question asked about currency.
 
 ```text
-compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better.
+compare: Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.
 ```
 
 One v2 trial failed, its recorded error `the candidate raised ValidationError: 1 validation error for Invoice` on
@@ -204,11 +205,12 @@ which 3b, 3c, 3d and the grid's low-effort cells replay too.
 come out equivalent, the one verdict that says "good enough". The margin comes from the decision, fixed before any
 reading: a person checks every total before it is paid, so a prompt worse on `total` by under 20 points would still
 ship on its other fields. It is never read off the interval the run produced. 30 invoices narrow the interval on
-`total` only to 23 points either side, wider than this margin, so they cannot show equivalence even at a margin this
-wide; a margin this wide or tighter needs more invoices:
+`total` to 12 and 13 points either side, inside this margin; but the question asks about currency, so `total` is a
+secondary reading, shown against its margin and decided on nothing. A margin reads equivalent on the question's own
+reading:
 
 ```text
-| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -23 to +23 pts | cannot tell apart; immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -12 to +13 pts | v2 level with v1, undecided (a secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
 ```
 
 ### Rung 3c: a guardrail, `3-invoices/guardrail.py`
@@ -217,7 +219,7 @@ wide; a margin this wide or tighter needs more invoices:
 that fails each trial it fails, with its own held/breached reading against v1 on top, decided apart from the contrasts.
 It grades the fields as compare.py does, with no margin. The guardrail is undecided for v2, so it
 exits 4, its last line saying why in the report's words
-(`exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
+(`exit 4: Accuracy: v2 behind v1, undecided. ... The gate failed on guardrail No invented total score, v2 vs v1: undecided: ...`). The report's first
 screen quotes the question and leads on its measure, the classifier's accuracy, with the guardrail's warning beside
 it, and reads v2 against v1 in one row
 
@@ -225,7 +227,7 @@ it, and reads v2 against v1 in one row
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better.**
+**Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.**
 ...
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 ...

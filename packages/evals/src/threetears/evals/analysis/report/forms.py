@@ -2009,8 +2009,8 @@ class PageForms:
             if cell.margin is not None:
                 said.setdefault(-cell.margin, format_signed(-cell.margin))
                 said.setdefault(cell.margin, plus_signed(format_number(cell.margin), cell.margin))
-        # Zero on a money scale reads at the money cells' own places (``$0.000`` beside ``+$0.025``), as every other end
-        # there does; elsewhere zero reads whole.
+        # Zero on a money scale of differences is a change, so it reads at the money cells' own places (``$0.000``
+        # beside ``+$0.025``) as every other end there does; a scale of levels starts at zero whole (``$0``).
         money_places = max(
             (
                 len(text.rsplit(".", 1)[1])
@@ -2020,9 +2020,10 @@ class PageForms:
             ),
             default=0,
         )
+        differences = any(cell.zero_line or cell.margin is not None for cell in cells)
         said.setdefault(
             0.0,
-            (f"${spell_at(0.0, money_places)}" if money_places else with_unit(0.0, MONEY))
+            (f"${spell_at(0.0, money_places)}" if money_places and differences else with_unit(0.0, MONEY))
             if is_money(unit)
             else format_number(0.0),
         )

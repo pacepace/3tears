@@ -220,7 +220,7 @@ the render's):
 
 v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
 
-**Accuracy: v2 behind v1, not decided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.**
+**Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
@@ -262,7 +262,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   call, so every trial was lost.` when every arm's run failed having measured nothing); one arm (`triage passed 70 of
   90 trials on 30 cases. Cases that failed a trial: double-charge, …`, each case by the name its author gave it, else
   `case N`, N its place in the list of cases from 1); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
-  first grader reads: on the quick path, where the arm stands (`Accuracy: v2 behind v1, not decided.`), its change
+  first grader reads: on the quick path, where the arm stands (`Accuracy: v2 behind v1, undecided.`), its change
   over the paired cases (`Over 30 paired cases, v2 is 1 point behind v1.`), what the interval allows it to be (`The
   interval allows v2 to be as much as 14 points worse or 12 better.`, its level the table's header), how strong the
   evidence is (`The evidence that v2 is worse is weak (1.2).`) and what the measure was on each arm, in its own verb
@@ -518,7 +518,7 @@ under one rig. How its columns, and the `Statistics` fold under it, are computed
 
 Each verdict is printed naming both arms by label, never "the control", with a reading's better end in brackets
 where it is the lower one: `v2 better than v1`, `v2 worse than v1 (lower is better)`, `v2 and v1 equivalent, within
-the measure's margin`, and, undecided, `v2 ahead of v1, not decided` (or `behind`, or `level with`) where the quick
+the measure's margin`, and, undecided, `v2 ahead of v1, undecided` (or `behind`, or `level with`) where the quick
 path's bet read it, else `the evidence cannot tell v2 and v1 apart` (in a table cell, `cannot tell apart`). The
 verdict line names the reading first (`Accuracy: v2 better than v1`).
 
@@ -526,7 +526,7 @@ verdict line names the reading first (`Accuracy: v2 better than v1`).
 |---|---|---|
 | better / worse (typed `improved` / `regressed`) | adjusted p < 0.05, in that direction | act on it, unless the row says *immaterial* (below the measure's margin) |
 | equivalent | the paired difference is shown inside ± the measure's margin by TOST, corrected in the same family | treat the arms as interchangeable on this reading |
-| ahead of, behind or level with, not decided (typed `not_separated`, the quick path's bet) | the change so far, with its interval and graded evidence; the evidence has not cleared the bar, or the reading is secondary and decides nothing (the row says so) | read the interval and the evidence; add cases and run it again, which keeps the error; never read it as a tie |
+| ahead of, behind or level with, undecided (typed `not_separated`, the quick path's bet) | the change so far, with its interval and graded evidence; the evidence has not cleared the bar, or the reading is secondary and decides nothing (the row says so) | read the interval and the evidence; add cases and run it again, which keeps the error; never read it as a tie |
 | cannot tell apart (typed `not_separated`) | the cases could not tell the arms apart, which never means they are the same, or every shared case moved by exactly the same amount on a measure with no declared range, which no test of the mean can call (the row says so) | add cases, declare a margin, or declare `value_range`; never read it as a tie |
 | untested | no test could decide: fewer than two cases on a side; the row says why | fix what it names (usually too few cases) |
 

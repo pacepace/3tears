@@ -558,8 +558,8 @@ excludes zero. See [reading a comparison](reading-reports.md#reading-a-compariso
 
 #### Verdict
 What a comparison's evidence supports, per arm and reading: **separated** (printed `v2 better than v1` or `v2 worse
-than v1`, each arm by its label), **not decided** (typed `not_separated`: on a comparison an `Eval` runs, `v2 ahead
-of v1, not decided` with its change, interval and graded evidence; elsewhere **cannot tell apart**: the cases could
+than v1`, each arm by its label), **undecided** (typed `not_separated`: on a comparison an `Eval` runs, `v2 ahead
+of v1, undecided` with its change, interval and graded evidence; elsewhere **cannot tell apart**: the cases could
 not tell the arms apart, which never means "no difference"), **equivalent** (shown inside a margin the measure declares, and the only verdict that says "good
 enough"), or **untested** (no test could decide). A report names, under Not tested, each measure that declares no
 margin and so can never read equivalent. A guardrail is decided apart, as `held`, `breached` or `undecided`, and a bar as `cleared`, `missed` or

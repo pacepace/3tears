@@ -122,7 +122,7 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Surfa
 
 #: Rung 3's result as every surface says it: the decision, what Accuracy was on each arm, what the interval allows.
 _RUNG_3_LEAD = (
-    "Accuracy: v2 behind v1, not decided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
+    "Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be "
     "as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy "
     "was right on 90 for v1 and 89 for v2."
 )
@@ -173,7 +173,7 @@ def test_rung_3_s_lead_sets_its_decision_in_bold_its_figures_regular_and_links_o
         assert found is not None, name
         line = found.group(1)
         bold = [re.sub(r"<[^>]+>", "", said) for said in re.findall(r"<strong>(.*?)</strong>", line, re.S)]
-        assert bold == ["Accuracy: v2 behind v1, not decided"], (name, line)
+        assert bold == ["Accuracy: v2 behind v1, undecided"], (name, line)
         regular = re.sub(r"<strong>.*?</strong>", "", line, flags=re.S)
         assert "Of 90 trials each" in regular and "interval allows v2" in regular, (name, line)
         links = re.findall(r"<a\b[^>]*>(.*?)</a>", line)
@@ -331,7 +331,7 @@ def test_the_undecided_phrase_is_one_glossary_entry_and_the_verdict_column_links
     (column,) = [column for column in contrasts.columns if column.key == "verdict"]
     assert column.term == "verdict"
     cells = {row["verdict"].text.split(";")[0] for row in contrasts.rows}
-    assert cells and all(cell.startswith("v2 ") and "not decided" in cell for cell in cells), cells
+    assert cells and all(cell.startswith("v2 ") and "undecided" in cell for cell in cells), cells
     assert CANNOT_TELL_APART in report.terms
     html = report_html(report)
     assert html.count('<dt id="g-cannot-tell-apart">') == 1
