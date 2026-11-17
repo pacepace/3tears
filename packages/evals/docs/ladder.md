@@ -390,7 +390,7 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
 - **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at
   the cases run so far, each time, so re-reading them as cases are added is not covered.
 
-## Rung 3b: a margin, so a reading can be equivalent
+## Rung 3b: a margin on a reading the question does not decide
 
 [`margin.py`](../examples/3-invoices/margin.py) is 3a with a margin on `total`:
 
@@ -500,6 +500,12 @@ if __name__ == "__main__":
 - **`result.gate()`** fails a CI step on a regression, a breach, or a guardrail not shown held. Here the guardrail is
   undecided, so `cd examples/3-invoices && python ci.py` exits 4. `python -m threetears.evals gate` is the same gate
   over a stored campaign ([Serving](serving.md#gate)).
+- **Only the question's own reading can fail it as a regression.** With a question asked, the first grader's reading
+  is decided and every other reading is shown and decided on nothing, so a second check's drop never fails the gate:
+  make the reading you gate on the first grader, or a guardrail. Ask the gate as one with a margin
+  (`Eval(question="Is v2 no worse than v1?", margin=0.05)`) and its bet leans toward worse: a regression decides once
+  the evidence that v2 is worse reaches about 22, where a question asking whether v2 does better leans the other way
+  and needs about 200 to call it worse.
 
 ## Rung 3e: two levers at once
 

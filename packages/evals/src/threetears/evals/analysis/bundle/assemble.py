@@ -970,6 +970,7 @@ def assemble_context_bundle(
         # Every family says how many of its cells ran again, the cut ones among them: a cut cell drawn afresh can lean
         # a reading where a slow answer is a wrong one, whatever reads it.
         redrawn=redrawn_cells(results),
+        first_result_at=first_result_at,
     )
     # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
     # paired judged contrast's share of it, filled last so no other section copies them.

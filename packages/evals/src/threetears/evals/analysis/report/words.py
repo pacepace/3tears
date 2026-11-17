@@ -208,9 +208,9 @@ _STANDING_WORDS = worded(
 #: points ahead of v1.`` Filled by :func:`standing_words`'s caller through :func:`estimate_sentence`.
 _ESTIMATE_WORDS = worded(
     {
-        "ahead": "Over {cases} paired cases, {arm} is {size} ahead of {control}.",
-        "behind": "Over {cases} paired cases, {arm} is {size} behind {control}.",
-        "level": "Over {cases} paired cases, {arm} and {control} are level.",
+        "ahead": "{now}ver {cases} paired cases, {arm} is {size} ahead of {control}.",
+        "behind": "{now}ver {cases} paired cases, {arm} is {size} behind {control}.",
+        "level": "{now}ver {cases} paired cases, {arm} and {control} are level.",
     },
     _StandingSide,
     "an estimate",
@@ -237,33 +237,50 @@ def standing_words(side: _StandingSide, arm: str, control: str, *, higher_is_bet
     return _STANDING_WORDS[side].format(arm=arm, control=control, better_end=better_end)
 
 
-def estimate_sentence(side: _StandingSide, arm: str, control: str, *, cases: int, size: str) -> str:
-    """The estimate's sentence: ``Over 8 paired cases, v2 is 29 points ahead of v1.``
+def estimate_sentence(side: _StandingSide, arm: str, control: str, *, cases: int, size: str, now: bool = False) -> str:
+    """The estimate's sentence: ``Over 8 paired cases, v2 is 29 points ahead of v1.``; after a decision made earlier,
+    where it stands now: ``Now, over 40 paired cases, v2 is 15 points ahead of v1.``
 
     :param side: Where the arm stands (:func:`standing_side`).
     :param arm: The arm, as the page names it.
     :param control: The control, as the page names it.
     :param cases: The paired cases the bet read.
     :param size: The change's size in the page's form, its unit with it (``29 points``).
+    :param now: Whether a decision made at an earlier count heads it, so this is where the arm stands now.
     :return: The sentence, with its closing stop.
     """
-    return _ESTIMATE_WORDS[side].format(arm=arm, control=control, cases=cases, size=size)
+    return _ESTIMATE_WORDS[side].format(arm=arm, control=control, cases=cases, size=size, now="Now, o" if now else "O")
 
 
-def evidence_sentence(arm: str, side: Literal["better", "worse"], grade: str, figure: str, *, decided: bool) -> str:
+def evidence_sentence(
+    arm: str, side: Literal["better", "worse"], grade: str, figure: str, *, against_question: bool
+) -> str:
     """The graded evidence's sentence, the grade in its one owner's word
     (:func:`~threetears.evals.analysis.style.evidence_grade`) and the e-value in the page's form: ``The evidence that
-    v2 is better is strong (74), enough to decide.``
+    v2 is better is moderate (3.6).``; where it points the other way from the side the question asks about, it says
+    so: ``The evidence points the other way from the question: that v2 is worse is strong (132).``
 
     :param arm: The arm, as the page names it.
     :param side: Which side the evidence is for.
     :param grade: Its grade's word.
     :param figure: The e-value, in the page's form.
-    :param decided: Whether the comparison is decided that way, which the sentence then says.
+    :param against_question: Whether the question asks about the other side.
     :return: The sentence, with its closing stop.
     """
-    closing = ", enough to decide" if decided else ""
-    return f"The evidence that {arm} is {side} is {grade} ({figure}){closing}."
+    if against_question:
+        return f"The evidence points the other way from the question: that {arm} is {side} is {grade} ({figure})."
+    return f"The evidence that {arm} is {side} is {grade} ({figure})."
+
+
+def decided_words(cases: int, figure: str) -> str:
+    """When a decision was made, said after it: ``, decided at 24 cases when the evidence reached 22``. A decision
+    stands once made; the figures after it say where the arm stands now.
+
+    :param cases: The paired cases it was decided at.
+    :param figure: The evidence it had reached then, in the page's form.
+    :return: The clause, opening on its comma.
+    """
+    return f", decided at {cases} cases when the evidence reached {figure}"
 
 
 #: What a guardrail came to for an arm against the control, as a reader says it, each arm by its label. Filled by
@@ -827,6 +844,7 @@ def counted(n: int, of: int, what: str) -> str:
 
 __all__ = [
     "BAR_DECISION_WORDS",
+    "decided_words",
     "evidence_sentence",
     "estimate_sentence",
     "standing_words",

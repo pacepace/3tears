@@ -46,6 +46,7 @@ from threetears.evals.analysis.stats import (
     bounded_separation_p,
     exact_rate_interval,
 )
+from threetears.evals.analysis.bundle.comparisons import LATE_QUESTION_SENTENCE
 from threetears.evals.analysis.style import evidence_grade
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -241,9 +242,7 @@ async def test_a_second_check_is_a_secondary_reading_shown_and_never_decided() -
     calls: Counter[tuple[str, int]] = Counter()
     n = 24
     arms = {"v1": _tallied("v1", [0] * n, calls), "v2": _tallied("v2", [1] * n, calls)}
-    result = await Eval(_cases(n), arms, [_passed, _guarded], k=1, name="two", question=_QUESTION).run(
-        store=":memory:"
-    )
+    result = await Eval(_cases(n), arms, [_passed, _guarded], k=1, name="two", question=_QUESTION).run(store=":memory:")
     family = _family(result)
     assert family.primary == "_passed"
     by_name = {(comparison.reading, comparison.name): comparison for comparison in family.comparisons}
@@ -493,14 +492,15 @@ def test_under_each_null_the_read_separates_at_most_alpha_and_the_evidence_is_st
 #: The effect the coverage is read at, on the pass rate: v2 passes each case 0.3 more often than v1.
 _EFFECT = 0.3
 
-#: Newcomers per coverage shard, and how many of each shard's intervals missed the true difference, as seeded.
+#: Newcomers per coverage shard, and per shard how many intervals fell wholly below the true difference and how many
+#: wholly above it, as seeded.
 _COVERAGE_PER_SHARD = 200
-_COVERAGE_MISSED: tuple[int, ...] = (3, 2)
+_COVERAGE_MISSED: tuple[tuple[int, int], ...] = ((0, 0), (0, 0))
 
 
-async def _covers(tag: str, n: int) -> bool:
+async def _covers(tag: str, n: int) -> tuple[bool, bool]:
     """One newcomer's single read of ``n`` pass/fail cases, v1 passing at a share drawn from 0.1 to 0.5 and v2 at that
-    plus :data:`_EFFECT`: whether the primary's interval holds the true difference."""
+    plus :data:`_EFFECT`: whether the primary's interval misses the true difference below it, and whether above it."""
     calls: Counter[tuple[int, int]] = Counter()
 
     def arm(which: int) -> Callable[[Mapping[str, Any]], Any]:
@@ -519,7 +519,7 @@ async def _covers(tag: str, n: int) -> bool:
     )
     interval = _primary(result).interval
     assert interval is not None
-    return interval[0] <= _EFFECT <= interval[1]
+    return interval[1] < _EFFECT, interval[0] > _EFFECT
 
 
 @pytest.mark.long_simulation
@@ -527,18 +527,197 @@ async def _covers(tag: str, n: int) -> bool:
 @pytest.mark.parametrize("shard", range(len(_COVERAGE_MISSED)))
 async def test_the_primary_s_interval_misses_the_true_difference_as_seeded(shard: int) -> None:
     """A shard of seeded newcomers reading sixteen cases at a true difference of 0.3 (:func:`_covers`): as many
-    intervals miss it as pinned."""
-    missed = 0
+    intervals miss it below, and above, as pinned."""
+    below = above = 0
     for index in range(_COVERAGE_PER_SHARD):
-        missed += not await _covers(f"cover-{shard}-{index}", 16)
-    assert missed == _COVERAGE_MISSED[shard]
+        low, high = await _covers(f"cover-{shard}-{index}", 16)
+        below += low
+        above += high
+    assert (below, above) == _COVERAGE_MISSED[shard]
 
 
 def test_the_primary_s_interval_covers_the_true_difference_at_least_the_ninety_percent_it_states() -> None:
-    """The claim, on the shards' seeded counts: the Clopper-Pearson 95% upper bound on the share of intervals that miss
-    the true difference is at most 10%, the 90% the interval states."""
+    """The claim, on the shards' seeded counts: the interval is the even hedge's confidence sequence at 90%, read on the
+    capital now, each end a 95% bound on its own side. The Clopper-Pearson 95% upper bound on the share of intervals
+    whose low end lies above the true difference is at most 5%, and so is the share whose high end lies below it."""
     replicates = _COVERAGE_PER_SHARD * len(_COVERAGE_MISSED)
-    missed = exact_rate_interval(sum(_COVERAGE_MISSED), replicates)
-    assert missed is not None
-    assert missed[1] <= 1 - 0.90 + 1e-12, f"missed {sum(_COVERAGE_MISSED)} of {replicates}: {missed}"
+    for end in (0, 1):
+        missed = sum(shard[end] for shard in _COVERAGE_MISSED)
+        bound = exact_rate_interval(missed, replicates)
+        assert bound is not None
+        assert bound[1] <= SIGNIFICANCE_ALPHA, f"end {end}: missed {missed} of {replicates}: {bound}"
     assert math.isclose(1 - 0.90, 2 * SIGNIFICANCE_ALPHA)
+
+
+# --- a gate, a question asked after the results, a range-less question, a decision that fades -------------------------
+
+
+def _planned(name: str, plan: Mapping[int, int]) -> Callable[[Mapping[str, Any]], Any]:
+    def run(case: Mapping[str, Any]) -> bool:
+        return bool(plan[int(case["n"])])
+
+    run.__name__ = name
+    return run
+
+
+async def test_a_gate_question_leans_toward_worse_so_a_regression_past_its_margin_fails_the_gate() -> None:
+    """A question with a margin is a gate (is v2 no worse?): its bet leans nine tenths toward worse. v2 failing three
+    cases in ten that v1 passes, over thirty, reads worse, decided, and the gate exits 4."""
+    n = 30
+    arms = {
+        "v1": _planned("v1", {i: 1 for i in range(n)}),
+        "v2": _planned("v2", {i: int(i % 10 >= 3) for i in range(n)}),
+    }
+    result = await Eval(
+        _cases(n), arms, [_passed], k=1, name="gate", question="Is v2 no worse than v1?", margin=0.05
+    ).run(store=":memory:")
+    family = _family(result)
+    assert family.lean == "worse" and _primary(result).verdict == "regressed"
+    assert (
+        str(result)
+        .splitlines()[0]
+        .startswith(
+            "gate: Passed score: v2 worse than v1, decided at 13 cases when the evidence reached 24. Now, over 30 paired "
+            "cases, v2 is 30 points behind v1."
+        )
+    )
+    assert result.exit_code() == 4
+
+
+def _wordy(case: Mapping[str, Any], answer: Any) -> float:
+    """A float score with no declared range."""
+    return 3.0 * float(answer)
+
+
+async def test_a_question_whose_reading_the_bet_cannot_read_is_untested_and_nothing_else_is_decided() -> None:
+    """With a question asked the family is always decided on its first grader: one with no declared range reads
+    untested, with its reason and its state, and a second check, which v2 holds on every case, is still a secondary
+    reading decided on nothing; no Holm family stands in for the question."""
+    n = 30
+    arms = {"v1": _planned("v1", {i: 0 for i in range(n)}), "v2": _planned("v2", {i: 1 for i in range(n)})}
+    result = await Eval(_cases(n), arms, [_wordy, _passed], k=1, name="free", question=_QUESTION).run(store=":memory:")
+    family = _family(result)
+    by_name = {comparison.name: comparison for comparison in family.comparisons}
+    assert family.primary == "_wordy" and by_name["_wordy"].verdict == "untested"
+    assert by_name["_wordy"].state is not None and by_name["_wordy"].state.reason == "not_recorded"
+    assert by_name["_passed"].verdict == "not_separated" and by_name["_passed"].p_adjusted is None
+    printed = str(result).splitlines()[0]
+    assert printed.startswith("free: Wordy score: untested (") and "also" not in printed and "better" not in printed
+
+
+async def test_a_question_asked_after_the_results_reads_the_even_hedge_and_says_so() -> None:
+    """A question set after the results (``against`` with a question) leans no way: the even hedge, and the print and
+    the family's disclosure say the question came after the results. v1 passing twelve of twelve and v2 six reads v1
+    ahead, undecided, where a lean picked after the readings would have decided it."""
+    m = 12
+    arms = {"v1": _planned("v1", {i: 1 for i in range(m)}), "v2": _planned("v2", {i: int(i >= 6) for i in range(m)})}
+    first = await Eval(_cases(m), arms, [_passed], k=1, name="late", question=_QUESTION).run(store=":memory:")
+    assert _family(first).lean == "better"
+    asked = await first.against("v2", question="Does v1 pass more often than v2?")
+    family = _family(asked)
+    assert family.lean is None and _primary(asked).verdict == "not_separated"
+    assert LATE_QUESTION_SENTENCE in str(asked).splitlines() and LATE_QUESTION_SENTENCE in family.disclosure
+
+
+async def test_a_decision_says_when_it_was_made_and_where_the_arm_stands_now() -> None:
+    """Eight straight wins decide; sixty cases near level after them leave it decided. The first line names the decision
+    and when it was made, then where v2 stands now, the interval on the capital now (which holds the estimate), and the
+    evidence now, weak: never "enough to decide" beside weak evidence."""
+    first = 8
+    tail = [(1, 0)] * 13 + [(0, 1)] * 15 + [(1, 1)] * 16 + [(0, 0)] * 16
+    v1 = {**{i: 0 for i in range(first)}, **{first + i: c for i, (c, _) in enumerate(tail)}}
+    v2 = {**{i: 1 for i in range(first)}, **{first + i: a for i, (_, a) in enumerate(tail)}}
+    store = InMemoryDocumentStore()
+    arms = {"v1": _planned("v1", v1), "v2": _planned("v2", v2)}
+    for upto in (first, first + len(tail)):
+        result = await Eval(_cases(upto), arms, [_passed], k=1, name="fade", question=_QUESTION).run(
+            store=store, scope="s"
+        )
+    primary = _primary(result)
+    assert primary.verdict == "improved" and primary.decided_at_cases == 6
+    assert primary.interval is not None and primary.delta is not None
+    assert primary.interval[0] <= primary.delta <= primary.interval[1]
+    printed = str(result).splitlines()[0]
+    assert printed.startswith(
+        "fade: Passed score: v2 better than v1, decided at 6 cases when the evidence reached 24. Now"
+    )
+    assert "enough to decide" not in printed and "is weak" in printed
+
+
+#: Newcomers in the gate null simulation, and how many of them a gate read separated, as seeded.
+_GATE_NEWCOMERS = 400
+_GATE_SEPARATED = 0
+
+
+async def _gate_newcomer(tag: str) -> bool:
+    """A newcomer under the pass/fail null asking a gate (is v2 no worse, within 5 points?), its bet leaning toward
+    worse: read at eight cases and continued up to five reads, each add sized from the reading, as :func:`_continued`
+    is; whether any read separated."""
+    calls: Counter[tuple[int, int]] = Counter()
+    arms = {"v1": _drawn("binary", tag, 0, calls), "v2": _drawn("binary", tag, 1, calls)}
+    store = InMemoryDocumentStore()
+    n = 8
+    for _ in range(5):
+        result = await Eval(
+            _cases(n), arms, [_passed], k=1, name="gate", question="Is v2 no worse than v1?", margin=0.05
+        ).run(store=store, scope="s")
+        if _decided(result):
+            return True
+        primary = _primary(result)
+        p = primary.p_adjusted if primary.p_adjusted is not None else 1.0
+        n += 4 + int(16 * (1.0 - min(1.0, p)))
+    return False
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(900)
+async def test_under_the_null_a_gate_question_separates_at_most_alpha() -> None:
+    """The gate's own null simulation, through ``Eval.run`` and its continuation: 400 seeded newcomers whose arms pass
+    alike, each asking whether v2 is no worse within 5 points and reading up to five times, separate as pinned, and the
+    Clopper-Pearson 95% upper bound on the rate is at most α."""
+    separated = 0
+    for index in range(_GATE_NEWCOMERS):
+        separated += await _gate_newcomer(f"gate-{index}")
+    assert separated == _GATE_SEPARATED
+    bound = exact_rate_interval(separated, _GATE_NEWCOMERS)
+    assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, bound
+
+
+#: Newcomers in the late-question null simulation, and how many separated, as seeded.
+_LATE_NEWCOMERS = 400
+_LATE_SEPARATED = 0
+
+
+async def _late_newcomer(tag: str) -> bool:
+    """A newcomer under the pass/fail null who asks no question up front, then at each read sets one (``against``)
+    pointing at whichever arm leads: read at eight cases and continued up to five reads, each add sized from the
+    reading; whether any read separated. A question set after the results leans no way, so pointing it at the leader
+    buys nothing."""
+    calls: Counter[tuple[int, int]] = Counter()
+    arms = {"v1": _drawn("binary", tag, 0, calls), "v2": _drawn("binary", tag, 1, calls)}
+    store = InMemoryDocumentStore()
+    n = 8
+    for _ in range(5):
+        result = await Eval(_cases(n), arms, [_passed], k=1, name="late").run(store=store, scope="s")
+        (row,) = result.contrasts("_passed")
+        leader, other = ("v2", "v1") if (row.get("delta") or 0.0) >= 0 else ("v1", "v2")
+        asked = await result.against(other, question=f"Does {leader} pass more often than {other}?")
+        if _decided(asked):
+            return True
+        primary = _primary(asked)
+        p = primary.p_adjusted if primary.p_adjusted is not None else 1.0
+        n += 4 + int(16 * (1.0 - min(1.0, p)))
+    return False
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(900)
+async def test_under_the_null_a_question_pointed_at_the_leader_after_each_read_separates_at_most_alpha() -> None:
+    """400 seeded newcomers (:func:`_late_newcomer`) separate as pinned, and the Clopper-Pearson 95% upper bound on the
+    rate is at most α: the even hedge a late question reads holds whichever arm it is pointed at."""
+    separated = 0
+    for index in range(_LATE_NEWCOMERS):
+        separated += await _late_newcomer(f"late-{index}")
+    assert separated == _LATE_SEPARATED
+    bound = exact_rate_interval(separated, _LATE_NEWCOMERS)
+    assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, bound

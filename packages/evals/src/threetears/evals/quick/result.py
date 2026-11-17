@@ -79,7 +79,7 @@ from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
-from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet
+from threetears.evals.analysis.bundle.comparisons import LATE_QUESTION_SENTENCE, REREAD_SENTENCE, read_by_bet
 from threetears.evals.quick.continuation import MEMORY_WHERE, UNKEPT_SENTENCE
 from threetears.evals.analysis.bundle.trials import pass_count, trial_order
 from threetears.evals.analysis.cells import cell_ref
@@ -797,11 +797,14 @@ class Result:
         (:func:`~threetears.evals.analysis.bundle.comparisons.read_by_bet`) and its runs are kept in a store a later run
         continues it from; where they were kept in memory, that running it again is a new comparison
         (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`), which is what the page's sentence, said of a
-        store that keeps the runs, comes to there. Empty for one arm, or a family no bet read."""
+        store that keeps the runs, comes to there. Empty for one arm, or a family no bet read. A question set after the
+        results (:data:`~threetears.evals.analysis.bundle.comparisons.LATE_QUESTION_SENTENCE`) says so first, as the
+        page's disclosure does: its bet leans no way."""
         families = self.report.bundle.multiple_comparisons.families
         if not any(read_by_bet(family) for family in families):
             return []
-        return [UNKEPT_SENTENCE if self.store == MEMORY_WHERE else REREAD_SENTENCE]
+        late = [LATE_QUESTION_SENTENCE] if any(f.primary is not None and f.lean is None for f in families) else []
+        return [*late, UNKEPT_SENTENCE if self.store == MEMORY_WHERE else REREAD_SENTENCE]
 
     def _stopped_lines(self) -> list[str]:
         """The first lines of the print of a run that did not finish, in place of its verdict; empty when every arm's

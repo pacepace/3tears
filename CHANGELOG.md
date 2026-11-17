@@ -159,7 +159,15 @@ choice, and the simulations behind it: `.prawduct/smalln-report.md`.
 `evidence_worse` and the family's `primary`, which a build from before it refuses by name: upgrade every reader of
 stored analyses before any writer, and after a rollback regenerate an analysis this build froze. No engine campaign's
 bundle carries them, so its fingerprints and pages do not move. A quick comparison's verdicts move: a secondary
-reading of a question reads `not_separated` where it may have separated before, and its `p_adjusted` is `None`.
+reading of a question reads `not_separated` where it may have separated before, and its `p_adjusted` is `None`. **A
+CI gate on a quick comparison with a question fails as a regression only on the question's own reading** (its first
+grader): a second check's drop no longer fails `gate()`, so make the reading you gate on the first grader, or a
+guardrail. Ask a gate with a margin (`Eval(question=..., margin=...)`): its bet leans toward worse, and a regression
+decides once the evidence that the arm is worse reaches about 22; a question whether the arm does better needs about
+200 to call it worse. A question that names no range on its first grader reads it untested, and decides nothing else.
+A question, control or margin set after the first result (`Result.against(..., question=...)`) reads the even hedge
+and says so. A decided reading says when it was decided (`decided_at_cases`, `decided_evidence`), and its interval is
+read on the capital now, so it always holds the estimate; `ComparisonFamily.lean` says which side the question leans.
 
 ### evals: a quick comparison may be read again as cases are added, with nothing declared
 
