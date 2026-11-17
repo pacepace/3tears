@@ -447,6 +447,15 @@ _HANDOVER_DRAIN_BOUND_SECONDS: Final[float] = REAUTH_RETIRE_DRAIN_SECONDS + 2 * 
 #: then drops it. A second is two orders of magnitude past the traced gap.
 _LATE_DELIVERY_GRACE_SECONDS: Final[float] = 1.0
 
+#: how long a move off a server in lame-duck mode keeps each subscription's old half in its group beside its
+#: successor (:meth:`_SubscriptionFeed.release`). A renewal holds it for the longest request, because its old
+#: connection lives on. A lame-duck server closes the old connection itself once its grace period is over
+#: (``lame_duck_grace_period``, 10 s by default), and a member still in its group then loses whatever was being
+#: routed to it as the server closed it. So the old half leaves well inside the grace, but only once a match
+#: made before its successor joined has been delivered: traced at 8 ms under load, so a second is two orders of
+#: magnitude past it.
+_LAME_DUCK_HOLD_SECONDS: Final[float] = 1.0
+
 #: the prefix of the queue group a subscription joins when its caller names none. Each such
 #: subscription gets a group of its OWN, of which it is the only member -- see
 #: :class:`Subscription` for why a subscription is never plain.
@@ -756,6 +765,13 @@ class _SubscriptionFeed:
         :rtype: None
         """
         await asyncio.sleep(hold)
+        if connection.is_closed:
+            # the server dropped the connection, and every member it held with it: nothing is left in a group.
+            log.info(
+                "a superseded subscription's connection closed before it left its group; the server dropped it",
+                extra={"extra_data": {"subject": self._subject.path}},
+            )
+            return
         try:
             # bounded: a connection that stopped answering would otherwise hold the handover forever.
             await asyncio.wait_for(_stop_routing(raw_subscription, connection), timeout=_HANDOVER_DRAIN_BOUND_SECONDS)
@@ -4080,6 +4096,11 @@ class NatsClient:
            key watch, a result waiter, a pull consumer -- rebinds to the current connection on its
            own the next time it is used or its connection closes.
 
+        The replaced connection is never reconnected: when its server drops it -- a lame-duck server
+        closing it, a network fault -- it closes. Its subscriptions already moved to the successor, and
+        a reconnect would replay them on another server, rejoining their groups as members that are
+        then dropped again, with whatever was routed to them, when the connection retires.
+
         Every step is a transition of the client's one lifecycle model (:class:`_ConnectionLifecycle`):
         the successor is a CANDIDATE, owned from the step that opens it, until the step that makes
         it current -- which is refused once the client was abandoned or shut down meanwhile. A
@@ -4098,6 +4119,21 @@ class NatsClient:
             the handover or during it -- or did not open its own connection
         :raises Exception: whatever opening or subscribing the successor raised; the current
             connection is untouched
+        """
+        await self._renew_connection(retire_after=retire_after, hold=retire_after)
+
+    async def _renew_connection(self, *, retire_after: timedelta, hold: timedelta) -> None:
+        """:meth:`renew_connection`, keeping each subscription's old half in its group for ``hold``.
+
+        :param retire_after: how long to keep the replaced connection open for the work it carries
+        :ptype retire_after: timedelta
+        :param hold: how long each subscription's old half stays in its group beside its successor
+            (:meth:`_SubscriptionFeed.release`); never longer than ``retire_after``
+        :ptype hold: timedelta
+        :return: nothing
+        :rtype: None
+        :raises NatsClientError: as :meth:`renew_connection`
+        :raises Exception: as :meth:`renew_connection`
         """
         opener = self._lifecycle.opener
         if opener is None:
@@ -4120,7 +4156,7 @@ class NatsClient:
                 # the one step that changes the current connection, refused once the client stopped
                 # serving: an abandon or a shutdown that landed during any await above wins.
                 previous = self._lifecycle.promote(successor)
-                await self._hand_over(previous, successor, moving, retire_after=retire_after)
+                await self._hand_over(previous, successor, moving, retire_after=retire_after, hold=hold)
         finally:
             # a candidate that never became current is closed on every path out -- an error, a
             # cancellation, an abandon or a shutdown -- because nothing else will ever reach it.
@@ -4210,6 +4246,7 @@ class NatsClient:
         moving: list[tuple[Subscription, Any]],
         *,
         retire_after: timedelta,
+        hold: timedelta,
     ) -> None:
         """finish a handover the lifecycle has already made: settle, move, and schedule retirement.
 
@@ -4227,9 +4264,16 @@ class NatsClient:
         :ptype moving: list[tuple[Subscription, Any]]
         :param retire_after: how long to keep ``previous`` open for the work it carries
         :ptype retire_after: timedelta
+        :param hold: how long each subscription's old half stays in its group beside its successor
+        :ptype hold: timedelta
         :return: nothing
         :rtype: None
         """
+        # a replaced connection that its server drops closes rather than reconnects: a reconnect replays every
+        # subscription it still holds on another server, rejoining each group as a member that is dropped again,
+        # with whatever was routed to it, when the connection retires. nats-py reads this option when a
+        # connection fails, so setting it now covers every later drop.
+        previous.options["allow_reconnect"] = False
         # nothing is published on the successor until everything already published on the old
         # connection has reached the server (_settle_publishes).
         self._lifecycle.hold_publishes()
@@ -4243,9 +4287,11 @@ class NatsClient:
                 # nothing about the credential now in use.
                 self._health_state["auth_violations"] = 0
                 self._health_state["overflow_events"] = 0
-                # each old half stays in its group until the replaced connection's hold is over
-                hold = retire_after.total_seconds()
-                handovers = [sub.move_to(raw_sub, successor, hold=hold) for sub, raw_sub in moving]
+                # each old half stays in its group until its hold is over
+                handovers = [
+                    sub.move_to(raw_sub, successor, hold=min(hold, retire_after).total_seconds())
+                    for sub, raw_sub in moving
+                ]
                 self._push_consumers = [consumer for consumer in self._push_consumers if not consumer.is_closed]
                 js = successor.jetstream()
                 handovers.extend(
@@ -4586,14 +4632,21 @@ class NatsClient:
         and becomes current, and the old connection is kept for the work it already carries until
         the server closes it or the longest request has had its time.
 
+        Unlike a renewal's, each subscription's old half leaves its group after
+        :data:`_LAME_DUCK_HOLD_SECONDS`, not the longest request: the server closes the old
+        connection once its grace period is over, and a member still in its group then loses
+        whatever was being routed to it.
+
         Called from the connection's read loop, so it only schedules the move.
 
         :return: nothing
         :rtype: None
         """
-        self._start_successor_move(why="the server entered lame-duck mode")
+        self._start_successor_move(
+            why="the server entered lame-duck mode", hold=timedelta(seconds=_LAME_DUCK_HOLD_SECONDS)
+        )
 
-    def _start_successor_move(self, *, why: str) -> None:
+    def _start_successor_move(self, *, why: str, hold: timedelta | None = None) -> None:
         """schedule a move of the current connection to a successor, unless one is under way.
 
         A move already running, or a client that no longer serves, is left alone; a renewal already
@@ -4602,6 +4655,9 @@ class NatsClient:
 
         :param why: why the connection must be replaced now, for the log
         :ptype why: str
+        :param hold: how long each subscription's old half stays in its group beside its successor;
+            ``None`` holds it for as long as the old connection is kept, as a renewal does
+        :ptype hold: timedelta | None
         :return: nothing
         :rtype: None
         """
@@ -4622,7 +4678,9 @@ class NatsClient:
         )
         leaving = self._raw
         move = _SuccessorMove(
-            renew=lambda retire_after: self.renew_connection(retire_after=retire_after),
+            renew=lambda retire_after: self._renew_connection(
+                retire_after=retire_after, hold=retire_after if hold is None else hold
+            ),
             still_leaving=lambda: self._lifecycle.is_live and self._raw is leaving and not leaving.is_closed,
             retire_after=timedelta(seconds=self._longest_request_seconds),
             client_name=self._client_name,

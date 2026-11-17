@@ -46,7 +46,12 @@ follows is its ordinary reconnect, which drops what is in flight exactly as the 
 Every connection a `NatsClient` opens now carries that callback: on the current connection it
 starts a move to a successor through `renew_connection`, retried every `REAUTH_RETRY_SECONDS`
 while the connection is still current and open (another renewal, or the server's own close, ends
-it). The old connection is kept for `longest_request_seconds` or until the server closes it.
+it). The old connection is kept for `longest_request_seconds` or until the server closes it, but
+each subscription's old half leaves its queue group after one second rather than with the
+connection: the server closes the connection once its `lame_duck_grace_period` is over (10 s by
+default), and a member still in its group then loses whatever was being routed to it. A replaced
+connection is never reconnected: when its server drops it, it closes, because a reconnect would
+replay its subscriptions on another server and rejoin their groups.
 Proven live on a two-node 2.14.2 cluster (`test_lame_duck_handover_live.py`): the pod moved about
 90ms after the notice, and not one request or subscribed message was lost, where the reconnect
 lost several requests and most of the feed.
