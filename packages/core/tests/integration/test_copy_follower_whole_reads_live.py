@@ -223,6 +223,7 @@ def _reader(backend: DuckDBBackend) -> Any:
     return read
 
 
+@pytest.mark.loop_timing
 async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
     """a cold start, end to end (CopyFollower.warm and the catch-up that applies it): the whole read of the table from
     L3 declared in CopyFollower._stage_cold_start (and its twins _stage_schema_change and _stage_legacy_whole_record,
@@ -285,6 +286,7 @@ async def test_stage_whole_speed_at_real_size(db: _Db) -> None:
     assert problem is None, problem
 
 
+@pytest.mark.loop_timing
 async def test_checkpoint_stage_speed_at_real_size() -> None:
     """CopyCheckpoints.stage (a start's load of every table from L2) within 2x the bare decode and copy-in of the same
     parts into DuckDB."""
@@ -320,6 +322,7 @@ async def test_checkpoint_stage_speed_at_real_size() -> None:
     assert problem is None, problem
 
 
+@pytest.mark.loop_timing
 async def test_checkpoint_whole_write_speed_at_real_size() -> None:
     """a checkpoint write at a table's cold start, whose whole read of the copy is copy_checkpoint._batches_cold_start
     (the same statement _batches_schema_change and _batches_rolling_upgrade run), within 2x the bare read of the same
@@ -356,6 +359,7 @@ _PART_ROWS = 250_000
 _PART_TOUCHED = 25_000
 
 
+@pytest.mark.loop_timing
 async def test_checkpoint_patch_speed_at_real_size() -> None:
     """a checkpoint write of a table with no scope (CopyCheckpoints.write patching its one part,
     copy_checkpoint._patched_part: the part's untouched rows kept by keyed.anti over the part and the staged touched

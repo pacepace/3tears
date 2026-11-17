@@ -409,6 +409,7 @@ async def test_read_whole_is_reached_only_at_a_first_read_a_reset_or_a_restore(p
 _SPEED_SCOPES = 20_000
 
 
+@pytest.mark.loop_timing
 async def test_read_whole_speed_at_real_size(pool: asyncpg.Pool) -> None:
     """a reader's first snapshot (ScopeEpochs._read_whole: the writer's record, then every scope a keyset page at a
     time, held and built) within 2x a bare keyset read of the same pages, interleaved on the same database."""

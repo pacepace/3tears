@@ -161,6 +161,7 @@ async def test_the_duplicate_key_read_is_reached_only_for_an_unusable_unique_ind
 _SPEED_ROWS = int(os.environ.get("THREETEARS_INDEX_HEALTH_SPEED_ROWS", "200000"))
 
 
+@pytest.mark.loop_timing
 async def test_rebuild_speed_at_real_size(conn: tuple[asyncpg.Connection, str]) -> None:
     """``rebuild_unusable_indexes`` on an unusable unique index (``_duplicate_keys``' whole read, the drop and the
     build; the repair ``_install_change_notes`` runs on the ring), against the same statements by hand, turn about;

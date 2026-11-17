@@ -226,6 +226,7 @@ class TestALargeCommitReachesAFollowerFromItsNotes:
         _, equal = await _timed_pass(db, noted=True, votes=2)
         assert equal
 
+    @pytest.mark.loop_timing
     async def test_end_to_end_within_twice_a_bare_keyed_read_of_the_same_keys(self, db: _Db) -> None:
         """Flips if naming the keys from the notes costs more than the keyed read and apply it feeds."""
         noted, bare = [], []

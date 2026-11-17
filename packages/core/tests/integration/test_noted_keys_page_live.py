@@ -248,6 +248,7 @@ class TestACommitsKeysAreReadBackFromItsNotes:
                 bounds = str(node.get("Index Cond", ""))
                 assert "noted_at >" in bounds and "noted_at <=" in bounds, (node["Node Type"], bounds)
 
+    @pytest.mark.loop_timing
     async def test_reading_every_page_keeps_within_twice_a_bare_read_of_the_same_notes(self, ring: _Ring) -> None:
         """Flips if the paged read costs over twice one plain read of the notes it must read."""
         since, until = ring.bracket

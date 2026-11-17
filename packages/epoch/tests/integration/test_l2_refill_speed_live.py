@@ -78,6 +78,7 @@ def _schema(table: str) -> TableSchema:
     )
 
 
+@pytest.mark.loop_timing
 async def test_refill_from_l3_speed_at_real_size(seeded: tuple[asyncpg.Pool, str], nats_container: str) -> None:
     """the refill L2Refiller.run_pass makes through L2Refiller.refill: L2FirstSupport.refill_from_l3, reading
     SchemaBackedCollection._l3_pages whole into an empty L2, within 2x the bare keyset read of the same pages and a

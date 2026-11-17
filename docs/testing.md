@@ -319,7 +319,17 @@ excludes them with `-m "not integration"`. They run on the testament pool: the p
 `.testament.toml`'s `[suites.integration]`, against Postgres, NATS and S3 started as child processes
 in the pool's container (`threetears.core.testing.services`, under `THREETEARS_TEST_SERVICES=process`;
 `THREETEARS_REQUIRE_SERVICES=1` makes a missing service fail rather than skip). Nothing runs on the
-laptop; `--dry-run` prints the command.
+laptop; `--dry-run` prints the commands.
+
+Its speed tests (a speed ratio or a loop turn against a real database, marked `loop_timing`) run apart, in
+`[suites.integration_timing]`: the same paths, after the rest of the suite, each batch alone on a runner labelled
+`exclusive` under testament's load ceiling, as the unit suite's `loop_timing` tests do. Beside the suite's other
+batches they failed on numbers they hold alone (2026-11-16: the visible-customer set 3.0x its statement on brooks-nas,
+1.41-1.99x alone). With no quiet runner the timing suite ends with no verdict (exit 2), never a pass. An integration
+test that starts the host's idle loop unmarked fails at once (`tests/timing_suite.py`); mark every speed test
+`loop_timing`, whether or not it does. A test only YugabyteDB is held to (a storage-set budget, a key-led plan) is
+marked `yugabyte_only` and deselected on any other engine, the pool's Postgres included (`tests/require_services.py`);
+it runs where `THREETEARS_TEST_ENGINE=yugabyte`.
 
 `./scripts/test-integration.sh --here` runs the rest on this machine: the tests marked `docker` (the
 scrape sidecar pipe, SearXNG scoring, the nats lame-duck handover in Docker) and `secrets` (Redshift,
@@ -343,7 +353,8 @@ it covers two suites out of three.
 
 A run that exits 0 with tests skipped reads exactly like one that ran them all. On the pool the
 suite fails a skip at runtime (`THREETEARS_REQUIRE_SERVICES=1`, `tests/require_services.py`); its one
-accepted skip is the datasources microbenchmark, an unconditional `@pytest.mark.skip`. For
+accepted skip is the datasources microbenchmark, an unconditional `@pytest.mark.skip`. A test that cannot hold on
+the run's engine is deselected by its marker (`process_only`, `yugabyte_only`), never skipped from its body. For
 `--here`, and any run taken off the pool, run with `-rs` and account for every skip.
 
 This is not hypothetical: `test_a_real_display_is_driven_through_the_pipe` was unpassable on

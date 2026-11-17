@@ -156,10 +156,11 @@ platform = [
 # out, since no integration test drives a browser (the image's ENV still names Chromium's path).
 # THREETEARS_TEST_SERVICES=process selects the child processes; THREETEARS_REQUIRE_SERVICES=1 makes a
 # service that is not there fail the test rather than skip it, and tests/require_services.py turns any
-# other runtime skip of an integration test into a failure, since a skip reads like a pass.
+# other runtime skip of an integration test into a failure, since a skip reads like a pass. Its speed tests
+# (`loop_timing`) are not here: they run in `integration_timing`, below, alone on a quiet runner.
 [suites.integration]
 adapter = "pytest"
-command = ["uv", "run", "--frozen", "pytest", "-m", "integration and not docker and not secrets"]
+command = ["uv", "run", "--frozen", "pytest", "-m", "integration and not loop_timing and not docker and not secrets"]
 default_selection = [
     "packages/agent/acl/tests/integration",
     "packages/agent/audit/tests/integration",
@@ -257,3 +258,49 @@ nats = ["packages/nats/**"]
 core = ["packages/core/**"]
 agent = ["packages/agent/**"]
 platform = ["packages/**"]
+
+# The integration suite's speed tests (`loop_timing`: a speed ratio, a loop's lateness, against a real database), apart
+# from the rest of it as `loop_timing` is from the unit suite, and for the same reason. Run beside the integration
+# suite's other batches they failed on the code's alone-green numbers (2026-11-16, work/fold-final 7da8c699b): the
+# visible-customer set 3.0x its statement on brooks-nas (1.41-1.99x alone, 10 of 10), a walked grant change 2.4x a keyed
+# read on brooks-5950x (1.07-1.50x alone), a restore's longest loop turn 1.84 ms on brooks-5950x (0.33-0.80 ms alone,
+# under its 1 ms). `exclusive`: each batch alone on a runner that offers it, under testament's load ceiling; no quiet
+# runner within the coordinator's wait ends the suite `runners_loaded` (no verdict, never a pass or a red). Its env,
+# services and selection are the integration suite's: scripts/test-integration.sh runs it after that suite over the
+# same paths, and tests/timing_suite.py fails an integration test that times against the host's quiet unmarked.
+# `yugabyte_only` speed tests are deselected here (tests/require_services.py): the pool's database is Postgres.
+[suites.integration_timing]
+adapter = "pytest"
+command = ["uv", "run", "--frozen", "pytest", "-m", "integration and loop_timing and not docker and not secrets"]
+default_selection = ["packages/", "tests/"]
+exclusive = true
+env = { UV_CACHE_DIR = "/tr/cache/uv", THREETEARS_TEST_SERVICES = "process", THREETEARS_REQUIRE_SERVICES = "1" }
+
+[suites.integration_timing.areas]
+evals = ["packages/evals/**"]
+enforcement = ["packages/enforcement/**", "tests/enforcement/**"]
+core = ["packages/core/**"]
+agent = ["packages/agent/**"]
+platform = [
+    "packages/backup/**",
+    "packages/channels/**",
+    "packages/conversations/**",
+    "packages/datasources/**",
+    "packages/epoch/**",
+    "packages/geo/**",
+    "packages/iam/**",
+    "packages/interfaces/**",
+    "packages/langgraph/**",
+    "packages/mcp/**",
+    "packages/models/**",
+    "packages/nats/**",
+    "packages/object-store/**",
+    "packages/observe/**",
+    "packages/registry/**",
+    "packages/scheduled-jobs/**",
+    "packages/scrape/**",
+    "packages/search/**",
+    "packages/tool-schema/**",
+    "tests/test_*.py",
+    "tests/integration/**",
+]

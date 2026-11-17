@@ -166,3 +166,33 @@ def test_no_plain_integration_test_sits_in_a_here_file_off_the_suite() -> None:
     assert tests and all({"integration", "secrets"} <= marks for marks in tests.values()), (
         "the control: a known secrets module's tests read as integration and secrets"
     )
+
+
+def test_the_suite_s_speed_tests_run_apart_with_the_suite_s_services() -> None:
+    """The integration suite's ``loop_timing`` tests run in ``[suites.integration_timing]`` alone (exclusive), with the
+    suite's services and its skip rule, and the suite itself leaves them out: one test in both would time beside the
+    suite's other batches again, and one in neither would run nowhere."""
+    suites = tomllib.loads((_REPO_ROOT / ".testament.toml").read_text(encoding="utf-8"))["suites"]
+    suite, timing = suites["integration"], suites["integration_timing"]
+
+    def marks(command: list[str]) -> str:
+        return command[command.index("-m") + 1]
+
+    assert marks(suite["command"]) == "integration and not loop_timing and not docker and not secrets"
+    assert marks(timing["command"]) == "integration and loop_timing and not docker and not secrets"
+    assert timing.get("exclusive") is True, "the timing suite runs each batch alone on a quiet runner"
+    assert timing["env"] == suite["env"], "the timing suite runs against the suite's services, under its skip rule"
+    script = _SCRIPT.read_text(encoding="utf-8")
+    assert "integration_timing" in script, "scripts/test-integration.sh runs the timing suite after the suite"
+
+
+def test_a_yugabyte_only_test_is_an_integration_test() -> None:
+    """``yugabyte_only`` is deselected off YugabyteDB, which only integration runs reach: one on a unit test would run
+    nowhere."""
+    nowhere = sorted(
+        f"{path.relative_to(_REPO_ROOT)}::{test}"
+        for path in _test_files()
+        for test, marks in _MARK_READER.marks_by_test(parse_python_path(path)).items()
+        if "yugabyte_only" in marks and "integration" not in marks
+    )
+    assert not nowhere, f"tests marked `yugabyte_only` without `integration`, which run nowhere: {nowhere}"

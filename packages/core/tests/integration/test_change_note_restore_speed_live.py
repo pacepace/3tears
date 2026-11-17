@@ -171,6 +171,7 @@ async def _worker_start() -> float:
     return min(starts)
 
 
+@pytest.mark.loop_timing
 async def test_a_restore_reads_its_coverage_within_twice_the_bare_reads(ring: _Ring) -> None:
     """Flips if the keeper's pass putting a lost log back (``_count_since``, ``_estimate`` and ``_stream`` with its
     keyed notes' ``_folded`` over the coverage) takes more than twice the bare count, sized distinct read and read of
@@ -222,6 +223,7 @@ async def _restore_into(ring: _Ring, log: _LostLog) -> str | None:
     return (await ChangeNoteKeeper(ring.pool, notes_schema=ring.schema, log=log).run_pass()).restored
 
 
+@pytest.mark.loop_timing
 async def test_a_restore_whose_bound_does_not_fit_reads_within_twice_the_bare_reads(ring_twice: _Ring) -> None:
     """Flips if a restore whose coverage fits the log only once its distinct rows are sized (each row noted twice, so
     the count's bound passes the budget and the estimate does not) takes more than twice the bare reads plus one

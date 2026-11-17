@@ -82,6 +82,7 @@ async def rings(db_container: str) -> AsyncIterator[_Rings]:
         await pool.close()
 
 
+@pytest.mark.loop_timing
 async def test_a_switchs_ring_read_count_reads_only_the_ring_reads(rings: _Rings) -> None:
     """Flips if ``count_ring_reads`` over a night's notes takes more than twice the same count over a table holding
     only its ring reads: the partial index's predicate then no longer bounds the read."""

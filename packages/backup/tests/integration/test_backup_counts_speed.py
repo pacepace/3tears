@@ -52,6 +52,7 @@ async def seeded(db_container: str) -> AsyncIterator[tuple[asyncpg.Connection, s
         await conn.close()
 
 
+@pytest.mark.loop_timing
 async def test_drift_checksums_speed_at_real_size(db_container: str, seeded: tuple[asyncpg.Connection, str]) -> None:
     """DriftComparator.compare (its _compare_table, _count and _count_and_checksum), both sides the same database,
     against the same work by hand: both sides connected and listed, each table's count-and-checksum read on both."""

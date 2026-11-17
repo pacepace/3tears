@@ -854,7 +854,8 @@ class TestTheManifest:
     def test_the_integration_suite_runs_on_process_services_and_fails_a_missing_one(self) -> None:
         """``--suite integration`` names a suite whose services are child processes and whose skips are failures.
 
-        Its ``env`` replaces the project's whole, so it repeats the uv cache.
+        Its ``env`` replaces the project's whole, so it repeats the uv cache. Its speed tests (``loop_timing``) run in
+        ``integration_timing``, alone on a quiet runner, so it leaves them out.
 
         :return: nothing
         :rtype: None
@@ -863,7 +864,7 @@ class TestTheManifest:
         suite = manifest["suites"]["integration"]
         assert suite["adapter"] == "pytest" and "default_for_paths" not in suite
         marks = suite["command"][suite["command"].index("-m") + 1]
-        assert marks == "integration and not docker and not secrets"
+        assert marks == "integration and not loop_timing and not docker and not secrets"
         assert suite["env"] == {
             "UV_CACHE_DIR": manifest["env"]["UV_CACHE_DIR"],
             "THREETEARS_TEST_SERVICES": "process",

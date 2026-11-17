@@ -1,5 +1,6 @@
-"""a test that starts the host's idle loop (a real HostTicker) without ``loop_timing`` fails at once, saying to mark it;
-a marked test, an integration test and a test that scripts the host are left alone (tests/timing_suite.py)."""
+"""a test that starts the host's idle loop (a real HostTicker) without ``loop_timing`` fails at once, saying to mark it,
+an integration test as much as a unit one; a marked test and a test that scripts the host are left alone
+(tests/timing_suite.py)."""
 
 from __future__ import annotations
 
@@ -34,7 +35,14 @@ class TestAMarkedClass:
 
 
 @pytest.mark.integration
-def test_an_integration_speed_test():
+def test_an_unmarked_integration_speed_test():
+    with HostTicker():
+        pass
+
+
+@pytest.mark.integration
+@pytest.mark.loop_timing
+def test_a_marked_integration_speed_test():
     with HostTicker():
         pass
 
@@ -67,18 +75,20 @@ def test_an_unmarked_fixture_that_times(ticking):
 
 
 def test_only_a_test_that_times_apart_may_start_the_host_s_idle_loop(pytester: pytest.Pytester) -> None:
-    """Flips if an unmarked test may start a real HostTicker (in its body or a fixture), or a marked, integration or
-    scripted one may not."""
+    """Flips if an unmarked test may start a real HostTicker (in its body or a fixture), an integration test as much as
+    a unit one, or a marked or scripted one may not."""
     pytester.makeconftest('pytest_plugins = ["tests.timing_suite"]')
     pytester.makeini("[pytest]\nmarkers =\n    integration: needs a service\n    loop_timing: times apart\n")
     pytester.makepyfile(test_timing=_TESTS)
     result = pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:asyncio", "-rA")
-    result.assert_outcomes(passed=4, failed=1, errors=1)
+    result.assert_outcomes(passed=4, failed=2, errors=1)
     result.stdout.fnmatch_lines(
         [
             "*ERROR at setup of test_an_unmarked_fixture_that_times*",
             "*runs apart from other work: mark it @pytest.mark.loop_timing*",
             "*test_an_unmarked_timing_test*",
+            "*runs apart from other work: mark it @pytest.mark.loop_timing*",
+            "*test_an_unmarked_integration_speed_test*",
             "*runs apart from other work: mark it @pytest.mark.loop_timing*",
         ]
     )

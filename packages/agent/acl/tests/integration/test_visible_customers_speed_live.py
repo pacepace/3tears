@@ -141,6 +141,7 @@ async def world(db_container: str) -> AsyncIterator[tuple[str, uuid.UUID]]:
         await held.close()
 
 
+@pytest.mark.loop_timing
 async def test_the_visible_set_costs_within_twice_the_statement_it_replaced(
     db_container: str, world: tuple[str, uuid.UUID]
 ) -> None:

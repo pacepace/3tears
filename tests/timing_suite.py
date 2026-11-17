@@ -13,8 +13,10 @@ This makes the marker structural. A test not marked ``loop_timing`` that starts 
 on every host, naming the marker: a red every run, never a flake. A test that scripts the host (a fake in place of
 ``HostTicker``) starts none, and is unaffected.
 
-An ``integration`` test is left alone: the integration suite has no timing suite of its own yet, so its speed tests
-still run beside the rest of it (``.testament.toml``).
+An ``integration`` test is held to it too: the integration suite's speed tests run apart from the rest of it, in the
+pool's ``integration_timing`` suite (``.testament.toml``; ``scripts/test-integration.sh`` runs it after the suite).
+Beside the suite's other batches they failed on numbers they hold alone (2026-11-16: the visible-customer set 3.0x
+its statement on brooks-nas, 1.41-1.99x alone), the same red the code did not earn.
 """
 
 from __future__ import annotations
@@ -42,8 +44,8 @@ def _refused(self: HostTicker) -> HostTicker:
 
 
 def _times_apart(item: pytest.Item) -> bool:
-    """whether ``item`` may start the host's idle loop: marked ``loop_timing``, or an ``integration`` test."""
-    return item.get_closest_marker("loop_timing") is not None or item.get_closest_marker("integration") is not None
+    """whether ``item`` may start the host's idle loop: marked ``loop_timing``, a unit and an integration test alike."""
+    return item.get_closest_marker("loop_timing") is not None
 
 
 @pytest.hookimpl(wrapper=True)

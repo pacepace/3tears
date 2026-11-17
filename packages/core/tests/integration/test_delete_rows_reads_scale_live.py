@@ -32,7 +32,6 @@ from threetears.core.collections.schema_backed import (
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.calibrate import budget_problem, plain_keyed_delete_seconds
-from threetears.core.testing.plans import on_yugabyte
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 pytestmark = pytest.mark.integration
@@ -153,11 +152,11 @@ async def test_every_message_carries_the_row_a_key_read_would_and_the_reads_are_
     assert await pool.fetchval("SELECT count(*) FROM results") == 0
 
 
+@pytest.mark.loop_timing
+@pytest.mark.yugabyte_only
 async def test_a_bulk_delete_keeps_within_twice_a_keyed_delete(pool: asyncpg.Pool) -> None:
     """Flips if deleting and reading a reload's rows takes over twice the database's keyed delete of them."""
     async with pool.acquire() as conn:
-        if not await on_yugabyte(conn):
-            pytest.skip("the budget is YugabyteDB's, the platform's database; Postgres checks the rows only")
         baseline = await plain_keyed_delete_seconds(conn, _ROWS)
     collection = _collection(SqlL3Backend(pool))
     best = float("inf")

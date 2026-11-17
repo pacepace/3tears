@@ -117,6 +117,8 @@ class TestATablesNotesAreReadThroughAnIndex:
             problems = plan_problems(checked.plans, scan_ratio=_SCAN_RATIO, together=True)
             assert not problems, problems
 
+    @pytest.mark.loop_timing
+    @pytest.mark.yugabyte_only
     async def test_the_reconcilers_ask_keeps_within_twice_the_reads_it_must_make(self, ring: _Ring) -> None:
         """Flips if the ask takes over twice the bare read it makes: the ring row and the table's notes since the
         reach, read in one statement through the notes' own index on the real table.
@@ -126,8 +128,6 @@ class TestATablesNotesAreReadThroughAnIndex:
         (the ring switched at the night's start), so it holds none since and is not part of the read. An earlier
         baseline read the same rows from plain tables holding only them; it left out the index read every real
         ask pays, and the path stayed at about 2.7x it however the ask was built."""
-        if not await on_yugabyte(ring.conn):
-            pytest.skip("the budget is YugabyteDB's, the platform's database; Postgres checks correctness only")
         wait = await ring.conn.fetchval(f"SELECT wait_seconds FROM {ring.schema}.{RING_TABLE} WHERE id = 1")
         reach = ring.since - timedelta(seconds=float(wait)) / 2
         bare = (

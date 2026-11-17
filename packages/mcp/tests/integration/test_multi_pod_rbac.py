@@ -382,6 +382,7 @@ async def _seed_grants(pool: asyncpg.Pool, count: int) -> list[UUID]:
     return [row[0] for row in rows]
 
 
+@pytest.mark.loop_timing
 @pytest.mark.asyncio
 async def test_load_all_grants_speed_at_real_size(pg_pool: asyncpg.Pool) -> None:
     """the cold-start fill reads the grants as fast as a bare read of the same rows, within the budget."""
@@ -397,6 +398,7 @@ async def test_load_all_grants_speed_at_real_size(pg_pool: asyncpg.Pool) -> None
     assert problem is None, problem
 
 
+@pytest.mark.loop_timing
 @pytest.mark.asyncio
 async def test_a_walked_change_applies_as_fast_as_a_bare_keyed_read(pg_pool: asyncpg.Pool, nats_container: str) -> None:
     """one epoch the walk applies -- its row message, the keyed read, the cache update -- against a bare

@@ -103,6 +103,7 @@ async def ring(db_container: str) -> AsyncIterator[_Ring]:
         await pool.close()
 
 
+@pytest.mark.loop_timing
 async def test_an_idle_table_is_emptied_once_each_note_within_twice_a_keyed_delete(ring: _Ring) -> None:
     """Flips if an emptying leaves a note, counts one twice, or (on YugabyteDB) rereads its own tombstones past
     twice the time of one keyed delete of as many rows (``_delete_band`` on YugabyteDB, ``_delete_past`` elsewhere: the
@@ -163,6 +164,7 @@ async def test_an_emptied_table_is_vacuumed_before_it_counts_as_empty_on_postgre
 _FULL_SLOT = 393_216
 
 
+@pytest.mark.loop_timing
 async def test_an_emptied_full_slot_s_vacuum_costs_within_twice_a_bare_vacuum(db_container: str) -> None:
     """Flips if the VACUUM the keeper sends after emptying a full slot on Postgres (``_vacuum_emptied``, Pace 2026-11-15)
     costs over twice a bare VACUUM of a table of the slot's own shape holding as many deleted rows (a FULL, an ANALYZE

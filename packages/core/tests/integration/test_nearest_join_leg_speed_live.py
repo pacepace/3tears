@@ -100,6 +100,7 @@ def _reads(owner: uuid.UUID) -> dict[str, dict[str, Any]]:
     }
 
 
+@pytest.mark.loop_timing
 async def test_the_joined_ranked_read_costs_within_twice_the_ranked_read_alone(
     db_container: str, world: tuple[str, uuid.UUID]
 ) -> None:

@@ -219,6 +219,7 @@ def _keys(count: int) -> list[tuple[str, str, int]]:
 
 
 class TestReadKeyed:
+    @pytest.mark.loop_timing
     async def test_a_batch_of_keys_reads_its_rows_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a keyed batch read scans past its keys' rows, or is over 2x the bare read of them.
 
@@ -261,6 +262,7 @@ class TestReadKeyed:
 
 
 class TestKeysetPage:
+    @pytest.mark.loop_timing
     async def test_a_page_reads_about_its_rows_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a page reads the prefix whole (a sort of every row), PostgreSQL pages past the cursor other than
         by the key's index range in order (the row comparison; the expansion planned a bitmap scan and a sort, 2.3 ms
@@ -445,6 +447,7 @@ class TestKeysetPage:
 
 
 class TestCounts:
+    @pytest.mark.loop_timing
     async def test_counts_by_counts_only_its_keys_rows(self, seeded: _Seeded) -> None:
         """Flips if a keyed count reads rows no key names, or is over 2x the bare count of them.
 
@@ -485,6 +488,7 @@ class TestCounts:
 
 
 class TestMarks:
+    @pytest.mark.loop_timing
     async def test_a_read_past_a_mark_reads_only_what_moved_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a change-record read scans past the rows that moved, or is over 2x the bare read of them.
 
@@ -507,6 +511,7 @@ class TestMarks:
 
 
 class TestDeleteBefore:
+    @pytest.mark.loop_timing
     async def test_a_sweep_deletes_page_by_page_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a sweep sends other than ceil(rows / page) + 1 statements, a page's plan reads its rows other than
         by the stamp index and the key (batched on YugabyteDB), or a page is over 2x the bare page delete.
@@ -556,6 +561,7 @@ class TestDeleteBefore:
 
 
 class TestUpdateBefore:
+    @pytest.mark.loop_timing
     async def test_a_reap_updates_page_by_page_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a reap sends other than ceil(rows / page) + 1 statements, a page's plan reads its rows other than
         by the stamp index and the key (batched on YugabyteDB), or a page is over 2x one bare update of the same 500
@@ -621,6 +627,7 @@ class _Executes:
 
 
 class TestKeyedWrites:
+    @pytest.mark.loop_timing
     async def test_an_update_and_a_delete_by_key_write_their_rows_within_budget(self, seeded: _Seeded) -> None:
         """Flips if an update or a delete by a (state, geo) prefix plans other than through the key's index, writes
         other than its 30 rows, or is over 2x the bare statement.
@@ -659,6 +666,7 @@ class TestKeyedWrites:
         ]
         assert problems == [None, None], problems
 
+    @pytest.mark.loop_timing
     async def test_a_drained_listing_reads_page_by_page_within_budget(self, seeded: _Seeded) -> None:
         """Flips if keyset_rows loses or doubles a row of a state's 6,000, a page's plan reads past its rows, or the
         drain is over 2x the bare.
@@ -700,6 +708,7 @@ class TestKeyedWrites:
 
 
 class TestKeyedWritesByBatchAndStage:
+    @pytest.mark.loop_timing
     async def test_a_key_batch_s_update_delete_and_source_update_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a write by 600 keys, an update from a keyed source, or a stage applied by its key plans other
         than through the key's index, writes other than its rows, or is over 2x its bare.
@@ -760,6 +769,7 @@ class TestKeyedWritesByBatchAndStage:
             problems.append(_budget(what, took, baseline))
         assert problems == [None] * len(timings), problems
 
+    @pytest.mark.loop_timing
     async def test_every_value_of_a_prefix_is_counted_a_page_at_a_time_within_budget(self, seeded: _Seeded) -> None:
         """Flips if counts_by with no values counts other than every geo of a state, reads past its pages' rows,
         or is over 2x the same paged count hand-written: ``GROUP BY geo ORDER BY geo LIMIT 100`` pages past the last
@@ -805,6 +815,7 @@ async def _replace_bare(conn: asyncpg.Connection) -> None:
 
 
 class TestReadJoined:
+    @pytest.mark.loop_timing
     async def test_a_page_s_joined_rows_are_read_by_its_values_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a joined read scans past the rows the page's values name, or is over 2x the bare read of them.
 
@@ -842,6 +853,7 @@ class TestReadJoined:
 
 
 class TestCountsByRelations:
+    @pytest.mark.loop_timing
     async def test_two_relations_count_only_their_keys_rows_within_budget(self, seeded: _Seeded) -> None:
         """Flips if a count over several relations reads rows no key names, or is over 2x the bare count of them.
 
@@ -906,6 +918,7 @@ class TestCountsByRelations:
 
 
 class TestDeleteOldest:
+    @pytest.mark.loop_timing
     async def test_a_cache_trim_deletes_its_oldest_rows_within_budget(self) -> None:
         """Flips if a cache trim reads past the rows it deletes (a sort of the table) or is over 2x the bare trim.
 
@@ -1044,6 +1057,7 @@ async def grants(db_container: str) -> AsyncIterator[_Seeded]:
 
 
 class TestReadKeyedRecords:
+    @pytest.mark.loop_timing
     async def test_uuid_keys_read_as_records_within_a_tenth_of_the_hand_written_any(self, grants: _Seeded) -> None:
         """Flips if read_keyed(records=True) of 2,000 uuid keys on a direct connection is over 1.1x the bare, or
         answers other rows.

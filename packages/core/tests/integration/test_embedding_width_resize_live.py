@@ -87,6 +87,7 @@ async def _refill(conn: asyncpg.Connection, width: int) -> None:
     await conn.execute(f"UPDATE notes SET embedding = '{vector}'::public.vector({width}) WHERE id % 10 <> 0")
 
 
+@pytest.mark.loop_timing
 async def test_resize_column_speed_at_real_size(notes: tuple[asyncpg.Connection, str]) -> None:
     """``_resize_column``'s schema_change read and rebuild, reached through ``_resize_on_one_session``, against the
     same statements by hand, interleaved."""

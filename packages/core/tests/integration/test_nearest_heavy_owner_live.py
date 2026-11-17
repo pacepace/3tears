@@ -141,6 +141,7 @@ async def test_without_the_iterative_scan_postgres_gets_fewer_rows_than_asked(
         assert len(rows) < _K
 
 
+@pytest.mark.loop_timing
 async def test_the_re_sort_costs_within_twice_the_read_unwrapped(
     db_container: str, world: tuple[str, str, bool]
 ) -> None:

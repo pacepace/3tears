@@ -599,3 +599,163 @@ class TestTestShRulesHold:
         run = _run(repo, ["scheduled-jobs", "-x"])
         assert run.returncode == 2
         assert run.calls == []
+
+
+#: the fixture's manifest with the integration suite's speed tests in a suite of their own, as the repo's declares
+_TIMING_MANIFEST = (
+    _MANIFEST
+    + """
+[suites.integration_timing]
+adapter = "pytest"
+command = ["uv", "run", "pytest", "-m", "integration and loop_timing"]
+default_selection = ["packages/", "tests/"]
+exclusive = true
+"""
+)
+
+#: a ``testament`` stand-in that records each call as ``_RECORDER`` does and exits ``{timing}`` for the timing suite's
+#: run and ``{suite}`` for any other
+_SUITE_RECORDER = (
+    "#!/bin/sh\n"
+    '{{ printf "%s" "$(basename "$0")"; printf "\\t%s" "$@"; printf "\\n"; }} >> "{calls}"\n'
+    'case " $* " in *" integration_timing "*) exit {timing} ;; esac\n'
+    "exit {suite}\n"
+)
+
+
+def _timing_run(repo: Path, args: list[str], *, suite: int = 0, timing: int = 0) -> _Run:
+    """Run the staged ``test-integration.sh`` under the timing manifest, ``testament`` exiting ``suite`` for the
+    integration suite and ``timing`` for its speed tests.
+
+    :param repo: the miniature repo root
+    :ptype repo: Path
+    :param args: the script's arguments
+    :ptype args: list[str]
+    :param suite: the integration suite's exit status
+    :ptype suite: int
+    :param timing: the timing suite's exit status
+    :ptype timing: int
+    :return: what the run did
+    :rtype: _Run
+    """
+    (repo / ".testament.toml").write_text(_TIMING_MANIFEST)
+    _run(repo, ["--dry-run"])  # stages the stand-ins and python3 on PATH
+    bin_dir = repo.parent / "bin"
+    calls = repo.parent / "calls.txt"
+    calls.unlink(missing_ok=True)
+    (bin_dir / "testament").write_text(_SUITE_RECORDER.format(calls=calls, suite=suite, timing=timing))
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "test-integration.sh"), *args],
+        cwd=repo,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    lines = calls.read_text().splitlines() if calls.exists() else []
+    return _Run(result.returncode, result.stderr, [line.split("\t") for line in lines], [], result.stdout)
+
+
+_TIMING_POOL = ["run", "--suite", "integration_timing", "--"]
+
+
+class TestTheSpeedTestsRunApart:
+    """with ``[suites.integration_timing]`` declared, the suite's speed tests run after it over the same paths, in
+    their own suite (alone on a quiet runner), and the run's status is both suites'."""
+
+    def test_a_whole_run_is_the_suite_then_its_speed_tests_over_the_same_paths(self, repo: Path) -> None:
+        """Flips if the speed tests are not run, or run over other paths or options than the suite.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _timing_run(repo, ["-rs"])
+        assert run.returncode == 0, run.stderr
+        assert [call[1:] for call in run.calls] == [
+            [*_POOL, _SUITE_FILE, _SUITE_DIR, "-rs"],
+            [*_TIMING_POOL, _SUITE_FILE, _SUITE_DIR, "-rs"],
+        ]
+
+    def test_without_the_timing_suite_the_suite_runs_alone(self, repo: Path) -> None:
+        """Flips if a manifest declaring no timing suite is sent a run of one.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _run(repo, ["-rs"])
+        assert [call[0:4] for call in run.calls] == [["testament", *_POOL[:3]]]
+
+    @pytest.mark.parametrize(
+        ("suite", "timing", "status"),
+        [
+            pytest.param(0, 0, 0, id="both-green"),
+            pytest.param(1, 0, 1, id="suite-red"),
+            pytest.param(0, 1, 1, id="timing-red"),
+            pytest.param(0, 2, 2, id="timing-no-verdict"),
+            pytest.param(1, 2, 1, id="suite-red-first"),
+            pytest.param(0, 5, 0, id="no-speed-test-here"),
+            pytest.param(5, 0, 0, id="only-speed-tests-here"),
+            pytest.param(5, 1, 1, id="only-speed-tests-red"),
+            pytest.param(5, 5, 5, id="nothing-here"),
+        ],
+    )
+    def test_the_run_s_status_is_both_suites(self, repo: Path, suite: int, timing: int, status: int) -> None:
+        """Flips if a red or a no verdict of either suite is lost, or a suite with nothing among the paths reads as
+        a failure while the other ran them.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param suite: the integration suite's exit
+        :ptype suite: int
+        :param timing: the timing suite's exit
+        :ptype timing: int
+        :param status: the run's expected exit
+        :ptype status: int
+        :return: nothing
+        :rtype: None
+        """
+        run = _timing_run(repo, [], suite=suite, timing=timing)
+        assert run.returncode == status, run.stderr
+        assert len(run.calls) == 2
+
+    def test_the_dry_run_prints_both_commands(self, repo: Path) -> None:
+        """Flips if the dry run hides the timing suite's command.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _timing_run(repo, ["scheduled-jobs", "--dry-run"])
+        assert run.returncode == 0, run.stderr
+        assert run.calls == []
+        first, second = run.stdout.splitlines()
+        assert shlex.split(first.removeprefix("on the pool: ")) == [
+            "./scripts/test.sh",
+            "--suite",
+            "integration",
+            _SUITE_DIR,
+        ]
+        assert shlex.split(second.removeprefix("on the pool, timing: ")) == [
+            "./scripts/test.sh",
+            "--suite",
+            "integration_timing",
+            _SUITE_DIR,
+        ]
+
+    def test_off_the_pool_one_local_run_holds_every_test(self, repo: Path) -> None:
+        """Flips if a run off the pool sends anything to a timing suite (a pool thing) instead of its one local run.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        (repo / ".testament.toml").write_text(_TIMING_MANIFEST)
+        run = _run(repo, ["scheduled-jobs"], testament=False)
+        assert run.call("uv") == ["run", "pytest", _SUITE_DIR, *_LOCAL_MARKS]

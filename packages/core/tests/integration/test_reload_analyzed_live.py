@@ -176,6 +176,7 @@ async def test_a_reloaded_tables_first_read_of_some_geographies_plans_by_its_ind
             assert not problems, problems
 
 
+@pytest.mark.loop_timing
 async def test_a_reload_s_analyze_speed_at_real_size(pool: asyncpg.Pool, served: tuple[Path, str]) -> None:
     """the speed test of SqlL3Backend.analyze, the one ANALYZE after a reload: a reload of 356,928 rows with its
     ANALYZE within 2x the same reload left to auto-analyze (the bare load), interleaved on the same database. On a

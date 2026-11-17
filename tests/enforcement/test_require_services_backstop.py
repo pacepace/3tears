@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests import require_services
+
 _TESTS = """
 import pytest
 
@@ -125,3 +127,70 @@ def test_in_process_mode_a_process_only_test_runs(pytester: pytest.Pytester, mon
     monkeypatch.setenv("THREETEARS_TEST_SERVICES", "process")
     result = _named_session(pytester)
     result.assert_outcomes(passed=2)
+
+
+_YUGABYTE_ONLY = """
+import pytest
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.mark.yugabyte_only
+def test_a_yugabyte_budget():
+    pass
+
+
+def test_on_every_engine():
+    pass
+"""
+
+
+def _engine_session(pytester: pytest.Pytester) -> pytest.RunResult:
+    """a session holding one ``yugabyte_only`` test and one for every engine, under the flag."""
+    pytester.makeconftest('pytest_plugins = ["tests.require_services"]')
+    pytester.makeini("[pytest]\nmarkers =\n    integration: needs a service\n    yugabyte_only: YugabyteDB's alone\n")
+    pytester.makepyfile(test_engines=_YUGABYTE_ONLY)
+    return pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:asyncio")
+
+
+@pytest.mark.parametrize("engine", [None, "postgres"])
+def test_off_yugabyte_a_yugabyte_only_test_is_deselected(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, engine: str | None
+) -> None:
+    """Flips if a ``yugabyte_only`` test runs (or skips, which the flag fails) on Postgres: a run naming no engine and
+    no server starts Postgres, and one naming Postgres is Postgres."""
+    monkeypatch.setenv("THREETEARS_REQUIRE_SERVICES", "1")
+    monkeypatch.delenv("THREETEARS_TEST_POSTGRES_URL", raising=False)
+    if engine is None:
+        monkeypatch.delenv("THREETEARS_TEST_ENGINE", raising=False)
+    else:
+        monkeypatch.setenv("THREETEARS_TEST_ENGINE", engine)
+    result = _engine_session(pytester)
+    # deselected, not skipped: nothing reads like a pass, and nothing fails for a skip
+    result.assert_outcomes(passed=1, deselected=1)
+
+
+def test_on_yugabyte_a_yugabyte_only_test_runs(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if a run that names YugabyteDB leaves out the tests only YugabyteDB is held to."""
+    monkeypatch.setenv("THREETEARS_REQUIRE_SERVICES", "1")
+    monkeypatch.setenv("THREETEARS_TEST_ENGINE", "yugabyte")
+    result = _engine_session(pytester)
+    result.assert_outcomes(passed=2)
+
+
+def test_the_engine_is_the_server_s_when_the_run_names_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Flips if a run pointed at a YugabyteDB server without naming the engine is taken for Postgres (its
+    ``yugabyte_only`` tests then never run), or one naming the engine asks the server at all."""
+    asked: list[str] = []
+
+    def server(url: str) -> str:
+        asked.append(url)
+        return "yugabyte"
+
+    monkeypatch.setattr(require_services, "server_engine", server)
+    monkeypatch.delenv("THREETEARS_TEST_ENGINE", raising=False)
+    monkeypatch.setenv("THREETEARS_TEST_POSTGRES_URL", "postgresql://yb.example/db")
+    assert require_services.run_engine() == "yugabyte"
+    monkeypatch.setenv("THREETEARS_TEST_ENGINE", "postgres")
+    assert require_services.run_engine() == "postgres"
+    assert asked == ["postgresql://yb.example/db"]

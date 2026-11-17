@@ -25,7 +25,8 @@ cd "$REPO_ROOT"
 #
 # The suite runs on the testament pool: the paths in .testament.toml's [suites.integration]
 # `default_selection`, through `./scripts/test.sh --suite integration`, against Postgres, NATS and S3
-# started as child processes inside the pool's container. test.sh's rules hold: its exit 2 (no verdict),
+# started as child processes inside the pool's container. Its speed tests (`loop_timing`) then run over the
+# same paths in [suites.integration_timing], each batch alone on a quiet runner. test.sh's rules hold: its exit 2 (no verdict),
 # and its refusal of flags that need one local process (-x, --pdb, ...). Nothing runs on this machine.
 #
 # `--here` runs the rest, on this machine: HERE_FILES, the tests marked `docker` (they drive a Docker
@@ -123,6 +124,13 @@ for path in suites.get("integration", {}).get("default_selection", []):
 while IFS= read -r path; do
     [ -n "$path" ] && SUITE_PATHS+=("$path")
 done <<<"$listed"
+# the suite's speed tests (`loop_timing`), when the manifest declares their suite: the same paths, run after the rest
+# of the suite, each batch alone on a quiet runner (.testament.toml's [suites.integration_timing])
+TIMING_SUITE="$(python3 -I -c '
+import tomllib
+with open(".testament.toml", "rb") as manifest:
+    print("integration_timing" if "integration_timing" in tomllib.load(manifest).get("suites", {}) else "")
+')"
 
 # whether $1 is $2 or lies under it
 under() {
@@ -194,6 +202,11 @@ if [ -n "$pool_route" ]; then
     [ ${#GATES[@]} -eq 0 ] || CMD+=(env "${GATES[@]}")
     CMD+=(./scripts/test.sh --suite integration "${SELECTION[@]}" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"})
     LABEL="on the pool"
+    TIMING_CMD=()
+    if [ -n "$TIMING_SUITE" ]; then
+        [ ${#GATES[@]} -eq 0 ] || TIMING_CMD+=(env "${GATES[@]}")
+        TIMING_CMD+=(./scripts/test.sh --suite "$TIMING_SUITE" "${SELECTION[@]}" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"})
+    fi
 else
     # off the pool: the selection runs here, less the modules marked `process_only`, which check the pool's
     # child-process services (a module named on its own is collected, and tests/require_services.py would
@@ -221,9 +234,32 @@ fi
 
 if [ -n "$DRY_RUN" ]; then
     echo "${LABEL}: $(shell_words "${CMD[@]}")"
+    if [ -n "$pool_route" ] && [ ${#TIMING_CMD[@]} -gt 0 ]; then
+        echo "${LABEL}, timing: $(shell_words "${TIMING_CMD[@]}")"
+    fi
     exit 0
 fi
 if [ -z "$pool_route" ]; then
     echo "test-integration.sh: the integration suite, here, through testcontainers: ${LOCAL[*]}" >&2
 fi
-exec "${CMD[@]}"
+if [ -z "$pool_route" ] || [ ${#TIMING_CMD[@]} -eq 0 ]; then
+    exec "${CMD[@]}"
+fi
+# on the pool: the suite, then its speed tests over the same paths. A suite's 5 is pytest's "no tests collected":
+# paths holding only speed tests leave the first nothing, and paths holding none leave the second nothing; the run
+# is 5 only when both found none. Otherwise the first other non-zero status is the run's; a 2 is test.sh's no verdict
+# (for the timing suite, a pool with no quiet runner), which test.sh has already said.
+status=0
+"${CMD[@]}" || status=$?
+timing=0
+"${TIMING_CMD[@]}" || timing=$?
+if [ "$status" -eq 5 ] && [ "$timing" -eq 5 ]; then
+    exit 5
+fi
+[ "$status" -eq 5 ] && status=0
+[ "$timing" -eq 5 ] && timing=0
+if [ "$timing" -ne 0 ]; then
+    echo "test-integration.sh: integration suite exit ${status}, ${TIMING_SUITE} suite exit ${timing}" >&2
+    [ "$status" -eq 0 ] && status=$timing
+fi
+exit "$status"
