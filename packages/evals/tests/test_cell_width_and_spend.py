@@ -28,6 +28,7 @@ from typing import Any, get_args
 
 import pytest
 
+from packages.evals.tests.bound_client_support import BoundClientDouble
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import TOY_JUDGE_MODEL, ToyJudgeCompletion, toyhost_judged_template
@@ -60,6 +61,7 @@ from threetears.evals.kernel.result_condition import (
     trial_exclusion,
 )
 from threetears.evals.kernel.usage_capture import RoleUsageLedger, maybe_billed_usd
+from threetears.evals.run.runner import DEFAULT_CELL_TIMEOUT_S
 from threetears.evals.run import (
     KindWiring,
     LaunchHost,
@@ -600,7 +602,7 @@ async def test_a_conversation_the_run_has_outspent_is_not_cut_short_mid_cell() -
 
 
 @dataclass
-class _PricedJudge:
+class _PricedJudge(BoundClientDouble):
     """A judge client that scores every dim a 4, each call costing ``cost_usd`` and priced beforehand at ``ceiling_usd``."""
 
     cost_usd: float
@@ -750,7 +752,7 @@ async def _judged_run_ended(
             options=RunnerOptions(
                 candidate_kinds={TOY_EXTRACTOR_KIND: lambda _cell: kind},
                 max_concurrent_cells=width,
-                **({"cell_timeout_s": cell_timeout_s} if cell_timeout_s is not None else {}),
+                cell_timeout_s=DEFAULT_CELL_TIMEOUT_S if cell_timeout_s is None else cell_timeout_s,
             ),
             budget_gate=cap.check,
             on_cost=cap.record,
@@ -1265,7 +1267,7 @@ async def test_a_simulator_call_whose_sent_settings_is_refused_is_counted_and_re
     ledger = RoleUsageLedger(role="simulator")
     driver.fold_usage(ledger)
     (row,) = ledger.rows()
-    assert (row.call_count, row.cost_usd, row.sent_settings) == (1, pytest.approx(0.004), None)
+    assert (row.call_count, row.sent_settings) == (1, None) and row.cost_usd == pytest.approx(0.004)
 
 
 def test_a_ceiling_is_the_clients_own_times_the_attempts_and_unpriced_without_one() -> None:

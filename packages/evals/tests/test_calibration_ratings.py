@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from pydantic import ValidationError
@@ -38,6 +38,7 @@ from threetears.evals.schema import (
     label_key_of,
 )
 from threetears.evals.kernel import NotFoundError, ValidationFailedError
+from threetears.evals.schema.models import RaterKind
 from threetears.evals.run import rate_result
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result, memory_storage
 from packages.evals.tests.stored_models import stored_sample
@@ -45,6 +46,13 @@ from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.clock_support import frozen_clock
+
+
+def _kappa(pairs: list[tuple[int, int]], scale: list[int], *, weights: Literal["none", "quadratic"] = "none") -> float:
+    """Cohen's kappa over ``pairs``, which these pairs always have."""
+    kappa = cohen_kappa(pairs, scale, weights=weights)
+    assert kappa is not None, pairs
+    return kappa
 
 
 @pytest.fixture(autouse=True)
@@ -411,9 +419,9 @@ class TestJudgeAgreement:
         host = [(judged[i], people[i]) for i in range(1, 6, 2)]
         scale = [1, 2, 3, 4, 5]
         # Each person's kappa over the results they rated, pooled weighted by each person's pairs (3 and 3 here).
-        assert tone.kappa == pytest.approx((cohen_kappa(guest, scale) + cohen_kappa(host, scale)) / 2)
+        assert tone.kappa == pytest.approx((_kappa(guest, scale) + _kappa(host, scale)) / 2)
         assert tone.weighted_kappa == pytest.approx(
-            (cohen_kappa(guest, scale, weights="quadratic") + cohen_kappa(host, scale, weights="quadratic")) / 2
+            (_kappa(guest, scale, weights="quadratic") + _kappa(host, scale, weights="quadratic")) / 2
         )
         assert (agreement.ratings_read, agreement.unpaired) == (6, [])
 
@@ -451,9 +459,7 @@ class TestJudgeAgreement:
         scale = [1, 2, 3, 4, 5]
         # Per person, then pooled by result: five results weigh 1 each, the two both people rated split between
         # them — alice carries 3 + 2 x 1/2 = 4, bob 2 x 1/2 = 1.
-        per_person = (
-            4 * cohen_kappa(list(zip(judged, alice)), scale) + 1 * cohen_kappa(list(zip(judged[:2], bob)), scale)
-        ) / 5
+        per_person = (4 * _kappa(list(zip(judged, alice)), scale) + 1 * _kappa(list(zip(judged[:2], bob)), scale)) / 5
         pooled = cohen_kappa(list(zip(judged + judged[:2], alice + bob)), scale)
         assert tone.n == 7 and tone.raters == ["alice", "bob"]
         assert tone.results == 5, "two people rating one result is one result"
@@ -575,7 +581,8 @@ class TestJudgeAgreement:
         Both orders are driven through the write, so neither kind can silently replace the other, and the
         agent disagrees with the person so a pooled read would move the human figures.
         """
-        for first, second in (("person", "agent"), ("agent", "person")):
+        orders: tuple[tuple[RaterKind, RaterKind], ...] = (("person", "agent"), ("agent", "person"))
+        for first, second in orders:
             storage, _ = memory_storage()
             storage.save_eval_result(_result("r-1", _tone(4)))
             scores = {"person": 4, "agent": 1}

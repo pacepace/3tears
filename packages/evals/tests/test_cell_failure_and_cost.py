@@ -72,6 +72,7 @@ from threetears.evals.run.runner import (
     execute_run,
     grade_goal_checks,
 )
+from packages.evals.tests.bound_client_support import ClientDouble
 from packages.evals.tests.job_support import InMemoryRunStore, settled
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from packages.evals.tests.scripted_table import ScriptedTable, actor
@@ -249,7 +250,7 @@ def _dim_of(system: str) -> str:
 
 
 @dataclass
-class _ScriptedJudge:
+class _ScriptedJudge(ClientDouble):
     """A judge client answering each dim with its scripted reply, priced the way a provider prices it.
 
     A dim named in ``hangs`` never answers — the call waits until the cell's deadline cancels it.
@@ -403,6 +404,7 @@ class _RigBreaksUnderKind(ToyExtractorKind):
         )
         if not self.misses:
             raise ApparatusError("the ledger's seeded payload no longer rebuilds as the type its seam declares")
+        assert test_case.template_id is not None
         raise CassetteMiss(
             CassetteKey(
                 corpus_id="capture-run",
@@ -751,7 +753,7 @@ async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_t
     assert result.termination == "apparatus_failed"
     assert result.infra_error is not None and "CompletionProtocolDefect" in result.infra_error
     (judge_row,) = [row for row in result.usage if row.role == "judge"]
-    assert (judge_row.call_count, judge_row.cost_usd) == (1, pytest.approx(0.0004))
+    assert judge_row.call_count == 1 and judge_row.cost_usd == pytest.approx(0.0004)
     assert any(row.role == "candidate" for row in result.usage)
     assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
@@ -770,7 +772,7 @@ async def test_an_unpriced_judge_s_defective_completion_fails_the_run_before_its
     (result,) = drive.results
     assert result.termination == "apparatus_failed"
     (judge_row,) = [row for row in result.usage if row.role == "judge"]
-    assert (judge_row.call_count, judge_row.cost_usd) == (1, pytest.approx(0.0004))
+    assert judge_row.call_count == 1 and judge_row.cost_usd == pytest.approx(0.0004)
     assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 
@@ -1045,7 +1047,7 @@ async def test_a_capped_run_stops_on_its_first_unpriced_cell_however_far_below_i
         await go()
 
     assert stopped.value.completed == 1
-    assert stopped.value.breach.unpriced_results == 1
+    assert stopped.value.breach is not None and stopped.value.breach.unpriced_results == 1
     assert len(drive.results) == 1, "the cell that went unpriced is kept, and no further cell was launched"
 
 
@@ -1234,7 +1236,7 @@ def test_the_program_budget_leaves_unpriced_spend_out_of_its_dollars_and_counts_
     assert budget.total_cost_usd == pytest.approx(0.10)
     assert budget.n_unpriced == 1
     (row,) = budget.runs
-    assert (row.cost_usd, row.n_results, row.n_unpriced) == (pytest.approx(0.10), 2, 1)
+    assert (row.n_results, row.n_unpriced) == (2, 1) and row.cost_usd == pytest.approx(0.10)
 
 
 def test_an_orphaned_runs_unpriced_spend_is_counted_beside_its_dollars() -> None:
@@ -1391,4 +1393,6 @@ def test_a_judge_kind_campaign_states_each_arms_cost_per_reply_from_the_judge_un
     (scoreboard,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "scoreboard"]
     (cost,) = [column for column in scoreboard.columns if column.key == "cost"]
     assert cost.header == "Cost per 1,000 replies"
-    assert sorted(row["cost"] for row in scoreboard.values()) == [pytest.approx(0.17), pytest.approx(0.67)]
+    cells = [row["cost"] for row in scoreboard.values()]
+    costs = sorted(cell for cell in cells if isinstance(cell, int | float))
+    assert len(costs) == len(cells) and costs == [pytest.approx(0.17), pytest.approx(0.67)]

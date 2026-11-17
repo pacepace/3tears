@@ -26,13 +26,14 @@ from dataclasses import replace
 
 import pytest
 
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.analysis import AnalysisContextBundle, ComparisonFamily, assemble_context_bundle
 from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.analysis.stats import guardrail_decision
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
-from threetears.evals.schema import EvalResult
+from threetears.evals.schema import EvalResult, EvalRun
 from packages.evals.tests.factories import (
     fixture_variant_key,
     make_aspect_campaign,
@@ -101,9 +102,9 @@ def _profile() -> HostProfile:
     )
 
 
-def _evidence() -> tuple[list, dict[str, list[EvalResult]]]:
+def _evidence() -> tuple[list[EvalRun], dict[str, list[EvalResult]]]:
     """A control and a contrast over twelve cases at ``K`` repeats each, every result carrying the four measures."""
-    runs = []
+    runs: list[EvalRun] = []
     results: dict[str, list[EvalResult]] = {}
     for model, trues in ((CONTROL, _CONTROL_TRUE), (CONTRAST, _CONTRAST_TRUE)):
         run = make_eval_run(status="completed", candidate_model=model)
@@ -141,7 +142,13 @@ def _bundle() -> AnalysisContextBundle:
         design=minimal_aspect_design(merit_axes=["reliability"]),
         question="does the contrast top up as often?",
         asked_at=asked,
-        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(CONTROL), named_at=asked),
+        control=CampaignArm(
+            identity_version=IDENTITY_VERSION,
+            label="control",
+            role="control",
+            variant_key=fixture_variant_key(CONTROL),
+            named_at=asked,
+        ),
         scope_id=runs[0].scope_id,
         name="boolean contrasts",
         subject_id=runs[0].subject_snapshot.subject_id,
@@ -217,12 +224,15 @@ def test_an_undirected_boolean_and_a_categorical_or_text_measure_get_no_contrast
 
 
 def test_the_report_states_the_boolean_s_contrast_in_points_of_a_share(bundle: AnalysisContextBundle) -> None:
+    from threetears.evals.analysis.report.blocks import TableBlock
     from threetears.evals.analysis.report.build import build_code_only_report
 
     report = build_code_only_report(bundle, assembled_at="2026-10-31T00:00:00Z")
-    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparisons"]
     (row,) = [row for row in table.values() if row["reading"] == "Top up never"]
-    (folded,) = [block for block in report.blocks if getattr(block, "name", None) == "comparison_statistics"]
+    (folded,) = [
+        block for block in report.blocks if isinstance(block, TableBlock) and block.name == "comparison_statistics"
+    ]
     (stats,) = [row for row in folded.values() if row["reading"] == "Top up never"]
 
     assert isinstance(row["interval"], str) and row["interval"].endswith(" pts")
@@ -291,7 +301,13 @@ def _guardrail_bundle(contrast_quiet: tuple[int, ...]) -> AnalysisContextBundle:
         design=minimal_aspect_design(merit_axes=["reliability"]),
         question="does the contrast keep quiet as often?",
         asked_at=asked,
-        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(CONTROL), named_at=asked),
+        control=CampaignArm(
+            identity_version=IDENTITY_VERSION,
+            label="control",
+            role="control",
+            variant_key=fixture_variant_key(CONTROL),
+            named_at=asked,
+        ),
         scope_id=runs[0].scope_id,
         name="boolean guardrail",
         subject_id=runs[0].subject_snapshot.subject_id,

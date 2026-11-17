@@ -16,7 +16,7 @@ import json
 import types
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 
 import pytest
 from threetears.evals.analysis import JudgeKey, judge_kind_readings
@@ -61,6 +61,7 @@ from threetears.evals.schema import (
 )
 from threetears.evals.testing import RecordedCompletions, RecordingRefused
 
+from packages.evals.tests.bound_client_support import BoundClientDouble
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -87,23 +88,10 @@ _UNREADABLE_INVOICE = "Invoice doc-02"
 _RATER = "ana@example.com"
 
 
-class _UnpricedJudge:
-    """What every judge client below is besides its replies: bound to the toy judge's model, unable to price a call
-    (the engine's ceiling then reads none, as for a client with no ``price_ceiling``), with nothing to release."""
+class _UnpricedJudge(BoundClientDouble):
+    """A judge client bound to the toy judge's model, unable to price a call."""
 
     model_name = TOY_JUDGE_MODEL
-
-    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
-        return None
-
-    async def aclose(self) -> None:
-        return None
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        await self.aclose()
 
 
 class _ArmAwareJudge(ScriptedJudgeClient, _UnpricedJudge):

@@ -35,7 +35,10 @@ from threetears.evals.schema import (
     EvalResult,
     EvalRun,
     EvalTemplate,
+    EvalTestCase,
+    EvalTrace,
     GoalStateOutcome,
+    JudgeConfig,
     JudgeEvidence,
     LatencyMetrics,
     RoleUsage,
@@ -276,12 +279,12 @@ TOYHOST_JUDGED_DIMENSION = "extraction.layout_fidelity"
 
 
 class ToyhostStorage:
-    """The reads the bundle assembler makes, over an in-memory toy-host corpus.
+    """The reads the bundle assembler makes, over an in-memory toy-host corpus, and a calibration rating's.
 
-    The reads :func:`~threetears.evals.analysis.assemble_context_bundle` makes, and nothing
-    else — the narrow port a read-only consumer implements over data it already holds. It honours
-    the scope partition on runs and results, so a wrong-scope read misses exactly as a real store's
-    does.
+    The reads :func:`~threetears.evals.analysis.assemble_context_bundle` makes and the reads and write
+    :func:`~threetears.evals.run.rate_result` makes, and nothing else — the narrow port a consumer implements over
+    data it already holds. It honours the scope partition on runs and results, so a wrong-scope read misses exactly
+    as a real store's does.
     """
 
     def __init__(
@@ -394,6 +397,21 @@ class ToyhostStorage:
             ),
             None,
         )
+
+    def load_test_case(self, test_case_id: str, scope_id: str) -> EvalTestCase | None:
+        """None: the toy host's cases are its documents, held by no stored case a rating reads back."""
+        del test_case_id, scope_id
+        return None
+
+    def load_eval_trace(self, result_id: str, scope_id: str) -> EvalTrace | None:
+        """None: the toy host's observations carry no trace."""
+        del result_id, scope_id
+        return None
+
+    def load_judge_config(self, config_id: str, scope_id: str) -> JudgeConfig | None:
+        """None: the toy host's judge runs on its built-in prompt, under no stored config."""
+        del config_id, scope_id
+        return None
 
     def save_calibration_rating(self, rating: CalibrationRating) -> None:
         """Hold a reviewer's rating, replacing that reviewer's earlier rating of the same thing, as the real store does."""
