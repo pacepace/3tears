@@ -46,7 +46,9 @@ since a skip reads like a pass.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
+import concurrent.futures
 import contextlib
 import importlib.util
 import json
@@ -66,8 +68,9 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Final, NoReturn
 
+import asyncpg
 import pytest
 
 from threetears.core.testing.containers import check_docker_available, stagger_container_start
@@ -83,6 +86,7 @@ __all__ = [
     "running_nats",
     "running_postgres",
     "running_s3",
+    "running_yugabyte",
 ]
 
 #: ``process`` starts the services as child processes; unset (or empty) uses testcontainers.
@@ -781,6 +785,307 @@ def running_postgres(image: str) -> contextlib.AbstractContextManager[str]:
     if _services_mode() == _PROCESS:
         return _postgres_process(image)
     return _postgres_container(image)
+
+
+# --------------------------------------------------------------------------------------------------
+# YugabyteDB
+# --------------------------------------------------------------------------------------------------
+
+#: the YugabyteDB release the process-mode cluster is: the one production runs, copied into the testament image from
+#: the ``yugabytedb/yugabyte`` image of this tag (docker/testament.Dockerfile, pinned by digest there;
+#: tests/enforcement/test_testament_image_services.py holds the two to one release)
+_YB_VERSION: Final = "2026.1.0.0-b118"
+_YB_ROOT = Path("/opt/yugabyte")
+_YB_USER = "yugabyte"
+#: the database the URL names, made at start as the Postgres template's ``test`` is, so a test never works in the
+#: cluster's own ``yugabyte`` database
+_YB_DATABASE = "test"
+#: every port a cluster listens on, each on the cluster's own loopback address: master RPC and web, tserver RPC and
+#: web, YSQL, YCQL, and the YSQL and YCQL metrics servers
+_YB_PORTS: Final[tuple[int, ...]] = (7100, 7000, 9100, 9000, 5433, 9042, 13000, 12000)
+_YB_MASTER_PORT = 7100
+_YB_TSERVER_PORT = 9100
+_YB_YSQL_PORT = 5433
+_YB_YCQL_PORT = 9042
+#: what each server may hold. A runner takes a few of the suite's batches at once (``max_batches_per_runner``), each
+#: with a cluster of its own; unbounded, each would size itself to the host's whole memory. A test process's
+#: single-node cluster measured about 0.7 GB resident (2026-11-16, 2026.1.0.0-b118): these are its ceilings.
+_YB_MASTER_MEMORY = 1 << 30
+_YB_TSERVER_MEMORY = 2 << 30
+#: a fresh cluster's start, master to first YSQL statement, took about 7 s alone; a runner's other batches slow it
+_YB_START_TIMEOUT_S = 180.0
+#: the settings ``yugabyted start`` gave the local YugabyteDB every earlier proof ran on (the integ095-yb container,
+#: ``yugabyted start --tserver_flags=ysql_enable_packed_row=true,max_clock_skew_usec=5000000
+#: --master_flags=max_clock_skew_usec=5000000``), read from its servers' command lines: one tablet per table (plans and
+#: budgets depend on it), read committed, the memory defaults for YSQL, the clock-skew allowance
+_YB_COMMON_FLAGS: Final[tuple[str, ...]] = (
+    "--yb_num_shards_per_tserver=1",
+    "--ysql_num_shards_per_tserver=1",
+    "--yb_enable_read_committed_isolation=true",
+    "--max_clock_skew_usec=5000000",
+    "--use_memory_defaults_optimized_for_ysql=true",
+    "--callhome_enabled=false",
+    # the server exits when the test process does, as yugabyted's do when it does
+    "--stop_on_parent_termination",
+    "--undefok=stop_on_parent_termination",
+)
+#: tcmalloc's line saying whether its per-CPU caches run
+_PER_CPU_LINE = re.compile(r"TCMalloc per cpu caches active: (\d+)")
+
+
+def yugabyte_master_argv(address: str, data: Path) -> list[str]:
+    """the master's command line: a one-node cluster's only master, on ``address``.
+
+    :param address: the cluster's loopback address
+    :ptype address: str
+    :param data: its data directory
+    :ptype data: Path
+    :return: the command
+    :rtype: list[str]
+    """
+    return [
+        str(_YB_ROOT / "bin" / "yb-master"),
+        f"--fs_data_dirs={data}",
+        f"--master_addresses={address}:{_YB_MASTER_PORT}",
+        f"--rpc_bind_addresses={address}:{_YB_MASTER_PORT}",
+        f"--webserver_interface={address}",
+        "--replication_factor=1",
+        "--enforce_tablet_replica_limits=true",
+        "--split_respects_tablet_replica_limits=true",
+        f"--memory_limit_hard_bytes={_YB_MASTER_MEMORY}",
+        *_YB_COMMON_FLAGS,
+    ]
+
+
+def yugabyte_tserver_argv(address: str, data: Path) -> list[str]:
+    """the tablet server's command line, serving YSQL on ``address``:5433.
+
+    :param address: the cluster's loopback address
+    :ptype address: str
+    :param data: its data directory
+    :ptype data: Path
+    :return: the command
+    :rtype: list[str]
+    """
+    return [
+        str(_YB_ROOT / "bin" / "yb-tserver"),
+        f"--fs_data_dirs={data}",
+        f"--tserver_master_addrs={address}:{_YB_MASTER_PORT}",
+        f"--rpc_bind_addresses={address}:{_YB_TSERVER_PORT}",
+        f"--webserver_interface={address}",
+        "--start_pgsql_proxy",
+        f"--pgsql_proxy_bind_address={address}:{_YB_YSQL_PORT}",
+        f"--cql_proxy_bind_address={address}:{_YB_YCQL_PORT}",
+        "--start_redis_proxy=false",
+        "--ysql_enable_packed_row=true",
+        "--ysql_pg_conf_csv=yb_enable_cbo=on",
+        f"--memory_limit_hard_bytes={_YB_TSERVER_MEMORY}",
+        *_YB_COMMON_FLAGS,
+    ]
+
+
+def _random_loopback() -> str:
+    """a loopback address other than 127.0.0.1, at random (Linux routes all of 127/8 to the loopback device).
+
+    :return: the address
+    :rtype: str
+    """
+    return f"127.{secrets.randbelow(254) + 1}.{secrets.randbelow(256)}.{secrets.randbelow(254) + 1}"
+
+
+def ports_free(address: str, ports: tuple[int, ...] = _YB_PORTS) -> bool:
+    """whether nothing listens on any of ``ports`` at ``address`` at this moment.
+
+    :param address: the address
+    :ptype address: str
+    :param ports: the ports
+    :ptype ports: tuple[int, ...]
+    :return: True when every port binds
+    :rtype: bool
+    """
+    for port in ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind((address, port))
+            except OSError:
+                # NOSILENT: a port that will not bind is the answer asked for
+                return False
+    return True
+
+
+def yugabyte_address() -> str:
+    """a loopback address of a cluster's own: its every port free there.
+
+    A cluster's servers each listen on fixed ports (the master's 7100, YSQL's 5433, ...); one address per cluster
+    gives two clusters in one container (two batches) no port to share, with every port where YugabyteDB puts it.
+
+    :return: the address
+    :rtype: str
+    """
+    for _ in range(_PORT_ATTEMPTS * 4):
+        address = _random_loopback()
+        if ports_free(address):
+            return address
+    pytest.fail(f"no loopback address with YugabyteDB's ports {_YB_PORTS} free in {_PORT_ATTEMPTS * 4} tries")
+
+
+def per_cpu_caches_off(log_path: Path) -> bool | None:
+    """whether a server's log says tcmalloc's per-CPU caches are off; None when it has not said.
+
+    :param log_path: the server's INFO log
+    :ptype log_path: Path
+    :return: True when off, False when on, None when the log has no such line (yet)
+    :rtype: bool | None
+    """
+    if not log_path.exists():
+        return None
+    found = _PER_CPU_LINE.search(log_path.read_text(encoding="utf-8", errors="replace"))
+    return None if found is None else found.group(1) == "0"
+
+
+def _yugabyte_answers(url: str) -> bool:
+    """whether the cluster at ``url``'s address takes a YSQL statement, making the URL's database on the first that
+    does; False while it does not yet.
+
+    :param url: the URL the cluster will be reached at
+    :ptype url: str
+    :return: True once the database is there
+    :rtype: bool
+    """
+    admin = url.rsplit("/", 1)[0] + f"/{_YB_USER}"
+
+    async def make() -> None:
+        conn = await asyncpg.connect(admin, timeout=10)
+        try:
+            if not await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", _YB_DATABASE):
+                await conn.execute(f"CREATE DATABASE {_YB_DATABASE}")
+        finally:
+            await conn.close()
+
+    try:
+        # on a thread of its own, so a session fixture asks it whether or not an event loop runs
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(asyncio.run, make()).result()
+    except OSError, asyncpg.PostgresError, asyncpg.InterfaceError, TimeoutError:
+        # NOSILENT: a cluster still starting refuses or fails its first statements; the caller waits and asks again
+        return False
+    return True
+
+
+def _await_yugabyte(servers: dict[str, tuple[subprocess.Popen[bytes], Path]], url: str) -> None:
+    """wait until the cluster takes statements and has its database, and its servers run no per-CPU caches.
+
+    :param servers: each server's process and INFO log, by name
+    :ptype servers: dict[str, tuple[subprocess.Popen[bytes], Path]]
+    :param url: the URL the cluster will be reached at
+    :ptype url: str
+    :return: None
+    :rtype: None
+    """
+    deadline = time.monotonic() + _YB_START_TIMEOUT_S
+    while True:
+        for name, (child, log_path) in servers.items():
+            if child.poll() is not None:
+                pytest.fail(
+                    f"YugabyteDB's {name} exited (code {child.returncode}) before the cluster was ready:\n"
+                    f"{_tail(log_path)}"
+                )
+        if _yugabyte_answers(url):
+            break
+        if time.monotonic() > deadline:
+            logs = "\n".join(f"--- {name}\n{_tail(log_path)}" for name, (_, log_path) in servers.items())
+            pytest.fail(f"YugabyteDB was not ready within {_YB_START_TIMEOUT_S:.0f}s:\n{logs}")
+        time.sleep(0.25)
+    # yugabyte-db #33458: on Linux kernels from 6.19 up to 7.0.14 on arm64, YugabyteDB's tcmalloc corrupts its heap
+    # through its per-CPU caches (rseq), and the tserver SIGSEGVs under ordinary writes (docs/runbook-epoch-write-cost.md).
+    # In this image they are off without asking: Debian's glibc registers rseq for every thread first, and this
+    # tcmalloc does not share the registration. A cluster that runs them anyway is refused, not left to crash a batch.
+    for name, (_, log_path) in servers.items():
+        verdict = per_cpu_caches_off(log_path)
+        if verdict is not True:
+            said = "says they run" if verdict is False else "never said"
+            pytest.fail(
+                f"YugabyteDB's {name} {said} whether tcmalloc's per-CPU caches are off ({log_path}): on some kernels "
+                f"they corrupt its heap (yugabyte-db #33458), so the cluster must run without them"
+            )
+
+
+def _yugabyte_bin() -> None:
+    """stop the test unless the image's YugabyteDB servers are here.
+
+    :return: None
+    :rtype: None
+    """
+    for binary in ("yb-master", "yb-tserver"):
+        if not (_YB_ROOT / "bin" / binary).is_file():
+            require_services(
+                f"YugabyteDB is not installed here ({_YB_ROOT}/bin/{binary}): process-mode services start the "
+                f"servers the testament image copies from yugabytedb/yugabyte:{_YB_VERSION}"
+            )
+
+
+def _stop_group(child: subprocess.Popen[bytes]) -> None:
+    """stop a YugabyteDB server and every process it started (the tserver's Postgres backends): SIGTERM, then the
+    group's kill.
+
+    :param child: the server, leader of its own process group
+    :ptype child: subprocess.Popen[bytes]
+    :return: None
+    :rtype: None
+    """
+    _stop(child, signal.SIGTERM)
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(child.pid, signal.SIGKILL)
+
+
+@contextlib.contextmanager
+def _yugabyte_process() -> Iterator[str]:
+    """a one-node YugabyteDB cluster, master and tablet server as child processes on a loopback address of its own;
+    yields its URL.
+
+    :yield: the ``postgresql://`` URL of its ``test`` database
+    :rtype: Iterator[str]
+    """
+    _yugabyte_bin()
+    directory = _service_dir("yb")
+    with _teardown(directory, "YugabyteDB"):
+        address = yugabyte_address()
+        servers: dict[str, tuple[subprocess.Popen[bytes], Path]] = {}
+        try:
+            for name, argv in (
+                ("master", yugabyte_master_argv(address, directory / "master")),
+                ("tserver", yugabyte_tserver_argv(address, directory / "tserver")),
+            ):
+                (directory / name).mkdir()
+                child = _spawn(argv, log_path=directory / f"{name}.out")
+                servers[name] = (child, directory / name / "yb-data" / name / "logs" / f"yb-{name}.INFO")
+            url = f"postgresql://{_YB_USER}@{address}:{_YB_YSQL_PORT}/{_YB_DATABASE}"
+            _await_yugabyte(servers, url)
+            yield url
+        finally:
+            # the tablet server first: its Postgres backends end with it, and the master outlives every write
+            for name in ("tserver", "master"):
+                if name in servers:
+                    _stop_group(servers[name][0])
+
+
+def running_yugabyte() -> contextlib.AbstractContextManager[str]:
+    """a YugabyteDB cluster for the block, in process mode: the image's YugabyteDB (:data:`_YB_VERSION`).
+
+    Only process mode starts one. Elsewhere a run naming YugabyteDB names its server
+    (``THREETEARS_TEST_POSTGRES_URL``), so this stops the run, as
+    :func:`threetears.core.testing.fixtures.check_engine` does.
+
+    :return: a context manager yielding the cluster's ``postgresql://`` URL
+    :rtype: contextlib.AbstractContextManager[str]
+    """
+    if _services_mode() != _PROCESS:
+        pytest.exit(
+            f"THREETEARS_TEST_ENGINE=yugabyte names no server: set THREETEARS_TEST_POSTGRES_URL, or run where "
+            f"{_SERVICES_ENV}={_PROCESS} starts one (the pool's integration_yugabyte suite)",
+            returncode=2,
+        )
+    return _yugabyte_process()
 
 
 # --------------------------------------------------------------------------------------------------

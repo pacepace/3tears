@@ -24,15 +24,16 @@ if [ "$unit_status" -ne 0 ] && [ "$unit_status" -ne 2 ]; then
     exit "$unit_status"
 fi
 
-# The integration suite, on the pool only. The same rule: exit 2 is no verdict, reported at the end; any
-# other failure stops the gate here. Where the pool route is not taken (no testament, CI, TESTAMENT=off),
+# The integration suite, on the pool only: on PostgreSQL, then again on YugabyteDB (each with its speed tests;
+# test-integration.sh runs the four suites in turn, and a red in any outranks another's no verdict). The same rule:
+# exit 2 is no verdict, reported at the end; any other failure stops the gate here. Where the pool route is not taken (no testament, CI, TESTAMENT=off),
 # test-integration.sh would run the suite here through testcontainers -- about an hour, or, without Docker,
 # every test skipped and the gate green -- so the gate does not run it, and fails at the end saying so. A
 # local run stays a choice made with test-integration.sh itself. The docker and secrets tests
 # (`test-integration.sh --here`) are not part of the gate: they need Docker or a credential, and a change
 # that touches what they cover runs them on purpose (CLAUDE.md, "Scripts").
 echo ""
-echo "=== Tests (integration suite, on the pool) ==="
+echo "=== Tests (integration suite on PostgreSQL and YugabyteDB, on the pool) ==="
 integration_status=0
 integration_skipped=""
 if ! command -v testament >/dev/null 2>&1; then

@@ -65,6 +65,7 @@ def _accepts(uri: str) -> bool:
         return False
 
 
+@pytest.mark.postgres_only
 async def test_postgres_has_pgvector_the_image_locale_and_major_16(db_container: str) -> None:
     conn = await asyncpg.connect(db_container)
     try:
@@ -85,6 +86,7 @@ def test_a_service_start_raises_the_open_files_soft_limit(db_container: str) -> 
     assert soft == resource.RLIM_INFINITY or soft >= wanted, (soft, hard)
 
 
+@pytest.mark.postgres_only
 def test_pg_dump_on_path_is_16_and_dumps_the_server(db_container: str) -> None:
     version = subprocess.run(["pg_dump", "--version"], capture_output=True, text=True, check=True).stdout
     assert " 16." in version, version

@@ -124,13 +124,28 @@ for path in suites.get("integration", {}).get("default_selection", []):
 while IFS= read -r path; do
     [ -n "$path" ] && SUITE_PATHS+=("$path")
 done <<<"$listed"
-# the suite's speed tests (`loop_timing`), when the manifest declares their suite: the same paths, run after the rest
-# of the suite, each batch alone on a quiet runner (.testament.toml's [suites.integration_timing])
-TIMING_SUITE="$(python3 -I -c '
+# the suites run after the integration suite over the same paths, each when the manifest declares it: its speed tests
+# (`loop_timing`, each batch alone on a quiet runner: [suites.integration_timing]), then both again on YugabyteDB
+# ([suites.integration_yugabyte] and [suites.integration_yugabyte_timing]), one line each: the suite and its label
+FOLLOW_SUITES=()
+FOLLOW_LABELS=()
+listed="$(python3 -I -c '
 import tomllib
 with open(".testament.toml", "rb") as manifest:
-    print("integration_timing" if "integration_timing" in tomllib.load(manifest).get("suites", {}) else "")
+    declared = tomllib.load(manifest).get("suites", {})
+for name, label in (
+    ("integration_timing", "timing"),
+    ("integration_yugabyte", "yugabyte"),
+    ("integration_yugabyte_timing", "yugabyte timing"),
+):
+    if name in declared:
+        print(f"{name}\t{label}")
 ')"
+while IFS=$'\t' read -r name label; do
+    [ -n "$name" ] || continue
+    FOLLOW_SUITES+=("$name")
+    FOLLOW_LABELS+=("$label")
+done <<<"$listed"
 
 # whether $1 is $2 or lies under it
 under() {
@@ -202,11 +217,6 @@ if [ -n "$pool_route" ]; then
     [ ${#GATES[@]} -eq 0 ] || CMD+=(env "${GATES[@]}")
     CMD+=(./scripts/test.sh --suite integration "${SELECTION[@]}" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"})
     LABEL="on the pool"
-    TIMING_CMD=()
-    if [ -n "$TIMING_SUITE" ]; then
-        [ ${#GATES[@]} -eq 0 ] || TIMING_CMD+=(env "${GATES[@]}")
-        TIMING_CMD+=(./scripts/test.sh --suite "$TIMING_SUITE" "${SELECTION[@]}" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"})
-    fi
 else
     # off the pool: the selection runs here, less the modules marked `process_only`, which check the pool's
     # child-process services (a module named on its own is collected, and tests/require_services.py would
@@ -232,34 +242,58 @@ else
     LABEL="here"
 fi
 
+# the integration suite's command (CMD, on the pool route), sent to suite $1
+follow_cmd() {
+    FOLLOW_CMD=()
+    [ ${#GATES[@]} -eq 0 ] || FOLLOW_CMD+=(env "${GATES[@]}")
+    FOLLOW_CMD+=(./scripts/test.sh --suite "$1" "${SELECTION[@]}" ${EXTRA_ARGS+"${EXTRA_ARGS[@]}"})
+}
+
 if [ -n "$DRY_RUN" ]; then
     echo "${LABEL}: $(shell_words "${CMD[@]}")"
-    if [ -n "$pool_route" ] && [ ${#TIMING_CMD[@]} -gt 0 ]; then
-        echo "${LABEL}, timing: $(shell_words "${TIMING_CMD[@]}")"
+    if [ -n "$pool_route" ]; then
+        for index in ${FOLLOW_SUITES+"${!FOLLOW_SUITES[@]}"}; do
+            follow_cmd "${FOLLOW_SUITES[$index]}"
+            echo "${LABEL}, ${FOLLOW_LABELS[$index]}: $(shell_words "${FOLLOW_CMD[@]}")"
+        done
     fi
     exit 0
 fi
 if [ -z "$pool_route" ]; then
     echo "test-integration.sh: the integration suite, here, through testcontainers: ${LOCAL[*]}" >&2
 fi
-if [ -z "$pool_route" ] || [ ${#TIMING_CMD[@]} -eq 0 ]; then
+if [ -z "$pool_route" ] || [ ${#FOLLOW_SUITES[@]} -eq 0 ]; then
     exec "${CMD[@]}"
 fi
-# on the pool: the suite, then its speed tests over the same paths. A suite's 5 is pytest's "no tests collected":
-# paths holding only speed tests leave the first nothing, and paths holding none leave the second nothing; the run
-# is 5 only when both found none. Otherwise the first other non-zero status is the run's; a 2 is test.sh's no verdict
-# (for the timing suite, a pool with no quiet runner), which test.sh has already said.
-status=0
-"${CMD[@]}" || status=$?
-timing=0
-"${TIMING_CMD[@]}" || timing=$?
-if [ "$status" -eq 5 ] && [ "$timing" -eq 5 ]; then
+# on the pool: the suite, then each follow-up suite over the same paths. A suite's 5 is pytest's "no tests collected":
+# paths holding only speed tests leave the suite nothing, paths holding none leave the timing suites nothing, and paths
+# whose tests never reach the database leave the YugabyteDB ones nothing; the run is 5 only when every suite found
+# none. Otherwise a red (any other non-zero status but 2) is the run's, the first one; a red outranks a 2 (test.sh's
+# no verdict: the pool could not take a suite, or no quiet runner came for a timing one, which test.sh has already
+# said), since check-all.sh reads a 2 as "not run" and goes on. With no red, a 2 is the run's.
+statuses=()
+red=""
+none=""
+nothing=1
+for name in integration "${FOLLOW_SUITES[@]}"; do
+    follow_cmd "$name"
+    code=0
+    "${FOLLOW_CMD[@]}" || code=$?
+    statuses+=("${name} ${code}")
+    [ "$code" -eq 5 ] || nothing=""
+    if [ "$code" -eq 2 ]; then
+        none=2
+    elif [ "$code" -ne 0 ] && [ "$code" -ne 5 ] && [ -z "$red" ]; then
+        red=$code
+    fi
+done
+if [ -n "$nothing" ]; then
     exit 5
 fi
-[ "$status" -eq 5 ] && status=0
-[ "$timing" -eq 5 ] && timing=0
-if [ "$timing" -ne 0 ]; then
-    echo "test-integration.sh: integration suite exit ${status}, ${TIMING_SUITE} suite exit ${timing}" >&2
-    [ "$status" -eq 0 ] && status=$timing
+if [ -n "$red" ] || [ -n "$none" ]; then
+    echo "test-integration.sh: suite exits: ${statuses[*]}" >&2
 fi
-exit "$status"
+if [ -n "$red" ]; then
+    exit "$red"
+fi
+exit "${none:-0}"

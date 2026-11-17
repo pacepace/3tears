@@ -304,3 +304,88 @@ platform = [
     "tests/test_*.py",
     "tests/integration/**",
 ]
+
+# The integration suite and its speed tests again, on YugabyteDB, the database the platform runs on (PostgreSQL is
+# supported equally, and the two suites above prove it). `THREETEARS_TEST_ENGINE=yugabyte`: each test process's
+# `db_container` is a one-node YugabyteDB cluster of its own (threetears.core.testing.services.running_yugabyte), master
+# and tablet server as child processes on a loopback address of the cluster's own, from the release production runs,
+# which the image copies from the pinned yugabytedb/yugabyte image; NATS and S3 as in the suite. Its selection is the
+# suite's; tests/require_services.py then leaves out what a second engine cannot change: the integration tests that
+# never reach the session database (the PostgreSQL run proved them) and those marked `postgres_only`, and keeps the
+# `yugabyte_only` ones, which the PostgreSQL run leaves out. scripts/test-integration.sh runs both after the suite and
+# its speed tests, over the same paths.
+#
+# `max_batches_per_runner`: each batch's cluster is about 0.7 GB resident and sized to 3 GB at most (the services'
+# limits), where a runner's slots are sized for test processes; a few at once per runner keeps a Docker Desktop VM
+# runner within its memory. The timing suite runs each batch alone on a quiet runner, as integration_timing does.
+[suites.integration_yugabyte]
+adapter = "pytest"
+command = ["uv", "run", "--frozen", "pytest", "-m", "integration and not loop_timing and not docker and not secrets"]
+default_selection = ["packages/", "tests/"]
+max_batches_per_runner = 4
+env = { UV_CACHE_DIR = "/tr/cache/uv", THREETEARS_TEST_SERVICES = "process", THREETEARS_REQUIRE_SERVICES = "1", THREETEARS_TEST_ENGINE = "yugabyte" }
+
+[suites.integration_yugabyte.areas]
+evals = ["packages/evals/**"]
+enforcement = ["packages/enforcement/**", "tests/enforcement/**"]
+core = ["packages/core/**"]
+agent = ["packages/agent/**"]
+platform = [
+    "packages/backup/**",
+    "packages/channels/**",
+    "packages/conversations/**",
+    "packages/datasources/**",
+    "packages/epoch/**",
+    "packages/geo/**",
+    "packages/iam/**",
+    "packages/interfaces/**",
+    "packages/langgraph/**",
+    "packages/mcp/**",
+    "packages/models/**",
+    "packages/nats/**",
+    "packages/object-store/**",
+    "packages/observe/**",
+    "packages/registry/**",
+    "packages/scheduled-jobs/**",
+    "packages/scrape/**",
+    "packages/search/**",
+    "packages/tool-schema/**",
+    "tests/test_*.py",
+    "tests/integration/**",
+]
+
+[suites.integration_yugabyte_timing]
+adapter = "pytest"
+command = ["uv", "run", "--frozen", "pytest", "-m", "integration and loop_timing and not docker and not secrets"]
+default_selection = ["packages/", "tests/"]
+exclusive = true
+env = { UV_CACHE_DIR = "/tr/cache/uv", THREETEARS_TEST_SERVICES = "process", THREETEARS_REQUIRE_SERVICES = "1", THREETEARS_TEST_ENGINE = "yugabyte" }
+
+[suites.integration_yugabyte_timing.areas]
+evals = ["packages/evals/**"]
+enforcement = ["packages/enforcement/**", "tests/enforcement/**"]
+core = ["packages/core/**"]
+agent = ["packages/agent/**"]
+platform = [
+    "packages/backup/**",
+    "packages/channels/**",
+    "packages/conversations/**",
+    "packages/datasources/**",
+    "packages/epoch/**",
+    "packages/geo/**",
+    "packages/iam/**",
+    "packages/interfaces/**",
+    "packages/langgraph/**",
+    "packages/mcp/**",
+    "packages/models/**",
+    "packages/nats/**",
+    "packages/object-store/**",
+    "packages/observe/**",
+    "packages/registry/**",
+    "packages/scheduled-jobs/**",
+    "packages/scrape/**",
+    "packages/search/**",
+    "packages/tool-schema/**",
+    "tests/test_*.py",
+    "tests/integration/**",
+]

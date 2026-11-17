@@ -41,7 +41,13 @@ import asyncpg
 import pytest
 
 from threetears.core.testing.containers import check_docker_available, stagger_container_start
-from threetears.core.testing.services import require_services, running_nats, running_postgres, running_s3
+from threetears.core.testing.services import (
+    require_services,
+    running_nats,
+    running_postgres,
+    running_s3,
+    running_yugabyte,
+)
 
 if TYPE_CHECKING:
     from testcontainers.core.container import DockerContainer
@@ -237,7 +243,7 @@ def check_engine(url: str | None) -> None:
 
 @pytest.fixture(scope="session")
 def db_container(db_image: str) -> Iterator[str]:
-    """session-scoped postgres: a URL given, a child process, or a testcontainer.
+    """session-scoped postgres: a URL given, a child process, or a testcontainer; or YugabyteDB.
 
     yields the asyncpg-compatible connection URL (``postgresql://``,
     NOT ``postgresql+psycopg2://`` -- the testcontainers default
@@ -247,7 +253,11 @@ def db_container(db_image: str) -> Iterator[str]:
     one, as a child process under ``THREETEARS_TEST_SERVICES=process``
     (the image's major) or as a testcontainer of ``db_image``. without
     either, a fresh checkout gets a clean skip instead of a
-    connection-refused stack trace.
+    connection-refused stack trace. a run naming YugabyteDB
+    (``THREETEARS_TEST_ENGINE=yugabyte``) and no server gets a
+    one-node cluster of its own from
+    :func:`~threetears.core.testing.services.running_yugabyte`, in
+    process mode only (the pool's ``integration_yugabyte`` suites).
 
     the image defaults to ``pgvector/pgvector:pg16`` (see
     :func:`db_image`) so the shared session container is vector-capable
@@ -262,13 +272,22 @@ def db_container(db_image: str) -> Iterator[str]:
     :rtype: Iterator[str]
     """
     provided = os.environ.get(_POSTGRES_URL_ENV)
-    check_engine(provided)
     if provided:
+        check_engine(provided)
         # An externally-managed Postgres (a CI service container). Yielded as-is: normalising
         # is testcontainers' suffix problem, not this one's.
         yield provided
         return
 
+    if os.environ.get(_ENGINE_ENV) == "yugabyte":
+        # the pool's YugabyteDB suites: a cluster of the test process's own, as child processes (outside process mode
+        # running_yugabyte stops the run, as check_engine does for a YugabyteDB run naming no server)
+        with running_yugabyte() as url:
+            check_engine(url)
+            yield url
+        return
+
+    check_engine(None)
     with running_postgres(db_image) as url:
         yield url
 

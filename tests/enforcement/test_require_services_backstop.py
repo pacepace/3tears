@@ -133,12 +133,17 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture
+def db_container():
+    return "postgresql://either"
+
+
 @pytest.mark.yugabyte_only
 def test_a_yugabyte_plan():
     pass
 
 
-def test_either_engine():
+def test_either_engine(db_container):
     pass
 """
 
@@ -146,7 +151,10 @@ def test_either_engine():
 def _engine_session(pytester: pytest.Pytester) -> pytest.RunResult:
     """a session holding one YugabyteDB-only test beside one for either engine."""
     pytester.makeconftest('pytest_plugins = ["tests.require_services"]')
-    pytester.makeini("[pytest]\nmarkers =\n    integration: needs a service\n    yugabyte_only: YugabyteDB only\n")
+    pytester.makeini(
+        "[pytest]\nmarkers =\n    integration: needs a service\n    yugabyte_only: YugabyteDB only\n"
+        "    postgres_only: PostgreSQL only\n"
+    )
     pytester.makepyfile(test_engines=_YUGABYTE_ONLY)
     return pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:asyncio", "test_engines.py")
 
@@ -171,3 +179,82 @@ def test_a_run_naming_yugabyte_runs_a_yugabyte_only_test(
     monkeypatch.setenv("THREETEARS_TEST_ENGINE", "yugabyte")
     result = _engine_session(pytester)
     result.assert_outcomes(passed=2)
+
+
+_DATABASE_OR_NOT = """
+import pytest
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+def db_container():
+    return "postgresql://either"
+
+
+@pytest.fixture
+def pool(db_container):
+    return db_container
+
+
+def test_through_the_session_database(db_container):
+    pass
+
+
+def test_through_a_fixture_over_it(pool):
+    pass
+
+
+def test_a_bus_alone():
+    pass
+
+
+@pytest.mark.postgres_only
+def test_what_only_postgres_does(db_container):
+    pass
+
+
+@pytest.mark.yugabyte_only
+def test_a_yugabyte_server_check():
+    pass
+
+"""
+
+
+def _database_session(pytester: pytest.Pytester) -> pytest.RunResult:
+    """a session holding database tests, a test that reaches none, a PostgreSQL-only and a YugabyteDB-only one."""
+    pytester.makeconftest('pytest_plugins = ["tests.require_services"]')
+    pytester.makeini(
+        "[pytest]\nmarkers =\n    integration: needs a service\n    yugabyte_only: YugabyteDB only\n"
+        "    postgres_only: PostgreSQL only\n"
+    )
+    pytester.makepyfile(test_database=_DATABASE_OR_NOT)
+    return pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:asyncio", "-v", "test_database.py")
+
+
+def test_a_yugabyte_run_holds_only_what_reaches_the_session_database(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Flips if a run naming YugabyteDB repeats a test that never reaches the session database (the integration
+    suite on PostgreSQL already proves it, and its engine changes nothing), runs a PostgreSQL-only test, or drops a
+    test that reaches the database through a fixture over ``db_container`` or a YugabyteDB-only one."""
+    monkeypatch.setenv("THREETEARS_TEST_ENGINE", "yugabyte")
+    monkeypatch.setenv("THREETEARS_REQUIRE_SERVICES", "1")
+    result = _database_session(pytester)
+    result.assert_outcomes(passed=3, deselected=2)
+    ran = "\n".join(line for line in result.outlines if "PASSED" in line)
+    for name in ("test_through_the_session_database", "test_through_a_fixture_over_it", "test_a_yugabyte_server_check"):
+        assert name in ran
+
+
+@pytest.mark.parametrize("engine", [None, "postgres"])
+def test_a_postgres_run_holds_every_test_but_the_yugabyte_only_one(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, engine: str | None
+) -> None:
+    """Flips if a run on PostgreSQL loses a test for not reaching the database, or its PostgreSQL-only test."""
+    if engine is None:
+        monkeypatch.delenv("THREETEARS_TEST_ENGINE", raising=False)
+    else:
+        monkeypatch.setenv("THREETEARS_TEST_ENGINE", engine)
+    result = _database_session(pytester)
+    result.assert_outcomes(passed=4, deselected=1)

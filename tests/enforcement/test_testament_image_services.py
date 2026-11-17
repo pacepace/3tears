@@ -120,3 +120,42 @@ def test_the_services_layers_come_after_the_browser_layer() -> None:
         dockerfile.index("RUN useradd"),
     ]
     assert order == sorted(order), "the services' layers go after the playwright layer and before `useradd`"
+
+
+_SERVICES = _REPO_ROOT / "packages" / "core" / "src" / "threetears" / "core" / "testing" / "services.py"
+
+
+def _services_yugabyte_version() -> str:
+    """``threetears.core.testing.services``' ``_YB_VERSION``, the YugabyteDB release the process-mode cluster is."""
+    tree = ast.parse(_SERVICES.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AnnAssign | ast.Assign):
+            targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+            if any(isinstance(t, ast.Name) and t.id == "_YB_VERSION" for t in targets):
+                assert isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+                return node.value.value
+    raise AssertionError(f"{_SERVICES.relative_to(_REPO_ROOT)} no longer declares _YB_VERSION")
+
+
+def test_the_image_s_yugabytedb_is_the_one_the_services_start_pinned_by_digest() -> None:
+    """The YugabyteDB the pool's YugabyteDB suites start comes from one ``yugabytedb/yugabyte`` image, pinned by the
+    multi-arch index's digest (a tag can be pushed again), at the release ``services`` names and the build checks."""
+    dockerfile = _dockerfile()
+    pins = re.findall(r"^FROM yugabytedb/yugabyte:(\S+)@sha256:[0-9a-f]{64} AS yugabyte$", dockerfile, re.M)
+    checked = re.findall(r"^RUN check-test-services --yugabyte (\S+)$", dockerfile, re.M)
+    version = _services_yugabyte_version()
+    assert pins == [version], f"docker/testament.Dockerfile pins yugabytedb/yugabyte {pins}; services names {version}"
+    assert checked == [version], f"the build checks YugabyteDB {checked}; services names {version}"
+    assert "COPY --from=yugabyte /home/yugabyte /opt/yugabyte" in dockerfile
+
+
+def test_the_yugabytedb_layer_comes_after_the_postgres_and_nats_layers() -> None:
+    """The largest services layer last among them, so a YugabyteDB move rebuilds only itself and the user."""
+    dockerfile = _dockerfile()
+    order = [
+        dockerfile.index("nats-server-v"),
+        dockerfile.index("COPY --from=yugabyte"),
+        dockerfile.index("RUN check-test-services --yugabyte"),
+        dockerfile.index("RUN useradd"),
+    ]
+    assert order == sorted(order)

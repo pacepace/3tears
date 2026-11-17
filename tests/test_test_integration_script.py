@@ -759,3 +759,176 @@ class TestTheSpeedTestsRunApart:
         (repo / ".testament.toml").write_text(_TIMING_MANIFEST)
         run = _run(repo, ["scheduled-jobs"], testament=False)
         assert run.call("uv") == ["run", "pytest", _SUITE_DIR, *_LOCAL_MARKS]
+
+
+#: the timing manifest with the integration suite and its speed tests again on YugabyteDB, as the repo's declares
+_YUGABYTE_MANIFEST = (
+    _TIMING_MANIFEST
+    + """
+[suites.integration_yugabyte]
+adapter = "pytest"
+command = ["uv", "run", "pytest", "-m", "integration and not loop_timing"]
+default_selection = ["packages/", "tests/"]
+
+[suites.integration_yugabyte_timing]
+adapter = "pytest"
+command = ["uv", "run", "pytest", "-m", "integration and loop_timing"]
+default_selection = ["packages/", "tests/"]
+exclusive = true
+"""
+)
+
+#: the four suites a whole run sends to the pool, in order
+_YUGABYTE_ORDER = ["integration", "integration_timing", "integration_yugabyte", "integration_yugabyte_timing"]
+
+#: a ``testament`` stand-in that records each call as ``_RECORDER`` does and exits the status given for the suite it
+#: is sent (``--suite <name>``)
+_PER_SUITE_RECORDER = (
+    "#!/bin/sh\n"
+    '{{ printf "%s" "$(basename "$0")"; printf "\\t%s" "$@"; printf "\\n"; }} >> "{calls}"\n'
+    'case " $* " in\n'
+    '  *" integration_yugabyte_timing "*) exit {yugabyte_timing} ;;\n'
+    '  *" integration_yugabyte "*) exit {yugabyte} ;;\n'
+    '  *" integration_timing "*) exit {timing} ;;\n'
+    "esac\n"
+    "exit {suite}\n"
+)
+
+
+def _yugabyte_run(repo: Path, args: list[str], statuses: tuple[int, int, int, int] = (0, 0, 0, 0)) -> _Run:
+    """Run the staged ``test-integration.sh`` under the YugabyteDB manifest, ``testament`` exiting each suite's status.
+
+    :param repo: the miniature repo root
+    :ptype repo: Path
+    :param args: the script's arguments
+    :ptype args: list[str]
+    :param statuses: the exits of the integration suite, its speed tests, and both again on YugabyteDB
+    :ptype statuses: tuple[int, int, int, int]
+    :return: what the run did
+    :rtype: _Run
+    """
+    (repo / ".testament.toml").write_text(_YUGABYTE_MANIFEST)
+    _run(repo, ["--dry-run"])  # stages the stand-ins and python3 on PATH
+    bin_dir = repo.parent / "bin"
+    calls = repo.parent / "calls.txt"
+    calls.unlink(missing_ok=True)
+    suite, timing, yugabyte, yugabyte_timing = statuses
+    (bin_dir / "testament").write_text(
+        _PER_SUITE_RECORDER.format(
+            calls=calls, suite=suite, timing=timing, yugabyte=yugabyte, yugabyte_timing=yugabyte_timing
+        )
+    )
+    result = subprocess.run(
+        ["bash", str(repo / "scripts" / "test-integration.sh"), *args],
+        cwd=repo,
+        env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    lines = calls.read_text().splitlines() if calls.exists() else []
+    return _Run(result.returncode, result.stderr, [line.split("\t") for line in lines], [], result.stdout)
+
+
+class TestTheSuitesRunAgainOnYugabyteDB:
+    """with ``[suites.integration_yugabyte]`` and its timing suite declared, a run sends the same paths to both after
+    the PostgreSQL ones, and its status is all four suites': a red anywhere is the run's, ahead of a no verdict."""
+
+    def test_a_whole_run_is_four_suites_over_the_same_paths(self, repo: Path) -> None:
+        """Flips if a YugabyteDB suite is not run, or runs over other paths or options than the suite.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _yugabyte_run(repo, ["-rs"])
+        assert run.returncode == 0, run.stderr
+        assert [call[1:] for call in run.calls] == [
+            ["run", "--suite", name, "--", _SUITE_FILE, _SUITE_DIR, "-rs"] for name in _YUGABYTE_ORDER
+        ]
+
+    def test_a_package_runs_its_part_on_both_engines(self, repo: Path) -> None:
+        """Flips if a package's run leaves YugabyteDB out.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _yugabyte_run(repo, ["scheduled-jobs"])
+        assert [call[1:] for call in run.calls] == [
+            ["run", "--suite", name, "--", _SUITE_DIR] for name in _YUGABYTE_ORDER
+        ]
+
+    @pytest.mark.parametrize(
+        ("statuses", "status"),
+        [
+            pytest.param((0, 0, 0, 0), 0, id="all-green"),
+            pytest.param((0, 0, 1, 0), 1, id="yugabyte-red"),
+            pytest.param((0, 0, 0, 1), 1, id="yugabyte-timing-red"),
+            pytest.param((0, 0, 2, 0), 2, id="yugabyte-no-verdict"),
+            pytest.param((2, 0, 1, 0), 1, id="a-red-outranks-an-earlier-no-verdict"),
+            pytest.param((0, 2, 0, 1), 1, id="a-timing-red-outranks-a-no-verdict"),
+            pytest.param((1, 0, 3, 0), 1, id="the-first-red"),
+            pytest.param((0, 5, 0, 5), 0, id="no-speed-test-here"),
+            pytest.param((5, 0, 5, 0), 0, id="only-speed-tests-here"),
+            pytest.param((5, 5, 5, 5), 5, id="nothing-here"),
+            pytest.param((0, 0, 5, 5), 0, id="nothing-reaching-the-database"),
+        ],
+    )
+    def test_the_run_s_status_is_every_suite_s(
+        self, repo: Path, statuses: tuple[int, int, int, int], status: int
+    ) -> None:
+        """Flips if a red or a no verdict of any suite is lost, a no verdict hides a red (the gate would report the
+        suite as not run while it failed), or a suite with nothing among the paths reads as a failure.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :param statuses: each suite's exit, in run order
+        :ptype statuses: tuple[int, int, int, int]
+        :param status: the run's expected exit
+        :ptype status: int
+        :return: nothing
+        :rtype: None
+        """
+        run = _yugabyte_run(repo, [], statuses)
+        assert run.returncode == status, run.stderr
+        assert len(run.calls) == 4
+
+    def test_the_dry_run_prints_every_command(self, repo: Path) -> None:
+        """Flips if the dry run hides a YugabyteDB suite's command.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        run = _yugabyte_run(repo, ["scheduled-jobs", "--dry-run"])
+        assert run.returncode == 0, run.stderr
+        assert run.calls == []
+        lines = run.stdout.splitlines()
+        assert [shlex.split(line.split(": ", 1)[1]) for line in lines] == [
+            ["./scripts/test.sh", "--suite", name, _SUITE_DIR] for name in _YUGABYTE_ORDER
+        ]
+        assert [line.split(": ", 1)[0] for line in lines] == [
+            "on the pool",
+            "on the pool, timing",
+            "on the pool, yugabyte",
+            "on the pool, yugabyte timing",
+        ]
+
+    def test_off_the_pool_one_local_run_holds_every_test(self, repo: Path) -> None:
+        """Flips if a run off the pool sends anything to a YugabyteDB suite (a pool thing) instead of its one local
+        run.
+
+        :param repo: the miniature repo root
+        :ptype repo: Path
+        :return: nothing
+        :rtype: None
+        """
+        (repo / ".testament.toml").write_text(_YUGABYTE_MANIFEST)
+        run = _run(repo, ["scheduled-jobs"], testament=False)
+        assert run.call("uv") == ["run", "pytest", _SUITE_DIR, *_LOCAL_MARKS]
+        assert run.call("testament") is None

@@ -3,6 +3,7 @@
 #
 #   ./scripts/check-test-services.sh PG_MAJOR NATS_VERSION...
 #   ./scripts/check-test-services.sh 16 2.14.2 2.12.6
+#   ./scripts/check-test-services.sh --yugabyte 2026.1.0.0-b118
 #
 # The integration suite on the testament pool starts its own Postgres and nats-server inside the
 # project's container rather than in Docker, which the pool's image has none of. So the image must
@@ -16,8 +17,43 @@
 # the Dockerfile's arguments to what the tests name.
 set -euo pipefail
 
+# `--yugabyte VERSION`: the YugabyteDB install the YugabyteDB suites start (at /opt/yugabyte, copied from
+# yugabytedb/yugabyte:VERSION) is that release, its servers run here, and its initdb's locale is generated.
+if [ "${1:-}" = "--yugabyte" ]; then
+    if [ $# -ne 2 ]; then
+        echo "usage: $0 --yugabyte VERSION" >&2
+        exit 2
+    fi
+    want="$2"
+    root=/opt/yugabyte
+    bad=0
+    # "version 2026.1.0.0 build 118 revision ..." -> 2026.1.0.0-b118
+    for server in yb-master yb-tserver; do
+        if [ ! -x "${root}/bin/${server}" ]; then
+            echo "check-test-services: ${root}/bin/${server} not found" >&2
+            bad=1
+            continue
+        fi
+        said="$("${root}/bin/${server}" --version)"
+        echo "${server}: ${said}"
+        got="$(sed -En 's/^version ([0-9.]+) build ([0-9]+) .*/\1-b\2/p' <<<"$said")"
+        if [ "$got" != "$want" ]; then
+            echo "check-test-services: ${root}/bin/${server} is YugabyteDB '${got}', not ${want}" >&2
+            bad=1
+        fi
+    done
+    locales="$(locale -a)"
+    if ! grep -qix 'en_US.utf8' <<<"$locales"; then
+        echo "check-test-services: the en_US.UTF-8 locale is not generated (YugabyteDB's initdb sets it)" >&2
+        bad=1
+    fi
+    du -sh "$root" || true
+    exit "$bad"
+fi
+
 if [ $# -lt 2 ]; then
     echo "usage: $0 PG_MAJOR NATS_VERSION..." >&2
+    echo "       $0 --yugabyte VERSION" >&2
     exit 2
 fi
 major="$1"

@@ -1,8 +1,13 @@
 # The image testament's runners run the unit suite in (see .testament.toml). It holds only the
-# toolchain, headless Chromium, and the Postgres and nats-server binaries the integration tests start
+# toolchain, headless Chromium, and the Postgres, nats-server and YugabyteDB binaries the integration tests start
 # as child processes: the workspace venv is built by the manifest's setup step, from the tree under test.
 # uv by digest too (the multi-arch index): a tag can be pushed again, and the copied binary with it.
 FROM ghcr.io/astral-sh/uv:0.11.32@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c AS uv
+
+# YugabyteDB, the release production runs, for the YugabyteDB suites (.testament.toml's [suites.integration_yugabyte]):
+# only its install tree is copied below. By the multi-arch index's digest, as uv is; tests/enforcement/
+# test_testament_image_services.py holds the tag to threetears.core.testing.services' _YB_VERSION.
+FROM yugabytedb/yugabyte:2026.1.0.0-b118@sha256:7de584c08b56bf5864988576e7309c52e1b961ac9533ab8374c89f5542e978cf AS yugabyte
 
 # Pinned to one patch by digest (the multi-arch index, so every runner architecture resolves it).
 # A floating `python:3.14-slim` moves the stdlib under the tests at each image rebuild: when it
@@ -82,6 +87,14 @@ RUN set -eu; \
 # Fails the build unless every service above is there at the version the tests expect, and prints what it found.
 COPY --chmod=0755 scripts/check-test-services.sh /usr/local/bin/check-test-services
 RUN check-test-services 16 2.14.2 2.12.6
+
+# YugabyteDB's install tree (~565 MB), from the image pinned at the top: the servers a YugabyteDB suite's test process
+# starts as child processes (threetears.core.testing.services.running_yugabyte), each cluster on a loopback address of
+# its own. Its binaries find their libraries by $ORIGIN-relative runpaths and need only glibc and libgcc_s from the
+# system (its build targets glibc 2.28; this one is newer), and its initdb the en_US.UTF-8 locale made above. The last
+# services layer, being the largest: a move of it rebuilds only itself and the user below.
+COPY --from=yugabyte /home/yugabyte /opt/yugabyte
+RUN check-test-services --yugabyte 2026.1.0.0-b118
 
 RUN useradd --create-home --shell /bin/bash lane
 USER lane

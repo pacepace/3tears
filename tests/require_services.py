@@ -28,6 +28,15 @@ budget measured on it); on Postgres it has nothing to assert. A run that does no
 (``THREETEARS_TEST_ENGINE``, PostgreSQL when unnamed, as ``tests/integration/conftest.py`` reads it) deselects it,
 rather than skipping it: the pool's suite runs on Postgres, where a skip fails. A run naming YugabyteDB runs it, and
 :func:`threetears.core.testing.fixtures.check_engine` stops that run when its server is not YugabyteDB.
+
+**A run on YugabyteDB proves the database.** The pool runs the integration suite twice: on PostgreSQL
+(``[suites.integration]``) and again on a YugabyteDB of each test process's own (``[suites.integration_yugabyte]``,
+``THREETEARS_TEST_ENGINE=yugabyte``). Its engine changes only what a test asks the session's database
+(``db_container``, named directly or through a fixture over it), so a run naming YugabyteDB deselects every
+integration test that never reaches it (a NATS round trip, a backup of a Postgres of the test's own): the PostgreSQL
+run proved it, and the second run would only repeat it. A test marked ``postgres_only`` proves what PostgreSQL alone
+does (its major, its ``pg_dump``), the mirror of ``yugabyte_only``: a run naming YugabyteDB deselects it too. A
+``yugabyte_only`` test stays, whatever it reaches.
 """
 
 from __future__ import annotations
@@ -50,8 +59,9 @@ YUGABYTE = "yugabyte"
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """deselect every ``process_only`` test outside process mode, and every ``yugabyte_only`` test in a run that does
-    not name YugabyteDB.
+    """deselect every ``process_only`` test outside process mode, every ``yugabyte_only`` test in a run that does
+    not name YugabyteDB, and, in a run that does, every ``postgres_only`` test and every integration test that never
+    reaches the session database.
 
     :param config: the session's config
     :ptype config: pytest.Config
@@ -65,11 +75,38 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         away.append("process_only")
     if os.environ.get(ENGINE_ENV) != YUGABYTE:
         away.append("yugabyte_only")
-    deselected = [item for item in items if any(item.get_closest_marker(name) is not None for name in away)]
+    on_yugabyte = os.environ.get(ENGINE_ENV) == YUGABYTE
+    if on_yugabyte:
+        away.append("postgres_only")
+    deselected = [
+        item
+        for item in items
+        if any(item.get_closest_marker(name) is not None for name in away)
+        or (on_yugabyte and _repeats_postgres_run(item))
+    ]
     if deselected:
         config.hook.pytest_deselected(items=deselected)
         dropped = set(map(id, deselected))
         items[:] = [item for item in items if id(item) not in dropped]
+
+
+#: the session database's fixture: a test whose fixtures reach it is one a run on YugabyteDB proves anew
+DATABASE_FIXTURE = "db_container"
+
+
+def _repeats_postgres_run(item: pytest.Item) -> bool:
+    """whether a run on YugabyteDB would only repeat ``item``'s PostgreSQL run: an integration test, not marked
+    ``yugabyte_only``, none of whose fixtures (their closure: a fixture over ``db_container`` counts) is the session
+    database.
+
+    :param item: a collected test
+    :ptype item: pytest.Item
+    :return: True for a test the YugabyteDB run leaves out
+    :rtype: bool
+    """
+    if item.get_closest_marker("integration") is None or item.get_closest_marker("yugabyte_only") is not None:
+        return False
+    return DATABASE_FIXTURE not in getattr(item, "fixturenames", ())
 
 
 #: the directory part every package's integration tests live under

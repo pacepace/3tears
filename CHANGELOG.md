@@ -6,6 +6,17 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `testing.services.running_yugabyte`, and the pool runs the integration suite on YugabyteDB too
+
+`running_yugabyte()` starts a one-node YugabyteDB cluster (2026.1.0.0-b118, the release production runs) as child
+processes under `THREETEARS_TEST_SERVICES=process`: master and tablet server on a loopback address of the cluster's own,
+with the settings `yugabyted` gives a local cluster (one tablet per table, read committed, `yb_enable_cbo=on`). Under
+`THREETEARS_TEST_ENGINE=yugabyte` with no `THREETEARS_TEST_POSTGRES_URL`, `db_container` yields one. The testament image
+carries the install tree, and `.testament.toml` adds `integration_yugabyte` and `integration_yugabyte_timing`, which
+`scripts/test-integration.sh` (and so `check-all.sh`) runs after the PostgreSQL suites: the `yugabyte_only` tests now
+run on every gate. A run on YugabyteDB leaves out integration tests that never reach `db_container` and the new
+`postgres_only` marker's. `test-integration.sh` now reports a red of any suite ahead of another's no verdict.
+
 ### core, interfaces: `keyed.read_row_beside(..., first=)` answers the row's columns once
 
 `read_row_beside` (and `read_row_beside_statement`) take `first`, the name of a column TRUE on one answered row: the

@@ -348,6 +348,35 @@ A local run without Chromium skips them; `-m "not browser"` leaves them out.
 `project-state.yaml` lists this as the third declared test command, so recorded evidence that omits
 it covers two suites out of three.
 
+### On YugabyteDB
+
+The platform runs on YugabyteDB, and 3tears supports PostgreSQL and YugabyteDB equally, so the suite and its speed
+tests run again on YugabyteDB, after the PostgreSQL ones and over the same paths: `[suites.integration_yugabyte]` and
+`[suites.integration_yugabyte_timing]` (exclusive, as above). They set `THREETEARS_TEST_ENGINE=yugabyte`, and each test
+process's `db_container` is then a one-node YugabyteDB cluster of its own, started as child processes by
+`threetears.core.testing.services.running_yugabyte`:
+
+| | |
+|---|---|
+| release | 2026.1.0.0-b118, the one production runs: `_YB_VERSION`, and `docker/testament.Dockerfile` copies its install tree from `yugabytedb/yugabyte` pinned by digest |
+| servers | `yb-master` and `yb-tserver`, with the settings `yugabyted` gave the local cluster every earlier proof ran on (one tablet per table, read committed, `yb_enable_cbo=on`, packed rows) |
+| address | a loopback address of the cluster's own (`127.x.y.z`, YugabyteDB's usual ports on it), so the batches in one container never share a port |
+| URL | `postgresql://yugabyte@<address>:5433/test` |
+| start | about 7 s alone; a batch's tests then share the cluster, as they share a Postgres |
+| per runner | at most 4 batches at once (`max_batches_per_runner`): each cluster is about 0.7 GB resident, capped at 3 GB |
+
+A run on YugabyteDB proves the database, so `tests/require_services.py` leaves out what a second engine cannot change:
+the integration tests that never reach `db_container` (directly or through a fixture over it), and those marked
+`postgres_only` (what PostgreSQL alone does: its major, its `pg_dump`). It keeps the `yugabyte_only` ones, which the
+PostgreSQL run leaves out. The cluster's tcmalloc runs without per-CPU caches (they corrupt its heap on some arm64
+kernels, yugabyte-db #33458); a start whose servers run them fails.
+
+`test-integration.sh` exits with the first red of the four suites; a red outranks another suite's no verdict (2), and
+with no red a 2 is the run's. A run of one suite: `./scripts/test.sh --suite integration_yugabyte <paths>`.
+
+Off the pool, a run naming YugabyteDB names its server: `THREETEARS_TEST_ENGINE=yugabyte
+THREETEARS_TEST_POSTGRES_URL=postgresql://yugabyte@127.0.0.1:5433/<database>` against a local `yugabyted`.
+
 ### A skip is not a pass
 
 A run that exits 0 with tests skipped reads exactly like one that ran them all. On the pool the

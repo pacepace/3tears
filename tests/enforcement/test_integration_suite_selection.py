@@ -196,3 +196,37 @@ def test_a_yugabyte_only_test_is_an_integration_test() -> None:
         if "yugabyte_only" in marks and "integration" not in marks
     )
     assert not nowhere, f"tests marked `yugabyte_only` without `integration`, which run nowhere: {nowhere}"
+
+
+def test_the_suite_and_its_speed_tests_run_again_on_yugabytedb() -> None:
+    """``[suites.integration_yugabyte]`` and ``[suites.integration_yugabyte_timing]`` are the integration suite and its
+    speed tests again, on a YugabyteDB the pool's container starts (``THREETEARS_TEST_ENGINE=yugabyte``): the same
+    marks and services, the timing one alone on a quiet runner, a bounded number of clusters per runner, and both run
+    by ``scripts/test-integration.sh``. One that drifted from the PostgreSQL suites would prove another selection on
+    YugabyteDB than the platform runs there."""
+    suites = tomllib.loads((_REPO_ROOT / ".testament.toml").read_text(encoding="utf-8"))["suites"]
+    suite, timing = suites["integration"], suites["integration_timing"]
+    yugabyte, yugabyte_timing = suites["integration_yugabyte"], suites["integration_yugabyte_timing"]
+    assert yugabyte["command"] == suite["command"]
+    assert yugabyte_timing["command"] == timing["command"]
+    on_yugabyte = {**suite["env"], "THREETEARS_TEST_ENGINE": "yugabyte"}
+    assert yugabyte["env"] == yugabyte_timing["env"] == on_yugabyte
+    assert yugabyte_timing.get("exclusive") is True, "the YugabyteDB speed tests run each batch alone on a quiet runner"
+    assert not yugabyte.get("exclusive"), "the YugabyteDB suite's batches share runners, as the suite's do"
+    # each batch starts a cluster of its own (about 0.7 GB resident, more under load): a runner's slots are sized for
+    # test processes, not for a database each, so the batches one runner takes at once are bounded
+    assert 1 <= yugabyte.get("max_batches_per_runner", 0) <= 4
+    script = _SCRIPT.read_text(encoding="utf-8")
+    assert "integration_yugabyte" in script and "integration_yugabyte_timing" in script
+
+
+def test_a_postgres_only_test_is_an_integration_test() -> None:
+    """``postgres_only`` is deselected on YugabyteDB, which only integration runs reach: one on a unit test is a mark
+    that means nothing."""
+    stray = sorted(
+        f"{path.relative_to(_REPO_ROOT)}::{test}"
+        for path in _test_files()
+        for test, marks in _MARK_READER.marks_by_test(parse_python_path(path)).items()
+        if "postgres_only" in marks and "integration" not in marks
+    )
+    assert not stray, f"tests marked `postgres_only` without `integration`: {stray}"
