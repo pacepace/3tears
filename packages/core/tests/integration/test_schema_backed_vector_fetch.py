@@ -84,9 +84,9 @@ def db_image() -> str:
 async def pg_pool(db_container: str) -> AsyncIterator[asyncpg.Pool]:
     """real asyncpg pool with the canonical 3tears connection init.
 
-    ``init_connection`` registers ONLY the jsonb / json text codec --
-    deliberately NO vector codec, exactly the production shape that makes
-    a raw ``SELECT *`` over a vector column unreadable.
+    ``init_connection`` registers the jsonb / json text codec, and a vector text codec only where the database held
+    the type when the connection opened: the extension is created here after the pool's first connection, so on
+    YugabyteDB that connection has none, the shape that makes a raw ``SELECT *`` over a vector column unreadable.
     """
     pool: asyncpg.Pool = await asyncpg.create_pool(
         db_container,
@@ -278,7 +278,7 @@ async def _insert_row(
     *,
     embedding: str | None,
 ) -> None:
-    """insert one row, casting the text vector literal with ``::vector``.
+    """insert one row, casting the text vector literal with ``::text::vector``.
 
     :param pool: real asyncpg pool
     :ptype pool: asyncpg.Pool
@@ -294,7 +294,11 @@ async def _insert_row(
     await pool.execute(
         "INSERT INTO sb_vec_items "
         "(id, label, embedding, search_vector, date_created, date_updated) "
-        "VALUES ($1, $2, $3::vector, to_tsvector('english', $2), $4, $5)",
+        # bound as text and cast on the server, as the platform's writes bind a vector: on YugabyteDB a ``$3::vector``
+        # placeholder is its built-in type (OID 8078), which asyncpg binds only through a codec, and ``init_connection``
+        # registers one only for a type the database held when the connection opened (the fixture creates the
+        # extension after the pool's first connection)
+        "VALUES ($1, $2, $3::text::vector, to_tsvector('english', $2), $4, $5)",
         item_id,
         "hello",
         embedding,

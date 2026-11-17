@@ -128,13 +128,41 @@ class TestATextKeyBindsAsItsDeclaredType:
 
 
 class TestAServerErrorIsNeverRetried:
-    """a server's own data error is raised as it is, and the statement runs once."""
+    """a server's own data error is raised as it is, and the statement runs once.
+
+    Counted twice over: the statements the driver sends (each ``fetch`` or ``cursor`` of it on a connection, on either
+    engine), and, on PostgreSQL, the server's own count: its sequence takes one value a call. YugabyteDB's sequences
+    hand each connection a block of values at once (``ysql_sequence_cache_minval``, 100 by default, over any
+    ``CACHE``), so its ``last_value`` says how many blocks were taken, not how many calls: there the sends are the count.
+    """
 
     _DIVIDES = "SELECT nextval('{schema}.calls') / (CASE WHEN $1::uuid IS NOT NULL THEN 0 ELSE 1 END) AS q"
 
-    async def _calls(self, db_container: str) -> int:
+    @pytest.fixture
+    def sent(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """every statement sent through a connection's ``fetch`` or ``cursor`` while the test runs."""
+        seen: list[str] = []
+        real_fetch = asyncpg.connection.Connection.fetch
+        real_cursor = asyncpg.connection.Connection.cursor
+
+        async def fetch(self: Any, query: str, *args: Any, **kwargs: Any) -> Any:
+            seen.append(query)
+            return await real_fetch(self, query, *args, **kwargs)
+
+        def cursor(self: Any, query: str, *args: Any, **kwargs: Any) -> Any:
+            seen.append(query)
+            return real_cursor(self, query, *args, **kwargs)
+
+        monkeypatch.setattr(asyncpg.connection.Connection, "fetch", fetch)
+        monkeypatch.setattr(asyncpg.connection.Connection, "cursor", cursor)
+        return seen
+
+    async def _calls(self, db_container: str) -> int | None:
+        """the calls the server counted, or None where its sequence does not count calls (YugabyteDB)."""
         conn = await asyncpg.connect(**_connect_kwargs(db_container))
         try:
+            if "-YB-" in await conn.fetchval("SELECT version()"):
+                return None
             value: int = await conn.fetchval(
                 f'SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM "{_SCHEMA}".calls'
             )
@@ -142,24 +170,33 @@ class TestAServerErrorIsNeverRetried:
             await conn.close()
         return value
 
-    async def test_outside_a_transaction(self, driver: AsyncpgDriver, db_container: str) -> None:
+    async def _ran_once(self, db_container: str, sent: list[str]) -> None:
+        statement = self._DIVIDES.format(schema=_SCHEMA)
+        assert sent.count(statement) == 1, f"the statement was sent {sent.count(statement)} times"
+        assert await self._calls(db_container) in (1, None), "the statement ran twice"
+
+    async def test_outside_a_transaction(self, driver: AsyncpgDriver, db_container: str, sent: list[str]) -> None:
         with pytest.raises(asyncpg.exceptions.DivisionByZeroError):
             await driver.fetch(self._DIVIDES.format(schema=_SCHEMA), "0198a3f2-1c4e-7b9a-8d2f-3e4a5b6c7d8e")
-        assert await self._calls(db_container) == 1, "the statement ran twice"
+        await self._ran_once(db_container, sent)
 
-    async def test_inside_a_statement_timeouts_transaction(self, driver: AsyncpgDriver, db_container: str) -> None:
+    async def test_inside_a_statement_timeouts_transaction(
+        self, driver: AsyncpgDriver, db_container: str, sent: list[str]
+    ) -> None:
         with pytest.raises(asyncpg.exceptions.DivisionByZeroError):
             await driver.fetch(
                 self._DIVIDES.format(schema=_SCHEMA), "0198a3f2-1c4e-7b9a-8d2f-3e4a5b6c7d8e", timeout_seconds=5
             )
-        assert await self._calls(db_container) == 1, "the statement ran twice"
+        await self._ran_once(db_container, sent)
 
-    async def test_inside_a_cursors_transaction(self, driver: AsyncpgDriver, db_container: str) -> None:
+    async def test_inside_a_cursors_transaction(
+        self, driver: AsyncpgDriver, db_container: str, sent: list[str]
+    ) -> None:
         with pytest.raises(asyncpg.exceptions.DivisionByZeroError):
             await driver.fetch_at_most(
                 self._DIVIDES.format(schema=_SCHEMA), "0198a3f2-1c4e-7b9a-8d2f-3e4a5b6c7d8e", max_rows=1
             )
-        assert await self._calls(db_container) == 1, "the statement ran twice"
+        await self._ran_once(db_container, sent)
 
 
 class TestAStreamPaysNothingForTextItBinds:

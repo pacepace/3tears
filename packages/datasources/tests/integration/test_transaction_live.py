@@ -19,7 +19,8 @@ plus the timeout claims:
    different ``statement_timeout`` values, and
 5. neither inherits the other's after a cache hit.
 
-this module is the Postgres half; it runs against the shared ``db_container``.
+this module is the Postgres half; it runs against the shared ``db_container`` (PostgreSQL, and YugabyteDB in the
+pool's YugabyteDB suite).
 the Redshift half, the same claims against the production engine, is
 ``test_transaction_redshift_live.py`` beside it. it needs a warehouse
 credential (the ``secrets`` marker), so it runs only where that is, while
@@ -122,19 +123,22 @@ class TestAsyncpgTransactionLive:
         self,
         pg_schema: tuple[str, str],
     ) -> None:
-        """the first statement's effect is gone when the second fails."""
+        """the first statement's effect is gone when the second fails.
+
+        The first statement writes a row: a write is transactional on PostgreSQL and YugabyteDB alike, where DDL is
+        not (YugabyteDB commits a ``CREATE TABLE`` inside a transaction block at once, ``ysql_yb_ddl_transaction_block_
+        enabled`` off by default in 2026.1), so a rolled-back write is what proves the transaction on either engine.
+        """
         db_url, schema = pg_schema
         driver = AsyncpgDriver(_pg_config(db_url))
         try:
+            await driver.execute(f'CREATE TABLE "{schema}"."atomic" (id int)')
             with pytest.raises(asyncpg.PostgresError):
                 async with driver.transaction() as transaction:
-                    await transaction.execute(f'CREATE TABLE "{schema}"."atomic" (id int)')
+                    await transaction.execute(f'INSERT INTO "{schema}"."atomic" VALUES (1)')
                     await transaction.execute(f'INSERT INTO "{schema}"."atomic" VALUES (not_a_column)')
-            rows = await driver.fetch(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema = $1",
-                schema,
-            )
-            assert [r["table_name"] for r in rows] == [], "the rolled-back CREATE TABLE survived"
+            rows = await driver.fetch(f'SELECT id FROM "{schema}"."atomic"')
+            assert [r["id"] for r in rows] == [], "the rolled-back INSERT survived"
         finally:
             await driver.close()
 

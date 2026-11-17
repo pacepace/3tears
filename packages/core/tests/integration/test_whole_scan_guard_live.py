@@ -66,6 +66,9 @@ async def test_a_whole_count_fails_the_guard(seeded: asyncpg.Connection) -> None
     assert any("results (3000 rows" in problem for problem in guarded.problems)
 
 
+# PostgreSQL only: the shape is PostgreSQL's bitmap heap scan over a bitmap index scan with no condition; YugabyteDB's
+# planner walks the partial index otherwise (no bitmap here), so there the test has no plan to hold the guard to
+@pytest.mark.postgres_only
 async def test_a_partial_index_walked_whole_through_a_bitmap_fails_the_guard(seeded: asyncpg.Connection) -> None:
     """Flips if a bitmap heap scan over a bitmap index scan with no index condition passes: every entry of a partial
     index read, the filter on another column applied after (hub: credit rates by model over the open-rates index)."""

@@ -78,13 +78,18 @@ CREATE TABLE IF NOT EXISTS {table} (
 )
 """
 
-#: Index backing :meth:`PostgresTicketStore.purge_expired`, for either table.
+#: Index backing :meth:`PostgresTicketStore.purge_expired`, for either table. ``ASC``: on YugabyteDB an index's first
+#: column is hash-sharded unless it says otherwise, and a hashed ``expires_at`` answers no range and no order, so a
+#: purge page (``expires_at < $1 ORDER BY expires_at LIMIT``) scanned the whole table there (2026.1.0.0-b118: a
+#: Seq Scan of 20,000 rows for a page of 100). Range-sharded, it reads the expired rows alone; on PostgreSQL ``ASC``
+#: is the default and the index the same. A table holding the index without it keeps the hashed one (``IF NOT
+#: EXISTS``): its migration drops it and creates this.
 EXPIRES_INDEX_DDL: Final[str] = (
     "-- purpose: packages/iam/src/threetears/iam/stores/postgres.py::PostgresTicketStore.purge_expired; "
     "packages/iam/src/threetears/iam/stores/postgres.py::PostgresStateStore.purge_expired\n"
     "-- plan_test: packages/iam/tests/integration/test_stores_postgres_live.py::"
     "test_a_purge_page_reads_its_expired_rows_through_the_expires_index\n"
-    "CREATE INDEX IF NOT EXISTS {index} ON {table} (expires_at)"
+    "CREATE INDEX IF NOT EXISTS {index} ON {table} (expires_at ASC)"
 )
 
 #: Table names are interpolated, not parameterized -- SQL has no placeholder for an

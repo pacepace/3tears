@@ -6,6 +6,20 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### iam: `EXPIRES_INDEX_DDL` is range-sharded on YugabyteDB
+
+The purge index is now `(expires_at ASC)`. On YugabyteDB an index's first column is hashed unless it says otherwise,
+and a hashed `expires_at` answers neither the purge page's range nor its order: each purge page scanned the whole
+table (2026.1.0.0-b118, a Seq Scan of 20,000 rows for a page of 100). On PostgreSQL the index is unchanged. The DDL
+says `IF NOT EXISTS`, so a consumer whose table already holds the hashed index drops it in a migration of its own and
+creates this one.
+
+### core: a `DataStore` table's vector column reads on a raw pool on YugabyteDB
+
+A dynamic collection's point read casts each `vector` column `::text`, as its write binds it. On a pool without
+`init_connection`'s vector codec, YugabyteDB's built-in `vector` (OID 8078) failed every read ("unhandled standard
+data type"); PostgreSQL's extension type read as text already.
+
 ### core: `testing.services.running_yugabyte`, and the pool runs the integration suite on YugabyteDB too
 
 `running_yugabyte()` starts a one-node YugabyteDB cluster (2026.1.0.0-b118, the release production runs) as child

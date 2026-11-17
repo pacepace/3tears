@@ -11,6 +11,7 @@ from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, Numeric, St
 from sqlalchemy.dialects.postgresql import BYTEA, JSONB
 from sqlalchemy.sql.sqltypes import UUID as SAUuid
 
+from threetears.interfaces.keyed import Selected, quote_identifier
 from threetears.interfaces.keyed.rows import KeyColumn
 from threetears.core.backends.protocol import parse_rowcount
 from threetears.core.backends.schema_sql import decode_vector as _decode_vector, encode_vector as _encode_vector
@@ -263,6 +264,15 @@ def create_dynamic_collection(
     field_types = _build_field_types(table_def)
     column_names = [col.name for col in table_def.columns]
     vector_columns = frozenset(col.name for col in table_def.columns if col.column_type == "vector")
+    # a vector column read as its text, as the write binds it: asyncpg has no vector codec, and where no
+    # ``init_connection`` registered a text one (a raw pool, the integration guide's shape) it reads PostgreSQL's
+    # extension type as text but refuses YugabyteDB's built-in ``vector`` (OID 8078: "unhandled standard data type");
+    # the cast reads the same text on either engine, whatever the pool registered
+    read_columns: list[str | Selected] | None = (
+        [Selected(f"t.{quote_identifier(col)}::text", col) if col in vector_columns else col for col in column_names]
+        if vector_columns
+        else None
+    )
     wall_clock_columns = frozenset(col.name for col in table_def.columns if col.column_type == "timestamp")
     instant_columns = frozenset(col.name for col in table_def.columns if col.column_type == "timestamptz")
     upsert_sql = _build_upsert_sql(tbl_name, column_names, pk_column, vector_columns)
@@ -314,7 +324,7 @@ def create_dynamic_collection(
             pool = self.l3_pool
             if pool is None:
                 return None
-            found = await read_row(pool, tbl_name, by={pk_column: entity_id})
+            found = await read_row(pool, tbl_name, by={pk_column: entity_id}, columns=read_columns)
             if found is None:
                 return None
             result = found

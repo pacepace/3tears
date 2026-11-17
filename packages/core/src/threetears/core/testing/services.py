@@ -797,6 +797,10 @@ def running_postgres(image: str) -> contextlib.AbstractContextManager[str]:
 _YB_VERSION: Final = "2026.1.0.0-b118"
 _YB_ROOT = Path("/opt/yugabyte")
 _YB_USER = "yugabyte"
+#: YSQL authentication is on, as in production (a local ``yugabyted`` runs without it): the cluster's superuser's
+#: password is the one YugabyteDB gives it, and a client must give it. A wrong password is refused, as on the pool's
+#: Postgres (scram), which a test of a refused password needs (test_pool_startup_survives_stalled_connects.py).
+_YB_PASSWORD = "yugabyte"  # noqa: S105 - the throwaway password YugabyteDB gives its superuser
 #: the database the URL names, made at start as the Postgres template's ``test`` is, so a test never works in the
 #: cluster's own ``yugabyte`` database
 _YB_DATABASE = "test"
@@ -879,6 +883,7 @@ def yugabyte_tserver_argv(address: str, data: Path) -> list[str]:
         "--start_redis_proxy=false",
         "--ysql_enable_packed_row=true",
         "--ysql_pg_conf_csv=yb_enable_cbo=on",
+        "--ysql_enable_auth=true",
         f"--memory_limit_hard_bytes={_YB_TSERVER_MEMORY}",
         *_YB_COMMON_FLAGS,
     ]
@@ -1059,7 +1064,7 @@ def _yugabyte_process() -> Iterator[str]:
                 (directory / name).mkdir()
                 child = _spawn(argv, log_path=directory / f"{name}.out")
                 servers[name] = (child, directory / name / "yb-data" / name / "logs" / f"yb-{name}.INFO")
-            url = f"postgresql://{_YB_USER}@{address}:{_YB_YSQL_PORT}/{_YB_DATABASE}"
+            url = f"postgresql://{_YB_USER}:{_YB_PASSWORD}@{address}:{_YB_YSQL_PORT}/{_YB_DATABASE}"
             _await_yugabyte(servers, url)
             yield url
         finally:

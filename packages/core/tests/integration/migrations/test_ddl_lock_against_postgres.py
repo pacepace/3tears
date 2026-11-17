@@ -1,5 +1,5 @@
 """
-the database-wide DDL lock against a real PostgreSQL.
+the database-wide DDL lock against a real PostgreSQL, and a real YugabyteDB (the session's ``db_container``).
 
 what only a real engine can show:
 
@@ -56,10 +56,14 @@ _BUILD_TIMEOUT_SECONDS = 60.0
 
 _POPULATED_ROWS = 50_000
 
-_HOLDS_THE_DDL_LOCK_SQL = (
-    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 "
-    "AND objsubid = 2 AND granted AND pid = pg_backend_pid()"
-)
+#: a session lock taken again on the session holding it is granted (it counts one more hold), and refused on any other
+#: session; given back once, the count is where it was. PostgreSQL and YugabyteDB alike (YugabyteDB 2026.1.0.0-b118,
+#: checked 2026-11-16). ``pg_locks`` cannot say which session holds it on YugabyteDB: its advisory rows carry no
+#: ``pid``, so a ``pid = pg_backend_pid()`` count reads 0 there whoever holds the lock.
+_TAKE_AGAIN_SQL = "SELECT pg_try_advisory_lock($1, $2) AS got"
+_GIVE_BACK_SQL = "SELECT pg_advisory_unlock($1, $2) AS gave"
+
+_Query = Callable[..., Awaitable[list[dict[str, Any]]]]
 
 
 @pytest.fixture(scope="session")
@@ -166,6 +170,45 @@ async def _lock_is_free(url: str) -> bool:
     return free
 
 
+async def _holds_here(query: _Query, url: str, database: str) -> int:
+    """
+    report whether the session ``query`` runs on holds the database's DDL lock: 1 when it does, else 0.
+
+    takes the lock again on that session (granted only when it holds it, or nobody does) and gives that hold back,
+    then asks a fresh session whether the lock is free: held here, it is not.
+
+    :param query: runs a statement on the session asked about, returning its rows
+    :ptype query: _Query
+    :param url: database URL, for the fresh session
+    :ptype url: str
+    :param database: the database's name
+    :ptype database: str
+    :return: 1 when this session holds the lock, else 0
+    :rtype: int
+    """
+    key = ddl_lock_key(database)
+    if not (await query(_TAKE_AGAIN_SQL, DDL_LOCK_NAMESPACE, key))[0]["got"]:
+        return 0
+    assert (await query(_GIVE_BACK_SQL, DDL_LOCK_NAMESPACE, key))[0]["gave"]
+    return 0 if await _lock_is_free(url) else 1
+
+
+def _on(conn: asyncpg.Connection) -> _Query:
+    """
+    a :data:`_Query` running on ``conn``.
+
+    :param conn: the connection
+    :ptype conn: asyncpg.Connection
+    :return: the query function
+    :rtype: _Query
+    """
+
+    async def query(sql: str, *args: Any) -> list[dict[str, Any]]:
+        return [dict(row) for row in await conn.fetch(sql, *args)]
+
+    return query
+
+
 async def _sample_wait_events(observer: asyncpg.Connection, pid: int, samples: int) -> list[str | None]:
     """
     sample what a backend is waiting on, several times over half a second.
@@ -195,7 +238,7 @@ async def test_runs_on_two_schemas_of_one_database_take_turns(lock_db: str) -> N
 
     async def _first(store: Any) -> None:
         """hold the lock until told to finish, proving it is held on this session."""
-        assert await store.query(_HOLDS_THE_DDL_LOCK_SQL, DDL_LOCK_NAMESPACE, ddl_lock_key(database)) == [{"count": 1}]
+        assert await _holds_here(store.query, lock_db, database) == 1
         first_entered.set()
         await first_may_finish.wait()
 
@@ -313,7 +356,7 @@ async def test_failed_run_leaves_the_lock_free(lock_db: str) -> None:
         with pytest.raises(MigrationFailedError):
             await _runner(_fail).apply_for_agent_schema(ConnectionSession(conn))
         database = await conn.fetchval("SELECT current_database()")
-        still_held_here = await conn.fetchval(_HOLDS_THE_DDL_LOCK_SQL, DDL_LOCK_NAMESPACE, ddl_lock_key(database))
+        still_held_here = await _holds_here(_on(conn), lock_db, database)
     finally:
         await conn.close()
 
@@ -355,8 +398,7 @@ async def test_data_store_run_migrations_holds_the_lock_on_its_bodies_session(lo
 
     async def _check(store: Any) -> None:
         """record how many holds of the DDL lock the body's own session has."""
-        rows = await store.query(_HOLDS_THE_DDL_LOCK_SQL, DDL_LOCK_NAMESPACE, ddl_lock_key(database))
-        seen.append(int(rows[0]["count"]))
+        seen.append(await _holds_here(store.query, lock_db, database))
         await store.execute("CREATE TABLE IF NOT EXISTS pinned (id INT)")
 
     admin = await asyncpg.connect(lock_db)
@@ -427,8 +469,8 @@ async def test_a_body_create_table_runs_on_the_pinned_session_that_holds_the_loc
         before = (await store.query("SELECT pg_backend_pid() AS pid"))[0]["pid"]
         await store.create_table(_widgets())
         after = (await store.query("SELECT pg_backend_pid() AS pid"))[0]["pid"]
-        holds = await store.query(_HOLDS_THE_DDL_LOCK_SQL, DDL_LOCK_NAMESPACE, ddl_lock_key(database))
-        observed.update(before=before, after=after, holds=int(holds[0]["count"]))
+        holds = await _holds_here(store.query, lock_db, database)
+        observed.update(before=before, after=after, holds=holds)
 
     admin = await asyncpg.connect(lock_db)
     database = await admin.fetchval("SELECT current_database()")
@@ -444,7 +486,7 @@ async def test_a_body_create_table_runs_on_the_pinned_session_that_holds_the_loc
 
     assert applied == 1
     assert observed["before"] == observed["after"]
-    # one hold: create_table ran under the run's lock and did not take it again
+    # held on this session: create_table ran under the run's lock, on the session holding it
     assert observed["holds"] == 1
     assert index_valid is True
     assert store["widgets"].table_name == "widgets"

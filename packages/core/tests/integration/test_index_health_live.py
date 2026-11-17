@@ -21,7 +21,6 @@ from threetears.core.ddl.index_health import (
     unusable_indexes,
 )
 from threetears.core.testing.calibrate import budget_problem
-from threetears.core.testing.plans import on_yugabyte
 
 pytestmark = pytest.mark.integration
 
@@ -48,9 +47,11 @@ async def conn(db_container: str) -> AsyncIterator[tuple[asyncpg.Connection, str
 
 
 async def _break(conn: asyncpg.Connection, schema: str, name: str) -> None:
-    """mark an index as a failed build leaves it: not valid, not ready (still updated and enforced while ready)."""
-    if await on_yugabyte(conn):
-        pytest.skip("YugabyteDB does not let the catalog be written to stand in for a failed build")
+    """mark an index as a failed build leaves it: not valid, not ready (still updated and enforced while ready).
+
+    PostgreSQL only: YugabyteDB does not let the catalog be written to stand in for a failed build, so every test
+    calling this is marked ``postgres_only`` (a run on YugabyteDB deselects it).
+    """
     await conn.execute(
         "UPDATE pg_index SET indisvalid = false, indisready = false WHERE indexrelid = to_regclass($1)",
         f"{schema}.{name}",
@@ -64,6 +65,7 @@ async def _valid(conn: asyncpg.Connection, schema: str, name: str) -> Any:
     )
 
 
+@pytest.mark.postgres_only
 async def test_an_unusable_index_is_built_again_from_its_definition(conn: tuple[asyncpg.Connection, str]) -> None:
     connection, schema = conn
     await _break(connection, schema, "datasets_customer_id_name_key")
@@ -84,6 +86,7 @@ async def test_an_unusable_index_is_built_again_from_its_definition(conn: tuple[
     assert "UNIQUE" in definition and "is_deleted = false" in definition
 
 
+@pytest.mark.postgres_only
 async def test_duplicate_keys_refuse_the_rebuild_loudly_and_drop_nothing(
     conn: tuple[asyncpg.Connection, str],
 ) -> None:
@@ -134,6 +137,7 @@ def _duplicate_checks(recording: _Recording) -> list[str]:
     return [sql for sql in recording.sent if "HAVING count(*) > 1" in sql]
 
 
+@pytest.mark.postgres_only
 async def test_the_duplicate_key_read_is_reached_only_for_an_unusable_unique_index(
     conn: tuple[asyncpg.Connection, str],
 ) -> None:
@@ -162,11 +166,12 @@ _SPEED_ROWS = int(os.environ.get("THREETEARS_INDEX_HEALTH_SPEED_ROWS", "200000")
 
 
 @pytest.mark.loop_timing
+@pytest.mark.postgres_only
 async def test_rebuild_speed_at_real_size(conn: tuple[asyncpg.Connection, str]) -> None:
     """``rebuild_unusable_indexes`` on an unusable unique index (``_duplicate_keys``' whole read, the drop and the
     build; the repair ``_install_change_notes`` runs on the ring), against the same statements by hand, turn about;
     within 2x. Postgres: YugabyteDB cannot fake an unusable
-    index (``_break`` skips there). Timed runs belong under measure-lock."""
+    index (``_break``), so it is ``postgres_only``. Timed runs belong under measure-lock."""
     connection, schema = conn
     await connection.execute(
         f"INSERT INTO {schema}.datasets (id, customer_id, name) "

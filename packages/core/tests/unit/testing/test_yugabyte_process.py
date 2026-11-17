@@ -65,6 +65,8 @@ def test_the_tserver_runs_as_yugabyted_runs_it_on_its_own_address(tmp_path: Path
     assert _YUGABYTED.items() <= flags.items()
     assert flags["ysql_enable_packed_row"] == "true"
     assert flags["ysql_pg_conf_csv"] == "yb_enable_cbo=on"
+    # as in production: a client gives the password, and a wrong one is refused
+    assert flags["ysql_enable_auth"] == "true"
     assert flags["tserver_master_addrs"] == "127.9.8.7:7100"
     assert flags["rpc_bind_addresses"] == "127.9.8.7:9100"
     assert flags["pgsql_proxy_bind_address"] == "127.9.8.7:5433"

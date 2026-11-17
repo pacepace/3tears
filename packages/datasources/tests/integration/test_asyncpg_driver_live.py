@@ -341,7 +341,11 @@ class TestIntrospectionCatalogsOnlySelectableTables:
         assert columns == {"widgets", "Gadgets"}
         assert hashed == {"widgets", "Gadgets"}
 
+    # PostgreSQL only: the race is staged by a REPEATABLE READ snapshot of PostgreSQL's catalog, which keeps showing a
+    # table another session dropped. YugabyteDB's catalog reads follow its catalog version, not the snapshot, so the
+    # dropped table is gone at once and the race cannot be staged there (the test's own guard says "proves nothing").
     @pytest.mark.asyncio
+    @pytest.mark.postgres_only
     @pytest.mark.parametrize("read", ["list_tables", "list_columns", "table_hashes"])
     async def test_a_table_dropped_while_the_catalog_is_read_is_skipped_not_fatal(
         self, seeded_schema: tuple[str, str], read: str, monkeypatch: pytest.MonkeyPatch
