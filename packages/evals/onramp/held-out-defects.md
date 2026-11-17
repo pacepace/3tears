@@ -4,7 +4,10 @@ The record of what is wrong with each held-out app, for whoever reads a run on t
 trial gets a copy of `apps/<app>/` only, and the twin is laid over it at grading.
 
 These apps were written blind to the package's docs, and nobody has read a transcript of them while writing a docs
-change. A docs change written after reading their transcripts makes them development-set apps.
+change. They are registered in `held-out.jsonl`, not `apps.jsonl`, so no default run covers them: a held-out app runs
+only when a committed plan names it. They stop being held out once any run's transcripts on them have been read while
+writing a docs change. From then on they are development-set apps, and a comparison on them is development-set
+evidence like any other.
 
 Each share below is printed by `python packages/evals/onramp/held_out_shares.py` (standard library only), which runs
 every case in the app's shipped data through the app and through the app with its twin laid over it, and checks that
