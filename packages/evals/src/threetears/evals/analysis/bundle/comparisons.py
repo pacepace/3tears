@@ -988,9 +988,7 @@ def _primary_disclosure(
 ) -> str:
     """The sentence a writer quotes about a family decided on its primary (:func:`_primary_family`), closing on
     :data:`REREAD_SENTENCE` as every family the bet read does."""
-    across = (
-        f", corrected by Holm's method across its {arms} arms" if arms > 1 else ""
-    )
+    across = f", corrected by Holm's method across its {arms} arms" if arms > 1 else ""
     level = format_number(100 * (1 - 2 * alpha / arms))
     sentence = (
         f"The question is decided on {primary} alone, at α={format_number(alpha)}{across}, by a bet staked "
@@ -1383,8 +1381,12 @@ def multiple_comparisons(
                 if reading[0] == "trial" and not (control_values and contrast_values):
                     # A side with no usable graded trial has no pass rate; the scoreboard says why, not a contrast.
                     continue
-                if reading[0] == "trial" and reread_order is not None and _repeats_a_reading(
-                    readings, values, (control_key, contrast_key), (control_values, contrast_values)
+                if (
+                    reading[0] == "trial"
+                    and reread_order is not None
+                    and _repeats_a_reading(
+                        readings, values, (control_key, contrast_key), (control_values, contrast_values)
+                    )
                 ):
                     # The pass rate of an eval with one check is that check, case for case: one hypothesis, read once.
                     continue

@@ -207,7 +207,11 @@ def _evidence_sentences(comparison: FamilyComparison, verdict: Verdict, forms: P
     better, worse = comparison.evidence_better, comparison.evidence_worse
     if better is None or worse is None:
         return []
-    leaning = "worse" if standing_side(comparison.delta, higher_is_better=comparison.higher_is_better) == "behind" else "better"
+    leaning = (
+        "worse"
+        if standing_side(comparison.delta, higher_is_better=comparison.higher_is_better) == "behind"
+        else "better"
+    )
     order = (("better", better), ("worse", worse)) if leaning == "better" else (("worse", worse), ("better", better))
     said = []
     for index, (side, evidence) in enumerate(order):

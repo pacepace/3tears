@@ -630,7 +630,9 @@ def evidence_grade(evidence: float) -> str:
     :return: The word.
     """
     moderate, strong = EVIDENCE_STEPS
-    return EVIDENCE_GRADES[2] if evidence >= strong else EVIDENCE_GRADES[1] if evidence >= moderate else EVIDENCE_GRADES[0]
+    return (
+        EVIDENCE_GRADES[2] if evidence >= strong else EVIDENCE_GRADES[1] if evidence >= moderate else EVIDENCE_GRADES[0]
+    )
 
 
 def cannot_tell_apart(arms: Sequence[str], control: str) -> str:
