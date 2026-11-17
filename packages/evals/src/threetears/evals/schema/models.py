@@ -5796,6 +5796,12 @@ CellTermination = Literal[
     "cancelled",
 ]
 
+#: What a row a run taken up again wrote over its cell's stored row had replaced (``EvalResult.written_over``): ``cut``
+#: where some attempt it replaces was cut while it ran (termination ``cancelled``), else ``unanswered`` (a call the
+#: account refused, or a model the provider did not serve), each a row that recorded no answer
+#: (:func:`~threetears.evals.kernel.result_condition.runs_again`).
+WrittenOver = Literal["cut", "unanswered"]
+
 
 class ConversationStopCause(StrEnum):
     """Why a conversation trial's turn loop stopped — one structural signal, never a reading of prose.
@@ -6508,6 +6514,17 @@ class EvalResult(CoreDocumentModel):
             "`infra_error` quotes the provider; cells that keep meeting it end the run exhausted, and a run taken up "
             "again once the model is served runs this cell again, written over this row. False on a row stored "
             "before the field existed."
+        ),
+    )
+    written_over: WrittenOver | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "What this row was written over: a row of its cell that recorded no answer (cut while it ran, its call "
+            "refused for the account, or its model not served), which a run taken up again runs again under the same "
+            "row. `cut` where some attempt it replaces was cut while it ran, else `unanswered`. A cell cut and taken "
+            "up again keeps no row of its cut, so this is how many cells ran again is still counted "
+            "(`redrawn_cells`). None on a row written over nothing, and on one stored before the field existed."
         ),
     )
     judging_set_aside: bool = Field(
