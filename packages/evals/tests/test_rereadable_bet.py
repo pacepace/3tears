@@ -909,7 +909,7 @@ async def test_an_interrupted_comparison_finishes_its_cells_in_flight_files_and_
         async def run(case: Mapping[str, Any]) -> str:
             answer = await coins[arm](case)
             await asyncio.sleep(0.002)
-            if arm == "b" and sum(count for (_, side), count in calls.items() if side == "b") == 8 and running:
+            if arm == "b" and sum(count for (_, side), count in calls.items() if side == "b") >= 8 and running:
                 asyncio.get_running_loop().call_soon(running.pop().cancel, "interrupted")
             return answer
 
