@@ -4,8 +4,8 @@ Some behaviour lives in state only nats-py's read loop writes: the queue and pen
 a subscription that has no callback. A test that wants messages in that queue either reaches into
 nats-py's private attributes to put them there, or has a server deliver them. This is the server.
 
-It answers ``CONNECT`` and ``PING``, records every ``SUB`` and ``UNSUB`` it is sent, and delivers
-a ``MSG`` to a subscription on request. It routes nothing on its own: a ``PUB`` is read and
+It answers ``CONNECT`` and ``PING``, records every ``SUB`` and ``UNSUB`` it is sent, delivers
+a ``MSG`` to a subscription on request, and drops a connection on request. It routes nothing on its own: a ``PUB`` is read and
 dropped, so a test decides exactly what reaches a client and when.
 """
 
@@ -35,11 +35,13 @@ class WireServer:
     :ivar url: ``nats://`` address the server listens on
     :ivar subscribed: every ``SUB`` received, as ``(subject, sid)``, in arrival order
     :ivar unsubscribed: the sid of every ``UNSUB`` received, in arrival order
+    :ivar connections: every client connection accepted, in arrival order, open or not
     """
 
     url: str = ""
     subscribed: list[tuple[str, int]] = field(default_factory=list)
     unsubscribed: list[int] = field(default_factory=list)
+    connections: list[asyncio.StreamWriter] = field(default_factory=list)
     _writers: dict[int, asyncio.StreamWriter] = field(default_factory=dict)
 
     def sid_for(self, subject: str) -> int:
@@ -71,6 +73,18 @@ class WireServer:
         writer.write(f"MSG {subject} {sid} {len(data)}\r\n".encode() + data + b"\r\n")
         await writer.drain()
 
+    async def drop(self, index: int) -> None:
+        """close one client connection from the server's side, as a server that goes away does.
+
+        :param index: its position in :attr:`connections`
+        :ptype index: int
+        :return: nothing
+        :rtype: None
+        """
+        writer = self.connections[index]
+        writer.close()
+        await writer.wait_closed()
+
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """one client connection, until it closes.
 
@@ -81,6 +95,7 @@ class WireServer:
         :return: nothing
         :rtype: None
         """
+        self.connections.append(writer)
         writer.write(f"INFO {json.dumps(_INFO)}\r\n".encode())
         await writer.drain()
         while line := await reader.readline():

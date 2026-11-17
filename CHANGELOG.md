@@ -27,7 +27,9 @@ passes it in the same order on every attempt, and the client's reconnect handler
 a client whose shuffle put a dead server first (a node that left, a lame-duck server that closed its listener)
 never tried the live servers beside it: 2 of 12 local runs stayed on a killed server for 20 s, where 12 of 12 now
 fail over within about a second. The handler now takes the server tried least since it last connected, ties by the
-pool's order, so each failure moves it on as nats-py's own round-robin does.
+pool's order, so each failure moves it on as nats-py's own round-robin does. The delay is still keyed on the selected
+server's own count, so with every server of an N-server pool down it reaches its cap after about N times as many
+attempts; each server still sees its own retries back off exponentially.
 
 ### web: a JavaScript workspace, and @3tears/web-pwa for installable web apps
 

@@ -26,6 +26,8 @@ from threetears.nats import (
 )
 from threetears.nats.credential_refusal import CredentialRefusal, CredentialRefusalReason
 
+from .wire_server import wire_server
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -1082,6 +1084,44 @@ async def test_a_replaced_connection_closes_when_its_server_drops_it_rather_than
     assert current.options["allow_reconnect"] is False
     assert successor.options["allow_reconnect"] is True, "the current connection still reconnects"
     await client.shutdown()
+
+
+async def test_a_real_replaced_connection_closes_when_its_server_drops_it() -> None:
+    """against nats-py itself, not a stand-in: nats-py must read the option again when the connection fails.
+
+    The successor stays connected; the replaced connection, dropped by its server, closes and never connects
+    again -- the server sees no third connection.
+    """
+    async with wire_server() as server:
+        client = await NatsClient.connect(
+            nats_url=server.url,
+            nats_subject_namespace="3tears",
+            client_name="drop-test",
+            verify_jetstream=False,
+            # a reconnect, if one were attempted, comes well inside the wait below
+            reconnect_backoff_base=0.05,
+            reconnect_backoff_cap=0.05,
+        )
+        replaced = client.raw
+        try:
+
+            async def _cb(msg: IncomingMessage) -> None:
+                return None
+
+            await client.subscribe(Subject.raw("events.>"), cb=_cb)
+            await client.renew_connection(retire_after=timedelta(seconds=30))
+            assert client.raw is not replaced and len(server.connections) == 2
+
+            await server.drop(0)
+            await asyncio.sleep(1.0)
+
+            assert len(server.connections) == 2, "the replaced connection reconnected"
+            assert replaced.is_closed
+            assert client.raw.is_connected
+        finally:
+            # a replaced connection still reconnecting would otherwise keep the server's block from closing
+            await replaced.close()
+            await client.shutdown()
 
 
 async def test_an_old_half_whose_connection_closed_first_sends_no_unsub() -> None:

@@ -225,14 +225,15 @@ def test_handler_never_raises_fails_safe_to_fallback() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_handler_selects_the_least_tried_server_and_jitters_on_its_reconnects() -> None:
+def test_handler_selects_the_least_tried_server_and_jitters_on_its_reconnects(monkeypatch: pytest.MonkeyPatch) -> None:
     """the handler picks the eligible server tried least and returns a jittered delay keyed on its reconnects."""
     handler = _handler(base=1.0, cap=30.0)
-    servers = [_server(4), _server(2)]
+    _pin_draw(monkeypatch, 1.0)
+    servers = [_server(3), _server(2)]
     selected, delay = handler(servers, {})
     assert selected is servers[1]
     # ceiling for reconnects=2 is min(30, 1 * 2**2) = 4.
-    assert 0.0 <= delay <= 4.0
+    assert delay == pytest.approx(4.0)
 
 
 def test_handler_breaks_a_tie_by_the_pools_order() -> None:

@@ -613,16 +613,19 @@ def _make_reconnect_to_server_handler(
     server info, and expects back ``(selected_server, callback_delay)``; it then sleeps
     ``callback_delay`` before connecting. the handler selects the eligible server tried least since it
     last connected -- the first of them in the pool's order, which nats-py shuffles once per reconnect --
-    and returns a FULL-JITTER capped-exponential delay keyed on THAT server's ``reconnects`` -- so the
-    per-attempt count drives the backoff and a mass reconnect spreads across the window rather than
-    synchronizing. the handler is sync because nats-py calls it un-awaited.
+    and returns a FULL-JITTER capped-exponential delay keyed on THAT server's ``reconnects`` -- so each
+    server's own retries back off exponentially and a mass reconnect spreads across the window rather
+    than synchronizing. the handler is sync because nats-py calls it un-awaited.
 
     the least-tried server, not simply the first: nats-py shuffles the pool once per reconnect, not per
     attempt, and passes it in the same order every attempt, so the first server stays first. a client
     whose shuffle put a dead server first -- a node that left the cluster, a lame-duck server that
     closed its listener -- would retry it forever (``max_reconnect_attempts`` is unbounded) and never
     try the live servers beside it. each failed attempt counts against its server, so the least-tried
-    one rotates through the pool as nats-py's own round-robin does.
+    one rotates through the pool as nats-py's own round-robin does. the price: across a pool of N
+    servers that are all down, the ceiling doubles once every N failures rather than every failure,
+    so the client reaches the cap after about N times as many attempts. each server still sees its
+    own retries back off exponentially, which is what keeps a reconnecting fleet off a server.
 
     :param base: base backoff (seconds) for :func:`_full_jitter_backoff`
     :ptype base: float
@@ -4099,7 +4102,8 @@ class NatsClient:
            rebind each durable push consumer;
         5. keep the old connection open a further ``retire_after`` after its members left -- the
            longest request it may be carrying, and a message matched to a leaving member just before
-           its ``UNSUB`` that lands after the round trip -- then drain and close it. Until then a request sent on it still receives its
+           its ``UNSUB`` that lands after the round trip -- then drain and close it. Until then, unless its server
+           drops it first (see below), a request sent on it still receives its
            reply there, a reply this client owes for a request that arrived there still leaves
            there (:meth:`publish_reply`), and a JetStream message received there is acknowledged
            there. Anything that outlives the old connection and is bound to it -- a KV handle, a
