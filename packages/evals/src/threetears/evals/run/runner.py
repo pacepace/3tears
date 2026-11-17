@@ -4474,13 +4474,13 @@ async def execute_run(
             if sink in in_flight:
                 in_flight.remove(sink)
 
-    def cut_short(sink: _CellSink, tc: EvalTestCase, k: int) -> CellOutcome:
+    def cut_short(sink: _CellSink, tc: EvalTestCase, k: int, why: str) -> CellOutcome:
         """A cell cancelled with its run, or interrupted, while it ran: recorded excluded on the rig's side with what it
-        had spent, which lives only on its sink."""
+        had spent, which lives only on its sink. ``why`` says which, in its log line and its row."""
         _, waiting_on = _DEADLINE_CHARGE[sink.pending]
         log.warning(
-            "Eval cell cancelled with its run while waiting on %s (test_case=%s model=%s k=%s run=%s); "
-            "recording what it had spent",
+            "Eval cell %s while waiting on %s (test_case=%s model=%s k=%s run=%s); recording what it had spent",
+            why,
             waiting_on,
             tc.id,
             model,
@@ -4488,7 +4488,7 @@ async def execute_run(
             run.id,
         )
         errors = sink.errors = ErrorLedger.of(sink.side())
-        msg = f"cell cancelled with its run while waiting on {waiting_on}"
+        msg = f"cell {why} while waiting on {waiting_on}"
         if sink.judging is None:
             errors.add_infra(msg)
         return _cut_short_cell(
@@ -4591,20 +4591,30 @@ async def execute_run(
             )
             # A set-aside here is neither a stop nor counted on the cap's record: a phase waits only while another holds
             # room it may not bill, so the cap's shortage was never established. The cell's mark is its count.
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancel:
             # NOSILENT: the cell is recorded excluded with what it spent, and the cancel is re-raised once it is saved.
             # The run was cancelled while this cell ran. The cancel still ends the run — it is
             # re-raised below, once the cell is accounted for — but the cell's spend was real, and
             # it lives only on this sink, so it is recorded as an excluded cell first rather than
             # dropped with the frame. Excluded on the rig's side: nothing the candidate did ended it.
-            result, cell_trace = cut_short(sink, tc, k)
             cancelled_in_cell = True
+            try:
+                result, cell_trace = cut_short(sink, tc, k, "cancelled with its run")
+            except Exception as failed:
+                contain(failed, log=log, what=f"a cancelled cell of run {run.id} could not be recorded", level="error")
+                raise cancel from failed
         except KeyboardInterrupt as stopped:
             # NOSILENT: a Ctrl+C landing in this cell's own step cuts it as a cancel does: recorded excluded with what it
-            # spent, and the interrupt is raised itself once the cell is saved.
-            result, cell_trace = cut_short(sink, tc, k)
+            # spent, and the interrupt is raised itself once the cell is saved, whatever the saving meets.
             cancelled_in_cell = True
             interrupted = stopped
+            try:
+                result, cell_trace = cut_short(sink, tc, k, "interrupted (Ctrl+C)")
+            except Exception as failed:
+                contain(
+                    failed, log=log, what=f"an interrupted cell of run {run.id} could not be recorded", level="error"
+                )
+                raise stopped from failed
         except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError, JudgeCallUnserved) as raised:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
@@ -4654,93 +4664,106 @@ async def execute_run(
         # while its row lands anyway. The cancel is delivered once the cell is accounted for below.
         # The cell's metered calls, as the run's ledger lands them below, and whether the account paying for the run
         # refused it: the row is what a later holding of the run counts its ceiling from and plans its cells by.
-        metered = sink.meter.tally().calls if options.metered_calls is not None and sink.meter is not None else None
-        result = result.model_copy(
-            update={
-                "lease_epoch": lease_epoch,
-                "metered_calls": metered,
-                "account_refused": sink.account_refusal is not None,
-                "model_unserved": sink.errors.model_unserved,
-            }
-        )
-        if (over := stored.replaced.get((tc.id, k))) is not None:
-            # Written over the cell's stored row, under its id (an older build minted ids, so it may not be the
-            # derived one), carrying what the attempts it replaces spent: the row was their only record.
-            superseded = (
-                None
-                if over.summary.cost_usd is None or over.superseded_spend_usd is None
-                # The replaced row's dropped sends move with its spend, so its next take-up's cap still counts them.
-                else over.summary.cost_usd + over.summary.maybe_billed_usd + over.superseded_spend_usd
-            )
+        # A cut cell's accounting is the cancel's or the interrupt's to finish, never to end: whatever it meets is
+        # recorded, and the cancel or the interrupt goes on.
+        try:
+            metered = sink.meter.tally().calls if options.metered_calls is not None and sink.meter is not None else None
             result = result.model_copy(
                 update={
-                    "id": over.summary.result_id,
-                    "superseded_spend_usd": superseded,
-                    "metered_calls": None
-                    if metered is None and over.metered_calls is None
-                    else (metered or 0) + (over.metered_calls or 0),
+                    "lease_epoch": lease_epoch,
+                    "metered_calls": metered,
+                    "account_refused": sink.account_refusal is not None,
+                    "model_unserved": sink.errors.model_unserved,
                 }
             )
-            if cell_trace.result_id != over.summary.result_id:
-                over_id = over.summary.result_id
-                cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over_id), "result_id": over_id})
-        saving = asyncio.ensure_future(
-            run_blocking(host.blocking_executor, host.storage.save_run_cell, result, cell_trace)
-        )
-        cancelled_while_saving = await wait_through_cancellation(saving)
-        try:
-            saving.result()
-            persisted = True
-        except JobFenced as fenced:
-            # The run is no longer this holding's: written lost (by a reader that found its lease lapsed, or by this
-            # process's shutdown), or taken up at a later epoch. Nothing was written, and the cell is not this
-            # run's to count: the run's work stops here, as a fenced renewal stops it — a cancel still pending is
-            # delivered, and otherwise the fence ends the run's loop.
-            log.warning(
-                "Eval cell not recorded — the run is no longer this holding's (test_case=%s model=%s k=%s run=%s): %s",
-                tc.id,
-                model,
-                k,
-                run.id,
-                fenced,
+            if (over := stored.replaced.get((tc.id, k))) is not None:
+                # Written over the cell's stored row, under its id (an older build minted ids, so it may not be the
+                # derived one), carrying what the attempts it replaces spent: the row was their only record.
+                superseded = (
+                    None
+                    if over.summary.cost_usd is None or over.superseded_spend_usd is None
+                    # The replaced row's dropped sends move with its spend, so its next take-up's cap still counts them.
+                    else over.summary.cost_usd + over.summary.maybe_billed_usd + over.superseded_spend_usd
+                )
+                result = result.model_copy(
+                    update={
+                        "id": over.summary.result_id,
+                        "superseded_spend_usd": superseded,
+                        "metered_calls": None
+                        if metered is None and over.metered_calls is None
+                        else (metered or 0) + (over.metered_calls or 0),
+                    }
+                )
+                if cell_trace.result_id != over.summary.result_id:
+                    over_id = over.summary.result_id
+                    cell_trace = cell_trace.model_copy(update={"id": eval_trace_doc_id(over_id), "result_id": over_id})
+            saving = asyncio.ensure_future(
+                run_blocking(host.blocking_executor, host.storage.save_run_cell, result, cell_trace)
             )
+            cancelled_while_saving = await wait_through_cancellation(saving)
+            try:
+                saving.result()
+                persisted = True
+            except JobFenced as fenced:
+                # The run is no longer this holding's: written lost (by a reader that found its lease lapsed, or by this
+                # process's shutdown), or taken up at a later epoch. Nothing was written, and the cell is not this
+                # run's to count: the run's work stops here, as a fenced renewal stops it — a cancel still pending is
+                # delivered, and otherwise the fence ends the run's loop.
+                log.warning(
+                    "Eval cell not recorded — the run is no longer this holding's (test_case=%s model=%s k=%s run=%s): %s",
+                    tc.id,
+                    model,
+                    k,
+                    run.id,
+                    fenced,
+                )
+                if interrupted is not None:
+                    raise interrupted from fenced
+                if cancelled_in_cell or cancelled_while_saving:
+                    raise asyncio.CancelledError from fenced
+                raise
+            except StorageError:
+                # NOSILENT: carried on the cell's summary as not persisted, which the run's completeness counts as a
+                # lost cell and every surface discloses as DEGRADED.
+                persisted = False
+                log.error(
+                    "Eval result NOT persisted — cell is lost (result=%s run=%s test_case=%s model=%s k=%s)",
+                    result.id,
+                    run.id,
+                    tc.id,
+                    model,
+                    k,
+                )
+            summaries.append(CellSummary.from_result(result, persisted=persisted))
+            done += 1
+            # Accumulate this cell's spend into the per-run cost cap so the
+            # run trips its own cap on the next cell once it's over.
+            # Passed as it stands: ``None`` is unpriced spend, which the cap counts
+            # as such and an enforcing cap stops on. Out of the in-flight set in the same step, so the
+            # cap never counts it twice.
+            in_flight.remove(sink)
+            if on_cost is not None:
+                # Beside it, any send that broke before a response began and was sent again, which the provider may have
+                # billed and no row's cost holds: counted at its call's own price, so the cap counts what it cannot see.
+                on_cost(
+                    None
+                    if result.cost_usd is None
+                    else result.cost_usd + maybe_billed_usd(result.usage, result.cost_roles)
+                )
+            # The cell's metered calls land on the run in the step that records its result: the metered-call
+            # ceiling is read against these and never against calls a running cell has made.
+            if options.metered_calls is not None and sink.meter is not None:
+                options.metered_calls.land(sink.meter)
+        except Exception as failed:
+            if not cancelled_in_cell:
+                raise
+            contain(failed, log=log, what=f"a cut cell of run {run.id} could not be accounted for", level="error")
+            if interrupted is None:
+                raise asyncio.CancelledError from failed
+        finally:
             if interrupted is not None:
-                raise interrupted from fenced
-            if cancelled_in_cell or cancelled_while_saving:
-                raise asyncio.CancelledError from fenced
-            raise
-        except StorageError:
-            # NOSILENT: carried on the cell's summary as not persisted, which the run's completeness counts as a
-            # lost cell and every surface discloses as DEGRADED.
-            persisted = False
-            log.error(
-                "Eval result NOT persisted — cell is lost (result=%s run=%s test_case=%s model=%s k=%s)",
-                result.id,
-                run.id,
-                tc.id,
-                model,
-                k,
-            )
-        summaries.append(CellSummary.from_result(result, persisted=persisted))
-        done += 1
-        # Accumulate this cell's spend into the per-run cost cap so the
-        # run trips its own cap on the next cell once it's over.
-        # Passed as it stands: ``None`` is unpriced spend, which the cap counts
-        # as such and an enforcing cap stops on. Out of the in-flight set in the same step, so the
-        # cap never counts it twice.
-        in_flight.remove(sink)
-        if on_cost is not None:
-            # Beside it, any send that broke before a response began and was sent again, which the provider may have
-            # billed and no row's cost holds: counted at its call's own price, so the cap counts what it cannot see.
-            on_cost(
-                None if result.cost_usd is None else result.cost_usd + maybe_billed_usd(result.usage, result.cost_roles)
-            )
-        # The cell's metered calls land on the run in the step that records its result: the metered-call
-        # ceiling is read against these and never against calls a running cell has made.
-        if options.metered_calls is not None and sink.meter is not None:
-            options.metered_calls.land(sink.meter)
-        if interrupted is not None:
-            raise interrupted
+                # The person's Ctrl+C leaves this cell whatever its accounting met, which it carries as its context.
+                raise interrupted
         if cancelled_in_cell or cancelled_while_saving:
             raise asyncio.CancelledError
         if run_defect is not None:

@@ -15,13 +15,28 @@ cancel it might read as its own. The campaign is filed wherever the second inter
 awaiting I/O, or inside a cell running on the loop thread (a CPU-busy candidate), it leaves the loop and
 `asyncio.run` cancels every task, and before this fix that cancel ended the comparison's waits and nothing was filed,
 so running it again re-ran every cell. The cells cut are recorded `cancelled`, counted, and run again in a
-continuation, the cell the interrupt landed in among them: a `KeyboardInterrupt` raised in a cell's own step (a
-CPU-busy candidate) records that cell cut, as a cancel does, before it goes on. **For hosts:** a host that awaits a
-quick comparison directly in its own coroutine, and catches `asyncio.CancelledError` there after a second interrupt,
-now gets `KeyboardInterrupt` at that `await` (its `__cause__` the first cancel); catch it to treat it as the person's
-stop. A host that runs the comparison as a task of its own (`create_task`, `gather`, a `TaskGroup`) gets it from its
-event loop's `run_until_complete` or `run_forever` instead, since asyncio raises a `KeyboardInterrupt` out of the loop
-from the task it ends. Nothing stored changes.
+continuation, the cell the interrupt landed in among them (see the engine entry below). **For hosts:** a host that
+awaits a quick comparison directly in its own coroutine, and catches `asyncio.CancelledError` there after a second
+interrupt, now gets `KeyboardInterrupt` at that `await` (its `__cause__` the first cancel); catch it to treat it as the
+person's stop. A host that runs the comparison as a task of its own (`create_task`, `gather`, a `TaskGroup`) gets it
+from its event loop's `run_until_complete` or `run_forever` instead, since asyncio raises a `KeyboardInterrupt` out
+of the loop from the task it ends.
+
+### evals: an engine run records a cell a Ctrl+C lands in as cut, then lets the interrupt go
+
+**Changed:** in every engine run, not only the quick path's, a `KeyboardInterrupt` raised in a cell's own step (a
+Ctrl+C landing while candidate code or the cell's scoring runs on the loop thread) records that cell as a cancel does:
+a row of termination `cancelled` carrying what the cell had spent, which the run's cost cap, metered-call ledger and
+summaries count; its log line and `infra_error` say "interrupted (Ctrl+C)" where a cancel's say "cancelled with its
+run". Then the interrupt is raised, whatever that accounting meets: a failure of it (an unexpected store error, say)
+is recorded with `contain()` at error level and the `KeyboardInterrupt` still leaves the cell, and a cancel held the
+same way is raised in the same way. Before, the cell recorded no row. Take-up is unchanged: `runs_again` runs a
+`cancelled` row's cell again, as it ran a cell with no row, and the row replacing it carries the cut row's spend as
+`superseded_spend_usd`. The interrupt waits for the cell's save before it leaves, with no bound of its own: a store
+write that hangs holds it, and a further Ctrl+C then leaves at once (under `asyncio.run`, one more is needed for its
+shutdown, which waits on the cell). **For hosts:** a host reading a run's rows after a Ctrl+C now finds a `cancelled`
+row for the cell the interrupt landed in, where it found none; no stored shape changes, and a build before this one
+reads such a row as the `cancelled` row a cancel writes.
 
 **Changed:** the count of a quick comparison's cells that recorded no answer and run again is one count
 (`analysis.bundle.trials.redrawn_cells`), which the print and the page both say: it now includes the launch that

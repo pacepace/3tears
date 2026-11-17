@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import random
 import re
@@ -1223,6 +1224,35 @@ def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_raises_it
     arm_of = {run.id: str(launched_as_run(run)[0]) for run in runs}
     again = Counter((case_n[r.test_case_id], arm_of[r.eval_run_id]) for r in cut)
     assert all(calls[cell] == 1 + again[cell] for cell in calls)
+
+
+class _StoreThatBreaksOnTheCutRow(InMemoryDocumentStore):
+    """A store whose next read of a row not yet stored fails with an error no store contract names, once armed: the
+    cell row a cut cell is saved as is the first such read after the interrupt."""
+
+    armed = False
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        if self.armed and self.get(doc_id, scope_id) is None:
+            self.armed = False
+            raise RuntimeError("the store broke while the cut cell was saved")
+        return super().get_with_etag(doc_id, scope_id)
+
+
+def test_a_ctrl_c_in_a_cell_still_leaves_when_saving_the_cut_cell_fails(caplog: pytest.LogCaptureFixture) -> None:
+    """A Ctrl+C landing in a cell's own step records the cell cut, then is raised; when saving that row fails with an
+    unexpected error, the failure is recorded for an operator and the ``KeyboardInterrupt`` still leaves, never turned
+    into a failed cell the run carries on past."""
+    store = _StoreThatBreaksOnTheCutRow()
+
+    async def a(case: Mapping[str, Any]) -> str:
+        store.armed = True
+        raise KeyboardInterrupt
+
+    with caplog.at_level(logging.ERROR), pytest.raises(KeyboardInterrupt):
+        asyncio.run(Eval(_cases(1), {"a": a}, [_correct], k=1, name="broken").run(store=store, scope="s"))
+    assert not store.armed
+    assert any("could not be accounted for" in record.getMessage() for record in caplog.records), caplog.text
 
 
 # --- the committed order, and the cells played in it -----------------------------------------------------------------
