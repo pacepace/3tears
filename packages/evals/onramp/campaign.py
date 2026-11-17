@@ -430,12 +430,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not args.dry_run:
                 return 2
             registered = []
-        # A scripted run on a plan runs its apps' fixed transcripts, at the k asked: no arm or tier of the plan.
-        apps, tiers = list(plan.apps), list(plan.tiers)
+        # A scripted run on a plan runs its apps' fixed transcripts (or those of the plan's apps --apps names), at the
+        # k asked: no arm or tier of the plan. A live run runs every app of the plan, and refuses an --apps that differs.
+        if args.scripted and (stray := [app for app in apps if app not in plan.apps]):
+            print(f"onramp-agent: the plan names no app {', '.join(stray)}", file=sys.stderr)
+            return 2
+        apps = apps if args.scripted and apps else list(plan.apps)
+        tiers = list(plan.tiers)
         k = (args.k or DEFAULT_K) if args.scripted else plan.k
-        run_cases = sorted((c for c in registered if c["app"] in plan.apps), key=lambda c: plan.apps.index(c["app"]))
-        if args.scripted and len(run_cases) != len(plan.apps):
-            unheld = [app for app in plan.apps if app not in {c["app"] for c in run_cases}]
+        run_cases = sorted((c for c in registered if c["app"] in apps), key=lambda c: plan.apps.index(c["app"]))
+        if args.scripted and len(run_cases) != len(apps):
+            unheld = [app for app in apps if app not in {c["app"] for c in run_cases}]
             print(f"onramp-agent: {', '.join(plan.registries)} lacks the plan's {', '.join(unheld)}", file=sys.stderr)
             return 2
     else:

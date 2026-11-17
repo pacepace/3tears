@@ -1,0 +1,8 @@
+{"tool": "run", "command": "ls"}
+{"tool": "read", "path": "{llms}"}
+{"tool": "read", "path": "README.md"}
+{"tool": "read", "path": "importer.py"}
+{"tool": "read", "path": "data/ledger.jsonl", "start": 1}
+{"tool": "write", "path": "evals.py", "text": "from threetears.evals import Eval\n\nfrom importer import read_statement_file\n\n\ndef dates(case):\n    \"\"\"The dates the importer gives the statement's transactions with this description and amount.\"\"\"\n    found = read_statement_file(\"data/\" + case[\"statement\"])\n    return {\"dates\": [t.date.isoformat() for t in found if t.description == case[\"description\"] and t.pence == case[\"pence\"]]}\n\n\ndef dated_as_ledger(case, out):\n    \"\"\"The transaction imports on the date the hand-kept ledger has.\"\"\"\n    return case[\"date\"] in out[\"dates\"]\n\n\nledger = Eval(\"data/ledger.jsonl\", runner=dates, grader=[dated_as_ledger], k=1)\n"}
+{"tool": "run", "command": "python -m threetears.evals evals.py"}
+{"tool": "done", "text": "{\"eval_file\": \"evals.py\", \"first_line\": \"{first_line}\", \"measure\": \"dated_as_ledger\", \"pass_rate\": 0.7297, \"finished\": true}"}

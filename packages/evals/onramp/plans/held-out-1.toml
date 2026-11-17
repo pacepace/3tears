@@ -10,21 +10,19 @@
 name = "held-out-1"
 question = "Does the candidate docs build let a coding agent add an eval that measures the app more often, on apps nobody tuned the docs against?"
 
-# The held-out apps. TO BE FILLED BY THE COORDINATOR once the apps branch lands, before the plan is committed for a
-# run: each app was written, with its twin, by a builder who never read the docs' history or any transcript. None is
-# recipes, holds or glossator: those are the development set the docs were tuned on, and they are never read here.
-# Each app also needs its line in apps.jsonl and a scripted transcript that passes every check (README, "Adding an
-# app"); the pre-flight refuses the run otherwise. The order is the order the package's bet reads the apps in.
-apps = [
-    "PLACEHOLDER-1",
-    "PLACEHOLDER-2",
-    "PLACEHOLDER-3",
-    "PLACEHOLDER-4",
-    "PLACEHOLDER-5",
-    "PLACEHOLDER-6",
-    "PLACEHOLDER-7",
-    "PLACEHOLDER-8",
-]
+# The held-out apps, read from held-out.jsonl, which nothing reads by default: a run covers them only on a committed
+# plan that names them. Each was written, with its twin, by a builder who never read the docs' history or any
+# transcript. None is recipes, holds or glossator, the development set the docs were tuned on, which this plan never
+# reads. Their planted defects are recorded in held-out-defects.md, which no trial sees. The order is the order the
+# package's bet reads the apps in.
+#
+# THE LEAK RULE. An app stops being held out once any trial's transcript on it is read while writing a docs change.
+# From then on it is a development-set app, and a comparison on it is development-set evidence. So no one working on
+# the docs reads this plan's runs' transcripts (steps.jsonl, record.json, the stuck lines) before its result is read.
+# The scripted transcripts in transcripts/ are the harness's fixtures, written by someone who has read the docs, and
+# are not trial transcripts.
+cases = ["held-out.jsonl"]
+apps = ["parcelrate", "weatherboard", "docnames", "previews", "tickets", "faqrank", "digest", "statements"]
 
 # Trials per arm on each app, in each tier. The app is the unit: k repeats an app, it does not add a case, so k is
 # sized to steady each app's share at a cost the quote below bears, not for power (see "Sizing").
@@ -85,6 +83,7 @@ secondary = ["eval_runs", "read_right"]
 # - Trials of the two tiers taken together, or of two arms, or of this run and any other.
 # - The secondary checks, the per-app tallies, errors_hit, cost or turns: description, never a result.
 # - The development set's apps, or any app added after this plan is committed for its run.
+# - Any held-out app whose trial transcripts were read while writing a docs change before this plan's result is read.
 # - A rerun on more apps after reading this one: that is a new plan, committed before it runs.
 # - Attribution to llms.txt alone: the arms are whole builds.
 #

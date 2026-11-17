@@ -116,7 +116,10 @@ def commit_of(ref: str) -> str | None:
 
 def committed_at(path: Path) -> str | None:
     """The commit ``path`` was last changed in, when the file is committed and unchanged since; else ``None``."""
-    relative = str(path.resolve().relative_to(REPO))
+    try:
+        relative = str(path.resolve().relative_to(REPO))
+    except ValueError:  # a file outside the repository has no commit here
+        return None
     if _git("ls-files", "--error-unmatch", "--", relative).returncode != 0:
         return None
     if _git("status", "--porcelain", "--", relative).stdout.strip():

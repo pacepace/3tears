@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from packages.evals.onramp.campaign import CASES, TRANSCRIPTS, clopper_pearson, main
+from packages.evals.onramp.campaign import CASES, HELD_OUT, TRANSCRIPTS, clopper_pearson, main, registry
 from packages.evals.onramp.plan import PLANS, Plan, PlannedArm, load_plan, plan_refusal, wheel_dir
 from packages.evals.onramp.reading import (
     CHECKS,
@@ -194,14 +194,27 @@ def test_the_committed_plan_states_its_arms_tiers_check_and_k_and_its_apps_are_h
     assert [arm.ref for arm in plan.arms] == ["f9ab6f74d", "8d433f44e"] and plan.arms[0].name == "docs@control"
     assert list(plan.tiers) == ["cheap", "ceiling"] and plan.primary == PRIMARY
     assert sorted((plan.primary, *plan.secondary)) == sorted(CHECKS)
-    development = {"recipes", "holds", "glossator"}
-    assert not development & set(plan.apps), "the development set's apps are never the held-out set's"
+    assert plan.registries == (HELD_OUT.name,) and not plan.placeholders()
+    held_out = [case["app"] for case in registry([HELD_OUT])]
+    assert list(plan.apps) == held_out, "every held-out app, in held-out.jsonl's order"
+    assert not {case["app"] for case in registry()} & set(plan.apps), "no held-out app is in the development set"
 
 
-def test_a_plan_with_placeholders_quotes_but_a_live_run_on_it_is_refused_before_anything_is_built(
+def test_a_run_without_a_plan_never_covers_a_held_out_app(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    held_out = registry([HELD_OUT])[0]["app"]
+    assert held_out not in {case["app"] for case in registry()}, "apps.jsonl, what a default run reads, lacks it"
+    argv = ["--scripted", "succeeds", "--host", "--k", "1", "--apps", held_out, "--workdir", str(tmp_path)]
+    assert main(argv) == 2
+    assert "runs only on a plan" in capsys.readouterr().err
+    assert not any(tmp_path.iterdir()), "nothing ran"
+
+
+def test_a_plan_quotes_but_a_live_run_on_one_not_committed_is_refused_before_anything_is_built(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
-    plan = load_plan(PLANS / "held-out-1.toml")
+    written = (PLANS / "held-out-1.toml").read_text(encoding="utf-8")
+    (tmp_path / "copy.toml").write_text(written, encoding="utf-8")  # outside the repository: never committed
+    plan = load_plan(tmp_path / "copy.toml")
     argv = ["--plan", str(plan.path), "--workdir", str(tmp_path)]
     assert main([*argv, "--dry-run"]) == 0
     said = capsys.readouterr().out
@@ -209,7 +222,7 @@ def test_a_plan_with_placeholders_quotes_but_a_live_run_on_it_is_refused_before_
     monkeypatch.setenv("ONRAMP_LIVE", "1")
     monkeypatch.delenv("RECORD", raising=False)
     assert main([*argv, "--cap", f"{plan.cap_usd:.2f}"]) == 2
-    assert "the plan" in capsys.readouterr().err
+    assert "is not committed" in capsys.readouterr().err
     assert not (tmp_path / "wheels").exists() and not (tmp_path / "images").exists(), "nothing built"
 
 
@@ -230,8 +243,10 @@ def test_a_stored_run_of_two_tiers_is_read_from_its_directories_tier_by_tier(
 
 
 def test_every_app_has_its_twin_and_a_scripted_transcript_the_pre_flight_runs() -> None:
-    """Adding an app is a line in apps.jsonl, the app and its twin, and a transcript that succeeds on it (README)."""
-    apps = [json.loads(line)["app"] for line in CASES.read_text(encoding="utf-8").splitlines() if line.strip()]
+    """Adding an app is a line in apps.jsonl or held-out.jsonl, the app and its twin, and a transcript that succeeds on
+    it (README)."""
+    apps = [case["app"] for case in registry([CASES, HELD_OUT])]
+    assert len(apps) == len(set(apps)), "an app is in one registry, once"
     for app in apps:
         assert (APPS / app / "README.md").is_file(), app
         assert any((TWINS / app).iterdir()), f"{app} has no fixed twin"

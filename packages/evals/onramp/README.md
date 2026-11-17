@@ -3,8 +3,10 @@
 An eval of the package's docs, built on the package. It asks: can a coding agent that has never seen this package add
 a working eval to an unfamiliar app, from the docs and the error messages alone?
 
-- **Cases:** small apps (`apps/`, listed in `apps.jsonl`), each with a planted defect, and a fixed twin of each
-  (`twins/`). The three the docs were tuned on are the development set (below).
+- **Cases:** small apps (`apps/`), each with a planted defect, and a fixed twin of each (`twins/`). `apps.jsonl` lists
+  the development set, the apps the docs were tuned on, which every run covers by default; `held-out.jsonl` lists the
+  held-out set, which only a committed plan that names it runs (below). Their defects are in `held-out-defects.md`,
+  which no trial sees.
 - **Arms:** docs builds. Each arm is a wheel of `3tears-evals` and the `llms.txt` inside it. The control arm is the
   wheel built from `ONRAMP_CONTROL_REF` (default `f9ab6f74d`).
 - **Runner:** a model acting as the agent. It reads, writes and runs `python` in a Docker container with no network,
@@ -150,7 +152,12 @@ What can support a claim beyond these apps:
   the tracking issue before the run starts. A plan in a working file with no history cannot be verified as written
   first.
 
-A plan is a TOML file in `plans/` (`plan.py`). `--plan` runs exactly what it states, and a live run on one is refused
+A held-out app stops being held out once any trial's transcript on it is read while writing a docs change; from then
+on it belongs to the development set. So a held-out app is in `held-out.jsonl`, never `apps.jsonl`: no default or
+development run covers it, and `--apps` naming it without a plan is refused.
+
+A plan is a TOML file in `plans/` (`plan.py`). It names the files its apps are read from (`cases`, `apps.jsonl` unless
+it says). `--plan` runs exactly what it states, and a live run on one is refused
 unless the plan is committed and unchanged since, names every app, and agrees with the command line: its apps, its
 `k`, its tiers, its total cap, and each arm's wheel built from that arm's commit (`runs/wheels/<ref>/`, built on first
 use). The run records the plan's commit in `run.json`. A second model tier is a second tier of the plan: each runs into
@@ -163,19 +170,22 @@ transcript that succeeds on it. The pre-flight runs every app's transcript befor
 unless every check passes on every app, so a new app is not done until its transcript passes.
 
 1. The app's builder writes `apps/<app>/` (with a `README.md`) and `twins/<app>/` (the files that fix the planted
-   defect, laid over the app), and adds `{"id": "<app>", "app": "<app>"}` to `apps.jsonl`.
+   defect, laid over the app), and adds `{"id": "<app>", "app": "<app>"}` to `apps.jsonl`, or to `held-out.jsonl`
+   for an app nobody tuning the docs may see.
 2. Write `transcripts/<app>.jsonl`, one act per line, on the shape of `transcripts/holds.jsonl`: read `{llms}` and
    the app, write an eval file that measures what the defect breaks, run it through the door
    (`python -m threetears.evals <file>`), and end with `done`, whose report gives `{first_line}` (filled in from the
    run) and the measure's name. Set its `pass_rate` to 0 for now.
-3. Run it alone: `./scripts/onramp-agent.sh --scripted succeeds --host --k 1 --apps <app>`. `read_right` fails
+3. Run it alone: `./scripts/onramp-agent.sh --scripted succeeds --host --k 1 --apps <app>` (a held-out app: add
+   `--plan <a plan naming it>`, which a scripted run takes for its apps only). `read_right` fails
    until `pass_rate` is the measure's mean on the app: the trial's `record.json` holds it under
    `checks.app.means`. Put it in the transcript and run again: all three checks pass.
 4. Run it in a trial container, as the pre-flight will: `./scripts/onramp-agent.sh --scripted succeeds --k 1 --apps
-   <app>` (needs Docker), and `--scripted stuck --k 1 --apps <app>`, which must fail every check.
+   <app>` (needs Docker), and `--scripted stuck --k 1 --apps <app>`, which must fail every check. Add
+   `--arm docs@candidate=<wheel>` to run it on a second build too: the pre-flight runs it on every arm.
 
-`tests/test_onramp_reading.py` holds every app in `apps.jsonl` to its twin and its transcript, and
-`tests/test_onramp_end_to_end.py` runs every app's transcript.
+`tests/test_onramp_reading.py` holds every app of either list to its twin and its transcript, and
+`tests/test_onramp_end_to_end.py` runs the development set's transcripts.
 
 History: on issue #1177, a docs change to `llms.txt` was described as established by a Fisher exact test over 42
 trials a side on the three apps here. The correction of 2026-11-16 withdrew that: the trials were 3 apps by 14 repeats,
