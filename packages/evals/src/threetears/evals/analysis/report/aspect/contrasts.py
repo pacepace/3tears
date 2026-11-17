@@ -6,6 +6,7 @@ the contrasts table and its rows (:func:`contrast_rows`).
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from typing import Literal
 
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
@@ -53,6 +54,7 @@ from threetears.evals.analysis.report.parts.words import FAMILY_LEVEL_TEMPLATE
 from threetears.evals.analysis.report.verdict import MIN_CASES, VerdictLine, verdict_line
 from threetears.evals.analysis.report.words import (
     comparison_words,
+    decided_words,
     disclosure_words,
     estimate_sentence,
     evidence_sentence,
@@ -125,14 +127,17 @@ def contrast_evidence(
     surface = bundle_decision_surface(bundle)
     rulers = report_rulers(surface, bundle.measure_catalog)
     tested = {
-        (comparison.contrast.variant_key, comparison.name, comparison.reading, family.aspect): comparison
+        (comparison.contrast.variant_key, comparison.name, comparison.reading, family.aspect): (comparison, family)
         for family in bundle.multiple_comparisons.families
         for comparison in family.comparisons
     }
 
     def figures(verdict: Verdict) -> str | None:
-        comparison = tested.get((verdict.variant_key, verdict.name, verdict.reading, verdict.aspect))
-        if comparison is None or verdict.control is None or comparison.delta is None or comparison.interval is None:
+        found = tested.get((verdict.variant_key, verdict.name, verdict.reading, verdict.aspect))
+        if found is None:
+            return None
+        comparison, family = found
+        if verdict.control is None or comparison.delta is None or comparison.interval is None:
             return None
         if comparison.control.mean is None or comparison.contrast.mean is None:
             return None
@@ -168,13 +173,19 @@ def contrast_evidence(
             size = page.ruled_change_size(
                 ruler, comparison.delta, form=form, places=places, measure=comparison.name, kind=comparison.reading
             )
-            unit = ("" if ruler.unit != PERCENT else " point" if size == "1" else " points")
+            unit = "" if ruler.unit != PERCENT else " point" if size == "1" else " points"
+            # A decision says when it was made, in its words; the estimate after it is where the arm stands now.
             lead = [
                 estimate_sentence(
-                    side, verdict.arm, verdict.control, cases=comparison.control.n_cases, size=f"{size}{unit}"
+                    side,
+                    verdict.arm,
+                    verdict.control,
+                    cases=comparison.control.n_cases,
+                    size=f"{size}{unit}",
+                    now=comparison.decided_at_cases is not None,
                 ),
                 allows,
-                *_evidence_sentences(comparison, verdict, page),
+                *_evidence_sentences(comparison, verdict, page, lean=family.lean if family.primary else None),
             ]
             return " ".join([*lead, *said])
         if paired:
@@ -191,11 +202,14 @@ def contrast_evidence(
 _EVIDENCE_SHOWN_TO = 1000.0
 
 
-def _evidence_sentences(comparison: FamilyComparison, verdict: Verdict, forms: PageForms) -> list[str]:
-    """The graded evidence a bet-read contrast holds: for the side its estimate leans to (better where it is level),
-    then for the other side where it reaches the first grade's step, each in its grade's word
-    (:func:`~threetears.evals.analysis.style.evidence_grade`) and with its e-value; a side the comparison is decided on
-    says so."""
+def _evidence_sentences(
+    comparison: FamilyComparison, verdict: Verdict, forms: PageForms, *, lean: Literal["better", "worse"] | None = None
+) -> list[str]:
+    """The graded evidence a bet-read contrast holds now: for the side its estimate leans to (better where it is
+    level), then for the other side where it reaches the first grade's step, each in its grade's word
+    (:func:`~threetears.evals.analysis.style.evidence_grade`) and with its e-value. Where the question leans one way
+    (``lean``) and the evidence the estimate leans to points the other, it says so: an interval wholly on that side with
+    strong evidence is never left to read as an answer to the question."""
     better, worse = comparison.evidence_better, comparison.evidence_worse
     if better is None or worse is None:
         return []
@@ -211,14 +225,13 @@ def _evidence_sentences(comparison: FamilyComparison, verdict: Verdict, forms: P
             continue
         shown = min(evidence, _EVIDENCE_SHOWN_TO)
         figure = forms.multiple(shown).text
-        decided = verdict.outcome == ("improved" if side == "better" else "regressed")
         said.append(
             evidence_sentence(
                 verdict.arm,
                 "better" if side == "better" else "worse",
                 evidence_grade(evidence),
                 f"over {figure}" if evidence > _EVIDENCE_SHOWN_TO else figure,
-                decided=decided,
+                against_question=lean is not None and side != lean and evidence >= EVIDENCE_STEPS[0],
             )
         )
     return said
@@ -629,6 +642,16 @@ def _verdict_cell(verdict: Verdict) -> str:
     return verdict.words if rest == verdict.words else CANNOT_TELL_APART + rest
 
 
+def _decided_when(comparison: FamilyComparison, forms: PageForms) -> str:
+    """When a contrast the bet decided was decided, said after its decision (:func:`decided_words`); empty for any other
+    contrast."""
+    if comparison.decided_at_cases is None or comparison.decided_evidence is None:
+        return ""
+    evidence = comparison.decided_evidence
+    figure = forms.multiple(min(evidence, _EVIDENCE_SHOWN_TO)).text
+    return decided_words(comparison.decided_at_cases, f"over {figure}" if evidence > _EVIDENCE_SHOWN_TO else figure)
+
+
 def _contrast_words(
     comparison: FamilyComparison,
     arms: tuple[str, str],
@@ -654,6 +677,7 @@ def _contrast_words(
             )
             if undecided_bet
             else comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
+            + _decided_when(comparison, forms)
         )
         + (f" ({reason_words(comparison.untested_reason)})" if comparison.untested_reason else "")
         + (f" ({reason_words(comparison.not_separated_reason)})" if comparison.not_separated_reason else "")

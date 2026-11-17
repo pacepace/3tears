@@ -196,6 +196,18 @@ def _shards() -> list[Shard]:
                     {"null": null, "shards": list(block), "per": 150},
                 )
             )
+    for asks in ("gate", "late"):
+        # A gate, and a question pointed at the leader after each read: 6,000 newcomers each (tags <asks>-<index>).
+        for block in _blocks(6000, 750):
+            shards.append(
+                Shard(
+                    f"small-{asks}-{block.start}",
+                    f"small-{asks}",
+                    "local",
+                    "small-asks",
+                    {"asks": asks, "start": block.start, "count": len(block)},
+                )
+            )
     for block in _blocks(20, 5):
         shards.append(
             Shard(
@@ -252,6 +264,16 @@ def _shards() -> list[Shard]:
                 "pool",
                 "equivalence",
                 {"flow": "small-continued", "null": null, "tags": [f"continued-{null}-0-{i}" for i in range(30)]},
+            )
+        )
+    for asks in ("gate", "late"):
+        shards.append(
+            Shard(
+                f"eq-small-{asks}",
+                f"eq-small-{asks}",
+                "pool",
+                "equivalence",
+                {"flow": f"small-{asks}", "null": "binary", "tags": [f"{asks}-{i}" for i in range(30)]},
             )
         )
     shards.append(
@@ -396,6 +418,12 @@ def run_local(shard: Shard) -> dict[str, int]:
             better=sum(c.strong_better for c in came),
             worse=sum(c.strong_worse for c in came),
         )
+    if shard.job == "small-asks":
+        reads = [
+            quick.small_continued("binary", f"{args['asks']}-{i}", args["asks"])
+            for i in range(args["start"], args["start"] + args["count"])
+        ]
+        return _counts(len(reads), sum(read[-1].decided for read in reads))
     if shard.job == "small-cover":
         sides = [
             quick.missed_side(quick.small_covers(f"cover-{s}-{i}")) for s in args["shards"] for i in range(args["per"])
@@ -476,6 +504,10 @@ async def _equivalence(flow: str, null: quick.Null | None, tags: Sequence[str]) 
         elif flow == "small-continued":
             assert null is not None
             product, restated = await quick.small_continued_product(null, tag), quick.small_continued(null, tag)
+        elif flow in ("small-gate", "small-late"):
+            asks = cast("quick.Asks", flow.removeprefix("small-"))
+            product = await quick.small_continued_product("binary", tag, asks)
+            restated = quick.small_continued("binary", tag, asks)
         elif flow == "small-cover":
             product, restated = await quick.small_covers_product(tag), quick.small_covers(tag)
         else:
@@ -570,11 +602,31 @@ def _claims() -> list[Claim]:
                     seeds,
                 )
             )
+    for asks, said in (
+        (
+            "gate",
+            "a gate (is v2 no worse within five points?), its bet leaning toward worse beside its equivalence test,",
+        ),
+        ("late", "a question set after each read and pointed at whichever arm leads, which leans no way,"),
+    ):
+        claims.append(
+            Claim(
+                f"small-n.{asks}.separates",
+                f"Under the binary null {said} continued from eight cases to five reads, each add sized from the "
+                "reading, separates at most α.",
+                f"small-{asks}",
+                "hits",
+                "at_most",
+                alpha,
+                _QUICK_SOURCES,
+                f"{asks}-<index>, 0-5999, restated",
+            )
+        )
     claims.append(
         Claim(
             "small-n.interval.misses",
-            "The primary's interval, read once at sixteen cases at a true difference of 0.3, misses it at most the 10% "
-            "its 90% states.",
+            "The primary's interval (the even hedge's confidence sequence at 90%, read on the capital now), read once "
+            "at sixteen cases at a true difference of 0.3, misses it at most the 10% its 90% states.",
             "small-cover",
             "hits",
             "at_most",
@@ -625,6 +677,8 @@ def _claims() -> list[Claim]:
     for flow, said in (
         ("small-once", "a question's single read at twelve cases, under each null"),
         ("small-continued", "a question's comparison continued to five reads, under each null"),
+        ("small-gate", "a gate continued to five reads"),
+        ("small-late", "a question set after each read, pointed at the leader"),
         ("small-cover", "a question's interval at a true difference of 0.3"),
         ("rereadable-continued", "a comparison continued with no question"),
         ("rereadable-rerun", "a comparison re-run whole with no question"),

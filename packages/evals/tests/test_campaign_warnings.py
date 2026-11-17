@@ -335,7 +335,7 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
     assert accuracy.heading == "Accuracy"
     assert lead == (
         f"**{accuracy.heading}: {accuracy.words}. Over 30 paired cases, same is 20 points ahead of current. The "
-        "interval allows same to be as much as 2 points worse or 45 better. The evidence that same is better is strong "
+        "interval allows same to be as much as 2 points worse or 46 better. The evidence that same is better is strong "
         "(24). Of 30 trials each, Accuracy was right on 20 for current and 26 for same.**"
     )
     assert "same" in accuracy.words and "current" in accuracy.words

@@ -466,23 +466,33 @@ candidate stands on the question's reading, by how much, how far the interval le
 the evidence is, and it says "decided" only when the evidence clears the bar:
 
 - **The estimate and the interval lead.** `Over 8 paired cases, v2 is 29 points ahead of v1. The interval allows v2
-  to be as much as 24 points worse or 60 better.` With a question asked, the interval on the question's reading is at
-  90%, each end a 95% bound on its own side, the partner of a question that asks which way; with none, it is at 95%
-  over the family.
+  to be as much as 24 points worse or 60 better.` The interval is the even hedge's confidence sequence (half the bet
+  on each side), read on the capital now: with a question asked it is at 90%, each end a 95% bound on its own side;
+  with none, at 95% over the family. It holds the true difference at every count at once, and it always holds the
+  estimate. It is not the decision's bet: the decision leans one way, the interval does not.
 - **The evidence is graded, always.** It is the bet's current e-value for the side the arm leans to: weak below 3,
   moderate from 3, strong from 10. Chance alone reaches 10 at most one time in ten, however often you read it. The
-  other side is named too where its evidence reaches 3.
-- **A decision clears a bar.** The bet is staked nine tenths toward the side the question asks about ("does v2 do
-  better?") and a tenth the other way; it decides "better" where its capital has reached 20 (α = 0.05), and "worse"
-  only where the side against the question has reached 200. Once decided, it stays decided, whatever you add.
+  other side is named too where its evidence reaches 3, and evidence pointing the other way from the question says so
+  (`The evidence points the other way from the question: that v2 is worse is strong (132).`).
+- **A decision clears a bar, and says when.** The bet is staked nine tenths toward the side the question asks about
+  and a tenth the other way. A question whether v2 does better leans toward better: it decides "better" once the
+  evidence that v2 is better reaches about 22 (its capital at 20, α = 0.05), and "worse" only at about 200. A
+  question with a margin is a gate (is v2 no worse?) and leans toward worse: a regression decides at about 22. Once
+  decided, it stays decided, and the line says when: `v2 better than v1, decided at 6 cases when the evidence reached
+  24. Now, over 68 paired cases, v2 is 3 points ahead of v1.`, then the interval and the evidence as they stand now,
+  which may have fallen.
 - **One reading is decided.** The question's own reading, its first grader's, is tested alone at full α. Every
   other reading is secondary: its change, interval and evidence are shown, and it decides nothing, so it costs the
-  question nothing. A pass rate that is the one check's own values is read once, not twice.
+  question nothing, and it cannot fail a gate. A first grader the bet cannot read (a score with no declared range)
+  reads untested, saying why, and nothing else is decided in its place. A pass rate that is the one check's own
+  values is read once, not twice.
+- **A question set after the results leans no way.** A question, control or margin set once results exist
+  (`Result.against(control, question=...)`, a campaign adopting runs) reads the even hedge, and the print and the page
+  say the question came after the results: a lean picked after seeing which arm leads would be a second look.
 - **With no question asked**, nothing is declared: every reading on a merit axis is tested two-sided, corrected
   together by Holm's method, each a lead.
 - **What a few cases can and cannot do.** Eight cases that all go v2's way decide (the evidence is 74), and from six
-  they can; a moderate effect needs a few dozen to decide. What the evidence is at eight cases is still worth reading:
-  `.prawduct/smalln-report.md` holds the simulations behind these figures.
+  they can; a moderate effect needs a few dozen to decide. What the evidence is at eight cases is still worth reading.
 
 ### The Contrasts table
 

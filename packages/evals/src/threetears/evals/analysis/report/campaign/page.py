@@ -357,7 +357,9 @@ def _lead_blocks(
         led_graded: list[bool] = []
 
         def evidence(
-            verdict: Verdict, figures: Callable[[Verdict], str | None] = figures, bundle: AnalysisContextBundle = report.bundle
+            verdict: Verdict,
+            figures: Callable[[Verdict], str | None] = figures,
+            bundle: AnalysisContextBundle = report.bundle,
         ) -> str | None:
             # Each led contrast's own reading says whether its sentence leaves the arms undecided; one the bet read
             # says where the arm stands and grades its evidence instead.

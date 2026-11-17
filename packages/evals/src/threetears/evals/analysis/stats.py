@@ -1667,6 +1667,7 @@ def bounded_difference_interval(
     confidence: float = INTERVAL_LEVEL,
     planned_n: int | None = None,
     mixture: bool = False,
+    current: bool = False,
 ) -> tuple[float, float] | None:
     """The interval on ``mean(b) − mean(a)`` from the bounded test by betting, valid at every n on a declared range.
 
@@ -1699,6 +1700,8 @@ def bounded_difference_interval(
     :param planned_n: The cases the bet was fixed for before the first pair, the pairs given in the order bet on;
         None for a bet over these pairs alone, in :func:`bet_order` of their count.
     :param mixture: Read the mixture bet's interval, over the pairs in the order given.
+    :param current: With ``mixture``, read every difference on the hedged capital now rather than on the most it
+        ever reached: still a confidence sequence, always holding the observed difference.
     :return: ``(low, high)``, or None with fewer than two values a side, or a value outside the declared range.
     :raises ValueError: ``planned_n`` on an unpaired reading, or below the pairs given; ``mixture`` unpaired or with
         ``planned_n``.
@@ -1717,7 +1720,9 @@ def bounded_difference_interval(
         width = float(high - low)
         diffs = [y - x for x, y in zip(a, b)]
         if mixture:
-            kept = _hedged_interval(_scaled_to_unit(diffs, (-width, width), ordered=True), 1.0 - confidence)
+            kept = _hedged_interval(
+                _scaled_to_unit(diffs, (-width, width), ordered=True), 1.0 - confidence, current=current
+            )
             return None if kept is None else (-width + 2.0 * width * kept[0], -width + 2.0 * width * kept[1])
         return _bounded_mean_interval(diffs, (-width, width), alpha=tail, planned_n=planned_n)
     bounds = (float(low), float(high))
@@ -1997,7 +2002,7 @@ def bounded_mean_p(
     At k = N the p is the one with no ``planned_n`` over the same values listed in case order.
 
     **A mixture stake, fixed for no count** (``mixture``): the values are bet on in the order given (the order the
-    cases were added, which the caller fixed before their values were seen) and the capital is the mean of
+    cases were added, which the caller fixed before their values were seen) and the capital is the weighted mean of
     :data:`_MIXTURE_STAKES` bets, each staking a fixed share ``j / D`` of the cap on every value
     (:func:`_mixture_log_path`; Waudby-Smith and Ramdas 2024, §5.6, "diversified Kelly"). An average of nonnegative
     supermartingales started at 1 is one, and no stake depends on a declared N, on α or on how many values follow,
@@ -2083,6 +2088,49 @@ def bet_evidence(
     up = _mixture_log_path(scaled, 0.5)[-1]
     down = _mixture_log_path([1.0 - z for z in scaled], 0.5)[-1]
     return math.exp(up), math.exp(down)
+
+
+def bet_decided_at(
+    sample_a: Sequence[float | Fraction],
+    sample_b: Sequence[float | Fraction],
+    *,
+    value_range: tuple[float, float],
+    toward: float = 0.5,
+    alpha: float = SIGNIFICANCE_ALPHA,
+) -> tuple[int, bool, float] | None:
+    """When the mixture bet over paired samples read in the order given decided, staked ``toward`` the upward side as
+    :func:`bounded_separation_p` stakes it: the count of pairs at which its capital first reached ``1/alpha``, whether
+    the upward side carried it there (``mean(b) > mean(a)``), and that side's own capital then, the evidence it had
+    reached. A decision stands once made (its p is one over the most the capital ever reached), however the capital
+    moves after it.
+
+    :param sample_a: The control's per-case values, in the order bet on.
+    :param sample_b: The arm's, aligned with ``sample_a``.
+    :param value_range: The reading's declared inclusive bounds.
+    :param toward: The share of the capital staked on ``mean(b) > mean(a)``.
+    :param alpha: The level the capital is read at.
+    :return: ``(pairs, upward, evidence)``; None where the capital never reached ``1/alpha``, or the samples cannot be
+        read (as :func:`bet_evidence`).
+    """
+    _check_toward(toward, mixture=True)
+    a = [exact_decimal(v) for v in sample_a]
+    b = [exact_decimal(v) for v in sample_b]
+    if len(a) < 2 or len(a) != len(b):
+        return None
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    if high <= low or any(not low <= v <= high for v in (*a, *b)):
+        return None
+    width = float(high - low)
+    scaled = _scaled_to_unit([y - x for x, y in zip(a, b)], (-width, width), ordered=True)
+    up = _mixture_log_path(scaled, 0.5)
+    down = _mixture_log_path([1.0 - z for z in scaled], 0.5)
+    threshold = math.log(1.0 / alpha)
+    log_up, log_down = math.log(toward), math.log1p(-toward)
+    for index, (u, d) in enumerate(zip(up, down)):
+        if _log_add_exp(u + log_up, d + log_down) >= threshold:
+            upward = u + log_up >= d + log_down
+            return index + 1, upward, math.exp(u if upward else d)
+    return None
 
 
 def _check_planned(planned_n: int | None, *, paired: bool, given: int) -> None:
@@ -2233,7 +2281,7 @@ _MIXTURE_WEIGHTS = tuple(j / (_MIXTURE_STAKES * (_MIXTURE_STAKES + 1) / 2) for j
 #: 0.015 against 0.0135).
 DECLARED_DIRECTION_SHARE = 0.9
 
-#: The e-values the graded evidence words step at (``analysis/style.py``'s ``evidence_words``): below the first is weak,
+#: The e-values the graded evidence words step at (``analysis/style.py``'s ``evidence_grade``): below the first is weak,
 #: from it moderate, from the second strong, the conventional steps for an evidence ratio (Jeffreys; Kass and Raftery
 #: 1995). Under no difference an e-value ever reaches ``c`` at most ``1/c`` of the time (Ville's inequality), so chance
 #: alone reads strong at most one time in ten, however often it is read.
@@ -2307,9 +2355,15 @@ def _hedged_p(scaled: Sequence[float], m: float, toward: float = 0.5) -> float:
     return _capital_p(_hedged_log_path(scaled, m, toward))
 
 
-def _hedged_interval(scaled: Sequence[float], alpha: float) -> tuple[float, float] | None:
-    """Every rescaled mean the hedged mixture has never rejected at ``alpha`` over the values read so far, as an
-    interval on ``[0, 1]``: the confidence sequence's reading at this many values, covering at every count at once.
+def _hedged_interval(scaled: Sequence[float], alpha: float, *, current: bool = False) -> tuple[float, float] | None:
+    """Every rescaled mean the even hedge has never rejected at ``alpha`` over the values read so far, as an interval
+    on ``[0, 1]``: the confidence sequence's reading at this many values, covering at every count at once.
+
+    ``current`` reads each mean on the capital now, not on the most it ever reached: every mean whose hedged capital
+    at this count is below ``1/alpha``. That too is a confidence sequence (the true mean is outside it at some count only
+    where its capital reached ``1/alpha`` at that count, which Ville's inequality bounds at ``alpha`` over every count
+    together), wider than the running intersection, and it always holds the values' mean, whose capital never exceeds
+    1 (each bet's log capital there is at most the sum of its stakes times ``z − mean``, which is zero).
 
     Found from a mean it keeps (the values' mean, else the first of 63 evenly spaced points it keeps) by bisection
     toward each end, as :func:`bounded_mean_lower_bound` finds its bound; each end is the farthest mean found
@@ -2319,7 +2373,10 @@ def _hedged_interval(scaled: Sequence[float], alpha: float) -> tuple[float, floa
     threshold = math.log(1.0 / alpha)
 
     def kept(m: float) -> bool:
-        return max(_hedged_log_path(scaled, m), default=0.0) < threshold
+        path = _hedged_log_path(scaled, m)
+        if current:
+            return (path[-1] if path else 0.0) < threshold
+        return max(path, default=0.0) < threshold
 
     centre = sum(scaled) / len(scaled)
     start = next((m for m in (centre, *(j / 64 for j in range(1, 64))) if kept(m)), None)
@@ -3341,6 +3398,7 @@ __all__ = [
     "SignificanceResult",
     "VarianceComponents",
     "bar_seed",
+    "bet_decided_at",
     "bet_evidence",
     "bounded_mean_p",
     "case_means",

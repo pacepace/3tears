@@ -192,7 +192,7 @@ class TestAPassFailInterval:
         row = _row(comparison, "correct")
         # A pass rate is a share, so its change reads in points on the percent ruler.
         assert row["delta"] == pytest.approx(50.0)
-        assert row["interval"] == "-36 to +89 pts at 95%", (
+        assert row["interval"] == "-36 to +94 pts at 95%", (
             "the bounded interval on the 0-1 range, its upper end where a pass-rate difference ends"
         )
 

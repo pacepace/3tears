@@ -588,7 +588,11 @@ def evidence_grade(evidence: float) -> str:
     """
     moderate, strong = EVIDENCE_STEPS
     return (
-        _EVIDENCE_GRADES[2] if evidence >= strong else _EVIDENCE_GRADES[1] if evidence >= moderate else _EVIDENCE_GRADES[0]
+        _EVIDENCE_GRADES[2]
+        if evidence >= strong
+        else _EVIDENCE_GRADES[1]
+        if evidence >= moderate
+        else _EVIDENCE_GRADES[0]
     )
 
 

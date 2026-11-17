@@ -43,10 +43,13 @@ from threetears.evals.analysis.stats import (
     DECLARED_DIRECTION_SHARE,
     EVIDENCE_STEPS,
     SIGNIFICANCE_ALPHA,
+    bet_decided_at,
     bet_evidence,
     bounded_difference_interval,
     bounded_separation_p,
+    holm_adjust,
     interval_permits_separation,
+    paired_equivalence,
     separation_test,
 )
 from threetears.evals.kernel.result_condition import runs_again
@@ -90,8 +93,9 @@ class Read:
     :param decided: Whether it decided either way.
     :param better: The evidence the bet holds now that the contrast is better (small n only).
     :param worse: The evidence it holds that it is worse (small n only).
-    :param interval: The primary's interval, where one was read (the restatement reads it only where a decision or a
-        coverage needs it).
+    :param interval: The primary's interval, where one was read (the restatement reads it only where a coverage needs
+        it).
+    :param decided_at: The cases at which the primary's bet first reached its level, where it decided (small n only).
     """
 
     cases: int
@@ -100,6 +104,7 @@ class Read:
     better: float | None = None
     worse: float | None = None
     interval: tuple[float, float] | None = None
+    decided_at: int | None = None
 
 
 def _close(read: float | None, restated: float | None) -> bool:
@@ -123,6 +128,7 @@ def same_reads(product: Sequence[Read], restated: Sequence[Read]) -> str | None:
             or not _close(one.p, two.p)
             or not _close(one.better, two.better)
             or not _close(one.worse, two.worse)
+            or one.decided_at != two.decided_at
         ):
             return f"read {place + 1}: product {one} / restated {two}"
         if two.interval is not None and (
@@ -248,27 +254,63 @@ def _small_read(result: Result, cases: int) -> Read:
         primary.evidence_better,
         primary.evidence_worse,
         primary.interval,
+        primary.decided_at_cases,
     )
 
 
-def _small_restated(a: Sequence[float], b: Sequence[float], cases: int, *, interval: bool = False) -> Read:
-    """The primary's reading of ``a`` against ``b`` in their committed order: the bet staked toward the asked side at
-    α, decided where its delta moved and its interval (the even hedge's confidence sequence at 1 − 2α) excludes zero;
-    and the evidence each side holds now. The interval is read where the decision needs it, or where ``interval``."""
-    p = bounded_separation_p(
-        list(a), list(b), paired=True, value_range=RATE, mixture=True, toward=DECLARED_DIRECTION_SHARE
-    )
+#: The share of a question's bet staked on the contrast rising: toward the better side (a question), toward the worse
+#: side (a gate, a question with a margin), or evenly (a question set after the results).
+Lean = Literal["better", "worse", "none"]
+
+_TOWARD: dict[Lean, float] = {
+    "better": DECLARED_DIRECTION_SHARE,
+    "worse": 1.0 - DECLARED_DIRECTION_SHARE,
+    "none": 0.5,
+}
+
+
+def _small_restated(
+    a: Sequence[float],
+    b: Sequence[float],
+    cases: int,
+    *,
+    interval: bool = False,
+    lean: Lean = "better",
+    margin: float | None = None,
+) -> Read:
+    """The primary's reading of ``a`` against ``b`` in their committed order: the bet staked as ``lean`` says, its p
+    corrected by Holm with the equivalence test against ``margin`` where one is declared (one arm, so at most one
+    hypothesis true), decided where the corrected p is below α, at the count where the bet first reached its level; the
+    evidence each side holds now; and, where ``interval``, the even hedge's confidence sequence at 1 − 2α read on the
+    capital now."""
+    toward = _TOWARD[lean]
+    p = bounded_separation_p(list(a), list(b), paired=True, value_range=RATE, mixture=True, toward=toward)
     p = 1.0 if p is None else p
+    adjusted = p
+    if margin is not None:
+        _, equivalence = paired_equivalence(
+            [y - x for x, y in zip(a, b, strict=True)], margin, value_range=RATE, mixture=True
+        )
+        if equivalence is not None:
+            adjusted = holm_adjust([p, equivalence], max_true=1)[0]
     evidence = bet_evidence(list(a), list(b), value_range=RATE)
     better, worse = evidence if evidence is not None else (None, None)
-    delta = sum(b) / len(b) - sum(a) / len(a)
+    point = None
+    if adjusted < SIGNIFICANCE_ALPHA:
+        level = SIGNIFICANCE_ALPHA * p / adjusted if adjusted > 0 else SIGNIFICANCE_ALPHA
+        point = bet_decided_at(list(a), list(b), value_range=RATE, toward=toward, alpha=min(1.0, level))
     bounds = None
-    if interval or (p < SIGNIFICANCE_ALPHA and delta):
+    if interval:
         bounds = bounded_difference_interval(
-            list(a), list(b), paired=True, value_range=RATE, confidence=1.0 - 2.0 * SIGNIFICANCE_ALPHA, mixture=True
+            list(a),
+            list(b),
+            paired=True,
+            value_range=RATE,
+            confidence=1.0 - 2.0 * SIGNIFICANCE_ALPHA,
+            mixture=True,
+            current=True,
         )
-    decided = p < SIGNIFICANCE_ALPHA and bool(delta) and _primary_permits(bounds)
-    return Read(cases, p, decided, better, worse, bounds)
+    return Read(cases, adjusted, point is not None, better, worse, bounds, point[0] if point is not None else None)
 
 
 async def small_once_product(null: Null, tag: str, n: int = ONCE_AT) -> list[Read]:
@@ -288,19 +330,40 @@ def small_once(null: Null, tag: str, n: int = ONCE_AT) -> list[Read]:
     return [_small_restated([a for a, _ in values], [b for _, b in values], n)]
 
 
-async def small_continued_product(null: Null, tag: str) -> list[Read]:
+#: What a continued small-n newcomer asks: whether v2 does better (``question``); whether it is no worse within five
+#: points, a gate, whose bet leans toward worse (``gate``); or nothing up front, then at each read a question pointed at
+#: whichever arm leads, set after the results, which leans no way (``late``).
+Asks = Literal["question", "gate", "late"]
+
+#: A gate's question and its margin, in the pass rate's units.
+GATE_QUESTION, GATE_MARGIN = "Is v2 no worse than v1?", 0.05
+
+
+async def small_continued_product(null: Null, tag: str, asks: Asks = "question") -> list[Read]:
     """One newcomer under ``null`` who reads at eight cases and, while nothing separates, appends cases and runs the
     comparison again into the same store, at most :data:`READS` reads: each add four cases plus up to sixteen more the
-    nearer the primary's p came to zero. Every read is the product's continuation (only appended cases run)."""
+    nearer the primary's p came to zero. Every read is the product's continuation (only appended cases run); what each
+    read asks is ``asks``."""
     calls: Counter[tuple[int, int]] = Counter()
     arms = {"v1": _drawn(null, tag, 0, calls), "v2": _drawn(null, tag, 1, calls)}
     store = InMemoryDocumentStore()
     n = 8
     reads: list[Read] = []
     for _ in range(READS):
-        result = await Eval(small_cases(n), arms, [_passed], k=repeats(null), name="null", question=QUESTION).run(
+        asked: dict[str, Any] = (
+            {"question": QUESTION}
+            if asks == "question"
+            else {"question": GATE_QUESTION, "margin": GATE_MARGIN}
+            if asks == "gate"
+            else {}
+        )
+        result = await Eval(small_cases(n), arms, [_passed], k=repeats(null), name="null", **asked).run(
             store=store, scope="s"
         )
+        if asks == "late":
+            (row,) = result.contrasts("_passed")
+            leader, other = ("v2", "v1") if (row.get("delta") or 0.0) >= 0 else ("v1", "v2")
+            result = await result.against(other, question=f"Does {leader} pass more often than {other}?")
         reads.append(_small_read(result, n))
         if reads[-1].decided:
             break
@@ -309,9 +372,11 @@ async def small_continued_product(null: Null, tag: str) -> list[Read]:
     return reads
 
 
-def small_continued(null: Null, tag: str) -> list[Read]:
-    """:func:`small_continued_product` restated over the bet alone: the same draws, the committed order, the tilted p,
-    the interval rule, the add sizes and the evidence."""
+def small_continued(null: Null, tag: str, asks: Asks = "question") -> list[Read]:
+    """:func:`small_continued_product` restated over the bet alone: the same draws, the committed order, the bet staked
+    as the question leans (the asked side, toward worse for a gate with its equivalence test beside it under Holm,
+    evenly and against the trailing arm for a question set after the results), the decision rule, the add sizes and
+    the evidence."""
     seed = case_set_seed(small_cases(8))
     launches: list[range] = []
     values: dict[int, tuple[float, float]] = {}
@@ -324,7 +389,15 @@ def small_continued(null: Null, tag: str) -> list[Read]:
         for index in order:
             if index not in values:
                 values[index] = _small_values(null, tag, index)
-        reads.append(_small_restated([values[i][0] for i in order], [values[i][1] for i in order], n))
+        a, b = [values[i][0] for i in order], [values[i][1] for i in order]
+        if asks == "late":
+            if sum(b) / len(b) - sum(a) / len(a) < 0:
+                a, b = b, a
+            reads.append(_small_restated(a, b, n, lean="none"))
+        elif asks == "gate":
+            reads.append(_small_restated(a, b, n, lean="worse", margin=GATE_MARGIN))
+        else:
+            reads.append(_small_restated(a, b, n))
         if reads[-1].decided:
             break
         p = reads[-1].p if reads[-1].p is not None else 1.0

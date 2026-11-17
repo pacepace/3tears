@@ -344,7 +344,7 @@ line says where v2 stands on it (a point behind), how far the interval lets it b
 evidence is (weak), and that it is undecided: "undecided" never means the two are the same.
 
 **The lesson: a small test still gets a fair read, and decides only when the evidence clears the bar.** Every reading
-is read at once: v2's Number score is 17 points ahead of v1's, its interval -1 to +33 points, a secondary reading
+is read at once: v2's Number score is 17 points ahead of v1's, its interval -1 to +38 points, a secondary reading
 shown with its evidence and decided on nothing, since the question asked about currency. The evidence is graded weak
 below 3, moderate from 3 and strong from 10; chance alone reaches 10 at most one time in ten, however often it is read.
 A decision needs the bet on the asked side to reach 20. One v2 trial failed on malformed JSON from the model, and it
@@ -390,7 +390,7 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
 - **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at
   the cases run so far, each time, so re-reading them as cases are added is not covered.
 
-## Rung 3b: a margin, so a reading can be equivalent
+## Rung 3b: a margin on a reading the question does not decide
 
 [`margin.py`](../examples/3-invoices/margin.py) is 3a with a margin on `total`:
 
@@ -408,7 +408,7 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
 What its report said of `total`:
 
 ```text
-| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -12 to +13 pts | v2 level with v1, undecided (a secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -13 to +13 pts | v2 level with v1, undecided (a secondary reading, which the question leaves open); immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
 ```
 
 **The lesson: a margin comes from the decision, and equivalence costs cases.** The margin is the largest difference
@@ -416,8 +416,8 @@ that would not change what you do, fixed before the readings from what the decis
 every total before it is paid, so a prompt worse on `total` by less than 20 points would still ship on its other
 fields. It is never read off the interval a run produced: a margin chosen to fit the readings it judges is criterion
 selection ([Measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects)), and it makes
-"equivalent" a foregone conclusion. The cost is honest too: 30 invoices narrow v2's interval on `total` to 12 and 13
-points either side, inside this margin, and a question asked of `total` could read equivalent on them; a decision
+"equivalent" a foregone conclusion. The cost is honest too: 30 invoices narrow v2's interval on `total` to 13 points
+either side, inside this margin, and a question asked of `total` could read equivalent on them; a decision
 that needs a 5-point margin needs many more invoices, and with too few the reading is undecided, never
 equivalent.
 [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) says how many cases a question needs.
@@ -465,7 +465,7 @@ v1 vs v2
 **Accuracy: v2 behind v1, undecided. Over 30 paired cases, v2 is 1 point behind v1. The interval allows v2 to be as much as 14 points worse or 12 better. The evidence that v2 is worse is weak (1.2). Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.**
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 | invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +17 pts | -1 to +26 | — | cannot tell apart |
-| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -1 to +33 pts | v2 ahead of v1, undecided (a secondary reading, which the question leaves open) | 30 paired |
+| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -1 to +38 pts | v2 ahead of v1, undecided (a secondary reading, which the question leaves open) | 30 paired |
 | No invented total score | v2 | 99% | 99% | 30 paired | 0 pts | -13 to +13 pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```
@@ -500,6 +500,12 @@ if __name__ == "__main__":
 - **`result.gate()`** fails a CI step on a regression, a breach, or a guardrail not shown held. Here the guardrail is
   undecided, so `cd examples/3-invoices && python ci.py` exits 4. `python -m threetears.evals gate` is the same gate
   over a stored campaign ([Serving](serving.md#gate)).
+- **Only the question's own reading can fail it as a regression.** With a question asked, the first grader's reading
+  is decided and every other reading is shown and decided on nothing, so a second check's drop never fails the gate:
+  make the reading you gate on the first grader, or a guardrail. Ask the gate as one with a margin
+  (`Eval(question="Is v2 no worse than v1?", margin=0.05)`) and its bet leans toward worse: a regression decides once
+  the evidence that v2 is worse reaches about 22, where a question asking whether v2 does better leans the other way
+  and needs about 200 to call it worse.
 
 ## Rung 3e: two levers at once
 

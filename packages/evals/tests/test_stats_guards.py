@@ -106,23 +106,29 @@ def test_a_single_read_of_twelve_pass_fail_cases_under_the_null_separates_at_mos
 
 
 def test_each_end_of_the_interval_is_a_one_sided_bound_on_every_sign_sequence() -> None:
-    """The primary's interval at 90% over every sequence of up to eight signs (a true difference of zero): its lower end
-    passes zero exactly where its first six signs are all up, and its upper
-    end, mirrored; each side's chance at eight signs, 4/256, is at most α, the bound each end states."""
+    """The primary's interval (the even hedge's confidence sequence at 90%, read on the capital now) over every sequence
+    of up to eight signs, a true difference of zero: its lower end passes zero only on all signs up, from six signs on,
+    and its upper end only on all down; each side's chance at eight signs, 1/256, is at most α, the bound each end
+    states. An interval read at 1 − α, or narrowed, passes zero on more of them."""
     lows, highs = [], []
     for j in range(2, 9):
         low = high = 0
         for signs in itertools.product((1, -1), repeat=j):
             interval = bounded_difference_interval(
-                *_signed(signs), paired=True, value_range=RATE, confidence=1 - 2 * SIGNIFICANCE_ALPHA, mixture=True
+                *_signed(signs),
+                paired=True,
+                value_range=RATE,
+                confidence=1 - 2 * SIGNIFICANCE_ALPHA,
+                mixture=True,
+                current=True,
             )
             assert interval is not None
             low += interval[0] > 0
             high += interval[1] < 0
         lows.append(low)
         highs.append(high)
-    assert lows == highs == [0, 0, 0, 0, 1, 2, 4]
-    assert 4 / 2**8 <= SIGNIFICANCE_ALPHA
+    assert lows == highs == [0, 0, 0, 0, 1, 1, 1]
+    assert 1 / 2**8 <= SIGNIFICANCE_ALPHA
 
 
 # --- pinned outputs --------------------------------------------------------------------------------------------------
@@ -147,25 +153,33 @@ _SAMPLES: dict[str, tuple[list[float], list[float]]] = {
 }
 
 #: Each sample's p staked nine tenths up, evenly and nine tenths down; its e-values up and down; and its intervals at
-#: 90% and 95%.
-_GOLDEN: dict[str, tuple[tuple[float, float, float], tuple[float, float], tuple[float, float], tuple[float, float]]] = {
+#: 90% and 95% on the most the capital reached; and at 90% on the capital now, the primary's.
+_GOLDEN: dict[
+    str,
+    tuple[
+        tuple[float, float, float], tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]
+    ],
+] = {
     "k3-12": (
         (0.19644264061949343, 0.3452627954157681, 1.0),
         (5.639094474959404, 0.1535945333989539),
         (-0.12548302178038284, 0.48687962407711893),
         (-0.18503202556166798, 0.5223110526567325),
+        (-0.12548302178038284, 0.48687962407711893),
     ),
     "k1-20-up": (
         (0.015048295765425847, 0.027079284587393396, 0.1350532415903887),
         (73.83373527002061, 0.02345964756920471),
         (0.08922183061949873, 0.7064218416344374),
         (0.04037408474832738, 0.7283258262090384),
+        (0.0847714288160204, 0.7064218416344374),
     ),
     "k1-16-down": (
         (0.23903985871514394, 0.048080926623245666, 0.026728581923085762),
         (0.029686412941786006, 41.56684968694822),
         (-0.7469679876812734, -0.0625234038598137),
         (-0.772888931169291, -0.003200092032784596),
+        (-0.7667127677268581, -0.05869566732144449),
     ),
 }
 
@@ -175,7 +189,7 @@ def test_the_bet_reads_fixed_samples_as_pinned(sample: str) -> None:
     """Each fixed sample's p (staked toward the asked side, evenly, the other way), its e-values and its intervals at 90%
     and 95%, to the digits: any change to the bet's stakes, weights, hedge, cap or interval moves them."""
     a, b = (list(map(float, side)) for side in _SAMPLES[sample])
-    ps, evidence, ninety, ninety_five = _GOLDEN[sample]
+    ps, evidence, ninety, ninety_five, now = _GOLDEN[sample]
     for toward, pinned in zip((DECLARED_DIRECTION_SHARE, 0.5, 1 - DECLARED_DIRECTION_SHARE), ps, strict=True):
         read = bounded_separation_p(a, b, paired=True, value_range=RATE, mixture=True, toward=toward)
         assert read == pytest.approx(pinned, rel=1e-9), toward
@@ -183,6 +197,10 @@ def test_the_bet_reads_fixed_samples_as_pinned(sample: str) -> None:
     for confidence, pinned_interval in ((0.90, ninety), (0.95, ninety_five)):
         interval = bounded_difference_interval(a, b, paired=True, value_range=RATE, confidence=confidence, mixture=True)
         assert interval == pytest.approx(pinned_interval, rel=1e-9, abs=1e-12), confidence
+    current = bounded_difference_interval(
+        a, b, paired=True, value_range=RATE, confidence=0.90, mixture=True, current=True
+    )
+    assert current == pytest.approx(now, rel=1e-9, abs=1e-12)
 
 
 def _passed(case: Mapping[str, Any], answer: Any) -> bool:
@@ -218,8 +236,9 @@ async def test_the_product_s_primary_is_read_staked_toward_the_asked_side(better
 def test_the_first_shard_of_each_small_n_claim_counts_as_the_product_did() -> None:
     """The first shard of each small-n claim, restated, at the counts the product gave it through ``Eval.run``: single
     reads at twelve cases (200 a null) separate once, never and never; continued to five reads (150 a null), (separated,
-    evidence for v2 ever strong, against it) as below; and at a true difference of 0.3, 3 of 200 intervals miss it, one
-    from below and two from above."""
+    evidence for v2 ever strong, against it) as below; at a true difference of 0.3, none of 200 intervals misses it on
+    either side; and of 200 newcomers asking a gate, and 200 pointing a late question at the leader, 6 and 7 separate.
+    The single reads, the continued reads and the coverage are the counts the product gave through ``Eval.run``."""
     once = [
         sum(small_once(null, f"once-{null}-0-{i}")[0].decided for i in range(200))
         for null in ("binary", "onramp", "skewed")
@@ -234,7 +253,11 @@ def test_the_first_shard_of_each_small_n_claim_counts_as_the_product_did() -> No
         )
         assert counted == pinned, null
     sides = [missed_side(small_covers(f"cover-0-{i}")) for i in range(200)]
-    assert (sides.count("low"), sides.count("high")) == (1, 2)
+    assert (sides.count("low"), sides.count("high")) == (0, 0)
+    asked = [
+        sum(small_continued("binary", f"{asks}-{i}", asks)[-1].decided for i in range(200)) for asks in ("gate", "late")
+    ]
+    assert asked == [6, 7]
 
 
 def test_the_first_shards_of_the_no_question_claims_count_as_the_product_did() -> None:

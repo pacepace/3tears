@@ -720,7 +720,9 @@ def verdict_line(
                 text=prefix + text + ungraded + _guardrail_sentences(verdicts) + _not_compared_sentences(bundle, arm),
                 lead=result,
                 decisions=decisions,
-                undecided=any(verdict.outcome == "not_separated" and not graded_contrast(bundle, verdict) for verdict in led),
+                undecided=any(
+                    verdict.outcome == "not_separated" and not graded_contrast(bundle, verdict) for verdict in led
+                ),
                 graded=any(verdict.outcome == "not_separated" and graded_contrast(bundle, verdict) for verdict in led),
             )
     said = (
