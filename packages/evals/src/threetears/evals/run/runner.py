@@ -132,6 +132,7 @@ from threetears.evals.schema.models import (
     eval_trace_doc_id,
     scored_dim_ids,
     utc_now_iso,
+    WrittenOver,
 )
 from threetears.evals.kernel.scoring import CellSummary, boundary_dim_names
 from threetears.evals.schema.call_ledger import CallLedger
@@ -3906,6 +3907,8 @@ class StoredCell:
     :ivar superseded_spend_usd: What the attempts it was written over spent (``EvalResult.superseded_spend_usd``).
     :ivar metered_calls: The metered calls it landed (``EvalResult.metered_calls``).
     :ivar metered_calls_refused: The metered calls it was refused (``EvalResult.metered_calls_refused``).
+    :ivar written_over: What it was itself written over (``EvalResult.written_over``), which the row written over it
+        carries on.
     """
 
     summary: CellSummary
@@ -3914,6 +3917,7 @@ class StoredCell:
     superseded_spend_usd: float | None
     metered_calls: int | None
     metered_calls_refused: int | None
+    written_over: WrittenOver | None = None
 
     @classmethod
     def from_result(cls, row: EvalResult) -> StoredCell:
@@ -3931,6 +3935,7 @@ class StoredCell:
             superseded_spend_usd=row.superseded_spend_usd,
             metered_calls=row.metered_calls,
             metered_calls_refused=row.metered_calls_refused,
+            written_over=row.written_over,
         )
 
 
@@ -4689,6 +4694,11 @@ async def execute_run(
                     update={
                         "id": over.summary.result_id,
                         "superseded_spend_usd": superseded,
+                        # So the cells that ran again are still counted once no row of the cut is kept
+                        # (``redrawn_cells``): cut where this attempt or one before it was cut while it ran.
+                        "written_over": "cut"
+                        if over.summary.termination == "cancelled" or over.written_over == "cut"
+                        else "unanswered",
                         "metered_calls": None
                         if metered is None and over.metered_calls is None
                         else (metered or 0) + (over.metered_calls or 0),

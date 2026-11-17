@@ -504,9 +504,11 @@ def redrawn_cells(results: Sequence[ResultView]) -> tuple[int, int]:
     """How many cells of ``results`` recorded no answer on some row, so they ran or run again
     (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those were cut while they ran (a row
     of termination ``cancelled``): a running total over every row, each cell counted once however many of its rows
-    recorded nothing. A cell is an arm's case at one repeat, its arm the variant its rows were stamped with. The one
-    count of them, which a quick-path comparison's print and its family on the page both say
-    (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`), read only where the bet reads it.
+    recorded nothing. A cell is an arm's case at one repeat, its arm the variant its rows were stamped with. A run taken
+    up again writes such a cell's new row over the old one, so the row it wrote says what it replaced
+    (``EvalResult.written_over``: ``cut``, or ``unanswered``), and counts as the old row would have. The one count of
+    them, which a quick-path comparison's print and every comparison family on the page and in the bundle say
+    (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`).
 
     :param results: Every result of the comparison's runs.
     :ptype results: Sequence[ResultView]
@@ -516,10 +518,10 @@ def redrawn_cells(results: Sequence[ResultView]) -> tuple[int, int]:
     again: set[tuple[str, str, int]] = set()
     cut: set[tuple[str, str, int]] = set()
     for result in results:
-        if runs_again(result):
+        if runs_again(result) or result.written_over is not None:
             cell = (result.variant_key, result.test_case_id, result.k_iteration)
             again.add(cell)
-            if result.termination == "cancelled":
+            if result.termination == "cancelled" or result.written_over == "cut":
                 cut.add(cell)
     return len(again), len(cut)
 

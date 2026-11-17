@@ -975,8 +975,9 @@ def assemble_context_bundle(
         # so every reader of a stored comparison reads it alike, and no campaign a host files over the same runs, nor
         # any declaration, opts an engine campaign in.
         reread_order=reread_order,
-        # Read only where the bet reads the comparison: no other family says it, nor reads the rows for it.
-        redrawn=redrawn_cells(results) if reread_order is not None else (0, 0),
+        # Every family says how many of its cells ran again, the cut ones among them: a cut cell drawn afresh can lean
+        # a reading where a slow answer is a wrong one, whatever reads it.
+        redrawn=redrawn_cells(results),
     )
     # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
     # paired judged contrast's share of it, filled last so no other section copies them.

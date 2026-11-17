@@ -495,9 +495,7 @@ async def _simulate(
     return separated, total
 
 
-def _said(
-    reading: _Reading, law: _Law, grader: _Grader, stop: _Stop, separated: int, count: int, cuts: _Cuts
-) -> str:
+def _said(reading: _Reading, law: _Law, grader: _Grader, stop: _Stop, separated: int, count: int, cuts: _Cuts) -> str:
     """The share, its 95% Clopper-Pearson interval, and what the take-ups ran again, for a report or a failure."""
     return (
         f"{reading} {law} {grader} {stop}: {separated}/{count} separated, {exact_rate_interval(separated, count)}; "

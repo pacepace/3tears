@@ -715,16 +715,16 @@ REREAD_SENTENCE = (
 
 
 def redrawn_sentence(cells: int, cut: int) -> str:
-    """How many of a quick-path comparison's cells recorded no answer and run again, as a running total over every run
-    of it, and how many of those were cut while they ran: the one owner of the sentence, which the print of a continued
-    comparison and its family's disclosure on the page and in the bundle both say, of the one count
+    """How many of a comparison's cells recorded no answer and run again, as a running total over every run of it, and
+    how many of those were cut while they ran: the one owner of the sentence, which the print of a continued quick-path
+    comparison and every family's disclosure on the page and in the bundle say, of the one count
     (:func:`~threetears.evals.analysis.bundle.trials.redrawn_cells`).
 
     A row records no answer when its cell was cut while it ran (a second interrupt, or a shutdown, cancelled its run),
     the account refused its call, or the provider did not serve its model
     (:func:`~threetears.evals.kernel.result_condition.runs_again`); its cell runs again when the comparison is
-    continued. A cut cell drawn afresh can lean the reading where a slow answer is a wrong one, which a refused or
-    unserved call, turned away before any answer, cannot.
+    continued or its run is taken up again. A cut cell drawn afresh can lean the reading where a slow answer is a wrong
+    one, which a refused or unserved call, turned away before any answer, cannot.
 
     :param cells: The comparison's cells that recorded no answer on some row, over all its runs, each once.
     :ptype cells: int
@@ -735,7 +735,7 @@ def redrawn_sentence(cells: int, cut: int) -> str:
     """
     counted = (
         f"{cells} cell{'s' if cells != 1 else ''} of this comparison recorded no answer (a running total over its "
-        f"runs), and each runs again when it is continued"
+        f"runs), and each runs again when the comparison is continued or its run taken up"
     )
     if cut:
         whom = "it was" if cells == 1 else f"{cut} of them {'was' if cut == 1 else 'were'}"
@@ -777,8 +777,8 @@ def _family_disclosure(
 ) -> str:
     """The sentence a writer quotes about one family, composed from what the family holds: under a plan of ``looks``
     looks, ``alpha`` is the level each look reads at, and what the intervals hold together is stated over the plan.
-    Where the bet read it (``rereadable``), it closes on :data:`REREAD_SENTENCE`, after how many of the comparison's
-    cells recorded no answer and run again (:func:`redrawn_sentence`), where any did."""
+    It says how many of the comparison's cells recorded no answer and ran or run again (:func:`redrawn_sentence`),
+    where any did; and where the bet read it (``rereadable``), it closes on :data:`REREAD_SENTENCE`."""
     asked = "the campaign holds" if campaign_wide else "this question asks about"
     if family_size == 0:
         sentence = f"No comparison {asked} carried a p, so it supports no separation between arms."
@@ -806,9 +806,9 @@ def _family_disclosure(
         )
     if n_untested:
         sentence += f" {n_untested} more could not be tested; each says why."
+    if redrawn[0]:
+        sentence += f" {redrawn_sentence(*redrawn)}"
     if rereadable:
-        if redrawn[0]:
-            sentence += f" {redrawn_sentence(*redrawn)}"
         sentence += f" {REREAD_SENTENCE}"
     return f"{_NO_QUESTION_FAMILY} {sentence}" if campaign_wide else sentence
 
@@ -1088,9 +1088,9 @@ def multiple_comparisons(
         a declared range is then read by the mixture bet over its cases in that order, so it keeps its error however
         often cases are added and it is read again (:func:`_corrected_family`). None reads every comparison as before.
     :ptype reread_order: Mapping[str, int] | None
-    :param redrawn: On a quick-path comparison, how many of its cells recorded no answer and run again, and how
-        many of those were cut while they ran (:func:`~threetears.evals.analysis.bundle.trials.redrawn_cells`),
-        which a family the bet read says (:func:`redrawn_sentence`).
+    :param redrawn: How many of the comparison's cells recorded no answer and ran or run again, and how many of those
+        were cut while they ran (:func:`~threetears.evals.analysis.bundle.trials.redrawn_cells`), which every family
+        says where any did (:func:`redrawn_sentence`).
     :ptype redrawn: tuple[int, int]
     :return: The aspect's question's family; the exploratory family over every reading when no question is
         asked; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
