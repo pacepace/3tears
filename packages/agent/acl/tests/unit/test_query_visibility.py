@@ -340,7 +340,10 @@ class _Tables:
         it)."""
         self.reads.append(sql)
         assert sql.startswith("WITH RECURSIVE reached") and '"group_members"' in sql, sql
-        start_kind, user, link_kind, depth, _scopes = params
+        # the discriminators are the code's own constants, written as literals (Const) so the generic plan caches
+        assert "t.\"member_type\" = 'user'" in sql and "t.\"member_type\" = 'group'" in sql, sql
+        start_kind, link_kind = "user", "group"
+        user, depth, _scopes = params
         level = {g for t, m, g in self.members if t == start_kind and m == user}
         reached = set(level)
         for _ in range(depth - 1):

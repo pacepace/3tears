@@ -144,7 +144,9 @@ async def test_the_set_is_read_once_for_the_namespace_type() -> None:
 
     assert visible == VisibleCustomers(is_all=False, customer_ids=(second, first))
     ((sql, params),) = conn.grant_reads
-    assert '"group_members"' in sql and '"role_assignments"' in sql and caller in params and "user" in params
+    assert '"group_members"' in sql and '"role_assignments"' in sql and caller in params
+    # the caller's own memberships, by the code's literal (Const), not a bound text
+    assert "t.\"member_type\" = 'user'" in sql and "user" not in params, (sql, params)
 
 
 async def test_a_platform_wide_grant_reads_every_customer_but_not_another_users_rows() -> None:
