@@ -151,7 +151,10 @@ class _InterleavingExecutor:
         self.between: Any = None
 
     async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
-        """delegate.
+        """delegate, then run ``between`` once if this was the latest-checkpoint query.
+
+        The latest checkpoint is the first page of one of the thread's checkpoints, newest first by the key
+        (``keyset_page``, a ``fetch``; a ``fetchrow`` before 14c3180e8).
 
         :param query: SQL
         :ptype query: str
@@ -160,10 +163,14 @@ class _InterleavingExecutor:
         :return: rows
         :rtype: list[dict[str, Any]]
         """
-        return await self.inner.fetch(query, *args)
+        rows = await self.inner.fetch(query, *args)
+        if self.between is not None and 'FROM "checkpoints"' in query and 'ORDER BY t."checkpoint_id" DESC' in query:
+            between, self.between = self.between, None
+            await between()
+        return rows
 
     async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
-        """delegate, then run ``between`` once if this was the latest-checkpoint query.
+        """delegate.
 
         :param query: SQL
         :ptype query: str
@@ -172,11 +179,7 @@ class _InterleavingExecutor:
         :return: the row the real query returned
         :rtype: dict[str, Any] | None
         """
-        row = await self.inner.fetchrow(query, *args)
-        if self.between is not None and "ORDER BY checkpoint_id DESC" in query:
-            between, self.between = self.between, None
-            await between()
-        return row
+        return await self.inner.fetchrow(query, *args)
 
     async def execute(self, query: str, *args: object) -> str:
         """delegate.
@@ -312,6 +315,8 @@ async def test_an_older_refill_cannot_replace_a_newer_checkpoint(executor: Async
         scope=_UNSCOPED,
     )
     read = await reader.aget_tuple(_CONFIG)
+    # the newer checkpoint landed between the reader's query and its refill: without it cp-1 is read either way
+    assert interleaving.between is None, "the interleaving did not happen: no latest-checkpoint query was seen"
     assert read is not None and read.checkpoint["id"] == "cp-1", "the interleaving did not happen"
 
     fresh = ThreeTierCheckpointSaver(executor, l2_cache=NatsCheckpointL2Cache(nc), l2_bucket=_BUCKET, scope=_UNSCOPED)
