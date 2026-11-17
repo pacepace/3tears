@@ -87,8 +87,8 @@ from threetears.evals.schema import (
     KnownUsageRole,
     ProviderFailureDescriber,
     WorldSeed,
-    canonical_digest,
 )
+from threetears.evals.schema.hashing import canonical_digest
 from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.schema.models import PASS_FAIL_SCORES, RubricScale, stored_variation
 from threetears.evals.kernel.host import (
@@ -125,16 +125,16 @@ from threetears.evals.run import (
     StoredCells,
     TemplateField,
     UnknownSubject,
-    build_judge_context,
     build_judge_service,
     freeze_judge_cases,
     get_result_trace,
     launch_as_group,
     launch_run,
     list_results,
-    set_run_archived,
     start_run,
 )
+from threetears.evals.run.runner import build_judge_context
+from threetears.evals.run.curation import set_run_archived
 from threetears.evals.run.authoring import active_judge_config_in, refuse_undeclared_judges, refuse_unsupplied_world
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS
 from threetears.evals.run.judge_repeat import BudgetedJudgeClient, planned_judge_call
@@ -2765,7 +2765,7 @@ def _ended_as_newest(host: EvalHost, pooled: EvalSummary, run_ids: Sequence[str]
     launch left short is in a later run's cases too, and counts once.
 
     :param host: The host whose store holds the runs.
-    :param pooled: The arm's runs summarised as one (:func:`~threetears.evals.analysis.summarize_runs`).
+    :param pooled: The arm's runs summarised as one (:func:`~threetears.evals.analysis.summary.summarize_runs`).
     :param run_ids: Its runs, oldest first.
     :param scope_id: The scope they live in.
     :return: The summary.

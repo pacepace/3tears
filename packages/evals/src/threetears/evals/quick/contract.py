@@ -44,7 +44,8 @@ from threetears.evals.analysis.summary import CaseResult, EvalSummary
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel import CONFUSION_CELL_MEASURE, GuardrailMargin, confusion_of
+from threetears.evals.kernel import CONFUSION_CELL_MEASURE, GuardrailMargin
+from threetears.evals.kernel.metrics import confusion_of
 from threetears.evals.kernel.host import CompletionClients, EvalHost
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore
 from threetears.evals.schema.logs import contain, get_logger
@@ -85,7 +86,7 @@ from threetears.evals.quick.result import (
 )
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
-from threetears.evals.run import set_run_archived
+from threetears.evals.run.curation import set_run_archived
 from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
 
 log = get_logger(__name__)

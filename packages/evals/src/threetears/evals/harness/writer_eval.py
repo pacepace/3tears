@@ -44,7 +44,7 @@ editor's own model. ``await WriterEval(...).run()``:
    primary reading, on the held-out side only: the dev side is where a change is tuned, so the read refuses it by
    design, and a dev run says so instead of reading it (its pass is still run and printed);
 8. returns a :class:`WriterResult`, each arm's summary read over its batches' runs as one
-   (:func:`~threetears.evals.analysis.summarize_runs`), which prints the campaign's readings and each pass's as tables and writes the
+   (:func:`~threetears.evals.analysis.summary.summarize_runs`), which prints the campaign's readings and each pass's as tables and writes the
    campaign's page, led by the answer: each candidate's promotion reading and the judge's side-by-side preference,
    with the preference drawn against even and the side-by-side tables at the head of its Scorecard.
 
@@ -147,12 +147,12 @@ from threetears.evals.analysis import (
     GateResult,
     add_runs_to_campaign,
     campaign_report,
-    campaign_report_markdown,
     create_campaign,
     gate_verdicts,
     summarize_run,
-    summarize_runs,
 )
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.summary import summarize_runs
 from threetears.evals.analysis.run_ending import stopped_short
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import (

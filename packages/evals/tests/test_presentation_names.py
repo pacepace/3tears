@@ -48,13 +48,9 @@ from packages.evals.tests.ladder_support import load, offline_copy
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, TOYHOST_SUBJECT, WRITER, ops_fixture, settled
 from packages.evals.tests.report_doc_support import REPORT_DOCS, converted_doc, snapshot_of
-from threetears.evals.analysis import (
-    build_code_only_report,
-    campaign_report_html,
-    campaign_report_markdown,
-    report_html,
-    report_markdown,
-)
+from threetears.evals.analysis import build_code_only_report, campaign_report_html, report_html
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import NO_ANALYSIS
 from threetears.evals.analysis.campaign_title import arms_line, declared_title
 from threetears.evals.analysis.errors import UnresolvableReference

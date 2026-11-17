@@ -44,7 +44,6 @@ from typing import Any
 
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.analysis import (
-    DEFAULT_FAIL_ON,
     ConfusionCount,
     GateResult,
     LabelStatistics,
@@ -55,11 +54,12 @@ from threetears.evals.analysis import (
     Report,
     TableBlock,
     campaign_report,
-    campaign_report_markdown,
     create_campaign,
-    get_campaign,
     variant_key_of_run,
 )
+from threetears.evals.analysis.gate import DEFAULT_FAIL_ON
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.kernel import (
     ACCURACY_MEASURE,
     CONFUSION_CELL_MEASURE,
@@ -68,8 +68,8 @@ from threetears.evals.kernel import (
     GuardrailMargin,
     GuardrailReadings,
     confusion_cell,
-    confusion_of,
 )
+from threetears.evals.kernel.metrics import confusion_of
 from threetears.evals.analysis.blind_read import BlindClose, blind_sheet, close_blind_read, draw_blind_read
 from threetears.evals.schema import BlindReadReport, CalibrationRating, CompletionClient, EvalResult
 from threetears.evals.schema.blind_read import BlindAnswer, BlindArm, BlindRead
@@ -971,8 +971,8 @@ class Result:
     def gate(self, fail_on: Iterable[str] = DEFAULT_FAIL_ON, *, readings: Iterable[str] | None = None) -> GateResult:
         """Gate a build on this comparison's verdicts, as ``python -m threetears.evals gate`` does on a campaign.
 
-        :param fail_on: The outcomes that fail it (:data:`~threetears.evals.analysis.GATE_TOKENS`). The default,
-            :data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`, fails on a regressed contrast, a breached
+        :param fail_on: The outcomes that fail it (:data:`~threetears.evals.analysis.gate.GATE_TOKENS`). The default,
+            :data:`~threetears.evals.analysis.gate.DEFAULT_FAIL_ON`, fails on a regressed contrast, a breached
             guardrail and an undecided guardrail.
         :param readings: Only the verdicts on these readings, by key or heading; ``None`` gates every verdict.
         :return: The gate's result: ``failed`` when a named outcome occurred, ``passed`` only when every verdict was

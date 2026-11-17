@@ -22,13 +22,9 @@ from typing import Any
 import pytest
 
 from threetears.evals import Answer, Eval, Result
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    assemble_context_bundle,
-    aspect_view,
-    campaign_readings,
-    get_campaign,
-)
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle, campaign_readings
+from threetears.evals.analysis.aspects import aspect_view
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.reads import bisect_runs
 from threetears.evals.kernel import EvalStorage

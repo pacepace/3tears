@@ -25,7 +25,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
-from threetears.evals.analysis import assemble_context_bundle, build_campaign_report, build_code_only_report
+from threetears.evals.analysis import assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.model import CampaignReport, Report

@@ -49,7 +49,8 @@ from threetears.evals.analysis.report.serialize import serialize_report
 from threetears.evals.analysis.service import analysis_report, campaign_report
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import RefusedInput
-from threetears.evals.ops import analyses_list, analysis_delete, campaigns_list, report_read
+from threetears.evals.ops import analyses_list, campaigns_list, report_read
+from threetears.evals.ops.analysis import analysis_delete
 from packages.evals.tests.factories import empty_bundle
 from threetears.evals.storage import InMemoryDocumentStore
 

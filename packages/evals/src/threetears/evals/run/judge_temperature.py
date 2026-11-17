@@ -481,7 +481,7 @@ async def judge_temperature_work(
     and every call, parse retries included, priced on the client it will be made on and admitted against
     ``out_of_run_cap_usd``, so a comparison the cap refuses is refused here with nothing spent. The returned work makes
     the calls — ``repeats`` per dim at each setting, interleaved — and ends its record with every answer. Nothing is
-    written to the results. Run it as a job (:func:`~threetears.evals.run.start_job_work`) or in the foreground
+    written to the results. Run it as a job (:func:`~threetears.evals.run.job_work.start_job_work`) or in the foreground
     (:func:`~threetears.evals.run.run_job_work`), and read the record's answers with
     :func:`~threetears.evals.analysis.read_judge_temperatures`.
 

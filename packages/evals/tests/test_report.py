@@ -25,10 +25,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import (
-    NO_ANALYSIS,
-    SECTION_TITLES,
     AnalysisContextBundle,
-    aspect_view,
     ChartBlock,
     DisclosureBlock,
     IntervalRow,
@@ -39,16 +36,19 @@ from threetears.evals.analysis import (
     build_code_only_report,
     campaign_report,
     report_html,
-    report_markdown,
     set_campaign_control,
 )
+from threetears.evals.analysis.report.aspect.method import NO_ANALYSIS
+from threetears.evals.analysis.report.blocks import SECTION_TITLES
+from threetears.evals.analysis.aspects import aspect_view
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.service import analysis_report
 from threetears.evals.analysis.report.build import contrast_rows
 from threetears.evals.analysis.report.model import table_row
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.run import set_analysis_archived
+from threetears.evals.run.curation import set_analysis_archived
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 from packages.evals.tests.report_support import toy_campaign_host, toy_report
 from packages.evals.tests.off_loop import off_loop

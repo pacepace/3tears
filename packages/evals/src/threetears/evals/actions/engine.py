@@ -96,12 +96,9 @@ from threetears.evals.ops import (
     UndescribableArmsListing,
     analyses_list,
     analyses_undescribable,
-    analysis_archive,
-    analysis_delete,
     analysis_estimate,
     analysis_generate,
     bars_propose,
-    campaign_archive,
     campaign_create,
     campaign_record,
     campaign_runs_add,
@@ -132,12 +129,10 @@ from threetears.evals.ops import (
     result_rate,
     result_rate_person,
     results_list,
-    run_archive,
     run_label,
     run_delete,
     run_get,
     run_launch,
-    runs_bisect,
     runs_compare,
     runs_list,
     runs_unreadable,
@@ -147,15 +142,20 @@ from threetears.evals.ops import (
     scope_out_of_run_spend,
     scope_pivot,
     templates_list,
-    bar_proposals_text,
-    estimate_text,
     frontier_text,
-    history_text,
     out_of_run_spend_text,
-    pivot_text,
-    runs_bisected_text,
-    runs_compared_text,
 )
+from threetears.evals.ops.analysis import analysis_archive
+from threetears.evals.ops.analysis import analysis_delete
+from threetears.evals.ops.analysis import campaign_archive
+from threetears.evals.ops.runs import run_archive
+from threetears.evals.ops.lenses import runs_bisect
+from threetears.evals.ops.analysis import bar_proposals_text
+from threetears.evals.ops.lenses import estimate_text
+from threetears.evals.ops.lenses import history_text
+from threetears.evals.ops.lenses import pivot_text
+from threetears.evals.ops.lenses import runs_bisected_text
+from threetears.evals.ops.lenses import runs_compared_text
 from threetears.evals.kernel.declaration import Margin, OverriddenBar
 from threetears.evals.ops.analysis import MEMBERSHIP_ASPECT_DESCRIPTION
 from threetears.evals.ops.cases import CaseRenamed, case_rename

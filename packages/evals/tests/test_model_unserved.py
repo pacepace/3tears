@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 
 from threetears.evals import Eval
-from threetears.evals.analysis import report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink
 from threetears.evals.kernel.failed_call import failed_call_output

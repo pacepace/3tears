@@ -1262,7 +1262,7 @@ def campaign_runs_remove(
     """Take runs out of a campaign — membership only: the runs and their results stay, in any other campaign too.
 
     A run the campaign (or the named aspect) does not hold is refused, all-or-nothing
-    (:func:`~threetears.evals.analysis.remove_runs_from_campaign`). An arm is a variant, not a run, so removing the
+    (:func:`~threetears.evals.analysis.campaigns.remove_runs_from_campaign`). An arm is a variant, not a run, so removing the
     run it was named from leaves it named; where no remaining run carries it, the report says the arm is unobserved.
 
     :param host: The host whose store holds the campaign.
@@ -1312,7 +1312,7 @@ def campaign_record(
     says neither is stored as before and reads as not recorded, never as a person's.
 
     Read against code's readings of the evidence as it stands, never a memo's words
-    (:func:`~threetears.evals.analysis.record_campaign_call`): an arm with a broken floor or a missed bar is recorded
+    (:func:`~threetears.evals.analysis.service.record_campaign_call`): an arm with a broken floor or a missed bar is recorded
     only when the call names each one as overridden, and an override of one the arm did not break or miss is refused.
     A new call replaces the earlier one.
 
@@ -1333,7 +1333,7 @@ def campaign_record(
     :raises EvalServiceError: Status 403: a person's call the host does not attest the caller for; nothing is
         written.
     :raises NotFoundError: No campaign with that id in the scope, or no such analysis.
-    :raises ValidationFailedError: See :func:`~threetears.evals.analysis.record_campaign_call`.
+    :raises ValidationFailedError: See :func:`~threetears.evals.analysis.service.record_campaign_call`.
     :raises ConflictError: The campaign changed while its readings were read.
     """
     if (made_by == "person") != (person is not None):
@@ -1514,7 +1514,7 @@ def analysis_archive(
 
     Archived, the analysis stays readable and marked, and the insights it minted are retracted from every
     later generation's context for as long as it stays archived; restored, they return
-    (:func:`~threetears.evals.run.set_analysis_archived`).
+    (:func:`~threetears.evals.run.curation.set_analysis_archived`).
 
     :param host: The host whose store holds the analysis.
     :param analysis_id: The analysis.
@@ -2729,7 +2729,7 @@ def insights_list(
 ) -> InsightListing:
     """The scope's insight ledger, newest observation first, each with where it stands.
 
-    Over :func:`~threetears.evals.analysis.list_insights`: both filters match ids exactly, and an id that
+    Over :func:`~threetears.evals.analysis.service.list_insights`: both filters match ids exactly, and an id that
     matches nothing is an answer (that campaign minted no insights), not a refusal.
 
     :param host: The host whose store holds the ledger.
@@ -2780,7 +2780,7 @@ def insight_delete(host: EvalHost, insight_id: str, scope_id: str, *, confirm: s
     """Destroy one insight — the intended answer to a wrong one, since an insight has no archive.
 
     A live insight is fed to every later generation over its subject as prior context, so a wrong one keeps
-    steering analyses until it is gone (:func:`~threetears.evals.run.delete_insight`). Archiving its analysis
+    steering analyses until it is gone (:func:`~threetears.evals.run.curation.delete_insight`). Archiving its analysis
     retracts every insight that analysis minted; this removes one.
 
     :param host: The host whose store holds the ledger.

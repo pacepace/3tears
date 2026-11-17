@@ -48,16 +48,16 @@ from threetears.evals.actions import (
     ActionCatalogue,
     ActionOutcome,
     MountedTool,
-    analyst_actions,
     analyst_tools,
-    catalogue_primer,
     eval_catalogue,
     read_only_tools,
     standard_tools,
 )
+from threetears.evals.actions.analyst import analyst_actions
+from threetears.evals.actions.catalogue import catalogue_primer
 from threetears.evals.actions.engine import engine_actions
 from threetears.evals.actions.render import render_cited
-from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.analyst.facts import campaign_overview
@@ -76,7 +76,8 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
+from threetears.evals.kernel import EvalReportSnapshot
+from threetears.evals.kernel.report_snapshot import report_snapshot_id
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.storage import InMemoryDocumentStore
 

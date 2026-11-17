@@ -23,18 +23,18 @@ import pytest
 
 from threetears.evals.analysis import JudgeKey, judge_kind_readings
 from threetears.evals.kernel import (
-    JUDGE_CASE_KEY,
     AuthoredJudgeCase,
     JUDGE_KIND,
-    JUDGE_LABEL_AGREEMENT_MEASURE,
-    JUDGE_PARSE_VALID_MEASURE,
     JudgeKindOverlays,
     ValidationFailedError,
     VariantConfig,
     judge_case_of,
-    judge_trial_of,
     withhold_failure_detail,
 )
+from threetears.evals.kernel.judge_cases import JUDGE_CASE_KEY
+from threetears.evals.kernel.judge_cases import JUDGE_LABEL_AGREEMENT_MEASURE
+from threetears.evals.kernel.judge_cases import JUDGE_PARSE_VALID_MEASURE
+from threetears.evals.kernel.judge_cases import judge_trial_of
 from threetears.evals.kernel.usage_capture import production_replicating_cost
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.providers import Provider, ProviderError, describe_failure
@@ -843,7 +843,7 @@ async def test_a_label_outlives_its_evidence_and_still_calibrates_a_judge_after_
     a reset the freeze reads no run, result or trace, and the judge campaign over its cases still measures the
     judge against what people said, on the very evidence they read.
     """
-    from threetears.evals.analysis import judge_profiles_of
+    from threetears.evals.analysis.judge_profiles import judge_profiles_of
     from threetears.evals.run import delete_run
 
     judge = _ServedJudge()
@@ -1014,7 +1014,7 @@ def _hard_cases() -> list[AuthoredJudgeCase]:
 
 
 async def test_authored_cases_are_judged_and_read_out_as_labelled_cases_whose_label_is_the_verdict() -> None:
-    from threetears.evals.analysis import judge_profiles_of
+    from threetears.evals.analysis.judge_profiles import judge_profiles_of
 
     judge = _ServedJudge()
     host = toyhost_host(clients=lambda role, model, *, temperature=None: judge)

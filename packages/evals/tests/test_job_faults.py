@@ -14,7 +14,8 @@ import pytest
 
 from threetears.evals.kernel import SWEEP_JOB, EvalStorage, EvalSweep, SweepArmRecord
 from threetears.evals.kernel.job_leases import write_held_record
-from threetears.evals.schema import JOB_FAULTS_MAX, with_fault
+from threetears.evals.schema import JOB_FAULTS_MAX
+from threetears.evals.schema.job_lease import with_fault
 from threetears.evals.schema.job_lease import JOB_FAULT_MAX_CHARS
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.stored_models import doc_type_of, stored_models

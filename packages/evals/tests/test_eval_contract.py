@@ -20,7 +20,9 @@ import pytest
 from pydantic import BaseModel, Field
 
 from threetears.evals import Eval, Example, Judge, Log, Model, Result, World, grader
-from threetears.evals.analysis import campaign_report_markdown, get_campaign, scope_out_of_run_spend
+from threetears.evals.analysis import scope_out_of_run_spend
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.quick import as_host
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.logged import NOT_LOGGED

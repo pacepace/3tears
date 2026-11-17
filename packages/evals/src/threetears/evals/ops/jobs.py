@@ -747,7 +747,7 @@ async def start_action_job(
     :param run: The work: makes the calls and returns the action's typed result.
     :param label: A short line naming the work.
     :param budget_s: The work's wall-clock ceiling. Required: a forgotten budget is a ``TypeError`` here, never an hour
-        nobody chose (:data:`~threetears.evals.run.DEFAULT_ACTION_JOB_BUDGET_S` is the value to pass for that).
+        nobody chose (:data:`~threetears.evals.run.job_work.DEFAULT_ACTION_JOB_BUDGET_S` is the value to pass for that).
     :param discard: Releases what the handler built for ``run`` when the work never runs.
     :return: The job's one handle (``action:<id>``); its target is the action.
     :raises ValueError: ``budget_s`` is not positive.

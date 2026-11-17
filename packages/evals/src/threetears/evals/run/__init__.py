@@ -19,26 +19,15 @@ from threetears.evals.run.authoring import (
     create_template,
     delete_judge_config,
     delete_rubric_dim,
-    get_template,
-    list_judge_configs,
     list_rubric_dims,
-    list_templates,
     update_judge_config,
     update_rubric_dim,
     update_template,
-    validated_kind_spec,
 )
 from threetears.evals.run.conversation import drive_conversation
 from threetears.evals.run.curation import (
-    delete_analysis,
-    delete_insight,
     delete_result,
     delete_run,
-    delete_unreadable_run,
-    require_delete_confirmation,
-    set_analysis_archived,
-    set_campaign_archived,
-    set_run_archived,
 )
 from threetears.evals.run.ratings import RatingStore, rate_result
 from threetears.evals.run.definition_seed import load_seed_corpus, seed_eval_definitions
@@ -53,7 +42,6 @@ from threetears.evals.run.judge_service import JudgeRequest, JudgeService
 from threetears.evals.run.call_floor import price_subject_call_floor
 from threetears.evals.run.launch import (
     AdmittedLaunch,
-    admit_group,
     admit_launch,
     ArmOutcome,
     ArmPlan,
@@ -67,7 +55,6 @@ from threetears.evals.run.launch import (
     LaunchArgument,
     LaunchGroup,
     LaunchHost,
-    TEMPLATE_FIELDS,
     TemplateField,
     ServedCheck,
     ServedRole,
@@ -101,23 +88,19 @@ from threetears.evals.run.executor import (
     DEFAULT_MAX_CONCURRENT_CELLS,
     CellExecutor,
     CellWork,
-    InProcessCellExecutor,
 )
 from threetears.evals.run.metering import CellMeter, MeteredCallLedger, MeteredCallTally
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.reads import (
-    get_result,
     get_result_trace,
     list_results,
     list_runs,
-    list_runs_page,
 )
 from threetears.evals.run.judge_repeat import (
     JudgeRepeatEstimate,
     JudgeRepeatReport,
     JudgeRepeatSkip,
     estimate_judge_repeat,
-    JUDGE_REPEAT_ACTION,
     judge_repeat_work,
 )
 from threetears.evals.run.judge_temperature import (
@@ -134,7 +117,6 @@ from threetears.evals.run.judge_second import (
     SecondJudgeEstimate,
     SecondJudgeReport,
     SecondJudgeSkip,
-    estimate_second_judge,
     second_judge_work,
 )
 from threetears.evals.run.launch_job import (
@@ -144,16 +126,11 @@ from threetears.evals.run.launch_job import (
 )
 from threetears.evals.run.job_work import (
     ACTION_JOB,
-    DEFAULT_ACTION_JOB_BUDGET_S,
     EvalActionJob,
     JobOutcome,
     JobRecorder,
     JobWork,
-    action_job_work,
-    end_record,
-    leased_job_kind,
     run_job_work,
-    start_job_work,
 )
 from threetears.evals.run.rejudge import reproducible_judge_inputs
 from threetears.evals.run.regrade import Regrade, RegradedDim, regrade
@@ -161,7 +138,6 @@ from threetears.evals.run.remeasure import (
     Attested,
     Remeasure,
     attest_measure_definitions,
-    attest_served_model,
     remeasure_run,
 )
 from threetears.evals.run.judge_kind import (
@@ -180,8 +156,6 @@ from threetears.evals.run.runner import (
     KindFactory,
     RunnerOptions,
     assert_preconditions,
-    build_judge_context,
-    evaluate_goal_state,
     execute_run,
     fold_metered_cell,
     grade_goal_checks,
@@ -204,14 +178,11 @@ from threetears.evals.run.budget import (
     EvalRunCostCap,
     ModelUnservedError,
 )
-from threetears.evals.run.case_sets import mint_case_set, resolve_case_set
+from threetears.evals.run.case_sets import mint_case_set
 from threetears.evals.run.ceilings import (
     CeilingRaisedError,
-    refuse_raised_ceiling,
-    resolve_ceiling_origin,
-    resolve_effective_ceiling,
 )
-from threetears.evals.run.curation import CurationStore, UnreadableRunDeleteStore
+from threetears.evals.run.curation import CurationStore
 from threetears.evals.run.package_ceilings import Ceilings
 from threetears.evals.run.definition_seed import SeedCaseSet, SeedCorpus, SeedJudgeCase, SeedOutcome, SeedTemplateCase
 from threetears.evals.run.definition_drift import (
@@ -266,13 +237,11 @@ __all__ = [
     "CellMeter",
     "CellWork",
     "CurationStore",
-    "UnreadableRunDeleteStore",
     "EvalJobManager",
     "EveryCellApparatusFailedError",
     "NothingMeasuredError",
     "FidelityContract",
     "GoalCheckUnevaluable",
-    "InProcessCellExecutor",
     "RunEndHook",
     "FrozenJudgeCase",
     "JudgeCaseFreezeReport",
@@ -291,7 +260,6 @@ __all__ = [
     "LaunchArgument",
     "LaunchGroup",
     "LaunchHost",
-    "TEMPLATE_FIELDS",
     "TemplateField",
     "ServedCheck",
     "ServedRole",
@@ -338,7 +306,6 @@ __all__ = [
     "WorkFn",
     "admit_template",
     "assert_preconditions",
-    "build_judge_context",
     "freeze_judge_cases",
     "judge_kind",
     "launchable_judge_kind",
@@ -347,30 +314,21 @@ __all__ = [
     "create_judge_config",
     "create_rubric_dim",
     "create_template",
-    "delete_analysis",
-    "delete_insight",
     "delete_judge_config",
     "delete_result",
     "delete_rubric_dim",
     "delete_run",
-    "delete_unreadable_run",
     "drive_conversation",
-    "evaluate_goal_state",
     "execute_run",
     "fold_metered_cell",
-    "get_result",
     "get_result_trace",
     "get_run",
-    "get_template",
     "grade_goal_checks",
     "launch_as_group",
     "launch_run",
-    "list_judge_configs",
     "list_results",
     "list_rubric_dims",
     "list_runs",
-    "list_runs_page",
-    "list_templates",
     "load_seed_corpus",
     "metered_cell_tally",
     "plan_judge",
@@ -383,28 +341,18 @@ __all__ = [
     "rate_result",
     "regrade",
     "attest_measure_definitions",
-    "attest_served_model",
     "remeasure_run",
     "record_witnessed_cell",
     "stamp_witnessed_judge",
     "rejudge_result",
-    "JUDGE_REPEAT_ACTION",
     "judge_repeat_work",
     "reproducible_judge_inputs",
-    "require_delete_confirmation",
-    "refuse_raised_ceiling",
-    "resolve_ceiling_origin",
     "resolve_constructor",
-    "resolve_effective_ceiling",
     "run_blocking",
     "run_judge_llm",
     "seed_eval_definitions",
-    "set_analysis_archived",
-    "set_campaign_archived",
-    "set_run_archived",
     "start_run",
     "mint_case_set",
-    "resolve_case_set",
     "sweep_abandoned_runs",
     "ResumableEnding",
     "ResumableGroup",
@@ -417,7 +365,6 @@ __all__ = [
     "update_judge_config",
     "update_rubric_dim",
     "update_template",
-    "validated_kind_spec",
     "JudgeRepeatEstimate",
     "JudgeRepeatReport",
     "JudgeRepeatSkip",
@@ -425,7 +372,6 @@ __all__ = [
     "SecondJudgeEstimate",
     "SecondJudgeReport",
     "SecondJudgeSkip",
-    "estimate_second_judge",
     "second_judge_work",
     "SECOND_JUDGE_JOB",
     "EvalSecondJudgePass",
@@ -436,18 +382,12 @@ __all__ = [
     "JUDGE_TEMPERATURE_JOB",
     "EvalJudgeTemperatureCheck",
     "ACTION_JOB",
-    "DEFAULT_ACTION_JOB_BUDGET_S",
     "EvalActionJob",
     "JobOutcome",
     "JobRecorder",
     "JobWork",
-    "action_job_work",
-    "end_record",
-    "leased_job_kind",
     "run_job_work",
-    "start_job_work",
     "AdmittedLaunch",
-    "admit_group",
     "admit_launch",
     "LAUNCH_JOB",
     "EvalLaunch",

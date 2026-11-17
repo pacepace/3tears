@@ -849,7 +849,7 @@ def keep_review(
 ) -> BlindRead:
     """Keep a model's answers on the read: only inside the read's own review job, and only the declared reviewer's.
 
-    Called by the job :func:`blind_read_review` starts. The job it runs in (:func:`~threetears.evals.kernel.running_job`)
+    Called by the job :func:`blind_read_review` starts. The job it runs in (:func:`~threetears.evals.kernel.job_context.running_job`)
     must be the one the read recorded when the review was started; anything else is refused and nothing is written,
     so no caller can put a model's answer on a read by any other door.
 

@@ -39,8 +39,8 @@ from threetears.evals.schema import (
     RecordedCall,
     RoleUsage,
     RubricScore,
-    eval_trace_doc_id,
 )
+from threetears.evals.schema.models import eval_trace_doc_id
 from threetears.evals.kernel import ResultOutcome
 from threetears.evals.analysis.latency_partition import decompose_total_ms
 from threetears.evals.kernel.errors import ValidationFailedError

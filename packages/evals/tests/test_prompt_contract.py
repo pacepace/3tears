@@ -40,13 +40,13 @@ from threetears.evals.kernel import (
     PromptContractError,
     SeedPrompt,
     SeedTemplate,
-    contract_state,
-    declared_contracts,
     prompt_drift,
-    require_output_contract,
     seed_digest,
-    template_text,
 )
+from threetears.evals.kernel.prompts.contract import contract_state
+from threetears.evals.kernel.prompts.contract import declared_contracts
+from threetears.evals.kernel.prompts.contract import require_output_contract
+from threetears.evals.kernel.prompts.contract import template_text
 from threetears.evals.kernel.prompts.contract import CONTRACT_MARKER
 
 _RESET = "call prompt_reset for the slot"

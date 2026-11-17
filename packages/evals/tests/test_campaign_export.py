@@ -43,7 +43,8 @@ from packages.evals.tests.ops_support import (
 )
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis.bundle.schema import host_declarations_digest
-from threetears.evals.harness import ReasonedOn, WriterCaseFile
+from threetears.evals.harness import ReasonedOn
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.kernel import EvalInsight, NotFoundError, UnreadableRecordError, ValidationFailedError
 from threetears.evals.ops import CampaignExport, OpsHost, UnresolvedLink, campaign_export
 from threetears.evals.schema import DOC_TYPE_FACTS, CatalogRubricDim, JudgeConfig, JudgeConfigTombstone, RubricDim

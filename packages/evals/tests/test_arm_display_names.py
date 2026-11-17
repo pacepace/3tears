@@ -38,7 +38,8 @@ from packages.evals.tests.fixtures.toyhost.corpus import (
 )
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from threetears.evals.analysis import build_code_only_report, report_html, report_markdown
+from threetears.evals.analysis import build_code_only_report, report_html
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.analyst.snapshot import analyst_input
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.campaign_bundle import CampaignBundle

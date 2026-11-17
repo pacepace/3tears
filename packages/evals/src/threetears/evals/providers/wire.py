@@ -45,8 +45,8 @@ from threetears.evals.schema import (
     TurnBlock,
     TurnMessage,
     TurnStopReason,
-    block_from_json,
 )
+from threetears.evals.schema.turns import block_from_json
 from threetears.evals.schema.logs import get_logger
 
 log = get_logger(__name__)

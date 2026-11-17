@@ -50,9 +50,9 @@ from threetears.evals.analysis import (
     judge_agreement,
     judge_evidence_tiers,
     judge_self_agreement,
-    tier_for_judges,
     tier_sentence,
 )
+from threetears.evals.analysis.agreement import tier_for_judges
 from threetears.evals.analysis.stats import cohen_kappa
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.kernel.evidence_tiers import (

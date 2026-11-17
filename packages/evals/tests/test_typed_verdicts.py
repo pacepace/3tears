@@ -24,15 +24,10 @@ import pytest
 from threetears.evals import Eval, Result, grader
 from threetears.evals.storage import InMemoryDocumentStore
 
-from threetears.evals.analysis import (
-    DEFAULT_FAIL_ON,
-    GATE_TOKENS,
-    TableBlock,
-    Verdict,
-    create_campaign,
-    gate_verdicts,
-    parse_fail_on,
-)
+from threetears.evals.analysis import TableBlock, Verdict, create_campaign, gate_verdicts
+from threetears.evals.analysis.gate import DEFAULT_FAIL_ON
+from threetears.evals.analysis.gate import GATE_TOKENS
+from threetears.evals.analysis.gate import parse_fail_on
 from threetears.evals.analysis.gate import verdict_token
 from threetears.evals.quick import (
     EXIT_GATE_FAILED,

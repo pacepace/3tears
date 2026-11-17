@@ -27,14 +27,10 @@ from typing import Any
 import pytest
 
 from threetears.evals import Answer, Eval, Result
-from threetears.evals.analysis import (
-    CampaignReport,
-    assemble_campaign_bundle,
-    campaign_report,
-    campaign_report_markdown,
-    create_campaign,
-    get_campaign,
-)
+from threetears.evals.analysis import CampaignReport, campaign_report, create_campaign
+from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import BarStatus
 from threetears.evals.analysis.doc_analysis import aspect_analysis
@@ -49,7 +45,8 @@ from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.declaration import BarOverride, Floor, OverriddenBar, RateDrop
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.identity import compute_variant_key
-from threetears.evals.ops import analyses_list, analysis_archive, campaign_record
+from threetears.evals.ops import analyses_list, campaign_record
+from threetears.evals.ops.analysis import analysis_archive
 from threetears.evals.quick.contract import as_host
 from threetears.evals.run.curation import set_analysis_archived
 from threetears.evals.storage import InMemoryDocumentStore

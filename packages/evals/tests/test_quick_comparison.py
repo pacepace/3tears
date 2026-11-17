@@ -20,10 +20,10 @@ from threetears.evals.analysis import (
     TableBlock,
     assemble_context_bundle,
     build_code_only_report,
-    campaign_report_markdown,
-    report_markdown,
     variant_key_of_run,
 )
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals import Eval, Result
 from threetears.evals.ops.analysis import CAMPAIGN_NAME_CHARS
 from threetears.evals.quick import as_host

@@ -17,7 +17,8 @@ import pytest
 from threetears.evals import Eval
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.quick import ENGINE_COMMANDS, HostCommand, as_host, run_cli
+from threetears.evals.quick import HostCommand, as_host, run_cli
+from threetears.evals.quick.cli import ENGINE_COMMANDS
 from threetears.evals.quick.cli import build_parser
 
 

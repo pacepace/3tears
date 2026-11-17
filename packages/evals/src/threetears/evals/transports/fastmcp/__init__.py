@@ -105,11 +105,11 @@ from threetears.evals.actions import (
     Recovery,
     Refusal,
     ToolSpec,
-    catalogue_primer,
     eval_catalogue,
     read_only_tools,
     standard_tools,
 )
+from threetears.evals.actions.catalogue import catalogue_primer
 from threetears.evals.kernel import EvalServiceError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import OpsHost
@@ -809,7 +809,7 @@ def mount_fastmcp(
     server named ``evals``, the engine's catalogue, :func:`~threetears.evals.actions.read_only_tools` (nothing
     launches over it: :meth:`~threetears.evals.ops.OpsHost.reading`), and every call in ``scope`` as ``identity``. A
     host of the full shape mounts on its own server with every hook below. A server built here carries the tools'
-    primer as its instructions (:func:`~threetears.evals.actions.catalogue_primer`); a host building its own passes
+    primer as its instructions (:func:`~threetears.evals.actions.catalogue.catalogue_primer`); a host building its own passes
     ``instructions=catalogue_primer(...)`` there.
 
     :param server: The host's server; or the one host every action works in, an
@@ -837,7 +837,7 @@ def mount_fastmcp(
         starts, for a host that retunes it from live configuration (:data:`CallTimeout`).
     :return: The names of the tools added; or, handed a host alone, the server built, ready to ``run()``.
     :raises ValueError: The catalogue refuses a tool (see :meth:`~threetears.evals.actions.ActionCatalogue.mount`),
-        a server built here would carry a primer past its budget (:func:`~threetears.evals.actions.catalogue_primer`),
+        a server built here would carry a primer past its budget (:func:`~threetears.evals.actions.catalogue.catalogue_primer`),
         or both or neither of ``host`` and ``host_resolver``, or of ``caller`` and ``scope``, were given, or
         ``call_timeout_s`` is a number that is not positive — before any tool is added. A function's value is
         checked per call instead.

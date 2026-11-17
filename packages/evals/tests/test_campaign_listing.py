@@ -48,7 +48,7 @@ from packages.evals.tests.ops_support import (
 )
 import pytest
 
-from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.campaigns import list_campaigns
 from threetears.evals.analysis.campaign_readings import (
     AspectReading,

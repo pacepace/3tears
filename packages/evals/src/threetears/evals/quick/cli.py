@@ -44,11 +44,11 @@ then never name the host::
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
 - ``gate`` is the CI gate: it reads the campaign's typed verdicts as code reaches them on its evidence now
-  (:func:`~threetears.evals.analysis.campaign_verdicts`, never an analysis's words), prints what it came to and
+  (:func:`~threetears.evals.analysis.service.campaign_verdicts`, never an analysis's words), prints what it came to and
   every verdict that failed it or was not decided, and exits 4 when a verdict ``--fail-on`` names occurred.
   ``--fail-on`` takes a comma-separated list of ``regressed``, ``not-separated``, ``untested``, ``breached``,
   ``undecided-guardrail``, ``missed`` and ``undecided-bar``; the default is ``regressed,breached,undecided-guardrail``
-  (:data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`): a regression, a breached guardrail, and a guardrail not shown
+  (:data:`~threetears.evals.analysis.gate.DEFAULT_FAIL_ON`): a regression, a breached guardrail, and a guardrail not shown
   held, since one not known to be safe must not ship as if it were. A verdict left undecided that ``--fail-on``
   does not name exits 0 and is printed as undecided, never as passed. ``--reading`` (repeatable) gates only those
   readings. A campaign with no verdict at all is refused (exit 2): a gate that read nothing passed nothing.
@@ -111,24 +111,24 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.analysis import (
     read_judge_temperatures,
-    DEFAULT_FAIL_ON,
-    GATE_TOKENS,
     FrontierResult,
     ReportFormat,
     TrialDetail,
     campaign_report,
-    campaign_stopped_short,
-    campaign_verdicts,
     frontier,
-    frontier_text,
     gate_verdicts,
     inspect_campaign_bundle,
-    list_campaigns,
-    out_of_run_spend_text,
-    parse_fail_on,
     scope_out_of_run_spend,
     serialize_report,
 )
+from threetears.evals.analysis.gate import DEFAULT_FAIL_ON
+from threetears.evals.analysis.gate import GATE_TOKENS
+from threetears.evals.analysis.service import campaign_stopped_short
+from threetears.evals.analysis.service import campaign_verdicts
+from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.campaigns import list_campaigns
+from threetears.evals.analysis.out_of_run_spend import out_of_run_spend_text
+from threetears.evals.analysis.gate import parse_fail_on
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OUT_OF_RUN_PURPOSES
 from threetears.evals.kernel import (
     DEFAULT_TEMPERATURE_REPEATS,
@@ -145,9 +145,9 @@ from threetears.evals.run import (
     judge_temperature_work,
     list_runs,
     run_job_work,
-    list_templates,
     start_run,
 )
+from threetears.evals.run.authoring import list_templates
 
 log = get_logger(__name__)
 

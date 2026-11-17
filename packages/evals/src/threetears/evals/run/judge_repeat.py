@@ -20,7 +20,7 @@ cell is judged once. This module takes the measurement, on a run that has finish
   call made is written to the out-of-run ledger under purpose ``judge``, stamped with the run, whether
   it returns or raises.
 - **A job, like every model-calling operation.** :func:`judge_repeat_work` makes every refusal and admits every
-  call; the work it returns makes them, as a job (:func:`~threetears.evals.run.start_job_work`) or in the
+  call; the work it returns makes them, as a job (:func:`~threetears.evals.run.job_work.start_job_work`) or in the
   foreground (:func:`~threetears.evals.run.run_job_work`). Its record is an
   :class:`~threetears.evals.run.EvalActionJob` whose result is the :class:`JudgeRepeatReport`; each result's
   repeat is written on the result as its calls return, so a repeat stopped part-way keeps what it paid for.
@@ -490,7 +490,7 @@ async def judge_repeat_work(
     repeat can make admitted against ``out_of_run_cap_usd``, so a repeat the cap refuses has spent nothing. The
     returned work makes the calls, results one after another, each one's repeat written on its result as soon as its
     calls return, so a repeat cut off partway keeps what it paid for; its record's result is the
-    :class:`JudgeRepeatReport`. Run it as a job (:func:`~threetears.evals.run.start_job_work`) or in the foreground
+    :class:`JudgeRepeatReport`. Run it as a job (:func:`~threetears.evals.run.job_work.start_job_work`) or in the foreground
     (:func:`~threetears.evals.run.run_job_work`).
 
     :param host: The host: the run's store, the judge clients — through the same run-pinned resolution the run

@@ -7,7 +7,7 @@ refused), the clone's ``src`` on ``PYTHONPATH`` so its rungs import the ``dow`` 
 
 The clone is dungeons-of-wagons on branch ``evals-ladder``; the environment is this worktree's, not the clone's.
 
-Fourteen cases, each a :class:`~threetears.evals.harness.WriterCaseFile`, none of them a rung-5 case
+Fourteen cases, each a :class:`~threetears.evals.harness.writer_cases.WriterCaseFile`, none of them a rung-5 case
 (``examples/5-writer/cases/``, :mod:`~packages.evals.tests.fixtures.writer_cases.export_writer_cases`) and none of them
 dev: they are the acceptance run's held-out cases.
 
@@ -61,7 +61,7 @@ from packages.evals.tests.fixtures.writer_cases.export_writer_cases import (
     replayed_case,
     seeded_case,
 )
-from threetears.evals.harness import WriterCaseFile
+from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.harness.writer_cases import WRITER_CASE_SUFFIX, writer_case_freeze
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import OpsHost

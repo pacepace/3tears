@@ -42,12 +42,9 @@ from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.hot_path_support import campaign_id_of, toyhost_from
 
-from threetears.evals.analysis import (
-    assemble_campaign_bundle,
-    campaign_report,
-    report_markdown,
-    serialize_report,
-)
+from threetears.evals.analysis import campaign_report, serialize_report
+from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.arms import ELISION
 from threetears.evals.analysis.errors import UnresolvableReference

@@ -13,7 +13,7 @@ analysis was refused (no recording and no key, a campaign the freeze refuses, a 
 
 ``python -m threetears.evals.harness mint --documents FILE --profile FILE --host module:factory --campaign ID
 --name NAME --out FILE.json.gz [...]`` mints one writer case from a host's export of a campaign
-(:func:`~threetears.evals.harness.writer_case_from_export`), writing nothing to the host's store. The profile's
+(:func:`~threetears.evals.harness.minting.writer_case_from_export`), writing nothing to the host's store. The profile's
 factory is the one ``--host`` names: the declaration's ``built_by`` is provenance and never imported, since an export
 can come from a host's chat agent and the mint runs in the operator's environment. Its exit codes are
 the host commands': 0 when the case is written, 2 when the mint is refused (an export missing a document the freeze

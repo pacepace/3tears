@@ -4,7 +4,7 @@ A change to how the report writer works (its skill, its reasoning effort, its re
 measured decision, and this is the read that decides it. It adds no statistics. It reads one pre-registered primary
 reading, the pairwise pass's preference (``report_writer.preferred``, at alpha 0.05, a family of one; its report is
 the completed ``writer_pairwise`` job's result), and the campaign's corrected verdicts
-(:func:`~threetears.evals.analysis.campaign_verdicts`), which gate on regression only:
+(:func:`~threetears.evals.analysis.service.campaign_verdicts`), which gate on regression only:
 
 - ``promote`` when the primary reads improved on the cases a rate needs, no gated reading reads regressed, and every
   guardrail is held;

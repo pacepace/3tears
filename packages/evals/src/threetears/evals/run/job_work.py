@@ -9,7 +9,7 @@ awaitable that runs to that ending. It is run either way, and writes the same re
 - **as a job** (:func:`start_job_work`): the record is written carrying a lease from the job manager's
   :class:`~threetears.evals.kernel.job_leases.JobLeases`, and the work runs as a background task the manager
   tracks — the form a transport uses, which returns at once with a job to poll
-  (:func:`~threetears.evals.ops.start_job`);
+  (:func:`~threetears.evals.ops.jobs.start_job`);
 - **in the foreground** (:func:`run_job_work`): the record is written and held the same way, and the caller awaits
   the work to its end in its own frame — the form a short-lived consumer uses (a script, the command line), which
   loses nothing to the job contract: it holds the result when the await returns.
@@ -452,7 +452,7 @@ async def run_job_work[R: EvalDocumentModel](
     while it runs, and a cancel asked on the record cancels the caller's await. Not bounded by the work's
     ``budget_s``, which bounds it as a job: the caller waits as long as the work takes, and stops it by cancelling.
     Not marked as a job's work
-    (:func:`~threetears.evals.kernel.running_job` stays the caller's), because it is not one: it is for a caller
+    (:func:`~threetears.evals.kernel.job_context.running_job` stays the caller's), because it is not one: it is for a caller
     that is not a transport — a script, the command line — and waits as long as the work takes.
 
     :param work: The admitted work.

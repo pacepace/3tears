@@ -30,8 +30,6 @@ below it, and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.quick.cli import (
-    DEFAULT_PROG,
-    ENGINE_COMMANDS,
     EXIT_FAILED,
     EXIT_GATE_FAILED,
     EXIT_OK,
@@ -49,8 +47,6 @@ from threetears.evals.quick.result import JudgeCalibration
 from threetears.evals.quick.world import WorldOutcome, WorldRunner
 
 __all__ = [
-    "DEFAULT_PROG",
-    "ENGINE_COMMANDS",
     "EXIT_FAILED",
     "EXIT_GATE_FAILED",
     "EXIT_OK",

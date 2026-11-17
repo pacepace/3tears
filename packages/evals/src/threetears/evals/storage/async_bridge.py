@@ -15,7 +15,7 @@ worker thread waits for its answer.
   The engine copies its context onto the executor thread
   (:func:`~threetears.evals.kernel.offload.run_blocking`); the bridge carries it on into the task.
 - **A call on a loop thread is refused**, before anything is scheduled
-  (:func:`~threetears.evals.schema.refuse_on_event_loop`). Waiting on ``loop`` from ``loop``'s own thread
+  (:func:`~threetears.evals.schema.store_port.refuse_on_event_loop`). Waiting on ``loop`` from ``loop``'s own thread
   never returns, and waiting from another loop's thread stalls that loop for the round trip.
 - **A loop that is not running is named**, rather than waited on: a call scheduled on a stopped loop never
   starts, and its caller would wait forever.

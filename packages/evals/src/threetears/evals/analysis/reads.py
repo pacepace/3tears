@@ -2124,7 +2124,7 @@ def compare_two_runs(
         case both runs scored), ``n_pairs`` (how many; None when nothing was paired),
         ``composite_untested_reason`` (why no composite test ran, None when one did), ``pass_hat_k_n_cases_{a,b}``
         (the cases each pass^k averaged at ``k``), ``pass_criteria_{a,b}`` (what each run's attempts were held to,
-        as :data:`~threetears.evals.kernel.host.PassCriterion` names), ``pass_checks_{a,b}`` (each other check they
+        as :data:`~threetears.evals.kernel.host.bars.PassCriterion` names), ``pass_checks_{a,b}`` (each other check they
         were held to, as the pass rule names it, ``Never topped up is false``),
         ``hedges_g``, ``p``, ``significant`` (nulls where a run scored nothing,
         a test is undefined, or the composites are not comparable).

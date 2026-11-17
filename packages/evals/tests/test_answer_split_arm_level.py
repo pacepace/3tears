@@ -23,12 +23,9 @@ from collections.abc import Sequence
 
 import pytest
 
-from threetears.evals.analysis import (
-    assemble_context_bundle,
-    build_code_only_report,
-    campaign_report_markdown,
-    report_markdown,
-)
+from threetears.evals.analysis import assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings

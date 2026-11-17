@@ -37,11 +37,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import (
-    assemble_campaign_bundle,
-    campaign_report,
-    serialize_report,
-)
+from threetears.evals.analysis import campaign_report, serialize_report
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.bundle.schema import BundleInspection, evidence_digest
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings
@@ -312,7 +309,8 @@ if step != "none":
     NormalDist.inv_cdf = nudged(NormalDist.inv_cdf)
     NormalDist.cdf = nudged(NormalDist.cdf)
 
-from threetears.evals.analysis import assemble_campaign_bundle, campaign_report
+from threetears.evals.analysis import campaign_report
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.run import rate_result
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
 from packages.evals.tests.report_support import toy_campaign_host

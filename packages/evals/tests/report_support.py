@@ -18,7 +18,8 @@ import json
 from pathlib import Path
 from typing import Any, Final
 
-from threetears.evals.analysis import Report, TableBlock, build_code_only_report, report_markdown
+from threetears.evals.analysis import Report, TableBlock, build_code_only_report
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
 from threetears.evals.analysis.style import StyleViolation
 from packages.evals.tests.style_support import lint_page

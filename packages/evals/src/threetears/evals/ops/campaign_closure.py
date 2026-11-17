@@ -1,7 +1,7 @@
 """One campaign's closure, exported as the three files a writer case is minted from: the mint's producer.
 
 A host mints a held-out writer case from one of its own campaigns
-(:func:`~threetears.evals.harness.writer_case_from_export`, ``python -m threetears.evals.harness mint``) out of three
+(:func:`~threetears.evals.harness.minting.writer_case_from_export`, ``python -m threetears.evals.harness mint``) out of three
 files. :func:`campaign_export` assembles them, read-only, from the host's store:
 
 - ``documents``: every stored document reachable from the campaign, verbatim as the store returns it (each keeps its

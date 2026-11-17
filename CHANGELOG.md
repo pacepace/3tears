@@ -6,6 +6,19 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: provisional names the package uses across its own modules leave the public roots too
+
+**Removed:** 249 more provisional root spellings (of 246 names) leave the public roots (`MIGRATIONS.toml` records
+the 208 a release shipped). Like the names before them, no declared name reaches them, no host's production code
+imports them, and no shipped example or page uses them; the package's own modules use each, and now import it from the
+module defining it, where it stays, unrenamed. Kept on their roots: what the package's own modules import through a
+root (`ops.frontier_text` and `ops.out_of_run_spend_text`, which the action catalogue reaches `analysis` through), the
+names the toy host imports, each leased job kind, the open vocabularies' registries, every type a name that stays
+reaches, and the names the recorded host's tests import. No stored or served shape moves.
+
+**For hosts:** nothing to do. Every name the recorded host's production code imports still resolves from its root,
+and so does every one its tests import that resolved before.
+
 ### evals: provisional names nothing reaches leave the public roots
 
 **Removed:** 88 provisional names leave the public roots (`MIGRATIONS.toml` records the 87 a release shipped). Each

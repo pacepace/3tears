@@ -14,7 +14,8 @@ import pytest
 
 
 from threetears.evals.actions.engine import engine_actions
-from threetears.evals.analysis import JudgeKey, assemble_context_bundle, judge_kind_readings, judge_profiles_of
+from threetears.evals.analysis import JudgeKey, assemble_context_bundle, judge_kind_readings
+from threetears.evals.analysis.judge_profiles import judge_profiles_of
 from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.kernel import (
@@ -22,11 +23,11 @@ from threetears.evals.kernel import (
     JUDGE_KIND,
     EvalJudgeProfile,
     JudgeCaseLabel,
-    JudgeTrial,
     NotFoundError,
     ValidationFailedError,
-    judge_criterion_digest,
 )
+from threetears.evals.kernel.judge_cases import JudgeTrial
+from threetears.evals.kernel.judge_cases import judge_criterion_digest
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.ops import JudgeProfilesRecord, judge_profiles_list, judge_profiles_record
 from threetears.evals.run import rate_result

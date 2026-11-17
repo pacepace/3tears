@@ -13,7 +13,8 @@ from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_NARROW, toyho
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.toyhost_cells import cell_at
 from packages.evals.tests.writer_host_support import doc_analysis_over
-from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle, assemble_context_bundle
+from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import variant_of_cell_ref
 
 

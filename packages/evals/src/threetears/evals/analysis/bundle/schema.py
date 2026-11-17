@@ -2652,7 +2652,7 @@ class DifferentialExclusion(EvalDocumentModel):
 #: ``Literal`` so a cause a newer build names reads as itself rather than failing the bundle.
 LossCause = str
 
-#: Why a trial failed: the candidate's own failure (:data:`~threetears.evals.kernel.CandidateFailureCause`:
+#: Why a trial failed: the candidate's own failure (:data:`~threetears.evals.kernel.result_condition.CandidateFailureCause`:
 #: ``model_failed``, ``turn_budget``, ``output_cap``), a check it failed (``check``: a goal check, or a pass/fail
 #: scorer), or a judged dimension scored under the bar (``judged``).
 FailCause = Literal["model_failed", "turn_budget", "output_cap", "check", "judged"]

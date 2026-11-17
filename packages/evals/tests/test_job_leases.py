@@ -53,14 +53,15 @@ from threetears.evals.kernel import (
     StorageError,
     SweepArmRecord,
     ValidationFailedError,
-    request_job_cancel,
-    require_held,
-    settle_job_record,
 )
+from threetears.evals.kernel.job_leases import request_job_cancel
+from threetears.evals.kernel.job_leases import require_held
+from threetears.evals.kernel.job_leases import settle_job_record
 from threetears.evals.kernel.job_leases import SHUTDOWN_CAUSE
 from threetears.evals.kernel import job_leases
 from threetears.evals.ops import OpsHost, analyses_list, job_cancel, job_poll, run_job_id, run_launch
-from threetears.evals.ops import LaunchArguments, SweepArguments, generation_key, sweep_launch
+from threetears.evals.ops import LaunchArguments, SweepArguments, sweep_launch
+from threetears.evals.ops.jobs import generation_key
 from threetears.evals.ops import sweeps
 from threetears.evals.run import EvalJobManager, sweep_abandoned_runs
 from threetears.evals.schema import EvalResult, EvalRun, JobLease, StoreConflict

@@ -546,7 +546,7 @@ async def second_judge_work(
     calls, one result after another, writing each result's :class:`~threetears.evals.schema.models.SecondJudging` as
     soon as its calls return (so a pass cut off part-way keeps what it paid for), and ends its record with the
     :class:`SecondJudgeReport`. Each call is ledgered under purpose ``second_judge``, stamped with the run: measurement
-    cost on its own line, never the candidate's. Run it as a job (:func:`~threetears.evals.run.start_job_work`) or in
+    cost on its own line, never the candidate's. Run it as a job (:func:`~threetears.evals.run.job_work.start_job_work`) or in
     the foreground (:func:`~threetears.evals.run.run_job_work`).
 
     :param host: The host: the run's store, its judge clients, and how a judge call that raised reads.

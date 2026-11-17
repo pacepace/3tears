@@ -7,7 +7,7 @@ runs every action and watches the completion clients.
 
 **The watch.** A host builds its :class:`~threetears.evals.ops.OpsHost` for the kit with its completion-client
 factory wrapped by the kit's :class:`CompletionGuard` (``EvalHost(..., clients=guard.wrap(my_clients))``). A
-request made through a wrapped client where :func:`~threetears.evals.kernel.running_job` is ``None`` — in a call,
+request made through a wrapped client where :func:`~threetears.evals.kernel.job_context.running_job` is ``None`` — in a call,
 not in a job's work — is counted and refused (:class:`CompletionOutsideJob`); one made in a job is counted and sent.
 Clients a host builds outside that factory are not watched, so a host routes every client its actions use through it.
 
@@ -51,7 +51,8 @@ from threetears.evals.kernel.numbers import spell_declared
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.actions import Action, ActionCatalogue, Caller, ConformanceSample, ConformanceStage
-from threetears.evals.kernel import EvalServiceError, running_job
+from threetears.evals.kernel import EvalServiceError
+from threetears.evals.kernel.job_context import running_job
 from threetears.evals.kernel.host import CompletionClients
 from threetears.evals.ops import JobsStarted, OpsHost, job_poll
 

@@ -18,7 +18,9 @@ import pytest
 from pydantic import Field
 
 from threetears.evals.kernel import ConflictError, JobLeases
-from threetears.evals.run import EvalActionJob, JobRecorder, action_job_work, run_job_work, start_job_work
+from threetears.evals.run import EvalActionJob, JobRecorder, run_job_work
+from threetears.evals.run.job_work import action_job_work
+from threetears.evals.run.job_work import start_job_work
 from threetears.evals.schema.base import EvalBaseModel
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture, settled
 from packages.evals.tests.off_loop import off_loop

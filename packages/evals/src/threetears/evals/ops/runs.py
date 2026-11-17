@@ -448,7 +448,7 @@ def runs_list(
     """One page of the scope's runs, newest first, how many on it this build cannot read, and the next page's cursor.
 
     An inventory, so a run this build's model cannot read is left out and counted rather than refusing the listing
-    (:func:`~threetears.evals.run.list_runs_page`): the operator opening it is looking for a run, and one row
+    (:func:`~threetears.evals.run.reads.list_runs_page`): the operator opening it is looking for a run, and one row
     nothing can read must not hide every other. ``unreadable`` says how many, and ``runs_unreadable`` names them.
 
     A page reads ``limit`` stored runs matching the status and archive filters. The label filter runs over those, so a

@@ -1,6 +1,6 @@
 """A judge campaign's readout: per judge and criterion, agreement with the labels, with itself, and parse validity (#628).
 
-A judge campaign's cells are judge trials (:class:`~threetears.evals.kernel.JudgeTrial`, on each result's
+A judge campaign's cells are judge trials (:class:`~threetears.evals.kernel.judge_cases.JudgeTrial`, on each result's
 ``kind_payload``): one judge configuration asked one frozen case's criterion. This module pools them into the three
 measures a judge is held to, **per (judge, criterion)** — the judge as :class:`~threetears.evals.analysis.JudgeKey`
 keys one (the criterion's dim and scale, the served model, the config that asked, the temperature the call was sent

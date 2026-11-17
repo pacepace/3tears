@@ -45,7 +45,9 @@ from threetears.evals.actions import Caller, eval_catalogue, read_only_tools
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.analysis import gate_verdicts
-from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
+from threetears.evals.harness import Writer, WriterEval, WriterResult
+from threetears.evals.harness.writer_cases import WriterCaseFile
+from threetears.evals.harness.writer_cases import read_writer_cases
 from threetears.evals.harness.analyse import Filed
 from threetears.evals.ops import OpsHost, job_poll
 from threetears.evals.ops.report_writer.loop import MOST_REVISIONS

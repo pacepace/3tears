@@ -28,7 +28,9 @@ from packages.evals.tests.test_quick_comparison import CASES, careful, hasty
 from packages.evals.tests.test_quick_guardrails import ARMS, NO_LEAK, correct, no_leak
 from packages.evals.tests.test_quick_guardrails import CASES as GUARDED_CASES
 from threetears.evals import Eval, grader
-from threetears.evals.analysis import TableBlock, assemble_campaign_bundle, campaign_report_markdown
+from threetears.evals.analysis import TableBlock
+from threetears.evals.analysis.service import assemble_campaign_bundle
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.report.forms import PageForms

@@ -479,7 +479,7 @@ async def writer_case_from_export(
         to check nothing.
     :param as_of: The instant the snapshot is assembled and frozen at (ISO-8601, with its offset), and the insight
         ledger's cutoff; ``None`` for the moment the campaign's evidence was complete.
-    :return: The case, unwritten (:meth:`~threetears.evals.harness.WriterCaseFile.write` writes it).
+    :return: The case, unwritten (:meth:`~threetears.evals.harness.writer_cases.WriterCaseFile.write` writes it).
     :raises RefusedInput: The export lacks a document the freeze needs, holds the campaign in two scopes,
         ``as_of`` is not an instant, the profile's declarations are not the ones declared, or ``withhold`` names a
         note the skill does not hold.

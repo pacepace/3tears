@@ -41,7 +41,8 @@ from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from threetears.evals.kernel.cassettes import Recordable, ToolLike, ToolWrap
 from threetears.evals.kernel.host import ApparatusError, ReplayMiss
-from threetears.evals.schema import RecordedCall, canonical_digest
+from threetears.evals.schema import RecordedCall
+from threetears.evals.schema.hashing import canonical_digest
 
 #: The environment variable that asks for a recording to be made again rather than replayed.
 RECORD_ENV = "RECORD"

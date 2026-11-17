@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING, Any, Final
 from pydantic import BaseModel
 
 from threetears.evals.schema import GoalStateOutcome
-from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
+from threetears.evals.kernel import ResultOutcome
+from threetears.evals.kernel.result_condition import counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.kernel.text_block import one_line
@@ -52,8 +53,8 @@ from threetears.evals.ops import (
     ResultListing,
     ScoreExport,
     SecondJudgeRead,
-    export_text,
 )
+from threetears.evals.ops.lenses import export_text
 from threetears.evals.ops.analyst import CitedFigure
 from threetears.evals.ops.results import PageForms
 
@@ -137,7 +138,7 @@ def _paged(topic: HelpTopic) -> str:
 
 
 def render_primer(tools: Sequence[MountedTool]) -> str:
-    """The primer :func:`~threetears.evals.actions.catalogue_primer` holds to its budget: help first, then the tools,
+    """The primer :func:`~threetears.evals.actions.catalogue.catalogue_primer` holds to its budget: help first, then the tools,
     then the rules."""
     lines = [
         "Eval tools. Each takes `action`: action='help' lists a tool's actions by workflow, and action='help', "
@@ -759,7 +760,7 @@ def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition:
     """One goal check as evaluated, and as every rate counts it when the two differ.
 
     A candidate failure counts every check failed and a harness fault counts none
-    (:func:`~threetears.evals.kernel.counted_goal_verdicts`), so a check that evaluated True on such a
+    (:func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts`), so a check that evaluated True on such a
     result says both, rather than reading as a pass the listing's count does not hold.
     """
     evaluated = "passed" if outcome.passed else "failed"

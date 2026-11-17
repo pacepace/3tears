@@ -5,7 +5,7 @@ What an eval's result carries for each arm (:class:`~threetears.evals.quick.resu
 says the same thing as one made the moment it ended.
 
 Every count is over the run's stored results, and each result is classified once by
-:func:`~threetears.evals.kernel.classify_result`: scored normally, failed by the candidate, or
+:func:`~threetears.evals.kernel.result_condition.classify_result`: scored normally, failed by the candidate, or
 excluded as a fault of the rig. A measure's mean is over the results that carry it, and its ``n``
 says how many did, so a mean over two results of five is never mistaken for one over five.
 
@@ -16,7 +16,7 @@ confusion matrix and each label's precision, recall and F1, counted by
 :func:`~threetears.evals.analysis.confusion.label_statistics` as the analysis bundle counts them.
 
 **A cost or latency measure is read over the turns the candidate took**
-(:func:`~threetears.evals.kernel.delivered_a_turn`), as every analysis surface reads it
+(:func:`~threetears.evals.kernel.result_condition.delivered_a_turn`), as every analysis surface reads it
 (:func:`~threetears.evals.kernel.metrics.summary_population`): a call the model refused or errored on
 carries a round trip and an empty spend, and averaged in they read as a fast, free run. What was left out
 is counted beside the mean — the failures that took no turn apart from the results excluded as a fault of
@@ -37,7 +37,7 @@ other two and hid it, and a judge campaign — every trial bills the ``judge`` r
 whose results reported nothing carries none of it.
 
 **So are its goal-state checks.** Each check the results carry is counted as every per-check rate counts
-it (:func:`~threetears.evals.kernel.counted_goal_verdicts`): passed as it evaluated, failed on every
+it (:func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts`): passed as it evaluated, failed on every
 check of a result the candidate failed, and in no count for a result excluded as a fault of the rig.
 
 **So is each kind of case.** When any case of the run declares a stratum (``EvalTestCase.stratum``), every
@@ -81,15 +81,10 @@ from threetears.evals.analysis.reporting import (
 from threetears.evals.analysis.stats import INTERVAL_LEVEL
 from threetears.evals.analysis.report.figures import NO_SUCCESSFUL_RESULTS
 from threetears.evals.analysis.quantities import display_scale
-from threetears.evals.kernel import (
-    NotFoundError,
-    CONFUSION_CELL_MEASURE,
-    MATCH_MEASURE,
-    ResultOutcome,
-    classify_result,
-    counted_goal_verdicts,
-    delivered_a_turn,
-)
+from threetears.evals.kernel import NotFoundError, CONFUSION_CELL_MEASURE, MATCH_MEASURE, ResultOutcome
+from threetears.evals.kernel.result_condition import classify_result
+from threetears.evals.kernel.result_condition import counted_goal_verdicts
+from threetears.evals.kernel.result_condition import delivered_a_turn
 from threetears.evals.schema import (
     COST_CAP_ORIGINS,
     USAGE_ROLES,
@@ -381,7 +376,7 @@ class DimensionSummary(BaseModel):
     second_judges: list[InterJudgeDimension] = []
 
 
-#: How one result came out, as :func:`~threetears.evals.kernel.classify_result` classifies it: graded normally,
+#: How one result came out, as :func:`~threetears.evals.kernel.result_condition.classify_result` classifies it: graded normally,
 #: failed by the candidate (it counts against the candidate), or excluded as a fault of the rig (it counts for nothing);
 #: or, of a result graded normally, ``not_judged``: the run's cost cap had too little left for its judging, so its
 #: measures and checks count and its judged readings leave it out (``EvalResult.judging_set_aside``).

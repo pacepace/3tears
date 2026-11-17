@@ -222,6 +222,142 @@ notes = [
 [[release.change]]
 from = "threetears.evals.actions"
 to = "removed"
+names = ["DEFAULT_PREFIX"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["AnalysisStore", "aspect_view", "AspectView", "assemble_campaign_bundle", "build_campaign_report",
+         "campaign_report_markdown", "campaign_verdicts", "CampaignBundle", "CellAddress", "completeness_disclosure",
+         "DEFAULT_FAIL_ON", "DEFAULT_WEIGHTING", "describe_insight_id_filters", "EQUIVALENCE_TEST_NAME", "FailCause",
+         "format_signed", "format_significance", "frontier_text", "GATE_TOKENS", "GenerationError", "GenerationTally",
+         "get_analysis", "get_campaign", "GLOSSARY", "insight_standing", "InsightStanding", "judge_profiles_of",
+         "JudgeProfileDrafts", "list_campaigns", "list_insights", "METRIC_COMPOSITE", "METRIC_OUTCOME", "METRIC_SCORE",
+         "multi_rig_variants", "NO_ANALYSIS", "out_of_run_spend_text", "PAIRED_TEST_NAME", "parse_fail_on",
+         "PROJECTED_METRICS", "record_campaign_call", "remove_runs_from_campaign", "report_markdown",
+         "running_analysis_attempt", "SECTION_TITLES", "SERVED_MODEL_UNRECORDED", "short_digest", "SoundnessRefusal",
+         "tier_for_judges", "UnresolvableReference", "WEIGHTING_EQUAL_PER_SCENARIO"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["agreement_statistic", "BarName", "BarNameKind", "BarNameRefusal", "beside_eval_file", "blended_cost_roles",
+         "calibration_criterion", "candidate_failure_cause", "CandidateFailureCause", "classifier_label_of",
+         "classify_result", "confusion_of", "contract_state", "counted_goal_verdicts", "counted_score",
+         "declared_contracts", "delivered_a_turn", "describe_and_log_failure", "DesignRefused", "existing_axis_values",
+         "FIND_ANALYSIS", "FIND_CASE_SET", "FIND_INSIGHT", "FIND_JOB", "FIND_JUDGE_CONFIG", "FIND_RESULT",
+         "FIND_RUBRIC_DIM", "FIND_TEST_CASE", "format_signed", "FRONTIER_RANKING_MEASURE", "generation_slot_id",
+         "goal_check_of", "JUDGE_CASE_KEY", "judge_criterion_digest", "JUDGE_LABEL_AGREEMENT_MEASURE",
+         "JUDGE_PARSE_VALID_MEASURE", "judge_profile_id", "judge_trial_of", "judge_truncated_dims", "JUDGED_TIER_RULE",
+         "JudgeProfileStore", "JudgeTrial", "JudgeTrialOutcome", "lease_lapsed", "list_metrics", "note_spend",
+         "prompt_token_bound", "REASONING_RATIO_KEY", "refuse_an_undeclarable_design", "REFUSED_CONTRACT_STATES",
+         "RELAUNCH_TO_REJUDGE", "request_job_cancel", "require_held", "require_output_contract", "REREAD_AND_RETRY",
+         "resolve_bar_name", "resolve_context_identity", "resolve_result_condition", "RUBRIC_FAMILY",
+         "RUN_MARGIN_MEASURES", "run_margin_refusal", "running_job", "SCHEMA_REMEDY", "separation_criterion",
+         "settle_job_record", "summarize_completeness", "TEMPERATURE_SETTINGS", "TemperatureSettingSpec",
+         "template_text", "tier_of", "timed_out_detail", "TRUNCATED_ROUNDS_KEY", "UndeclarableAxisError",
+         "UnreadableBarName", "weakest_judged_tier", "write_held_record", "WRITER_REMEDY"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel.host"
+to = "removed"
+names = ["CANDIDATE_KIND_LEVER", "pass_threshold_label", "PassCriterion", "resolve_preconditions", "schema_violations"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.negotiation"
+to = "removed"
+names = ["ANTHROPIC_MIN_THINKING_BUDGET", "EFFORT_LADDER"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "removed"
+names = ["ACTION_JOB_PREFIX", "AdmittedJob", "analysis_archive", "analysis_delete", "analysis_job_id",
+         "bar_proposals_text", "campaign_archive", "estimate_text", "export_text", "generation_key", "history_text",
+         "launch_job_id", "parse_job_id", "pivot_text", "run_archive", "runs_bisect", "runs_bisected_text",
+         "runs_compared_text", "start_job", "sweep_job_id"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.quick"
+to = "removed"
+names = ["DEFAULT_PROG", "ENGINE_COMMANDS"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.run"
+to = "removed"
+names = ["action_job_work", "admit_group", "build_judge_context", "DEFAULT_ACTION_JOB_BUDGET_S", "delete_analysis",
+         "delete_insight", "delete_unreadable_run", "end_record", "estimate_second_judge", "evaluate_goal_state",
+         "get_result", "get_template", "InProcessCellExecutor", "JUDGE_REPEAT_ACTION", "leased_job_kind",
+         "list_judge_configs", "list_templates", "refuse_raised_ceiling", "require_delete_confirmation",
+         "resolve_case_set", "resolve_ceiling_origin", "resolve_effective_ceiling", "set_analysis_archived",
+         "set_campaign_archived", "set_run_archived", "start_job_work", "TEMPLATE_FIELDS", "UnreadableRunDeleteStore",
+         "validated_kind_spec"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["aspect_label_for", "attribution_state", "CANDIDATE_SPEAKER", "canonical_digest", "case_set_doc_id",
+         "eval_trace_doc_id", "extract_paths", "ExtractedPaths", "is_pass", "keep_fields", "KnownCellTimeoutOrigin",
+         "KnownFailedBecause", "KnownReasoningEffort", "KnownRoleModelOrigin", "MODEL_DEFAULT_TEMPERATURE",
+         "OUTCOME_DIM_ID", "referenced_actions", "refuse_on_event_loop", "ROUND_DONE", "SCALES", "ScaleSpec",
+         "with_fault"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.actions"
+to = "removed"
 names = ["ACTION_NAME", "engine_actions", "HELP_ACTION", "PERMISSION_CLASSES", "RESERVED_PARAMETERS", "TOOL_NAME"]
 why = """
 Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's

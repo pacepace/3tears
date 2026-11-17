@@ -47,7 +47,8 @@ from packages.evals.tests.report_writer_support import (
     thinking,
     written,
 )
-from threetears.evals.actions import MountedTool, analyst_actions, analyst_tools
+from threetears.evals.actions import MountedTool, analyst_tools
+from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.catalogue import ActionCatalogue, Caller, catalogue_primer
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.analysis.analyst.skill import load_skill

@@ -51,11 +51,8 @@ from threetears.evals.schema.completion import PricedCompletion
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.reading_states import Maker
 from threetears.evals.kernel.text_block import under
-from threetears.evals.schema import (
-    SCALES,
-    CalibrationRating,
-    EvalResult,
-)
+from threetears.evals.schema import CalibrationRating, EvalResult
+from threetears.evals.schema.models import SCALES
 from threetears.evals.schema.blind_read import (
     BlindAnswer,
     BlindPreference,

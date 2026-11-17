@@ -60,7 +60,6 @@ from threetears.evals.analysis.agreement import (
     judge_key,
     judge_self_agreement,
     person_scores_by_result,
-    tier_for_judges,
 )
 from threetears.evals.analysis.judge_temperature import (
     JudgeTemperatureComparison,
@@ -79,16 +78,12 @@ from threetears.evals.analysis.judge_kind_readings import (
     judge_kind_readings,
 )
 from threetears.evals.analysis.judge_profiles import (
-    JudgeProfileDrafts,
     SkippedJudgeProfile,
-    judge_profiles_of,
 )
-from threetears.evals.analysis.arms import multi_rig_variants, short_digest
 from threetears.evals.analysis.bar_proposals import BaselineBarProposals, propose_bars
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.bundle.evidence import EvidenceManifest
-from threetears.evals.analysis.bundle.insights import InsightStanding, insight_standing
 from threetears.evals.analysis.bundle.schema import (
     AnalysisContextBundle,
     JudgeChange,
@@ -97,21 +92,11 @@ from threetears.evals.analysis.bundle.schema import (
     BundleInspection,
     GoalCheckProofReading,
 )
-from threetears.evals.analysis.aspects import AspectDeclaration, AspectView, aspect_view
-from threetears.evals.analysis.campaign_bundle import ArmSpelling, CampaignBundle
+from threetears.evals.analysis.aspects import AspectDeclaration
 from threetears.evals.analysis.checks import Check, Corrected, Looks, Rescore
 from threetears.evals.analysis.report_input import (
-    CallRead,
-    CaveatEntry,
-    FalseSeparation,
-    FirstScreen,
     Gate,
     GateRun,
-    NoActionReason,
-    Remedy,
-    RemedyStep,
-    StepArgument,
-    UnsizedReason,
 )
 from threetears.evals.analysis.campaign_readings import (
     AggregateFigure,
@@ -138,15 +123,12 @@ from threetears.evals.analysis.campaigns import (
     add_runs_to_campaign,
     create_campaign,
     declarable_axes,
-    get_campaign,
-    list_campaigns,
-    remove_runs_from_campaign,
     set_campaign_control,
     update_campaign,
 )
 from threetears.evals.analysis.confusion import ConfusionCount, LabelStatistics
 from threetears.evals.analysis.depth import Depth, ModelPassHatK, Precision
-from threetears.evals.kernel.numbers import ABSENT, format_number, format_signed
+from threetears.evals.kernel.numbers import ABSENT, format_number
 from threetears.evals.analysis.reads import (
     BUNDLE_READ_BUDGET,
     EXPORT_PAGE_RESULTS,
@@ -165,36 +147,22 @@ from threetears.evals.analysis.reads import (
 )
 from threetears.evals.analysis.remainder import RemainderState
 from threetears.evals.analysis.reporting import (
-    METRIC_COMPOSITE,
-    METRIC_OUTCOME,
-    METRIC_SCORE,
     METRIC_TRANSCRIPT,
-    PROJECTED_METRICS,
-    SERVED_MODEL_UNRECORDED,
 )
-from threetears.evals.analysis.lenses.aggregation import DEFAULT_WEIGHTING, WEIGHTING_EQUAL_PER_SCENARIO
 from threetears.evals.analysis.lenses.cost_estimate import (
-    BORROWED_PREDICTION_METHOD,
     COST_ESTIMATE_MIN_BASIS,
 )
 from threetears.evals.analysis.significance import (
     SeparationTest,
-    Unquoted,
-    format_significance,
 )
-from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.analysis.gate import (
-    DEFAULT_FAIL_ON,
-    GATE_TOKENS,
     GateOutcome,
     GateResult,
     GateToken,
     gate_verdicts,
-    parse_fail_on,
 )
 from threetears.evals.analysis.floors import CasesNeeded, NeedKind, SampleProjection
 from threetears.evals.analysis.report import (
-    KIT_CHARTS,
     BarRow,
     BarSegment,
     BarsChart,
@@ -245,7 +213,6 @@ from threetears.evals.analysis.report import (
     ScatterPath,
     ScatterPoint,
     MIN_CASES,
-    SECTION_TITLES,
     CampaignAspectFold,
     CampaignReport,
     CellValue,
@@ -275,14 +242,10 @@ from threetears.evals.analysis.report import (
     Verdict,
     VerdictKind,
     VerdictReason,
-    NO_ANALYSIS,
     ReportBasis,
-    build_campaign_report,
     build_code_only_report,
     campaign_report_html,
-    campaign_report_markdown,
     report_html,
-    report_markdown,
     DocCaveatLine,
     DocCheck,
     DocClaim,
@@ -300,19 +263,11 @@ from threetears.evals.analysis.report import (
 )
 from threetears.evals.analysis.service import (
     AnalysisGenerationEstimate,
-    assemble_campaign_bundle,
     campaign_report,
-    campaign_stopped_short,
-    campaign_verdicts,
-    record_campaign_call,
-    describe_insight_id_filters,
-    get_analysis,
     inspect_analysis_bundle,
     inspect_campaign_bundle,
-    list_insights,
-    running_analysis_attempt,
 )
-from threetears.evals.analysis.stats import EQUIVALENCE_TEST_NAME, PAIRED_TEST_NAME, ChangeLabel
+from threetears.evals.analysis.stats import ChangeLabel
 from threetears.evals.analysis.bundle.assemble import CampaignReadStore
 from threetears.evals.analysis.bundle.schema import (
     AliasedFactors,
@@ -323,7 +278,6 @@ from threetears.evals.analysis.bundle.schema import (
     ArmPricing,
     ArmScoreboard,
     NegativeValues,
-    FailCause,
     LossCause,
     TrialCheck,
     TrialJudgement,
@@ -378,9 +332,6 @@ from threetears.evals.analysis.cells import (
     RefusedMerge,
     SubjectKeyInstability,
 )
-from threetears.evals.analysis.errors import GenerationError, SoundnessRefusal, UnresolvableReference
-from threetears.evals.analysis.references import CellAddress
-from threetears.evals.analysis.generation_tally import GenerationTally
 from threetears.evals.analysis.reads import LensStore, RowColumns, RunLister
 from threetears.evals.analysis.reporting import (
     FrontierDominance,
@@ -413,21 +364,17 @@ from threetears.evals.analysis.lenses.frontier import (
 from threetears.evals.kernel.scoring import UnpooledReason
 from threetears.evals.analysis.lenses.history import HistoryResult, MeasureSeries, RegressionFlag, SeriesPoint
 from threetears.evals.analysis.lenses.export import ExportFormat, ExportPage, ScoreExport
-from threetears.evals.analysis.run_ending import RunEnding, StoppedShort, stopped_short
-from threetears.evals.analysis.service import AnalysisStore
-from threetears.evals.analysis.report.doc_page.store import ReportDocReads
+from threetears.evals.analysis.run_ending import RunEnding
 
 
-from threetears.evals.analysis.lens_text import frontier_text, tier_sentence
+from threetears.evals.analysis.lens_text import tier_sentence
 from threetears.evals.analysis.out_of_run_spend import (
     OutOfRunSpendReport,
     OutOfRunSpendTotals,
-    out_of_run_spend_text,
     scope_out_of_run_spend,
 )
 from threetears.evals.analysis.report.serialize import ReportFormat, serialize_report
 from threetears.evals.analysis.style import (
-    GLOSSARY,
     GOAL_CHECK,
     HumanizeKind,
     humanize,
@@ -449,7 +396,6 @@ from threetears.evals.analysis.summary import (
     UNPRICED,
     dollars_text,
     summarize_run,
-    summarize_runs,
 )
 
 __all__ = [
@@ -461,19 +407,9 @@ __all__ = [
     # The test a reading's claims are read by, which a caveat on looks quotes a measured rate for.
     "SeparationTest",
     # Why a caveat on looks quotes no reference rate.
-    "Unquoted",
     # The one caveat list and the first screen read off it, which the campaign bundle holds.
-    "CallRead",
-    "CaveatEntry",
-    "FalseSeparation",
-    "FirstScreen",
     "Gate",
     "GateRun",
-    "NoActionReason",
-    "Remedy",
-    "RemedyStep",
-    "StepArgument",
-    "UnsizedReason",
     # A campaign read one aspect at a time, and the shapes of what code reads off it across aspects.
     "AggregateFigure",
     "AggregateWeighting",
@@ -481,7 +417,6 @@ __all__ = [
     "ArmAggregate",
     "AspectDeclaration",
     "AspectReading",
-    "AspectView",
     "BarState",
     "BarStatus",
     "CampaignAggregate",
@@ -494,19 +429,12 @@ __all__ = [
     "FloorDecision",
     "FloorStatus",
     "ShownReading",
-    "aspect_view",
     "campaign_readings",
     # A campaign's whole evidence: every aspect's evidence, the floors and code's readings.
-    "ArmSpelling",
-    "CampaignBundle",
-    "CellAddress",
-    "assemble_campaign_bundle",
     # A campaign's page over its aspects, and its two forms a person reads.
     "CampaignAspectFold",
     "CampaignReport",
-    "build_campaign_report",
     "campaign_report_html",
-    "campaign_report_markdown",
     # The parts a report document's page draws with, and the page itself.
     "PageArmsKey",
     "PageChart",
@@ -527,14 +455,11 @@ __all__ = [
     "NeedKind",
     "SampleProjection",
     "DECLARED_NAME_CHARS",
-    "GLOSSARY",
     "GOAL_CHECK",
     "HumanizeKind",
     "humanize",
-    "frontier_text",
     "OutOfRunSpendReport",
     "OutOfRunSpendTotals",
-    "out_of_run_spend_text",
     "scope_out_of_run_spend",
     "ReportFormat",
     "serialize_report",
@@ -553,13 +478,10 @@ __all__ = [
     "UNPRICED",
     "dollars_text",
     "summarize_run",
-    "summarize_runs",
     "MIN_CASES",
-    "SECTION_TITLES",
     "CellValue",
     "ChartBlock",
     "ChartKind",
-    "KIT_CHARTS",
     "BarRow",
     "BarSegment",
     "BarsChart",
@@ -619,11 +541,9 @@ __all__ = [
     "TrialDetail",
     "DisclosureBlock",
     "DisclosureSource",
-    "NO_ANALYSIS",
     "Report",
     "ReportBasis",
     "ReportBlock",
-    "ReportDocReads",
     "ReportSection",
     "ReportSource",
     "TableBlock",
@@ -636,48 +556,32 @@ __all__ = [
     "Verdict",
     "VerdictKind",
     "VerdictReason",
-    "DEFAULT_FAIL_ON",
-    "GATE_TOKENS",
     "GateOutcome",
     "GateResult",
     "GateToken",
     "gate_verdicts",
-    "parse_fail_on",
     "report_html",
-    "report_markdown",
     "ABSENT",
-    "BORROWED_PREDICTION_METHOD",
     "COST_ESTIMATE_MIN_BASIS",
-    "DEFAULT_WEIGHTING",
-    "EQUIVALENCE_TEST_NAME",
-    "METRIC_COMPOSITE",
-    "METRIC_OUTCOME",
-    "METRIC_SCORE",
     "METRIC_TRANSCRIPT",
-    "PAIRED_TEST_NAME",
-    "PROJECTED_METRICS",
     "READ_TIER_ROW_BUDGET",
     "READING_BUDGET",
     "PLANNING_READ_BUDGET",
     "BUNDLE_READ_BUDGET",
     "EXPORT_PAGE_RESULTS",
     # debt: retires when the English moves to one renderer
-    "SERVED_MODEL_UNRECORDED",
-    "WEIGHTING_EQUAL_PER_SCENARIO",
     "AliasedFactors",
     "UnexercisedFactor",
     "ArmExclusions",
     "ArmPricing",
     "ArmScoreboard",
     "NegativeValues",
-    "FailCause",
     "LossCause",
     "TrialCheck",
     "TrialJudgement",
     "TrialRow",
     "TrialState",
     "AnalysisContextBundle",
-    "AnalysisStore",
     "ArmMechanismReading",
     "ArmServedModel",
     "BaselineBarProposals",
@@ -722,10 +626,7 @@ __all__ = [
     "UnpooledReason",
     "PassHatKCellReading",
     "Precision",
-    "GenerationError",
-    "GenerationTally",
     "GoalCheckProofReading",
-    "InsightStanding",
     "JudgeAgreement",
     "JudgeKey",
     "JudgeKindReading",
@@ -792,16 +693,12 @@ __all__ = [
     "RunApparatus",
     "RunEnding",
     "RunSummary",
-    "StoppedShort",
-    "stopped_short",
     "RemainderState",
     "ScopeDivergence",
     "ShortCell",
-    "SoundnessRefusal",
     "SubjectFrontier",
     "SubjectKeyInstability",
     "TelemetryRollup",
-    "UnresolvableReference",
     "TokenRollup",
     "FrontierBoundaryCheck",
     "UnpairedRating",
@@ -814,25 +711,16 @@ __all__ = [
     "add_runs_to_campaign",
     "build_code_only_report",
     "campaign_report",
-    "campaign_stopped_short",
-    "campaign_verdicts",
-    "record_campaign_call",
     "assemble_context_bundle",
     "compare_two_runs",
     "comparison_sets",
-    "completeness_disclosure",  # debt: retires when the English moves to one renderer
+    # debt: retires when the English moves to one renderer
     "create_campaign",
     "declarable_axes",
-    "describe_insight_id_filters",
     "export_results",
     "format_number",
-    "format_signed",
-    "format_significance",
     "frontier",
-    "get_analysis",
-    "get_campaign",
     "history",
-    "insight_standing",
     "inspect_analysis_bundle",
     "inspect_campaign_bundle",
     "judge_agreement",
@@ -849,24 +737,15 @@ __all__ = [
     "inter_judge_agreement",
     "judge_drift",
     "judge_kind_readings",
-    "judge_profiles_of",
-    "JudgeProfileDrafts",
     "SkippedJudgeProfile",
-    "list_campaigns",
-    "list_insights",
     # debt: retires when the English moves to one renderer
-    "multi_rig_variants",
     "orphaned_runs",
     "pivot",
     "program_budget",
     "propose_bars",
-    "remove_runs_from_campaign",
-    "running_analysis_attempt",
     "run_summary",
     "set_campaign_control",
-    "short_digest",
     # debt: retires when the English moves to one renderer
-    "tier_for_judges",
     "tier_sentence",
     "update_campaign",
     "variant_key_of_run",

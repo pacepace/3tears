@@ -49,7 +49,8 @@ from pathlib import Path
 from typing import Any
 
 from packages.evals.tests.fixtures.report_inputs.migrate_bundle_shape_66 import moved_paths
-from threetears.evals.analysis import AnalysisContextBundle, CampaignBundle
+from threetears.evals.analysis import AnalysisContextBundle
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.arms import (
     ArmLevel,
     arm_names,

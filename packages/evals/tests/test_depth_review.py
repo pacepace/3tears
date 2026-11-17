@@ -11,7 +11,8 @@ from dataclasses import replace
 
 import pytest
 
-from threetears.evals.analysis import build_campaign_report, build_code_only_report
+from threetears.evals.analysis import build_code_only_report
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.depth import Depth
 from threetears.evals.analysis.depth_reading import aspect_depth

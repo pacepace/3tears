@@ -34,7 +34,8 @@ from typing import Any, get_args
 
 import pytest
 
-from threetears.evals.analysis import KIT_CHARTS, campaign_report_html, report_html
+from threetears.evals.analysis import campaign_report_html, report_html
+from threetears.evals.analysis.report.charts import KIT_CHARTS
 from threetears.evals.analysis.report import Report
 from threetears.evals.analysis.report.blocks import ChartBlock, ChartKind, CostQualityPoint
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE

@@ -19,8 +19,8 @@ from threetears.evals.analysis import (
     Report,
     TableBlock,
     inspect_campaign_bundle,
-    report_markdown,
 )
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.number_forms.policy import policy_places
 from threetears.evals.kernel.numbers import round_half_even
 from threetears.evals.kernel.analysis_measures import MeasureSummary

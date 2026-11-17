@@ -28,7 +28,7 @@ from threetears.evals.analysis.lenses.history import HistoryResult, RegressionFl
 from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, paired_change
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor
-from threetears.evals.ops import history_text
+from threetears.evals.ops.lenses import history_text
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.guardrail_support import two_arm_bundle

@@ -32,13 +32,13 @@ from threetears.evals.actions import (
     Caller,
     HelpTopic,
     analyst_tools,
-    catalogue_primer,
     ToolSpec,
     eval_catalogue,
     read_only_tools,
     render_jobs_started,
     standard_tools,
 )
+from threetears.evals.actions.catalogue import catalogue_primer
 from threetears.evals.actions.engine import engine_actions
 from threetears.evals.actions.params import NullIsOmitted
 from threetears.evals.actions.render import render_cited

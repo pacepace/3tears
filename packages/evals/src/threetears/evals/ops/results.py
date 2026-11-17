@@ -43,18 +43,16 @@ from pydantic import Field
 from threetears.evals.analysis.latency_partition import LatencyPartition, decompose_total_ms
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.schema import CallLedger, CellTermination, EvalResult, JudgedArtifact, JudgeEvidence
-from threetears.evals.kernel import (
-    ResultCondition,
-    ResultOutcome,
-    classify_result,
-    counted_goal_verdicts,
-    resolve_result_condition,
-)
+from threetears.evals.kernel import ResultCondition, ResultOutcome
+from threetears.evals.kernel.result_condition import classify_result
+from threetears.evals.kernel.result_condition import counted_goal_verdicts
+from threetears.evals.kernel.result_condition import resolve_result_condition
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.run_pages import iter_keyed_results
-from threetears.evals.run import get_result, get_result_trace, get_run
+from threetears.evals.run import get_result_trace, get_run
+from threetears.evals.run.reads import get_result
 
 #: Which part of a stored result :func:`result_get` returns. ``record`` is the result with what its kind
 #: stored about the cell (output, call ledger, end state); ``judge`` is what the judge was sent; ``spans`` is
@@ -270,7 +268,7 @@ def result_get(host: EvalHost, result_id: str, scope_id: str, *, part: ResultPar
     written (:func:`~threetears.evals.run.get_result_trace`, which logs a record whose trace no document
     backs; it reads here as ``missing``, never as none stored). Nothing is recomputed but the condition and
     the latency partition, each by the one function every surface asks
-    (:func:`~threetears.evals.kernel.resolve_result_condition`,
+    (:func:`~threetears.evals.kernel.result_condition.resolve_result_condition`,
     :func:`~threetears.evals.analysis.latency_partition.decompose_total_ms`), so each reads here as it reads anywhere
     else. The whole trace document is read whichever part is asked for: the bound is on what is
     returned, which is what a reader's context pays for.

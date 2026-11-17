@@ -101,11 +101,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.schema.aspect_label_for": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.AsyncDelivery": {
       "kind": "model",
       "signature": "AsyncDelivery(tool: str, requested_by: str | None = None, status: AsyncDeliveryStatus, model: str | None = None, served_model: str | None = None, served_provider: str | None = None, acknowledged_turn: int | None = None, delivered_turn: int | None = None, elapsed_ms: float | None = None, delivered_items: int | None = None, summary: str | None = None, error: str | None = None, substituted: bool, input_tokens: int | None = None, output_tokens: int | None = None, reasoning_tokens: int | None = None, llm_calls: int | None = None, cost_usd: float | None = None, price_source: str | None = None, external_spend: list[AsyncExternalSpend] = list())",
@@ -138,11 +133,6 @@
     },
     "threetears.evals.schema.AttestableCoordinate": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.attribution_state": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -246,11 +236,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.schema.block_from_json": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.BoundCompletionClient": {
       "kind": "protocol",
       "signature": "BoundCompletionClient{__aenter__(self) -> Self; __aexit__(self, exc_type: object, exc: object, tb: object) -> None; aclose(self) -> None; generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult; model_name: str; price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None}",
@@ -286,21 +271,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.schema.CANDIDATE_SPEAKER": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.canonical_digest": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.case_set_doc_id": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.CaseSet": {
       "kind": "model",
       "signature": "",
@@ -330,11 +300,6 @@
       "kind": "model",
       "signature": "CatalogRubricDim(schema_minor: DurableSchemaMinor = 5, id: str = <lambda>(), doc_type: Literal['rubric_dim'] = 'rubric_dim', schema_version: DurableSchemaVersion = 17, scope_id: str, key: str, dim: RubricDim, axis: RubricAxis = 'capability', universal: bool = False, seed_digest: str | None = None, archived: bool = False, created_at: str = utc_now_iso(), updated_at: str = utc_now_iso())",
       "tier": "stable"
-    },
-    "threetears.evals.schema.CaveatClass": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.schema.CaveatReach": {
       "kind": "literal",
@@ -370,11 +335,6 @@
       "kind": "function",
       "signature": "check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None",
       "tier": "host-contract"
-    },
-    "threetears.evals.schema.check_grouping": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.schema.ClientRequestSettings": {
       "kind": "model",
@@ -428,11 +388,6 @@
     },
     "threetears.evals.schema.Coordinate": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.copy_json": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -576,11 +531,6 @@
       "signature": "",
       "tier": "stable"
     },
-    "threetears.evals.schema.eval_trace_doc_id": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.EvalBaseModel": {
       "kind": "model",
       "signature": "EvalBaseModel()",
@@ -651,16 +601,6 @@
       "signature": "ExternalSpend(provider: str | None, calls: int = 0, provider_units: int | None = None, provider_unit: str | None = None, money: float | None = None)",
       "tier": "stable"
     },
-    "threetears.evals.schema.extract_paths": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.ExtractedPaths": {
-      "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.FAILED_BECAUSE": {
       "kind": "constant (tuple)",
       "signature": "",
@@ -698,11 +638,6 @@
     },
     "threetears.evals.schema.Firings": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.fold_groups": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -750,11 +685,6 @@
       "kind": "model",
       "signature": "IntervalScale(kind: Literal['interval'] = 'interval', value: float, unit: str | None = None)",
       "tier": "host-contract"
-    },
-    "threetears.evals.schema.is_pass": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.schema.JOB_FAULTS_MAX": {
       "kind": "constant (int)",
@@ -841,27 +771,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.schema.keep_fields": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.KnownCellTimeoutOrigin": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.KnownCostCapOrigin": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.KnownExhaustedBecause": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.KnownFailedBecause": {
       "kind": "literal",
       "signature": "",
       "tier": "provisional"
@@ -881,20 +791,10 @@
       "signature": "'variation'` | `'proposer'` | `'analysis'` | `'judge'` | `'second_judge'` | `'reviewer'",
       "tier": "host-contract"
     },
-    "threetears.evals.schema.KnownReasoningEffort": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.KnownRefusalKind": {
       "kind": "literal",
       "signature": "'refused'` | `'not_found'` | `'conflict'` | `'validation_failed'` | `'storage_failed'` | `'provider_refused'` | `'admission_refused'",
       "tier": "host-contract"
-    },
-    "threetears.evals.schema.KnownRoleModelOrigin": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.schema.KnownSimulatorPurpose": {
       "kind": "literal",
@@ -981,11 +881,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.schema.MODEL_DEFAULT_TEMPERATURE": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.MODEL_ROLE_ORIGINS": {
       "kind": "constant (tuple)",
       "signature": "",
@@ -998,16 +893,6 @@
     },
     "threetears.evals.schema.ModelRoleOrigin": {
       "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.narrow_groups": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.narrow_items": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -1048,11 +933,6 @@
     },
     "threetears.evals.schema.OUT_OF_RUN_PURPOSES": {
       "kind": "constant (tuple)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.OUTCOME_DIM_ID": {
-      "kind": "constant (str)",
       "signature": "",
       "tier": "provisional"
     },
@@ -1176,11 +1056,6 @@
       "signature": "RecordedCall(tool: str, action: str, params: dict[str, Any] = dict())",
       "tier": "stable"
     },
-    "threetears.evals.schema.referenced_actions": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.REFUSAL_KINDS": {
       "kind": "constant (tuple)",
       "signature": "",
@@ -1195,11 +1070,6 @@
       "kind": "type alias",
       "signature": "str",
       "tier": "host-contract"
-    },
-    "threetears.evals.schema.refuse_on_event_loop": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.schema.RefusedCall": {
       "kind": "model",
@@ -1245,16 +1115,6 @@
       "kind": "model",
       "signature": "RoleUsage(role: StoredUsageRole, model: str | None = None, served_model: str | None = None, served_provider: str | None = None, prompt_tokens: int | None = None, completion_tokens: int | None = None, reasoning_tokens: int | None = None, cost_usd: float | None = None, price_source: str | None = None, call_count: int | None = None, provider: str | None = None, provider_unit: str | None = None, provider_units: int | None = None, actor_id: str | None = None, purpose: StoredSimulatorPurpose | None = None, sent_settings: list[ClientRequestSettings] | None = None, unanswered_retried: int | None = None, unanswered_lost: int | None = None, unanswered_reasons: dict[str, int] | None = None, maybe_billed_sends: int | None = None, unpriced_reasons: list[str] | None = None)",
       "tier": "host-contract"
-    },
-    "threetears.evals.schema.ROUND_DONE": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.rubric_dim_scale": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.schema.RubricAxis": {
       "kind": "literal",
@@ -1308,16 +1168,6 @@
     },
     "threetears.evals.schema.Scale": {
       "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.SCALES": {
-      "kind": "constant (mappingproxy)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.ScaleSpec": {
-      "kind": "class",
       "signature": "",
       "tier": "provisional"
     },
@@ -1421,11 +1271,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.schema.takes_exclude_in_items": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.schema.ThinkingBinding": {
       "kind": "dataclass",
       "signature": "ThinkingBinding(prefix_mismatch_behavior: Literal['error', 'drop_block'] = 'error')",
@@ -1470,11 +1315,6 @@
       "kind": "dataclass",
       "signature": "TurnReply(content: tuple[TurnBlock, ...], stop_reason: TurnStopReason, provider_stop_reason: str | None, model: str, served_model: str | None, input_tokens: int | None, output_tokens: int | None, reasoning_tokens: int | None, cache_read_tokens: int | None, cache_write_tokens: int | None, cost_usd: float | None, price_source: str | None, pricing_failure: str | None, sent_binding: str | None = None, input_transformations: tuple[dict[str, Any], ...] | None = None, resent_after: tuple[str, ...] = (), maybe_billed_sends: int = 0)",
       "tier": "stable"
-    },
-    "threetears.evals.schema.TurnReplyRefused": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.schema.TurnStopReason": {
       "kind": "literal",
@@ -1533,11 +1373,6 @@
     },
     "threetears.evals.schema.VersionSpace": {
       "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.schema.with_fault": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -1606,11 +1441,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.agreement_statistic": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.ANALYSIS_JOB": {
       "kind": "constant (LeasedJobKind)",
       "signature": "",
@@ -1671,21 +1501,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.BarName": {
-      "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.BarNameKind": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.BarNameRefusal": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.BarOverride": {
       "kind": "model",
       "signature": "BarOverride(measure_id: str, threshold: float, direction: Literal['higher_is_better', 'lower_is_better'])",
@@ -1696,23 +1511,8 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.beside_eval_file": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.blended_cost_roles": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.BOUNDARY_GEN_PROMPT": {
       "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.calibration_criterion": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -1758,16 +1558,6 @@
     },
     "threetears.evals.kernel.CampaignWindow": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.candidate_failure_cause": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.CandidateFailureCause": {
-      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -1876,18 +1666,8 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.classifier_label_of": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.ClassifierStatistic": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.classify_result": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -1921,16 +1701,6 @@
       "signature": "",
       "tier": "stable"
     },
-    "threetears.evals.kernel.confusion_of": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.contract_state": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.ContractState": {
       "kind": "literal",
       "signature": "",
@@ -1961,16 +1731,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.counted_goal_verdicts": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.counted_score": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.CoverageLens": {
       "kind": "model",
       "signature": "",
@@ -1991,11 +1751,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.declared_contracts": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.default_job_timeout": {
       "kind": "function",
       "signature": "default_job_timeout(budget_s: float) -> AsyncIterator[float]",
@@ -2003,11 +1758,6 @@
     },
     "threetears.evals.kernel.DEFAULT_TEMPERATURE_REPEATS": {
       "kind": "constant (int)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.delivered_a_turn": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -2053,16 +1803,6 @@
     },
     "threetears.evals.kernel.DerivedVariantIdentity": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.describe_and_log_failure": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.DesignRefused": {
-      "kind": "exception",
       "signature": "",
       "tier": "provisional"
     },
@@ -2181,11 +1921,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.existing_axis_values": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.ExternalRateTable": {
       "kind": "dataclass",
       "signature": "ExternalRateTable(rates: Mapping[tuple[str, str], float])",
@@ -2206,42 +1941,7 @@
       "signature": "failed_call_output(owner: FailureOwner, description: str, *, refused: str, declined: str, failed: str, log: Callable[[str, int], None], unserved: str | None = None, telemetry: CandidateTelemetry | None = None, host_measures: dict[str, bool | float | str] | None = None, kind_payload: VerbatimJsonObject | None = None) -> CandidateOutput",
       "tier": "host-contract"
     },
-    "threetears.evals.kernel.FIND_ANALYSIS": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.FIND_CAMPAIGN": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.FIND_CASE_SET": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.FIND_INSIGHT": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.FIND_JOB": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.FIND_JUDGE_CONFIG": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.FIND_RESULT": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.FIND_RUBRIC_DIM": {
       "kind": "constant (str)",
       "signature": "",
       "tier": "provisional"
@@ -2255,11 +1955,6 @@
       "kind": "constant (str)",
       "signature": "",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.FIND_TEST_CASE": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.FindingResolution": {
       "kind": "model",
@@ -2278,16 +1973,6 @@
     },
     "threetears.evals.kernel.format_number": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.format_signed": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.FRONTIER_RANKING_MEASURE": {
-      "kind": "constant (str)",
       "signature": "",
       "tier": "provisional"
     },
@@ -2321,18 +2006,8 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.generation_slot_id": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.GenerationProvenance": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.goal_check_of": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -2416,22 +2091,12 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.JUDGE_CASE_KEY": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.judge_case_of": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
     "threetears.evals.kernel.judge_case_payload": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.judge_criterion_digest": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -2456,31 +2121,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.JUDGE_LABEL_AGREEMENT_MEASURE": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.JUDGE_PARSE_VALID_MEASURE": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.judge_profile_id": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.judge_trial_of": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.judge_truncated_dims": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.JudgeCase": {
       "kind": "model",
       "signature": "",
@@ -2498,11 +2138,6 @@
     },
     "threetears.evals.kernel.JudgeCaseSource": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.JUDGED_TIER_RULE": {
-      "kind": "constant (str)",
       "signature": "",
       "tier": "provisional"
     },
@@ -2546,11 +2181,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.JudgeProfileStore": {
-      "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.JudgeTemperatureAnswers": {
       "kind": "model",
       "signature": "",
@@ -2558,16 +2188,6 @@
     },
     "threetears.evals.kernel.JudgeTierFromProfile": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.JudgeTrial": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.JudgeTrialOutcome": {
-      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -2593,11 +2213,6 @@
     },
     "threetears.evals.kernel.LatencyView": {
       "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.lease_lapsed": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -2628,11 +2243,6 @@
     },
     "threetears.evals.kernel.LeverCoverage": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.list_metrics": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -2731,11 +2341,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.note_spend": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.NotFoundError": {
       "kind": "exception",
       "signature": "NotFoundError(resource: str, resource_id: str, *, remedy: str)",
@@ -2801,11 +2406,6 @@
       "signature": "prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift",
       "tier": "stable"
     },
-    "threetears.evals.kernel.prompt_token_bound": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.PromptContractError": {
       "kind": "exception",
       "signature": "",
@@ -2846,11 +2446,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.REASONING_RATIO_KEY": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.Recordable": {
       "kind": "protocol",
       "signature": "Recordable{model_dump(self, *, mode: Literal['json']) -> dict[str, Any]; model_validate(cls, obj: Any) -> Self}",
@@ -2861,16 +2456,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.refuse_an_undeclarable_design": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.REFUSED_CONTRACT_STATES": {
-      "kind": "constant (frozenset)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.RefusedInput": {
       "kind": "exception",
       "signature": "",
@@ -2878,11 +2463,6 @@
     },
     "threetears.evals.kernel.RefusedRow": {
       "kind": "class",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.RELAUNCH_TO_REJUDGE": {
-      "kind": "constant (str)",
       "signature": "",
       "tier": "provisional"
     },
@@ -2911,31 +2491,6 @@
       "signature": "ReplayedDelivery(outcome: DeliveryOutcome, payload: P | None = None, error: str | None = None)",
       "tier": "stable"
     },
-    "threetears.evals.kernel.report_snapshot_id": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.request_job_cancel": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.require_held": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.require_output_contract": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.REREAD_AND_RETRY": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.RescoreReading": {
       "kind": "dataclass",
       "signature": "",
@@ -2946,22 +2501,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.resolve_bar_name": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.resolve_context_identity": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.resolve_control_arm": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.resolve_result_condition": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -3016,33 +2556,13 @@
       "signature": "RoleUsageLedger(role: KnownUsageRole, rate_table: ExternalRateTable | None = None, _totals: dict[_RowKey, _ModelTotals] (derived))",
       "tier": "stable"
     },
-    "threetears.evals.kernel.RUBRIC_FAMILY": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.RUN_JOB": {
       "kind": "constant (LeasedJobKind)",
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.RUN_MARGIN_MEASURES": {
-      "kind": "constant (frozenset)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.run_margin_refusal": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.RunIndexEntry": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.running_job": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -3060,11 +2580,6 @@
       "kind": "protocol",
       "signature": "RunStore{delete_eval_run(self, run_id: str, scope_id: str, /) -> bool; load_eval_run(self, run_id: str, scope_id: str, /) -> EvalRun | None; load_eval_run_stamps(self, run_ids: Sequence[str], scope_id: str, /) -> list[EvalRunStamp]; load_eval_run_with_etag(self, run_id: str, scope_id: str, /) -> tuple[EvalRun | None, str | None]; load_eval_runs(self, run_ids: Sequence[str], scope_id: str, /, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; query_eval_runs(self, scope_id: str, status: EvalRunStatus | None = None, *, elide_payload: frozenset[str] = frozenset()) -> list[EvalRun]; query_non_terminal_eval_runs(self, scope_id: str, /) -> NonTerminalRunScan; save_eval_run(self, run: EvalRun, /, *, if_match: str | None = None) -> None; set_eval_run_archived(self, run_id: str, scope_id: str, /, *, archived: bool) -> bool}",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.SCHEMA_REMEDY": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.ScoreReading": {
       "kind": "dataclass",
@@ -3136,11 +2651,6 @@
       "signature": "SeedTemplate(template_name: str, template_type: str, scope: str, description: str, sections: tuple[SeedSection, ...] = (), version: int = 1)",
       "tier": "stable"
     },
-    "threetears.evals.kernel.separation_criterion": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.SEPARATION_MIN_AGREEMENT": {
       "kind": "constant (float)",
       "signature": "",
@@ -3148,11 +2658,6 @@
     },
     "threetears.evals.kernel.SEPARATION_MIN_RESULTS": {
       "kind": "constant (int)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.settle_job_record": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -3185,11 +2690,6 @@
       "kind": "function",
       "signature": "strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, Any]",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.summarize_completeness": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.SWEEP_JOB": {
       "kind": "constant (LeasedJobKind)",
@@ -3241,11 +2741,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.TEMPERATURE_SETTINGS": {
-      "kind": "constant (tuple)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.TemperatureAnswer": {
       "kind": "model",
       "signature": "",
@@ -3266,23 +2761,8 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.TemperatureSettingSpec": {
-      "kind": "class",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.TemperatureSkip": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.template_text": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.tier_of": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -3298,11 +2778,6 @@
     },
     "threetears.evals.kernel.TimeAxisBasis": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.timed_out_detail": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -3331,23 +2806,8 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.TRUNCATED_ROUNDS_KEY": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.TURN_BUDGET_ENDED_KEY": {
       "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.turn_prompt_token_bound": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.UndeclarableAxisError": {
-      "kind": "exception",
       "signature": "",
       "tier": "provisional"
     },
@@ -3363,11 +2823,6 @@
     },
     "threetears.evals.kernel.unpriced_because": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.UnreadableBarName": {
-      "kind": "dataclass",
       "signature": "",
       "tier": "provisional"
     },
@@ -3411,11 +2866,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.weakest_judged_tier": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.withhold_failure_detail": {
       "kind": "function",
       "signature": "withhold_failure_detail(exc: BaseException) -> ProviderFailure",
@@ -3430,16 +2880,6 @@
       "kind": "exception",
       "signature": "",
       "tier": "stable"
-    },
-    "threetears.evals.kernel.write_held_record": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.WRITER_REMEDY": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.host.ActionParameterReader": {
       "kind": "type alias",
@@ -3480,11 +2920,6 @@
       "kind": "class",
       "signature": "BarRegistry(bars: Iterable[Bar] = (), *, pass_thresholds: Iterable[PassThreshold] = ()) -> None",
       "tier": "host-contract"
-    },
-    "threetears.evals.kernel.host.CANDIDATE_KIND_LEVER": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.host.CANDIDATE_MODEL_LEVER": {
       "kind": "constant (str)",
@@ -3646,16 +3081,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.host.pass_threshold_label": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.kernel.host.PassCriterion": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.host.PassThreshold": {
       "kind": "dataclass",
       "signature": "PassThreshold(behavior: str, threshold: int, rationale: str)",
@@ -3691,11 +3116,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.host.resolve_preconditions": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.host.ResolvedLevers": {
       "kind": "dataclass",
       "signature": "",
@@ -3710,11 +3130,6 @@
       "kind": "dataclass",
       "signature": "RolePins(name: str, pins: tuple[str, ...] = (), subject_phrase: str | None = None)",
       "tier": "stable"
-    },
-    "threetears.evals.kernel.host.schema_violations": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.kernel.host.SeedRefusalKind": {
       "kind": "literal",
@@ -3846,18 +3261,8 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.action_job_work": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.AdmissionTicket": {
       "kind": "class",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.admit_group": {
-      "kind": "async function",
       "signature": "",
       "tier": "provisional"
     },
@@ -3911,11 +3316,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.attest_served_model": {
-      "kind": "async function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.Attested": {
       "kind": "model",
       "signature": "",
@@ -3923,11 +3323,6 @@
     },
     "threetears.evals.run.BudgetStoppedError": {
       "kind": "exception",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.build_judge_context": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -4011,11 +3406,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.DEFAULT_ACTION_JOB_BUDGET_S": {
-      "kind": "constant (float)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.DEFAULT_MAX_CONCURRENT_CELLS": {
       "kind": "constant (int)",
       "signature": "",
@@ -4046,16 +3436,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.delete_analysis": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.delete_insight": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.delete_judge_config": {
       "kind": "function",
       "signature": "",
@@ -4076,20 +3456,10 @@
       "signature": "delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: str | None = None) -> dict[str, Any]",
       "tier": "stable"
     },
-    "threetears.evals.run.delete_unreadable_run": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.drive_conversation": {
       "kind": "async function",
       "signature": "drive_conversation(driver: TurnDriver, candidate_turn: Callable[[Sequence[SimulatorTurn]], Awaitable[CandidateTurn]], post_user_turn: Callable[[SimulatorTurn], Awaitable[None]], *, llm: SimulatorLLM, sink: CellSink, world: WorldSession | None = None) -> ConversationStopCause",
       "tier": "stable"
-    },
-    "threetears.evals.run.end_record": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.run.estimate_judge_repeat": {
       "kind": "async function",
@@ -4097,11 +3467,6 @@
       "tier": "stable"
     },
     "threetears.evals.run.estimate_judge_temperature_comparison": {
-      "kind": "async function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.estimate_second_judge": {
       "kind": "async function",
       "signature": "",
       "tier": "provisional"
@@ -4136,11 +3501,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.evaluate_goal_state": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.EveryCellApparatusFailedError": {
       "kind": "exception",
       "signature": "",
@@ -4171,11 +3531,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.get_result": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.get_result_trace": {
       "kind": "function",
       "signature": "get_result_trace(storage: ResultStore, result: EvalResult) -> EvalTrace | None",
@@ -4186,11 +3541,6 @@
       "signature": "get_run(storage: RunStore, run_id: str, scope_id: str) -> EvalRun",
       "tier": "stable"
     },
-    "threetears.evals.run.get_template": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.GoalCheckUnevaluable": {
       "kind": "exception",
       "signature": "GoalCheckUnevaluable(expression: str, error: BaseException) -> None",
@@ -4200,11 +3550,6 @@
       "kind": "function",
       "signature": "grade_goal_checks(expressions: Sequence[str], *, ledger: CallLedger, end_state: Mapping[str, Any], fired: Firings | None, variation: Mapping[str, Any], world: WorldRegistry | None) -> list[GoalStateOutcome]",
       "tier": "stable"
-    },
-    "threetears.evals.run.InProcessCellExecutor": {
-      "kind": "class",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.run.JobOutcome": {
       "kind": "literal",
@@ -4235,11 +3580,6 @@
       "kind": "constant (int)",
       "signature": "",
       "tier": "stable"
-    },
-    "threetears.evals.run.JUDGE_REPEAT_ACTION": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.run.judge_repeat_work": {
       "kind": "async function",
@@ -4406,16 +3746,6 @@
       "signature": "LaunchSettings(max_launch_arms: int, max_admitted_runs: int, judge_concurrency: int, max_concurrent_cells: int = 4, enforcement_enabled: bool, max_cost_usd: float, max_metered_calls: int | None, max_out_of_run_cost_usd: float, judge_alternate_model: str | None = None, max_cell_timeout_s: float | None = None, setting_names: dict[str, str] = dict())",
       "tier": "host-contract"
     },
-    "threetears.evals.run.leased_job_kind": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.list_judge_configs": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.list_results": {
       "kind": "function",
       "signature": "list_results(storage: RunResultsStore, run_id: str, scope_id: str) -> list[EvalResult]",
@@ -4430,16 +3760,6 @@
       "kind": "function",
       "signature": "list_runs(host: EvalHost, scope_id: str, *, status: str | None = None, include_archived: bool = False, label: str | None = None) -> list[EvalRun]",
       "tier": "stable"
-    },
-    "threetears.evals.run.list_runs_page": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.list_templates": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.run.load_seed_corpus": {
       "kind": "function",
@@ -4531,11 +3851,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.refuse_raised_ceiling": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.Regrade": {
       "kind": "model",
       "signature": "",
@@ -4586,11 +3901,6 @@
       "signature": "require_candidate_model(request: LaunchRequest, default: str | None) -> str",
       "tier": "stable"
     },
-    "threetears.evals.run.require_delete_confirmation": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.reset_definitions": {
       "kind": "function",
       "signature": "reset_definitions(host: EvalHost, corpus: SeedCorpus, definitions: Sequence[str], *, overwrite_customized: bool = False, carry_live_cases: bool = False, seeded_digests: Mapping[str, str] | None = None) -> DefinitionReset",
@@ -4601,22 +3911,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.resolve_case_set": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.resolve_ceiling_origin": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.resolve_constructor": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.resolve_effective_ceiling": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -4761,21 +4056,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.run.set_analysis_archived": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.set_campaign_archived": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.set_run_archived": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.SIMULATOR_REQUEST_SETTINGS": {
       "kind": "constant (ClientRequestSettings)",
       "signature": "",
@@ -4798,11 +4078,6 @@
     },
     "threetears.evals.run.stamp_witnessed_judge": {
       "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.run.start_job_work": {
-      "kind": "async function",
       "signature": "",
       "tier": "provisional"
     },
@@ -4831,11 +4106,6 @@
       "signature": "sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> AbandonedRunSweepReport",
       "tier": "stable"
     },
-    "threetears.evals.run.TEMPLATE_FIELDS": {
-      "kind": "constant (tuple)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.TemplateField": {
       "kind": "literal",
       "signature": "'tools_required'` | `'tools_allowed'` | `'variation_axes'` | `'conversation'` | `'world_seed'` | `'preconditions'` | `'goal_state_checks'` | `'goal_check_controls'` | `'rubric'",
@@ -4856,11 +4126,6 @@
       "signature": "UnpricedCall(call: str, why: str)",
       "tier": "host-contract"
     },
-    "threetears.evals.run.UnreadableRunDeleteStore": {
-      "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.run.update_judge_config": {
       "kind": "function",
       "signature": "",
@@ -4875,11 +4140,6 @@
       "kind": "function",
       "signature": "update_template(host: EvalHost, template_id: str, scope_id: str, fields: dict[str, Any]) -> EvalTemplate",
       "tier": "host-contract"
-    },
-    "threetears.evals.run.validated_kind_spec": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.run.WitnessedJudging": {
       "kind": "class",
@@ -4926,11 +4186,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.AnalysisStore": {
-      "kind": "protocol",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.AnswerSplit": {
       "kind": "model",
       "signature": "",
@@ -4966,16 +4221,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.ArmSpelling": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.aspect_view": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.AspectDeclaration": {
       "kind": "model",
       "signature": "",
@@ -4983,16 +4228,6 @@
     },
     "threetears.evals.analysis.AspectReading": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.AspectView": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.assemble_campaign_bundle": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -5041,16 +4276,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.BORROWED_PREDICTION_METHOD": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.build_campaign_report": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.build_code_only_report": {
       "kind": "function",
       "signature": "",
@@ -5062,11 +4287,6 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.BundleInspection": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.CallRead": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -5091,32 +4311,12 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.campaign_report_markdown": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.campaign_stopped_short": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.campaign_verdicts": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.CampaignAggregate": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
     "threetears.evals.analysis.CampaignAspectFold": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.CampaignBundle": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -5166,11 +4366,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.CaveatEntry": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.Cell": {
       "kind": "model",
       "signature": "",
@@ -5180,11 +4375,6 @@
       "kind": "constant (int)",
       "signature": "",
       "tier": "host-contract"
-    },
-    "threetears.evals.analysis.CellAddress": {
-      "kind": "class",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.analysis.CellCoordinate": {
       "kind": "model",
@@ -5281,11 +4471,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.completeness_disclosure": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.Confound": {
       "kind": "model",
       "signature": "",
@@ -5371,23 +4556,8 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.DEFAULT_FAIL_ON": {
-      "kind": "constant (tuple)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.DEFAULT_WEIGHTING": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.Depth": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.describe_insight_id_filters": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -5511,11 +4681,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.EQUIVALENCE_TEST_NAME": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.EvalSummary": {
       "kind": "model",
       "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_not_judged: int = 0, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, arm_schedule: ArmSchedule | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, cap_checked_on_estimates: bool | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], request_settings: list[RequestSettingsReading] = [], case_results: list[CaseResult] | None = None)",
@@ -5591,22 +4756,7 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.FailCause": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.FalseSeparation": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.FamilyComparison": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.FirstScreen": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
@@ -5651,25 +4801,10 @@
       "signature": "format_number(value: float | None, *, prefix: str = '') -> str",
       "tier": "host-contract"
     },
-    "threetears.evals.analysis.format_signed": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.format_significance": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.frontier": {
       "kind": "function",
       "signature": "frontier(storage: LensStore, scope_id: str, *, list_runs: RunLister, bar: float | str | None = None, subject_id: str | None = None, status: str | None = 'completed', profile: HostProfile | None = None, control_variant_key: str | None = None) -> dict[str, Any]",
       "tier": "stable"
-    },
-    "threetears.evals.analysis.frontier_text": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.analysis.FrontierBoundaryCheck": {
       "kind": "model",
@@ -5713,11 +4848,6 @@
     },
     "threetears.evals.analysis.Gate": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.GATE_TOKENS": {
-      "kind": "constant (tuple)",
       "signature": "",
       "tier": "provisional"
     },
@@ -5768,31 +4898,6 @@
     },
     "threetears.evals.analysis.GateToken": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.GenerationError": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.GenerationTally": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.get_analysis": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.get_campaign": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.GLOSSARY": {
-      "kind": "constant (dict)",
       "signature": "",
       "tier": "provisional"
     },
@@ -5866,16 +4971,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.insight_standing": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.InsightStanding": {
-      "kind": "class",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.inspect_analysis_bundle": {
       "kind": "function",
       "signature": "",
@@ -5930,11 +5025,6 @@
       "kind": "function",
       "signature": "judge_kind_readings(results: Iterable[EvalResult]) -> JudgeKindReadings",
       "tier": "stable"
-    },
-    "threetears.evals.analysis.judge_profiles_of": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.analysis.judge_self_agreement": {
       "kind": "function",
@@ -6006,11 +5096,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.JudgeProfileDrafts": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.JudgeSelfAgreement": {
       "kind": "model",
       "signature": "",
@@ -6018,11 +5103,6 @@
     },
     "threetears.evals.analysis.JudgeTemperatureComparison": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.KIT_CHARTS": {
-      "kind": "constant (dict)",
       "signature": "",
       "tier": "provisional"
     },
@@ -6086,16 +5166,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.list_campaigns": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.list_insights": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.Looks": {
       "kind": "model",
       "signature": "",
@@ -6151,21 +5221,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.METRIC_COMPOSITE": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.METRIC_OUTCOME": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.METRIC_SCORE": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.METRIC_TRANSCRIPT": {
       "kind": "constant (str)",
       "signature": "",
@@ -6178,11 +5233,6 @@
     },
     "threetears.evals.analysis.ModelPassHatK": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.multi_rig_variants": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -6206,27 +5256,12 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.NO_ANALYSIS": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.NoActionReason": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.OpenAxisFamily": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
     "threetears.evals.analysis.orphaned_runs": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.out_of_run_spend_text": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -6271,11 +5306,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.PAIRED_TEST_NAME": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.PairingCorrelation": {
       "kind": "model",
       "signature": "",
@@ -6283,11 +5313,6 @@
     },
     "threetears.evals.analysis.PairReading": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.parse_fail_on": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -6356,11 +5381,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.PROJECTED_METRICS": {
-      "kind": "constant (frozenset)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.ProjectionExclusions": {
       "kind": "model",
       "signature": "",
@@ -6421,11 +5441,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.record_campaign_call": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.RefusedMerge": {
       "kind": "model",
       "signature": "",
@@ -6441,21 +5456,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.Remedy": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.RemedyStep": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.remove_runs_from_campaign": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.Report": {
       "kind": "model",
       "signature": "Report(title: str, source: ReportSource, blocks: list[ReportBlock], verdicts: list[Verdict] = list(), bundle: AnalysisContextBundle)",
@@ -6466,11 +5466,6 @@
       "signature": "report_html(report: Report, *, static: bool = False) -> str",
       "tier": "host-contract"
     },
-    "threetears.evals.analysis.report_markdown": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.ReportBasis": {
       "kind": "literal",
       "signature": "",
@@ -6478,11 +5473,6 @@
     },
     "threetears.evals.analysis.ReportBlock": {
       "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.ReportDocReads": {
-      "kind": "protocol",
       "signature": "",
       "tier": "provisional"
     },
@@ -6561,11 +5551,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.running_analysis_attempt": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.RunSummary": {
       "kind": "model",
       "signature": "",
@@ -6611,11 +5596,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.SECTION_TITLES": {
-      "kind": "constant (dict)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.SelfAgreementDimension": {
       "kind": "model",
       "signature": "",
@@ -6646,11 +5626,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.SERVED_MODEL_UNRECORDED": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.ServedModelReading": {
       "kind": "model",
       "signature": "",
@@ -6662,11 +5637,6 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.set_campaign_control": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.short_digest": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -6691,26 +5661,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.SoundnessRefusal": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.StepArgument": {
-      "kind": "type alias",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.stopped_short": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.StoppedShort": {
-      "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.StratumSummary": {
       "kind": "model",
       "signature": "",
@@ -6727,11 +5677,6 @@
       "tier": "provisional"
     },
     "threetears.evals.analysis.summarize_run": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.summarize_runs": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -6773,11 +5718,6 @@
     },
     "threetears.evals.analysis.TemperatureSide": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.tier_for_judges": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -6861,11 +5801,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.analysis.Unquoted": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.analysis.UnreadJudgeTrial": {
       "kind": "model",
       "signature": "",
@@ -6878,16 +5813,6 @@
     },
     "threetears.evals.analysis.UnrepeatedScore": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.UnresolvableReference": {
-      "kind": "exception",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.UnsizedReason": {
-      "kind": "literal",
       "signature": "",
       "tier": "provisional"
     },
@@ -6918,11 +5843,6 @@
     },
     "threetears.evals.analysis.VerdictReason": {
       "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.analysis.WEIGHTING_EQUAL_PER_SCENARIO": {
-      "kind": "constant (str)",
       "signature": "",
       "tier": "provisional"
     },
@@ -7176,16 +6096,6 @@
       "signature": "as_host(evals: Sequence[Eval], *, store: DocumentStore | str | os.PathLike[str] | None, clients: CompletionClients | None = None) -> EvalHost",
       "tier": "host-contract"
     },
-    "threetears.evals.quick.DEFAULT_PROG": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.quick.ENGINE_COMMANDS": {
-      "kind": "constant (tuple)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.quick.ExampleGrade": {
       "kind": "dataclass",
       "signature": "",
@@ -7271,11 +6181,6 @@
       "signature": "AnalystSkill(files: Mapping[str, str])",
       "tier": "host-contract"
     },
-    "threetears.evals.harness.CaseMint": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.harness.MintedWriterCase": {
       "kind": "model",
       "signature": "",
@@ -7288,11 +6193,6 @@
     },
     "threetears.evals.harness.PairwiseStopping": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.harness.read_writer_cases": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -7316,30 +6216,10 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.harness.WithheldNote": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.harness.Writer": {
       "kind": "dataclass",
       "signature": "Writer(model_id: str, skill: AnalystSkill | None = None, effort: str | None = None, revisions: int = 2, editor_model: str | None = None)",
       "tier": "host-contract"
-    },
-    "threetears.evals.harness.writer_case_from_export": {
-      "kind": "async function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.harness.WriterCaseFile": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.harness.WriterCaseFormat": {
-      "kind": "literal",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.harness.WriterEval": {
       "kind": "class",
@@ -7376,32 +6256,12 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.ops.ACTION_JOB_PREFIX": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.AdmittedJob": {
-      "kind": "dataclass",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.ops.analyses_list": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
     "threetears.evals.ops.analyses_undescribable": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.analysis_archive": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.analysis_delete": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -7413,11 +6273,6 @@
     },
     "threetears.evals.ops.analysis_generate": {
       "kind": "async function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.analysis_job_id": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -7471,22 +6326,12 @@
       "signature": "await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[JobStatus]",
       "tier": "stable"
     },
-    "threetears.evals.ops.bar_proposals_text": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.ops.BarProposals": {
       "kind": "model",
       "signature": "",
       "tier": "provisional"
     },
     "threetears.evals.ops.bars_propose": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.campaign_archive": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -7636,11 +6481,6 @@
       "signature": "EditorLimits(calls: int = 40, session: SessionLimits = SessionLimits())",
       "tier": "stable"
     },
-    "threetears.evals.ops.estimate_text": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.ops.EvalSummary": {
       "kind": "model",
       "signature": "EvalSummary(run_id: str, scope_id: str, template_id: str | None, candidate_model: str, arm: str | None = None, status: str, k_runs: int, n_cases: int, n_results: int, n_scored: int, n_not_judged: int = 0, n_candidate_failed: int, n_excluded: int, measures: list[RunMeasureSummary], confusion: list[ConfusionCount], labels: list[LabelStatistics], judged: list[DimensionSummary] = [], strata: list[StratumSummary] = [], spend: list[RoleSpend] = [], total_cost_usd: float | None = None, second_judge_calls: int = 0, second_judge_cost_usd: float | None = None, goal_checks: list[GoalCheckSummary] = [], intent: str | None = None, intent_source: str | None = None, errors: list[str], stopped_because: str | None = None, arm_schedule: ArmSchedule | None = None, max_cost_usd: float | None = None, max_cost_usd_origin: CostCapOrigin | None = None, cap_checked_on_estimates: bool | None = None, judge_shares_candidate_model: list[str] = [], unconfirmed_models: list[UnconfirmedModelIdentity] = [], request_settings: list[RequestSettingsReading] = [], case_results: list[CaseResult] | None = None)",
@@ -7648,11 +6488,6 @@
     },
     "threetears.evals.ops.EXPORT_PAGE_RESULTS": {
       "kind": "constant (int)",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.export_text": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -7671,20 +6506,10 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.ops.generation_key": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.ops.history_launch_pricer": {
       "kind": "function",
       "signature": "history_launch_pricer(host: EvalHost) -> LaunchPricer",
       "tier": "stable"
-    },
-    "threetears.evals.ops.history_text": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.ops.HistoryResult": {
       "kind": "model",
@@ -7896,11 +6721,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.ops.launch_job_id": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.ops.LaunchArguments": {
       "kind": "model",
       "signature": "LaunchArguments(template_id: str, subject_id: str, models: list[str] = list(), k_runs: int = 3, n_variations: int = 0, variation_model: str | None = None, overlays: dict[str, Any] | None = None, apparatus_settings: dict[str, Any] | None = None, max_cost_usd: float | None = None, judge_model: str | None = None, simulator_model: str | None = None, cell_timeout_s: float | None = None, case_set_name: str | None = None, case_set_version: int | None = None, measure_latency: bool = False, arm_schedule: ArmSchedule | None = None)",
@@ -7938,16 +6758,6 @@
     },
     "threetears.evals.ops.OutOfRunSpendReport": {
       "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.parse_job_id": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.pivot_text": {
-      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -8051,11 +6861,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.ops.run_archive": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.ops.run_delete": {
       "kind": "function",
       "signature": "",
@@ -8096,22 +6901,7 @@
       "signature": "RunListing(runs: list[RunLine], include_archived: bool, label: str | None = None, unreadable: int, filtered: int, next: str | None)",
       "tier": "stable"
     },
-    "threetears.evals.ops.runs_bisect": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.runs_bisected_text": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.ops.runs_compare": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
-    "threetears.evals.ops.runs_compared_text": {
       "kind": "function",
       "signature": "",
       "tier": "provisional"
@@ -8181,20 +6971,10 @@
       "signature": "start_action_job(host: OpsHost, scope_id: str, *, action: str, run: Callable[[], Awaitable[BaseModel]], budget_s: float, label: str = '', discard: Callable[[], Awaitable[None]] | None = None) -> JobsStarted",
       "tier": "stable"
     },
-    "threetears.evals.ops.start_job": {
-      "kind": "async function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.ops.start_paid_call": {
       "kind": "async function",
       "signature": "start_paid_call(host: OpsHost, scope_id: str, *, action: str, role: CompletionRole, model: str | None, purpose: KnownOutOfRunPurpose, budget: OutOfRunBudget, call: PlannedCall, make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]], label: str, budget_s: float) -> JobsStarted",
       "tier": "stable"
-    },
-    "threetears.evals.ops.sweep_job_id": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.ops.sweep_launch": {
       "kind": "async function",
@@ -8331,11 +7111,6 @@
       "signature": "ActionOutcome(text: str, structured: dict[str, Any] | None = None, refusal: Refusal | None = None, action: str | None = None, recovery: Recovery | None = None)",
       "tier": "stable"
     },
-    "threetears.evals.actions.analyst_actions": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.actions.analyst_tools": {
       "kind": "function",
       "signature": "analyst_tools(prefix: str = 'evals', *, writes: bool = True, role: Literal['analyst', 'editor'] = 'analyst') -> tuple[ToolSpec]",
@@ -8346,11 +7121,6 @@
       "signature": "Caller(scope_id: str, identity: str)",
       "tier": "stable"
     },
-    "threetears.evals.actions.catalogue_primer": {
-      "kind": "function",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.actions.ConformanceSample": {
       "kind": "dataclass",
       "signature": "ConformanceSample(template_id: str, subject_id: str, models: tuple[str, ...], second_judge_model: str)",
@@ -8360,11 +7130,6 @@
       "kind": "dataclass",
       "signature": "ConformanceStage(host: OpsHost, caller: Caller, sample: ConformanceSample)",
       "tier": "stable"
-    },
-    "threetears.evals.actions.DEFAULT_PREFIX": {
-      "kind": "constant (str)",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.actions.definition_drift_actions": {
       "kind": "function",
@@ -8506,11 +7271,6 @@
       "signature": "ToolCall(tool: str, action: str | None, caller: Caller, host: OpsHost | None, timeout_s: float, context: Any = None, refused: EvalServiceError | None = None)",
       "tier": "stable"
     },
-    "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET": {
-      "kind": "constant (int)",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.negotiation.anthropic_thinking": {
       "kind": "function",
       "signature": "anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str | int] | None",
@@ -8525,11 +7285,6 @@
       "kind": "function",
       "signature": "closest_settings(asked: WireSettings, facts: SettingFacts, provider_family: ProviderFamily) -> tuple[WireSettings, tuple[str, ...]]",
       "tier": "host-contract"
-    },
-    "threetears.evals.negotiation.EFFORT_LADDER": {
-      "kind": "constant (tuple)",
-      "signature": "",
-      "tier": "provisional"
     },
     "threetears.evals.negotiation.facts_from_router_catalogue": {
       "kind": "function",

@@ -79,7 +79,7 @@ class JudgeCasesFreeze(EvalBaseModel):
 def judge_cases_freeze(host: EvalHost, freeze: JudgeCasesFreeze, scope_id: str) -> JudgeCaseFreezeReport:
     """Freeze stored judged outputs, their criteria and their labels into cases of a judge template.
 
-    The template is loaded as every use of one is (:func:`~threetears.evals.run.get_template`), in the caller's
+    The template is loaded as every use of one is (:func:`~threetears.evals.run.authoring.get_template`), in the caller's
     scope, so a template or run of another scope does not resolve.
 
     :param host: The host whose store holds the runs and receives the cases.

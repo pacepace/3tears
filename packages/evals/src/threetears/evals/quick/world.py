@@ -19,7 +19,7 @@ and drives the same machinery:
   why, as a ``ValueError`` (:class:`ToolRefused`).
 - **What a grader sees** is a :class:`WorldOutcome`: the agent's ``answer``, the ``state`` it left (an instance of the
   state model) and the ``calls`` it made. An expression grader is a goal-state check over the same, graded by the
-  engine's own :func:`~threetears.evals.run.evaluate_goal_state`. A tool that raises is the rig's fault and excludes
+  engine's own :func:`~threetears.evals.run.runner.evaluate_goal_state`. A tool that raises is the rig's fault and excludes
   the cell; a check that cannot be evaluated does too.
 - **A world with no state** (``World(tools=[search])``) is a set of lookups: plain functions of their keyword
   arguments returning JSON. Handed ``recording=``, its answers are recorded once and replayed after
@@ -46,15 +46,9 @@ from typing import Any, NoReturn, get_type_hints
 from pydantic import BaseModel, ConfigDict, PydanticSchemaGenerationError, TypeAdapter, ValidationError
 
 from threetears.evals.quick.answer import Answer
-from threetears.evals.schema import (
-    CallLedger,
-    RecordedCall,
-    EvalTestCase,
-    JudgedArtifact,
-    WorldSeed,
-    extract_paths,
-    referenced_actions,
-)
+from threetears.evals.schema import CallLedger, RecordedCall, EvalTestCase, JudgedArtifact, WorldSeed
+from threetears.evals.schema.goal_grammar import extract_paths
+from threetears.evals.schema.goal_grammar import referenced_actions
 from threetears.evals.kernel import (
     CandidateOutput,
     CandidatePreparationFailed,
@@ -65,9 +59,11 @@ from threetears.evals.kernel import (
     WorldSession,
 )
 from threetears.evals.kernel.eval_file import beside_eval_file
-from threetears.evals.kernel.host import SeedRefused, WorldDimension, WorldRegistry, check_seed, schema_violations
+from threetears.evals.kernel.host import SeedRefused, WorldDimension, WorldRegistry, check_seed
+from threetears.evals.kernel.host.world_schema import schema_violations
 from threetears.evals.schema import SubjectSnapshot
-from threetears.evals.run import CellContext, GoalCheckUnevaluable, evaluate_goal_state, grade_goal_checks
+from threetears.evals.run import CellContext, GoalCheckUnevaluable, grade_goal_checks
+from threetears.evals.run.runner import evaluate_goal_state
 from threetears.evals.run.check_controls import idle_end_state
 from threetears.evals.schema.logs import get_logger
 

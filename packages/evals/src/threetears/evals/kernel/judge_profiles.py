@@ -10,7 +10,7 @@ and when, so a campaign scored by that same judge reads its evidence tier from i
 none (:func:`~threetears.evals.analysis.judge_profiles.tiers_with_judge_profiles`).
 
 **Recorded on purpose, never on completion.** A profile is written by an explicit step over the judge campaign's
-runs (:func:`~threetears.evals.analysis.judge_profiles_of` and the ``judge_profiles_record`` operation), because
+runs (:func:`~threetears.evals.analysis.judge_profiles.judge_profiles_of` and the ``judge_profiles_record`` operation), because
 which runs make up one measurement is the operator's call: a campaign's arms are several runs, a re-run of one arm
 may be meant to replace it, and a run abandoned halfway should not overwrite a full measurement.
 
@@ -79,7 +79,7 @@ def judge_profile_id(
     :param judge_config_id: The versioned config that asked, or a ``builtin:`` id for the built-in prompt, by its
         wording.
     :param judge_temperature: What the judge's calls were sent at.
-    :param criterion_digest: The criterion's wording (:func:`~threetears.evals.kernel.judge_criterion_digest`).
+    :param criterion_digest: The criterion's wording (:func:`~threetears.evals.kernel.judge_cases.judge_criterion_digest`).
     :param judge_sent_settings: What the judge's calls were sent with, as their scores recorded them; ``None`` =
         unverified, its own judge.
     :return: ``judge-profile:`` and the digest of the seven.

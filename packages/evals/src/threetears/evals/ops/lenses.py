@@ -82,7 +82,8 @@ from threetears.evals.kernel.campaign import ReadingKind
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 
-from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
+from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost
+from threetears.evals.kernel.host.bars import pass_threshold_label
 
 from threetears.evals.kernel.metrics import describe_reported_measure, holds_host_measure, measure_title, reads_as_rate
 

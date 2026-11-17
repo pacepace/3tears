@@ -68,7 +68,7 @@ from threetears.evals.analysis.lenses.export import ExportError, export_projecti
 from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
 from threetears.evals.kernel.host import freeze
-from threetears.evals.ops import pivot_text
+from threetears.evals.ops.lenses import pivot_text
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key, derive_context_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure

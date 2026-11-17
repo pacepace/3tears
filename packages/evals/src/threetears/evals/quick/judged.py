@@ -57,7 +57,8 @@ from pydantic import ValidationError
 
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.summary import RoleSpend
-from threetears.evals.schema import SCALES, CompletionClient, CompletionResult, JudgeEvidence, RubricDim
+from threetears.evals.schema import CompletionClient, CompletionResult, JudgeEvidence, RubricDim
+from threetears.evals.schema.models import SCALES
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.host import CompletionClients, CompletionRole
 from threetears.evals.kernel import AuthoredJudgeCase, AuthoredVerdict

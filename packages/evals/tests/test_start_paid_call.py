@@ -18,7 +18,8 @@ import pytest
 
 from threetears.evals.kernel import AdmittedCall, OutOfRunBudget, PlannedCall, ValidationFailedError
 from threetears.evals.ops import await_job, start_action_job, start_paid_call
-from threetears.evals.run import EvalActionJob, action_job_work, run_blocking
+from threetears.evals.run import EvalActionJob, run_blocking
+from threetears.evals.run.job_work import action_job_work
 from threetears.evals.schema import BoundCompletionClient
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.storage import InMemoryDocumentStore

@@ -39,11 +39,11 @@ from threetears.evals.analysis import (
     AnalysisContextBundle,
     CampaignReport,
     assemble_context_bundle,
-    build_campaign_report,
     build_code_only_report,
-    campaign_report_markdown,
     campaigns,
 )
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
 from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_readings
 from threetears.evals.analysis.caveats import UnkeptPlan, caveat_list, unkept_plan

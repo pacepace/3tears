@@ -18,7 +18,7 @@ work that already writes its OWN durable record (an analysis generation writes a
 from a process — tracking, a timeout, and cancellation at shutdown — and never a status of its own.
 
 **Every job's work runs marked as a job's** (:func:`~threetears.evals.kernel.job_context.job_running`): a run's work
-and a task's alike, so a completion request made in it reads as a job's (:func:`~threetears.evals.kernel.running_job`),
+and a task's alike, so a completion request made in it reads as a job's (:func:`~threetears.evals.kernel.job_context.running_job`),
 and one made in the call that started it does not — which the jobs conformance kit holds every action to.
 
 **Every job's record carries its lease** (:mod:`threetears.evals.kernel.job_leases`), held through the manager's
@@ -501,7 +501,7 @@ class EvalJobManager:
         """What bounds each job's work: the host's factory, or :func:`default_job_timeout`.
 
         For work that bounds itself rather than being bounded by :meth:`start_task` — a job whose record must say
-        it timed out, which only the work's own frame can write (:func:`~threetears.evals.run.start_job_work`).
+        it timed out, which only the work's own frame can write (:func:`~threetears.evals.run.job_work.start_job_work`).
         """
         return self._job_timeout_factory
 

@@ -37,21 +37,21 @@ from threetears.evals.ops import (
     WriterLimits,
     LaunchArguments,
     analyses_list,
-    analysis_archive,
-    analysis_job_id,
     await_job,
-    campaign_archive,
     campaign_create,
     campaigns_list,
     job_cancel,
     job_poll,
-    parse_job_id,
     report_read,
     run_delete,
     run_get,
     run_job_id,
     run_launch,
 )
+from threetears.evals.ops.analysis import analysis_archive
+from threetears.evals.ops.jobs import analysis_job_id
+from threetears.evals.ops.analysis import campaign_archive
+from threetears.evals.ops.jobs import parse_job_id
 from threetears.evals.analysis import judge_agreement
 from threetears.evals.run.launch_job import LAUNCH_CANCEL_REASON
 from threetears.evals.analysis.summary import budget_stop_line, summarize_runs
