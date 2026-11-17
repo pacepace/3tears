@@ -339,17 +339,19 @@ Asks = Literal["question", "gate", "late"]
 GATE_QUESTION, GATE_MARGIN = "Is v2 no worse than v1?", 0.05
 
 
-async def small_continued_product(null: Null, tag: str, asks: Asks = "question") -> list[Read]:
+async def small_continued_product(
+    null: Null, tag: str, asks: Asks = "question", *, start: int = 8, reads: int = READS
+) -> list[Read]:
     """One newcomer under ``null`` who reads at eight cases and, while nothing separates, appends cases and runs the
     comparison again into the same store, at most :data:`READS` reads: each add four cases plus up to sixteen more the
     nearer the primary's p came to zero. Every read is the product's continuation (only appended cases run); what each
-    read asks is ``asks``."""
+    read asks is ``asks``. ``start`` and ``reads`` read another plan: sixteen cases once is a single read."""
     calls: Counter[tuple[int, int]] = Counter()
     arms = {"v1": _drawn(null, tag, 0, calls), "v2": _drawn(null, tag, 1, calls)}
     store = InMemoryDocumentStore()
-    n = 8
-    reads: list[Read] = []
-    for _ in range(READS):
+    n = start
+    taken: list[Read] = []
+    for _ in range(reads):
         asked: dict[str, Any] = (
             {"question": QUESTION}
             if asks == "question"
@@ -364,25 +366,25 @@ async def small_continued_product(null: Null, tag: str, asks: Asks = "question")
             (row,) = result.contrasts("_passed")
             leader, other = ("v2", "v1") if (row.get("delta") or 0.0) >= 0 else ("v1", "v2")
             result = await result.against(other, question=f"Does {leader} pass more often than {other}?")
-        reads.append(_small_read(result, n))
-        if reads[-1].decided:
+        taken.append(_small_read(result, n))
+        if taken[-1].decided:
             break
-        p = reads[-1].p if reads[-1].p is not None else 1.0
+        p = taken[-1].p if taken[-1].p is not None else 1.0
         n += 4 + int(16 * (1.0 - min(1.0, p)))
-    return reads
+    return taken
 
 
-def small_continued(null: Null, tag: str, asks: Asks = "question") -> list[Read]:
+def small_continued(null: Null, tag: str, asks: Asks = "question", *, start: int = 8, reads: int = READS) -> list[Read]:
     """:func:`small_continued_product` restated over the bet alone: the same draws, the committed order, the bet staked
     as the question leans (the asked side, toward worse for a gate with its equivalence test beside it under Holm,
     evenly and against the trailing arm for a question set after the results), the decision rule, the add sizes and
     the evidence."""
-    seed = case_set_seed(small_cases(8))
+    seed = case_set_seed(small_cases(start))
     launches: list[range] = []
     values: dict[int, tuple[float, float]] = {}
-    n, held = 8, 0
-    reads: list[Read] = []
-    for _ in range(READS):
+    n, held = start, 0
+    taken: list[Read] = []
+    for _ in range(reads):
         launches.append(range(held, n))
         held = n
         order = _ordered(seed, launches)
@@ -393,16 +395,16 @@ def small_continued(null: Null, tag: str, asks: Asks = "question") -> list[Read]
         if asks == "late":
             if sum(b) / len(b) - sum(a) / len(a) < 0:
                 a, b = b, a
-            reads.append(_small_restated(a, b, n, lean="none"))
+            taken.append(_small_restated(a, b, n, lean="none"))
         elif asks == "gate":
-            reads.append(_small_restated(a, b, n, lean="worse", margin=GATE_MARGIN))
+            taken.append(_small_restated(a, b, n, lean="worse", margin=GATE_MARGIN))
         else:
-            reads.append(_small_restated(a, b, n))
-        if reads[-1].decided:
+            taken.append(_small_restated(a, b, n))
+        if taken[-1].decided:
             break
-        p = reads[-1].p if reads[-1].p is not None else 1.0
+        p = taken[-1].p if taken[-1].p is not None else 1.0
         n += 4 + int(16 * (1.0 - min(1.0, p)))
-    return reads
+    return taken
 
 
 @dataclass(frozen=True)

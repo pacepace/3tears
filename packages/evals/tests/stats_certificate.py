@@ -197,17 +197,19 @@ def _shards() -> list[Shard]:
                 )
             )
     for asks in ("gate", "late"):
-        # A gate, and a question pointed at the leader after each read: 6,000 newcomers each (tags <asks>-<index>).
-        for block in _blocks(6000, 750):
-            shards.append(
-                Shard(
-                    f"small-{asks}-{block.start}",
-                    f"small-{asks}",
-                    "local",
-                    "small-asks",
-                    {"asks": asks, "start": block.start, "count": len(block)},
+        # A gate, and a question pointed at the leader after the read: continued from eight cases to five reads (tags
+        # <asks>-<index>), and read once at sixteen cases (tags <asks>-once-<index>); 6,000 newcomers each.
+        for plan in ("", "-once"):
+            for block in _blocks(6000, 750):
+                shards.append(
+                    Shard(
+                        f"small-{asks}{plan}-{block.start}",
+                        f"small-{asks}{plan}",
+                        "local",
+                        "small-asks",
+                        {"asks": asks, "plan": plan, "start": block.start, "count": len(block)},
+                    )
                 )
-            )
     for block in _blocks(20, 5):
         shards.append(
             Shard(
@@ -266,16 +268,23 @@ def _shards() -> list[Shard]:
                 {"flow": "small-continued", "null": null, "tags": [f"continued-{null}-0-{i}" for i in range(30)]},
             )
         )
-    for asks in ("gate", "late"):
-        shards.append(
-            Shard(
-                f"eq-small-{asks}",
-                f"eq-small-{asks}",
-                "pool",
-                "equivalence",
-                {"flow": f"small-{asks}", "null": "binary", "tags": [f"{asks}-{i}" for i in range(30)]},
+    # A gate's page reads its margin on every read, about five seconds a continued newcomer: 15 to a shard.
+    for asks, plan, count, size in (
+        ("gate", "", 210, 15),
+        ("gate", "-once", 120, 40),
+        ("late", "", 120, 20),
+        ("late", "-once", 120, 40),
+    ):
+        for part, block in enumerate(_blocks(count, size)):
+            shards.append(
+                Shard(
+                    f"eq-small-{asks}{plan}-{part}",
+                    f"eq-small-{asks}{plan}",
+                    "pool",
+                    "equivalence",
+                    {"flow": f"small-{asks}{plan}", "null": "binary", "tags": [f"{asks}{plan}-{i}" for i in block]},
+                )
             )
-        )
     shards.append(
         Shard(
             "eq-small-cover",
@@ -419,8 +428,9 @@ def run_local(shard: Shard) -> dict[str, int]:
             worse=sum(c.strong_worse for c in came),
         )
     if shard.job == "small-asks":
+        plan = {"start": 16, "reads": 1} if args["plan"] == "-once" else {}
         reads = [
-            quick.small_continued("binary", f"{args['asks']}-{i}", args["asks"])
+            quick.small_continued("binary", f"{args['asks']}{args['plan']}-{i}", args["asks"], **plan)
             for i in range(args["start"], args["start"] + args["count"])
         ]
         return _counts(len(reads), sum(read[-1].decided for read in reads))
@@ -504,10 +514,11 @@ async def _equivalence(flow: str, null: quick.Null | None, tags: Sequence[str]) 
         elif flow == "small-continued":
             assert null is not None
             product, restated = await quick.small_continued_product(null, tag), quick.small_continued(null, tag)
-        elif flow in ("small-gate", "small-late"):
-            asks = cast("quick.Asks", flow.removeprefix("small-"))
-            product = await quick.small_continued_product("binary", tag, asks)
-            restated = quick.small_continued("binary", tag, asks)
+        elif flow in ("small-gate", "small-late", "small-gate-once", "small-late-once"):
+            asks = cast("quick.Asks", flow.removeprefix("small-").removesuffix("-once"))
+            plan = {"start": 16, "reads": 1} if flow.endswith("-once") else {}
+            product = await quick.small_continued_product("binary", tag, asks, **plan)
+            restated = quick.small_continued("binary", tag, asks, **plan)
         elif flow == "small-cover":
             product, restated = await quick.small_covers_product(tag), quick.small_covers(tag)
         else:
@@ -607,8 +618,20 @@ def _claims() -> list[Claim]:
             "gate",
             "a gate (is v2 no worse within five points?), its bet leaning toward worse beside its equivalence test,",
         ),
-        ("late", "a question set after each read and pointed at whichever arm leads, which leans no way,"),
+        ("late", "a question set after the results and pointed at whichever arm leads, which leans no way,"),
     ):
+        claims.append(
+            Claim(
+                f"small-n.{asks}.once",
+                f"Under the binary null {said} read once at sixteen cases, separates at most α.",
+                f"small-{asks}-once",
+                "hits",
+                "at_most",
+                alpha,
+                _QUICK_SOURCES,
+                f"{asks}-once-<index>, 0-5999, restated",
+            )
+        )
         claims.append(
             Claim(
                 f"small-n.{asks}.separates",
@@ -678,7 +701,9 @@ def _claims() -> list[Claim]:
         ("small-once", "a question's single read at twelve cases, under each null"),
         ("small-continued", "a question's comparison continued to five reads, under each null"),
         ("small-gate", "a gate continued to five reads"),
+        ("small-gate-once", "a gate read once at sixteen cases"),
         ("small-late", "a question set after each read, pointed at the leader"),
+        ("small-late-once", "a question set after one read at sixteen cases, pointed at the leader"),
         ("small-cover", "a question's interval at a true difference of 0.3"),
         ("rereadable-continued", "a comparison continued with no question"),
         ("rereadable-rerun", "a comparison re-run whole with no question"),

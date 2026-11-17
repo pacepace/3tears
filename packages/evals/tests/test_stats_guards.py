@@ -237,7 +237,8 @@ def test_the_first_shard_of_each_small_n_claim_counts_as_the_product_did() -> No
     """The first shard of each small-n claim, restated, at the counts the product gave it through ``Eval.run``: single
     reads at twelve cases (200 a null) separate once, never and never; continued to five reads (150 a null), (separated,
     evidence for v2 ever strong, against it) as below; at a true difference of 0.3, none of 200 intervals misses it on
-    either side; and of 200 newcomers asking a gate, and 200 pointing a late question at the leader, 6 and 7 separate.
+    either side; and of 200 newcomers asking a gate, and 200 pointing a late question at the leader, 6 and 7 separate
+    continued, and 4 and 2 read once at sixteen cases.
     The single reads, the continued reads and the coverage are the counts the product gave through ``Eval.run``."""
     once = [
         sum(small_once(null, f"once-{null}-0-{i}")[0].decided for i in range(200))
@@ -258,6 +259,11 @@ def test_the_first_shard_of_each_small_n_claim_counts_as_the_product_did() -> No
         sum(small_continued("binary", f"{asks}-{i}", asks)[-1].decided for i in range(200)) for asks in ("gate", "late")
     ]
     assert asked == [6, 7]
+    once = [
+        sum(small_continued("binary", f"{asks}-once-{i}", asks, start=16, reads=1)[-1].decided for i in range(200))
+        for asks in ("gate", "late")
+    ]
+    assert once == [4, 2]
 
 
 def test_the_first_shards_of_the_no_question_claims_count_as_the_product_did() -> None:
