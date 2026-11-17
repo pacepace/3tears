@@ -83,6 +83,14 @@ class _WriteLandsDuringScan:
         self.row = row
         self.collection: IntentionsCollection | None = None
 
+    async def answers_from_yugabyte(self) -> bool:
+        """the database behind it, asked by the reads that spell their page per engine: PostgreSQL.
+
+        :return: False
+        :rtype: bool
+        """
+        return False
+
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         del sql, args
         assert self.collection is not None
