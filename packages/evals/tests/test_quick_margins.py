@@ -43,8 +43,9 @@ def _frozen_clock() -> Iterator[None]:
         yield
 
 
-#: Enough cases for two arms that agree on every one to be shown within 0.1 of each other. Each expects the answer
-#: ``right``, which a classifier's field grader reads.
+#: Enough cases for two arms that agree on every one to be shown within 0.1 of each other when theirs is the only
+#: reading the family tests (45 cases); beside a second reading that takes 53, more than these hold. Each expects the
+#: answer ``right``, which a classifier's field grader reads.
 CASES = [{"n": index, "label": "right"} for index in range(48)]
 
 
@@ -129,30 +130,44 @@ class TestADeclaredMargin:
 
 
 class TestHowManyCasesEquivalenceTakes:
-    """The case counts ``reading-reports.md`` states, through a comparison: arms answering alike on every case."""
+    """The case counts ``reading-reports.md`` states, through a comparison: arms answering alike on every case. Each
+    count is searched for on cases of its own, as many as it needs, so a count past :data:`CASES`' 48 (a pass rate
+    within 0.1 beside a second reading) is found where it is rather than capped at the cases these tests hold."""
 
     @staticmethod
-    async def _verdict(n: int, margin: float, *, expected: bool) -> str:
+    async def _verdict(n: int, graders: list[Any], *, reading: str, scope: str) -> str:
         async def alike(case: Mapping[str, Any]) -> str:
             return "right" if case["n"] % 3 else "wrong"
 
-        graders = [*(["label"] if expected else []), grader(correct, margin=margin)]
-        comparison = await _run(
-            CASES[:n], {"current": alike, "cheaper": alike}, graders, f"how-many-{n}-{margin}-{expected}", 2
-        )
-        return str(_row(comparison, "correct")["verdict"])
+        cases = [{"n": index, "label": "right"} for index in range(n)]
+        comparison = await _run(cases, {"current": alike, "cheaper": alike}, graders, f"{scope}-{n}", 2)
+        return str(_row(comparison, reading)["verdict"])
 
     @pytest.mark.parametrize(
-        ("margin", "expected", "first"), [(0.25, False, 12), (0.1, False, 33), (0.25, True, 15), (0.1, True, 41)]
+        ("margin", "expected", "first"), [(0.25, False, 16), (0.1, False, 45), (0.25, True, 20), (0.1, True, 53)]
     )
     async def test_the_first_count_at_which_alike_arms_read_equivalent(
         self, margin: float, expected: bool, first: int
     ) -> None:
         """One reading in the family, or two when a field grader adds accuracy and Holm divides α between them."""
-        assert (await self._verdict(first - 1, margin, expected=expected)).startswith(
+        graders = [*(["label"] if expected else []), grader(correct, margin=margin)]
+        scope = f"how-many-{margin}-{expected}"
+        assert (await self._verdict(first - 1, graders, reading="correct", scope=scope)).startswith(
             "the evidence cannot tell cheaper and current apart"
         )
-        assert (await self._verdict(first, margin, expected=expected)).startswith("cheaper and current equivalent")
+        assert (await self._verdict(first, graders, reading="correct", scope=scope)).startswith(
+            "cheaper and current equivalent"
+        )
+
+    async def test_the_first_count_at_which_alike_arms_read_a_score_equivalent_on_its_range(self) -> None:
+        """A 1-to-5 score within 0.5, the only reading the family tests."""
+        graders = [grader(rating, margin=0.5, range=(1, 5))]
+        assert (await self._verdict(34, graders, reading="rating", scope="how-many-rating")).startswith(
+            "the evidence cannot tell cheaper and current apart"
+        )
+        assert (await self._verdict(35, graders, reading="rating", scope="how-many-rating")).startswith(
+            "cheaper and current equivalent"
+        )
 
 
 class TestAPassFailInterval:

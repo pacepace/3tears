@@ -1159,18 +1159,35 @@ def test_the_committed_order_only_appends_and_depends_on_the_cases_alone() -> No
 
 
 async def test_a_comparison_plays_its_cells_case_by_case_in_the_committed_order_the_arms_in_turn() -> None:
-    """Each launch starts its cells case by case in the committed order, every arm and repeat of a case before the
-    next case, the arms in turn within a case (k = 2, four at a time). A continuation after a stop plays the cases
-    the stop left unfinished where they stand in that order, then the cases appended in theirs."""
+    """Each launch plays its cells case by case in the committed order, every arm and repeat of a case together, four
+    at a time (k = 2, two arms), and no cell of the next case starts until a cell of this one has finished; a
+    continuation after a stop plays the cases the stop left where they stand in that order, then the cases appended in
+    theirs.
+
+    Read without any timing: each answer is held until all four cells of its case have reached the runner, so a slot
+    frees only once the whole case is in flight, and a cell of the next case can reach the runner only after every
+    cell of this one has. The order the runner is reached in is then exactly case by case, whatever a loaded machine
+    does to the time between a cell's start and its call. Within a case the four calls are both arms' two repeats,
+    together; the order the interleaver hands them out in is its own (``test_arm_schedule``). Each answer costs a
+    quarter and each arm's cap is 0.9, so a launch stops when a case's cells have landed past it: after its second case,
+    with no case left part-run."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
     started: list[tuple[int, str]] = []
+    arrived: Counter[int] = Counter()
+    whole: dict[int, asyncio.Event] = {}
 
     def recording(arm: str) -> Callable[[Mapping[str, Any]], Any]:
-        draw = _priced("played", arm, 0.5, calls)
+        draw = _priced("played", arm, 0.5, calls, cost=0.25)
 
         async def run(case: Mapping[str, Any]) -> Answer:
             started.append((case["n"], arm))
+            arrived[case["n"]] += 1
+            held = whole.setdefault(case["n"], asyncio.Event())
+            if arrived[case["n"]] == 4:
+                held.set()
+            # Held until the whole case has reached the runner: no slot frees for the next case before then.
+            await held.wait()
             answer: Answer = await draw(case)
             return answer
 
@@ -1182,22 +1199,20 @@ async def test_a_comparison_plays_its_cells_case_by_case_in_the_committed_order_
     def compare(n: int, cap: float) -> Eval:
         return Eval(_cases(n), arms, [_correct], k=2, name="played", max_cost_usd=cap)
 
-    stopped = await compare(12, 1.2).run(store=store, scope="s")
+    def played(starts: list[tuple[int, str]], cases: list[int]) -> None:
+        """The runner is reached case by case in ``cases``' order, each case's four calls both arms' two repeats."""
+        assert [n for n, _ in starts] == [n for n in cases for _ in range(4)], starts
+        for at in range(0, len(starts), 4):
+            assert Counter(arm for _, arm in starts[at : at + 4]) == {"a": 2, "b": 2}, starts
+
+    stopped = await compare(12, 1.8).run(store=store, scope="s")
+    assert stopped.exit_code() == 1
     runs, _ = off_loop(_stored, stopped.host.storage, stopped.campaign_id)
     template = runs[0].template_id
     case_n = {f"{template}-{n}": n for n in range(20)}
     order = [case_n[case] for case in committed_order(template, [[f"{template}-{n}" for n in range(12)]])]
-
-    def played(starts: list[tuple[int, str]], cases: list[int]) -> None:
-        """Every case's cells start before the next case's, in ``cases``' order, the arms in turn within each."""
-        assert [n for n, _ in starts] == [n for n in cases for _ in range(4)][: len(starts)]
-        for at in range(0, len(starts) - 1, 2):
-            assert {starts[at][1], starts[at + 1][1]} == {"a", "b"}, starts
-
-    first_launch = list(started)
-    assert 0 < len(first_launch) < 48
-    played(first_launch, order)
-    unfinished = [n for n in order if sum(1 for m, _ in first_launch if m == n) < 4]
+    played(started, order[:2])
+    unfinished = order[2:]
 
     started.clear()
     await compare(20, 100.0).run(store=store, scope="s")
@@ -1208,12 +1223,8 @@ async def test_a_comparison_plays_its_cells_case_by_case_in_the_committed_order_
             [[f"{template}-{n}" for n in range(12)], [f"{template}-{n}" for n in (*unfinished, *range(12, 20))]],
         )
     ][12:]
-    # The continuation plays the unfinished cases where they stand, then the appended ones, each arm only its missing
-    # cells: each arm's starts follow that order (an arm missing fewer cells runs ahead of the other).
-    for arm in "ab":
-        missing = {n: 2 - sum(1 for m, side in first_launch if (m, side) == (n, arm)) for n in unfinished}
-        expected = [n for n in unfinished for _ in range(missing[n])] + [n for n in appended for _ in range(2)]
-        assert [n for n, side in started if side == arm] == expected, arm
+    # The continuation plays the cases left where they stand, then the appended ones in their own committed order.
+    played(started, [*unfinished, *appended])
 
 
 # --- the null, through the product -----------------------------------------------------------------------------------
