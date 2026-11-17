@@ -724,10 +724,10 @@ def _reading_p(runs: Sequence[Any], results: Sequence[EvalResult], rule: _Rule =
     - ``prefix`` (the product): the cases of the committed order
       (:func:`~threetears.evals.analysis.bundle.trials.committed_order` over the runs' launches) up to the first case
       some arm has not recorded at every repeat;
-    - ``recorded`` (the rule of fix round 4): every complete case, in the order of its last cell's ``scored_at``,
-      launch by launch;
-    - ``filed`` (the rule before that): every case both arms recorded any repeat of, in the launch that first recorded
-      it, each launch's in the order of the cases file.
+    - ``recorded`` (a comparison rule, never the product's): every complete case, in the order of its last cell's
+      ``scored_at``, launch by launch;
+    - ``filed`` (a comparison rule, never the product's): every case both arms recorded any repeat of, in the launch
+      that first recorded it, each launch's in the order of the cases file.
 
     ``None`` with fewer than two cases."""
     launch: dict[str, int] = {}
@@ -1500,13 +1500,14 @@ async def test_under_the_null_arms_of_different_speed_stopped_and_drained_separa
     latency: _Latency,
 ) -> None:
     """Arms of different speed, the slow one slower again when wrong (arm ``a`` 0.4 ms whatever it answers; arm ``b`` 2
-    ms when right and four or twenty times that when wrong), which pushed the record-order rule of fix round 4 above α:
-    :data:`_APART` newcomers (:func:`_watched`), k = 1, each run interrupted in four of five at a point drawn apart from
-    any answer, the cells in flight drained, then continued once. The product reads the longest complete prefix of an
-    order fixed before any answer, so its 95% Clopper-Pearson upper bound is at most α. As drawn for this change: at
-    four times slower when wrong, the product 19 of 1,000 (1.9%, 1.1% to 3.0%), the record-order rule 19, the
-    file-order rule 19; at twenty times, the product 17 (1.7%, 1.0% to 2.7%), the record-order rule 20, the file-order
-    rule 11. With up to three runs (800 newcomers each) the product separated 12 and 29 (3.6%, upper 5.1%): the bound is read at two runs, so that it clears α at a count one pool request holds."""
+    ms when right and four or twenty times that when wrong): :data:`_APART` newcomers (:func:`_watched`), k = 1, each
+    run interrupted in four of five at a point drawn apart from any answer, the cells in flight drained, then continued
+    once (two runs). The product reads the longest complete prefix of an order fixed before any answer, so its 95%
+    Clopper-Pearson upper bound is at most α. As drawn for this change: at four times slower when wrong, the product 19
+    of 1,000 (1.9%, 1.1% to 3.0%); at twenty times, 17 (1.7%, 1.0% to 2.7%); the two comparison rules over the same
+    answers 19 and 19, and 20 and 11. Over three runs (800 newcomers each) the product drew 12 and 29, the latter 3.6%
+    with an upper bound of 5.1%, which does not clear α at that size: consistent with the bound (the plain five-run
+    flow draws 2.2% to 4.5%), and the test reads two runs so that it clears α at a count one pool request holds."""
     tally = await _watch_many(f"drained-{latency}", _APART, latency=latency, stop="blind", k=1, launches=2)
     bound = exact_rate_interval(tally[0], _APART)
     assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, _shares(tally, _APART)
