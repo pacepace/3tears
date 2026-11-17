@@ -833,6 +833,36 @@ class PageForms:
             higher_is_better=higher_is_better,
         )
 
+    def ruled_change_size(
+        self,
+        ruler: MeasureRuler,
+        change: float,
+        *,
+        form: MoneyForm | None = None,
+        places: ContrastPlaces | None = None,
+        measure: str = "",
+        kind: _MeasureKind = None,
+    ) -> str:
+        """A change's size as the verdict line's estimate states it (``29``, ``$0.002``, ``0.31 points``): unsigned, in
+        the form :meth:`ruled_allows` states the interval's ends in, so the estimate and its interval read alike.
+
+        :param ruler: The reading's ruler.
+        :param change: The change, as stored.
+        :param form: The form the reading's changes read in on the surface; None for none.
+        :param places: The surface's set's places; None where it holds none.
+        :param measure: The measure or dimension it is a change of; empty for none.
+        :param kind: Its reading.
+        :return: The size.
+        """
+        return self._ruled_size(
+            ruler,
+            change * ruler.factor,
+            form=form,
+            places=self._set_places(places, measure, kind),
+            measure=measure,
+            kind=kind,
+        )
+
     def loss_share(self, share: float) -> Printed:
         """A share of an arm's trials lost (0 to 1), or the share past which loss differs between arms, in percent by
         the lone figure rule (``12.5%``), as the methods' disclosure states it.

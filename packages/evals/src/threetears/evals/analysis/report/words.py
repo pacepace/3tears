@@ -202,6 +202,83 @@ def comparison_words(verdict: ComparisonVerdict, arm: str, control: str, *, high
     return COMPARISON_VERDICT_WORDS[verdict].format(arm=arm, control=control, better_end=better_end)
 
 
+#: Where an arm stands against the control on a reading the bet read and did not decide: the lead's direction, said
+#: before its estimate, its interval and its evidence, never "cannot tell apart", which a reader takes for "the same".
+StandingSide = Literal["ahead", "behind", "level"]
+
+#: Filled by :func:`standing_words`.
+_STANDING_WORDS = worded(
+    {
+        "ahead": "{arm} ahead of {control}{better_end}, not decided",
+        "behind": "{arm} behind {control}{better_end}, not decided",
+        "level": "{arm} level with {control}, not decided",
+    },
+    StandingSide,
+    "an undecided standing",
+)
+
+#: The estimate's sentence on such a reading, its size already in the page's form: ``Over 8 paired cases, v2 is 29
+#: points ahead of v1.`` Filled by :func:`standing_words`'s caller through :func:`estimate_sentence`.
+_ESTIMATE_WORDS = worded(
+    {
+        "ahead": "Over {cases} paired cases, {arm} is {size} ahead of {control}.",
+        "behind": "Over {cases} paired cases, {arm} is {size} behind {control}.",
+        "level": "Over {cases} paired cases, {arm} and {control} are level.",
+    },
+    StandingSide,
+    "an estimate",
+)
+
+
+def standing_side(delta: float | None, *, higher_is_better: bool) -> StandingSide:
+    """Which side of the control an arm's change puts it on, the better side ``ahead``."""
+    if not delta:
+        return "level"
+    return "ahead" if (delta > 0) == higher_is_better else "behind"
+
+
+def standing_words(side: StandingSide, arm: str, control: str, *, higher_is_better: bool = True) -> str:
+    """An undecided contrast the bet read, in words: ``v2 ahead of v1, not decided``.
+
+    :param side: Where the arm stands (:func:`standing_side`).
+    :param arm: The arm read against the control, as the page names it.
+    :param control: The control, as the page names it.
+    :param higher_is_better: The reading's direction; a lower-is-better reading's better end is said in brackets.
+    :return: The words.
+    """
+    better_end = "" if higher_is_better else LOWER_IS_BETTER
+    return _STANDING_WORDS[side].format(arm=arm, control=control, better_end=better_end)
+
+
+def estimate_sentence(side: StandingSide, arm: str, control: str, *, cases: int, size: str) -> str:
+    """The estimate's sentence: ``Over 8 paired cases, v2 is 29 points ahead of v1.``
+
+    :param side: Where the arm stands (:func:`standing_side`).
+    :param arm: The arm, as the page names it.
+    :param control: The control, as the page names it.
+    :param cases: The paired cases the bet read.
+    :param size: The change's size in the page's form, its unit with it (``29 points``).
+    :return: The sentence, with its closing stop.
+    """
+    return _ESTIMATE_WORDS[side].format(arm=arm, control=control, cases=cases, size=size)
+
+
+def evidence_sentence(arm: str, side: Literal["better", "worse"], grade: str, figure: str, *, decided: bool) -> str:
+    """The graded evidence's sentence, the grade in its one owner's word
+    (:func:`~threetears.evals.analysis.style.evidence_grade`) and the e-value in the page's form: ``The evidence that
+    v2 is better is strong (74), enough to decide.``
+
+    :param arm: The arm, as the page names it.
+    :param side: Which side the evidence is for.
+    :param grade: Its grade's word.
+    :param figure: The e-value, in the page's form.
+    :param decided: Whether the comparison is decided that way, which the sentence then says.
+    :return: The sentence, with its closing stop.
+    """
+    closing = ", enough to decide" if decided else ""
+    return f"The evidence that {arm} is {side} is {grade} ({figure}){closing}."
+
+
 #: What a guardrail came to for an arm against the control, as a reader says it, each arm by its label. Filled by
 #: :func:`guardrail_words`.
 GUARDRAIL_DECISION_WORDS = worded(
@@ -829,6 +906,11 @@ def counted(n: int, of: int, what: str) -> str:
 
 __all__ = [
     "BAR_DECISION_WORDS",
+    "evidence_sentence",
+    "estimate_sentence",
+    "standing_words",
+    "standing_side",
+    "StandingSide",
     "CASES_READING",
     "COMPARISON_VERDICT_WORDS",
     "CONFIDENCE_WORDS",

@@ -54,12 +54,16 @@ from threetears.evals.analysis.report.verdict import MIN_CASES, VerdictLine, ver
 from threetears.evals.analysis.report.words import (
     comparison_words,
     disclosure_words,
+    estimate_sentence,
+    evidence_sentence,
     reading_heading,
     reading_verb,
     reason_words,
+    standing_side,
+    standing_words,
 )
-from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, INTERVAL_LEVEL
-from threetears.evals.analysis.style import CANNOT_TELL_APART
+from threetears.evals.analysis.stats import EQUIVALENCE_NEEDS_RANGE, EVIDENCE_STEPS, INTERVAL_LEVEL
+from threetears.evals.analysis.style import CANNOT_TELL_APART, evidence_grade
 from threetears.evals.kernel.metrics import ACCURACY_MEASURE, METRIC_DESCRIPTORS
 from threetears.evals.kernel.surface import DecisionSurface
 
@@ -165,6 +169,22 @@ def contrast_evidence(
         if _unvaried_means(surface, comparison) is not None:
             # Neither arm varied, so the table draws no interval, and the sentence claims none either.
             allows = "Neither arm varied over these cases, so no interval is drawn on the change."
+        if comparison.evidence_better is not None and comparison.evidence_worse is not None and paired:
+            # A reading the bet read leads on where the arm stands: its estimate, the interval, then the evidence for
+            # each side it is graded on, and the counts it rests on last.
+            side = standing_side(comparison.delta, higher_is_better=comparison.higher_is_better)
+            size = page.ruled_change_size(
+                ruler, comparison.delta, form=form, places=places, measure=comparison.name, kind=comparison.reading
+            )
+            unit = " points" if ruler.unit == PERCENT else ""
+            lead = [
+                estimate_sentence(
+                    side, verdict.arm, verdict.control, cases=comparison.control.n_cases, size=f"{size}{unit}"
+                ),
+                allows,
+                *_evidence_sentences(comparison, verdict, page),
+            ]
+            return " ".join([*lead, *said])
         if paired:
             said.append(f"Over {comparison.control.n_cases} paired cases, {allows[:1].lower()}{allows[1:]}")
         else:
@@ -172,6 +192,40 @@ def contrast_evidence(
         return " ".join(said)
 
     return figures
+
+
+#: The largest e-value a sentence states as a figure; past it the evidence is said to be over it, since a bet's capital
+#: on a few dozen agreeing cases runs to many digits that say nothing a reader acts on.
+_EVIDENCE_SHOWN_TO = 1000.0
+
+
+def _evidence_sentences(comparison: FamilyComparison, verdict: Verdict, forms: PageForms) -> list[str]:
+    """The graded evidence a bet-read contrast holds: for the side its estimate leans to (better where it is level),
+    then for the other side where it reaches the first grade's step, each in its grade's word
+    (:func:`~threetears.evals.analysis.style.evidence_grade`) and with its e-value; a side the comparison is decided on
+    says so."""
+    better, worse = comparison.evidence_better, comparison.evidence_worse
+    if better is None or worse is None:
+        return []
+    leaning = "worse" if standing_side(comparison.delta, higher_is_better=comparison.higher_is_better) == "behind" else "better"
+    order = (("better", better), ("worse", worse)) if leaning == "better" else (("worse", worse), ("better", better))
+    said = []
+    for index, (side, evidence) in enumerate(order):
+        if index and evidence < EVIDENCE_STEPS[0]:
+            continue
+        shown = min(evidence, _EVIDENCE_SHOWN_TO)
+        figure = forms.multiple(shown).text
+        decided = verdict.outcome == ("improved" if side == "better" else "regressed")
+        said.append(
+            evidence_sentence(
+                verdict.arm,
+                "better" if side == "better" else "worse",
+                evidence_grade(evidence),
+                f"over {figure}" if evidence > _EVIDENCE_SHOWN_TO else figure,
+                decided=decided,
+            )
+        )
+    return said
 
 
 def _sides_sentence(sides: Sequence[tuple[str, str, str | None, int | None]], heading: str, reading: str) -> str:
@@ -568,6 +622,9 @@ def _verdict_cell(verdict: Verdict) -> str:
     if verdict.outcome != "not_separated" or verdict.control is None:
         return verdict.words
     sentence = comparison_words("not_separated", verdict.arm, verdict.control)
+    if not verdict.words.startswith(sentence):
+        # An undecided contrast the bet read says where the arm stands (:func:`_contrast_words`), not the short form.
+        return verdict.words
     # prose-canary: allow — Verdict.words is the sentence comparison_words rendered, not anything a model wrote
     return CANNOT_TELL_APART + verdict.words.removeprefix(sentence)
 
@@ -583,8 +640,17 @@ def _contrast_words(
     """A tested contrast's verdict in words: the verdict naming the arm and the control (``arms``) by label, why where
     there is more to say, its margin, materiality."""
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
+    undecided_bet = comparison.verdict == "not_separated" and comparison.evidence_better is not None
     return (
-        comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
+        (
+            standing_words(
+                standing_side(comparison.delta, higher_is_better=comparison.higher_is_better),
+                *arms,
+                higher_is_better=comparison.higher_is_better,
+            )
+            if undecided_bet
+            else comparison_words(comparison.verdict, *arms, higher_is_better=comparison.higher_is_better)
+        )
         + (f" ({reason_words(comparison.untested_reason)})" if comparison.untested_reason else "")
         + (f" ({reason_words(comparison.not_separated_reason)})" if comparison.not_separated_reason else "")
         + (
