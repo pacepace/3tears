@@ -8,6 +8,9 @@ honest check that the bytes mean what we think.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import Any
+
 import mapbox_vector_tile
 import pytest
 from shapely import wkt
@@ -160,7 +163,7 @@ class TestPartialLayer:
 
     def test_a_healthy_tile_encodes_byte_for_byte_as_before(self) -> None:
         tile = TileId(z=6, x=12, y=25)
-        layers = {"pts": self._features(tile)}
+        layers: dict[str, Sequence[TileFeature]] = {"pts": self._features(tile)}
         plain = encode_tile(layers, tile)
         assert encode_tile(layers, tile, undecodable={"pts": 0}) == plain
         assert set(mapbox_vector_tile.decode(plain)) == {"pts"}
@@ -220,8 +223,9 @@ def _wire_coordinates(geometry: object) -> list[tuple[float, float]]:
     return found
 
 
-def _decode(payload: bytes) -> dict:
-    return mapbox_vector_tile.decode(payload, default_options={"y_coord_down": True})
+def _decode(payload: bytes) -> dict[str, Any]:
+    decoded: dict[str, Any] = mapbox_vector_tile.decode(payload, default_options={"y_coord_down": True})
+    return decoded
 
 
 def _within_buffer(coordinates: list[tuple[float, float]]) -> bool:

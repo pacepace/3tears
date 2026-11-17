@@ -17,6 +17,8 @@ from threetears.evals.kernel.errors import ValidationFailedError
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.factories import memory_storage
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.storage.memory import InMemoryDocumentStore
 
 #: The host the campaigns here are declared against; their designs name nothing of its vocabulary.
 _HOST = toyhost_profile()
@@ -25,7 +27,7 @@ _HOME = "scope-a"
 _ELSEWHERE = "scope-b"
 
 
-def _storage_with_a_run_in_each_scope():
+def _storage_with_a_run_in_each_scope() -> tuple[EvalStorage, InMemoryDocumentStore]:
     storage, store = memory_storage()
     here = make_eval_run(id="run-here", scope_id=_HOME)
     there = make_eval_run(id="run-there", scope_id=_ELSEWHERE)

@@ -25,4 +25,4 @@ def test_the_six_categories_and_their_wire_values() -> None:
 
 def test_a_category_is_its_string() -> None:
     assert ImpersonationCategory("email_change") is ImpersonationCategory.EMAIL_CHANGE
-    assert ImpersonationCategory.EMAIL_CHANGE == "email_change"
+    assert ImpersonationCategory.EMAIL_CHANGE.value == "email_change"

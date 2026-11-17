@@ -61,9 +61,10 @@ from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
 from packages.evals.tests.off_loop import off_loop
+from threetears.evals.schema.models import EvalRun
 
 
-def _run_of_the_kind(**overlays: Any):
+def _run_of_the_kind(**overlays: Any) -> EvalRun:
     """A toy-extractor run whose launch turned ``overlays``, frozen as a launch freezes them."""
     validated = TOY_EXTRACTOR_CONTRACT.validate_overlays(overlays)
     return make_eval_run(candidate_kind=TOY_EXTRACTOR_KIND, overlays=freeze(validated))
@@ -494,7 +495,7 @@ def _launching(max_admitted_runs: int = TOYHOST_LAUNCH_SETTINGS.max_admitted_run
     return host, storage
 
 
-async def _launch(host: LaunchHost, **overlays: Any):
+async def _launch(host: LaunchHost, **overlays: Any) -> list[EvalRun]:
     runs = await start_run(
         host,
         template_id=toyhost_template().id,

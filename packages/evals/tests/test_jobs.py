@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -215,7 +215,7 @@ async def test_a_terminal_branch_other_than_cancel_records_the_empty_matrix() ->
         async def __aenter__(self) -> None:
             raise EvalJobTimeout(budget_s=1.0, elapsed_s=1.0)
 
-        async def __aexit__(self, *exc: object):
+        async def __aexit__(self, *exc: object) -> bool:
             return False
 
     storage = InMemoryRunStore()
@@ -611,7 +611,7 @@ async def test_the_manager_hands_each_job_its_own_resolved_budget() -> None:
     seen: list[float] = []
 
     @asynccontextmanager
-    async def recording_timeout(budget_s: float):
+    async def recording_timeout(budget_s: float) -> AsyncIterator[float]:
         seen.append(budget_s)
         yield budget_s
 

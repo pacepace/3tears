@@ -73,6 +73,13 @@ def _call(code: str) -> ast.Call:
     return node.value
 
 
+def _sent(code: str) -> list[str]:
+    """The SQL of each statement the helper call in ``code`` sends, every one of which the walk read."""
+    statements = list(helper_statements(_call(code)))
+    assert all(statement.sql is not UNSEEN for statement in statements), statements
+    return [statement.sql for statement in statements if statement.sql is not None]
+
+
 def _judged(code: str, schema: SchemaCatalog, name: str = "src/app.py::reader") -> list[list[tuple[str, str]]]:
     judged = []
     for statement in helper_statements(_call(code)):
@@ -664,7 +671,7 @@ def test_a_stage_or_source_target_written_as_an_f_string_is_the_relation_it_name
     """Flips if apply_stage's / update_from's target written as an f-string (``f"main.{name}"``: a local copy named at
     run time, R9) is written as an unknown ``"{}"`` instead of the relation it names, the default key every copy
     declares (``local_relations["*"]``), as the same f-string handed to any other helper is."""
-    written = [statement.sql for statement in helper_statements(_call(code))]
+    written = _sent(code)
     assert any(f"{COPY_PREFIX}{{}}" in sql and sql.startswith(("DELETE", "UPDATE")) for sql in written), written
 
 
@@ -767,8 +774,8 @@ def test_a_text_ranked_read_is_judged_by_its_pins_under_its_rank_order(schema: S
     as the read pinning them is; and never as the vector order an approximate-nearest-neighbour index serves."""
     keyed = 'read_nearest(c, "results", by={"state": s}, nearest=TextRank("search_vector", q), limit=k)'
     assert _judged(keyed, schema) == [[]]
-    (statement,) = helper_statements(_call(keyed))
-    assert "ts_rank_cd" in statement.sql and "DESC LIMIT" in statement.sql, statement.sql
+    (sent,) = _sent(keyed)
+    assert "ts_rank_cd" in sent and "DESC LIMIT" in sent, sent
     assert _judged(keyed.replace('by={"state": s}', 'by={"kind": s}'), schema) == [[("non-key-where", "results")]]
     ranked = 'read_nearest(c, "docs", by={"owner": o}, nearest=TextRank("search_vector", q), limit=k)'
     assert _judged(ranked, schema) == [[("non-key-where", "docs")]]
@@ -783,11 +790,11 @@ def test_a_text_ranked_read_s_tie_order_is_in_the_statement_it_is_judged_as(sche
         'then=(Sort("geo", descending=True), Sort("kind"))), limit=k)'
     )
     assert _judged(keyed, schema) == [[]]
-    (statement,) = helper_statements(_call(keyed))
-    assert re.search(r"DESC, \S*geo\S* DESC, \S*kind\S* LIMIT", statement.sql), statement.sql
+    (sent,) = _sent(keyed)
+    assert re.search(r"DESC, \S*geo\S* DESC, \S*kind\S* LIMIT", sent), sent
     unread = keyed.replace('then=(Sort("geo", descending=True), Sort("kind"))', "then=ties")
-    (statement,) = helper_statements(_call(unread))
-    assert re.search(r"\) DESC LIMIT", statement.sql), statement.sql
+    (sent,) = _sent(unread)
+    assert re.search(r"\) DESC LIMIT", sent), sent
     assert _judged(keyed.replace('by={"state": s}', 'by={"kind": s}'), schema) == [[("non-key-where", "results")]]
 
 
@@ -818,10 +825,10 @@ def test_a_pattern_ranked_read_is_judged_by_its_pins_under_its_rank_order(schema
     finding when they do not; its ``LEFT`` joins each judged by the columns it is joined on."""
     keyed = 'read_nearest(c, "results", by={"state": s}, nearest=PatternCount(("name",), ps), limit=k)'
     assert _judged(keyed, schema) == [[]]
-    (statement,) = helper_statements(_call(keyed))
-    assert "pattern_count" in statement.sql and "DESC LIMIT" in statement.sql, statement.sql
-    (tied,) = helper_statements(_call(keyed.replace("ps)", 'ps, then=("name", Sort("geo", descending=True)))')))
-    assert re.search(r"DESC, \S*name\S*, \S*geo\S* DESC LIMIT", tied.sql), tied.sql
+    (sent,) = _sent(keyed)
+    assert "pattern_count" in sent and "DESC LIMIT" in sent, sent
+    (tied,) = _sent(keyed.replace("ps)", 'ps, then=("name", Sort("geo", descending=True)))'))
+    assert re.search(r"DESC, \S*name\S*, \S*geo\S* DESC LIMIT", tied), tied
     assert _judged(keyed.replace('by={"state": s}', 'by={"kind": s}'), schema) == [[("non-key-where", "results")]]
     joined = (
         'read_nearest(c, "docs", by={"owner": o}, nearest=PatternCount(("g",), ps), limit=k, '

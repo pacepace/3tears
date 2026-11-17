@@ -14,6 +14,9 @@ counting is the only way to tell "released once" from "released twice" from
 
 from __future__ import annotations
 
+from typing import Self
+from unittest.mock import MagicMock
+
 
 class ReleasableClientMixin:
     """Gives a fake LLM client the release half of the client protocol.
@@ -29,7 +32,7 @@ class ReleasableClientMixin:
         """Record a release. Idempotent, like the real client's."""
         self.aclose_calls = self.aclose_calls + 1
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         """Enter a releasing scope, mirroring the real client."""
         return self
 
@@ -38,7 +41,7 @@ class ReleasableClientMixin:
         await self.aclose()
 
 
-def releasable_client_mock():
+def releasable_client_mock() -> MagicMock:
     """A ``MagicMock`` LLM client whose ``aclose`` can actually be awaited.
 
     A bare ``MagicMock`` returns a ``MagicMock`` from ``aclose()``, which is not

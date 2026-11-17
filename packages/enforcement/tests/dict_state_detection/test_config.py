@@ -177,5 +177,6 @@ class TestAllowlistRationaleValidation:
             attr_name="_cache",
             rationale=_VALID_RATIONALE,
         )
+        field = "line"
         with pytest.raises(dataclasses.FrozenInstanceError):
-            entry.line = 20
+            setattr(entry, field, 20)

@@ -11,7 +11,6 @@ from typing import Any
 import httpx
 import pytest
 
-import threetears.iam.saml as saml_module
 from threetears.iam.saml import (
     AuthnResponseLike,
     SamlError,
@@ -135,7 +134,7 @@ def test_an_unexpected_parser_failure_is_not_read_as_malformed_input(monkeypatch
     def _broken(_payload: bytes) -> Any:
         raise RuntimeError("parser bug")
 
-    monkeypatch.setattr(saml_module.DefusedElementTree, "fromstring", _broken)
+    monkeypatch.setattr("threetears.iam.saml.DefusedElementTree.fromstring", _broken)
     with pytest.raises(RuntimeError, match="parser bug"):
         peek_entity_id(_METADATA)
 

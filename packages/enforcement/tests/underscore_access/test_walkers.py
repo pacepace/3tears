@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from typing import Any
 import os
 from pathlib import Path
 
@@ -755,7 +756,13 @@ class TestEveryShapeReadsOneParse:
     ) -> None:
         parses: list[str] = []
         real_parse = ast.parse
-        monkeypatch.setattr(ast, "parse", lambda source, *a, **k: parses.append("p") or real_parse(source, *a, **k))
+
+        def counting_parse(source: str, *a: Any, **k: Any) -> ast.AST:
+            parses.append("p")
+            parsed: ast.AST = real_parse(source, *a, **k)
+            return parsed
+
+        monkeypatch.setattr(ast, "parse", counting_parse)
         src = tmp_path / "src"
         _write(src / "pkg" / "mod.py", '__all__ = ["_x"]\n\nclass A:\n    _y = 1\n')
         roots = (src,)

@@ -331,10 +331,13 @@ class TestRoundTripThroughTheCollection:
         key = (row["agent_id"], row["conversation_id"])
         collection.evict_from_cache_sync(key)
 
-        stored = await collection.l3_pool.fetchrow(  # type: ignore[union-attr]
+        pool = collection.l3_pool
+        assert pool is not None
+        stored = await pool.fetchrow(
             "SELECT parent_type, parent_id FROM conversations WHERE agent_id = $1 AND conversation_id = $2",
             *key,
         )
+        assert stored is not None
         assert (stored["parent_type"], stored["parent_id"]) == ("wake", parent)
 
         read = await collection.get(key)

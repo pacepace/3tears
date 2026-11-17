@@ -22,7 +22,7 @@ from threetears.conversations.buffer import ConversationWriteBuffer
 
 def _build_collection_mock(
     *,
-    get_returns: dict[tuple, Any] | None = None,
+    get_returns: dict[tuple[object, ...], Any] | None = None,
 ) -> MagicMock:
     """build a fake :class:`ConversationsCollection` for buffer tests.
 

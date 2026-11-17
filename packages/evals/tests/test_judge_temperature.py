@@ -78,7 +78,9 @@ class _Client:
         return SimpleNamespace(**fields)
 
 
-def _service(*, configs: dict[str, JudgeConfig] | None = None, refuses: bool = False, reports: bool = True):
+def _service(
+    *, configs: dict[str, JudgeConfig] | None = None, refuses: bool = False, reports: bool = True
+) -> tuple[JudgeService, list[tuple[str | None, float | None]]]:
     """A judge service whose clients report what they were asked for — or none, for a model that refuses one."""
     asked: list[tuple[str | None, float | None]] = []
 

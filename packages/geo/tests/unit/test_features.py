@@ -36,7 +36,9 @@ async def _empty_loader(layer: str, source_version: int, bounds: BoundingBox) ->
 
 def _row_bounds(row: dict[str, Any]) -> BoundingBox:
     """test rows carry their bounds directly; real layers decode geometry."""
-    return row["bounds"]
+    bounds = row["bounds"]
+    assert isinstance(bounds, BoundingBox)
+    return bounds
 
 
 @pytest.fixture

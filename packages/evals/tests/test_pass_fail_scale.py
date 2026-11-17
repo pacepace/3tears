@@ -15,7 +15,7 @@ from typing import Any, get_args
 import pytest
 from pydantic import ValidationError
 from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
-from threetears.evals.analysis.reporting import project_score_records
+from threetears.evals.analysis.reporting import ScoreRecord, project_score_records
 from threetears.evals.kernel.declaration import resolve_bar_name
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.provider import withhold_failure_detail
@@ -23,6 +23,7 @@ from threetears.evals.kernel.scoring import compute_dimension_summary, compute_p
 from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
 from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from threetears.evals.schema.models import (
+    EvalResult,
     MODEL_DEFAULT_TEMPERATURE,
     SCALES,
     JudgedArtifact,
@@ -227,7 +228,7 @@ class TestTheJudgeService:
         assert outcome.score is None
 
 
-def _result(**overrides: Any):
+def _result(**overrides: Any) -> EvalResult:
     return make_eval_result(goal_state_outcomes=[], **overrides)
 
 
@@ -288,7 +289,7 @@ class TestAggregation:
 
 
 class TestTheProjection:
-    def _project(self, results, **run_overrides):
+    def _project(self, results, **run_overrides) -> list[ScoreRecord]:
         """Project through the toy host: the projection reads the installed host's levers."""
         run = make_eval_run(id="run-1", **run_overrides)
         profile = toyhost_profile()

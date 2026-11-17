@@ -18,6 +18,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.registry import CollectionRegistry
@@ -153,7 +154,9 @@ class _UnreachableKv(FakeNatsClient):
         del kwargs
         raise KvError("kv down")
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         return None
 
 

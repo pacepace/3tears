@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from threetears.enforcement.common.violations import Violation
 from threetears.enforcement.no_silent_swallow.walkers import (
     body_contains_log,
     body_reraises,
@@ -31,7 +32,7 @@ def _make_repo(repo_root: Path) -> Path:
     return repo_root
 
 
-def _scan(src: Path, repo: Path) -> list:
+def _scan(src: Path, repo: Path) -> list[Violation]:
     return find_silent_swallows(
         (src,),
         repo,

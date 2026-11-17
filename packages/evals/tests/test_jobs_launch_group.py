@@ -149,7 +149,7 @@ async def test_a_sibling_that_cannot_be_saved_cancels_the_runs_already_saved() -
             super().__init__()
             self.saves = 0
 
-        def save_eval_run(self, run, *, if_match=None):
+        def save_eval_run(self, run, *, if_match=None) -> None:
             self.saves += 1
             if self.saves == 2:
                 raise OSError("disk full")
@@ -178,7 +178,7 @@ async def test_a_cancellation_that_cannot_be_saved_neither_stops_the_rest_nor_ma
             super().__init__()
             self.saves = 0
 
-        def save_eval_run(self, run, *, if_match=None):
+        def save_eval_run(self, run, *, if_match=None) -> None:
             self.saves += 1
             if self.saves == 3:
                 raise StorageError("the third member could not be saved")

@@ -27,12 +27,14 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_BARS, toyhost_profile
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.kernel.host.profile import HostProfile
 
 DECLARED = "extract_invoice_fields"
 UNDECLARED = "summarise_invoices"
 
 
-def _profile(threshold: int):
+def _profile(threshold: int) -> HostProfile:
     return replace(
         toyhost_profile(),
         bars=BarRegistry(
@@ -44,7 +46,7 @@ def _profile(threshold: int):
     )
 
 
-def _bundle(behavior: str, threshold: int, *, score: int = 4):
+def _bundle(behavior: str, threshold: int, *, score: int = 4) -> AnalysisContextBundle:
     runs, results = [], {}
     for model in ("control-model", "contrast-model"):
         run = make_eval_run(status="completed", candidate_model=model, k_runs=1)

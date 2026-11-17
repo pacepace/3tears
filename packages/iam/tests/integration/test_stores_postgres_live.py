@@ -101,7 +101,10 @@ async def test_a_purge_deletes_every_expired_row_page_after_page_and_no_live_one
 def _index_reads(node: dict[str, object]) -> list[str]:
     """every index a plan node (and its children) reads."""
     found = [str(node["Index Name"])] if "Index Name" in node else []
-    for child in node.get("Plans", []):
+    children = node.get("Plans", [])
+    assert isinstance(children, list), f"a plan node's Plans is a list, not {children!r}"
+    for child in children:
+        assert isinstance(child, dict), f"a plan node is an object, not {child!r}"
         found += _index_reads(child)
     return found
 

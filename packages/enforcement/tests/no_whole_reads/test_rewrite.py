@@ -1621,7 +1621,9 @@ def test_aggregates_and_scalar_sub_selects_are_parsed() -> None:
         ("agents", ["name"]),
     ], subs.parts
     assert [item["function"] for item in subs.parts[1]["items"]] == ["value"]
-    assert sorted({pin.param for pin in subs.pins}) == [1, 2]
+    params = {pin.param for pin in subs.pins}
+    assert None not in params
+    assert sorted(param for param in params if param is not None) == [1, 2]
     for refused, reason in (
         ("SELECT count(*) FROM geos WHERE state = $1", "count shape"),
         ("SELECT COALESCE(MAX(pop), 0) + 1 AS next FROM geos WHERE state = $1", "aggregate"),

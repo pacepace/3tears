@@ -24,11 +24,12 @@ from threetears.evals.analysis.stats import (
 )
 from threetears.evals.kernel.surface import PredictionPoweredReading
 from threetears.evals.run import rate_result
-from threetears.evals.schema.models import EvalCaseStratum, EvalResult
+from threetears.evals.schema.models import EvalRun, EvalCaseStratum, EvalResult
 from packages.evals.tests.factories import make_calibration_rating, make_eval_result
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 
 
 class TestTheEstimator:
@@ -105,7 +106,9 @@ class _OneStratumToyhost(ToyhostStorage):
         ]
 
 
-def _bundle(*, rated: dict[int, int], shift: int, stratified: bool = False):
+def _bundle(
+    *, rated: dict[int, int], shift: int, stratified: bool = False
+) -> tuple[list[EvalRun], AnalysisContextBundle]:
     """The toy campaign's bundle with the first ``rated[i]`` results of run ``i`` rated by a person at judge + shift."""
     campaign, toy = toyhost_campaign()
     runs = toy.load_eval_runs(campaign.run_ids, TOYHOST_SCOPE)

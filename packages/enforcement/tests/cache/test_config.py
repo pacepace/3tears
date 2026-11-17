@@ -73,8 +73,8 @@ class TestOverrides:
         # the architecture fix: callers can pass distinct tuples for
         # each so violation scanning stays scoped while the inheritance
         # graph still spans path-deps.
-        scan = (tmp_path / "src",)
-        inheritance = (tmp_path / "src", tmp_path / "lib" / "src")
+        scan: tuple[Path, ...] = (tmp_path / "src",)
+        inheritance: tuple[Path, ...] = (tmp_path / "src", tmp_path / "lib" / "src")
         config = CacheEnforcementConfig(
             repo_root=tmp_path,
             scan_roots=scan,

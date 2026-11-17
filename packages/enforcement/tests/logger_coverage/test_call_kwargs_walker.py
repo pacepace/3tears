@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from threetears.enforcement.common.violations import Violation
 from threetears.enforcement.logger_coverage.walkers import (
     STDLIB_LOG_CALL_KWARGS,
     find_structlog_shaped_log_calls,
@@ -36,7 +37,7 @@ def _scan(
     src: Path,
     repo: Path,
     exempt_files: dict[str, str] | None = None,
-) -> list:
+) -> list[Violation]:
     return find_structlog_shaped_log_calls(
         (src,),
         repo,

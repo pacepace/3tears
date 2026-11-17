@@ -50,8 +50,8 @@ def _descriptor(
 
 
 def test_the_two_scopes_are_the_wire_strings_consumers_render() -> None:
-    assert ConnectionScope.PLATFORM == "platform"
-    assert ConnectionScope.CUSTOMER == "customer"
+    assert ConnectionScope.PLATFORM.value == "platform"
+    assert ConnectionScope.CUSTOMER.value == "customer"
 
 
 def test_the_known_field_kinds_are_the_wire_strings_consumers_render() -> None:

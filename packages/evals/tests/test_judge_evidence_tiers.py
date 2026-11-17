@@ -79,6 +79,7 @@ from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSIO
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.writer_host_support import doc_analysis_over
 from packages.evals.tests.clock_support import frozen_clock
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 
 
 @pytest.fixture(autouse=True)
@@ -410,7 +411,9 @@ class TestSelfAgreementIsReadAsCalibrationIs:
 
 class TestTheTiersFromResults:
     @staticmethod
-    def _tiers(*, rated: int = 0, repeated: int = 0, agree: bool = True, rater_kind: str = "person"):
+    def _tiers(
+        *, rated: int = 0, repeated: int = 0, agree: bool = True, rater_kind: str = "person"
+    ) -> JudgeEvidenceTier:
         scores = _cycle(max(rated, repeated, 1))
         results, ratings = [], []
         for index, score in enumerate(scores):
@@ -833,7 +836,7 @@ def _repeated(result: EvalResult, *, agree: bool) -> EvalResult:
     return result.model_copy(update={"judge_repeats": [repeat]})
 
 
-def _bundle(*, repeats: int = 0, rated: int = 0, agree: bool = True, two_days: bool = False):
+def _bundle(*, repeats: int = 0, rated: int = 0, agree: bool = True, two_days: bool = False) -> AnalysisContextBundle:
     """The toy campaign's bundle, with ``repeats`` of its results repeated and ``rated`` of them rated by a person.
 
     ``two_days`` starts the second arm a day after the first, which gives the bundle a time axis.

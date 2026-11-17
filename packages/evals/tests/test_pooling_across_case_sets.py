@@ -28,6 +28,7 @@ from packages.evals.tests.factories import DEFAULT_SUBJECT, make_campaign, make_
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.clock_support import frozen_clock
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +88,7 @@ def _results(
     ]
 
 
-def _bundle(runs: list[EvalRun], results: dict[str, list[EvalResult]]):
+def _bundle(runs: list[EvalRun], results: dict[str, list[EvalResult]]) -> AnalysisContextBundle:
     campaign = make_campaign(
         scope_id=runs[0].scope_id,
         name="pooling",
@@ -148,7 +149,7 @@ def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it() -> None
     ]
 
 
-def _mixed_campaign():
+def _mixed_campaign() -> tuple[list[EvalRun], dict[str, list[EvalResult]]]:
     """Three runs that pool, two that pool with each other on another rig, and one each of another template and none.
 
     Every pooled run passes and every other run fails, so a headline counting any run kept out would read below 1.
@@ -315,7 +316,9 @@ def test_a_run_whose_context_cannot_be_rederived_is_a_cell_of_its_own_and_the_re
     assert point.pass_hat_k == 1.0
 
 
-def _silences_corpus(*others: EvalRun, served: dict[str, str | None]):
+def _silences_corpus(
+    *others: EvalRun, served: dict[str, str | None]
+) -> tuple[list[EvalRun], dict[str, list[EvalResult]]]:
     """Two runs that froze a template digest and named their served model, beside the runs under test."""
     headline = [_launched(run_id, test_case_ids=["tc1"]) for run_id in ("run-a", "run-b")]
     runs = [*headline, *others]

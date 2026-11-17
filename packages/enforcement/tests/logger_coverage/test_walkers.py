@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from threetears.enforcement.common.violations import Violation
 from threetears.enforcement.logger_coverage.walkers import (
     find_modules_without_logger,
 )
@@ -33,7 +34,7 @@ def _scan(
     factory_names: frozenset[str] = _FACTORY_NAMES,
     var_names: frozenset[str] = _VAR_NAMES,
     skip_basenames: frozenset[str] = _SKIP_BASENAMES,
-) -> list:
+) -> list[Violation]:
     return find_modules_without_logger(
         (src,),
         repo,

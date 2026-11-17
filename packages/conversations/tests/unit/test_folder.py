@@ -28,6 +28,7 @@ from threetears.conversations.entity import Conversation
 from threetears.conversations.folder_collection import FolderCollection
 from threetears.core.testing import entity_collection_stub
 from threetears.conversations.folder_entity import Folder
+from threetears.core.collections.base import ScanReadTicket
 from threetears.core.collections.flush import FlushStrategy
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
@@ -58,6 +59,8 @@ class _BackendlessFolderCollection(FolderCollection):
         self,
         data: dict[str, Any],
         primary_key: str | tuple[str, ...] | None = None,
+        *,
+        read_since: ScanReadTicket | None = None,
     ) -> bool:
         """no-op L1 write so entity construction falls back to _changes.
 
@@ -65,6 +68,8 @@ class _BackendlessFolderCollection(FolderCollection):
         :ptype data: dict[str, Any]
         :param primary_key: pk override (ignored)
         :ptype primary_key: str | tuple[str, ...] | None
+        :param read_since: the scan the row was read in (ignored)
+        :ptype read_since: ScanReadTicket | None
         :return: always ``False`` (no L1 backend)
         :rtype: bool
         """
@@ -150,11 +155,13 @@ class _CoherentConversationsCollection(ConversationsCollection):
         self._l2_writes.append(data)
         return True
 
-    async def _publish_invalidation(self, entity_id: Any) -> None:
+    async def _publish_invalidation(self, entity_id: Any, **_: object) -> None:
         """no-op cross-pod invalidation publish (no NATS in the harness).
 
         :param entity_id: composite pk (ignored)
         :ptype entity_id: Any
+        :param _: the base's keyword options (ignored)
+        :ptype _: object
         :return: nothing
         :rtype: None
         """

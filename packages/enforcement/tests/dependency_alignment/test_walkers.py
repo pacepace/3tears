@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from threetears.enforcement.common.violations import Violation
 from threetears.enforcement.dependency_alignment import (
     DependencyAlignmentConfig,
     DependencyFloor,
@@ -67,7 +68,7 @@ def _make_package(
     (module_dir / "api.py").write_text(body)
 
 
-def _violations(root: Path) -> list:
+def _violations(root: Path) -> list[Violation]:
     config = DependencyAlignmentConfig(repo_root=root, package_globs=("packages/*",))
     return dependency_alignment_violations(config)
 
@@ -179,7 +180,7 @@ class TestStaleDetection:
 
 
 class TestContractPurity:
-    def _purity(self, root: Path, contract: str) -> list:
+    def _purity(self, root: Path, contract: str) -> list[Violation]:
         from threetears.enforcement.dependency_alignment import (
             DependencyAlignmentConfig,
         )
@@ -263,7 +264,7 @@ class TestContractPurity:
 class TestDependencyFloor:
     """the pin for a package that cannot be dependency-free but whose short list was ruled."""
 
-    def _floor(self, root: Path, allowed: tuple[str, ...], package: str = "packages/tt-leaf") -> list:
+    def _floor(self, root: Path, allowed: tuple[str, ...], package: str = "packages/tt-leaf") -> list[Violation]:
         config = DependencyAlignmentConfig(
             repo_root=root,
             package_globs=("packages/*",),

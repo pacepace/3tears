@@ -22,7 +22,8 @@ class _Store:
         self._conn = conn
 
     async def execute(self, sql: str, *params: Any) -> str:
-        return await self._conn.execute(sql, *params)
+        status: str = await self._conn.execute(sql, *params)
+        return status
 
     async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         return [dict(r) for r in await self._conn.fetch(sql, *params)]

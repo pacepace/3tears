@@ -54,6 +54,7 @@ from packages.evals.tests.fixtures.toyhost.sweepables import TOYHOST_SWEEPABLE_R
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_campaign
 from threetears.evals.schema.models import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 
 #: The apparatus a model-scored, simulator-driven kind would have and the toy extractor does not: the
 #: core's model-judge axes and its simulator axes. ``judge_config_ids`` is not among them: the extractor's
@@ -77,7 +78,7 @@ _JUDGED_CONTRACT = KindContract(
 )
 
 
-def _toyhost_bundle(profile: HostProfile):
+def _toyhost_bundle(profile: HostProfile) -> AnalysisContextBundle:
     """The assembled toy-host bundle under ``profile``."""
     from packages.evals.tests.fixtures.toyhost.campaign import toyhost_bundle
 

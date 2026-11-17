@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from threetears.enforcement.common.violations import Violation
 from threetears.enforcement.no_stdlib_logging.walkers import (
     find_stdlib_logging_imports,
     is_stdlib_logging_module,
@@ -29,7 +30,7 @@ def _scan(
     src: Path,
     repo: Path,
     exempt_files: dict[str, str] | None = None,
-) -> list:
+) -> list[Violation]:
     return find_stdlib_logging_imports(
         (src,),
         repo,

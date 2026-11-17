@@ -50,8 +50,8 @@ class TestOverrides:
         # the architecture fix: callers can pass distinct tuples for
         # each so violation scanning stays scoped to the consumer's
         # own code while shape-A / shape-D still see path-deps.
-        scan = (tmp_path / "src",)
-        inheritance = (tmp_path / "src", tmp_path / "lib" / "src")
+        scan: tuple[Path, ...] = (tmp_path / "src",)
+        inheritance: tuple[Path, ...] = (tmp_path / "src", tmp_path / "lib" / "src")
         config = UnderscoreAccessConfig(
             repo_root=tmp_path,
             scan_roots=scan,

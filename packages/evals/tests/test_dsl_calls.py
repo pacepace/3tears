@@ -25,6 +25,8 @@ from threetears.evals.schema.goal_grammar import DSLError, extract_text_matches,
 
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
+from collections.abc import Mapping
+from typing import Any
 
 _SAY = {
     "type": "object",
@@ -41,7 +43,7 @@ _SAY = {
 }
 
 
-def _reader(tool: str, action: str):
+def _reader(tool: str, action: str) -> Mapping[str, Any] | None:
     return _SAY if (tool, action) == ("speech", "say") else None
 
 
@@ -190,7 +192,7 @@ class TestTheAuthoringGate:
         assert "describes no parameters for docs.extract" in str(refused.value)
 
 
-def _actions(tool: str):
+def _actions(tool: str) -> frozenset[str] | None:
     return frozenset({"say", "hush"}) if tool == "speech" else None
 
 

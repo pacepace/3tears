@@ -15,7 +15,7 @@ from threetears.evals.analysis.lenses.pivot import compute_pivot
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.lenses.history import compute_history
 from threetears.evals.kernel.errors import NotFoundError
-from threetears.evals.schema.models import EvalTemplate, GoalStateOutcome, RubricScore
+from threetears.evals.schema.models import EvalResult, EvalTemplate, GoalStateOutcome, RubricScore
 from threetears.evals.kernel.scoring import composite_basis, compute_composite_summary, pool_composite_bases
 from threetears.evals.kernel.run_pages import ResultKey
 from threetears.evals.ops.lenses import RunsCompared, history_text, pivot_text, runs_compared_text
@@ -29,7 +29,7 @@ _LEFT = ["extraction.accuracy", "extraction.format"]
 _RIGHT = ["extraction.tone"]
 
 
-def _result(run, case: str, dims: list[str], *, score: int = 4, **overrides):
+def _result(run, case: str, dims: list[str], *, score: int = 4, **overrides) -> EvalResult:
     return make_eval_result(
         eval_run_id=run.id,
         scope_id=run.scope_id,
