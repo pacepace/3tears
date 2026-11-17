@@ -125,3 +125,49 @@ def test_in_process_mode_a_process_only_test_runs(pytester: pytest.Pytester, mon
     monkeypatch.setenv("THREETEARS_TEST_SERVICES", "process")
     result = _named_session(pytester)
     result.assert_outcomes(passed=2)
+
+
+_YUGABYTE_ONLY = """
+import pytest
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.mark.yugabyte_only
+def test_a_yugabyte_plan():
+    pass
+
+
+def test_either_engine():
+    pass
+"""
+
+
+def _engine_session(pytester: pytest.Pytester) -> pytest.RunResult:
+    """a session holding one YugabyteDB-only test beside one for either engine."""
+    pytester.makeconftest('pytest_plugins = ["tests.require_services"]')
+    pytester.makeini("[pytest]\nmarkers =\n    integration: needs a service\n    yugabyte_only: YugabyteDB only\n")
+    pytester.makepyfile(test_engines=_YUGABYTE_ONLY)
+    return pytester.runpytest_inprocess("-p", "no:cacheprovider", "-p", "no:asyncio", "test_engines.py")
+
+
+@pytest.mark.parametrize("engine", [None, "postgres"])
+def test_a_run_not_naming_yugabyte_deselects_a_yugabyte_only_test(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, engine: str | None
+) -> None:
+    if engine is None:
+        monkeypatch.delenv("THREETEARS_TEST_ENGINE", raising=False)
+    else:
+        monkeypatch.setenv("THREETEARS_TEST_ENGINE", engine)
+    monkeypatch.setenv("THREETEARS_REQUIRE_SERVICES", "1")
+    result = _engine_session(pytester)
+    # deselected, not skipped: a skip would fail the pool's suite, and nothing reads like a pass
+    result.assert_outcomes(passed=1, deselected=1)
+
+
+def test_a_run_naming_yugabyte_runs_a_yugabyte_only_test(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("THREETEARS_TEST_ENGINE", "yugabyte")
+    result = _engine_session(pytester)
+    result.assert_outcomes(passed=2)

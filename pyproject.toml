@@ -441,6 +441,7 @@ markers = [
     "docker: drives a Docker daemon itself (testcontainers, docker exec); runs locally, never on the testament pool",
     "secrets: reads a credential from the environment (a warehouse password, an API key or token); runs locally only",
     "process_only: checks the test services started as child processes (THREETEARS_TEST_SERVICES=process, the testament pool); deselected anywhere else",
+    "yugabyte_only: proves what YugabyteDB alone does (a plan, a budget); deselected in a run that does not name it (THREETEARS_TEST_ENGINE=yugabyte)",
     # Opts a test out of the scrape suite's autouse offline-robots fixture, for the few whose
     # subject IS the real default fetcher. Without the opt-out that builder was patched
     # suite-wide and never executed, so the code binding a robots read to the configured exit
