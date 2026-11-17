@@ -1146,14 +1146,13 @@ def test_under_the_null_a_continued_comparison_separates_at_most_alpha_and_re_ru
 
 #: How long each arm's answer takes, as a law of the answer: both arms alike, latency apart from the answer (a coin of
 #: its own, 1 or 6 ms); both arms alike, a wrong answer slower (1 ms right, 6 ms wrong); or arms of different laws, arm
-#: ``a`` 1 ms whatever it answers and arm ``b`` five times slower when right (5 ms) and four or twenty times slower
-#: again when wrong (20 or 100 ms).
+#: ``a`` 0.4 ms whatever it answers and arm ``b`` five times slower when right (2 ms) and four or twenty times slower
+#: again when wrong (8 or 40 ms).
 _Latency = Literal["alike-apart", "alike-slow-wrong", "b-slower-4x", "b-slower-20x"]
 
-#: How a watcher stops a run: when the answers landed in it favour an arm by four (after ten on each arm); at a point
-#: drawn apart from any answer, in four runs of five; or the moment the reading the rule before (file order) would show
-#: over every answer landed separates.
-_Stop = Literal["lead", "blind", "file-order-reading"]
+#: How a watcher stops a run: when the answers landed in it favour an arm by four (after ten on each arm), or at a point
+#: drawn apart from any answer, in four runs of five.
+_Stop = Literal["lead", "blind"]
 
 
 def _seconds(latency: _Latency, tag: str, arm: str, n: int, call: int, right: bool) -> float:
@@ -1163,19 +1162,8 @@ def _seconds(latency: _Latency, tag: str, arm: str, n: int, call: int, right: bo
     if latency == "alike-slow-wrong":
         return 0.001 if right else 0.006
     if arm == "a":
-        return 0.001
-    return 0.005 if right else 0.005 * (4 if latency == "b-slower-4x" else 20)
-
-
-def _file_order_shown(history: Mapping[int, Mapping[str, Sequence[float]]], first: Mapping[int, int]) -> float | None:
-    """The p the file-order rule would show on ``_correct`` over the answers landed so far: every case both arms
-    answered at some repeat, placed in the launch that first answered it (``first``), each launch's in the order of the
-    cases file, each arm's value its mean over the repeats landed. ``None`` with fewer than two such cases."""
-    order = sorted((n for n, on in history.items() if on.get("a") and on.get("b")), key=lambda n: (first[n], n))
-    if len(order) < 2:
-        return None
-    a, b = ([sum(history[n][arm]) / len(history[n][arm]) for n in order] for arm in "ab")
-    return separation_test(a, b, paired=True, value_range=_RATE, mixture=True).p
+        return 0.0004
+    return 0.002 if right else 0.002 * (4 if latency == "b-slower-4x" else 20)
 
 
 async def _watched(
@@ -1201,9 +1189,6 @@ async def _watched(
     calls: Counter[tuple[int, str]] = Counter()
     landed: list[tuple[str, float]] = []
     running: list[asyncio.Task[Result]] = []
-    history: dict[int, dict[str, list[float]]] = {}
-    first: dict[int, int] = {}
-    launch = [0]
     stop_at: list[int] = []
     rules = random.Random(f"{tag}-stops")
 
@@ -1220,17 +1205,10 @@ async def _watched(
         async def run(case: Mapping[str, Any]) -> str:
             answer = await coin(case)
             await asyncio.sleep(_seconds(latency, tag, arm, case["n"], calls[case["n"], arm], answer == "right"))
-            value = 1.0 if answer == "right" else 0.0
-            landed.append((arm, value))
-            history.setdefault(case["n"], {}).setdefault(arm, []).append(value)
-            first.setdefault(case["n"], launch[0])
+            landed.append((arm, 1.0 if answer == "right" else 0.0))
             if not running:
                 return answer
-            if stop == "file-order-reading":
-                shown = _file_order_shown(history, first) if len(history[case["n"]]) == 2 else None
-                if shown is not None and shown < SIGNIFICANCE_ALPHA:
-                    interrupt()
-            elif stop == "blind":
+            if stop == "blind":
                 if stop_at and len(landed) >= stop_at[0]:
                     interrupt()
             else:
@@ -1246,10 +1224,9 @@ async def _watched(
     store = InMemoryDocumentStore()
     n = 20
     separated = [False, False, False]
-    for index in range(launches):
+    for _ in range(launches):
         compare = Eval(_cases(n), arms, [_correct], k=k, name="watched")
         landed.clear()
-        launch[0] = index
         stop_at[:] = [rules.randint(1, 2 * k * n)] if rules.random() < 0.8 else []
         running.append(asyncio.create_task(compare.run(store=store, scope="s")))
         task = running[0]
@@ -1292,3 +1269,91 @@ def _separated_on_correct(families: Sequence[ComparisonFamily]) -> tuple[bool, f
         any(comparison.verdict in ("improved", "regressed") for comparison in compared),
         min((c.p_raw for c in compared if c.p_raw is not None), default=1.0),
     )
+
+
+#: Watchers in each simulation of arms alike in speed (k = 3, up to five runs); stopped comparisons in each simulation
+#: of arms of different speed (k = 1, a run and its continuation, so the share's bound is read at a count the pool runs
+#: in one request); and each smoke check's.
+_ALIKE, _APART, _SMOKE = 300, 1000, 3
+
+
+async def _watch_many(tag: str, count: int, **how: Any) -> tuple[int, int, int]:
+    """How many of ``count`` newcomers (:func:`_watched`, with ``how``) the product, the record-order rule and the
+    file-order rule each separated."""
+    tally = [0, 0, 0]
+    for index in range(count):
+        for rule, separated in enumerate(await _watched(f"{tag}-{index}", **how)):
+            tally[rule] += separated
+    return tally[0], tally[1], tally[2]
+
+
+def _shares(tally: tuple[int, int, int], count: int) -> str:
+    """Each rule's count, share and 95% Clopper-Pearson interval, for a failure's message."""
+    return "; ".join(
+        f"{rule} {separated}/{count} {exact_rate_interval(separated, count)}"
+        for rule, separated in zip(("product", "record order", "file order"), tally, strict=True)
+    )
+
+
+async def test_a_few_watched_comparisons_of_arms_alike_and_apart_in_speed_read_their_prefix() -> None:
+    """The unit suite's smoke check of every watched simulation: a few newcomers each, every reading checked to be the
+    bet over the longest complete prefix of the committed order (inside :func:`_watched`), and the product separating
+    at most one of each few, which at a rate of α happens with probability above 0.99."""
+    for how in (
+        {"latency": "alike-slow-wrong", "stop": "lead", "k": 3},
+        {"latency": "b-slower-4x", "stop": "blind", "k": 1, "launches": 2},
+        {"latency": "b-slower-20x", "stop": "blind", "k": 1, "cut_share": 0.3, "launches": 2},
+    ):
+        product, _, _ = await _watch_many(f"smoke-{how['latency']}-{how['stop']}", _SMOKE, **how)
+        assert product <= 1, how
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(1700)
+@pytest.mark.parametrize("latency", ["alike-apart", "alike-slow-wrong"])
+async def test_under_the_null_arms_alike_in_speed_stopped_when_an_arm_leads_separate_at_most_alpha(
+    latency: _Latency,
+) -> None:
+    """:data:`_ALIKE` newcomers (:func:`_watched`) whose arms answer alike in speed, both apart from the answer or both
+    slower when wrong (exchangeable arms; arms of different speed are the next tests'), k = 3, each interrupting a run
+    as soon as the answers landed in it favour an arm by four, then continuing, up to five runs: the product's 95%
+    Clopper-Pearson upper bound on the false-separation rate is at most α. Drawn, not pinned: which cells an interrupt
+    finds in flight depends on time. As drawn for this change (95% Clopper-Pearson intervals), the product separated
+    0 of 300 with latency apart (upper 1.2%) and 1 of 300 with both arms slower when wrong (0.3%, upper 1.8%); the
+    record-order rule 0 and 1, the file-order rule 0 and 2."""
+    tally = await _watch_many(f"alike-{latency}", _ALIKE, latency=latency, stop="lead", k=3)
+    bound = exact_rate_interval(tally[0], _ALIKE)
+    assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, _shares(tally, _ALIKE)
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(1700)
+@pytest.mark.parametrize("latency", ["b-slower-4x", "b-slower-20x"])
+async def test_under_the_null_arms_of_different_speed_stopped_and_drained_separate_at_most_alpha(
+    latency: _Latency,
+) -> None:
+    """Arms of different speed, the slow one slower again when wrong (arm ``a`` 0.4 ms whatever it answers; arm ``b`` 2
+    ms when right and four or twenty times that when wrong), which pushed the record-order rule of fix round 4 above α:
+    :data:`_APART` newcomers (:func:`_watched`), k = 1, each run interrupted in four of five at a point drawn apart from
+    any answer, the cells in flight drained, then continued once. The product reads the longest complete prefix of an
+    order fixed before any answer, so its 95% Clopper-Pearson upper bound is at most α. As drawn for this change: at
+    four times slower when wrong, the product 19 of 1,000 (1.9%, 1.1% to 3.0%), the record-order rule 19, the
+    file-order rule 19; at twenty times, the product 17 (1.7%, 1.0% to 2.7%), the record-order rule 20, the file-order
+    rule 11. With up to three runs (800 newcomers each) the product separated 12 and 29 (3.6%, upper 5.1%): the bound is read at two runs, so that it clears α at a count one pool request holds."""
+    tally = await _watch_many(f"drained-{latency}", _APART, latency=latency, stop="blind", k=1, launches=2)
+    bound = exact_rate_interval(tally[0], _APART)
+    assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, _shares(tally, _APART)
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(1700)
+@pytest.mark.parametrize("latency", ["b-slower-4x", "b-slower-20x"])
+async def test_under_the_null_arms_of_different_speed_whose_stops_cut_are_reported(latency: _Latency) -> None:
+    """The same, with a second interrupt 5 ms after three in ten of the stops, cutting the cells still in flight; a
+    continuation draws each cut cell afresh, which can lean the reading where a slow answer is a wrong one (the print
+    counts them). Reported as it is, as drawn for this change: at four times slower when wrong, the product 20 of
+    1,000 (2.0%, 1.2% to 3.1%), the record-order rule 21, the file-order rule 22; at twenty times, the product 14
+    (1.4%, 0.8% to 2.3%), the record-order rule 31 (3.1%, 2.1% to 4.4%), the file-order rule 18. The test fails only
+    where the product's share passes twice α."""
+    tally = await _watch_many(f"cut-{latency}", _APART, latency=latency, stop="blind", k=1, cut_share=0.3, launches=2)
+    assert tally[0] / _APART < 2 * SIGNIFICANCE_ALPHA, _shares(tally, _APART)

@@ -4883,7 +4883,7 @@
     },
     "threetears.evals.run.RunnerOptions": {
       "kind": "dataclass",
-      "signature": "RunnerOptions(judge_concurrency: int = 4, cell_timeout_s: float = 600.0, concurrent_eval_jobs_probe: Callable[[], int] | None = None, external_rates: ExternalRateTable | None = None, metered_calls: MeteredCallLedger | None = None, cell_order_rng: random.Random | None = None, cell_order_seed: str | None = None, candidate_kinds: Mapping[str, KindFactory] = dict(), max_concurrent_cells: int = 1, cell_executor: CellExecutor | None = None)",
+      "signature": "RunnerOptions(judge_concurrency: int = 4, cell_timeout_s: float = 600.0, concurrent_eval_jobs_probe: Callable[[], int] | None = None, external_rates: ExternalRateTable | None = None, metered_calls: MeteredCallLedger | None = None, cell_order_rng: random.Random | None = None, cell_order_seed: str | None = None, candidate_kinds: Mapping[str, KindFactory] = dict(), max_concurrent_cells: int = 1, cell_executor: CellExecutor | None = None, case_order: Sequence[str] | None = None, stop_starting: asyncio.Event | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.run.RunResumption": {

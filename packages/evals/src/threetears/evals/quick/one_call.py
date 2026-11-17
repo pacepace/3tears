@@ -2809,15 +2809,19 @@ async def launch_arms(
             await launch_host.job_manager.wait_for([run.id for run in runs])
         except asyncio.CancelledError:
             # This call owns the runs it started: cancelled, it settles them as cancelled rather than leaving pending
-            # ones behind in a store that outlives it. The first interrupt drains: no further cell starts, the cells
+            # ones behind in a store that outlives it. A comparison's first interrupt drains (it is bounded: each cell
+            # by its own deadline, and a second interrupt cuts): no further cell starts, the cells
             # running finish and are recorded (their answers were being drawn, and cutting a slow one to draw it
             # afresh would lean the bet toward fast answers), and each run ends cancelled. A second cuts at once.
             # A comparison's caller then files them, so what they recorded is kept and a run again runs only the
             # cells they never recorded; the cancel that landed first is the one re-raised.
+            if on_cancel is None:
+                # Not a comparison: no bet reads it, so the cancel cuts at once.
+                await launch_host.job_manager.shutdown()
+                raise
             await drain(launched_in[0] if launched_in else None, [run.id for run in runs])
-            if on_cancel is not None:
-                # Waited for to its end even through a further cancel.
-                await wait_through_cancellation(asyncio.ensure_future(file_cancelled(on_cancel)))
+            # Waited for to its end even through a further cancel.
+            await wait_through_cancellation(asyncio.ensure_future(file_cancelled(on_cancel)))
             raise
     if await differs():
         # The comparison cannot continue: the new runs are archived, and every case runs as a new comparison.

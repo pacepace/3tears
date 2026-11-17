@@ -52,7 +52,18 @@ disclosure on the page and in the bundle says it too, and it names what it does 
 arm's own rate, cost, latency and the exit status, still read at the cases run so far (`comparisons.REREAD_SENTENCE`,
 `comparisons.read_by_bet`). It is said of a store that outlives the run, so the page is true wherever it is read; kept
 in memory (`store=":memory:"`), where nothing is left to continue, the print's line says instead that running it again
-is a new comparison (`continuation.UNKEPT_SENTENCE`). SIMULATIONS A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
+is a new comparison (`continuation.UNKEPT_SENTENCE`). Simulations driving `Eval.run` itself, two arms passing 50% each: run again as cases are added (k = 1, adds sized
+from the data, up to five runs; seeded and pinned, since every launch there completes and the committed order depends
+on the cases alone), 32 of 1,000 newcomers separate (3.2%, 95% upper bound 4.5%) at α = 5%, where re-running every
+case on each run, read by the same bet, separates 50 of 600 (8.3%, lower bound 6.3%). Stopped by a watcher (drawn,
+since which cells a stop finds in flight depends on time): arms alike in speed (k = 3, stopped when an arm leads by
+four), 0 and 1 of 300 (upper bounds 1.2% and 1.8%), latency apart from the answer or slower when wrong on both arms;
+arms of different speed, arm `a` fast whatever it answers and arm `b` five times slower and four or twenty times
+slower again when wrong (k = 1, four runs in five stopped at a point apart from any answer, then continued), drained:
+19 and 17 of 1,000 (upper bounds 3.0% and 2.7%); with a second interrupt cutting in three stops of ten: 20 and 14 of
+1,000 (upper bounds 3.1% and 2.3%). Earlier rules over the same kind of answers: the record-order rule of a previous
+draft of this change separated 31 of 1,000 at twenty times with cuts (3.1%, upper 4.4%), and an independent simulation
+of it with outcome-blind cancels in four launches of five measured 5.9% (5.2% to 6.7%), above α. A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
 the time where the reading it replaces did 43.6%. A quick-path comparison is one the quick path filed
 (`EvalCampaign.created_by` is `kernel.candidate_kind.QUICK_PATH_FILER`) over runs of kinds only it launches
 (`QUICK_PATH_KINDS`), no arm recording a cell in two runs, with no plan of looks (`trials.bet_places`): a campaign a host
