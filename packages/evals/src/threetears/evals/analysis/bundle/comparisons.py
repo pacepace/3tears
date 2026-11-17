@@ -22,10 +22,13 @@ from threetears.evals.analysis.reporting import (
     project_score_records,
 )
 from threetears.evals.analysis.stats import (
+    DECLARED_DIRECTION_SHARE,
     INTERVAL_LEVEL,
     SIGNIFICANCE_ALPHA,
     GuardrailVerdict,
+    bet_evidence,
     bounded_difference_interval,
+    bounded_separation_p,
     composite_significance,
     contrast_cases,
     contrast_samples,
@@ -97,6 +100,7 @@ from threetears.evals.analysis.bundle.schema import (
     ReadingScope,
     RealizedDesign,
     late_criteria,
+    asks_a_question,
     question_axes,
 )
 from threetears.evals.analysis.bundle.measures import (
@@ -632,6 +636,13 @@ def _compare(
         not_separated_reason=separation.refusal if untested_reason is None else None,
         materiality=None if delta is None else materiality(threshold, delta),
     )
+    if bet is not None and p_raw is not None and value_range is not None:
+        # The graded evidence the bet holds now, each side by name: always shown, never a verdict.
+        held = bet_evidence(*bet, value_range=value_range)
+        if held is not None:
+            up, down = held
+            better, worse = (up, down) if higher_is_better else (down, up)
+            comparison = comparison.model_copy(update={"evidence_better": better, "evidence_worse": worse})
     return _Tested(comparison, p_raw, equivalence_p_raw, (a, b), value_range, bet_samples=bet)
 
 
@@ -822,6 +833,179 @@ def _interval_withholds(interval: tuple[float, float] | None, *, rate: bool) -> 
     return f"the adjusted p is below the family's alpha, but {drawn} reaches zero, so no difference is shown"
 
 
+#: Why a secondary reading of a quick-path comparison carries no verdict: the one sentence its comparisons say it in.
+_SECONDARY_READING = (
+    "a secondary reading: its estimate, interval and evidence are shown, and only the question's own reading is decided"
+)
+
+
+def _is_primary(one: _Tested, primary: str) -> bool:
+    """Whether a tested comparison is the question's primary reading: its name, never the overall pass rate, read by
+    the bet with a p."""
+    comparison = one.comparison
+    return (
+        comparison.name == primary
+        and comparison.reading != "trial"
+        and one.bet_samples is not None
+        and one.p_raw is not None
+    )
+
+
+def _primary_family(
+    aspect: str,
+    axes: list[MeritAxis],
+    tested: list[_Tested],
+    primary: str,
+    *,
+    redrawn: tuple[int, int] = (0, 0),
+) -> ComparisonFamily:
+    """A quick-path comparison's family, its question asked: decided on the primary reading alone, every other reading
+    shown and decided on nothing.
+
+    **The primary** is tested by the mixture bet staked toward the question's better side
+    (:func:`~threetears.evals.analysis.stats.bounded_separation_p`'s ``toward``,
+    :data:`~threetears.evals.analysis.stats.DECLARED_DIRECTION_SHARE` of the capital there and the rest the other way),
+    at α with no correction across readings: the question asks one thing. With several arms, its contrasts are
+    corrected by Holm across the arms, as is its equivalence test where a margin is declared, capped at the arms' count.
+    It is ``improved`` where its adjusted p is below α, its delta moved the better way and its interval excludes zero,
+    and ``regressed`` likewise the other way, which needs about ten times the evidence. Each bet p is valid over every
+    re-read as cases are added, so the decision is: once the capital has reached ``1/α`` it stays decided.
+
+    **Its interval** is the even hedge's confidence sequence at ``1 − 2α/m`` over its ``m`` arms (90% for one arm), so
+    each end is a ``1 − α/m`` one-sided bound, the partner of the one-sided question; a decision the asked way needs
+    its capital at ``1/α``, which puts the even hedge past ``1/(2α)`` too, so the interval excludes zero wherever the
+    decision stands, and the rule that a separation needs it to is kept for any other case.
+
+    **Every other reading is secondary** (:data:`_SECONDARY_READING`): its estimate, its interval at the same level and
+    its evidence (``evidence_better``, ``evidence_worse``) are shown, and it carries no adjusted p and no verdict, so no
+    correction across readings is owed. The overall pass rate is one where it is not the primary's own values
+    (:func:`multiple_comparisons` leaves it out where it is).
+
+    :param aspect: The aspect whose question the family serves.
+    :param axes: The question's merit axes.
+    :param tested: The family's comparisons, tested and uncorrected.
+    :param primary: The question's first grader's reading, by name.
+    :param redrawn: How many of the comparison's cells recorded no answer and run again, and how many an interrupt cut.
+    :return: The family.
+    """
+    alpha = SIGNIFICANCE_ALPHA
+    decided = [one for one in tested if _is_primary(one, primary)]
+    arms = len(decided)
+    raw: list[float] = []
+    for one in decided:
+        assert one.bet_samples is not None and one.value_range is not None
+        toward = DECLARED_DIRECTION_SHARE if one.comparison.higher_is_better else 1.0 - DECLARED_DIRECTION_SHARE
+        tilted = bounded_separation_p(
+            *one.bet_samples, paired=True, value_range=one.value_range, mixture=True, toward=toward
+        )
+        raw.append(1.0 if tilted is None else tilted)
+        if one.equivalence_p_raw is not None:
+            raw.append(one.equivalence_p_raw)
+    adjusted = iter(holm_adjust(raw, max_true=arms))
+    interval_level = 1.0 - 2.0 * alpha / arms
+    n_equivalence = sum(1 for one in decided if one.equivalence_p_raw is not None)
+    comparisons = []
+    for one in tested:
+        comparison = one.comparison
+        if one.p_raw is None:
+            comparisons.append(comparison)
+            continue
+        control_sample, contrast_sample = one.samples
+        bounded = (
+            None
+            if one.value_range is None
+            else bounded_difference_interval(
+                *(one.bet_samples or one.samples),
+                paired=one.bet_samples is not None or comparison.test == "paired",
+                value_range=one.value_range,
+                confidence=interval_level,
+                mixture=one.bet_samples is not None,
+            )
+        )
+        on_bounded = one.value_range is not None and (
+            one.rate or comparison.basis in ("bounded", "identical") or one.bet_samples is not None
+        )
+        interval = (
+            bounded
+            if on_bounded
+            else difference_interval(
+                control_sample,
+                contrast_sample,
+                paired=comparison.test == "paired",
+                confidence=interval_level,
+                value_range=one.value_range,
+            )
+        )
+        update: dict[str, object] = {
+            "interval": interval,
+            "interval_basis": None if interval is None else ("bounded" if on_bounded else "t"),
+            "bounded_interval": bounded,
+            "case_values": None if bounded is None else (list(control_sample), list(contrast_sample)),
+        }
+        if _is_primary(one, primary):
+            p_adjusted = next(adjusted)
+            equivalence_p_adjusted = next(adjusted) if one.equivalence_p_raw is not None else None
+            permits = interval_permits_separation(interval) and (interval is not None or not one.rate)
+            verdict: ComparisonVerdict = "not_separated"
+            if p_adjusted < alpha and comparison.delta and permits:
+                verdict = "improved" if (comparison.delta > 0) == comparison.higher_is_better else "regressed"
+            elif equivalence_p_adjusted is not None and equivalence_p_adjusted < alpha:
+                verdict = "equivalent"
+            withheld = verdict == "not_separated" and p_adjusted < alpha and bool(comparison.delta)
+            update |= {
+                "p_adjusted": p_adjusted,
+                "equivalence_p_adjusted": equivalence_p_adjusted,
+                "verdict": verdict,
+                "not_separated_reason": (
+                    _interval_withholds(interval, rate=one.rate) if withheld else comparison.not_separated_reason
+                ),
+            }
+        else:
+            update |= {
+                "p_adjusted": None,
+                "equivalence_p_adjusted": None,
+                "verdict": "not_separated",
+                "not_separated_reason": _SECONDARY_READING,
+            }
+        comparisons.append(comparison.model_copy(update=update))
+    n_untested = sum(1 for comparison in comparisons if comparison.verdict == "untested")
+    return ComparisonFamily(
+        aspect=aspect,
+        merit_axes=axes,
+        alpha=alpha,
+        family_size=arms,
+        n_equivalence_tests=n_equivalence,
+        interval_level=interval_level,
+        n_untested=n_untested,
+        comparisons=comparisons,
+        disclosure=_primary_disclosure(primary, arms, n_untested, alpha, redrawn=redrawn),
+        primary=primary,
+    )
+
+
+def _primary_disclosure(
+    primary: str, arms: int, n_untested: int, alpha: float, *, redrawn: tuple[int, int] = (0, 0)
+) -> str:
+    """The sentence a writer quotes about a family decided on its primary (:func:`_primary_family`), closing on
+    :data:`REREAD_SENTENCE` as every family the bet read does."""
+    across = (
+        f", corrected by Holm's method across its {arms} arms" if arms > 1 else ""
+    )
+    level = format_number(100 * (1 - 2 * alpha / arms))
+    sentence = (
+        f"The question is decided on {primary} alone, at α={format_number(alpha)}{across}, by a bet staked "
+        f"{format_number(100 * DECLARED_DIRECTION_SHARE)}% toward the better side the question asks about and the rest "
+        "the other way: a decision stands only where that bet's capital has reached 1/α and the interval excludes "
+        f"zero. Every other reading is shown with its estimate, its interval and its evidence, and decides nothing. "
+        f"Each interval is at {level}%, each end a {format_number(100 * (1 - alpha / arms))}% bound on its own side."
+    )
+    if n_untested:
+        sentence += f" {n_untested} more could not be tested; each says why."
+    if redrawn[0]:
+        sentence += f" {redrawn_sentence(*redrawn)}"
+    return f"{sentence} {REREAD_SENTENCE}"
+
+
 def _corrected_family(
     aspect: str | None,
     axes: list[MeritAxis],
@@ -830,8 +1014,12 @@ def _corrected_family(
     looks: int | None = None,
     rereadable: bool = False,
     redrawn: tuple[int, int] = (0, 0),
+    primary: str | None = None,
 ) -> ComparisonFamily:
     """Correct one family's tests together, and read each comparison's verdict and interval off the result.
+
+    **A quick-path comparison whose question is asked is decided on its primary alone** (``primary``, the question's
+    first grader, where the bet read it): :func:`_primary_family`. Every other family is corrected as below.
 
     Every separation p and every equivalence p is Holm-adjusted as one family, capped at the separation
     count (:func:`~threetears.evals.analysis.stats.holm_adjust`'s ``max_true``): a comparison's two
@@ -888,6 +1076,8 @@ def _corrected_family(
     :return: The corrected family.
     :rtype: ComparisonFamily
     """
+    if primary is not None and rereadable and aspect is not None and any(_is_primary(one, primary) for one in tested):
+        return _primary_family(aspect, axes, tested, primary, redrawn=redrawn)
     planned = looks if looks is not None and looks > 1 else None
     alpha = looks_alpha(planned)
     family_size = sum(1 for one in tested if one.p_raw is not None)
@@ -994,6 +1184,32 @@ def _corrected_family(
             rereadable=rereadable and any(one.bet_samples is not None for one in tested),
             redrawn=redrawn,
         ),
+    )
+
+
+def _question_primary(declared: AspectDeclaration | None) -> str | None:
+    """The reading an asked question is decided on: its first grader's (the design's ``measure_order``, which an eval
+    files in the order it lists its graders); None where no question is asked or no order is filed."""
+    if declared is None or not asks_a_question(declared) or not declared.design.measure_order:
+        return None
+    return declared.design.measure_order[0]
+
+
+def _repeats_a_reading(
+    readings: Mapping[tuple[ComparisonReading, str], bool],
+    values: Mapping[CellKey, Mapping[tuple[ComparisonReading, str], Mapping[str, float]]],
+    pair: tuple[CellKey, CellKey],
+    sides: tuple[Mapping[str, float], Mapping[str, float]],
+) -> bool:
+    """Whether another reading of the family holds exactly these per-case values on both sides of ``pair``: the
+    overall pass rate of an eval whose one check is its pass rate, which tested again would be one hypothesis counted
+    twice."""
+    control_key, contrast_key = pair
+    return any(
+        reading[0] != "trial"
+        and values[control_key].get(reading) == sides[0]
+        and values[contrast_key].get(reading) == sides[1]
+        for reading in readings
     )
 
 
@@ -1167,6 +1383,11 @@ def multiple_comparisons(
                 if reading[0] == "trial" and not (control_values and contrast_values):
                     # A side with no usable graded trial has no pass rate; the scoreboard says why, not a contrast.
                     continue
+                if reading[0] == "trial" and reread_order is not None and _repeats_a_reading(
+                    readings, values, (control_key, contrast_key), (control_values, contrast_values)
+                ):
+                    # The pass rate of an eval with one check is that check, case for case: one hypothesis, read once.
+                    continue
                 threshold, margin_source = _margin_of(reading, catalog, run_margins or {})
                 one = _compare(
                     reading,
@@ -1207,6 +1428,7 @@ def multiple_comparisons(
                 looks=planned_looks,
                 rereadable=reread_order is not None,
                 redrawn=redrawn,
+                primary=_question_primary(declared) if family_aspect is not None else None,
             )
         )
     checks = [

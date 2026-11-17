@@ -2191,6 +2191,51 @@ def _check_mixture(mixture: bool, *, planned_n: int | None = None, paired: bool 
         raise ValueError("a mixture bet is read paired: an unpaired reading's cut moves with each case")
 
 
+def _check_toward(toward: float, *, mixture: bool) -> None:
+    """Refuse a declared direction's share that is no share (the capital must ride on both sides, or one side's
+    supermartingale would start at zero), or one given to a bet that is not the mixture.
+
+    :raises ValueError: Either.
+    """
+    if not 0.0 < toward < 1.0:
+        raise ValueError(f"toward is the share of the capital on one side, strictly between 0 and 1, not {toward}")
+    if toward != 0.5 and not mixture:
+        raise ValueError("a declared direction tilts the mixture bet: give toward with mixture")
+
+
+def bet_evidence(
+    sample_a: Sequence[float | Fraction], sample_b: Sequence[float | Fraction], *, value_range: tuple[float, float]
+) -> tuple[float, float] | None:
+    """The graded evidence the mixture bet holds over paired samples read in the order given: the capital, now, of the
+    upward bet (that ``mean(b) > mean(a)``) and of the downward one, each the mixture of :func:`_mixture_log_path` on
+    the differences, rescaled from ± the range's width.
+
+    Each is an e-value against no difference in the means: under it, its expected value is at most 1 at any count of
+    pairs, read at any stop, and it ever reaches ``c`` at most ``1/c`` of the time (Ville's inequality). It is the
+    current capital, not its running maximum: evidence can fall as pairs are added, and the reading says so. The
+    decision on the same pairs is :func:`bounded_separation_p` with ``mixture``, whose p is one over the most the
+    hedged capital ever reached; :data:`EVIDENCE_STEPS` grade these figures in words.
+
+    :param sample_a: The control's per-case values, in the order bet on.
+    :param sample_b: The arm's, aligned with ``sample_a``.
+    :param value_range: The reading's declared inclusive bounds.
+    :return: ``(upward, downward)``, each at least 0; None with fewer than two pairs, samples of different lengths, or
+        a value outside the declared range.
+    """
+    a = [exact_decimal(v) for v in sample_a]
+    b = [exact_decimal(v) for v in sample_b]
+    if len(a) < 2 or len(a) != len(b):
+        return None
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    if high <= low or any(not low <= v <= high for v in (*a, *b)):
+        return None
+    width = float(high - low)
+    scaled = _scaled_to_unit([y - x for x, y in zip(a, b)], (-width, width), ordered=True)
+    up = _mixture_log_path(scaled, 0.5)[-1]
+    down = _mixture_log_path([1.0 - z for z in scaled], 0.5)[-1]
+    return math.exp(up), math.exp(down)
+
+
 def _check_planned(planned_n: int | None, *, paired: bool, given: int) -> None:
     """Refuse a ``planned_n`` no bet can be read under: on an unpaired reading, whose cut between the two means moves
     with each case read, or below the cases already given.
@@ -2331,6 +2376,26 @@ def _capital_p(log_path: Sequence[float]) -> float:
 #: times the cases of a test read once at a fixed n.
 _MIXTURE_STAKES = 10
 
+#: Each fraction's weight in the mixture is in proportion to ``j`` (:func:`_mixture_log_path`), so more of the capital
+#: rides on the larger stakes, the only ones that can grow it over a handful of cases: an even weighting puts half its
+#: capital on stakes at or below half the cap, which over eight cases grow it at most about twentyfold. Simulated
+#: against the even weighting (``.prawduct/smalln-report.md``, T7) it decided more often at every n from 8 to 40 and
+#: lost nothing measured to n = 100; where only the smallest stake grows (a tiny effect over very many cases) it can
+#: need more cases, since that stake's weight falls from 1/10 to 1/55. Any fixed weighting is valid.
+_MIXTURE_WEIGHTS = tuple(j / (_MIXTURE_STAKES * (_MIXTURE_STAKES + 1) / 2) for j in range(1, _MIXTURE_STAKES + 1))
+
+#: The share of a declared direction's capital on that direction (:func:`_hedged_log_path`'s ``toward``): the rest
+#: is staked the other way, so a gross move against the question is still shown, at ten times the evidence. A one-sided
+#: bet would put all of it on the declared side; this keeps nine tenths of that power (all wins over eight cases read
+#: 0.015 against 0.0135).
+DECLARED_DIRECTION_SHARE = 0.9
+
+#: The e-values the graded evidence words step at (``analysis/style.py``'s ``evidence_words``): below the first is weak,
+#: from it moderate, from the second strong, the conventional steps for an evidence ratio (Jeffreys; Kass and Raftery
+#: 1995). Under no difference an e-value ever reaches ``c`` at most ``1/c`` of the time (Ville's inequality), so chance
+#: alone reads strong at most one time in ten, however often it is read.
+EVIDENCE_STEPS = (3.0, 10.0)
+
 
 def _log_add_exp(a: float, b: float) -> float:
     """``log(e^a + e^b)``, without overflow."""
@@ -2341,10 +2406,11 @@ def _log_add_exp(a: float, b: float) -> float:
 
 
 def _mixture_log_path(scaled: Sequence[float], m: float) -> list[float]:
-    """The mixture stake's log capital after each value against the rescaled null ``m``: the mean of
+    """The mixture stake's log capital after each value against the rescaled null ``m``: the weighted mean of
     :data:`_MIXTURE_STAKES` bets (:func:`_log_capital_path`), the j-th staking ``j / D`` of the cap :data:`_BET_CAP`
-    ``/ m`` on every value. No stake depends on a declared count, on α or on the values, so the mixture is one
-    capital however many values follow (Waudby-Smith and Ramdas 2024, §5.6).
+    ``/ m`` on every value with weight :data:`_MIXTURE_WEIGHTS` (in proportion to ``j``). No stake or weight depends on
+    a declared count, on α or on the values, so the mixture is one capital however many values follow (Waudby-Smith and
+    Ramdas 2024, §5.6).
 
     At ``m`` on the range's ends no bet can be staked: at 0 one value above it refutes the null outright (an infinite
     capital), at 1 nothing can.
@@ -2369,34 +2435,36 @@ def _mixture_log_path(scaled: Sequence[float], m: float) -> list[float]:
     paths = [
         _log_capital_path(scaled, [j / _MIXTURE_STAKES * _BET_CAP / m] * n, m) for j in range(1, _MIXTURE_STAKES + 1)
     ]
-    log_d = math.log(_MIXTURE_STAKES)
+    log_weights = [math.log(weight) for weight in _MIXTURE_WEIGHTS]
     mixed = []
     for column in zip(*paths):
         total = -math.inf
-        for log_capital in column:
-            total = _log_add_exp(total, log_capital)
-        mixed.append(total - log_d)
+        for log_weight, log_capital in zip(log_weights, column):
+            total = _log_add_exp(total, log_weight + log_capital)
+        mixed.append(total)
     return mixed
 
 
-def _hedged_log_path(scaled: Sequence[float], m: float) -> list[float]:
-    """The two-sided mixture's log capital after each value: half the upward mixture (on ``z > m``) plus half the
-    downward one (on ``z < m``, the upward one on ``1 − z`` against ``1 − m``), each :func:`_mixture_log_path`.
+def _hedged_log_path(scaled: Sequence[float], m: float, toward: float = 0.5) -> list[float]:
+    """The two-sided mixture's log capital after each value: ``toward`` of the upward mixture (on ``z > m``) plus the
+    rest of the downward one (on ``z < m``, the upward one on ``1 − z`` against ``1 − m``), each
+    :func:`_mixture_log_path`.
 
-    Hedged capital (Waudby-Smith and Ramdas 2024, §4.2, with θ = 1/2): under H0 ``E[z] = m`` each half is a
-    nonnegative supermartingale started at 1/2, so their sum ever reaches ``1/α`` with probability at most α. The
-    test of ``m`` and the interval on the mean are both read off it (:func:`_hedged_p`, :func:`_hedged_interval`), so
-    the interval excludes ``m`` exactly where the test rejects it.
+    Hedged capital (Waudby-Smith and Ramdas 2024, §4.2, with θ = ``toward``): under H0 ``E[z] = m`` each part is a
+    nonnegative supermartingale started at its share, so their sum ever reaches ``1/α`` with probability at most α. An
+    even hedge (1/2) is the test with no direction declared; :data:`DECLARED_DIRECTION_SHARE` tilts it toward a declared
+    one. The test of ``m`` and the interval on the mean are both read off the even hedge's paths
+    (:func:`_hedged_p`, :func:`_hedged_interval`).
     """
     up = _mixture_log_path(scaled, m)
     down = _mixture_log_path([1.0 - z for z in scaled], 1.0 - m)
-    half = math.log(2.0)
-    return [_log_add_exp(u, d) - half for u, d in zip(up, down)]
+    log_up, log_down = math.log(toward), math.log1p(-toward)
+    return [_log_add_exp(u + log_up, d + log_down) for u, d in zip(up, down)]
 
 
-def _hedged_p(scaled: Sequence[float], m: float) -> float:
+def _hedged_p(scaled: Sequence[float], m: float, toward: float = 0.5) -> float:
     """The two-sided mixture p against the rescaled null ``m``: one over the most the hedged capital ever reached."""
-    return _capital_p(_hedged_log_path(scaled, m))
+    return _capital_p(_hedged_log_path(scaled, m, toward))
 
 
 def _hedged_interval(scaled: Sequence[float], alpha: float) -> tuple[float, float] | None:
@@ -2509,6 +2577,7 @@ def bounded_separation_p(
     alpha: float = SIGNIFICANCE_ALPHA,
     planned_n: int | None = None,
     mixture: bool = False,
+    toward: float = 0.5,
 ) -> float | None:
     """The two-sided p of the bounded test by betting that ``mean(b) ≠ mean(a)``, valid at every n on a declared range.
 
@@ -2530,7 +2599,13 @@ def bounded_separation_p(
     the p is one over the most it reached. No stake depends on a count, so the p over the first k pairs is one
     capital read at k: cases may be added and the p read again as often as wanted, and a reading at or below α
     happens at most α of the time under the null over every such re-read together. Its interval
-    (:func:`bounded_difference_interval` with ``mixture``) is read off the same capital. ``alpha`` plays no part.
+    (:func:`bounded_difference_interval` with ``mixture``) is read off the same stakes. ``alpha`` plays no part.
+
+    **A declared direction** (``toward``, with ``mixture``): the share of the capital staked on ``mean(b) > mean(a)``,
+    the rest on the other side. 1/2 is the even hedge, the test with no direction declared; a question that asks
+    whether ``b`` does better stakes :data:`DECLARED_DIRECTION_SHARE` on its better side (``toward`` 0.9 where higher is
+    better, 0.1 where lower is), so a separation the asked way needs about 1/0.9 of the capital a one-sided bet would,
+    and one the other way ten times it. Any share strictly between 0 and 1 keeps α.
 
     :param sample_a: One side's per-case values, in a fixed case order.
     :ptype sample_a: Sequence[float | Fraction]
@@ -2547,14 +2622,16 @@ def bounded_separation_p(
     :ptype planned_n: int | None
     :param mixture: Read the hedged mixture bet, over the pairs in the order given.
     :ptype mixture: bool
+    :param toward: With ``mixture``, the share of the capital staked on ``mean(b) > mean(a)``.
     :return: The p, in ``[0, 1]``; None with fewer than two values a side, paired samples of different lengths, or a
         value outside the declared range.
     :rtype: float | None
     :raises ValueError: ``planned_n`` on an unpaired reading, or below the pairs given; ``mixture`` unpaired or with
-        ``planned_n``.
+        ``planned_n``; ``toward`` not strictly between 0 and 1, or other than 1/2 without ``mixture``.
     """
     _check_planned(planned_n, paired=paired, given=len(sample_b))
     _check_mixture(mixture, planned_n=planned_n, paired=paired)
+    _check_toward(toward, mixture=mixture)
     a = [exact_decimal(v) for v in sample_a]
     b = [exact_decimal(v) for v in sample_b]
     if len(a) < 2 or len(b) < 2 or (paired and len(a) != len(b)):
@@ -2566,7 +2643,7 @@ def bounded_separation_p(
         width = float(high - low)
         diffs = [y - x for x, y in zip(a, b)]
         if mixture:
-            return _hedged_p(_scaled_to_unit(diffs, (-width, width), ordered=True), 0.5)
+            return _hedged_p(_scaled_to_unit(diffs, (-width, width), ordered=True), 0.5, toward)
         upward = bounded_mean_p(diffs, 0.0, (-width, width), alpha=alpha / 2.0, planned_n=planned_n)
         downward = bounded_mean_p([-d for d in diffs], 0.0, (-width, width), alpha=alpha / 2.0, planned_n=planned_n)
         return min(1.0, 2.0 * min(upward, downward))
@@ -3458,7 +3535,9 @@ def paired_case_variance(
 
 __all__ = [
     "BAR_SEED_HALF_WIDTH_FRACTION",
+    "DECLARED_DIRECTION_SHARE",
     "DETECTABLE_POWER",
+    "EVIDENCE_STEPS",
     "EQUIVALENCE_NEEDS_RANGE",
     "EQUIVALENCE_TEST_NAME",
     "GUARDRAIL_HELD_NEEDS_RANGE",
@@ -3484,6 +3563,7 @@ __all__ = [
     "SignificanceResult",
     "VarianceComponents",
     "bar_seed",
+    "bet_evidence",
     "bounded_mean_p",
     "case_means",
     "case_rate_interval",
