@@ -49,6 +49,7 @@ import asyncio
 import functools
 import math
 import random
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -61,13 +62,14 @@ from threetears.evals.actions.catalogue import Caller
 from threetears.evals.analysis import ComparisonFamily, assemble_context_bundle
 from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.bundle.comparisons import redrawn_sentence
-from threetears.evals.analysis.bundle.trials import redrawn_cells
+from threetears.evals.analysis.bundle.trials import RedrawnCells, redrawn_cells
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, exact_rate_interval, separation_test
 from threetears.evals.kernel import ValidationFailedError, default_job_timeout
 from threetears.evals.kernel.declaration import AspectDesign, ControlDeclaration, SweptAxis
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.ops import LaunchArguments, OpsHost, job_cancel, job_poll, job_resume, run_launch
+from threetears.evals.ops import jobs as ops_jobs
 from threetears.evals.ops.jobs import parse_job_id
 from threetears.evals.quick.one_call import CALLABLE_KIND, callable_host, callable_kind
 from threetears.evals.run import (
@@ -598,7 +600,7 @@ async def test_an_operator_s_first_cancel_of_a_launch_lets_its_cells_in_flight_f
     family = await _taken_up_and_read(engine, job_id, launch_id)
     rows = off_loop(_rows_of, engine, launch_id)
     assert len(rows) == 16 and not any(row.written_over for row in rows)
-    assert redrawn_cells(rows) == (0, 0)
+    assert redrawn_cells(rows) == RedrawnCells()
     assert "recorded no answer" not in family.disclosure
 
 
@@ -619,8 +621,9 @@ async def test_a_second_cancel_cuts_the_cells_in_flight_and_the_family_says_how_
     family = await _taken_up_and_read(engine, job_id, launch_id)
     rows = off_loop(_rows_of, engine, launch_id)
     assert len(rows) == 16 and {row.id for row in rows if row.written_over == "cut"} == {row.id for row in cut}
-    assert redrawn_cells(rows) == (len(cut), len(cut))
-    assert redrawn_sentence(len(cut), len(cut)) in family.disclosure
+    assert redrawn_cells(rows) == RedrawnCells(taken_up=len(cut), taken_up_cut=len(cut))
+    assert redrawn_sentence(*redrawn_cells(rows)) in family.disclosure
+    assert "ran again when its run was taken up" in family.disclosure
 
 
 async def test_a_cancel_the_lease_then_finds_on_the_record_is_the_same_cancel_and_does_not_cut() -> None:
@@ -632,6 +635,34 @@ async def test_a_cancel_the_lease_then_finds_on_the_record_is_the_same_cancel_an
     await job_cancel(engine.ops, job_id, _SCOPE, reason="shipping a fix")
     await asyncio.sleep(0.5)  # several renewals, each reading the request
     assert (await job_poll(engine.ops, job_id, _SCOPE)).state == "running", "the lease delivered no second cancel"
+    assert engine.landings.held is not None
+    engine.landings.held.set()
+    await engine.ops.launch.job_manager.wait_for([launch_id])
+    rows = off_loop(_rows_of, engine, launch_id)
+    assert rows and {row.termination for row in rows} == {"completed"}, "nothing was cut"
+
+
+async def test_a_cancel_the_lease_delivers_before_its_own_process_counts_it_is_still_one_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``job_cancel`` writes its request on the launch's record, then cancels the launch here. Where the lease, renewing,
+    finds the request and delivers it in between, the cancel here is that same request, read by what it wrote
+    (``cancel_requested_at``), so it is no second cancel: the launch drains and nothing is cut."""
+    engine = _engine(random.Random("lease-first"), "alike-20x", "grade", lease_s=0.3)
+    job_id, launch_id = await _held_launch(engine, 8)
+    written = ops_jobs.request_job_cancel
+
+    def written_then_delivered(*args: Any, **kwargs: Any) -> Any:
+        # Off the loop: the request is on the record, and the lease renews several times (every 0.1 s) before the
+        # cancel here is made.
+        stamp = written(*args, **kwargs)
+        time.sleep(0.5)
+        return stamp
+
+    monkeypatch.setattr(ops_jobs, "request_job_cancel", written_then_delivered)
+    await job_cancel(engine.ops, job_id, _SCOPE, reason="shipping a fix")
+    await asyncio.sleep(0.2)
+    assert (await job_poll(engine.ops, job_id, _SCOPE)).state == "running", "one cancel drains: the held cells run on"
     assert engine.landings.held is not None
     engine.landings.held.set()
     await engine.ops.launch.job_manager.wait_for([launch_id])

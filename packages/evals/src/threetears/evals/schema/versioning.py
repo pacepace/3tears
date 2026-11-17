@@ -495,8 +495,11 @@ CORE_SCHEMA_VERSION: int = 15
 #:   where some attempt it replaces was cut while it ran, else ``unanswered`` (a call the account refused, or a model
 #:   not served). The count of cells that ran again (``redrawn_cells``) reads it, since the take-up keeps no row of the
 #:   cut, and an engine family discloses that count. Left out of the document when unset, so a row written over
-#:   nothing is stored byte for byte as before. In no identity, key or digest. An older build reads such a row as the
-#:   cell's one answer, which it is, and counts no cell run again for it, which only its disclosure misses.
+#:   nothing is stored byte for byte as before. In no identity or key. Evidence in a bundle's fingerprint only where set,
+#:   so no stored fingerprint moves: a row taken up before this build carries none, and a bundle over it fingerprints as
+#:   it did (and counts fewer cells run again, a lower bound it does not flag); a row taken up under this build carries
+#:   it from its first write, so a bundle over it is fingerprinted with it from the start. An older build reads such a
+#:   row as the cell's one answer, which it is, and counts no cell run again for it, which only its disclosure misses.
 #:   An older build that ignores this field reads the document correctly, and its writes leave it true.
 CORE_SCHEMA_MINOR: int = 23
 """The core minor this build writes; a read of this build's major at a newer minor keeps what it does not know."""

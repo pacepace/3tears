@@ -432,7 +432,7 @@ def _refuse_let_go(leases: JobLeases | None, kind: LeasedJobKind[Any], record_id
         )
 
 
-def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> bool:
+def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reason: str | None) -> str | None:
     """Ask a job to stop by writing the request on its record, from any process.
 
     The holder reads it at its next renewal and ends the job ``cancelled``; the write is unconditional and mints a
@@ -442,11 +442,13 @@ def request_job_cancel(store: LeaseStore, record_id: str, scope_id: str, *, reas
     :param record_id: The job's record.
     :param scope_id: Its scope.
     :param reason: Why, when the asker said; recorded on the record and on a run's ``cancellation_reason``.
-    :return: Whether the record was written (False: there is no such document).
+    :return: The request as written (its ``cancel_requested_at``), which names this one cancel wherever it is heard;
+        ``None`` where there is no such document.
     :raises StorageError: The write failed.
     """
-    fields: dict[str, Any] = {"cancel_requested_at": store.store_time().isoformat(), "cancel_request_reason": reason}
-    return store.merge_job_record_fields(record_id, scope_id, fields)
+    requested = store.store_time().isoformat()
+    fields: dict[str, Any] = {"cancel_requested_at": requested, "cancel_request_reason": reason}
+    return requested if store.merge_job_record_fields(record_id, scope_id, fields) else None
 
 
 def write_held_record[R: EvalDocumentModel](
@@ -1418,6 +1420,16 @@ class JobLeases:
         if held is None:
             return False
         return await run_blocking(self._pool(), self._end_lost, held, cause)
+
+    def delivered(self, record_id: str) -> str | None:
+        """The cancel request last handed to a held job (its ``cancel_requested_at``), or ``None``: what the job's own
+        rule reads to count one request once, however many ways it arrives.
+
+        :param record_id: The job's record.
+        :return: The request, or ``None`` where none was handed over or the record is not held here.
+        """
+        held = self._held.get(record_id)
+        return held.delivered if held is not None and isinstance(held.delivered, str) else None
 
     def _act_on(self, held: _Held, verdict: _RenewalVerdict, reason: str | None, retry_in_s: float) -> None:
         """Do what a renewal found: deliver each cancel request once, or release and stop a job fenced off its record.

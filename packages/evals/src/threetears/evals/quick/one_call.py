@@ -154,7 +154,7 @@ from threetears.evals.quick.continuation import (
     new_comparison_sentence,
 )
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
-from threetears.evals.analysis.bundle.trials import committed_order, redrawn_cells
+from threetears.evals.analysis.bundle.trials import RedrawnCells, committed_order, redrawn_cells
 from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExamples, judge_evidence
@@ -2614,7 +2614,7 @@ async def launch_arms(
                 for run_ids in read_runs
             ]
 
-        def redrawn() -> tuple[int, int]:
+        def redrawn() -> RedrawnCells:
             # Over every run read, this launch's included, so the print says the count the comparison's page says.
             return redrawn_cells(
                 [
@@ -2627,7 +2627,7 @@ async def launch_arms(
 
         # Summarizing reads each run and its results back from the store, so it runs off the loop.
         summaries = await run_blocking(host.blocking_executor, summarized)
-        cells_again = await run_blocking(host.blocking_executor, redrawn) if continuing else (0, 0)
+        cells_again = await run_blocking(host.blocking_executor, redrawn) if continuing else RedrawnCells()
         # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
         # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
         idle = (

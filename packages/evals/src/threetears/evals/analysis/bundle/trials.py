@@ -32,7 +32,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from threetears.evals.analysis.bundle.caps import (
     MAX_ERROR_CHARS,
@@ -465,28 +465,68 @@ def bet_places(
     return places
 
 
-def redrawn_cells(results: Sequence[ResultView]) -> tuple[int, int]:
+class RedrawnCells(NamedTuple):
+    """The cells of a comparison that recorded no answer on some row, each once, by where each stands: still to run again
+    (``pending``), run again by a take-up of its run (``taken_up``), or run again by a later launch of a continued
+    comparison (``continued``); each with how many of those were cut while they ran. Read by
+    :func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`, in this order.
+
+    :ivar pending: Cells with no answer yet, which run again when the comparison is continued or its run taken up.
+    :ivar pending_cut: How many of them were cut while they ran.
+    :ivar taken_up: Cells a take-up ran again, written over their rows (``EvalResult.written_over``).
+    :ivar taken_up_cut: How many of them had been cut while they ran.
+    :ivar continued: Cells a later launch answered, their rows with no answer kept beside.
+    :ivar continued_cut: How many of them had been cut while they ran.
+    """
+
+    pending: int = 0
+    pending_cut: int = 0
+    taken_up: int = 0
+    taken_up_cut: int = 0
+    continued: int = 0
+    continued_cut: int = 0
+
+    @property
+    def any(self) -> bool:
+        """Whether any cell recorded no answer on some row."""
+        return bool(self.pending or self.taken_up or self.continued)
+
+
+def redrawn_cells(results: Sequence[ResultView]) -> RedrawnCells:
     """How many cells of ``results`` recorded no answer on some row, so they ran or run again
     (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those were cut while they ran (a row
-    of termination ``cancelled``): a running total over every row, each cell counted once however many of its rows
-    recorded nothing. A cell is an arm's case at one repeat, its arm the variant its rows were stamped with. A run taken
-    up again writes such a cell's new row over the old one, so the row it wrote says what it replaced
-    (``EvalResult.written_over``: ``cut``, or ``unanswered``), and counts as the old row would have. The one count of
-    them, which a quick-path comparison's print and every comparison family on the page and in the bundle say
-    (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`).
+    of termination ``cancelled``), each by where it stands (:class:`RedrawnCells`): a running total over every row, each
+    cell counted once however many of its rows recorded nothing. A cell is an arm's case at one repeat, its arm the
+    variant its rows were stamped with. A cell some row still leaves without an answer is pending. A run taken up again
+    writes such a cell's new row over the old one, so the row it wrote says what it replaced
+    (``EvalResult.written_over``: ``cut``, or ``unanswered``), and the cell ran again by a take-up; a cell whose row
+    with no answer is kept beside an answer of a later run ran again when its comparison was continued. Rows a take-up
+    wrote over before ``written_over`` existed carry nothing, so a comparison over runs taken up before it counts fewer
+    cells than ran again. The one count of them, which a quick-path comparison's print and every comparison family on
+    the page and in the bundle say (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`).
 
     :param results: Every result of the comparison's runs.
-    :return: The cells that recorded no answer on some row, and the cut ones among them.
+    :return: The cells, by where each stands.
     """
-    again: set[tuple[str, str, int]] = set()
-    cut: set[tuple[str, str, int]] = set()
+    rows: dict[tuple[str, str, int], list[ResultView]] = {}
     for result in results:
-        if runs_again(result) or result.written_over is not None:
-            cell = (result.variant_key, result.test_case_id, result.k_iteration)
-            again.add(cell)
-            if result.termination == "cancelled" or result.written_over == "cut":
-                cut.add(cell)
-    return len(again), len(cut)
+        rows.setdefault((result.variant_key, result.test_case_id, result.k_iteration), []).append(result)
+    counts = [0] * 6
+    for cell_rows in rows.values():
+        unanswered = [row for row in cell_rows if runs_again(row)]
+        over = [row.written_over for row in cell_rows if row.written_over is not None]
+        if not unanswered and not over:
+            continue
+        cut = any(row.termination == "cancelled" for row in unanswered) or "cut" in over
+        if len(unanswered) == len(cell_rows):
+            where = 0  # no row answers it yet
+        elif over:
+            where = 2  # a take-up answered it, over its row
+        else:
+            where = 4  # a later launch answered it
+        counts[where] += 1
+        counts[where + 1] += cut
+    return RedrawnCells(*counts)
 
 
 def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView]) -> frozenset[str]:

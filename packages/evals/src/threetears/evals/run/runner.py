@@ -273,9 +273,11 @@ class RunnerOptions:
     # every other run, shuffles the whole matrix.
     case_order: Sequence[str] | None = None
     # Set, the run starts no further cell: the cells running finish and are recorded, and the run ends cancelled
-    # (``asyncio.CancelledError``, raised once they have) where it left a cell unstarted. A first interrupt of a
-    # comparison drains its runs this way (:meth:`~threetears.evals.run.launch.LaunchGroup.stop_starting`); a cancel of
-    # the run's job still cuts at once. ``None`` never drains.
+    # (``asyncio.CancelledError``, raised once they have) where it left a cell unstarted, and completes where every
+    # cell had started. A run's first cancel sets it (``EvalJobManager.cancel_job``, through its launch group's
+    # :meth:`~threetears.evals.run.launch.LaunchGroup.drains`), as a comparison's first interrupt does
+    # (:meth:`~threetears.evals.run.launch.LaunchGroup.stop_starting`); a further cancel of the run's job cuts at once.
+    # ``None`` never drains.
     stop_starting: asyncio.Event | None = None
 
     def __post_init__(self) -> None:

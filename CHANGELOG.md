@@ -11,7 +11,8 @@ packages (bumped in lock-step).
 **Changed:** the engine keeps the quick path's interrupt rule. A run's first cancel (`job_cancel` on the run, or on
 the launch or sweep holding it; a foreground `await_job` interrupted; a cancel asked on the record from
 another process) starts no further cell and lets the cells in flight finish and record, each within its own deadline;
-the run then ends `cancelled`, and a take-up runs only the cells it never started. A second cancel, from any process,
+the run then ends `cancelled` where it left a cell unstarted, and a take-up runs only those, or `completed` where every
+cell had already started when the cancel landed (the run is whole). A second cancel, from any process,
 or a second Ctrl+C, cuts the cells still running, recorded `cancelled`, and a take-up runs them again. Before, the
 first cancel cut, and a cut cell drawn afresh leans a comparison where one arm's wrong answers are its slow ones: a
 null simulation of the engine (`test_engine_take_up_null.py`) drew 13% false separations over three planned looks
@@ -23,10 +24,18 @@ and the job manager reads a run's first cancel as a drain (`EvalJobManager.cance
 (`EvalResult.written_over`: `cut` or `unanswered`; core minor 15.23), so the count of cells that ran again
 (`redrawn_cells`) still counts a cell the take-up wrote over. Every comparison family, an engine campaign's included,
 now says that count where any cell ran again, in the one sentence that says it (`redrawn_sentence`); before, only a
-quick-path family did.
+quick-path family did. The sentence says each cell as it stands: one still to run again "runs again when it is
+continued"; one a take-up ran again "ran again when its run was taken up"; one a later launch of a quick comparison
+answered "ran again when the comparison was continued", where it said "runs again" of every cell. `redrawn_cells`
+returns `RedrawnCells` (pending, taken up and continued, each with its cut ones) in place of a pair. Rows a take-up
+wrote over before this build carry no `written_over`, so an engine family over runs taken up before it counts fewer
+cells run again than did, or none, and does not say the count is short.
 
 **For hosts:** a first Ctrl+C, or a first `job_cancel`, now finishes the running cells before the run stops, so a
-cancel no longer returns a run to `cancelled` at once: poll until it lands, or cancel again to stop at once. Two
+cancel no longer lands within one renewal interval: it lands within one renewal interval plus the longest deadline of a
+cell in flight (the run's `cell_timeout_s`, 600 s by default). Size a cancel's poll by that, or cancel again to stop at
+once (`docs/serving.md`, "A cancel drains, then cuts"). `kernel.job_leases.request_job_cancel` returns the request it
+wrote (its `cancel_requested_at`), or None, where it returned a bool. Two
 cancels of a launch or a sweep that land before its job has heard the first are one cancel. `written_over` is left out
 of a row that replaced nothing, so such rows are stored as before; a build before this one reads a row carrying it
 under its newer-minor tolerance and ignores the field, which is correct (the row is the cell's one answer) and only

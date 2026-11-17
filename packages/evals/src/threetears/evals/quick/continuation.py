@@ -63,6 +63,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from threetears.evals.analysis.bundle.comparisons import redrawn_sentence
+from threetears.evals.analysis.bundle.trials import RedrawnCells
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.campaigns import list_campaigns
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
@@ -305,7 +306,7 @@ UNKEPT_SENTENCE = (
 
 
 def continued_sentence(
-    already: int, added: int, unreached: int = 0, incomplete: int = 0, redrawn: tuple[int, int] = (0, 0)
+    already: int, added: int, unreached: int = 0, incomplete: int = 0, redrawn: RedrawnCells = RedrawnCells()
 ) -> str:
     """What a continued comparison's print says of how it ran: the cases read again as they ran, the cases that ran
     now (``unreached`` of them held by a launch that stopped before it reached them, and ``incomplete`` reached by one
@@ -326,7 +327,7 @@ def continued_sentence(
         ran = f"{added} case{'s' if added != 1 else ''} ran, {' and '.join(part for part in held if part)}"
     else:
         ran = f"{added} new case{'s' if added != 1 else ''} ran"
-    again = f" {redrawn_sentence(*redrawn)}" if redrawn[0] else ""
+    again = f" {redrawn_sentence(*redrawn)}" if redrawn.any else ""
     return (
         f"Continues the comparison run before under this name: its {already} case{'s' if already != 1 else ''} already "
         f"run {'are' if already != 1 else 'is'} read as {'they' if already != 1 else 'it'} ran, and {ran}.{again} An arm "

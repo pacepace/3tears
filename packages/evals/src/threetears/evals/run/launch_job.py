@@ -199,7 +199,9 @@ def _launch_work(
                 raise second from first
             raise
         except BaseException:
-            # Fenced off, or the progress write failed: the launch has ended, and its runs are cut with it.
+            # The progress write failed, or the launch's job ended otherwise than by a cancel: the launch has ended, and
+            # its runs are cut with it. A launch fenced off its record arrives as a cancel (its lease's stop), so it
+            # drains above, and each run's own lease fences and cuts it within a renewal.
             for run_id in run_ids:
                 manager.cut_job(run_id, reason=_LAUNCH_CANCEL_REASON)
             await asyncio.shield(manager.wait_for(run_ids))

@@ -634,8 +634,11 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
     **A first cancel drains, a further one cuts** (:meth:`~threetears.evals.run.jobs.EvalJobManager.cancel_job`): a
     run, or every run of a launch or a sweep, starts no further cell, and the cells it is running finish and are
     recorded, each within its own deadline; a second ``job_cancel``, from this process or another, cuts them, and a
-    take-up runs the cut cells again. Two cancels of a launch or a sweep landing before its job has heard the first
-    are one cancel.
+    take-up runs the cut cells again. A drained run whose cells had all started when the cancel landed completes. Each
+    request is one cancel however it arrives (here, and through the job's lease, which finds the request this wrote on
+    the record). Two cancels count as one, erring toward draining, where they land too close together to be told apart:
+    two of a launch or a sweep before its job has heard the first, or two written from other processes before the
+    holder's lease reads either.
 
     :param host: The host whose store holds the job's record and whose job manager may run it.
     :param job_id: The id the start returned.
@@ -668,15 +671,16 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
             )
         if attempt_id is not None:
             record_id = attempt_id
-    await run_blocking(
+    request = await run_blocking(
         eval_host.blocking_executor, request_job_cancel, eval_host.storage, record_id, scope_id, reason=reason
     )
     # This process may be the one running it: cancel it here now rather than at the next renewal. The record was
-    # read in the caller's scope, so the id is one this caller may cancel.
+    # read in the caller's scope, so the id is one this caller may cancel. The cancel carries the request it wrote, so
+    # the job's lease, finding that request on the record (before this line or after), counts the one cancel once.
     if kind == "run":
-        manager.cancel_job(record_id, reason=reason, requested=True)
+        manager.cancel_job(record_id, reason=reason, request=request)
     else:
-        manager.cancel_task(record_id, requested=True)
+        manager.cancel_task(record_id, request=request)
     return await job_poll(host, job_id, scope_id)
 
 
