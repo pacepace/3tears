@@ -884,7 +884,7 @@ def _primary_family(
     :param axes: The question's merit axes.
     :param tested: The family's comparisons, tested and uncorrected.
     :param primary: The question's first grader's reading, by name.
-    :param redrawn: How many of the comparison's cells recorded no answer and run again, and how many an interrupt cut.
+    :param redrawn: The comparison's cells that recorded no answer, by where each stands (:class:`RedrawnCells`).
     :return: The family.
     """
     alpha = SIGNIFICANCE_ALPHA
