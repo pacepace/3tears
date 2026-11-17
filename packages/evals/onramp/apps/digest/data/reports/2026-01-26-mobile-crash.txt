@@ -1,0 +1,1 @@
+The iOS app crashed on launch for users on the newest OS version. The crash was caused by a deprecated API call in the analytics library. Approximately 6,000 users were affected over two days until the fixed build was approved. Android users were not affected. We now test release builds on the OS beta.

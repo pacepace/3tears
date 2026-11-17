@@ -35,7 +35,7 @@ def display_c(temp_f: float | str) -> int:
     """The whole degree Celsius the board shows for one Fahrenheit reading."""
     try:
         value = float(temp_f)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise ReadingError(f"reading {temp_f!r} is not a number") from None
     low, high = SENSOR_RANGE_F
     if not math.isfinite(value) or not low <= value <= high:

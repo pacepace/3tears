@@ -1,0 +1,1 @@
+Product images failed to load for users in Asia for about 50 minutes on Friday. A CDN configuration push removed our origin from the Singapore edge. Pages still loaded, but without images. The CDN provider rolled back the push at 11:40 and images were restored. We have asked the provider for notice of configuration changes.

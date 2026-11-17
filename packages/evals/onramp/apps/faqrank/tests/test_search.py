@@ -28,10 +28,12 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(search("zebra"), [])
 
     def test_a_title_counts_more_than_the_body(self):
-        index = Index([
-            {"id": "a", "title": "Webhooks", "body": "Set them up in settings."},
-            {"id": "b", "title": "Settings", "body": "Webhooks and other settings."},
-        ])
+        index = Index(
+            [
+                {"id": "a", "title": "Webhooks", "body": "Set them up in settings."},
+                {"id": "b", "title": "Settings", "body": "Webhooks and other settings."},
+            ]
+        )
         self.assertEqual([h.id for h in index.search("webhooks")], ["a", "b"])
 
 

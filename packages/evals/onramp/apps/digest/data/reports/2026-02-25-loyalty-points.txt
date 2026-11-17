@@ -1,0 +1,1 @@
+Loyalty points were awarded twice on orders placed on Tuesday evening. The points service retried after a timeout and the award was not idempotent, i.e. each retry added the points again. Approx. 3,900 customers got extra points, worth about £7,800 in all. We decided to let customers keep the points. Awards now carry an order key so a retry cannot add them twice.
