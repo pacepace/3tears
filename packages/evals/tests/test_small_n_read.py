@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import math
 import random
+import threading
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
@@ -52,6 +53,10 @@ from threetears.evals.storage import InMemoryDocumentStore
 
 #: The pass rate's range, which the per-case shares and their differences are read on.
 _RATE = (0.0, 1.0)
+
+#: A plain runner may be called from several threads at once, one per repeat in flight: each call takes its number
+#: under this lock, so no two repeats of a case read the same call and every seeded draw is the one its count names.
+_COUNTING = threading.Lock()
 
 #: The question every comparison here asks, so its first grader is the primary.
 _QUESTION = "Does v2 pass more often than v1?"
@@ -149,8 +154,10 @@ def _tallied(name: str, passes: Sequence[int], calls: Counter[tuple[str, int]]) 
 
     def run(case: Mapping[str, Any]) -> bool:
         index = int(case["n"])
-        calls[(name, index)] += 1
-        return calls[(name, index)] <= passes[index]
+        with _COUNTING:
+            calls[(name, index)] += 1
+            call = calls[(name, index)]
+        return call <= passes[index]
 
     run.__name__ = name
     return run
@@ -284,11 +291,13 @@ def _drawn(null: _Null, tag: str, arm: int, calls: Counter[tuple[int, int]]) -> 
 
     def run(case: Mapping[str, Any]) -> bool:
         index = int(case["n"])
-        calls[(index, arm)] += 1
+        with _COUNTING:
+            calls[(index, arm)] += 1
+            call = calls[(index, arm)]
         held = _share(null, tag, index)[arm]
         if isinstance(held, int):
-            return calls[(index, arm)] <= held
-        return random.Random(f"{tag}-{arm}-{index}-{calls[(index, arm)]}").random() < held
+            return call <= held
+        return random.Random(f"{tag}-{arm}-{index}-{call}").random() < held
 
     run.__name__ = f"v{arm + 1}"
     return run
@@ -506,10 +515,12 @@ async def _covers(tag: str, n: int) -> tuple[bool, bool]:
     def arm(which: int) -> Callable[[Mapping[str, Any]], Any]:
         def run(case: Mapping[str, Any]) -> bool:
             index = int(case["n"])
-            calls[(index, which)] += 1
+            with _COUNTING:
+                calls[(index, which)] += 1
+                call = calls[(index, which)]
             base = random.Random(f"{tag}-case-{index}").uniform(0.1, 0.5)
             share = base + (_EFFECT if which else 0.0)
-            return random.Random(f"{tag}-{which}-{index}-{calls[(index, which)]}").random() < share
+            return random.Random(f"{tag}-{which}-{index}-{call}").random() < share
 
         run.__name__ = f"v{which + 1}"
         return run
