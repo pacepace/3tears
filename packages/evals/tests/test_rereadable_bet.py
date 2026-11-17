@@ -38,8 +38,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import random
+import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -59,7 +61,7 @@ from threetears.evals.analysis import (
     list_campaigns,
 )
 from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet, redrawn_sentence
-from threetears.evals.analysis.bundle.trials import committed_order
+from threetears.evals.analysis.bundle.trials import committed_order, redrawn_cells
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
     bounded_difference_interval,
@@ -1066,13 +1068,105 @@ async def test_a_call_the_account_refused_or_a_model_not_served_runs_again_when_
     assert read_by_bet(family) and _same_p(_correct_p(finished), _reading_p(runs, results))
 
 
-async def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_raises_the_first_cancel(
+def test_the_cells_that_run_again_are_counted_once_each_however_many_rows_recorded_no_answer() -> None:
+    """A cell is an arm's case at one repeat: one whose rows recorded no answer twice, cut in one launch and refused in
+    the next, is one cell that ran again, and one cut, never two; the same case on another arm, or at another repeat, is
+    another cell."""
+    cut = make_eval_result(eval_run_id="run-1", test_case_id="tc-1", variant_key="v-a", termination="cancelled")
+    refused = make_eval_result(eval_run_id="run-2", test_case_id="tc-1", variant_key="v-a", account_refused=True)
+    answered = make_eval_result(eval_run_id="run-3", test_case_id="tc-1", variant_key="v-a")
+    assert redrawn_cells([cut, refused, answered]) == (1, 1)
+    elsewhere = [
+        make_eval_result(eval_run_id="run-4", test_case_id="tc-1", variant_key="v-b", model_unserved=True),
+        make_eval_result(
+            eval_run_id="run-1", test_case_id="tc-1", variant_key="v-a", k_iteration=2, account_refused=True
+        ),
+    ]
+    assert redrawn_cells([cut, refused, answered, *elsewhere]) == (3, 1)
+
+
+@pytest.mark.parametrize(
+    ("cells", "cut", "said"),
+    [
+        (
+            1,
+            1,
+            "1 cell of this comparison recorded no answer (a running total over its runs), and each runs again when it "
+            "is continued; it was cut while running, by an interrupt or a shutdown, and a cut cell drawn afresh can "
+            "lean the reading where a slow answer is a wrong one.",
+        ),
+        (
+            3,
+            1,
+            "3 cells of this comparison recorded no answer (a running total over its runs), and each runs again when "
+            "it is continued; 1 of them was cut while running, by an interrupt or a shutdown, and a cut cell drawn "
+            "afresh can lean the reading where a slow answer is a wrong one.",
+        ),
+        (
+            2,
+            2,
+            "2 cells of this comparison recorded no answer (a running total over its runs), and each runs again when "
+            "it is continued; 2 of them were cut while running, by an interrupt or a shutdown, and a cut cell drawn "
+            "afresh can lean the reading where a slow answer is a wrong one.",
+        ),
+        (
+            2,
+            0,
+            "2 cells of this comparison recorded no answer (a running total over its runs), and each runs again when "
+            "it is continued: calls the account refused or the provider did not serve.",
+        ),
+    ],
+)
+def test_the_sentence_of_cells_run_again_agrees_with_its_cut_count(cells: int, cut: int, said: str) -> None:
+    """The verb agrees with the number it follows: the cut count, or the one cell where there is one."""
+    assert redrawn_sentence(cells, cut) == said
+
+
+async def test_a_continuation_that_records_a_refused_cell_counts_it_on_its_print_as_its_page_does() -> None:
+    """A continuation whose own launch records a row with no answer (a call the account refused) counts it on its print,
+    as the comparison's page does: the print and the page give one count, this launch's rows included."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    coins = {"a": _coin("refused-again", "a", 0.5, calls), "b": _coin("refused-again", "b", 0.5, calls)}
+    refused: list[int] = []
+    launch = ["first"]
+
+    def turned_away(arm: str) -> Callable[[Mapping[str, Any]], Any]:
+        async def run(case: Mapping[str, Any]) -> str:
+            answer = await coins[arm](case)
+            # Arm a's account refuses once in each launch, on a case no launch refused before.
+            if arm == "a" and len(refused) < len(launch) and case["n"] not in refused:
+                refused.append(case["n"])
+                raise ProviderError("openai", 401, "turned away")
+            return answer
+
+        run.__name__ = arm
+        return run
+
+    arms = {arm: turned_away(arm) for arm in "ab"}
+    await Eval(_cases(10), arms, [_correct], k=1, name="refused-again").run(store=store, scope="s")
+    launch.append("again")
+    again = await Eval(_cases(10), arms, [_correct], k=1, name="refused-again").run(store=store, scope="s")
+    assert len(refused) == 2
+
+    def counted(text: str) -> int:
+        (found,) = re.findall(r"(\d+) cells? of this comparison recorded no answer", text)
+        return int(found)
+
+    (printed,) = _how_it_ran(again)
+    (family,) = again.report.bundle.multiple_comparisons.families
+    assert counted(printed) == counted(family.disclosure) == 2
+
+
+def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_raises_it_after_the_first_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """In a terminal a second Ctrl+C reaches the comparison's own task as ``KeyboardInterrupt``, not as a second cancel
     (here, raised as the drain says it is finishing the cells in flight). It is the cutting interrupt: the cells in
-    flight are cut, the runs settle cancelled, the campaign is filed, and the cancel that landed first is raised. Run
-    again, only the cells no run recorded run, the cut ones among them, and nothing recorded is drawn twice."""
+    flight are cut, the runs settle cancelled, the campaign is filed, and the ``KeyboardInterrupt`` itself is raised,
+    from the cancel that landed first, so a host that would read a cancel as its own still gets the interrupt. Run
+    again, only the cells no run recorded run, the cut ones among them, and nothing recorded is drawn twice. Run on a
+    loop of its own, as a host's is, since the interrupt leaves the loop it is raised on."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
     running: list[asyncio.Task[Result]] = []
@@ -1102,14 +1196,18 @@ async def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_rai
         return run
 
     arms = {arm: interrupting(arm) for arm in "ab"}
-    running.append(
-        asyncio.create_task(Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s"))
-    )
-    task = running[0]
-    with pytest.raises(asyncio.CancelledError) as cancelled:
-        await task
+
+    async def interrupted() -> Result:
+        running.append(
+            asyncio.create_task(Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s"))
+        )
+        return await running[0]
+
+    with pytest.raises(KeyboardInterrupt) as second:
+        asyncio.run(interrupted())
     monkeypatch.undo()
-    assert cancelled.value.args == ("interrupted",)
+    assert isinstance(second.value.__cause__, asyncio.CancelledError)
+    assert second.value.__cause__.args == ("interrupted",)
     host = as_host([Eval(_cases(12), arms, [_correct], k=1, name="keys")], store=store)
     (campaign,) = off_loop(list_campaigns, host.storage, "s", subject_id="keys")
     cut_runs, cut_results = off_loop(_stored, host.storage, campaign.id)
@@ -1117,7 +1215,7 @@ async def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_rai
     cut = [result for result in cut_results if runs_again(result)]
     assert cut and {result.termination for result in cut} == {"cancelled"}
 
-    finished = await Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s")
+    finished = asyncio.run(Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s"))
     assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
     runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
     kept = [result for result in results if not runs_again(result)]
@@ -1126,6 +1224,35 @@ async def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_rai
     arm_of = {run.id: str(launched_as_run(run)[0]) for run in runs}
     again = Counter((case_n[r.test_case_id], arm_of[r.eval_run_id]) for r in cut)
     assert all(calls[cell] == 1 + again[cell] for cell in calls)
+
+
+class _StoreThatBreaksOnTheCutRow(InMemoryDocumentStore):
+    """A store whose next read of a row not yet stored fails with an error no store contract names, once armed: the
+    cell row a cut cell is saved as is the first such read after the interrupt."""
+
+    armed = False
+
+    def get_with_etag(self, doc_id: str, scope_id: str) -> tuple[dict[str, Any] | None, str | None]:
+        if self.armed and self.get(doc_id, scope_id) is None:
+            self.armed = False
+            raise RuntimeError("the store broke while the cut cell was saved")
+        return super().get_with_etag(doc_id, scope_id)
+
+
+def test_a_ctrl_c_in_a_cell_still_leaves_when_saving_the_cut_cell_fails(caplog: pytest.LogCaptureFixture) -> None:
+    """A Ctrl+C landing in a cell's own step records the cell cut, then is raised; when saving that row fails with an
+    unexpected error, the failure is recorded for an operator and the ``KeyboardInterrupt`` still leaves, never turned
+    into a failed cell the run carries on past."""
+    store = _StoreThatBreaksOnTheCutRow()
+
+    async def a(case: Mapping[str, Any]) -> str:
+        store.armed = True
+        raise KeyboardInterrupt
+
+    with caplog.at_level(logging.ERROR), pytest.raises(KeyboardInterrupt):
+        asyncio.run(Eval(_cases(1), {"a": a}, [_correct], k=1, name="broken").run(store=store, scope="s"))
+    assert not store.armed
+    assert any("could not be accounted for" in record.getMessage() for record in caplog.records), caplog.text
 
 
 # --- the committed order, and the cells played in it -----------------------------------------------------------------
