@@ -24,8 +24,8 @@ A launch of it that did not finish (a cost cap, a replay miss, an interrupt, who
 seen) is kept as it ran: every result it recorded counts, and a continuation runs only the cells no launch recorded,
 every case's missing arms and repeats as well as the cases no arm reached, then the cases appended. A row that
 records no answer runs again, by the one rule the engine's take-up reads
-(:func:`~threetears.evals.kernel.result_condition.runs_again`): a cell a second interrupt cut, a call the account
-refused, a model the provider did not serve. No recorded answer is ever drawn again, and raising the cap and running
+(:func:`~threetears.evals.kernel.result_condition.runs_again`): a cell cut while it ran (a second interrupt, or a
+shutdown), a call the account refused, a model the provider did not serve. No recorded answer is ever drawn again, and raising the cap and running
 again finishes the comparison.
 
 **The bet reads a committed order.** Before any answer is seen, each launch's new cases are shuffled once by their ids
@@ -42,8 +42,10 @@ slow arm is slow when wrong, that exclusion follows the answer.)
 and record, then files the comparison; a second cuts at once, and the cells it cut run again in a continuation, which
 its sentence counts, as a running total (:func:`continued_sentence`), and so does its family's disclosure on the page
 and in the bundle: a cut cell drawn again can lean the bet where a slow answer is a wrong one, so the number is said.
-In a terminal the second interrupt can arrive as ``KeyboardInterrupt`` in the comparison's own task rather than as a
-second cancel; it cuts just the same, and the comparison is filed before the first cancel goes on.
+In a terminal the second interrupt arrives as ``KeyboardInterrupt``, raised wherever the loop's thread is: in the
+comparison's own task, where it cuts as a second cancel does and is raised itself once the comparison is filed; or in
+the loop's wait or another task, whence it leaves the loop and ``asyncio.run`` cancels every task, which cuts, and the
+comparison is filed before that interrupt is reported.
 
 Anything else starts a NEW comparison, which runs every case and says so in one sentence naming what changed
 (:func:`new_comparison_sentence`). A comparison continued says so too (:func:`continued_sentence`), and says how to start
@@ -115,10 +117,6 @@ class EarlierComparison:
     :ivar incomplete: How many of :attr:`unfinished` some arm ran: a continuation runs only their missing cells.
     :ivar launches: Each launch's cases, in launch order, as its runs hold them: what the committed order is derived
         from (:func:`~threetears.evals.analysis.bundle.trials.committed_order`).
-    :ivar redrawn: How many of its stored rows, over every run of it, record no answer and run again
-        (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those an interrupt cut: a
-        running total, as its print and its family's disclosure say it
-        (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`).
     """
 
     campaign_id: str
@@ -135,7 +133,6 @@ class EarlierComparison:
     unfinished: tuple[str, ...] = ()
     incomplete: int = 0
     launches: tuple[tuple[str, ...], ...] = ()
-    redrawn: tuple[int, int] = (0, 0)
 
 
 def launched_as(arm: str | None, model: str, levers: Mapping[str, Any] | None) -> tuple[str | None, str, str]:
@@ -227,7 +224,6 @@ def earlier_comparison(
     # The repeats each arm recorded of each case, over all its runs: a cell that holds a result was recorded, whether
     # its launch finished or not, and is never run again.
     repeats: dict[tuple[str | None, str, str], dict[str, set[int]]] = {}
-    again = cut = 0
     for key, held in grouped.items():
         results = {run.id: list_results(host.storage, run.id, scope_id) for run in held}
         ran_on_arm = repeats.setdefault(key, {})
@@ -235,8 +231,6 @@ def earlier_comparison(
             for result in each:
                 # A row that records no answer runs again: its cell is not recorded.
                 if runs_again(result):
-                    again += 1
-                    cut += result.termination == "cancelled"
                     continue
                 ran_on_arm.setdefault(result.test_case_id, set()).add(result.k_iteration)
         # A run its launch stopped before it ran anything holds no result to read a variant from.
@@ -295,7 +289,6 @@ def earlier_comparison(
         unfinished=unfinished,
         incomplete=sum(1 for case in unfinished if case in ran),
         launches=tuple(tuple(grouped[control][index].test_case_ids) for index in range(n_launches)),
-        redrawn=(again, cut),
     )
 
 
@@ -317,7 +310,8 @@ def continued_sentence(
     """What a continued comparison's print says of how it ran: the cases read again as they ran, the cases that ran
     now (``unreached`` of them held by a launch that stopped before it reached them, and ``incomplete`` reached by one
     on some arms or repeats only, whose missing cells alone ran), how many of its cells recorded no answer and run again
-    (``redrawn``, a running total and the cut ones among it, said by
+    (``redrawn``, a running total over every run of it, this launch's included, and the cut ones among it, counted by
+    :func:`~threetears.evals.analysis.bundle.trials.redrawn_cells` as the page counts them and said by
     :func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`), what a runner or a grader is known by, and
     how to start a new comparison instead. The one owner of the sentence."""
     if not added:

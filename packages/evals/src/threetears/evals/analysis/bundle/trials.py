@@ -466,16 +466,25 @@ def bet_places(
 
 
 def redrawn_cells(results: Sequence[ResultView]) -> tuple[int, int]:
-    """How many of ``results`` recorded no answer, so their cells run again
-    (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those an interrupt cut (termination
-    ``cancelled``): what a quick-path comparison's family says of them
+    """How many cells of ``results`` recorded no answer on some row, so they ran or run again
+    (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those were cut while they ran (a row
+    of termination ``cancelled``): a running total over every row, each cell counted once however many of its rows
+    recorded nothing. A cell is an arm's case at one repeat, its arm the variant its rows were stamped with. The one
+    count of them, which a quick-path comparison's print and its family on the page both say
     (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`), read only where the bet reads it.
 
-    :param results: The campaign's results.
-    :return: The rows that run again, and the cut ones among them.
+    :param results: Every result of the comparison's runs.
+    :return: The cells that recorded no answer on some row, and the cut ones among them.
     """
-    again = [result for result in results if runs_again(result)]
-    return len(again), sum(1 for result in again if result.termination == "cancelled")
+    again: set[tuple[str, str, int]] = set()
+    cut: set[tuple[str, str, int]] = set()
+    for result in results:
+        if runs_again(result):
+            cell = (result.variant_key, result.test_case_id, result.k_iteration)
+            again.add(cell)
+            if result.termination == "cancelled":
+                cut.add(cell)
+    return len(again), len(cut)
 
 
 def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView]) -> frozenset[str]:
