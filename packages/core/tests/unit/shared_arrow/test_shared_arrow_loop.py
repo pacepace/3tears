@@ -168,45 +168,52 @@ def _window(measured: tuple[list[Tick], list[Tick], list[int], int]) -> tuple[li
 WINDOWS_TO_CONFIRM = 2
 
 
+async def _over_budget(
+    tmp_path: Path, parts: dict[str, pa.Table], *, planted: Callable[[], None] | None = None
+) -> list[str]:
+    """the judgement: trusted windows taken one after another until one is within the budget, at most
+    :data:`WINDOWS_TO_CONFIRM`; the loop was held when every one of them was over it.
+
+    :param planted: called on the loop 0.5 s into each window (a red case plants its blocking here)
+    :return: each window's lateness past the host, as said, when every window was over the budget; else empty
+    """
+    seen: list[str] = []
+    for _ in range(WINDOWS_TO_CONFIRM):
+        ticks, host, reads, mapped = await trusted(
+            lambda: _queried_while_published(tmp_path, parts, planted=planted),
+            _window,
+            host_may_be_late=LOOP_MAY_BE_LATE,
+            threads=READERS * READER_THREADS,
+        )
+        assert min(reads) > 0 and mapped > 1, (reads, mapped)
+        added = added_lateness(ticks, host, every=TICK)
+        late = latest(ticks, every=TICK)
+        print(
+            f"reads {reads}, versions mapped {mapped}, late {late * 1000:.1f} ms, past the host {added * 1000:.1f} ms"
+        )
+        if added < LOOP_MAY_BE_LATE:
+            return []
+        seen.append(f"{added * 1000:.1f} ms past the host's own idle loop ({late * 1000:.1f} ms late in all)")
+    return seen
+
+
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileThreadsQueryTheCopy:
     async def test_a_ticker_is_never_late_while_threads_query_dev_sized_versions(
         self, tmp_path: Path, parts: dict[str, pa.Table]
     ) -> None:
-        seen: list[str] = []
-        for _ in range(WINDOWS_TO_CONFIRM):
-            ticks, host, reads, mapped = await trusted(
-                lambda: _queried_while_published(tmp_path, parts),
-                _window,
-                host_may_be_late=LOOP_MAY_BE_LATE,
-                threads=READERS * READER_THREADS,
-            )
-            assert min(reads) > 0 and mapped > 1, (reads, mapped)
-            added = added_lateness(ticks, host, every=TICK)
-            late = latest(ticks, every=TICK)
-            print(
-                f"reads {reads}, versions mapped {mapped}, late {late * 1000:.1f} ms, "
-                f"past the host {added * 1000:.1f} ms"
-            )
-            if added < LOOP_MAY_BE_LATE:
-                return
-            seen.append(f"{added * 1000:.1f} ms past the host's own idle loop ({late * 1000:.1f} ms late in all)")
-        pytest.fail(
+        held = await _over_budget(tmp_path, parts)
+        assert not held, (
             f"the loop ran late while threads queried the copy in each of {WINDOWS_TO_CONFIRM} trusted windows: "
-            f"{'; '.join(seen)}"
+            f"{'; '.join(held)}"
         )
 
     async def test_a_block_planted_on_the_loop_is_caught(self, tmp_path: Path, parts: dict[str, pa.Table]) -> None:
-        """the judgement's red case: 30 ms of blocking on the loop itself while the threads query fails it; the
-        host's idle loop, in its own process, is not late for it, so it credits none of it."""
-        ticks, host, _, _ = await trusted(
-            lambda: _queried_while_published(tmp_path, parts, planted=lambda: hold_the_loop(0.03)),
-            _window,
-            host_may_be_late=LOOP_MAY_BE_LATE,
-            threads=READERS * READER_THREADS,
-        )
-        added = added_lateness(ticks, host, every=TICK)
-        assert added >= LOOP_MAY_BE_LATE, f"a 30 ms block on the loop was judged {added * 1000:.1f} ms"
+        """the judgement's red case: 30 ms of blocking on the loop itself in every window while the threads query
+        fails it, every window over the budget; the host's idle loop, in its own process, is not late for it, so it
+        credits none of it."""
+        held = await _over_budget(tmp_path, parts, planted=lambda: hold_the_loop(0.03))
+        assert len(held) == WINDOWS_TO_CONFIRM, f"a 30 ms block on the loop in every window was judged {held}"
 
 
 class TestTheScanModuleIsImportedWithSharedArrow:
