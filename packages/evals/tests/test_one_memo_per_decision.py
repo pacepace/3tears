@@ -845,8 +845,7 @@ async def test_an_analysis_of_one_aspect_is_listed_by_its_page_s_broken_floor_th
 async def test_a_call_over_an_analysis_is_read_against_its_readings_and_one_without_against_the_evidence_now() -> None:
     """The memo was written while billing's floor stood; the floor is then withdrawn from the stored campaign. A call
     over the analysis is read against the readings frozen with it, which still break the floor; a call on code's
-    readings alone is read against the evidence now, which breaks none — and the analysis's page, read by its id over
-    what was frozen with it, says the floor broken there is not overridden."""
+    readings alone is read against the evidence now, which breaks none."""
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate({**two.model_dump(), "floors": []}))

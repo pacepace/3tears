@@ -25,15 +25,22 @@ from typing import Any, Final, Self, get_args
 import httpx
 from pydantic import BaseModel
 
-from threetears.evals.kernel import strict_response_format
-from threetears.evals.kernel.eval_file import beside_eval_file
-from threetears.evals.kernel.runner_spend import note_spend
-from threetears.evals.kernel.capped_completion import prompt_token_bound
-from threetears.evals.kernel.capped_completion import turn_prompt_token_bound
+from threetears.evals.kernel import (
+    beside_eval_file,
+    note_spend,
+    prompt_token_bound,
+    strict_response_format,
+    turn_prompt_token_bound,
+)
 from threetears.evals.kernel.host import CompletionRole
-from threetears.evals.negotiation import SettingFacts, WireSettings, facts_from_router_catalogue, negotiate
-from threetears.evals.negotiation.settings import ANTHROPIC_MIN_THINKING_BUDGET
-from threetears.evals.negotiation.settings import EFFORT_LADDER
+from threetears.evals.negotiation import (
+    ANTHROPIC_MIN_THINKING_BUDGET,
+    EFFORT_LADDER,
+    SettingFacts,
+    WireSettings,
+    facts_from_router_catalogue,
+    negotiate,
+)
 from threetears.evals.providers.catalogue import Catalogue, PriceRefresh
 from threetears.evals.providers.failures import Provider, ProviderError, error_from_response
 from threetears.evals.providers.pricing import NOTHING_TO_PRICE, AnthropicPublishedRates, CallPrice, HostRates, Pricer

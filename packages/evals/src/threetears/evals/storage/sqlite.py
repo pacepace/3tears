@@ -344,7 +344,6 @@ class SqliteDocumentStore:
 
     :param path: The database file, created with its table when absent. ``":memory:"`` keeps it in this
         process's memory, which is the in-memory store with SQLite's semantics.
-    :ptype path: str | os.PathLike[str]
     :raises ValueError: The file was written by a layout this store does not read.
     """
 

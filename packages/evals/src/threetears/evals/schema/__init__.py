@@ -299,6 +299,8 @@ from threetears.evals.schema.versioning import (
     CoreUpgrader,
     VersionSpace,
 )
+from threetears.evals.schema.turns import block_from_json
+from threetears.evals.schema.goal_grammar import ExtractedPaths, extract_paths
 
 __all__ = [
     "ArmIdentity",
@@ -568,4 +570,7 @@ __all__ = [
     "SweepableValue",
     "TraceSink",
     "nested_schemas",
+    "block_from_json",
+    "ExtractedPaths",
+    "extract_paths",
 ]

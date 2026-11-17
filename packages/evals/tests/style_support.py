@@ -10,12 +10,11 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
-from typing import Any
 
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.model import ReportBlock
 from threetears.evals.analysis.report.verdict import guardrail_name
-from threetears.evals.analysis.style import lint_prose
+from threetears.evals.analysis.style import StyleViolation, lint_prose
 from threetears.evals.analysis.style import measure_name_of
 
 __all__ = ["Absence", "absence_violations", "lint_page", "reading_names", "unlinked"]
@@ -42,7 +41,7 @@ def _unnamed(header: str, names: Collection[str]) -> str:
     return header
 
 
-def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[Any]:
+def lint_page(markdown: str, *, question: str | None = None, names: Collection[str] = ()) -> list[StyleViolation]:
     """Every rule a rendered ``report.md`` breaks, outside the data it quotes.
 
     Headings and table headers are held to the header rule; prose lines to every rule. Table body cells, fenced
@@ -57,9 +56,9 @@ def lint_page(markdown: str, *, question: str | None = None, names: Collection[s
         never a header's words.
     :ptype names: Collection[str]
     :return: The violations, in page order.
-    :rtype: list[Any]
+    :rtype: list[StyleViolation]
     """
-    found: list[Any] = []
+    found: list[StyleViolation] = []
     fenced = False
     folded = 0
     header_row = False

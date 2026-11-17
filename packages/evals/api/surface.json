@@ -236,6 +236,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.schema.block_from_json": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.schema.BoundCompletionClient": {
       "kind": "protocol",
       "signature": "BoundCompletionClient{__aenter__(self) -> Self; __aexit__(self, exc_type: object, exc: object, tb: object) -> None; aclose(self) -> None; generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> CompletionResult; model_name: str; price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None}",
@@ -600,6 +605,16 @@
       "kind": "dataclass",
       "signature": "ExternalSpend(provider: str | None, calls: int = 0, provider_units: int | None = None, provider_unit: str | None = None, money: float | None = None)",
       "tier": "stable"
+    },
+    "threetears.evals.schema.extract_paths": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.schema.ExtractedPaths": {
+      "kind": "dataclass",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.schema.FAILED_BECAUSE": {
       "kind": "constant (tuple)",
@@ -1511,6 +1526,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.beside_eval_file": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.BOUNDARY_GEN_PROMPT": {
       "kind": "constant (str)",
       "signature": "",
@@ -2341,6 +2361,11 @@
       "signature": "",
       "tier": "provisional"
     },
+    "threetears.evals.kernel.note_spend": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.kernel.NotFoundError": {
       "kind": "exception",
       "signature": "NotFoundError(resource: str, resource_id: str, *, remedy: str)",
@@ -2405,6 +2430,11 @@
       "kind": "function",
       "signature": "prompt_drift(entry: SeedPrompt, *, shipped: SeedTemplate | str, stored: SeedTemplate | str, seeded_digest: str | None, reset: str, customized: bool = False) -> PromptDrift",
       "tier": "stable"
+    },
+    "threetears.evals.kernel.prompt_token_bound": {
+      "kind": "function",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.kernel.PromptContractError": {
       "kind": "exception",
@@ -2803,6 +2833,11 @@
     },
     "threetears.evals.kernel.TURN_BUDGET_ENDED_KEY": {
       "kind": "constant (str)",
+      "signature": "",
+      "tier": "provisional"
+    },
+    "threetears.evals.kernel.turn_prompt_token_bound": {
+      "kind": "function",
       "signature": "",
       "tier": "provisional"
     },
@@ -7266,6 +7301,11 @@
       "signature": "ToolCall(tool: str, action: str | None, caller: Caller, host: OpsHost | None, timeout_s: float, context: Any = None, refused: EvalServiceError | None = None)",
       "tier": "stable"
     },
+    "threetears.evals.negotiation.ANTHROPIC_MIN_THINKING_BUDGET": {
+      "kind": "constant (int)",
+      "signature": "",
+      "tier": "provisional"
+    },
     "threetears.evals.negotiation.anthropic_thinking": {
       "kind": "function",
       "signature": "anthropic_thinking(sent: WireSettings, facts: SettingFacts) -> dict[str, str | int] | None",
@@ -7280,6 +7320,11 @@
       "kind": "function",
       "signature": "closest_settings(asked: WireSettings, facts: SettingFacts, provider_family: ProviderFamily) -> tuple[WireSettings, tuple[str, ...]]",
       "tier": "host-contract"
+    },
+    "threetears.evals.negotiation.EFFORT_LADDER": {
+      "kind": "constant (tuple)",
+      "signature": "",
+      "tier": "provisional"
     },
     "threetears.evals.negotiation.facts_from_router_catalogue": {
       "kind": "function",

@@ -2804,9 +2804,7 @@ def _to_its_end(work: Callable[[], Awaitable[object]]) -> asyncio.Future[None]:
     settle, or a shutdown, which cancels and waits for what is still running.
 
     :param work: Makes the awaitable to run, once per beginning.
-    :ptype work: Callable[[], Awaitable[object]]
     :return: Ends with ``None`` once ``work`` returns, or with what it raised.
-    :rtype: asyncio.Future[None]
     """
     loop = asyncio.get_running_loop()
     ended: asyncio.Future[None] = loop.create_future()

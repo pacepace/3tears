@@ -352,6 +352,10 @@ from threetears.evals.kernel.usage_capture import (
     CallUsage,
 )
 from threetears.evals.kernel.world_session import WorldSession, WorldSessionError
+from threetears.evals.kernel.eval_file import beside_eval_file
+from threetears.evals.kernel.runner_spend import note_spend
+from threetears.evals.kernel.capped_completion import prompt_token_bound
+from threetears.evals.kernel.capped_completion import turn_prompt_token_bound
 
 __all__ = [
     "EarlierControl",
@@ -657,4 +661,8 @@ __all__ = [
     "JudgedEvidenceTier",
     "JudgedTierRule",
     "TierCriterion",
+    "beside_eval_file",
+    "note_spend",
+    "prompt_token_bound",
+    "turn_prompt_token_bound",
 ]

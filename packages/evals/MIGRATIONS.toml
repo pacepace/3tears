@@ -262,7 +262,7 @@ through the declared name that carries it.
 [[release.change]]
 from = "threetears.evals.kernel"
 to = "removed"
-names = ["agreement_statistic", "BarName", "BarNameKind", "BarNameRefusal", "beside_eval_file", "blended_cost_roles",
+names = ["agreement_statistic", "BarName", "BarNameKind", "BarNameRefusal", "blended_cost_roles",
          "calibration_criterion", "candidate_failure_cause", "CandidateFailureCause", "classifier_label_of",
          "classify_result", "confusion_of", "contract_state", "counted_goal_verdicts", "counted_score",
          "declared_contracts", "delivered_a_turn", "describe_and_log_failure", "DesignRefused", "existing_axis_values",
@@ -270,8 +270,7 @@ names = ["agreement_statistic", "BarName", "BarNameKind", "BarNameRefusal", "bes
          "FIND_RUBRIC_DIM", "FIND_TEST_CASE", "format_signed", "FRONTIER_RANKING_MEASURE", "generation_slot_id",
          "goal_check_of", "JUDGE_CASE_KEY", "judge_criterion_digest", "JUDGE_LABEL_AGREEMENT_MEASURE",
          "JUDGE_PARSE_VALID_MEASURE", "judge_profile_id", "judge_trial_of", "judge_truncated_dims", "JUDGED_TIER_RULE",
-         "JudgeProfileStore", "JudgeTrial", "JudgeTrialOutcome", "lease_lapsed", "list_metrics", "note_spend",
-         "prompt_token_bound", "REASONING_RATIO_KEY", "refuse_an_undeclarable_design", "REFUSED_CONTRACT_STATES",
+         "JudgeProfileStore", "JudgeTrial", "JudgeTrialOutcome", "lease_lapsed", "list_metrics", "REASONING_RATIO_KEY", "refuse_an_undeclarable_design", "REFUSED_CONTRACT_STATES",
          "RELAUNCH_TO_REJUDGE", "request_job_cancel", "require_held", "require_output_contract", "REREAD_AND_RETRY",
          "resolve_bar_name", "resolve_context_identity", "resolve_result_condition", "RUBRIC_FAMILY",
          "RUN_MARGIN_MEASURES", "run_margin_refusal", "running_job", "SCHEMA_REMEDY", "separation_criterion",
@@ -289,17 +288,6 @@ through the declared name that carries it.
 from = "threetears.evals.kernel.host"
 to = "removed"
 names = ["CANDIDATE_KIND_LEVER", "pass_threshold_label", "PassCriterion", "resolve_preconditions", "schema_violations"]
-why = """
-Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
-production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
-use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
-through the declared name that carries it.
-"""
-
-[[release.change]]
-from = "threetears.evals.negotiation"
-to = "removed"
-names = ["ANTHROPIC_MIN_THINKING_BUDGET", "EFFORT_LADDER"]
 why = """
 Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
 production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
@@ -353,7 +341,7 @@ through the declared name that carries it.
 from = "threetears.evals.schema"
 to = "removed"
 names = ["aspect_label_for", "attribution_state", "CANDIDATE_SPEAKER", "canonical_digest", "case_set_doc_id",
-         "eval_trace_doc_id", "extract_paths", "ExtractedPaths", "is_pass", "keep_fields", "KnownCellTimeoutOrigin",
+         "eval_trace_doc_id", "is_pass", "keep_fields", "KnownCellTimeoutOrigin",
          "KnownFailedBecause", "KnownReasoningEffort", "KnownRoleModelOrigin", "MODEL_DEFAULT_TEMPERATURE",
          "OUTCOME_DIM_ID", "referenced_actions", "refuse_on_event_loop", "ROUND_DONE", "SCALES", "ScaleSpec",
          "with_fault"]

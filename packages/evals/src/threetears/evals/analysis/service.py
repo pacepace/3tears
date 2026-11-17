@@ -1083,11 +1083,6 @@ def _with_declaration(campaign: EvalCampaign, declared: CampaignDeclaration) -> 
     return campaign.model_copy(update=_declared(declared))
 
 
-#: What a stored analysis's page laid out over its own frozen bundles says beside why its document no longer reads:
-#: that it is the evidence the analysis was written over, never the campaign's evidence now.
-_FROZEN_FALLBACK = "this page lays out the evidence frozen with the analysis, not the campaign's evidence now"
-
-
 def campaign_report(
     host: EvalHost,
     campaign_id: str,

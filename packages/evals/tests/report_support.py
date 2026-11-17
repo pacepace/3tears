@@ -29,6 +29,7 @@ from threetears.evals.kernel.campaign import (
     EvalInsight,
 )
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.analysis.style import StyleViolation
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import DocumentStore
 from threetears.evals.analysis.style import declared_arm_names
@@ -46,13 +47,13 @@ __all__ = [
 ]
 
 
-def page_violations(report: Report) -> list[Any]:
+def page_violations(report: Report) -> list[StyleViolation]:
     """Every style rule a report's page breaks outside the data it quotes, its arms' names read as names.
 
     :param report: The report.
     :ptype report: Report
     :return: The violations; empty for a page that passes.
-    :rtype: list[Any]
+    :rtype: list[StyleViolation]
     """
     names = {
         str(row["arm"]).removeprefix("▸ ")

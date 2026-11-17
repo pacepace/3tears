@@ -14,8 +14,9 @@ description), `analysis.service.analysis_report` (reading one stored analysis by
 it, which no door offered; `campaign_report` and `report_read` read a campaign's report) with its store port,
 `kernel.usage_capture.resolve_result_usage` with `ResolvedUsage` (on the `kernel` root until now; `MIGRATIONS.toml`
 records it), `gen.variation_gen.price_variations`, `schema.versioning.DURABLE_ADDRESSING_FIELDS`,
-`schema.judge_attribution.judges_sharing_a_candidate_model` and the `campaign_aggregate` wrapper. Thirty-one names
-used only inside their own module are made private; the tests reach what they do through the module's public
+`schema.judge_attribution.judges_sharing_a_candidate_model`, the `campaign_aggregate` wrapper and the report
+document reads' store protocol (the reads take `EvalStorage`). Twenty-eight names used only inside their own module
+are made private; the tests reach what they do through the module's public
 functions. Two sentences that said a run judged on a candidate's model is disclosed on every surface now say what
 happens: the run records it among its judges.
 
@@ -24,12 +25,13 @@ served shape moves.
 
 ### evals: provisional names the package uses across its own modules leave the public roots too
 
-**Removed:** 249 more provisional root spellings (of 246 names) leave the public roots (`MIGRATIONS.toml` records
-the 208 a release shipped). Like the names before them, no declared name reaches them, no host's production code
+**Removed:** 240 more provisional root spellings (of 237 names) leave the public roots (`MIGRATIONS.toml` records
+the 201 a release shipped). Like the names before them, no declared name reaches them, no host's production code
 imports them, and no shipped example or page uses them; the package's own modules use each, and now import it from the
 module defining it, where it stays, unrenamed. Kept on their roots: what the package's own modules import through a
 root (`ops.frontier_text` and `ops.out_of_run_spend_text`, which the action catalogue reaches `analysis` through), the
-names the toy host imports, each leased job kind, the open vocabularies' registries, every type a name that stays
+names the toy host imports, the names the shipped completion client (`providers`) imports, which reaches the engine
+only through the roots, `schema.extract_paths` and its result, which the reference page teaches, each leased job kind, the open vocabularies' registries, every type a name that stays
 reaches, and the names the recorded host's tests import. No stored or served shape moves.
 
 **For hosts:** nothing to do. Every name the recorded host's production code imports still resolves from its root,

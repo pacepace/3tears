@@ -164,7 +164,6 @@ def sent_settings_level(scores: Iterable[ScoreView | None]) -> tuple[str, ...] |
     over.
 
     :param scores: The scores, as the calls that made them recorded what they were sent with.
-    :ptype scores: Iterable[RubricScore | None]
     :return: Each distinct value's canonical form (:func:`~threetears.evals.schema.models.request_settings_order`),
         sorted; ``None`` when any score is unverified (its client did not report what it sent) or there is no score: a
         partial record is not reported as the part that is known.

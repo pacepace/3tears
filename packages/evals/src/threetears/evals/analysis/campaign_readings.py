@@ -1986,9 +1986,11 @@ def _difference_error(first: Sequence[float], second: Sequence[float], *, paired
 
 def _cost_on(bundle: AnalysisContextBundle, key: str) -> tuple[float, float] | None:
     """What a reply costs an arm on an aspect, its scoreboard's cost per reply, and the standard error of its one
-    cell's cost per reply; None where it went unpriced, or ran under several test setups there, or none."""
+    cell's cost per reply; None where it went unpriced, or ran under several test setups there, or none, and where the
+    cells keep the arm apart on a coordinate of its identity (:func:`~threetears.evals.analysis.cells.unread_arms`):
+    its cost pools two models' or two definitions' replies."""
     board = _board(bundle, key)
-    if board is None or board.reply_cost_usd is None:
+    if board is None or unread_arms(bundle.cells, key) or board.reply_cost_usd is None:
         return None
     errors = [
         summary.sem

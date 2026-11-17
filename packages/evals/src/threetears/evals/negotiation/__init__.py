@@ -48,6 +48,8 @@ from threetears.evals.negotiation.settings import (
     closest_settings,
     wire_settings_for,
 )
+from threetears.evals.negotiation.settings import ANTHROPIC_MIN_THINKING_BUDGET
+from threetears.evals.negotiation.settings import EFFORT_LADDER
 
 __all__ = [
     "BUDGET_SHARES",
@@ -67,4 +69,6 @@ __all__ = [
     "read_openai_refusal",
     "read_router_refusal",
     "wire_settings_for",
+    "ANTHROPIC_MIN_THINKING_BUDGET",
+    "EFFORT_LADDER",
 ]

@@ -30,8 +30,8 @@ Mutations that turn this file red: a derived arm labelled with its levers' reade
 arm's frozen label instead of naming its levers; a factor sentence stored in the bundle, or worded with lever ids; a
 measure's reader name, or a level's declared display, read into any fingerprint; a trial's check, a reading's measure
 or a bar's reason frozen under a measure's reader name; a crossing cell frozen under its levels' names; a decision
-surface ordered by a declared level name; a stored page naming a measure or a level by the live declaration; a trial's
-case label read into any fingerprint, or its trials ordered by it; a stored page naming a case by its live name.
+surface ordered by a declared level name; a trial's case label read into any fingerprint, or its trials ordered by
+it.
 """
 
 from __future__ import annotations

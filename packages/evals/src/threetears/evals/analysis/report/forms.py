@@ -218,12 +218,9 @@ class PageForms:
     """Every form one page prints, decided once before the page is assembled, and the ledger of every text handed out.
 
     :param page: Which page the forms are for.
-    :ptype page: _PageKind
     :param measures: Each measure's form, by its key and kind.
-    :ptype measures: Mapping[tuple[str, _MeasureKind], MeasureForm]
     :param report_input: A written page's report input, which a figure key's set is read from
         (:meth:`key_places`); None for any other page.
-    :ptype report_input: ReportInput | None
     """
 
     def __init__(

@@ -275,13 +275,10 @@ class RoutedDocumentStore:
 
     :param children: The stores, by name. A store no type is placed in is still asked by every id-only call, so one
         being drained stays reachable until :meth:`relocate` has emptied it.
-    :ptype children: Mapping[str, DocumentStore]
     :param route: Where each type is kept.
-    :ptype route: DocTypeRoute
     :param routing_scope: The scope this router's placement record is kept in, in every store: one the host owns and
         never uses for documents. A host running one router per partition of shared stores names one per
         partition (the module docstring). Required: it must be the scope :meth:`relocate` was given.
-    :ptype routing_scope: str
     :raises ValueError: The route or the stores are refused (see :class:`DocTypeRoute` and :meth:`relocate`), or the
         routing scope is blank.
     :raises RouteChanged: The stores were written under other placements, or under none.
