@@ -16,6 +16,7 @@ import pytest
 
 from packages.evals.onramp.agent import Caps
 from packages.evals.onramp.campaign import adopter, main, onramp_eval, scripted, trials
+from packages.evals.onramp.reading import reading_lines
 from packages.evals.onramp.sandbox import DocsBuild
 
 #: Every field a trial's record carries.
@@ -75,6 +76,13 @@ async def test_a_scripted_agent_runs_the_whole_harness_and_every_field_is_record
             assert checks["door_exit"] == 2
     assert result.render().strip()
     assert set(result.write(tmp_path / "report")) >= {"html", "json"}
+
+    # The package's own reading of the run, apps as cases: three apps cannot call a difference, however wide.
+    assert all(row["app"] == row["record"]["app"] for row in rows), "each row names its app from its case"
+    said = reading_lines(rows)
+    assert said[0] == "the package's reading, apps as cases: 3 app(s), 1 trial(s) per arm on each"
+    assert said[1].startswith("  measures_the_app (primary): onramp: "), said[1]
+    assert said[1].endswith("too few cases to call a difference."), said[1]
 
 
 @pytest.mark.timeout(900)

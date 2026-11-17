@@ -52,6 +52,8 @@ from .agent import (
 )
 from .checks import GRADERS, regrade
 from .isolation import IsolationUnavailable, unavailable
+from .plan import Plan, build_wheel, built_wheel, commit_of, committed_at, load_plan, plan_refusal
+from .reading import PRIMARY, Unreadable, power_lines, reading_lines
 from .sandbox import HERE, DocsBuild, Sandbox
 
 CASES = HERE / "apps.jsonl"
@@ -251,10 +253,17 @@ def onramp_eval(arms: Mapping[str, Runner], *, k: int, max_cost_usd: float | Non
 
 
 def trials(result: Result) -> list[dict[str, Any]]:  # Any: each trial's stored record and grades
-    """Every trial as the eval's store holds it: the arm, the agent's record, each grade, and each failed check's
-    :func:`failure_causes`."""
+    """Every trial as the eval's store holds it: the arm, the app it ran on (from its case, so a trial the run lost
+    still names it), the agent's record, each grade, and each failed check's :func:`failure_causes`."""
     rows = [
-        {"arm": arm, "repeat": trial.repeat, "state": trial.state, "scores": trial.scores, "record": trial.answer}
+        {
+            "arm": arm,
+            "app": trial.input.get("app") if isinstance(trial.input, dict) else None,
+            "repeat": trial.repeat,
+            "state": trial.state,
+            "scores": trial.scores,
+            "record": trial.answer,
+        }
         for arm in result.arms
         for trial in result.results(arm)
     ]
@@ -309,8 +318,8 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --scripted only: run the fixed transcripts' commands on this machine, not in a trial container",
     )
-    parser.add_argument("--tier", choices=sorted(TIERS), default="cheap")
-    parser.add_argument("--k", type=int, default=3)
+    parser.add_argument("--tier", choices=sorted(TIERS), default=None, help="the model tier (default: cheap)")
+    parser.add_argument("--k", type=int, default=None, help=f"trials per arm on each app (default: {DEFAULT_K})")
     parser.add_argument("--cap", type=float, default=None, metavar="DOLLARS", help="the most a live run may spend")
     parser.add_argument("--apps", default="", help="comma-separated; every app when empty")
     parser.add_argument("--workdir", type=Path, default=HERE / "runs")
@@ -329,6 +338,31 @@ def _parser() -> argparse.ArgumentParser:
         metavar="RUN_DIR",
         help="grade a stored run again with today's harness, in trial containers: no model call, no agent run",
     )
+    parser.add_argument(
+        "--plan",
+        type=Path,
+        default=None,
+        metavar="PLAN",
+        help="run a committed plan (plans/*.toml): its arms, apps, k and tiers; refused if anything here disagrees",
+    )
+    parser.add_argument(
+        "--read",
+        type=Path,
+        default=None,
+        metavar="RUN_DIR",
+        help="read a stored run by the package, apps as cases, tier by tier: no model call, nothing run",
+    )
+    parser.add_argument(
+        "--power",
+        nargs=3,
+        type=float,
+        default=None,
+        metavar=("APPS", "K", "EFFECT"),
+        help="how often the package's reading of a plan this size separates EFFECT, simulated: nothing run",
+    )
+    parser.add_argument("--spread", type=float, default=0.1, help="with --power: the arm-by-app noise, as an sd")
+    parser.add_argument("--reps", type=int, default=200, help="with --power: simulated runs")
+    parser.add_argument("--seed", type=int, default=1, help="with --power: the simulation's seed")
     return parser
 
 
@@ -344,12 +378,40 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         print("\n".join(rescore(args.regrade)))
         return 0
+    if args.read is not None:
+        try:
+            print("\n".join(read_stored(args.read)))
+        except Unreadable as unreadable:
+            print(f"onramp-agent: {unreadable}", file=sys.stderr)
+            return 2
+        return 0
+    if args.power is not None:
+        apps_n, k_n, effect = args.power
+        lines = power_lines(
+            apps=int(apps_n), k=int(k_n), effect=effect, spread=args.spread, reps=args.reps, seed=args.seed
+        )
+        print("\n".join(lines))
+        return 0
     if args.host and not args.scripted:
         parser.error("--host runs commands on this machine, which only the scripted agent may do: add --scripted")
+    if args.plan is not None and args.scripted:
+        parser.error("--plan states a live comparison; --scripted runs the fixed transcripts, which no plan names")
+    plan: Plan | None = None
+    if args.plan is not None:
+        try:
+            plan = load_plan(args.plan)
+        except (OSError, ValueError) as unread:
+            print(f"onramp-agent: {unread}", file=sys.stderr)
+            return 2
     apps = [app for app in args.apps.split(",") if app]
-    cases = len(apps) if apps else sum(1 for line in CASES.read_text(encoding="utf-8").splitlines() if line.strip())
+    if plan is not None:
+        apps, k, tiers = list(plan.apps), plan.k, list(plan.tiers)
+    else:
+        k, tiers = args.k or DEFAULT_K, [args.tier or "cheap"]
+    cases = len(apps) if apps else len(_apps())
     run_dir = args.workdir / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    wheels = dict(arm.split("=", 1) for arm in args.arm)
+    given = dict(arm.split("=", 1) for arm in args.arm)
+    wheels = _planned_wheels(plan, given, args.workdir) if plan is not None else given
     print("\n".join(f"arm {name}: {wheel}" for name, wheel in wheels.items()) or "arm docs@here: this interpreter")
     if args.scripted:
         if args.dry_run:
@@ -366,25 +428,56 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"onramp-agent: {built}", file=sys.stderr)
             return 2
         arms = {build.name: adopter(build, brains, workdir=run_dir, caps=Caps()) for build in built}
-        return _finish(onramp_eval(arms, k=args.k, max_cost_usd=None, apps=apps), run_dir)
+        return _finish(onramp_eval(arms, k=k, max_cost_usd=None, apps=apps), run_dir)
     if not wheels:
         print("onramp-agent: name a docs build (--arm NAME=WHEEL), or run --scripted", file=sys.stderr)
         return 2
-    tier = TIERS[args.tier]
-    priced = quote(tier, runs=len(wheels) * cases * args.k, cap_usd=args.cap)
-    print("\n".join(priced.lines()))
-    recordings = args.recordings or run_dir / "recordings"
+    priced = {
+        name: quote(TIERS[name], runs=len(wheels) * cases * k, cap_usd=plan.tiers[name] if plan else args.cap)
+        for name in tiers
+    }
+    for name, each in priced.items():
+        print(
+            "\n".join(each.lines() if len(tiers) == 1 else [f"tier {name}:", *(f"  {line}" for line in each.lines())])
+        )
+    if plan is not None:
+        print("\n".join(_plan_lines(plan, priced)))
+    base = args.recordings or run_dir / "recordings"
+    recordings = {name: base / name if len(tiers) > 1 else base for name in tiers}
     # A replay serves only calls it holds and refuses any other by name: it never sends one, so it spends nothing.
     # RECORD=1 records the files again, live, so it is no replay.
-    replay = os.environ.get("RECORD") != "1" and all((recordings / f"{slug(n)}.jsonl").is_file() for n in wheels)
+    replay = os.environ.get("RECORD") != "1" and all(
+        (recordings[name] / f"{slug(arm)}.jsonl").is_file() for name in tiers for arm in wheels
+    )
     if replay:
-        print(f"replays {recordings}: nothing is sent, and nothing spent")
+        print(f"replays {base}: nothing is sent, and nothing spent")
     if args.dry_run:
         return 0
     if not replay and (refusal := live_refusal(os.environ, args.cap)) is not None:
         print(f"onramp-agent: {refusal}", file=sys.stderr)
         return 2
+    if plan is not None:
+        cap = plan.cap_usd if replay else args.cap
+        refusal = plan_refusal(
+            plan,
+            commit=committed_at(plan.path),
+            wheels=given,
+            apps=[app for app in args.apps.split(",") if app],
+            k=args.k,
+            tier=args.tier,
+            cap_usd=cap,
+            known_apps=_apps(),
+            workdir=args.workdir,
+        )
+        if refusal is not None:
+            print(f"onramp-agent: {refusal}", file=sys.stderr)
+            return 2
     # A replayed run's commands are a model's too: they run in trial containers like a live run's, or not at all.
+    if (refusal := isolation_refusal()) is not None:
+        print(f"onramp-agent: {refusal}", file=sys.stderr)
+        return 2
+    if plan is not None:
+        wheels = {arm.name: str(build_wheel(args.workdir, arm.ref)) for arm in plan.arms}
     built = _isolated_builds(wheels, args.workdir)
     if isinstance(built, str):
         print(f"onramp-agent: {built}", file=sys.stderr)
@@ -392,17 +485,107 @@ def main(argv: Sequence[str] | None = None) -> int:
     if (refusal := preflight(built, run_dir / "preflight")) is not None:
         print(f"onramp-agent: {refusal}", file=sys.stderr)
         return 2
-    arms: dict[str, Runner] = {}
-    for build in built:
-        try:
-            recording = recordings / f"{slug(build.name)}.jsonl"
-            brain = ModelBrain(lambda meter, recording=recording: tier.model(recording, transport=meter))
-        except ValueError as unbuilt:  # a missing key, named
-            print(f"onramp-agent: {unbuilt}", file=sys.stderr)
-            return 2
-        caps = Caps(cost_usd=priced.per_run_usd)
-        arms[build.name] = adopter(build, lambda _sandbox, brain=brain: brain, workdir=run_dir, caps=caps)
-    return _finish(onramp_eval(arms, k=args.k, max_cost_usd=args.cap, apps=apps), run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run.json").write_text(
+        json.dumps(_run_record(plan, wheels, apps, k, priced), indent=1), encoding="utf-8"
+    )
+    exit_codes = []
+    for name in tiers:
+        tier = TIERS[name]
+        arms: dict[str, Runner] = {}
+        for build in built:
+            try:
+                recording = recordings[name] / f"{slug(build.name)}.jsonl"
+                brain = ModelBrain(lambda meter, recording=recording, tier=tier: tier.model(recording, transport=meter))
+            except ValueError as unbuilt:  # a missing key, named
+                print(f"onramp-agent: {unbuilt}", file=sys.stderr)
+                return 2
+            caps = Caps(cost_usd=priced[name].per_run_usd)
+            tier_dir = run_dir / name if len(tiers) > 1 else run_dir
+            arms[build.name] = adopter(build, lambda _sandbox, brain=brain: brain, workdir=tier_dir, caps=caps)
+        ev = onramp_eval(arms, k=k, max_cost_usd=plan.tiers[name] if plan else args.cap, apps=apps)
+        exit_codes.append(_finish(ev, run_dir / name if len(tiers) > 1 else run_dir, tier=name, plan=plan))
+    return next((code for code in exit_codes if code), 0)
+
+
+#: Trials per arm on each app when neither the command line nor a plan says.
+DEFAULT_K = 3
+
+
+def _apps() -> list[str]:
+    """Every app the harness has, in ``apps.jsonl``'s order."""
+    return [json.loads(line)["app"] for line in CASES.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _planned_wheels(plan: Plan, given: Mapping[str, str], workdir: Path) -> dict[str, str]:
+    """Each of the plan's arms, in its order, with the wheel it will run: one given for it on the command line (checked
+    against the plan before the run), else the one already built from its commit, else where that will be built.
+    An arm given on the command line that the plan does not name is kept, so the refusal can name it."""
+    wheels = {
+        arm.name: given.get(arm.name) or str(built_wheel(workdir, arm.ref) or f"<built from {arm.ref} at the run>")
+        for arm in plan.arms
+    }
+    return {**wheels, **{name: wheel for name, wheel in given.items() if name not in wheels}}
+
+
+def _plan_lines(plan: Plan, priced: Mapping[str, Quote]) -> list[str]:
+    """What a plan's dry run adds: its total bound, whether it is committed, and what a live run still needs."""
+    commit = committed_at(plan.path)
+    lines = [
+        f"plan {plan.name} ({plan.path.name}): {len(plan.arms)} arms x {len(plan.apps)} apps x k={plan.k} x "
+        f"{len(plan.tiers)} tier(s); at most ${sum(q.bound_usd for q in priced.values()):.2f} in all, expected "
+        f"${sum(q.expected_usd for q in priced.values()):.2f}",
+        f"plan committed at: {commit or 'not committed, or changed since: a live run on it is refused'}",
+    ]
+    if placeholders := plan.placeholders():
+        lines.append(f"plan apps still placeholders: {len(placeholders)}: a live run on it is refused until named")
+    return lines
+
+
+def _run_record(
+    plan: Plan | None, wheels: Mapping[str, str], apps: Sequence[str], k: int, priced: Mapping[str, Quote]
+) -> dict[str, Any]:  # Any: JSON
+    """``run.json``: what a run ran, recorded before its first trial: the plan and the commit it was last changed in,
+    each arm's wheel and commit, the apps, ``k``, and each tier's model and caps."""
+    refs = {arm.name: arm.ref for arm in plan.arms} if plan is not None else {}
+    return {
+        "plan": None if plan is None else str(plan.path.resolve().relative_to(HERE.parents[2])),
+        "plan_commit": None if plan is None else committed_at(plan.path),
+        "question": None if plan is None else plan.question,
+        "primary": PRIMARY if plan is None else plan.primary,
+        "arms": {
+            name: {"wheel": wheel, "ref": refs.get(name), "commit": commit_of(refs[name]) if name in refs else None}
+            for name, wheel in wheels.items()
+        },
+        "apps": list(apps) or _apps(),
+        "k": k,
+        "tiers": {
+            name: {"model": q.tier.model_id, "per_run_usd": q.per_run_usd, "cap_usd": q.bound_usd}
+            for name, q in priced.items()
+        },
+    }
+
+
+def read_stored(run_dir: Path) -> list[str]:
+    """``--read``: the package's reading of a stored run, apps as cases, tier by tier (each tier's ``trials.jsonl``,
+    in its own directory when the run had more than one), with the plan's primary check and question when it ran one.
+
+    :raises Unreadable: No ``trials.jsonl`` under ``run_dir``, or rows the package cannot read with apps as cases.
+    """
+    files = (
+        [run_dir / "trials.jsonl"] if (run_dir / "trials.jsonl").is_file() else sorted(run_dir.glob("*/trials.jsonl"))
+    )
+    if not files:
+        raise Unreadable(f"{run_dir} holds no trials.jsonl, nor one per tier")
+    rows = []
+    for file in files:
+        tier = None if file.parent == run_dir else file.parent.name
+        for line in file.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            rows.append({**row, "tier": row.get("tier") or tier})
+    meta = json.loads((run_dir / "run.json").read_text(encoding="utf-8")) if (run_dir / "run.json").is_file() else {}
+    head = [f"plan {meta['plan']} at {meta.get('plan_commit')}"] if meta.get("plan") else []
+    return head + reading_lines(rows, primary=meta.get("primary") or PRIMARY, question=meta.get("question"))
 
 
 def preflight(builds: Sequence[DocsBuild], workdir: Path) -> str | None:
@@ -457,13 +640,15 @@ def _isolated_builds(wheels: Mapping[str, str], workdir: Path) -> list[DocsBuild
         return f"an agent's commands run only in a trial container, and none can run here: {why}"
 
 
-def _finish(ev: Eval, run_dir: Path) -> int:
-    """Run the eval into ``run_dir``'s store, print it, write its report and every trial, and exit as the door does."""
+def _finish(ev: Eval, run_dir: Path, *, tier: str | None = None, plan: Plan | None = None) -> int:
+    """Run the eval into ``run_dir``'s store, print it, write its report and every trial (each stamped with its
+    ``tier``, when the run names one), and, with two arms or more, the package's reading of the run with apps as cases
+    (``reading.txt``); exit as the door does."""
     run_dir.mkdir(parents=True, exist_ok=True)
     result = asyncio.run(ev.run(store=run_dir / "onramp.sqlite"))
     print(result.render())
     written = result.write(run_dir / "report")
-    rows = trials(result)
+    rows = [{**row, "tier": tier} if tier is not None else row for row in trials(result)]
     print(spend_line(rows))
     (run_dir / "trials.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
     for row in rows:
@@ -477,6 +662,10 @@ def _finish(ev: Eval, run_dir: Path) -> int:
     said = census(rows)
     (run_dir / "census.txt").write_text("\n".join(said) + "\n", encoding="utf-8")
     print("\n".join(said))
+    if len(result.arms) > 1:
+        read = reading_lines(rows, **({"primary": plan.primary, "question": plan.question} if plan else {}))
+        (run_dir / "reading.txt").write_text("\n".join(read) + "\n", encoding="utf-8")
+        print("\n".join(read))
     for unfinished in sorted(path.parent for path in run_dir.glob("*/*/steps.jsonl")):
         if not (unfinished / "record.json").is_file():
             print(f"unfinished: {unfinished} (its steps.jsonl holds every step it took)")
