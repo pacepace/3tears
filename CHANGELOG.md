@@ -20,7 +20,9 @@ and two orders of magnitude past the delivery lag the hold exists for. A credent
 every subscription it still held on another server: each rejoined its group as a member, took a share of its
 messages, and lost what was being routed to it when the connection retired. A replaced connection now closes when
 its server drops it; its subscriptions are already on the successor. A leaving member whose connection closed first
-sends no `UNSUB` (the server dropped it with the connection) instead of logging a failure.
+sends no `UNSUB` (the server dropped it with the connection) instead of logging a failure. The trade: a request still
+waiting on a replaced connection when its server drops it gets no reply and times out, and a reply still owed there
+leaves on the current connection.
 
 **Fixed:** a reconnect could retry one dead server forever. nats-py shuffles the server pool once per reconnect and
 passes it in the same order on every attempt, and the client's reconnect handler always took the first server, so
