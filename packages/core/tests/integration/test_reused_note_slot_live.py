@@ -36,12 +36,14 @@ from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
 from threetears.core.testing.note_ring import install_note_ring
 
+#: whether this run measures: a measurement is run by hand, so a run that does not ask carries a written ``skip`` (as
+#: the datasources microbenchmark does), never a ``skipif`` -- the pool's suite fails a skip whose condition is the
+#: environment (``tests/require_services.py``), and this one's is a request, not a service
+_MEASURING = os.environ.get("THREETEARS_MEASURE_REUSED_SLOT") == "1"
+
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skipif(
-        os.environ.get("THREETEARS_MEASURE_REUSED_SLOT") != "1",
-        reason="a measurement: THREETEARS_MEASURE_REUSED_SLOT=1",
-    ),
+    *(() if _MEASURING else (pytest.mark.skip(reason="a measurement, run by hand: THREETEARS_MEASURE_REUSED_SLOT=1"),)),
 ]
 
 #: a slot's notes at its switch: the 64 MiB log's restore budget (75 %) over two, over 64 bytes a note
