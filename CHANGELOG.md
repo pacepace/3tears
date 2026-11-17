@@ -15,7 +15,10 @@ cancel it might read as its own. The campaign is filed wherever the second inter
 awaiting I/O, or inside a cell running on the loop thread (a CPU-busy candidate), it leaves the loop and
 `asyncio.run` cancels every task, and before this fix that cancel ended the comparison's waits and nothing was filed,
 so running it again re-ran every cell. The cells cut are recorded `cancelled` and run again in a continuation; a cell
-the interrupt landed in records nothing and runs again as a cell never reached does.
+the interrupt landed in records nothing and runs again as a cell never reached does. **For hosts:** a host that runs a
+quick comparison on its own loop and catches `asyncio.CancelledError` from it after a second interrupt now gets
+`KeyboardInterrupt` there (its `__cause__` the first cancel); catch that to treat it as the person's stop. Nothing
+stored changes.
 
 **Changed:** the count of a quick comparison's cells that recorded no answer and run again is one count
 (`analysis.bundle.trials.redrawn_cells`), which the print and the page both say: it now includes the launch that
