@@ -52,7 +52,7 @@ async def test_one_change_prints_one_text_on_the_written_page_the_code_page_an_a
     ]
     change, interval = row["change"].text, row["interval"].text
     # careful against hasty, 100% against 50% of 16 paired cases: whole points, which the interval's width sets.
-    assert (change, interval) == ("+50 pts", "+11 to +83 pts")
+    assert (change, interval) == ("+50 pts", "+2 to +83 pts")
 
     held = report_input(off_loop(assemble_campaign_bundle, result.host, result.campaign_id, SCOPE))
     (contrast,) = held.contrasts
@@ -63,7 +63,7 @@ async def test_one_change_prints_one_text_on_the_written_page_the_code_page_an_a
     assert written.interval(contrast.measure, low, high, change=True).text == interval
 
     # The quick line and the code page's lead say the interval's ends in words, at the page's digits.
-    said = "the interval puts careful between 11 and 83 points better"
+    said = "the interval puts careful between 2 and 83 points better"
     assert said in result.render().splitlines()[0]
     assert said in campaign_report_markdown(result.page)
     (program,) = result.contrasts()

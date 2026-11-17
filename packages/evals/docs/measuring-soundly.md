@@ -173,7 +173,9 @@ is frozen once any aspect holds a run: `update_campaign` (the `campaign_update` 
 `aspects` and `floors` in any form from then on, and names a control only while none is. To amend a question after
 the runs, create a new campaign that adopts the aspects it keeps (`aspects_from`): each adopted aspect keeps its
 times, so it reads as the campaign declared before the runs did, and whatever the new campaign adds (a margin, a
-floor, an arm) is dated now and named on the page where it came after its readings. An aspect adopted from a
+floor, an arm) is dated now and named on the page where it came after its readings. A host that adopts the quick
+path's runs, or files its own campaign over them, reads them by the engine's test: only a campaign the quick path
+files itself (`Eval.run`) is read by its re-readable bet. An aspect adopted from a
 campaign that asked no question is the known exception: it keeps its source's time when the new campaign first puts
 it to a question, so that is not named. Runs added to an aspect (`campaign_runs_add`) date nothing: where their results
 predate the aspect's criteria, those criteria are named as set after their readings.

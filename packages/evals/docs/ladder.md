@@ -318,6 +318,8 @@ compare = Eval(
   against zero. A question of "no worse than v1" writes its own margin, in the measure's units:
   `Eval(question=..., margin=0.05)` is 5 points. Leave the question out and the readings are leads: the page says
   "Exploratory comparison." once and leads on the same first grader.
+- **`name=`** names the comparison: run it again under the same name, into the same store and scope, and it continues
+  (only what it has not recorded runs); a new name starts a fresh one.
 - **Each eval gets its own `Model`.** A replay serves each recorded call once per model, so two evals in one process
   never share one: `compare.py`, `margin.py` and `guardrail.py` each build one over the same recording, `grid.py`
   builds two (one per effort, each over its own recording), `ci.py` runs `guardrail.py`'s eval on its model, and
