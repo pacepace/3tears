@@ -220,7 +220,7 @@ the render's):
 
 v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
 
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
@@ -264,7 +264,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   `case N`, N its place in the list of cases from 1); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
   first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what the measure was on each arm, in its own verb
   (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed") and what the interval allows the candidate to be (`Over 30 paired cases, the
-  interval allows v2 to be as much as 20 points worse or 18 better.`, its level the table's header), then what
+  interval allows v2 to be as much as 24 points worse or 22 better.`, its level the table's header), then what
   else the evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
   evidence cannot tell v2 and v1 apart on any reading`, never "no difference" and never "the same". A guardrail an
   arm is not shown safe on is the last sentence, what it means for the decision: `v2 may do worse than v1 on the No

@@ -1,7 +1,7 @@
 """Rung 3, ``examples/3-invoices/``: two prompts compared on 30 invoices, one concept a file, replayed offline.
 
 - 3a ``compare.py``: two arms, a control and a verdict;
-- 3b ``margin.py``: a margin on total, which reads equivalent;
+- 3b ``margin.py``: a margin on total, which 30 invoices cannot yet show equivalent;
 - 3c ``guardrail.py``: a guardrail decided apart from the contrasts, undecided, so the door exits 4;
 - 3d ``ci.py``: the gate in CI, which writes the report and exits by the gate;
 - 3e ``grid.py``: two levers at once, four arms named as ``k=v`` factors, read again against another control.
@@ -32,6 +32,7 @@ from threetears.evals.analysis import (
 )
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
+from threetears.evals.quick.continuation import UNKEPT_SENTENCE
 from threetears.evals.schema import ClientRequestSettings
 from threetears.evals.testing import RecordedCompletions, RecordedPrompt
 from packages.evals.tests.style_support import unlinked
@@ -69,7 +70,7 @@ CASES = [json.loads(line) for line in (RUNG / "invoices.jsonl").read_text(encodi
 #: prints them.
 _LEAD = (
     "Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 "
-    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better."
+    "for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better."
 )
 
 
@@ -148,21 +149,22 @@ async def test_3a_offline_it_replays_two_arms_against_the_control_and_leads_on_t
 
 
 async def test_3b_a_margin_lets_total_read_equivalent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """compare.py's runs with a 20-point margin on total: v2's interval there (19 points either side) is inside it."""
+    """compare.py's runs with a 20-point margin on total: v2's interval there (23 points either side) is wider than it."""
     offline_copy("3-invoices", tmp_path, monkeypatch)
     module = load(Path("margin.py"), "margin", monkeypatch)
 
     result = await module.within_margin.run(store=":memory:")
     (total,) = result.contrasts("total")
     # Its level, 1 − 0.05/6, reads to two significant figures of the chance it misses (owner ruling, 2026-11-14).
-    assert (total["outcome"], total["interval"]) == ("equivalent", "-19 to +19 pts at 99.17%")
+    assert (total["outcome"], total["interval"]) == ("not_separated", "-23 to +23 pts at 99.17%")
     # Only the reading with a margin can: the others still cannot tell the arms apart.
     assert {row["outcome"] for grader in ("accuracy", "number", "due") for row in result.contrasts(grader)} == {
         "not_separated"
     }
     assert (
-        "| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within "
-        "the measure's margin (margin ±20 pts) | 30 paired |"
+        "| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -23 to +23 pts | cannot tell apart; immaterial: the "
+        "observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that "
+        "small | 30 paired |"
     ) in campaign_report_markdown(result.page).splitlines()
 
 
@@ -434,7 +436,7 @@ async def test_3e_a_factor_arm_reads_by_its_declared_factors_on_the_lead_the_sco
     # Read against another control, its name and its page's title name that control the same way.
     again = await result.against(_CELLS[2])
     assert again.name == f"grid, against {_SHOWN[_CELLS[2]]}"
-    assert again.render().splitlines()[1] == f"{control}: 90 result(s): 90 scored"
+    assert again.render().splitlines()[1:3] == [UNKEPT_SENTENCE, f"{control}: 90 result(s): 90 scored"]
 
 
 @pytest.mark.parametrize("example", [COMPARE, MARGIN, GUARDRAIL], ids=lambda path: path.name)

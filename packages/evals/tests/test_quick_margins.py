@@ -175,7 +175,7 @@ class TestAPassFailInterval:
         row = _row(comparison, "correct")
         # A pass rate is a share, so its change reads in points on the percent ruler.
         assert row["delta"] == pytest.approx(50.0)
-        assert row["interval"] == "-28 to +100 pts at 95%", (
+        assert row["interval"] == "-40 to +91 pts at 95%", (
             "the bounded interval on the 0-1 range, its upper end where a pass-rate difference ends"
         )
 
@@ -330,7 +330,9 @@ class TestADeclaredRange:
             2,
         )
         row = _row(comparison, "rating")
-        assert row["verdict"].startswith("cheaper and current equivalent") and "(margin ±0.5)" in row["verdict"]
+        assert row["verdict"].startswith("the evidence cannot tell cheaper and current apart") and (
+            "margin of ±0.5 on Rating score" in row["verdict"]
+        )
         assert "value_range" not in report_markdown(comparison.report)
 
     async def test_a_score_outside_it_fails_the_run_naming_the_scorer_and_the_case(self) -> None:
