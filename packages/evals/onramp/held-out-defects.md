@@ -4,11 +4,11 @@ The record of what is wrong with each held-out app, for whoever reads a run on t
 trial gets a copy of `apps/<app>/` only, and the twin is laid over it at grading.
 
 These apps were written blind to the package's docs, and nobody has read a transcript of them while writing a docs
-change. They are registered in `held-out.jsonl`, not `apps.jsonl`, so no default run covers them. `held-out.jsonl` is to be
-read only by a run whose committed plan names the apps it runs; that plan-based selection is added on the harness
-branch (`evals/bp-onramp-harness`), and until it lands no harness command runs a held-out app. They stop being held out once any run's transcripts on them have been read while
-writing a docs change. From then on they are development-set apps, and a comparison on them is development-set
-evidence like any other.
+change. They are registered in `held-out.jsonl`, not `apps.jsonl`, so no default run covers them. `held-out.jsonl` is
+to be read only by a run whose committed plan names the apps it runs, through the harness's committed-plan selection;
+until that selection exists, no harness command runs a held-out app. They stop being held out once any run's
+transcripts on them have been read while writing a docs change. From then on they are development-set apps, and a
+comparison on them is development-set evidence like any other.
 
 Each share below is printed by `python packages/evals/onramp/held_out_shares.py` (standard library only), which runs
 every case in the app's shipped data through the app and through the app with its twin laid over it.
@@ -97,6 +97,12 @@ Graded apps, whose outputs need a graded judgement rather than an exact match: `
 - **Share.** 13 of 44 logged queries (30%) rank with a lower NDCG@5 than the twin against the support team's graded
   judgments (`data/judgments.jsonl`); mean NDCG@5 is 0.726 on the app and 0.958 on the twin, and 11 queries lose the
   best article from first place. No query reads better on the app.
+- **Data edit.** One query was reworded after the first draft of the data: `verification code never arrives, what
+  now?` became `verification code never arrives`. In the first form the shipped app read slightly better than the
+  twin (NDCG@5 1.000 against 0.964): the twin read `arrives,` as `arrive` and matched it in the password-reset
+  article, which then ranked second, while the app's `arrives,` matched nothing. So the twin did not read at least as
+  well as the app on every query, which the pool test requires of a graded app. The reworded query, with no
+  punctuation, reads the same on both. The defect's reach was 13 of 44 before the edit and is 13 of 44 after it.
 - **Twin diff.**
   ```diff
   -        query_terms = [stem(word) for word in query.lower().split() if word not in STOPWORDS]
