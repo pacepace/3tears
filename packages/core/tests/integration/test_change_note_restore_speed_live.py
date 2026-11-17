@@ -51,6 +51,9 @@ class _Ring:
 class _LostLog:
     """a change log that is gone: no state until a restore declares the new one, which takes every change."""
 
+    #: names no database on its records: the keeper reads this at construction (EpochGenerationSource.database)
+    database = None
+
     def __init__(self, max_bytes: int = 1 << 40) -> None:
         self.declared = False
         self.appended = 0

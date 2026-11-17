@@ -61,6 +61,9 @@ class _OneConnection:
 class _NoChangeLog:
     """the keeper's change log, which an install never reads."""
 
+    #: names no database on its records: the keeper reads this at construction (EpochGenerationSource.database)
+    database = None
+
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(f"installing the ring reads no change log ({name})")
 

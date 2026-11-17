@@ -18,6 +18,24 @@ epoch is the last of them.
 
 The records live in L2 (a memory bucket, replicated); the writer that advances writes them, and
 core holds only the format and the two protocols, as it does for the generation itself.
+
+**A record names the database it was written in** (:attr:`EpochChange.database`; RC9, Pace 2026-11-16). One log is
+shared by every database whose writers advance through it -- the hub's platform database and identity-core's -- and
+a record names its table by its bare name, so two databases noting a table of one name write records no reader could
+tell apart. They do today: 3tears' coordination tables (``coordination_revocations``) are migrated into each one's
+schema and noted in each one's ring. Read by name alone, a hub truncate dropped identity's whole cache of it, a hub
+key evicted identity's row of that key, a hub keys-unknown record was paged from identity's ring (behind, until a
+restart, once its bracket was older than that ring's coverage), and each ring's scrub reported the other's every
+write as a missing note. So a source built with its database (its ring's schema, which the keeper checks) names it
+on every record, a reader built with it walks only its own database's records and those naming none, and each scrub
+judges only its own.
+
+Why a name on the record rather than refusing a second ring's claim on a name: the colliding table is 3tears' own,
+declared once and migrated into both databases, so neither database can rename it; and the record's key cannot
+change without every older reader losing it. Why it is rolled out safely: the field is new and optional. An older
+reader ignores a field it does not know (no model here forbids one), so it reads a new record as before; a record
+from an older writer names no database and every reader walks it as before. Once every writer of a shared log names
+its database, a contract release may treat a record naming none as another database's.
 """
 
 from __future__ import annotations
@@ -178,6 +196,8 @@ class EpochChange(BaseModel):
         connection: every note the commit wrote (:mod:`~threetears.core.collections.change_notes`) is in it, so a
         follower resolves the keys from the notes (perhaps with other commits' keys, which it reads again harmlessly).
         A follower built before it reads the record as keys unknown and is behind, never misled
+    :ivar database: the database whose write (or whose ring's restore) appended the record, by its ring's schema
+        (module docstring); ``None`` from a writer that names none, or one built before the field
     """
 
     table: str
@@ -189,6 +209,7 @@ class EpochChange(BaseModel):
     prefixes: list[dict[str, str]] | None = None
     reason: str | None = None
     noted_between: tuple[datetime, datetime] | None = None
+    database: str | None = None
 
     @model_validator(mode="after")
     def _names_its_reach(self) -> EpochChange:
@@ -668,6 +689,8 @@ class _EpochBody(BaseModel):
     prefixes: list[dict[str, str]] | None = None
     reason: str | None = None
     noted_between: tuple[datetime, datetime] | None = None
+    #: last, so a keyed record's form (:func:`keyed_record_form`) carries it in its tail
+    database: str | None = None
 
 
 def epoch_change_body(
@@ -679,6 +702,7 @@ def epoch_change_body(
     noted_between: tuple[datetime, datetime] | None = None,
     prefixes: Sequence[Mapping[str, str]] | None = None,
     reason: str | None = None,
+    database: str | None = None,
 ) -> bytes:
     """the stored form of a change for a log whose sequence is the epoch, so the record carries no token.
 
@@ -701,6 +725,8 @@ def epoch_change_body(
     :ptype prefixes: Sequence[Mapping[str, str]] | None
     :param reason: for a whole-table change, its reason (:attr:`EpochChange.reason`)
     :ptype reason: str | None
+    :param database: the database the change was written in (:attr:`EpochChange.database`); ``None`` names none
+    :ptype database: str | None
     :return: the stored body
     :rtype: bytes
     :raises ValueError: when ``keys_unknown`` is set with rows, or a partition with either
@@ -720,6 +746,7 @@ def epoch_change_body(
         prefixes=[dict(prefix) for prefix in prefixes] if prefixes else None,
         reason=reason,
         noted_between=noted_between,
+        database=database,
     )
     stored = body.model_dump_json(exclude_none=True).encode("utf-8")
     carries_values = rows is not None and any(row.value is not None for row in rows)
@@ -753,9 +780,11 @@ class KeyedRecordForm:
     max_bytes: int
 
 
-def keyed_record_form() -> KeyedRecordForm:
+def keyed_record_form(database: str | None = None) -> KeyedRecordForm:
     """the stored form of a keyed change in its fixed pieces, cut out of :func:`epoch_change_body`'s output.
 
+    :param database: the database its records name (:attr:`EpochChange.database`), carried in the form's tail
+    :ptype database: str | None
     :return: the form
     :rtype: KeyedRecordForm
     """
@@ -763,7 +792,7 @@ def keyed_record_form() -> KeyedRecordForm:
     columns: dict[str, str | None] = {"C": "V"}
     bare = ChangedRow(ids=ids).model_dump_json(exclude_none=True).encode("utf-8")
     carried = ChangedRow(ids=ids, columns=columns).model_dump_json(exclude_none=True).encode("utf-8")
-    body = epoch_change_body(table, [ChangedRow(ids=ids)])
+    body = epoch_change_body(table, [ChangedRow(ids=ids)], database=database)
     ids_json, table_json = json.dumps(ids, separators=(",", ":")).encode(), json.dumps(table).encode()
     columns_json = json.dumps(columns, separators=(",", ":")).encode()
     head, _, rest = body.partition(table_json)
@@ -808,6 +837,7 @@ def read_epoch_change_body(raw: bytes, table_name: str, token: str) -> EpochChan
             prefixes=body.prefixes,
             reason=body.reason,
             noted_between=body.noted_between,
+            database=body.database,
         )
     except ValidationError as exc:
         raise GenerationUnavailableError(

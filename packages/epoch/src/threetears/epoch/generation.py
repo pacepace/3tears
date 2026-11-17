@@ -29,6 +29,13 @@ its newest record (``:0`` for a table with none): it moves with every write to t
 an absence's stamp needs. A table's sequences are not consecutive -- other tables' records sit between
 them -- so a follower catches up by walking the table's records after its mark
 (:meth:`EpochGenerationReader.changes_after`), never by counting.
+
+**Two databases, one log** (RC9, 2026-11-16). The hub's platform database and identity-core's both advance through
+this log and both note a table of one name (3tears' ``coordination_revocations``). A source built with ``database``
+(its ring's schema) names it on every record it appends, a restore's included, and a reader built with it walks past
+a record naming another database: that database's keys, truncates and notes brackets are not this one's rows. A
+record naming none (an older writer's) is walked as before, as every record is by a reader naming none (a pod's).
+Why on the record: :mod:`threetears.core.collections.epoch_change`'s module docstring.
 """
 
 from __future__ import annotations
@@ -117,6 +124,18 @@ def _changes_refused() -> Any:
     return counter(
         "collection_epoch_change_refused_total",
         description="epoch change records the change log refused (full, absent, unreachable) after a committed write",
+        label_names=("table",),
+    )
+
+
+def _other_database_records() -> Any:
+    """the count of records a walk skipped as another database's, fetched where it is moved, never held at import."""
+    return counter(
+        "threetears_epoch_change_other_database_records_total",
+        description=(
+            "records of a followed table a walk skipped as another database's table of the same name (the shared "
+            "change log names a table by its bare name)"
+        ),
         label_names=("table",),
     )
 
@@ -229,6 +248,7 @@ class _ChangeLogReading:
         *,
         tenants: PodTenants | None = None,
         absent_log_poll: timedelta = _ABSENT_LOG_POLL,
+        database: str | None = None,
     ) -> None:
         """capture the client and the tenants it reads; no I/O.
 
@@ -238,6 +258,10 @@ class _ChangeLogReading:
         :ptype tenants: PodTenants | None
         :param absent_log_poll: how often a watch on a log not yet declared looks again
         :ptype absent_log_poll: timedelta
+        :param database: the database this process writes and follows, by its change-note ring's schema: a source
+            names it on every record, and a walk skips a record naming another (module docstring). ``None`` names
+            none and walks every record, as before
+        :ptype database: str | None
         :return: nothing
         :rtype: None
         :raises TypeError: when ``tenants`` is anything but a :class:`~threetears.core.tenancy.PodTenants`
@@ -246,6 +270,7 @@ class _ChangeLogReading:
             raise TypeError(f"a pod's reader takes its PodTenants, never a list of tenants; got {tenants!r}")
         self._nats = nats_client
         self._tenants = tenants
+        self._database = database
         self._tenants_of: dict[str, tuple[str, ...]] = {}
         self._absent_log_poll = absent_log_poll
 
@@ -297,6 +322,25 @@ class _ChangeLogReading:
         if split is None or mine is None or split[1] != mine[1]:
             return False
         return self._tenants is None or split[0] in self._table_tenants(self._tenants, table_name)
+
+    @property
+    def database(self) -> str | None:
+        """the database this source or reader names, by its change-note ring's schema; ``None`` when it names none.
+
+        :return: the name
+        :rtype: str | None
+        """
+        return self._database
+
+    def _another_databases(self, change: EpochChange) -> bool:
+        """whether ``change`` was written in another database than this reader's: it names one, and not this one.
+
+        :param change: a record of a table this reader follows
+        :ptype change: EpochChange
+        :return: whether a walk skips it
+        :rtype: bool
+        """
+        return self._database is not None and change.database is not None and change.database != self._database
 
     async def _newest(self, table_name: str) -> ChangeLogEntry | None:
         """the newest record of ``table_name`` among the keys this reader reads.
@@ -493,7 +537,14 @@ class _ChangeLogReading:
             raise GenerationUnavailableError(f"the epochs of {table_name!r} could not be read: {exc}") from exc
         for entry in sorted((entry for entries in walked for entry in entries), key=lambda entry: entry.seq):
             seq = entry.seq
-            changes.append(read_epoch_change_body(entry.value, table_name, _token(state.incarnation, seq)))
+            change = read_epoch_change_body(entry.value, table_name, _token(state.incarnation, seq))
+            if self._another_databases(change):
+                # WHY (RC9, 2026-11-16): another database's table of this name (the hub's and identity-core's
+                # coordination_revocations); its keys, truncates and brackets are not this database's rows. Walked
+                # past, so the mark still reaches the head
+                _other_database_records().labels(table=table_name).inc()
+                continue
+            changes.append(change)
         if seq < high[1]:
             # the generation read is past the newest record the walk found: that record is gone
             complete = False
@@ -662,7 +713,7 @@ def _by_tenant(rows: Sequence[ChangedRow]) -> list[tuple[str | None, list[Change
     return list(groups.items())
 
 
-def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]:
+def _restored_records(changes: Sequence[NotedChange], database: str | None) -> list[tuple[str, bytes]]:
     """the records a restore of ``changes`` appends: per table its row runs within the record bound (or the records
     the keeper's worker already wrote of them), or the whole table.
 
@@ -672,6 +723,8 @@ def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]
 
     :param changes: what the notes say changed, per table
     :ptype changes: Sequence[NotedChange]
+    :param database: the database whose notes they are, named on each record (the worker's bodies name it already)
+    :ptype database: str | None
     :return: ``(key, body)`` per record
     :rtype: list[tuple[str, bytes]]
     """
@@ -686,10 +739,14 @@ def _restored_records(changes: Sequence[NotedChange]) -> list[tuple[str, bytes]]
                     partition=prefixes[0] if prefixes is not None and len(prefixes) == 1 else None,
                     prefixes=prefixes,
                     reason=change.reason,
+                    database=database,
                 )
             ]
         elif change.rows:
-            bodies = [epoch_change_body(change.table, run) for run in changed_row_runs(change.table, change.rows)]
+            bodies = [
+                epoch_change_body(change.table, run, database=database)
+                for run in changed_row_runs(change.table, change.rows)
+            ]
         elif change.bodies:
             # folded and written in the keeper's worker process (threetears.core.change_note_fold), each within the
             # record bound: appended as they are, never decoded here
@@ -748,6 +805,7 @@ class EpochGenerationSource(_ChangeLogReading):
         change_retention: EpochChangeRetention = _DEFAULT_EPOCH_CHANGE_RETENTION,
         restored_from_l3: bool = False,
         restore_wait: timedelta = _RESTORE_WAIT,
+        database: str | None = None,
     ) -> None:
         """capture the client; no I/O.
 
@@ -760,10 +818,13 @@ class EpochGenerationSource(_ChangeLogReading):
         :ptype restored_from_l3: bool
         :param restore_wait: how long a write waits for the keeper to put a lost log back
         :ptype restore_wait: timedelta
+        :param database: the database this process writes, by its change-note ring's schema, named on every record
+            it appends (module docstring); set in every writer of a log another database shares. ``None`` names none
+        :ptype database: str | None
         :return: nothing
         :rtype: None
         """
-        super().__init__(nats_client)
+        super().__init__(nats_client, database=database)
         self._change_retention = change_retention
         self._restored_from_l3 = restored_from_l3
         self._restore_wait = restore_wait
@@ -921,12 +982,13 @@ class EpochGenerationSource(_ChangeLogReading):
                         noted_between=noted_between,
                         prefixes=prefixes,
                         reason=reason,
+                        database=self._database,
                     ),
                 )
             ]
         else:
             bodies = [
-                (tenant, epoch_change_body(table_name, run))
+                (tenant, epoch_change_body(table_name, run, database=self._database))
                 for tenant, group in _by_tenant(rows)
                 for run in changed_row_runs(table_name, group)
             ]
@@ -982,7 +1044,9 @@ class EpochGenerationSource(_ChangeLogReading):
         if state is None:
             raise L2LostError(f"the epoch change log is absent; {table_name!r}'s write does not commit")
         try:
-            seq = await self._append(table_name, epoch_change_body(table_name, list(rows)), tenant)
+            seq = await self._append(
+                table_name, epoch_change_body(table_name, list(rows), database=self._database), tenant
+            )
         except KvBucketNotFoundError as exc:
             raise L2LostError(f"the epoch change log went; {table_name!r}'s write does not commit") from exc
         return _token(state.incarnation, seq)
@@ -1093,9 +1157,79 @@ class EpochGenerationSource(_ChangeLogReading):
             raise GenerationUnavailableError(
                 f"the epoch change log is not the restore of {lost!r} under {incarnation!r}: {state}"
             )
+        appended = await self._append_restored(changes, state, incarnation=incarnation, lost=lost)
+        try:
+            labelled = await self._log().label_restored(continues=(lost, covered_from))
+        except KvError as exc:
+            raise GenerationUnavailableError(f"the epoch change log could not be restored: {exc}") from exc
+        self._declared = labelled
+        return appended
+
+    async def put_back(
+        self,
+        changes: Sequence[NotedChange] | AsyncIterable[NotedChange],
+        *,
+        incarnation: str,
+        lost: str,
+    ) -> int:
+        """append one record per change into the log restored from ``lost``, and label nothing: a second ring's part.
+
+        One change log is shared by every database whose writers advance through it, and each database notes its
+        own writes in its own ring; the log's owner (the hub's keeper) puts a lost log back from its ring alone and
+        labels it (:meth:`begin_restore`, :meth:`finish_restore`). A ring in another database (identity-core's) puts
+        its own notes back with this, into the same log, while it is being restored or once it is labelled: the
+        label stays the owner's, so the log's lifecycle keeps one owner. A record appended after the label reaches a
+        follower that carried its mark over as any write's record does: it walks every record of the new log.
+
+        The same budget as :meth:`finish_restore`: at most :data:`RESTORE_BUDGET_RATIO` of ``max_bytes``, what the
+        log holds when this begins included (the owner's records already appended among them). Run again after an
+        interruption, it appends afresh; a record appended twice is evicted twice.
+
+        :param changes: what the ring's notes say changed, per table
+        :ptype changes: Sequence[NotedChange] | AsyncIterable[NotedChange]
+        :param incarnation: the restored log
+        :ptype incarnation: str
+        :param lost: the lost log's incarnation, the one the ring's notes cover
+        :ptype lost: str
+        :return: the records appended
+        :rtype: int
+        :raises RestoreTooLargeError: when the changes would pass the budget; a sequence appends nothing, a stream
+            stops before the append that would pass it
+        :raises GenerationUnavailableError: when the log is not ``lost``'s restore, or cannot be written
+        """
+        state = await self._state()
+        if state is None or state.incarnation != incarnation or lost not in (state.restoring, state.continues):
+            raise GenerationUnavailableError(
+                f"the epoch change log is not the restore of {lost!r} under {incarnation!r}: {state}"
+            )
+        return await self._append_restored(changes, state, incarnation=incarnation, lost=lost)
+
+    async def _append_restored(
+        self,
+        changes: Sequence[NotedChange] | AsyncIterable[NotedChange],
+        state: ChangeLogState,
+        *,
+        incarnation: str,
+        lost: str,
+    ) -> int:
+        """append one record per change into the restored log ``state`` names, within the restore's budget.
+
+        :param changes: what the notes say changed, per table
+        :ptype changes: Sequence[NotedChange] | AsyncIterable[NotedChange]
+        :param state: the log as read before the first append
+        :ptype state: ChangeLogState
+        :param incarnation: the restored log
+        :ptype incarnation: str
+        :param lost: the lost log's incarnation
+        :ptype lost: str
+        :return: the records appended
+        :rtype: int
+        :raises RestoreTooLargeError: when the changes would pass the budget
+        :raises GenerationUnavailableError: when the log cannot be written
+        """
         budget = None if not state.max_bytes else state.max_bytes * RESTORE_BUDGET_RATIO - state.bytes
         if isinstance(changes, Sequence):
-            needed = _restored_bytes(_restored_records(changes))
+            needed = _restored_bytes(_restored_records(changes, self._database))
             if budget is not None and needed > budget:
                 raise RestoreTooLargeError(
                     f"the restore of {lost!r} needs {needed} bytes and the log holds {state.bytes} of "
@@ -1106,7 +1240,7 @@ class EpochGenerationSource(_ChangeLogReading):
         used = 0
         try:
             async for change in _each(changes):
-                for key, body in _restored_records([change]):
+                for key, body in _restored_records([change], self._database):
                     used += _restored_bytes([(key, body)])
                     if budget is not None and used > budget:
                         raise RestoreTooLargeError(
@@ -1115,10 +1249,8 @@ class EpochGenerationSource(_ChangeLogReading):
                         )
                     await self._log().append(key, body, msg_id=f"restore-{incarnation}-{attempt}-{appended}")
                     appended += 1
-            labelled = await self._log().label_restored(continues=(lost, covered_from))
         except KvError as exc:
             raise GenerationUnavailableError(f"the epoch change log could not be restored: {exc}") from exc
-        self._declared = labelled
         return appended
 
     async def epoch_at(self, seq: int) -> EpochChange | None:
@@ -1183,6 +1315,7 @@ class EpochGenerationReader(_ChangeLogReading):
         create_if_missing: bool = False,
         tenants: PodTenants | None = None,
         absent_log_poll: timedelta = _ABSENT_LOG_POLL,
+        database: str | None = None,
     ) -> None:
         """capture the client and the tenants it reads; no I/O.
 
@@ -1197,8 +1330,12 @@ class EpochGenerationReader(_ChangeLogReading):
             default, which bounds how late an epoch whose broadcasts were lost is caught after the log's
             first write
         :ptype absent_log_poll: timedelta
+        :param database: the database whose tables this process follows, by its change-note ring's schema: a walk
+            skips a record another database wrote of a table of the same name (module docstring). ``None`` walks
+            every record: a pod, which reads only the platform database's tables
+        :ptype database: str | None
         :return: nothing
         :rtype: None
         """
-        super().__init__(nats_client, tenants=tenants, absent_log_poll=absent_log_poll)
+        super().__init__(nats_client, tenants=tenants, absent_log_poll=absent_log_poll, database=database)
         self._create_if_missing = create_if_missing

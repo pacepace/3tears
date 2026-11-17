@@ -21,6 +21,58 @@ above them, so a costly one (a call into Python) runs once a distinct row. Unfen
 below the `DISTINCT` into the scan: 30,003 calls' values over 30,000 rows of three values, 6 fenced; 30 ms of a 37 ms
 statement on a reports Overview page, 15 ms fenced. Off by default; an unfenced step's SQL is unchanged.
 
+### epoch, core: a change-log record names the database it was written in
+
+The hub's platform database and identity-core's share one change log, which names a record's table by its bare name,
+and both note `coordination_revocations` (3tears' coordination table, migrated into each one's schema). So a hub
+truncate of it dropped identity's whole cache, a hub key evicted identity's row of that key, a hub keys-unknown record
+was paged from identity's ring (behind until a restart once its bracket was older than that ring's coverage), and each
+ring's scrub read the other's every write of it as a missing note. Now `EpochGenerationSource(database=...)` names its
+database (its change-note ring's schema) on every record it appends, a restore's included (`EpochChange.database`);
+`EpochGenerationReader(database=...)` walks past a record naming another database
+(`threetears_epoch_change_other_database_records_total{table}`); and each ring's scrub judges a record naming a
+database as its own exactly when it names its ring's, an unnamed record by its table as before. `ChangeNoteKeeper`
+takes the name from its log, refuses one other than its ring's schema, and a `keeps_log=False` ring refuses to start
+naming none. Rolling upgrade: the field is optional; an older reader ignores it and every reader walks an unnamed
+record as before. Consumers: the hub builds every source and platform reader with `database=<platform schema>`;
+identity-core its source and follower reader with `database=<its schema>`.
+
+### core: a ring beside the change log's owner scrubs its own tables
+
+The owner's scrub skips another database's epochs, so a missing note on one of identity-core's tables was reported by
+no one. A `ChangeNoteKeeper(keeps_log=False)` ring now runs the same scrub on its own interval and reports on the same
+metric and log line (`threetears_change_notes_missing_total{table}`), so one alert covers every ring. It judges only
+tables whose note trigger writes into its ring, never a plain table of its schema: the log names a record's table by
+its bare name, and identity-core's schema holds an `api_keys` table while the hub's `api_keys` is on epochs. It still
+never declares, labels or marks the log.
+
+### core: a ring beside the change log's owner puts its own notes back after a loss, and the owner's scrub judges only its own tables
+
+A lost change log was put back from the owner's ring alone (the hub's), so the epochs of identity-core's tables since
+the floor were not in it and a follower of them continued past them silently. Now a `ChangeNoteKeeper(keeps_log=False)`
+ring, once the log is a restore of the one it last saw (being restored or labelled), folds its own coverage and appends
+it into that log (`EpochGenerationSource.put_back`, the same budget as `finish_restore`), then takes the new log; the
+owner still declares, labels, marks and scrubs the log alone. A record appended after the label reaches a carried-over
+follower as any write's does. Where the ring's floor is after the label's `covered_from`, or its coverage does not fit,
+it is said at ERROR and counted (`threetears_change_notes_put_back_short_total{reason}`); each put-back is counted
+(`threetears_change_notes_put_backs_total`, `KeeperPass.put_back`). A ring beside no longer stalls behind a restore the
+owner refused (that log stays marked restoring). The scrub judges only epochs of tables its database notes into its
+ring (a table whose note trigger runs a function of the ring's schema, or any table of that schema); another
+database's epochs are skipped (`ScrubPass.others`) instead of each raising `threetears_change_notes_missing_total`.
+
+### core: a second database keeps its own change-note ring beside the log the hub's keeper owns
+
+`ChangeNoteKeeper(keeps_log=False)` keeps a ring (install, switch, fence, empty) in a database whose writers advance
+through a change log another keeper owns, and never declares, restores, marks or scrubs that log: two keepers restoring
+one log from two rings would each put back only their own notes, and the scrub would read every other database's
+epochs as missing notes. identity-core runs one over its own database, so its write-mark reconciler names a lost
+write's rows from the notes (no longer `notes_unavailable`) and its followers page a bracket's keys from them.
+`ChangeNoteKeeping` (the same module) is the hub's lease-held keeping, moved here so every keeping process shares it:
+`start()` once, `claim_and_keep(holder)` every `CHANGE_NOTE_KEEPER_CLAIM_EVERY`, `install_triggers()` beside it; the
+lease name is per ring, and `key_scope` / `create_if_missing=False` serve a process granted only its own keys of the
+shared `leases` bucket. A lost log is put back from the owner's notes alone: the other database's epochs since the
+floor are not in it.
+
 ### core: a follower on a direct L3 pool reads a keys-unknown epoch's keys from the change notes
 
 `PoolNotedKeysReader` (`threetears.core.collections.change_notes`) is a noted-keys reader over a direct L3 pool: it
