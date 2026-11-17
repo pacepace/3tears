@@ -26,7 +26,7 @@ from collections.abc import Collection, Generator, Iterable, Iterator, Mapping, 
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, cast
 
-from threetears.evals.schema.models import SCALES, LabelKey
+from threetears.evals.schema.models import SCALES, LabelKey, WrittenOver
 
 if TYPE_CHECKING:
     from threetears.evals.schema.models import (
@@ -332,6 +332,8 @@ class ResultView(Protocol):
     def model_unserved(self) -> bool: ...
     @property
     def account_refused(self) -> bool: ...
+    @property
+    def written_over(self) -> WrittenOver | None: ...
     @property
     def judging_set_aside(self) -> bool: ...
     @property
@@ -787,6 +789,7 @@ class ResultReading:
     metered_calls_refused: int | None
     model_unserved: bool
     account_refused: bool
+    written_over: WrittenOver | None
     judging_set_aside: bool
     candidate_kind: str | None
     candidate_instance_id: str | None
@@ -855,6 +858,7 @@ class ResultReading:
             metered_calls_refused=result.metered_calls_refused,
             model_unserved=result.model_unserved,
             account_refused=result.account_refused,
+            written_over=result.written_over,
             judging_set_aside=result.judging_set_aside,
             candidate_kind=text(result.candidate_kind),
             candidate_instance_id=text(result.candidate_instance_id),

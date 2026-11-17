@@ -945,7 +945,9 @@ class LaunchGroup:
         #: The order every member plays its cases in, case by case (``RunnerOptions.case_order``), once the caller
         #: commits one (:meth:`play_cases_in`); ``None`` keeps the runner's shuffle of the whole matrix.
         self.case_order: tuple[str, ...] | None = None
-        self._stop_starting = asyncio.Event()
+        #: Each member's ask to start no further cell (``RunnerOptions.stop_starting``), by run id: set together by
+        #: :meth:`stop_starting`, or one at a time by a member's first cancel (:meth:`drains`).
+        self._stops: dict[str, asyncio.Event] = {}
 
     def disclose(self, notice: str) -> None:
         """Keep what an arm's admission tells the caller, once, for whoever admitted the group to say.
@@ -1046,8 +1048,22 @@ class LaunchGroup:
 
         :return: How many cells the members were running when asked, which finish first.
         """
-        self._stop_starting.set()
+        for run, _, _ in self.members:
+            self._stop(run.id).set()
         return self._interleaver.in_flight
+
+    def drains(self) -> dict[str, Callable[[], object]]:
+        """What asks each member alone to start no further cell, by run id: what the job manager does on a member's
+        first cancel (:meth:`~threetears.evals.run.jobs.EvalJobManager.cancel_job`), so an operator's cancel, or a
+        launch's, drains a run before a further one cuts it.
+
+        :return: By run id, the ask.
+        """
+        return {run.id: self._stop(run.id).set for run, _, _ in self.members}
+
+    def _stop(self, run_id: str) -> asyncio.Event:
+        """A member's ask to start no further cell, made the first time it is read."""
+        return self._stops.setdefault(run_id, asyncio.Event())
 
     def options_for(self, run_id: str, options: RunnerOptions) -> RunnerOptions:
         """A member's runner options as its run executes, once the group has begun.
@@ -1060,7 +1076,7 @@ class LaunchGroup:
         :param options: Its options, as its launch built them.
         :return: The options it executes under.
         """
-        options = replace(options, case_order=self.case_order, stop_starting=self._stop_starting)
+        options = replace(options, case_order=self.case_order, stop_starting=self._stop(run_id))
         if not self._interleaving:
             return options
         return replace(
@@ -3546,6 +3562,7 @@ class AdmittedLaunch:
                     measure_latency=bool(group.measure_latency),
                     in_turn=group.arm_schedule == "sequential",
                     on_member_end=group.member_ended,
+                    drains=group.drains(),
                 )
             except BaseException:
                 log.warning("%s group=%s abandoned before starting", self._event, group.id)

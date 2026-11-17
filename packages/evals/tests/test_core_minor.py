@@ -666,6 +666,7 @@ def _closed_vocabularies() -> dict[str, frozenset[Any]]:
         "AttemptOutcome": values(AttemptOutcome),
         "ArmSchedule": values(models.ArmSchedule),
         "CellTermination": values(models.CellTermination),
+        "WrittenOver": values(models.WrittenOver),
         "GoalCheckProof": values(models.GoalCheckProof),
         "GoalCheckIntent": values(models.GoalCheckIntent),
         "ApparatusProvenance": values(models.ApparatusProvenance),

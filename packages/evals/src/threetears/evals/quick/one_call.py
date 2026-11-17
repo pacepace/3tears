@@ -50,11 +50,11 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.offload import drain_then_cut, run_blocking, wait_through_cancellation
 from threetears.evals.kernel.candidate_kind import CALLABLE_KIND, JUDGED_CALLABLE_KIND
 from threetears.evals.kernel.scoring import measure_catalog_of
 from threetears.evals.kernel.metrics import declaration_of
-from threetears.evals.schema.logs import contain, contained, get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
     CandidateKind,
@@ -154,7 +154,7 @@ from threetears.evals.quick.continuation import (
     new_comparison_sentence,
 )
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
-from threetears.evals.analysis.bundle.trials import committed_order, redrawn_cells
+from threetears.evals.analysis.bundle.trials import RedrawnCells, committed_order, redrawn_cells
 from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExamples, judge_evidence
@@ -2614,7 +2614,7 @@ async def launch_arms(
                 for run_ids in read_runs
             ]
 
-        def redrawn() -> tuple[int, int]:
+        def redrawn() -> RedrawnCells:
             # Over every run read, this launch's included, so the print says the count the comparison's page says.
             return redrawn_cells(
                 [
@@ -2627,7 +2627,7 @@ async def launch_arms(
 
         # Summarizing reads each run and its results back from the store, so it runs off the loop.
         summaries = await run_blocking(host.blocking_executor, summarized)
-        cells_again = await run_blocking(host.blocking_executor, redrawn) if continuing else (0, 0)
+        cells_again = await run_blocking(host.blocking_executor, redrawn) if continuing else RedrawnCells()
         # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
         # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
         idle = (
@@ -2672,54 +2672,37 @@ async def launch_arms(
     async def drain(group: LaunchGroup | None, run_ids: list[str]) -> KeyboardInterrupt | None:
         """Let the runs' running cells finish and record, starting none, then settle every run; a cancel landing
         meanwhile (a second interrupt) cuts the cells still running at once, each recorded cut (termination
-        ``cancelled``), which a continuation runs again.
+        ``cancelled``), which a continuation runs again. The engine's one interrupt rule
+        (:func:`~threetears.evals.kernel.offload.drain_then_cut`), which a launch's job and a foreground wait keep too.
 
-        In a terminal a second Ctrl+C is not a second cancel: ``asyncio.run`` raises ``KeyboardInterrupt`` wherever the
-        main thread is. Where that is this task's own step it arrives here: it cuts as a second cancel does, and it is
-        returned, for the caller to raise once the runs are filed. Anywhere else it leaves the loop, and
-        ``asyncio.run`` cancels every task once before it reports it, this task and the waits it holds among them: that
-        cancel cuts, and a wait it ends is begun again (:func:`_to_its_end`), so the runs settle and are filed all the
-        same.
-
-        :return: The ``KeyboardInterrupt`` that cut the cells, where one arrived here; ``None`` otherwise.
+        :return: The ``KeyboardInterrupt`` that cut the cells, where a second Ctrl+C arrived in this task; ``None``
+            otherwise.
         """
         manager = launch_host.job_manager
-        interrupted: list[KeyboardInterrupt] = []
 
-        def cut_now() -> None:
+        def ask() -> None:
+            # Each run's first cancel, which the job manager reads as a drain (each run is its group's member), so a
+            # further one cuts.
             for run_id in run_ids:
-                manager.cancel_job(run_id, reason="interrupted twice: the cells running were cut")
-
-        async def through(ended: asyncio.Future[None], what: str) -> None:
-            # A further cancel cuts, and the wait goes on until ``ended``.
-            while True:
-                try:
-                    await wait_through_cancellation(ended, on_cancel=cut_now)
-                    break
-                except KeyboardInterrupt as second:
-                    # NOSILENT: the second Ctrl+C, delivered into this task; it cuts as a second cancel does, and the
-                    # caller raises it once the cut runs are settled and filed.
-                    interrupted.append(second)
-                    cut_now()
-            # The runs are filed whatever this wait met; a failure of it is recorded.
-            with contained(what, log=log):
-                ended.result()
-
-        try:
+                manager.cancel_job(run_id)
             if group is not None:
                 running = group.stop_starting()
                 said = f"{running} cell{'s' if running != 1 else ''}" if running else "the cells"
                 sys.stderr.write(f"Interrupted: finishing {said} in flight; interrupt again to stop now.\n")
-        except KeyboardInterrupt as second:
-            # NOSILENT: the second Ctrl+C, landing as the first is told; it cuts, and the caller raises it once filed.
-            interrupted.append(second)
-            cut_now()
-        await through(
-            _to_its_end(lambda: manager.wait_for(run_ids)), "an interrupted comparison's wait for its runs failed"
+
+        def cut_now() -> None:
+            for run_id in run_ids:
+                manager.cut_job(run_id, reason="interrupted twice: the cells running were cut")
+
+        return await drain_then_cut(
+            ask,
+            cut_now,
+            [
+                (lambda: manager.wait_for(run_ids), "an interrupted comparison's wait for its runs failed"),
+                # Nothing is left running or pending behind the call.
+                (manager.shutdown, "an interrupted comparison's shutdown of its runs failed"),
+            ],
         )
-        # Nothing is left running or pending behind the call.
-        await through(_to_its_end(manager.shutdown), "an interrupted comparison's shutdown of its runs failed")
-        return interrupted[0] if interrupted else None
 
     async def file_cancelled(deliver: Callable[[Launched], Awaitable[None]]) -> None:
         """Hand what the cancelled runs recorded to ``deliver``, unless they were archived: then they are another
@@ -2790,45 +2773,6 @@ async def launch_arms(
             on_cancel=on_cancel,
         )
     return await read(cancelled=False)
-
-
-def _to_its_end(work: Callable[[], Awaitable[object]]) -> asyncio.Future[None]:
-    """A future that ends once ``work`` has run to its end, begun again each time its task is cancelled.
-
-    For a wait whose end a caller must reach however the loop is stopping. ``asyncio.run``, stopped by a
-    ``KeyboardInterrupt``, cancels every task once and runs the loop until they end: the caller's own wait is told and
-    goes on (:func:`~threetears.evals.kernel.offload.wait_through_cancellation`), but a task it awaits is cancelled
-    too, and what that task waited for has not ended. This future is no task, so nothing cancels it, and the work is
-    begun again in a task created after that one cancel, as it is where a ``KeyboardInterrupt`` landing in the work's
-    own step ended it. ``work`` must be safe to begin again: a wait for jobs to
-    settle, or a shutdown, which cancels and waits for what is still running.
-
-    :param work: Makes the awaitable to run, once per beginning.
-    :return: Ends with ``None`` once ``work`` returns, or with what it raised.
-    """
-    loop = asyncio.get_running_loop()
-    ended: asyncio.Future[None] = loop.create_future()
-    # The task running the work now, held so it is not collected mid-run: the loop keeps only a weak reference.
-    held: list[asyncio.Future[object]] = []
-
-    def begin() -> None:
-        task = asyncio.ensure_future(work())
-        held[:] = [task]
-        task.add_done_callback(finished)
-
-    def finished(task: asyncio.Future[object]) -> None:
-        held.clear()
-        # Cancelled, or ended by a ``KeyboardInterrupt`` landing in its step (which has left the loop already, and is
-        # reported where it lands): what the work waited for has not ended, so it is begun again.
-        if task.cancelled() or isinstance(task.exception(), KeyboardInterrupt):
-            begin()
-        elif (raised := task.exception()) is not None:
-            ended.set_exception(raised)
-        else:
-            ended.set_result(None)
-
-    begin()
-    return ended
 
 
 def _ended_as_newest(host: EvalHost, pooled: EvalSummary, run_ids: Sequence[str], scope_id: str) -> EvalSummary:

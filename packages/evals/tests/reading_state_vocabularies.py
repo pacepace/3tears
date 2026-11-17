@@ -219,6 +219,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "schema/models.py:AsyncDeliveryStatus",
         "schema/models.py:CassetteDeliveryOutcome",
         "schema/models.py:CellTermination",
+        "schema/models.py:WrittenOver",
         "schema/models.py:StopReason",
         "schema/turns.py:TurnStopReason",
     ),
