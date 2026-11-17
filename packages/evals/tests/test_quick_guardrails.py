@@ -163,7 +163,8 @@ class TestAScorerGuardrail:
         assert undecided == "slip may do worse than current on the No leak score guardrail."
         blocks = comparison.report.blocks
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "comparisons")
-        assert [b.text for b in blocks[table - 2 : table]] == [breach, undecided], "directly above the contrasts"
+        above = [b.text for b in blocks[table - 2 : table] if isinstance(b, DisclosureBlock)]
+        assert above == [breach, undecided], "directly above the contrasts"
         (gain,) = [row for row in comparison.contrasts("correct") if row["arm"] == "leaky"]
         assert gain["verdict"] == "leaky better than current", "the breached arm gained, and its breach is still named"
 
@@ -175,7 +176,8 @@ class TestAScorerGuardrail:
             i for i, b in enumerate(blocks) if isinstance(b, DisclosureBlock) and b.text.startswith("leaky breaches")
         ]
         assert len(named) == 1 and blocks[named[0]].section == "contrasts"
-        assert blocks[named[0]].text == "leaky breaches the No leak score guardrail."
+        said = blocks[named[0]]
+        assert isinstance(said, DisclosureBlock) and said.text == "leaky breaches the No leak score guardrail."
         table = next(i for i, b in enumerate(blocks) if isinstance(b, TableBlock) and b.name == "guardrails")
         assert named[0] < table and all(b.section == "contrasts" for b in blocks[named[0] : table + 1])
 
@@ -453,10 +455,12 @@ class TestTheDeclarationGate:
         )
 
     def _refuse(self, margins: list[GuardrailMargin], template: EvalTemplate | None) -> None:
-        design = AspectDesign(
-            axes=[{"axis_id": "model", "values": [{"content": "a", "display": "a"}], "rationale": "x"}],
-            held_fixed={"stimulus": "controlled", "apparatus": "commissioned"},
-            guardrail_margins=margins,
+        design = AspectDesign.model_validate(
+            {
+                "axes": [{"axis_id": "model", "values": [{"content": "a", "display": "a"}], "rationale": "x"}],
+                "held_fixed": {"stimulus": "controlled", "apparatus": "commissioned"},
+                "guardrail_margins": margins,
+            }
         )
         refuse_an_undeclarable_design(design, behavior="score", template=template, profile=callable_host().profile)
 

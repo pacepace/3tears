@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import threading
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -56,15 +57,15 @@ class _FakeLLM:
         self._ceilings = list(ceilings) if ceilings is not None else None
         self.calls: list[tuple[str, str]] = []
         self.priced: list[tuple[str, str]] = []
-        self.response_formats: list = []
+        self.response_formats: list[dict[str, Any] | None] = []
 
-    def price_ceiling(self, *, system: str, user: str, response_format=None) -> float | None:
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         self.priced.append((system, user))
         if self._ceilings is None:
             return 0.01
         return self._ceilings.pop(0)
 
-    async def generate(self, *, system: str, user: str, response_format=None):
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         self.calls.append((system, user))
         self.response_formats.append(response_format)
         if not self._responses:
@@ -75,7 +76,7 @@ class _FakeLLM:
 
         return _R()
 
-    def __getattr__(self, name) -> None:
+    def __getattr__(self, name: str) -> None:
         raise AttributeError(name)
 
 
@@ -100,7 +101,7 @@ def _admitted(
     return AdmittedGeneration(writer=llm, budget=budget, calls=dict(zip(planned, admitted, strict=True)))
 
 
-def _template(*axes, name="t", scope_id="uni") -> EvalTemplate:
+def _template(*axes: VariationAxis, name: str = "t", scope_id: str = "uni") -> EvalTemplate:
     return EvalTemplate(
         scope_id="uni-1",
         name=name,
@@ -762,7 +763,7 @@ class _FakeThreadRecordingLLM(_FakeLLM):
         super().__init__(responses)
         self._threads = threads
 
-    async def generate(self, *, system: str, user: str, response_format=None):
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> Any:
         self._threads.append(("generate", threading.get_ident()))
         return await super().generate(system=system, user=user, response_format=response_format)
 

@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import math
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import Literal
 
 import pytest
 
@@ -204,16 +205,23 @@ _CRITERIA = [
     ("separation", separation_criterion, SEPARATION_MIN_AGREEMENT, SEPARATION_MIN_RESULTS, 400),
 ]
 
+#: A tier criterion's builder (``calibration_criterion``, ``separation_criterion``): pairs, results, agreement, bounds.
+_CriterionBuilder = Callable[[int, int, float | None, tuple[float, float] | None], TierCriterion]
+
 #: The one-sided error a criterion's bounds admit: how often a judge AT the bar may be shown on either side of it.
 _ONE_SIDED = 0.05
 
 
 def _criterion_over(
-    pairs: Sequence[tuple[int, int]], categories: Sequence[int], weights: str, unordered: Sequence[int], build
+    pairs: Sequence[tuple[int, int]],
+    categories: Sequence[int],
+    weights: str,
+    unordered: Sequence[int],
+    build: _CriterionBuilder,
 ) -> tuple[TierCriterion, float] | None:
     """The criterion the engine decides over one rater's ``pairs`` (one per result), beside the point estimate."""
     scale = [category for category in categories if category not in unordered]
-    cost = "quadratic" if weights == "quadratic" else "none"
+    cost: Literal["none", "quadratic"] = "quadratic" if weights == "quadratic" else "none"
     kappa = cohen_kappa(pairs, scale, weights=cost, unordered=unordered)
     moments = kappa_moments(pairs, scale, weights=cost, unordered=unordered)
     if kappa is None or moments is None:
@@ -227,7 +235,7 @@ def _tier_rates(
     n: int,
     truth: float,
     variant: tuple[str, Sequence[int], Sequence[float], str, Sequence[int]],
-    build,
+    build: _CriterionBuilder,
     bar: float,
     replicates: int,
 ) -> tuple[float, float, float]:
@@ -265,7 +273,7 @@ class TestTheTierIsDecidedOnConfidenceBounds:
         self,
         variant: tuple[str, Sequence[int], Sequence[float], str, Sequence[int]],
         criterion: str,
-        build,
+        build: _CriterionBuilder,
         bar: float,
         floor: int,
         replicates: int,
@@ -366,7 +374,9 @@ def _correlated_calibration(
         ("people who agree with each other", lambda rng: _correlated_calibration(rng, 30, CALIBRATION_MIN_AGREEMENT)),
     ],
 )
-def test_the_pooled_tier_from_several_people_holds_its_error_at_the_bar(label: str, draw) -> None:
+def test_the_pooled_tier_from_several_people_holds_its_error_at_the_bar(
+    label: str, draw: Callable[[random.Random], tuple[list[CalibrationRating], list[EvalResult]]]
+) -> None:
     """End to end through :func:`judge_agreement` and :func:`judge_evidence_tiers`: three people share 30 results
     (a result rated by one or two of them), each at weighted kappa 0.6 — the bar. The result is the cluster: two
     people's disagreements with the judge on one result are added at the correlation they show. When they agree with

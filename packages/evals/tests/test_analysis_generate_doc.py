@@ -70,7 +70,8 @@ from threetears.evals.kernel import EvalJobTimeout, JobTimeoutFactory, Validatio
 from threetears.evals.kernel.campaign import EvalAnalysis, EvalAnalysisAttempt
 from threetears.evals.kernel.inner_ceilings import writer_ceiling_s, writer_turns
 from threetears.evals.kernel.report_doc import EvalReportDoc
-from threetears.evals.kernel.storage import StorageError
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.analysis.report.serialize import ReportFormat
 from threetears.evals.ops import (
     AnalysisGeneration,
     JobStatus,
@@ -140,6 +141,7 @@ async def test_a_stored_report_is_linked_by_a_doc_analysis_with_the_skill_as_its
     analysis = _analysis(fixture, status.analysis_id)
     assert analysis.basis == "doc"
     assert analysis.document is None and analysis.report_plan_id is None
+    assert analysis.report_doc_id is not None
     stored = off_loop(fixture.host.eval_host.storage.load_report_doc, analysis.report_doc_id, TOYHOST_SCOPE)
     assert isinstance(stored, EvalReportDoc) and stored.ending == "stored"
     assert stored.campaign_id == fixture.campaign.id == analysis.campaign_id
@@ -606,7 +608,7 @@ async def test_a_refused_report_fails_the_job_with_its_ending_and_keeps_the_tall
     attempt = _attempt(fixture, status)
     assert attempt.outcome == "refused"
     assert attempt.error is not None and attempt.error.startswith("the report writer ended refused:")
-    assert (attempt.calls, attempt.token_cost) == (4, pytest.approx(0.04)), "the draft and its three bounces"
+    assert attempt.calls == 4 and attempt.token_cost == pytest.approx(0.04), "the draft and its three bounces"
     assert attempt.refusals, "the faults the last submission was refused for"
     assert attempt.analysis_id is None
     (row,) = _ledger(fixture)
@@ -700,7 +702,9 @@ async def test_a_report_cut_off_by_its_time_limit_counts_the_turn_in_flight_as_s
 async def test_a_value_error_after_turns_were_sent_is_no_refusal_of_the_start() -> None:
     fixture = off_loop(ops_fixture)
 
-    async def breaks(host: OpsHost, *, tally: Tally, **_: Any) -> Any:
+    async def breaks(host: OpsHost, **arguments: Any) -> Any:
+        tally = arguments["tally"]
+        assert isinstance(tally, Tally)
         tally.record_sent()
         raise ValueError("a defect after the first turn")
 
@@ -929,7 +933,7 @@ async def test_the_estimate_counts_the_report_budget_s_turn_cap_where_it_is_fewe
     estimate = await analysis_estimate(host, fixture.campaign.id, TOYHOST_SCOPE)
 
     assert (estimate.max_calls, estimate.cap_usd) == (7, REPORT_BUDGET_USD)
-    assert "7-turn" in estimate.bound and "$" in estimate.bound
+    assert estimate.bound is not None and "7-turn" in estimate.bound and "$" in estimate.bound
 
 
 # -- one client ---------------------------------------------------------------------------------------------------------
@@ -991,14 +995,15 @@ async def test_a_report_out_of_revisions_with_findings_open_is_a_draft_on_its_li
     status = await settled(host, job.job_id)
     assert status.status == "stored", status
     eval_host = host.eval_host
-    stored = off_loop(
-        eval_host.storage.load_report_doc, _analysis(fixture, status.analysis_id).report_doc_id, TOYHOST_SCOPE
-    )
+    report_doc_id = _analysis(fixture, status.analysis_id).report_doc_id
+    assert report_doc_id is not None
+    stored = off_loop(eval_host.storage.load_report_doc, report_doc_id, TOYHOST_SCOPE)
     assert stored is not None and stored.ending == "stored_with_findings" and stored.draft
     (line,) = off_loop(analyses_list, eval_host, fixture.campaign.id, TOYHOST_SCOPE).analyses
     assert line.draft, "a host's list shows the report as a draft"
     said = "Draft: its editor's review left 1 finding open."
-    for form, static in (("markdown", False), ("html", False), ("html", True)):
+    forms: tuple[tuple[ReportFormat, bool], ...] = (("markdown", False), ("html", False), ("html", True))
+    for form, static in forms:
         read = off_loop(report_read, eval_host, fixture.campaign.id, TOYHOST_SCOPE, format=form, static=static)
         assert read.draft, (form, static)
         assert (html.escape(said) if form == "html" else said) in read.body, (form, static)

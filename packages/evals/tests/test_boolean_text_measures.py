@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 
 from threetears.evals.analysis.cells import cell_ref
@@ -57,10 +59,15 @@ _PROFILE = HostProfile(
 )
 
 
-def _result(case: str, faulted: bool = False, **measures: bool | float | str) -> EvalResult:
+def _result(case: str, *, faulted: bool = False, **measures: bool | float | str) -> EvalResult:
+    return _measured(case, measures, faulted=faulted)
+
+
+def _measured(case: str, measures: Mapping[str, bool | float | str], *, faulted: bool = False) -> EvalResult:
+    """A result of ``case`` holding ``measures`` as its host measures, faulted on the rig or not."""
     return make_eval_result(
         test_case_id=case,
-        host_measures=measures,
+        host_measures=dict(measures),
         infra_error="apparatus: the rig broke" if faulted else None,
         rubric_scores=[],
         goal_state_outcomes=[],
@@ -129,7 +136,7 @@ def test_a_stored_value_its_declared_type_does_not_fit_is_named_with_its_reason_
 ) -> None:
     """A result stored before the runner refused the misfit: dropped from the statistics, named with why."""
     (name,) = measured
-    collection = _collection([_result("c1", **measured), _result("c2", **measured)])
+    collection = _collection([_measured("c1", measured), _measured("c2", measured)])
 
     assert name not in {summary.name for summary in collection.measures}
     assert collection.unreported_observations == [entry]
@@ -221,7 +228,8 @@ def test_a_label_keeps_the_whitespace_at_its_ends_through_a_stored_result() -> N
     """Every eval model strips its strings, so a bare ``"move "`` would come back as ``"move"`` and count as a hit."""
     for expected, predicted in [("move", "move "), (" move", "\tmove\n"), ("move", "\u3000move")]:
         stored = _result("c1", confusion_cell=confusion_cell(expected, predicted))
-        assert confusion_of(stored.host_measures["confusion_cell"]) == (expected, predicted)
+        cell = stored.host_measures["confusion_cell"]
+        assert isinstance(cell, str) and confusion_of(cell) == (expected, predicted)
     # The escapes are percent-encodings, so a label carrying what looks like one is still read back as written.
     assert confusion_of(confusion_cell("50% off", "%20")) == ("50% off", "%20")
     assert confusion_cell("go left", "attack") == "go left → attack", "a label with no edge whitespace is unchanged"
@@ -258,13 +266,13 @@ def test_per_label_precision_recall_and_f1_come_from_the_confusion_counts() -> N
     precision_attack = summaries[classifier_label_measure("precision", "attack")]
     assert (precision_attack.rate, precision_attack.n) == (1.0, 2)
     recall_attack = summaries[classifier_label_measure("recall", "attack")]
-    assert (recall_attack.rate, recall_attack.n) == (pytest.approx(2 / 3), 3)
+    assert recall_attack.n == 3 and recall_attack.rate == pytest.approx(2 / 3)
     precision_move = summaries[classifier_label_measure("precision", "move")]
     assert (precision_move.rate, precision_move.n) == (0.5, 2)
     f1_attack = summaries[classifier_label_measure("f1", "attack")]
-    assert (f1_attack.mean, f1_attack.n) == (pytest.approx(0.8), 3), "n is the label's support: predicted or expected"
+    assert f1_attack.n == 3 and f1_attack.mean == pytest.approx(0.8), "n is the label's support: predicted or expected"
     f1_move = summaries[classifier_label_measure("f1", "move")]
-    assert (f1_move.mean, f1_move.n) == (pytest.approx(2 / 3), 2)
+    assert f1_move.n == 2 and f1_move.mean == pytest.approx(2 / 3)
 
 
 def test_a_label_predicted_but_never_expected_has_no_recall_and_no_f1() -> None:
@@ -336,12 +344,12 @@ def test_a_confusion_cell_that_does_not_split_is_dropped_and_reported() -> None:
 def test_an_engine_owned_key_a_host_kind_stored_is_dropped_and_named_never_pooled() -> None:
     """A stored result from before the runner refused it: the core name keeps the engine's own reading alone."""
     smuggled = {"cost_usd": 99.0, "goal_state:state.done": 1.0, "classifier:recall:a": 1.0}
-    results = [_result("c1", match=True, **smuggled), _result("c2", match=False, **smuggled)]
+    results = [_measured("c1", {"match": True, **smuggled}), _measured("c2", {"match": False, **smuggled})]
 
     collection = _collection(results)
     summaries = {summary.name: summary for summary in collection.measures}
 
-    assert "cost_usd" not in summaries or 99.0 not in {summaries["cost_usd"].maximum, summaries["cost_usd"].mean}
+    assert "cost_usd" not in summaries or 99.0 not in {summaries["cost_usd"].max, summaries["cost_usd"].mean}
     assert not {"goal_state:state.done", "classifier:recall:a"} & set(summaries)
     assert summaries["match"].rate == 0.5, "the classifier track's own key still pools"
     dropped = [entry for entry in collection.unreported_observations if "host_measures" in entry]
@@ -364,7 +372,7 @@ def test_a_core_named_covariate_no_writer_lands_is_dropped_and_named_never_poole
     collection = _collection(results)
     summaries = {summary.name: summary for summary in collection.measures}
 
-    assert "cost_usd" not in summaries or 99.0 not in {summaries["cost_usd"].maximum, summaries["cost_usd"].mean}
+    assert "cost_usd" not in summaries or 99.0 not in {summaries["cost_usd"].max, summaries["cost_usd"].mean}
     assert "execution_mode" in summaries, "a covariate the writer lands is read as before"
     (dropped,) = [entry for entry in collection.unreported_observations if "covariate" in entry]
     assert dropped.startswith("cost_usd ")

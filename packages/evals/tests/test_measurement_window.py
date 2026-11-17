@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from typing import Any
+
 import pytest
 from threetears.evals.analysis import measurement_windows
 from threetears.evals.analysis.lenses.comparison_sets import BADGE_MEASUREMENT_WINDOWS_DISJOINT, compute_comparison_sets
@@ -28,6 +30,8 @@ from threetears.evals.kernel.result_reading import ReadingsRead, ResultReading
 from threetears.evals.run.reads import list_runs
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.schema.models import EvalResult, EvalRun
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.storage import InMemoryDocumentStore
 
 from packages.evals.tests.factories import as_listed
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
@@ -39,7 +43,7 @@ from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 _HOST = toyhost_profile()
 
 
-def bool_disjoint(windows) -> bool:
+def bool_disjoint(windows: Sequence[MeasurementWindow]) -> bool:
     """Whether ANY pair of these windows is disjoint.
 
     ``measurement_windows`` exports the pair list, not a boolean. A wrapper named
@@ -85,7 +89,7 @@ def _subject(subject_id: str, label: str) -> SubjectSnapshot:
     )
 
 
-def _comparison_sets(storage: _WindowStorage) -> dict:
+def _comparison_sets(storage: _WindowStorage) -> dict[str, Any]:
     """The grouping as a host serves it: the engine's composition over the engine's run listing.
 
     A host's service delegates exactly this, so driving it here drives the production seam --
@@ -121,8 +125,8 @@ def _grouped_run(run_id: str) -> EvalRun:
     )
 
 
-class _WindowStorage:
-    """The two scope-wide reads the served grouping composes over.
+class _WindowStorage(EvalStorage):
+    """The two scope-wide reads the served grouping composes over, over an empty store that holds nothing else.
 
     Deliberately not a ``MagicMock``: a mock answers ``query_eval_results`` with a
     mock whatever the service does, so it cannot tell a service that reads the
@@ -130,6 +134,7 @@ class _WindowStorage:
     """
 
     def __init__(self, runs: list[EvalRun], results: list[EvalResult]) -> None:
+        super().__init__(InMemoryDocumentStore())
         self._runs = runs
         self._results = results
 
@@ -150,19 +155,30 @@ class _WindowStorage:
             elide_payload,
         )
 
-    def query_eval_results(self, scope_id: str, *, elide: Sequence[str] = ()) -> list[EvalResult]:
-        """Return the seeded results in the scope.
+    def query_eval_results(
+        self,
+        scope_id: str,
+        *,
+        run_id: str | None = None,
+        test_case_id: str | None = None,
+        model: str | None = None,
+        elide: Sequence[str] = (),
+    ) -> list[EvalResult]:
+        """Return the seeded results in the scope; the grouping reads the scope whole, so a filter is refused.
 
         :param scope_id: Partition key.
         :ptype scope_id: str
         :return: The matching results.
         :rtype: list[EvalResult]
         """
+        assert (run_id, test_case_id, model) == (None, None, None), "the grouping reads the scope's results whole"
         return [
             r.model_copy(update=dict.fromkeys(elide)) if elide else r for r in self._results if r.scope_id == scope_id
         ]
 
-    def iter_result_readings(self, run_ids: Sequence[str] | None, scope_id: str, /) -> ReadingsRead:
+    def iter_result_readings(
+        self, run_ids: Sequence[str] | None, scope_id: str, /, *, in_store_order: bool = False
+    ) -> ReadingsRead:
         """Return the seeded results of the runs (or of the scope) as their readings, as the grouping reads them.
 
         :param run_ids: The runs, or ``None`` for the scope.
@@ -242,6 +258,7 @@ def test_measurement_window_is_derived_from_result_timestamps_and_not_the_runs_o
 
     # Enqueue spans: arm_b's sits wholly inside arm_a's. Nothing derived from them
     # can ever read as disjoint, whatever the arms actually did.
+    assert arm_a.completed_at is not None
     assert arm_a.created_at < arm_b.created_at < arm_a.completed_at
 
     windows = [
@@ -600,7 +617,9 @@ def test_a_naive_stamp_beside_an_aware_one_yields_no_duration_rather_than_a_wron
         ),
     ],
 )
-def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, why: str) -> None:
+def test_an_uncomputable_gap_says_why_it_could_not_be_computed(
+    first: tuple[str, str], second: tuple[str, str] | None, why: str
+) -> None:
     """The three failures read alike: the reason each stamp pair yielded no duration was swallowed."""
     windows = [
         _window("earlier", *first),
@@ -726,7 +745,7 @@ def test_a_run_set_too_small_to_pair_classifies_as_neither() -> None:
         (None, measurement_windows.UNCOMPUTABLE_GAP_CLAUSE),
     ],
 )
-def test_a_gap_renders_as_two_significant_units(seconds: int | None, rendered) -> None:
+def test_a_gap_renders_as_two_significant_units(seconds: int | None, rendered: str) -> None:
     """Compact and unit-word-free, so a list of pairs reads as numbers to weigh."""
     assert measurement_windows.format_window_gap(seconds) == rendered
 

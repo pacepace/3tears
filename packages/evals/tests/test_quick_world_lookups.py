@@ -12,7 +12,7 @@ comparison is served the same recording.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +45,7 @@ class Dice:
 
 async def adds_a_roll(case: Mapping[str, Any], tools: Mapping[str, Any]) -> int:
     """Add a d20 roll to the case's number."""
-    return int(case["n"]) + await tools["roll"](sides=20)
+    return int(case["n"]) + int(await tools["roll"](sides=20))
 
 
 def total(case: Mapping[str, Any], out: Any) -> float:
@@ -61,7 +61,7 @@ async def test_an_agent_is_handed_its_tools_live_with_no_recording_sync_and_asyn
     async def both(case: Mapping[str, Any], tools: Mapping[str, Any]) -> int:
         """Look up, then roll."""
         found = await tools["lookup"](key=str(case["n"]))
-        return int(found["key"]) * 10 + await tools["roll"](sides=6)
+        return int(found["key"]) * 10 + int(await tools["roll"](sides=6))
 
     dice = Dice()
     world = World(tools=[dice.roll, lookup])
@@ -125,7 +125,7 @@ async def test_an_ask_the_recording_does_not_hold_on_one_case_fails_the_run_nami
 
     async def rolls_bigger_on_two(case: Mapping[str, Any], tools: Mapping[str, Any]) -> int:
         """Roll a d100 on two."""
-        return int(case["n"]) + await tools["roll"](sides=100 if case["n"] == 2 else 20)
+        return int(case["n"]) + int(await tools["roll"](sides=100 if case["n"] == 2 else 20))
 
     replay = (await Eval(CASES, world(rolls_bigger_on_two), [total], k=1).run(store=":memory:")).summary
     assert dice.calls == 3
@@ -144,7 +144,7 @@ async def test_a_miss_the_agent_swallows_still_fails_the_run_never_scoring_the_c
     async def shrugs_off_failures(case: Mapping[str, Any], tools: Mapping[str, Any]) -> int:
         """Roll a d12, and answer 0 on any failure."""
         try:
-            return int(case["n"]) + await tools["roll"](sides=12)  # never recorded
+            return int(case["n"]) + int(await tools["roll"](sides=12))  # never recorded
         except Exception:  # noqa: BLE001 — the point: an agent that absorbs every tool failure
             return 0
 
@@ -208,9 +208,14 @@ async def test_a_tool_that_raises_is_the_agents_to_handle() -> None:
     assert "TimeoutError: the service timed out" in summary.errors[0]
 
 
-def _untyped(sides):
+def _untyped(sides: int) -> int:
     """A tool whose parameter has no type."""
     return sides
+
+
+# What is under test is a def written with no type on its parameter: the annotation is dropped from the function itself,
+# so the refusal reads exactly what such a def holds.
+del _untyped.__annotations__["sides"]
 
 
 @pytest.mark.parametrize(
@@ -229,13 +234,21 @@ def test_tools_no_agent_could_be_handed_are_refused(tools: Any, said: str) -> No
         World(tools=tools)
 
 
+def _unchecked(function: Callable[..., Any]) -> Callable[..., Any]:
+    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
+
+    The tests that use it assert the call is refused: the bad value is what they exercise.
+    """
+    return function
+
+
 async def test_a_synchronous_agent_handed_a_worlds_tools_is_refused_before_anything_runs() -> None:
     def sync_agent(case: Mapping[str, Any], tools: Mapping[str, Any]) -> int:
         """Cannot await its tools."""
         return 1
 
     with pytest.raises(ValueError, match="must be one: its tools are async functions"):
-        await Eval(CASES, World(tools=[Dice().roll])(sync_agent), [total], k=1).run(store=":memory:")
+        await Eval(CASES, _unchecked(World(tools=[Dice().roll]))(sync_agent), [total], k=1).run(store=":memory:")
 
 
 async def test_every_arm_of_a_comparison_is_served_one_recording(tmp_path: Path) -> None:
@@ -247,7 +260,7 @@ async def test_every_arm_of_a_comparison_is_served_one_recording(tmp_path: Path)
     def arm(name: str, offset: int) -> Any:
         async def agent(case: Mapping[str, Any], tools: Mapping[str, Any]) -> int:
             """Roll a d20 and add an offset."""
-            roll = await tools["roll"](sides=20)
+            roll = int(await tools["roll"](sides=20))
             rolled.setdefault(name, []).append(roll)
             return int(case["n"]) + roll + offset
 
@@ -259,4 +272,5 @@ async def test_every_arm_of_a_comparison_is_served_one_recording(tmp_path: Path)
     assert dice.calls == 3
     assert sorted(rolled["base"]) == sorted(rolled["plus"])
     means = {name: summary.measures[0].mean for name, summary in result.arms.items()}
-    assert means["plus"] == pytest.approx(means["base"] + 1)
+    base = means["base"]
+    assert base is not None and means["plus"] == pytest.approx(base + 1)

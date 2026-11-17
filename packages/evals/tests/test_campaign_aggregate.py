@@ -21,6 +21,7 @@ from html.parser import HTMLParser
 from typing import Any
 
 import pytest
+from pydantic import JsonValue
 
 from threetears.evals.analysis import (
     campaign_report,
@@ -38,6 +39,7 @@ from threetears.evals.analysis.campaign_readings import AggregateWeighting
 from threetears.evals.analysis.report.campaign.aggregate import EQUAL_WEIGHT_ROW
 from threetears.evals.analysis.report.model import CampaignReport, ChartBlock, DisclosureBlock, TableBlock
 from threetears.evals.kernel.errors import RefusedInput
+from packages.evals.tests.json_support import json_at, json_list, json_object
 from packages.evals.tests.report_shapes_support import (
     SHAPES,
     ArmTrials,
@@ -107,8 +109,9 @@ def test_s1_s_figures_across_aspects_are_the_plain_mean_of_each_aspect_s() -> No
     # Each candidate's change is the mean of its rows' changes, the matrix's own figures.
     for label in ("v2", "v3", "v4"):
         changes = [row.change for row in shape.readings.readings if row.arm_label == label]
-        assert held[label].change is not None
-        assert held[label].change.value == pytest.approx(_mean(changes))
+        change = held[label].change
+        assert change is not None
+        assert change.value == pytest.approx(_mean(changes))
     assert held["v2"].change is not None and held["v2"].change.value == pytest.approx((-60 + 40 + 25) / 3)
     assert held["production"].change is None
     # A reply costs v4 a tenth of a cent on every aspect and every other arm a fifth.
@@ -243,7 +246,7 @@ def test_s2_draws_its_arms_on_one_aspect_with_that_aspect_s_own_figures_and_no_r
     assert WEIGHTING_LINE not in _lines(page)
     drawn = chart.kit_chart()
     assert drawn is not None and drawn[0] == "scatter_frontier"
-    assert [point["label"] for point in drawn[1]["points"]] == ["alpha", "beta", "gamma"]  # type: ignore[index,union-attr]
+    assert [json_at(point, "label") for point in json_list(drawn[1], "points")] == ["alpha", "beta", "gamma"]
     html = campaign_report_html(page)
     assert '<figure class="fig" data-figure="cost_quality">' in html and 'data-kind="scatter_frontier"' in html
     caption = "<caption>Pass rate and cost per 1,000 replies, each arm, 95% intervals</caption>"
@@ -268,7 +271,7 @@ def test_s1_draws_every_arm_across_its_aspects() -> None:
     ]
     drawn = chart.kit_chart()
     assert drawn is not None
-    assert [point["label"] for point in drawn[1]["points"]] == ["production", "v2", "v3", "v4"]  # type: ignore[index,union-attr]
+    assert [json_at(point, "label") for point in json_list(drawn[1], "points")] == ["production", "v2", "v3", "v4"]
     html = campaign_report_html(page)
     assert all(f"<td>{arm}</td>" in html for arm in ("production", "v2", "v3", "v4"))
 
@@ -306,7 +309,7 @@ def test_an_arm_is_one_tag_and_one_colour_on_every_chart_of_the_campaign_page(na
     tags = {point.arm: point.tag for point in chart.points}
     assert len(set(tags.values())) == len(tags) and None not in tags.values()
     assert ("P" in tags.values()) == (shape.readings.control is not None)
-    colours = {point["label"]: point["color"] for point in chart.kit_chart()[1]["points"]}  # type: ignore[index]
+    colours = {str(json_at(point, "label")): json_at(point, "color") for point in json_list(_kit(chart), "points")}
     bars = [
         bar
         for aspect in page.aspects
@@ -368,14 +371,21 @@ def test_the_service_page_draws_a_shared_arm_in_one_tag_and_one_colour_on_every_
     assert "v3" in {entry["label"] for entry in cost["points"]}, "the cost chart draws v3 too"
 
 
+def _kit(chart: ChartBlock) -> dict[str, JsonValue]:
+    """The data the eval report kit draws ``chart`` from; a chart the kit does not draw fails here."""
+    drawn = chart.kit_chart()
+    assert drawn is not None, chart.chart
+    return drawn[1]
+
+
 def _outcome_rows(page: CampaignReport) -> list[dict[str, Any]]:
     """Every drawn row of every aspect's outcome bar on the campaign page."""
     return [
-        row
+        json_object(row)
         for aspect in page.aspects
         for block in aspect.report.blocks
         if isinstance(block, ChartBlock) and block.chart == "outcome_bar"
-        for row in block.kit_chart()[1]["rows"]  # type: ignore[index,union-attr]
+        for row in json_list(_kit(block), "rows")
     ]
 
 

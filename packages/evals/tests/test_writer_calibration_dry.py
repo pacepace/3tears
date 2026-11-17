@@ -105,11 +105,11 @@ def test_each_page_gives_seven_cases_on_the_gates_criteria_labelled_by_the_opus_
     assert len(frozen.cases) == len(cases) and not frozen.skipped
     per_dim = Counter(case.dim for case in frozen.cases)
     assert set(per_dim) == set(gate) and set(per_dim.values()) == {len(dry.found)}
-    for case in frozen.cases:
-        stored = off_loop(dry.host.storage.load_test_case, case.test_case_id, TOYHOST_SCOPE)
+    for frozen_case in frozen.cases:
+        stored = off_loop(dry.host.storage.load_test_case, frozen_case.test_case_id, TOYHOST_SCOPE)
         assert stored is not None
         judge_case = judge_case_of(stored)
-        assert judge_case is not None and judge_case.criterion_digest() == gate[case.dim]
+        assert judge_case is not None and judge_case.criterion_digest() == gate[frozen_case.dim]
 
 
 def test_each_pair_of_rounds_gives_two_cases_the_swapped_one_mirrored(dry: Calibration) -> None:
@@ -123,7 +123,9 @@ def test_each_pair_of_rounds_gives_two_cases_the_swapped_one_mirrored(dry: Calib
         assert (swapped.a, swapped.b) == (first.b, first.a)
         assert first.a.round < first.b.round
         assert cases[index].expected == preferred(first.b.total - first.a.total)
-        assert cases[index].expected + cases[index + 1].expected == 6
+        first_expected, swapped_expected = cases[index].expected, cases[index + 1].expected
+        assert isinstance(first_expected, int) and isinstance(swapped_expected, int)
+        assert first_expected + swapped_expected == 6
         assert cases[index + 1].output == pair_evidence(first.b.evidence, first.a.evidence).artifact.strip()
         assert cases[index].criterion == criterion
     # The stored Kairo record's third round scored 14 against its second's 13: the later page, by one, is preferred.

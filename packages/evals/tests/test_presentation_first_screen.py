@@ -36,6 +36,8 @@ from threetears.evals.analysis.report.model import (
     TableBlock,
 )
 from threetears.evals.kernel.errors import RefusedInput
+from threetears.evals import Eval
+from threetears.evals.analysis.report.blocks import ReportSection
 from threetears.evals.quick.files import load_evals
 
 from packages.evals.tests.g2_support import g2_report, g2_ruled_report
@@ -73,6 +75,7 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Rung]
                 (runnable,) = load_evals(copy / file)
             else:
                 runnable = getattr(load(copy / file, Path(file).stem, monkeypatch), attribute)
+            assert isinstance(runnable, Eval), runnable
             result = asyncio.run(runnable.run(store=":memory:"))
             replayed[name] = _Rung(page=result.page, report=result.report)
     yield replayed
@@ -196,7 +199,11 @@ def test_every_first_screen_rate_carries_its_count(rungs: dict[str, _Rung], name
 def test_every_report_wide_caveat_lands_on_the_first_screen_once(rungs: dict[str, _Rung], name: str) -> None:
     rung = rungs[name]
     bundles = [fold.report.bundle for fold in rung.page.aspects]
-    for page, section in ((rung.page, "warnings"), (rung.report, "header")):
+    surfaces: tuple[tuple[Report | CampaignReport, ReportSection], ...] = (
+        (rung.page, "warnings"),
+        (rung.report, "header"),
+    )
+    for page, section in surfaces:
         assigned = [block.anchor for block in caveat_blocks(bundles, section=section)]
         landed = [block.anchor for block in _said(page.blocks) if block.anchor in assigned]
         assert landed == assigned
@@ -254,7 +261,9 @@ def test_a_lead_the_caller_supplies_replaces_code_s_in_place_and_the_rest_of_the
     index = computed.blocks.index(code_lead)
     # Where code's lead stood, directly after the question line and the arms line under it, the caller's block
     # stands, as given, its tone kept.
-    assert supplied.blocks[index] == given and [block.source for block in supplied.blocks[index - 2 : index]] == [
+    assert supplied.blocks[index] == given and [
+        block.source if isinstance(block, DisclosureBlock) else None for block in supplied.blocks[index - 2 : index]
+    ] == [
         "basis",
         "arms",
     ]

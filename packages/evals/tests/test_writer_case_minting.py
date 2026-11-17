@@ -23,6 +23,7 @@ import pytest
 
 from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import HOST_CAMPAIGNS, held_out_path, host_case
 from packages.evals.tests.fixtures.writer_cases.export_writer_cases import FROZEN_AT, FROZEN_BY, PACKAGE
+from packages.evals.tests.json_support import json_at, json_list
 from threetears.evals.analysis.analyst.skill import load_skill
 from threetears.evals.harness import CaseMint, ReasonedOn, WithheldNote, WriterCaseFile, writer_case_from_export
 from threetears.evals.harness.__main__ import main
@@ -53,7 +54,7 @@ def _declared_digest() -> str:
     """The courier's declarations' digest, as the committed case's bundle records it."""
     bundle = WriterCaseFile.read(held_out_path(NAME)).snapshot.bundle
     assert bundle is not None
-    (digest,) = {aspect["host_declarations_digest"] for aspect in bundle["aspects"]}
+    (digest,) = {json_at(aspect, "host_declarations_digest") for aspect in json_list(bundle, "aspects")}
     return str(digest)
 
 

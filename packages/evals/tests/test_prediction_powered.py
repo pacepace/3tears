@@ -29,7 +29,7 @@ from packages.evals.tests.factories import make_calibration_rating, make_eval_re
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION, TOYHOST_SCOPE, ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, JudgedArm
 
 
 class TestTheEstimator:
@@ -57,7 +57,7 @@ class TestTheEstimator:
     def test_labels_on_one_case_alone_state_the_estimate_with_no_interval(self) -> None:
         estimate = prediction_powered_mean([4.0, 4.0, 3.0], ["a", "a", "b"], [3.0, 3.0, None])
         assert estimate is not None
-        assert (estimate.mean, estimate.sem, estimate.interval) == (pytest.approx(8.0 / 3.0), None, None)
+        assert (estimate.sem, estimate.interval) == (None, None) and estimate.mean == pytest.approx(8.0 / 3.0)
 
     def test_the_interval_is_clipped_to_the_scale_and_the_estimate_is_not(self) -> None:
         judge = [5.0] * 10
@@ -133,7 +133,7 @@ def _bundle(
     return runs, assemble_context_bundle(campaign, storage=storage, profile=toyhost_profile())
 
 
-def _arms(bundle):
+def _arms(bundle: AnalysisContextBundle) -> dict[tuple[str, ...], JudgedArm]:
     (measure,) = [m for m in bundle.judged_measures if m.name == TOYHOST_JUDGED_DIMENSION]
     return {tuple(arm.run_ids): arm for arm in measure.arms}
 

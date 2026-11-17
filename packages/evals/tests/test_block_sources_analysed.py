@@ -30,13 +30,16 @@ from typing import Any
 import pytest
 
 from packages.evals.tests.analyst_support import fixture_inputs, shape_snapshots
+from packages.evals.tests.figure_support import figure_number
 from threetears.evals.analysis.analyst.blocks import block_render
 from threetears.evals.analysis.analyst.compare import arms_compare
-from threetears.evals.analysis.analyst.levers import lever_effects
+from threetears.evals.analysis.analyst.compare import ComparisonRow
+from threetears.evals.analysis.analyst.levers import EffectRow, InteractionRow, lever_effects
 from threetears.evals.analysis.analyst.settle import settle_cases
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
-from threetears.evals.analysis.report.charts import BarsChart, DotIntervalChart
+from threetears.evals.analysis.report.blocks import ChartBlock
+from threetears.evals.analysis.report.charts import BarsChart, DotIntervalChart, DotIntervalPanel
 from threetears.evals.analysis.report.parts.charting import measure_words
 from threetears.evals.analysis.report.figure_keys import resolve
 from threetears.evals.analysis.report.forms import PageForms
@@ -80,7 +83,9 @@ def _data(held: ReportInput, kind: str, query: ChartQuery) -> Any:
     planned = PlannedChart.model_validate({"kind": kind, "title": "", "query": query, "reference": [], "emphasis": ""})
     spec, faults = complete_chart(planned, held, "block", forms=PageForms.of(held))
     assert not faults, faults
-    return resolve_chart(spec, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart.data
+    chart = resolve_chart(spec, block_look(held, fact_arms(held)), title="", forms=PageForms.of(held)).chart
+    assert isinstance(chart, ChartBlock)
+    return chart.data
 
 
 # =============================================================================
@@ -151,7 +156,8 @@ def test_a_compare_block_names_two_arms_and_the_order_is_the_difference() -> Non
     ahead = query_rows(_query("compare", arms=[first, second], measures=[key]), held)
     behind = query_rows(_query("compare", arms=[second, first], measures=[key]), held)
     for one, other in zip(ahead, behind, strict=True):
-        assert one.item.difference.value == pytest.approx(-other.item.difference.value)  # type: ignore[union-attr]
+        assert isinstance(one.item, ComparisonRow) and isinstance(other.item, ComparisonRow)
+        assert figure_number(one.item.difference) == pytest.approx(-figure_number(other.item.difference))
 
 
 def test_a_compare_block_the_function_refuses_is_refused_with_its_reason() -> None:
@@ -209,14 +215,14 @@ def test_settle_bars_draw_how_often_a_fresh_run_reads_the_other_side_for_every_r
     for name, arms in _settled():
         held = _inputs()[name]
         expected = [
-            row.wrong_side.value
+            figure_number(row.wrong_side)
             for arm in arms
             for row in settle_cases(held, [arm], limit=_EVERY).rows
             if row.wrong_side is not None
         ]
         data = _data(held, "bars", _query("settle", arms=arms))
         assert isinstance(data, BarsChart) and data.rows is not None
-        assert [row.value for row in data.rows] == pytest.approx([float(value) * 100 for value in expected])
+        assert [row.value for row in data.rows] == pytest.approx([value * 100 for value in expected])
 
 
 def test_a_settle_table_prints_each_figure_as_its_key_reads_it_and_its_filters_narrow_it() -> None:
@@ -261,8 +267,10 @@ def test_a_levers_chart_draws_each_effect_and_interaction_with_its_interval() ->
         read = lever_effects(held, key, limit=_EVERY)
         data = _data(held, "dot_interval", _query("levers", measures=[key]))
         assert isinstance(data, DotIntervalChart)
-        rows = {row.id: row for panel in (data.panels or [data]) for row in (panel.rows or [])}
-        moves = {"→".join(lever_arms(item, held)): item.figures for item in [*read.effects, *read.interactions]}
+        panels: list[DotIntervalPanel] | list[DotIntervalChart] = data.panels or [data]
+        rows = {row.id: row for panel in panels for row in (panel.rows or [])}
+        levered: list[EffectRow | InteractionRow] = [*read.effects, *read.interactions]
+        moves = {"→".join(lever_arms(item, held)): item.figures for item in levered}
         assert set(rows) == set(moves)
         for move, held_figures in moves.items():
             row = rows[move]
@@ -300,9 +308,9 @@ def test_a_bar_reads_strip_draws_each_arms_value_and_interval_against_its_bars_l
             continue
         data = _data(held, "dot_interval", _query("bar_reads"))
         assert isinstance(data, DotIntervalChart)
-        panels = data.panels or [data]
-        assert len(panels) == len({(read.aspect, read.measure, read.bar, read.direction) for read in reads})
-        for panel in panels:
+        bar_panels: list[DotIntervalPanel] | list[DotIntervalChart] = data.panels or [data]
+        assert len(bar_panels) == len({(read.aspect, read.measure, read.bar, read.direction) for read in reads})
+        for panel in bar_panels:
             line = panel.reference or data.reference
             assert line is not None and line.kind in ("floor", "budget")
             for row in panel.rows or []:

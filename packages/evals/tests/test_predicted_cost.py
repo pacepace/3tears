@@ -19,6 +19,7 @@ Mutations that turn this file red (each run against a saved copy and restored fr
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -31,9 +32,10 @@ from threetears.evals.analysis.lenses.cost_estimate import (
     PlannedCost,
     compute_estimate_cost,
 )
-from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
+from threetears.evals.analysis.lenses.pivot import PivotError, PivotTable, compute_pivot
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
 from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.models import EvalResult, EvalRun
 from threetears.evals.run.reads import list_runs
 from packages.evals.tests.factories import make_eval_result, make_eval_run, memory_storage
@@ -496,7 +498,7 @@ class TestAPredictionSitsOnlyWhereItsPlanRan:
 
 
 class TestTheLensTakesTheEstimateTheCallerMadeBeforeTheRun:
-    def _stored(self):  # type: ignore[no-untyped-def]
+    def _stored(self) -> tuple[EvalStorage, str]:
         storage, _ = memory_storage()
         run = make_eval_run(candidate_model="sonnet", status="completed", template_id="tpl-1")
         storage.save_eval_run(run)
@@ -513,7 +515,12 @@ class TestTheLensTakesTheEstimateTheCallerMadeBeforeTheRun:
             )
         return storage, run.scope_id
 
-    def _pivot(self, storage, scope_id, predicted_cost):  # type: ignore[no-untyped-def]
+    def _pivot(
+        self,
+        storage: EvalStorage,
+        scope_id: str,
+        predicted_cost: CostEstimate | Sequence[PlannedCost] | Mapping[str, Any] | None,
+    ) -> PivotTable:
         return pivot(
             storage,
             scope_id,

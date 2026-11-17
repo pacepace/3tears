@@ -330,11 +330,11 @@ def test_with_nothing_but_cost_declared_the_axes_named_are_weighed_beside_cost(n
 
     expected = [arm for arm in survivors if all(at_least(arm, other) for other in survivors if other != arm)]
     assert [_arm_id(arm) for arm in result.dominant_with_axes] == expected
-    for row in result.survivors:
-        arm = _arm_id(row.arm)
+    for survivor in result.survivors:
+        arm = _arm_id(survivor.arm)
         ahead = [other for other in survivors if other != arm and at_least(other, arm) and not at_least(arm, other)]
-        assert [_arm_id(other) for other in row.dominated_with_axes] == ahead, arm
-        assert row.dominated_by == []
+        assert [_arm_id(other) for other in survivor.dominated_with_axes] == ahead, arm
+        assert survivor.dominated_by == []
     assert any(row.dominated_with_axes for row in result.survivors), "the control: the axes rank some options"
 
 
@@ -662,7 +662,7 @@ def test_a_sweep_over_a_range_cuts_only_inside_it_and_pages_its_flips() -> None:
     low, high = (values[2] + values[3]) / 2, (values[-3] + values[-2]) / 2
     ranged = sensitivity(held, "threshold:pass_rate", range_low=low, range_high=high, limit=WHOLE)
     assert {flip.at.key for flip in ranged.flips} == {
-        flip.at.key for flip in whole.flips if low <= flip.at.value <= high
+        flip.at.key for flip in whole.flips if isinstance(flip.at.value, float) and low <= flip.at.value <= high
     }
     assert ranged.segments[0].low is None and ranged.segments[-1].high is None
     assert "flips outside the range swept are not listed" in ranged.notes

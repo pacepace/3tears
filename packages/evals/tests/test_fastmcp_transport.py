@@ -16,10 +16,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from fastmcp import Client, FastMCP
+from mcp.types import TextContent
 
 from threetears.evals.actions import (
     Caller,
@@ -36,6 +37,10 @@ from packages.evals.tests.ops_support import CALLER, RUN_MODELS, TOYHOST_SUBJECT
 from packages.evals.tests.mcp_wire import wire
 from packages.evals.tests.off_loop import off_loop
 
+if TYPE_CHECKING:
+    # Typing only: the transport a client over an in-process server holds, named the same on either fastmcp major.
+    from fastmcp.client.transports import FastMCPTransport
+
 
 def _served(fixture: OpsFixture, **mount: Any) -> FastMCP:
     server = FastMCP("toyhost")
@@ -44,12 +49,16 @@ def _served(fixture: OpsFixture, **mount: Any) -> FastMCP:
     return server
 
 
-async def _text(client: Client, tool: str, arguments: dict[str, Any]) -> tuple[str, dict[str, Any] | None, bool]:
+async def _text(
+    client: Client[FastMCPTransport], tool: str, arguments: dict[str, Any]
+) -> tuple[str, dict[str, Any] | None, bool]:
     result = await client.call_tool(tool, arguments, raise_on_error=False)
-    return result.content[0].text, result.structured_content, result.is_error
+    content = result.content[0]
+    assert isinstance(content, TextContent), content
+    return content.text, result.structured_content, result.is_error
 
 
-async def _done(client: Client, job_id: str) -> dict[str, Any]:
+async def _done(client: Client[FastMCPTransport], job_id: str) -> dict[str, Any]:
     async with asyncio.timeout(10):
         while True:
             _, status, is_error = await _text(client, "evals", {"action": "job_poll", "job_id": job_id})
@@ -340,7 +349,7 @@ async def test_an_ops_host_handed_alone_keeps_its_launch_tools() -> None:
         assert sorted(tool.name for tool in await client.list_tools()) == ["evals", "evals_admin"]
 
 
-def _served_instructions(client: Client) -> str | None:
+def _served_instructions(client: Client[FastMCPTransport]) -> str | None:
     """The instructions a connected server sent, on either fastmcp major the 1.x CI step installs.
 
     fastmcp 4 negotiates through `server/discover` and reads them as `Client.instructions` (its

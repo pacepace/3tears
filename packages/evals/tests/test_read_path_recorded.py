@@ -320,7 +320,7 @@ class _Down(CountingStore):
     ) -> list[dict[str, Any]]:
         raise ConnectionError("the backend is down")
 
-    def get_many(self, doc_type: str, ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
+    def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
         raise ConnectionError("the backend is down")
 
     def iter_narrowed(self, doc_type: str, scope_id: str, **kwargs: Any) -> Iterator[dict[str, Any]]:
@@ -328,6 +328,14 @@ class _Down(CountingStore):
 
     def grouped(self, doc_type: str, scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
         raise ConnectionError("the backend is down")
+
+
+def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
+    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
+
+    The tests that use it assert the call is refused: the bad value is what they exercise.
+    """
+    return function
 
 
 class TestOneOutageContract:
@@ -359,7 +367,9 @@ class TestOneOutageContract:
         storage = EvalStorage(store if path == "store" else EngineOnlyStore(store))
 
         with pytest.raises(ValueError, match="kind"):
-            storage.result_groups(["run-1"], SCOPE, by=["eval_run_id"], measures={"m": ("mean", "cost_usd")})
+            _unchecked(storage.result_groups)(
+                ["run-1"], SCOPE, by=["eval_run_id"], measures={"m": ("mean", "cost_usd")}
+            )
         with pytest.raises(TypeError, match="string"):
             storage.result_groups(["run-1"], SCOPE, by="eval_run_id", measures={"n": ("count", None)})
         assert store.calls == []
@@ -461,7 +471,7 @@ class _PageWatchingStore(CountingStore):
     def get_many(self, doc_type: str, doc_ids: Sequence[str], scope_id: str, **kwargs: Any) -> list[dict[str, Any]]:
         gc.collect()
         self.alive_at_each_page.append(sum(ref() is not None for ref in self.handed))
-        rows = [_Row(row) for row in super().get_many(doc_type, doc_ids, scope_id, **kwargs)]
+        rows: list[dict[str, Any]] = [_Row(row) for row in super().get_many(doc_type, doc_ids, scope_id, **kwargs)]
         self.handed += [weakref.ref(row) for row in rows]
         return rows
 

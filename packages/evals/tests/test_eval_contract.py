@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from threetears.evals import Eval, Example, Judge, Log, Model, Result, World, grader
 from threetears.evals.analysis import campaign_report_markdown, get_campaign
+from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.quick import as_host
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.logged import NOT_LOGGED
@@ -29,10 +30,11 @@ from threetears.evals.quick.result import LABEL_COLUMNS, TO_LABEL
 from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import StopReason
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.spend_support import spent
 from packages.evals.tests.recorded_model_support import CALL_COST_USD, record_model
 
 #: Tickets, each with its expected label, how urgent it is, and the kind of case it is.
-TICKETS = [
+TICKETS: list[dict[str, Any]] = [
     {"id": "refund", "text": "please refund me", "label": "billing", "urgent": False, "stratum": "plain"},
     {"id": "crash", "text": "the app crashes", "label": "bug", "urgent": True, "stratum": "plain"},
     {"id": "both", "text": "refund the crash", "label": "billing", "urgent": True, "stratum": "lookalike"},
@@ -180,9 +182,10 @@ async def test_grader_declares_a_margin_a_range_or_a_guard_on_its_reading() -> N
     )
     host = ev.host(":memory:")
 
-    assert host.profile.measures.get("rating").value_range == (1.0, 5.0)
+    rated = host.profile.measures.get("rating")
+    assert rated is not None and rated.value_range == (1.0, 5.0)
     guarded = host.profile.measures.get("short_label")
-    assert guarded.guardrail is True and guarded.materiality_threshold == 0.1
+    assert guarded is not None and guarded.guardrail is True and guarded.materiality_threshold == 0.1
     assert ev.plan.run_margins == {"accuracy": 0.25}
 
 
@@ -414,7 +417,9 @@ async def test_a_single_arm_s_first_line_says_what_its_page_says_of_the_trials_l
     # Half its trials were lost, so its page's verdict line is the setup gate's, and so is the print's first line;
     # the cause each lost trial records is the arm's excluded line, below it.
     rendered = result.render()
-    (verdict,) = [block.text for block in result.report.blocks if getattr(block, "source", None) == "verdict"]
+    (verdict,) = [
+        block.text for block in result.report.blocks if isinstance(block, DisclosureBlock) and block.source == "verdict"
+    ]
     assert rendered.splitlines()[0] == f"{result.name}: {verdict}"
     assert verdict.startswith("The test setup failed: it measured the setup instead of the models.")
     assert [line for line in rendered.splitlines() if line.strip().startswith("excluded: ") and NOT_LOGGED in line]
@@ -442,7 +447,7 @@ async def test_a_runner_calling_model_reports_its_spend_with_no_answer(
     result = await Eval(TICKETS, labeller, ["label"], k=2).run(store=":memory:")
 
     assert result.summary.total_cost_usd == pytest.approx(8 * CALL_COST_USD)
-    assert result.summary.role_spend("candidate").calls == 8
+    assert spent(result.summary, "candidate").calls == 8
     # With no recording and no key, the one Model is refused when it is built, naming the variable.
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(ValueError, match="no key for openrouter: pass api_key= or set OPENROUTER_API_KEY"):

@@ -194,9 +194,14 @@ class TestTheJudgeCallRecordsWhatItWasSent:
 
         results = off_loop(lambda: host.storage.query_eval_results_by_run(summary.run_id, summary.scope_id))
         assert [score.judge_sent_settings for result in results for score in result.rubric_scores] == [_WORD] * 2
-        (judge,) = summary.request_settings
-        assert (judge.role, judge.state, judge.n_not_as_asked, judge.n_total) == ("judge", "sent_otherwise", 2, 2)
-        assert judge.sent_display() == request_settings_words(_WORD)
+        (reading,) = summary.request_settings
+        assert (reading.role, reading.state, reading.n_not_as_asked, reading.n_total) == (
+            "judge",
+            "sent_otherwise",
+            2,
+            2,
+        )
+        assert reading.sent_display() == request_settings_words(_WORD)
         assert summary.request_settings_warning is not None
         assert summary.render().count("Request settings not confirmed as asked:") == 1
 
@@ -426,7 +431,9 @@ class TestASecondJudgeSentDifferentlyIsAnotherSecondJudge:
         ]
         assert [d.n_pairs for d in dimensions] == [1, 2, 2], "unverified first, then each send in canonical order"
         assert sent[0] is None
-        assert sorted(sent[1:]) == sorted([[request_settings_words(_ASKED)], [request_settings_words(_WORD)]])
+        verified = [one for one in sent[1:] if one is not None]
+        assert len(verified) == len(sent) - 1
+        assert sorted(verified) == sorted([[request_settings_words(_ASKED)], [request_settings_words(_WORD)]])
 
     def test_a_pass_reads_as_the_level_the_bundle_names_it_by(self) -> None:
         """One reading names a pass's send for the bundle and for both readers, so a linked drift groups as its level."""

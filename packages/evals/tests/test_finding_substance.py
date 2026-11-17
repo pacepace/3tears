@@ -27,8 +27,15 @@ from packages.evals.tests.writer_host_support import doc_analysis_over
 class TestEvidenceRowsCarryTheirBasis:
     def test_a_row_with_no_cell_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="cell_ref"):
-            EvidenceRow(
-                aspect="conversation", measure_id="cost_usd", reading="measure", value=0.5, n=3, dispersion="±0.1"
+            EvidenceRow.model_validate(
+                {
+                    "aspect": "conversation",
+                    "measure_id": "cost_usd",
+                    "reading": "measure",
+                    "value": 0.5,
+                    "n": 3,
+                    "dispersion": "±0.1",
+                }
             )
 
     def test_a_cell_keyed_row_is_legitimate(self) -> None:
@@ -67,7 +74,7 @@ class TestEvidenceRowsCarryTheirBasis:
         }
         del fields[missing]
         with pytest.raises(ValidationError):
-            EvidenceRow(**fields)
+            EvidenceRow.model_validate(fields)
 
 
 class TestEvidenceRowsAreCheckedAgainstTheCampaignThatReportedThem:

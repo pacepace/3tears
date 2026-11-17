@@ -98,6 +98,12 @@ def _no_margin_advice(comparison: Result) -> dict[str, str]:
     return {str(row["reading"]): str(row["declare"]) for table in tables for row in table.values()}
 
 
+def _present[T](value: T | None) -> T:
+    """``value``, which the test's setup declared; one that is missing fails here."""
+    assert value is not None
+    return value
+
+
 class TestADeclaredMargin:
     async def test_two_arms_inside_it_read_equivalent_with_the_margin_named(self) -> None:
         """Alike on all 48 cases. One miss among them is shown inside 0.1 in only 18 of the 48 places the bounded
@@ -112,14 +118,15 @@ class TestADeclaredMargin:
 
     async def test_a_bool_scorer_s_margin_comes_with_its_range_and_a_float_scorer_s_with_the_one_declared(self) -> None:
         host = callable_host([correct, wordy], margins={"correct": 0.1, "wordy": 2.0}, ranges={"wordy": (0, 50)})
-        declared = {name: host.profile.measures.get(name) for name in ("correct", "wordy")}
+        declared = {name: _present(host.profile.measures.get(name)) for name in ("correct", "wordy")}
         assert (declared["correct"].materiality_threshold, declared["correct"].value_range) == (0.1, (0.0, 1.0))
         assert (declared["wordy"].materiality_threshold, declared["wordy"].value_range) == (2.0, (0.0, 50.0))
         plain = callable_host([correct, wordy]).profile.measures
-        assert (plain.get("correct").materiality_threshold, plain.get("correct").value_range) == (None, (0.0, 1.0)), (
+        plain_correct = _present(plain.get("correct"))
+        assert (plain_correct.materiality_threshold, plain_correct.value_range) == (None, (0.0, 1.0)), (
             "no margin is ever assumed, and a pass/fail is on 0-1 whatever its margin"
         )
-        assert plain.get("wordy").value_range is None, "nothing says what a float scorer's values can be"
+        assert _present(plain.get("wordy")).value_range is None, "nothing says what a float scorer's values can be"
 
     async def test_a_second_control_reads_the_same_margin(self) -> None:
         comparison = await _compare([grader(correct, margin=0.1)], cheaper_misses=0)

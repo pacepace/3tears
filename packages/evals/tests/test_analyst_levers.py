@@ -197,20 +197,20 @@ def test_each_lever_pair_is_listed_once_its_effect_the_second_mean_minus_the_fir
     assert len(listed) == len(expected), "each pair once"
     for row, (setting, first, second) in zip(read.effects, listed, strict=True):
         assert _differ(settings, first, second) == [setting]
-        expected = _expected_effect(held, key, first, second, place, row.figures[0].scale)
-        assert row.figures[0].key.endswith(".effect") and row.figures[0].value == pytest.approx(expected.change)
-        if expected.interval is None:
+        want = _expected_effect(held, key, first, second, place, row.figures[0].scale)
+        assert row.figures[0].key.endswith(".effect") and row.figures[0].value == pytest.approx(want.change)
+        if want.interval is None:
             assert len(row.figures) == 1
             with pytest.raises(UnstatedFigure):
                 resolve(row.figures[0].key.removesuffix(".effect") + ".interval", held)
         else:
             assert row.figures[1].key.endswith(".interval")
-            assert row.figures[1].value == pytest.approx(expected.interval)
+            assert row.figures[1].value == pytest.approx(want.interval)
             stem = row.figures[0].key.removesuffix(".effect")
             ends = (resolve(f"{stem}.low", held).value, resolve(f"{stem}.high", held).value)
-            assert ends == pytest.approx(expected.interval)
+            assert ends == pytest.approx(want.interval)
             beside = {figure.key.rsplit(".", 1)[1]: figure.value for figure in row.figures[2:]}
-            assert beside == {"basis": expected.basis} | ({} if expected.level is None else {"level": expected.level})
+            assert beside == {"basis": want.basis} | ({} if want.level is None else {"level": want.level})
 
 
 @pytest.mark.parametrize(("name", "key", "place"), READS)
@@ -401,10 +401,8 @@ def _expected_verdict(held: ReportInput, key: str, crossing: frozenset[frozenset
     """A crossing's verdict, from the compare family's two effects, each move read from its setting's lower value."""
     settings = _settings(held)
     setting = _setting_of(held, crossing)
-    first, second = (
-        _expected_effect(held, key, *sorted(move, key=lambda arm: repr(settings[arm][setting])), None, scale)
-        for move in sorted(crossing, key=sorted)
-    )
+    moves = [sorted(move, key=lambda arm: repr(settings[arm][setting])) for move in sorted(crossing, key=sorted)]
+    first, second = (_expected_effect(held, key, low, high, None, scale) for low, high in moves)
     if first.interval is None or second.interval is None or first.level != second.level:
         return "no_interval"
     sides = [1 if lo > 0 else -1 if hi < 0 else 0 for lo, hi in (first.interval, second.interval)]

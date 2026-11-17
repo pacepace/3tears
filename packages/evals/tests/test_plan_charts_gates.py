@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 
+from packages.evals.tests.figure_support import figure_number
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
@@ -194,7 +195,9 @@ def test_every_stored_chart_of_these_kinds_resolves_to_its_kind_and_validates(
     assert block.chart == spec.kind
     drawn = block.kit_chart()
     assert drawn is not None and drawn[0] == spec.kind
-    assert type(block.data).model_validate(block.data.kit_data()) == block.data
+    data = block.data
+    assert data is not None
+    assert type(data).model_validate(data.kit_data()) == data
     _, rows = block.values_table()
     assert rows
 
@@ -371,7 +374,9 @@ def test_a_readings_matrix_reads_each_candidate_by_the_direction_of_its_change()
             assert cell.status == {"worse": "bad", "better": "good", "": "neutral"}[direction]
             margin = reading.margin if reading.margin is not None else aspect.margin
             assert reading.within_interval is not None and margin is not None
-            within = flip_margin(reading) < margin  # the decision's rule
+            flip = flip_margin(reading)
+            assert flip is not None
+            within = flip < margin  # the decision's rule
             assert ("within margin" in cell.label) == within and ("outside margin" in cell.label) == (not within)
             floors = [f for f in report_input.floors if f.arm == reading.arm and f.aspect == aspect.id and f.reading]
             assert len(cell.reasons or []) == 1 + len(floors), "each floor reading another rate is shown apart"
@@ -550,7 +555,7 @@ def test_a_lattice_tiles_the_first_factor_by_the_rest_with_each_configs_figures_
             assert cell.value == report_input.measures[key].per_arm[arm].mean
             # Drawn per 1,000,000 where a cost is under a cent per 1,000 (#993), every tile alike.
             scale = 1000 if data.cost_unit and "1,000,000" in data.cost_unit else 1
-            assert cell.cost == pytest.approx(float(resolve(f"cost_per_1k.{arm}", report_input).value) * scale)
+            assert cell.cost == pytest.approx(figure_number(resolve(f"cost_per_1k.{arm}", report_input)) * scale)
             assert cell.latency == report_input.measures[latency].per_arm[arm].p95
             check = gate_check(report_input, arm)
             assert (cell.status, cell.status_label) == (_STATUS_COLOUR[check.status], GATE_WORDS[check.status])
@@ -576,6 +581,7 @@ def test_at_a_zero_margin_a_reading_is_outside_it_by_the_decisions_rule() -> Non
     aspect["readings"][0]["within_interval"] = [0.5, 3.0]
     report_input = ReportInput.model_validate(data)
     reading = report_input.aspects[0].readings[0]
+    assert reading.within_interval is not None
     assert flip_margin(reading) == 0.0 and -float(reading.within_interval[0]) < 0.0  # the two rules differ here
 
     data_block = _resolved(report_input, _spec("gate_matrix", "readings")).data
@@ -626,7 +632,7 @@ def _hostile(report_input: ReportInput) -> ReportInput:
 @pytest.mark.parametrize("name", ["r1", "r2", "r3"])
 def test_markup_in_the_names_these_charts_print_is_text_on_the_page(name: str) -> None:
     charts = [drawn for _, drawn in drawn_charts(_plan(name), _hostile(_input(name)))]
-    assert {chart.chart.chart for chart in charts} & _KINDS
+    assert {chart.chart.chart for chart in charts if isinstance(chart.chart, ChartBlock)} & _KINDS
     html = charts_html(charts)
     assert what_runs(html) == []
     assert "<script>alert" not in html and "&lt;script&gt;alert(1)&lt;/script&gt;" in html

@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import math
 from fractions import Fraction
+from typing import Any
 
 import pytest
 from threetears.evals.analysis.stats import (
+    ChangeVerdict,
     EQUIVALENCE_NEEDS_RANGE,
     PAIRED_TEST_NAME,
     SIGNIFICANCE_ALPHA,
@@ -58,7 +60,8 @@ class TestStandardErrorOfMean:
         """The population form would divide by n; ddof=1 divides by n-1 and is larger."""
         values = [1.0, 2.0, 3.0, 4.0]
         population_sem = math.sqrt(sum((v - 2.5) ** 2 for v in values) / len(values)) / math.sqrt(len(values))
-        assert standard_error_of_mean(values) > population_sem
+        sem = standard_error_of_mean(values)
+        assert sem is not None and sem > population_sem
 
 
 class TestStudentTPValue:
@@ -440,7 +443,9 @@ class TestPairedChange:
             ([1.0] * 4, [0.0] * 4, "not_separated"),
         ],
     )
-    def test_a_label_no_t_test_produced_reports_no_p(self, baseline, current, expected_label: str) -> None:
+    def test_a_label_no_t_test_produced_reports_no_p(
+        self, baseline: list[float], current: list[float], expected_label: str
+    ) -> None:
         """The absence is the disclosure: it says the label did not come from a test."""
         verdict = paired_change(
             baseline, current, min_absolute_change=0.05, min_relative_change=0.0, higher_is_better=True
@@ -502,7 +507,9 @@ class TestEquivalence:
     """The TOST against the measure's declared margin — the only route to a claim of no meaningful change (#592)."""
 
     @staticmethod
-    def _change(baseline: list[float], current: list[float], *, margin: float | None, gate: float = 0.0):
+    def _change(
+        baseline: list[float], current: list[float], *, margin: float | None, gate: float = 0.0
+    ) -> ChangeVerdict:
         return paired_change(
             baseline,
             current,
@@ -523,7 +530,7 @@ class TestEquivalence:
         ],
         ids=["centred", "near the edge", "noisy", "three pairs", "forty tight pairs"],
     )
-    def test_a_margin_with_no_declared_range_is_never_equivalent_and_names_the_remedy(self, diffs) -> None:
+    def test_a_margin_with_no_declared_range_is_never_equivalent_and_names_the_remedy(self, diffs: list[float]) -> None:
         """No test of a mean holds α without a range, so the margin is not tested at all (#695) — even forty pairs
         a hair apart, which the paired t TOST this replaced called equivalent, read no closer than not separated."""
         n = len(diffs)
@@ -730,7 +737,7 @@ class TestLevelDifference:
     def test_equivalence_needs_a_margin_a_declared_range_and_shared_cases(self) -> None:
         a = {f"c{i}": 0.05 + 0.09 * i for i in range(10)}
         b = {case: value + (0.01 if int(case[1:]) % 2 else -0.01) for case, value in a.items()}
-        on_range = {"equivalence_margin": 0.5, "value_range": (0.0, 1.0)}
+        on_range: dict[str, Any] = {"equivalence_margin": 0.5, "value_range": (0.0, 1.0)}
         assert level_difference(a, b).equivalent is None
         assert level_difference(a, b, **on_range).equivalent is True
         assert level_difference(a, b, equivalence_margin=0.5).equivalent is None, "no range, no test (#695)"

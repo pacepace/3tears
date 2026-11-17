@@ -45,7 +45,8 @@ from threetears.evals.analysis import (
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
-from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
+from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, TableColumn
+from threetears.evals.kernel.chart_query import PlanChartKind
 from threetears.evals.analysis.report.figures import SHARE, UNITLESS
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
@@ -111,6 +112,7 @@ def rungs(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, _Rung]
                 (runnable,) = load_evals(copy / file)
             else:
                 runnable = getattr(load(copy / file, Path(file).stem, monkeypatch), attribute)
+            assert isinstance(runnable, Eval), runnable
             result = asyncio.run(runnable.run(store=":memory:"))
         replayed[name] = _Rung(result=result, page=result.page)
     yield replayed
@@ -409,8 +411,8 @@ def test_the_line_under_a_matrix_names_the_columns_each_range_is_drawn_for() -> 
         title="solo by aspect",
         shared_scale=True,
         columns=[
-            {"key": "aspect", "header": "Aspect"},
-            *({"key": key, "header": header} for key, header, _ in columns),
+            TableColumn(key="aspect", header="Aspect"),
+            *(TableColumn(key=key, header=header) for key, header, _ in columns),
         ],
         order="aspect by aspect",
         rows=[{"aspect": TableCell(value="research"), **{key: cell for key, _, cell in columns}}],
@@ -439,8 +441,8 @@ def _quality_scorecard(*cells: tuple[str, str, TableCell]) -> TableBlock:
         title="deepseek-v4.1-flash by aspect",
         shared_scale=True,
         columns=[
-            {"key": "aspect", "header": "Aspect"},
-            *({"key": key, "header": header} for key, header, _ in cells),
+            TableColumn(key="aspect", header="Aspect"),
+            *(TableColumn(key=key, header=header) for key, header, _ in cells),
         ],
         order="aspect by aspect",
         rows=[{"aspect": TableCell(value="Research quality"), **{key: cell for key, _, cell in cells}}],
@@ -606,7 +608,8 @@ def test_a_judged_dimension_drawn_as_a_chart_is_named_with_a_capital_and_keeps_i
     look = block_look(held, fact_arms(held))
     said: list[str] = []
     # A forest draws one unit (the dimension alone); a table holds the dimension beside another.
-    for kind, measures in (("forest", [key]), ("table", [key, "__outcome__"])):
+    kinds: tuple[tuple[PlanChartKind, list[str]], ...] = (("forest", [key]), ("table", [key, "__outcome__"]))
+    for kind, measures in kinds:
         query = ChartQuery.model_validate(
             {
                 "source": "contrasts",

@@ -195,7 +195,10 @@ class TestUnsettledPastTheMargin:
         """The issue's state: the asked aspect leaves qwen3.8-flash (the cheapest) dominant, and its unasked voice
         reading allows a loss past the declared margin and a change short of it."""
         report_input = _input(data=_voice(_cost(_data(), "qwen3.8-flash", 0.0015), "qwen3.8-flash"))
-        assert (decision_at(report_input).modes, dominant_options(report_input)) == ({"decide"}, ["qwen3.8-flash"])
+        assert (decision_at(report_input).modes, dominant_options(report_input)) == (
+            frozenset({"decide"}),
+            ["qwen3.8-flash"],
+        )
         assert unsettled_arms(report_input) == {"unsettled:voice": ("qwen3.8-flash",)}
         assert _unsettled_ids(report_input) == [("unsettled:voice", "report")]
         materiality = caveat_materiality(report_input)["unsettled:voice"]
@@ -204,7 +207,10 @@ class TestUnsettledPastTheMargin:
     def test_a_reading_within_its_margin_raises_none(self) -> None:
         report_input = _input(data=_voice(_cost(_data(), "qwen3.8-flash", 0.0015)))
         voice = report_input.aspects[-1]
-        assert all(flip_margin(reading) < float(reading.margin or 0) for reading in voice.readings)
+        assert all(
+            (flip := flip_margin(reading)) is not None and flip < float(reading.margin or 0)
+            for reading in voice.readings
+        )
         assert unsettled_arms(report_input) == {} and _unsettled_ids(report_input) == []
 
     def test_a_reading_wholly_past_its_line_is_settled_and_raises_none(self) -> None:
@@ -368,7 +374,10 @@ class TestAllowedModes:
             {"id": "tone", "kind": "guardrail", "measure": "persona.holds_character",
              "direction": "higher_is_better", "threshold": 0.95},
         ]  # fmt: skip
-        assert (surviving_options(_input(data=data)), decision_at(_input(data=data)).modes) == ([], {"no_call"})
+        assert (surviving_options(_input(data=data)), decision_at(_input(data=data)).modes) == (
+            [],
+            frozenset({"no_call"}),
+        )
 
     def test_every_candidate_unseparated_is_a_no_call(self) -> None:
         data = _data()
@@ -390,7 +399,10 @@ class TestAllowedModes:
         picks."""
         data = _p95_improved(_unclear_readings(_data()))
         data["contrast_families"][0]["merit_axes"] = ["latency", "cost"]
-        assert (decision_at(_input(data=data)).modes, dominant_options(_input(data=data))) == ({"decide"}, [])
+        assert (decision_at(_input(data=data)).modes, dominant_options(_input(data=data))) == (
+            frozenset({"decide"}),
+            [],
+        )
 
     def test_a_regressed_candidate_counts_as_separated(self) -> None:
         by_reading = _unclear_readings(_data())
@@ -411,7 +423,7 @@ class TestAllowedModes:
         data["arms"][0]["role"] = "challenger"
         data["aspects"][0]["pairs"] = [{"arms": ["September", "1017"], "change": change, "ahead": ahead}]
         assert (decision_at(_input(data=data)).modes, dominant_options(_input(data=data))) == (
-            {"decide"},
+            frozenset({"decide"}),
             ["September"],
         )
 
@@ -433,4 +445,7 @@ class TestAllowedModes:
     def test_two_survivors_neither_dominating_is_a_tradeoff(self) -> None:
         data = _cost(_data(), "1017", 0.0015)
         data["floors"] = [floor for floor in data["floors"] if floor["arm"] != "1017"]
-        assert (dominant_options(_input(data=data)), decision_at(_input(data=data)).modes) == ([], {"tradeoff"})
+        assert (dominant_options(_input(data=data)), decision_at(_input(data=data)).modes) == (
+            [],
+            frozenset({"tradeoff"}),
+        )
