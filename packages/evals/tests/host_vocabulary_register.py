@@ -423,6 +423,7 @@ CEILINGS: dict[str, dict[str, int]] = {
     "quick/blind.py": {},
     "quick/cli.py": {},
     "quick/contract.py": {},
+    "quick/continuation.py": {},
     "quick/files.py": {},
     "quick/graders.py": {},
     "quick/judged.py": {},

@@ -431,7 +431,8 @@ async def _build_two(
     asked_at: str = DECLARED_AT,
 ) -> tuple[Store, EvalCampaign]:
     """Billing regresses (production passes eighteen of twenty cases, the candidate six) under a 10-point floor; tone
-    improves (six to nineteen) under the cost bar the candidate misses. Asked before every run.
+    improves (six to nineteen) under the cost bar the candidate misses. Asked before every run, and filed as a host
+    files a campaign over the quick path's runs (``create_campaign``, as its operator), so it reads by the engine's test.
 
     ``labels`` keeps those aspects of the two; ``floor`` and ``bar`` declare billing's floor and tone's bar;
     ``asked_at`` asks the question then instead, after the runs where it is later than them."""
@@ -443,6 +444,62 @@ async def _build_two(
     quick = {
         label: off_loop(get_campaign, held.host.storage, held.runs[label].campaign_id, SCOPE) for label in held.runs
     }
+    if asked_at != DECLARED_AT:
+        return held, off_loop(_asked_late, held, quick, labels, floor=floor, bar=bar, asked_at=asked_at)
+    # Filed as a host files a campaign over the quick path's runs, through its front door (``create_campaign``, as its
+    # operator): the quick path's own campaigns are the only ones its bet reads, so a host's reads by the engine's
+    # test, and an adopting campaign reads the same way.
+    first = held.runs[labels[0]]
+    aspects = []
+    for label, campaign in quick.items():
+        (aspect,) = campaign.aspects
+        assert aspect.design is not None
+        bars = [COST_BAR] if label == "tone" and bar else []
+        aspects.append(
+            {
+                "label": label,
+                "template_id": aspect.template_id,
+                "margin": 10.0,
+                "design": aspect.design.model_copy(update={"merit_axes": [], "bars": bars}),
+                "run_ids": list(aspect.run_ids),
+            }
+        )
+    two = off_loop(
+        create_campaign,
+        held.host.storage,
+        {
+            "name": "support queue",
+            "subject_id": quick[labels[0]].subject_id,
+            "behavior": "support",
+            "question": QUESTION,
+            "arms": [{"label": "production", "role": "control", "from_run_ids": [first.arms["production"].run_id]}],
+            "aspects": aspects,
+            "floors": [{"aspect": "billing", "clause": RateDrop(max_points=10)}]
+            if floor and "billing" in labels
+            else [],
+        },
+        scope_id=SCOPE,
+        created_by="op",
+        profile=held.host.profile,
+        declared_at=DECLARED_AT,
+    )
+    return held, two
+
+
+def _asked_late(
+    held: Store,
+    quick: Mapping[str, EvalCampaign],
+    labels: Sequence[str],
+    *,
+    floor: bool,
+    bar: bool,
+    asked_at: str,
+) -> EvalCampaign:
+    """:func:`_build_two`'s campaign with its question asked at ``asked_at``, after its runs, while its control and its
+    margins were fixed before them. No front door files that mix (a create dates every criterion it declares at one
+    time), so it is stored as written; filed by a host (``created_by`` its operator), so it reads by the engine's test
+    as the campaign filed through the front door does, and the two differ in nothing but when each criterion was set.
+    Reads the store."""
     control = quick[labels[0]].control
     assert control is not None
     aspects = []
@@ -470,6 +527,7 @@ async def _build_two(
             "behavior": "support",
             "question": QUESTION,
             "declared_at": DECLARED_AT,
+            "created_by": "op",
             "arms": [control.model_copy(update={"label": "production", "named_at": DECLARED_AT})],
             "aspects": aspects,
             "floors": [Floor(aspect="billing", clause=RateDrop(max_points=10))]
@@ -477,8 +535,9 @@ async def _build_two(
             else [],
         }
     )
-    off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate(two.model_dump()))
-    return held, two
+    stored = EvalCampaign.model_validate(two.model_dump())
+    held.host.storage.save_campaign(stored)
+    return stored
 
 
 async def test_two_aspects_that_regress_and_improve_are_both_in_the_scorecard_the_broken_floor_first() -> None:

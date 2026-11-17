@@ -6,6 +6,93 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a quick comparison may be read again as cases are added, with nothing declared
+
+**Changed:** a comparison an `Eval` runs (two arms or more) into a store that holds the one it filed before under its
+name, in its scope, continues it: every case already run is read as it ran, only the cases appended after them run,
+and the new campaign holds every arm's runs of both. It continues only while it is the same comparison, read from
+stored facts: the same arms (name, model, levers) and control, the same repeats, graders (name and declared range,
+direction, margin and guard), guardrails, question and margin, every case run before still at its place and unedited,
+and the same judge criteria, intent and goal checks over them; an arm's new run must carry its earlier runs' variant
+key, measurement context (which holds the judge's model and settings) and graders' declarations. Anything else runs
+every case as a new comparison, and the print says which in one sentence (`quick.continuation`). An arm is known by
+its name, model and levers, and a grader by its name and declaration (a judge by its model and criteria), never by
+its code: a runner or a grader function edited under the same name continues the comparison, its new cases pooled
+with the ones run before, as the continuation's sentence says; give the eval a new name (or run it in another scope or
+store) to compare an edit afresh. A run that stopped or was cancelled (its cost cap, a replay miss, an interrupt, a
+person who stopped it after watching its results) is kept as it ran: every result it recorded counts, and running it
+again, the cap raised, runs only the cells no run recorded (a case's missing arms and repeats, as well as the cases no
+arm reached; `run.KindWiring.observed` hands the recorded ones over as done, as a take-up hands its own), and the
+comparison finishes as any other; the print counts each kind. A row that records no answer runs again, by one public
+rule the engine's take-up reads too (`kernel.result_condition.runs_again`): a cell an interrupt cut (termination
+`cancelled`), a call the account refused (`account_refused`), a model the provider did not serve (`model_unserved`).
+**An interrupt drains:** the first interrupt of a comparison starts no further cell, lets the cells in flight finish
+and record (it says so on stderr: `Interrupted: finishing 4 cells in flight; interrupt again to stop now.`), files the
+campaign and re-raises the cancel that landed (`run.LaunchGroup.stop_starting`, `RunnerOptions.stop_starting`); a
+second interrupt cuts the cells still in flight, each recorded cut, and a continuation runs them again and says how
+many cells of the comparison recorded no answer and run again, a running total with the cut ones among it, on the print
+and in the family's disclosure on the page and in the bundle (`comparisons.redrawn_sentence`), since a cut cell drawn
+afresh can lean the reading where a slow answer is a wrong one. In a terminal a second Ctrl+C that arrives as
+`KeyboardInterrupt` in the comparison's task cuts the same way, and the campaign is still filed. No recorded answer is ever drawn again.
+
+Each paired contrast on a declared range (a pass rate, a score on its scale) of a quick-path comparison is read by a
+mixture bet: the mean of ten bets staking fixed shares of the cap, hedged over the two directions
+(`stats.bounded_separation_p`, `bounded_difference_interval`, `bounded_mean_p` and `paired_equivalence` gain
+`mixture`; `separation_test` too), over the cases in an order **committed before any answer is seen**: launch by
+launch, each launch's new cases shuffled once by a digest of the case set and the case's id and appended, a case left
+unfinished keeping its place (`trials.committed_order`, recomputed from the stored runs by every reader). Each launch
+plays its cells case by case in that order, every arm and repeat of a case together, the arms in turn, four at a time
+(`RunnerOptions.case_order`, `LaunchGroup.play_cases_in`; engine runs keep the shuffle of the whole matrix). The bet
+reads the **longest complete prefix** of the order: the cases up to the first one some arm has not recorded at every
+repeat (`trials.bet_places`). Every reading is then a prefix of one sequence fixed in advance, so Ville's inequality
+bounds the bet's running maximum at every prefix: a reading taken at any time, chosen by someone who watched any
+cells, keeps the error it states, whatever each arm's speed short of a cell's deadline and whether or not it follows
+the answers. No stake depends
+on a declared count, and the quick path never draws a recorded answer twice, so a newcomer may add cases and run it
+again as often as they like, and each such verdict, p and interval keeps its error over every reading. Holm stays the correction: a bet reading's
+adjusted p holds every t reading's p at 1. The print says so in one sentence under its first line, the family's
+disclosure on the page and in the bundle says it too, and it names what it does not cover: guardrails, floors, each
+arm's own rate, cost, latency and the exit status, still read at the cases run so far (`comparisons.REREAD_SENTENCE`,
+`comparisons.read_by_bet`). It is said of a store that outlives the run, so the page is true wherever it is read; kept
+in memory (`store=":memory:"`), where nothing is left to continue, the print's line says instead that running it again
+is a new comparison (`continuation.UNKEPT_SENTENCE`). Simulations driving `Eval.run` itself, two arms passing 50% each: run again as cases are added (k = 1, adds sized
+from the data, up to five runs; seeded and pinned, since every launch there completes and the committed order depends
+on the cases alone), 32 of 1,000 newcomers separate (3.2%, 95% upper bound 4.5%) at α = 5%, where re-running every
+case on each run, read by the same bet, separates 50 of 600 (8.3%, lower bound 6.3%). Stopped by a watcher (drawn,
+since which cells a stop finds in flight depends on time): arms alike in speed (k = 3, stopped when an arm leads by
+four, up to five runs), 0 and 1 of 300 (upper bounds 1.2% and 1.8%), latency apart from the answer or slower when
+wrong on both arms; arms of different speed, arm `a` fast whatever it answers and arm `b` five times slower and four
+or twenty times slower again when wrong (k = 1, four runs in five stopped at a point apart from any answer, then
+continued once: two runs), drained: 19 and 17 of 1,000 (upper bounds 3.0% and 2.7%); with a second interrupt cutting
+in three stops of ten: 20 and 14 of 1,000 (upper bounds 3.1% and 2.3%). Read over three runs instead (800 newcomers
+each, drained), the product drew 12 and 29; at twenty times slower, 29 of 800 is 3.6% with an upper bound of 5.1%,
+which does not clear α at that size. A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
+the time where the reading it replaces did 43.6%. A quick-path comparison is one the quick path filed
+(`EvalCampaign.created_by` is `kernel.candidate_kind.QUICK_PATH_FILER`) over runs of kinds only it launches
+(`QUICK_PATH_KINDS`), no arm recording a cell in two runs, with no plan of looks (`trials.bet_places`): a campaign a host
+files over the same runs (`campaign_create`) reads as every engine campaign does, α or α/L, and no declaration opts
+one in. In such a comparison a launch that stopped is taken up once a later launch ran (`trials.taken_up`): it is not
+listed among the bundle's `incomplete_runs`, so the page and the print open on the newest launch's ending, and what it
+delivered short of its matrix is still said in `short_runs`.
+
+Quick-path comparisons read differently from this version on; a stored quick campaign reads the new way on upgrade.
+An older build reads the same stored campaign the old way, so two builds can give different verdicts on it. Readings
+move: intervals on bounded readings are wider (rung 3a's Accuracy, 20 points worse or 18 better, now reads 24 or 22),
+and rung 3b's `total` no longer reads equivalent within its 20-point margin on 30 cases.
+
+**For hosts:** nothing to do, in either order. No stored or served shape gains a field: the bet's sentence is carried
+in the family's existing `disclosure`, so a build from before this change reads every bundle, frozen analysis and
+`bundle:<aspect>` file this one writes, and this one reads every document an older build wrote. A rollback reads stored
+quick campaigns the old way again; a host's own campaigns read as before on both builds. The committed order is
+derived from the runs' stored case lists and template, so nothing is stored to carry it. A host that cancels an
+`Eval.run` comparison's task once finds the cells in flight finished and recorded, its campaign filed, its runs
+cancelled, and receives the cancel it sent; cancelled again, the cells in flight are cut. In-process additions, all
+defaulted: `run.KindWiring.observed`, `RunnerOptions.case_order` and `stop_starting`, `LaunchGroup.play_cases_in` and
+`stop_starting`, `kernel.offload.wait_through_cancellation`'s `on_cancel`, `kernel.result_condition.runs_again`, and
+`ResultView.account_refused` (the reading of `EvalResult.account_refused`, already stored; not evidence, since the
+refusal's words are the row's `infra_error`). A continuation's run records a complete matrix in its completeness while
+it holds rows only for the cells it ran: the rest are its arm's earlier runs' rows.
+
 ### evals: a scoreboard block and a run's summary read an arm's or a role's unanswered calls without raising
 
 **Fixed:** the scoreboard block (`block_render`, a written page's evidence) summed each figure's values, and an arm

@@ -47,7 +47,7 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.kernel import CONFUSION_CELL_MEASURE, GuardrailMargin, confusion_of
 from threetears.evals.kernel.host import CompletionClients, EvalHost
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore
-from threetears.evals.schema.logs import get_logger
+from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, GraderPlan, expected_label, plan_graders
 from threetears.evals.quick.levers import refuse_unusable_lever_names
@@ -58,10 +58,19 @@ from threetears.evals.quick.one_call import (
     JUDGED_CALLABLE_KIND,
     SHARED_ARM_MODEL,
     CallableArm,
+    Launched,
     callable_host,
     grade_judge_examples,
+    launch_arms,
+    launched_as_run,
     refuse_an_unusable_cap,
-    run_arms,
+)
+from threetears.evals.quick.continuation import (
+    MEMORY_WHERE,
+    design_facts,
+    earlier_comparison,
+    new_comparison_sentence,
+    same_margin,
 )
 from threetears.evals.quick.result import (
     CREATED_BY,
@@ -176,7 +185,7 @@ def open_store(store: StoreSpec) -> tuple[DocumentStore, str]:
         DEFAULT_STORE.parent.mkdir(parents=True, exist_ok=True)
         return SqliteDocumentStore(DEFAULT_STORE), str(DEFAULT_STORE)
     if isinstance(store, str) and store == MEMORY_STORE:
-        return InMemoryDocumentStore(), "memory (this process only)"
+        return InMemoryDocumentStore(), MEMORY_WHERE
     if isinstance(store, str | os.PathLike):
         path = Path(store)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -623,7 +632,92 @@ class Eval:
         # The design and the control are fixed here, in the call, before any arm runs: the campaign, filed once they
         # have, is dated now.
         declared_at = utc_now_iso()
-        summaries = await run_arms(
+        # A comparison run again under its name continues the one it filed before, where nothing but its cases' tail
+        # changed: the cases already run are read as they ran and only the cases appended run (one bet, read later).
+        earlier = None
+        said: str | None = None
+        control_index = list(self.arms).index(self.control) if self.control in self.arms else 0
+        if self.comparison:
+            earlier = await run_blocking(
+                host.blocking_executor, earlier_comparison, host, scope_id, self.name, launched_as_run
+            )
+            if earlier is not None and (
+                earlier.design
+                != design_facts(
+                    self.plan.readings,
+                    judge.guard_margins if judge is not None else {},
+                    self.measure_latency,
+                    self.question,
+                )
+                or not same_margin(earlier.margin, self.margin)
+            ):
+                earlier, said = (
+                    None,
+                    new_comparison_sentence("the graders, the guardrails, the question or its margin changed"),
+                )
+
+        def campaign(
+            launched: Launched,
+        ) -> tuple[dict[str, EvalSummary], str, dict[str, tuple[str, ...]], Callable[[], Result]]:
+            """What ``launched`` files: each arm's summary by name, the control, each arm's runs, and the filing."""
+            summaries = launched.summaries
+            keyed = {
+                arm if arm is not None else summary.candidate_model: summary
+                for arm, summary in zip(self.arms, summaries, strict=True)
+            }
+            control = self.control if self.control is not None else summaries[0].candidate_model
+            filed_levels = levels if levels else {control: {"model": summaries[0].candidate_model}}
+            runs_of = {
+                arm if arm is not None else summary.candidate_model: run_ids
+                for arm, summary, run_ids in zip(self.arms, summaries, launched.run_ids, strict=True)
+            }
+
+            def filed() -> Result:
+                return declare(
+                    host,
+                    keyed,
+                    factors,
+                    levels=filed_levels,
+                    kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
+                    control=control,
+                    scope_id=scope_id,
+                    name=self.name,
+                    behavior="classify" if self.plan.classifier is not None else "score",
+                    repetitions=self.k,
+                    created_by=CREATED_BY,
+                    guardrail_margins=[
+                        GuardrailMargin(dimension=dimension, margin=margin)
+                        for dimension, margin in (judge.guard_margins if judge is not None else {}).items()
+                    ],
+                    measure_latency=self.measure_latency,
+                    # A continued comparison's design and control were fixed when it first ran, and nothing a
+                    # continuation may change is part of them.
+                    declared_at=(
+                        earlier.declared_at
+                        if launched.continued and earlier is not None and earlier.declared_at is not None
+                        else declared_at
+                    ),
+                    question=self.question,
+                    margin=self.margin,
+                    measure_order=self.plan.readings,
+                    runs=runs_of,
+                )
+
+            return keyed, control, runs_of, filed
+
+        async def file_cancelled(launched: Launched) -> None:
+            # Filed as a stopped comparison is, and nothing more is read or asked of a model: the cancel goes on.
+            try:
+                await run_blocking(host.blocking_executor, campaign(launched)[3])
+            except Exception as exc:
+                contain(
+                    exc,
+                    log=log,
+                    what="a cancelled comparison's runs could not be filed; a run again starts a new comparison",
+                    level="error",
+                )
+
+        launched = await launch_arms(
             self.cases,
             arms,
             self.plan.scorers,
@@ -643,13 +737,21 @@ class Eval:
             subject=self.name if self.comparison else None,
             margins=self.plan.run_margins,
             measure_latency=self.measure_latency,
+            earlier=earlier,
+            control_index=control_index,
+            said=said,
+            # A comparison cancelled while it runs is filed as a stopped one is, before the cancel goes on: every result
+            # it recorded is kept, and a run again runs only the cells it never recorded.
+            on_cancel=file_cancelled if self.comparison else None,
         )
+        summaries = launched.summaries
         if (
             refused := _a_field_no_answer_carries(self.plan, self.cases, summaries, world=self.world is not None)
         ) is not None:
             # The runs measured the author's wiring, not the product: archived, as an operator retires a contaminated
-            # run, so no listing, history or frontier reads them, and no campaign is filed.
-            await run_blocking(host.blocking_executor, _archive_runs, host, summaries, scope_id)
+            # run, so no listing, history or frontier reads them, and no campaign is filed. A continued comparison's
+            # earlier runs stay as they were: only the runs this call launched are archived.
+            await run_blocking(host.blocking_executor, _archive_runs, host, launched.launched, scope_id)
             raise ValueError(refused)
         examples = None
         if judge is not None and judge.examples and summaries[0].template_id is not None:
@@ -666,39 +768,16 @@ class Eval:
                 max_cost_usd=self.max_cost_usd,
                 landed_usd=_landed_usd(summaries),
             )
-        keyed = {
-            arm if arm is not None else summary.candidate_model: summary
-            for arm, summary in zip(self.arms, summaries, strict=True)
-        }
-        control = self.control if self.control is not None else summaries[0].candidate_model
-        if not levels:
-            levels = {control: {"model": summaries[0].candidate_model}}
+        keyed, control, runs_of, filed = campaign(launched)
 
         def declared() -> Result:
-            said = disclosures + tuple(_silent_served_model(host, keyed, scope_id, self.arms))
-            result = declare(
-                host,
-                keyed,
-                factors,
-                levels=levels,
-                kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
-                control=control,
-                scope_id=scope_id,
-                name=self.name,
-                behavior="classify" if self.plan.classifier is not None else "score",
-                repetitions=self.k,
-                created_by=CREATED_BY,
-                guardrail_margins=[
-                    GuardrailMargin(dimension=dimension, margin=margin)
-                    for dimension, margin in (judge.guard_margins if judge is not None else {}).items()
-                ],
-                measure_latency=self.measure_latency,
-                declared_at=declared_at,
-                question=self.question,
-                margin=self.margin,
-                measure_order=self.plan.readings,
+            said = (
+                ((launched.said,) if launched.said is not None else ())
+                + disclosures
+                + tuple(_silent_served_model(host, keyed, scope_id, self.arms))
             )
-            closed, _loose = read_blind(judge, host, keyed, control, scope_id, self.name)
+            result = filed()
+            closed, _loose = read_blind(judge, host, keyed, control, scope_id, self.name, runs=runs_of)
             drawn.extend([closed.read.id] if closed is not None else [])
             return with_judge_examples(
                 replace(
@@ -837,10 +916,10 @@ def _refuse_a_case_a_field_grader_cannot_read(plan: GraderPlan, cases: Sequence[
                 raise ValueError(f"case {case.get('id', index + 1)}: {unreadable}{fix}") from None
 
 
-def _archive_runs(host: EvalHost, summaries: Sequence[EvalSummary], scope_id: str) -> None:
+def _archive_runs(host: EvalHost, run_ids: Sequence[str], scope_id: str) -> None:
     """Archive the runs of a refused eval: kept, and restorable, but out of every listing and reading."""
-    for summary in summaries:
-        set_run_archived(host.storage, summary.run_id, scope_id, archived=True, profile=host.profile)
+    for run_id in run_ids:
+        set_run_archived(host.storage, run_id, scope_id, archived=True, profile=host.profile)
 
 
 def _a_field_no_answer_carries(

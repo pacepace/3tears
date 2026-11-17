@@ -189,7 +189,7 @@ answers, asked before any reading is seen: its measure is the first grader, `cur
 the recorded run said: accuracy did not separate v2 from v1, and nothing else did.
 
 ```text
-compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.
+compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better.
 ```
 
 One v2 trial failed, its recorded error `the candidate raised ValidationError: 1 validation error for Invoice` on
@@ -204,11 +204,11 @@ which 3b, 3c, 3d and the grid's low-effort cells replay too.
 come out equivalent, the one verdict that says "good enough". The margin comes from the decision, fixed before any
 reading: a person checks every total before it is paid, so a prompt worse on `total` by under 20 points would still
 ship on its other fields. It is never read off the interval the run produced. 30 invoices narrow the interval on
-`total` to 19 points either side, so they can show equivalence only at a margin this wide; a tighter margin needs
-more invoices:
+`total` only to 23 points either side, wider than this margin, so they cannot show equivalence even at a margin this
+wide; a margin this wide or tighter needs more invoices:
 
 ```text
-| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within the measure's margin (margin ±20 pts) | 30 paired |
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -23 to +23 pts | cannot tell apart; immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
 ```
 
 ### Rung 3c: a guardrail, `3-invoices/guardrail.py`
@@ -225,7 +225,7 @@ it, and reads v2 against v1 in one row
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better.**
 ...
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 ...

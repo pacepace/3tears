@@ -101,6 +101,7 @@ from threetears.evals.run.runner import (
     KindFactory,
     RunCallbacks,
     RunnerOptions,
+    StoredCells,
     execute_run,
     template_as_graded,
 )
@@ -967,6 +968,10 @@ class LaunchGroup:
         self._interleaver = CellInterleaver()
         self._interleaving = False
         self.notices: list[str] = []
+        #: The order every member plays its cases in, case by case (``RunnerOptions.case_order``), once the caller
+        #: commits one (:meth:`play_cases_in`); ``None`` keeps the runner's shuffle of the whole matrix.
+        self.case_order: tuple[str, ...] | None = None
+        self._stop_starting = asyncio.Event()
 
     def disclose(self, notice: str) -> None:
         """Keep what an arm's admission tells the caller, once, for whoever admitted the group to say.
@@ -1059,6 +1064,25 @@ class LaunchGroup:
         """
         self._interleaver.withdraw(run_id)
 
+    def play_cases_in(self, order: Sequence[str]) -> None:
+        """Commit the order every member plays its cases in: case by case, each case's repeats and arms together
+        (:func:`~threetears.evals.run.runner.cell_execution_order`), before any member starts.
+
+        :param order: The case ids, in the order to play them.
+        :ptype order: Sequence[str]
+        """
+        self.case_order = tuple(order)
+
+    def stop_starting(self) -> int:
+        """Ask every member to start no further cell: the cells running finish and are recorded, and each member that
+        left a cell unstarted ends cancelled (``RunnerOptions.stop_starting``). A cancel of a member's job still cuts.
+
+        :return: How many cells the members were running when asked, which finish first.
+        :rtype: int
+        """
+        self._stop_starting.set()
+        return self._interleaver.in_flight
+
     def options_for(self, run_id: str, options: RunnerOptions) -> RunnerOptions:
         """A member's runner options as its run executes, once the group has begun.
 
@@ -1073,6 +1097,7 @@ class LaunchGroup:
         :return: The options it executes under.
         :rtype: RunnerOptions
         """
+        options = replace(options, case_order=self.case_order, stop_starting=self._stop_starting)
         if not self._interleaving:
             return options
         return replace(
@@ -1509,6 +1534,13 @@ class KindWiring:
         :attr:`LaunchSettings.max_concurrent_cells` and its matrix; the runner refuses a kind whose own
         declaration is narrower than the run, so stating more here than the kind does fails the run before
         anything is spent. Defaults to ``1``, the safe width: a launcher that says nothing runs serially.
+    :ivar observed: The cells of the run's matrix that another run of the same arm already recorded, handed as a take-up
+        hands its own done cells (:class:`~threetears.evals.run.runner.StoredCells`' ``done``): the run never runs them
+        and counts them as done in its progress and completeness, so it runs only what was never recorded (the quick
+        path's continued comparison, whose earlier launch stopped partway). Its caller leaves out the rows that record
+        no answer, by the take-up's own rule (:func:`~threetears.evals.kernel.result_condition.runs_again`), so their
+        cells run again. Every cell must be one of the run's cases at one of its repeats. ``None`` runs every cell;
+        never beside a take-up, which holds its own.
     """
 
     kind_factory: KindFactory
@@ -1524,6 +1556,7 @@ class KindWiring:
     external_rates: ExternalRateTable | None = None
     teardown: contextlib.AsyncExitStack | None = None
     max_concurrent_cells: int | None = 1
+    observed: StoredCells | None = None
 
     def __post_init__(self) -> None:
         """Refuse a width no run can execute at.
@@ -4064,6 +4097,19 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
             f"{request.template.id!r} in scope {request.scope_id!r}; a run's cases are its template's, in its scope, "
             "or its results name cases nothing in that scope resolves"
         )
+    if wiring.observed is not None and request.resuming is not None:
+        raise ValueError(
+            f"kind {kind!r}'s launcher handed cells another run recorded to a run taken up again, which holds its own"
+        )
+    if wiring.observed is not None and (
+        strays := sorted(
+            {cell.summary.test_case_id for cell in wiring.observed.done} - {case.id for case in wiring.test_cases}
+        )
+    ):
+        raise ValueError(
+            f"kind {kind!r}'s launcher counted cells of case(s) {', '.join(strays)} as recorded, which the run does "
+            "not hold; a cell counted as done is one of the run's own"
+        )
     if request.case_set is not None and (frozen := [case.id for case in wiring.test_cases]) != list(
         request.case_set.test_case_ids
     ):
@@ -4547,7 +4593,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                     budget_gate=cost_cap.check,
                     on_cost=cost_cap.record,
                     cell_sink=cells,
-                    stored=request.resuming.stored if request.resuming is not None else None,
+                    # A run taken up again holds its own cells; a run whose arm another run already observed in
+                    # part (``KindWiring.observed``) counts those as done, and runs only the rest.
+                    stored=request.resuming.stored if request.resuming is not None else wiring.observed,
                 )
             finally:
                 try:

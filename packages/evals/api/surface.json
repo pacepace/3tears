@@ -4498,7 +4498,7 @@
     },
     "threetears.evals.run.KindWiring": {
       "kind": "dataclass",
-      "signature": "KindWiring(kind_factory: KindFactory, subject: SubjectSnapshot, test_cases: Sequence[EvalTestCase], default_candidate_model: str | None = None, judge: RunJudge | None = None, simulator_model: str | None = None, payload: Mapping[str, Any] = dict(), variation_counts: VariationCounts | None = None, turn_budget_s: float | None = None, cell_timeout_s: float | None = None, external_rates: ExternalRateTable | None = None, teardown: contextlib.AsyncExitStack | None = None, max_concurrent_cells: int | None = 1)",
+      "signature": "KindWiring(kind_factory: KindFactory, subject: SubjectSnapshot, test_cases: Sequence[EvalTestCase], default_candidate_model: str | None = None, judge: RunJudge | None = None, simulator_model: str | None = None, payload: Mapping[str, Any] = dict(), variation_counts: VariationCounts | None = None, turn_budget_s: float | None = None, cell_timeout_s: float | None = None, external_rates: ExternalRateTable | None = None, teardown: contextlib.AsyncExitStack | None = None, max_concurrent_cells: int | None = 1, observed: StoredCells | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.run.launch_as_group": {
@@ -4883,7 +4883,7 @@
     },
     "threetears.evals.run.RunnerOptions": {
       "kind": "dataclass",
-      "signature": "RunnerOptions(judge_concurrency: int = 4, cell_timeout_s: float = 600.0, concurrent_eval_jobs_probe: Callable[[], int] | None = None, external_rates: ExternalRateTable | None = None, metered_calls: MeteredCallLedger | None = None, cell_order_rng: random.Random | None = None, cell_order_seed: str | None = None, candidate_kinds: Mapping[str, KindFactory] = dict(), max_concurrent_cells: int = 1, cell_executor: CellExecutor | None = None)",
+      "signature": "RunnerOptions(judge_concurrency: int = 4, cell_timeout_s: float = 600.0, concurrent_eval_jobs_probe: Callable[[], int] | None = None, external_rates: ExternalRateTable | None = None, metered_calls: MeteredCallLedger | None = None, cell_order_rng: random.Random | None = None, cell_order_seed: str | None = None, candidate_kinds: Mapping[str, KindFactory] = dict(), max_concurrent_cells: int = 1, cell_executor: CellExecutor | None = None, case_order: Sequence[str] | None = None, stop_starting: asyncio.Event | None = None)",
       "tier": "host-contract"
     },
     "threetears.evals.run.RunResumption": {

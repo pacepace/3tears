@@ -318,6 +318,8 @@ compare = Eval(
   against zero. A question of "no worse than v1" writes its own margin, in the measure's units:
   `Eval(question=..., margin=0.05)` is 5 points. Leave the question out and the readings are leads: the page says
   "Exploratory comparison." once and leads on the same first grader.
+- **`name=`** names the comparison: run it again under the same name, into the same store and scope, and it continues
+  (only what it has not recorded runs); a new name starts a fresh one.
 - **Each eval gets its own `Model`.** A replay serves each recorded call once per model, so two evals in one process
   never share one: `compare.py`, `margin.py` and `guardrail.py` each build one over the same recording, `grid.py`
   builds two (one per effort, each over its own recording), `ci.py` runs `guardrail.py`'s eval on its model, and
@@ -326,7 +328,7 @@ compare = Eval(
 What it printed (made at `max_tokens=8192`), first lines and errors:
 
 ```text
-compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.
+compare: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better.
 v1 (control): 90 result(s): 90 scored
   Number score: 83%, 75 of 90 trials
   ...
@@ -346,6 +348,45 @@ the corrected interval on that gain reaches below zero. One v2 trial failed on m
 counts against v2, stated, never excluded: a model's unusable answer is the candidate's failure.
 [Reading reports](reading-reports.md#reading-a-comparison) explains each verdict.
 
+**Adding cases and reading again.** When the evidence cannot tell the arms apart, add invoices to the end of
+`invoices.jsonl` and run `compare.py` again, as often as you like, with nothing declared first. The line under the
+first line says what that allows:
+
+```text
+Where its runs are kept in a store that outlives the run (a file, or a host's), add cases to the end and run it again into that store as often as you like: each comparison of the arms on a pass rate, or on a score within its declared range, keeps its error however many times it is read, and a single read gives up some power for that; guardrails, floors, each arm's own rate, cost, latency and the exit status are read at the cases run so far, so reading them again is not covered.
+```
+
+- **Why it holds.** Run again into the same store, the comparison continues: the invoices already run are read as they
+  ran, and only the ones you added run. The print says so, last: `Continues the comparison run before under this
+  name: ...`. Each pass rate, and each score on its declared range, is read by a bet whose stakes depend on no count
+  of cases declared ahead: a mixture of fixed betting fractions over the cases in an order fixed before any answer. A
+  reading after you add cases is the same bet read later, so stopping when it first tells the arms apart keeps the
+  error it states.
+- **What starts a new comparison.** Change an arm's name, model or levers, the control, a grader's name or what it
+  declares (its range, direction, margin or guard), a judge's model or criteria, the question or its margin, or the
+  repeats, or edit, move or remove an invoice already run, and every case runs again as a new comparison; the print
+  names what changed (`A new comparison: ...`).
+- **What does not.** An arm is known by its name, model and levers, and a grader by its name and declaration (a judge
+  by its model and criteria), never by its code. A runner or a grader function edited under the same name continues
+  the comparison, its new cases pooled with the ones run before, as the continuation's sentence says: after changing a
+  prompt or a grader's code, give the eval a new `name=` (or another scope or store) to compare it afresh. A store kept
+  in memory (`store=":memory:"`) keeps nothing between runs, so each run there is a new comparison, and the line under
+  the first line says so in place of the one above.
+- **A run that stopped.** A run stopped by its cost cap, a replay miss or an interrupt is kept as it ran: every answer
+  it recorded counts, and running it again (with the cap raised) runs only what it never recorded, a case's missing
+  arms and repeats as well as the cases it never reached, and the comparison finishes. Interrupt it once (Ctrl+C) and
+  it starts no further case, lets the cells in flight finish, and keeps them; interrupt it again to stop at once, and
+  the cells it cut run again next time, which the print counts.
+- **Why a stop keeps the error.** The order the cases are read in is fixed before any answer: each run's new cases are
+  shuffled once and appended. Each run plays its cases one at a time in that order, every arm and repeat of a case
+  together, and the bet reads the longest run of cases from the start of the order that are complete on every arm and
+  repeat. Every reading is that one sequence read further, so stopping whenever you like, after watching whatever you
+  like, keeps the error it states, however fast or slow each arm answers, short of a cell's deadline.
+- **What it costs.** Read once, it tells the arms apart a little later than a test fixed for that many cases would:
+  its intervals are somewhat wider. That is the price of reading again freely.
+- **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at
+  the cases run so far, each time, so re-reading them as cases are added is not covered.
+
 ## Rung 3b: a margin, so a reading can be equivalent
 
 [`margin.py`](../examples/3-invoices/margin.py) is 3a with a margin on `total`:
@@ -362,7 +403,7 @@ counts against v2, stated, never excluded: a model's unusable answer is the cand
 What its report said of `total`:
 
 ```text
-| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -19 to +19 pts | v2 and v1 equivalent, within the measure's margin (margin ±20 pts) | 30 paired |
+| Total score | 99% (88 to 99.9) | 99% (88 to 99.9) | 0 pts | -23 to +23 pts | cannot tell apart; immaterial: the observed delta is inside the margin of ±20 pts on Total score, which does not show the true difference is that small | 30 paired |
 ```
 
 **The lesson: a margin comes from the decision, and equivalence costs cases.** The margin is the largest difference
@@ -370,9 +411,10 @@ that would not change what you do, fixed before the readings from what the decis
 every total before it is paid, so a prompt worse on `total` by less than 20 points would still ship on its other
 fields. It is never read off the interval a run produced: a margin chosen to fit the readings it judges is criterion
 selection ([Measuring soundly](measuring-soundly.md#declare-the-campaign-its-question-arms-and-aspects)), and it makes
-"equivalent" a foregone conclusion. The cost is honest too: 30 invoices narrow v2's interval on `total` to 19 points
-either side, so they can show equivalence only at a margin this wide. A decision that needs a 5-point margin needs
-many more invoices, and with too few the reading is "cannot tell apart", never equivalent.
+"equivalent" a foregone conclusion. The cost is honest too: 30 invoices narrow v2's interval on `total` only to 23
+points either side, wider than this margin, so they cannot show equivalence even at a margin this wide. A decision
+that needs a 5-point margin needs many more invoices, and with too few the reading is "cannot tell apart", never
+equivalent.
 [Measuring soundly](measuring-soundly.md#how-many-cases-how-many-repeats) says how many cases a question needs.
 
 ## Rung 3c: a guardrail, decided on its own
@@ -395,7 +437,7 @@ def no_invented_total(case: dict, out: Invoice) -> bool:
 What the recording printed, first lines, errors and the last line, which says why it exits 4:
 
 ```text
-invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.
+invoices: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better. v2 may do worse than v1 on the No invented total score guardrail.
 v1 (control): 90 result(s): 90 scored
   Number score: 83%, 75 of 90 trials
   ...
@@ -404,7 +446,7 @@ v2: 90 result(s): 89 scored, 1 failed by the candidate
   ...
   error: case c02: the candidate raised ValidationError: 1 validation error for Invoice Invalid JSON: expected `:` at line 1 column 7 ...
 ...
-exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
+exit 4: Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better. The gate failed on guardrail No invented total score, v2 vs v1: undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it).
 ```
 
 And what the report (`.evals/reports/invoices/report.md`, the same page as `report.html`) said: its first screen's
@@ -415,10 +457,10 @@ guardrail's row, and the trials' census:
 # invoices
 "Does v2 read the currency an invoice charges in right more often than v1?"
 v1 vs v2
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better.**
 **v2 may do worse than v1 on the No invented total score guardrail on invoices, by more than its 2-point margin. Of the 30 cases that could fail it, v2 failed 1 and v1 failed 1, too few to settle it.**
 | invoices | v2 | 30 | 73 of 90 trials | 88 of 90 trials | +17 pts | -1 to +26 | — | cannot tell apart |
-| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -8 to +35 pts | cannot tell apart | 30 paired |
+| Number score | 83% (67 to 93) | 100% (88 to 100) | +17 pts | -13 to +43 pts | cannot tell apart | 30 paired |
 | No invented total score | v2 | 99% | 99% | 30 paired | 0 pts | -13 to +13 pts | 2 pts | undecided: v2 may be worse than v1 by more than the margin (the interval reaches both sides of -2 pts, the declared margin, so the arm is shown neither within it nor beyond it) |
 180 trials ran. Of them 161 passed and 19 failed.
 ```

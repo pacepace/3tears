@@ -79,6 +79,8 @@ from threetears.evals.kernel.host import CANDIDATE_MODEL_LEVER, EvalHost
 from threetears.evals.kernel.text_block import one_line
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle, ArmScoreboard
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
+from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet
+from threetears.evals.quick.continuation import MEMORY_WHERE, UNKEPT_SENTENCE
 from threetears.evals.analysis.bundle.trials import pass_count, trial_order
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.confusion import confusion_matrix, label_statistics
@@ -117,11 +119,14 @@ from threetears.evals.quick.blind import (
 from threetears.evals.run.blind_review import REVIEWER_PURPOSE, plan_review
 from threetears.evals.quick.judged import BorrowedJudgeClient, Judge, JudgeExamples, judge_client
 from threetears.evals.quick.one_call import ARM_LEVER, CALLABLE_KIND
+from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER
 from threetears.evals.run import get_result_trace, list_results
 from threetears.evals.analysis.style import measure_name, measure_name_of
 
-#: Who an eval's campaign and its control are recorded as created by, unless the caller says.
-CREATED_BY = "eval"
+#: Who an eval's campaign and its control are recorded as created by, unless the caller says: the quick path's own
+#: name, which the analysis reads a quick-path comparison's origin by
+#: (:data:`~threetears.evals.kernel.candidate_kind.QUICK_PATH_FILER`).
+CREATED_BY = QUICK_PATH_FILER
 
 
 #: The factors that are levers of the engine or the host, never of the callable kind: no kind prefix names them.
@@ -457,11 +462,12 @@ class Result:
         kept_at = None if kept is None else Path(kept)
 
         def recorded() -> tuple[BlindRead, tuple[CalibrationRating, ...], list[EvalResult], list[BlindAnswer]]:
-            closed, outside = read_blind(judge, self.host, self.arms, self.control, self.scope_id, self.name)
+            runs = self._arm_runs()
+            closed, outside = read_blind(judge, self.host, self.arms, self.control, self.scope_id, self.name, runs=runs)
             if closed is None:
                 raise ValueError("the stored answers no longer hold a judged answer to read blind")
             drawn = closed.read
-            results = _results_of(self.host, self.arms, self.scope_id)
+            results = _results_of(self.host, self.arms, self.scope_id, runs)
             if kept_at is None or not kept_at.is_file():
                 return drawn, outside, results, []
             # Only answers on this very draw are read back: an answer to another draw is asked for again.
@@ -526,6 +532,18 @@ class Result:
 
         return await run_blocking(self.host.blocking_executor, closed)
 
+    def _arm_runs(self) -> dict[str, list[str]]:
+        """Each arm's runs, as its campaign holds them, oldest first: one, or a continued comparison's every run
+        (:func:`~threetears.evals.quick.one_call.launch_arms`). Reads the store."""
+        campaign = get_campaign(self.host.storage, self.campaign_id, self.scope_id)
+        arm_of = {variant: arm for arm, variant in self.arm_variants.items()}
+        runs: dict[str, list[str]] = {arm: [] for arm in self.arms}
+        for run_id in campaign.aspects[0].run_ids:
+            arm = arm_of.get(variant_key_of_run(list_results(self.host.storage, run_id, self.scope_id)) or "")
+            if arm is not None:
+                runs[arm].append(run_id)
+        return {arm: held or [self.arms[arm].run_id] for arm, held in runs.items()}
+
     # --- the report --------------------------------------------------------------------------------------------------
 
     def __str__(self) -> str:
@@ -562,7 +580,7 @@ class Result:
                 ]
             )
         one_arm = len(self.arms) == 1
-        lines = self._stopped_lines() or [self._verdict_line()]
+        lines = self._stopped_lines() or [self._verdict_line(), *self._reread_line()]
         # How far its judge can be trusted is read with the verdict: against people's labels, then on its examples.
         judged = self.calibration_lines() + (self.judge_examples.lines() if self.judge_examples is not None else [])
         if one_arm:
@@ -786,6 +804,19 @@ class Result:
         guardrail an arm is not shown safe on. The page, its lead, this line and the exit line say one sentence.
         """
         return f"{self.name}: {self._verdict().text}"
+
+    def _reread_line(self) -> list[str]:
+        """What a reader may do with the comparison the first line reads, one line under it: read it again as cases are
+        added (:data:`~threetears.evals.analysis.bundle.comparisons.REREAD_SENTENCE`, its family's disclosure on the
+        page), where the mixture bet read its family
+        (:func:`~threetears.evals.analysis.bundle.comparisons.read_by_bet`) and its runs are kept in a store a later run
+        continues it from; where they were kept in memory, that running it again is a new comparison
+        (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`), which is what the page's sentence, said of a
+        store that keeps the runs, comes to there. Empty for one arm, or a family no bet read."""
+        families = self.report.bundle.multiple_comparisons.families
+        if not any(read_by_bet(family) for family in families):
+            return []
+        return [UNKEPT_SENTENCE if self.store == MEMORY_WHERE else REREAD_SENTENCE]
 
     def _stopped_lines(self) -> list[str]:
         """The first lines of the print of a run that did not finish, in place of its verdict; empty when every arm's
@@ -1161,6 +1192,7 @@ class Result:
                 question=asked,
                 margin=held,
                 measure_order=self.grader_readings,
+                runs=self._arm_runs(),
             )
             return with_judge_examples(
                 replace(
@@ -1403,13 +1435,31 @@ def _exclusion_causes(summary: EvalSummary) -> list[str]:
     return [f"{count} x {error}" for error, count in counted.items()]
 
 
-def _results_of(host: EvalHost, arms: Mapping[str, EvalSummary], scope_id: str) -> list[EvalResult]:
-    """Every arm's results, arm by arm. Reads the store."""
-    return [result for summary in arms.values() for result in list_results(host.storage, summary.run_id, scope_id)]
+def _results_of(
+    host: EvalHost,
+    arms: Mapping[str, EvalSummary],
+    scope_id: str,
+    runs: Mapping[str, Sequence[str]] | None = None,
+) -> list[EvalResult]:
+    """Every arm's results, arm by arm: each arm's runs in ``runs`` (a continued comparison's every run), else its
+    summary's one run. Reads the store."""
+    return [
+        result
+        for arm, summary in arms.items()
+        for run_id in (runs or {}).get(arm, (summary.run_id,))
+        for result in list_results(host.storage, run_id, scope_id)
+    ]
 
 
 def read_blind(
-    judge: Judge | None, host: EvalHost, arms: Mapping[str, EvalSummary], control: str, scope_id: str, name: str
+    judge: Judge | None,
+    host: EvalHost,
+    arms: Mapping[str, EvalSummary],
+    control: str,
+    scope_id: str,
+    name: str,
+    *,
+    runs: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[BlindClose | None, tuple[CalibrationRating, ...]]:
     """Draw the run's blind read and read the labels ``judge`` names against it. Reads the store.
 
@@ -1425,7 +1475,7 @@ def read_blind(
     """
     if judge is None:
         return None, ()
-    results = _results_of(host, arms, scope_id)
+    results = _results_of(host, arms, scope_id, runs)
     evidence = {}
     for result in results:
         trace = get_result_trace(host.storage, result) if result.has_trace else None
@@ -1437,7 +1487,11 @@ def read_blind(
         evidence,
         judge.dims,
         [
-            BlindArm(key=arm, role="control" if arm == control else "candidate", run_ids=[arms[arm].run_id])
+            BlindArm(
+                key=arm,
+                role="control" if arm == control else "candidate",
+                run_ids=list((runs or {}).get(arm, (arms[arm].run_id,))),
+            )
             for arm in chosen
         ],
         scope_id=scope_id,
@@ -1597,6 +1651,7 @@ def declare(
     question: str | None = None,
     margin: float | None = None,
     measure_order: Sequence[str] = (),
+    runs: Mapping[str, Sequence[str]] | None = None,
 ) -> Result:
     """File the arms' runs as one campaign, one axis per factor, designate ``control``, and read its report.
 
@@ -1607,6 +1662,10 @@ def declare(
     against zero. ``question`` ``None`` asks none, and a margin without one is refused. ``measure_order`` is each
     grader's measure in the order the eval lists them (:attr:`Result.grader_readings`), filed on the aspect's design so
     the campaign's page leads on the first of them, as the printed line does; empty files none.
+
+    ``runs`` is each arm's runs, oldest first, where an arm reads more than its summary's one: a comparison continued
+    over cases appended to it (:func:`~threetears.evals.quick.one_call.launch_arms`), whose every run the campaign
+    holds. ``None`` files each summary's one run.
 
     ``declared_at`` is when the caller fixed the design and the control, where that was before its arms ran: an eval
     fixes both in the call that launches them, so the campaign filed once they have run is written once, dated then
@@ -1654,7 +1713,7 @@ def declare(
     # on the pass rate is filed only where the eval's author wrote one; none is ever assumed.
     aspect: dict[str, Any] = {
         "label": aspect_label_for(behavior),
-        "run_ids": [summary.run_id for summary in arms.values()],
+        "run_ids": [run_id for arm, summary in arms.items() for run_id in (runs or {}).get(arm, (summary.run_id,))],
         "design": design,
     }
     refuse_an_unusable_margin(margin, question)
@@ -1668,7 +1727,7 @@ def declare(
         {
             "label": shown.get(arm, arm),
             "role": "control" if arm == control else "candidate",
-            "from_run_ids": [arms[arm].run_id],
+            "from_run_ids": list((runs or {}).get(arm, (arms[arm].run_id,))),
         }
         for arm in ordered
         if arm == control or arm in shown

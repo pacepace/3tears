@@ -42,6 +42,7 @@ import asyncio
 import inspect
 import json
 import math
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
@@ -49,8 +50,10 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
+from threetears.evals.kernel.candidate_kind import CALLABLE_KIND, JUDGED_CALLABLE_KIND
 from threetears.evals.kernel.scoring import measure_catalog_of
+from threetears.evals.kernel.metrics import declaration_of
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.kernel import default_job_timeout
 from threetears.evals.kernel import (
@@ -105,7 +108,7 @@ from threetears.evals.kernel.host import (
 from threetears.evals.schema import NominalScale, SubjectSnapshot, SweepableValue, TraceSink
 from threetears.evals.schema import WorldPlacement
 from threetears.evals.kernel.host.sweepables import CORE_ROLES, CORE_SWEEPABLES
-from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_run
+from threetears.evals.analysis.summary import CaseResult, EvalSummary, RoleSpend, summarize_run, summarize_runs
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.run import (
     CellContext,
@@ -118,6 +121,8 @@ from threetears.evals.run import (
     LaunchGroup,
     LaunchSettings,
     RunJudge,
+    StoredCell,
+    StoredCells,
     TemplateField,
     UnknownSubject,
     build_judge_context,
@@ -127,6 +132,7 @@ from threetears.evals.run import (
     launch_as_group,
     launch_run,
     list_results,
+    set_run_archived,
     start_run,
 )
 from threetears.evals.run.authoring import active_judge_config_in, refuse_undeclared_judges, refuse_unsupplied_world
@@ -140,6 +146,16 @@ from threetears.evals.kernel.out_of_run import OutOfRunBudget
 from threetears.evals.kernel.runner_spend import cell_spend, spent
 from threetears.evals.kernel.usage_capture import blended_cost
 from threetears.evals.quick.answer import Answer, unwrap_answer
+from threetears.evals.quick.continuation import (
+    EarlierComparison,
+    canonical_json,
+    continued_sentence,
+    launched_as,
+    new_comparison_sentence,
+)
+from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.analysis.bundle.trials import committed_order
+from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExamples, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
@@ -176,12 +192,6 @@ ExpectedLabel = Callable[[Mapping[str, Any]], str]
 #: (``accuracy``). No scorer may take one: it would collide with a classifier's own measure, or be read
 #: under the core descriptor of a measure it is not.
 _CLASSIFIER_NAMES = frozenset({MATCH_MEASURE, CONFUSION_CELL_MEASURE, ACCURACY_MEASURE})
-
-#: The kind :class:`~threetears.evals.quick.contract.Eval` launches, as its template names it.
-CALLABLE_KIND = "callable"
-
-#: The kind :class:`~threetears.evals.quick.contract.Eval` launches when it is handed a judge: the callable, its answers judged as documents.
-JUDGED_CALLABLE_KIND = "callable-judged"
 
 #: The host :func:`callable_host` builds, by the id the engine prints in its logs and errors.
 CALLABLE_HOST_ID = "eval"
@@ -596,6 +606,14 @@ def _arm_of_run(run: EvalRun) -> str:
     """The arm a run is, by name: what its launch stated, else its candidate model's label."""
     named = (run.host_payload or {}).get(_ARM_PAYLOAD_KEY)
     return named if isinstance(named, str) and named else run.candidate_model
+
+
+def launched_as_run(run: EvalRun) -> tuple[str | None, str, str]:
+    """How a stored run's arm was launched, as a continued comparison compares it
+    (:func:`~threetears.evals.quick.continuation.launched_as`): the arm's name its launch stated on the run's payload
+    under this module's key (``None`` for an arm named by its model), its candidate model and its levers."""
+    named = (run.host_payload or {}).get(_ARM_PAYLOAD_KEY)
+    return launched_as(named if isinstance(named, str) and named else None, run.candidate_model, run.overlays)
 
 
 def _arm_levels(run: EvalRun) -> dict[str, SweepableValue]:
@@ -1514,6 +1532,12 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
         host.storage.save_template(
             template if stored is None else template.model_copy(update={"created_at": stored.created_at})
         )
+    _save_cases_unless_unchanged(host, test_cases)
+
+
+def _save_cases_unless_unchanged(host: EvalHost, test_cases: Sequence[EvalTestCase]) -> None:
+    """Store each case the store does not already hold unchanged (:func:`_save_unless_unchanged`'s cases): a stored
+    case's ``name`` is fill-only, and one that differs in anything but its stamps is saved with its ``created_at``."""
     for test_case in test_cases:
         kept = host.storage.load_test_case(test_case.id, test_case.scope_id)
         if kept is not None and kept.name is not None:
@@ -1524,6 +1548,131 @@ def _save_unless_unchanged(host: EvalHost, template: EvalTemplate, test_cases: S
             host.storage.save_test_case(
                 test_case if kept is None else test_case.model_copy(update={"created_at": kept.created_at})
             )
+
+
+def _what_changed(
+    host: EvalHost,
+    earlier: EarlierComparison,
+    keys: Sequence[tuple[str | None, str, str]],
+    control_index: int,
+    k: int,
+    declared: str,
+    cases: Sequence[EvalTestCase],
+    names: Sequence[str],
+    first_address: str,
+) -> str | None:
+    """What makes this launch another comparison than ``earlier``, as a clause; ``None`` where it continues it.
+
+    ``declared`` is how this launch's host declares its measures and margins, as a run freezes them
+    (``EvalRun.declared_measures``, ``declared_margins``). ``cases`` are this launch's cases as ``earlier``'s case set
+    would store them, each at its place, and
+    ``first_address`` the address of the cases ``earlier`` first ran, read off this launch's (``_template_id``, which
+    covers their content, labels, seeds, rubric, intent and goal checks). Every case ``earlier`` ran must be stored at
+    its place as this launch holds it, and a case appended must not be stored there otherwise (another comparison in
+    the scope appended other cases to the same case set). Reads the store.
+    """
+    if k != earlier.k:
+        return "the repeats per case changed"
+    if set(keys) != set(earlier.arms) or len(keys) != len(earlier.arms):
+        return "the arms changed"
+    if keys[control_index] != earlier.control:
+        return "the control changed"
+    if any(arm.declared != declared for arm in earlier.arms.values()):
+        return "a grader's margin, range or guard changed"
+    if len(cases) < len(earlier.case_ids):
+        return "a case run before was removed"
+    unrun = set(earlier.unrun)
+    for index, case in enumerate(cases):
+        kept = host.storage.load_test_case(case.id, case.scope_id)
+        held = index < len(earlier.case_ids)
+        if held and earlier.case_ids[index] != case.id:
+            return "the cases run before are not in the order they ran"
+        if (held or kept is not None) and (
+            kept is None
+            or kept.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS)
+            != case.model_dump(mode="json", exclude=_LIFECYCLE_STAMPS)
+        ):
+            if held and case.id in unrun:
+                return f"case {names[index]}, which the run that stopped held, was edited, moved or removed"
+            if held:
+                return f"case {names[index]} was edited, moved or removed"
+            return f"another comparison in this scope added another case {names[index]} to the same cases"
+    if first_address != earlier.template_id:
+        return "the judge's rubric, the intent or the goal checks changed"
+    return None
+
+
+def _reads_otherwise(
+    host: EvalHost,
+    earlier: EarlierComparison,
+    keys: Sequence[tuple[str | None, str, str]],
+    runs: Sequence[EvalRun],
+    scope_id: str,
+) -> bool:
+    """Whether a run launched to continue ``earlier`` is not its arm's earlier runs measured alike: another variant
+    key, another measurement context (which holds the graders' and the judge's definitions), or other declarations
+    of the graders. Reads the store."""
+    for key, run in zip(keys, runs, strict=True):
+        arm = earlier.arms[key]
+        stored = host.storage.load_eval_run(run.id, scope_id)
+        if stored is None:
+            return True
+        declared = canonical_json(
+            {
+                "measures": {
+                    name: declared.model_dump(mode="json") for name, declared in stored.declared_measures.items()
+                },
+                "margins": stored.declared_margins,
+            }
+        )
+        # A run whose every cell its arm's earlier runs recorded holds no result to read a variant from.
+        variant = variant_key_of_run(list_results(host.storage, run.id, scope_id))
+        if (
+            (variant is not None and variant != arm.variant_key)
+            or stored.context_key != arm.context_key
+            or declared != arm.declared
+        ):
+            return True
+    return False
+
+
+def _recorded_cells(
+    host: EvalHost, run_ids: Sequence[tuple[str, ...]], cases: set[str], scope_id: str
+) -> list[StoredCells | None]:
+    """Each arm's cells of ``cases`` its runs ``run_ids`` recorded, as the done cells its continuation's run counts and
+    never runs again (``KindWiring.observed``); ``None`` for an arm with none. A row that records no answer is not
+    recorded and its cell runs again, by the take-up's own rule
+    (:func:`~threetears.evals.kernel.result_condition.runs_again`): a cell an interrupt cut, a call the account refused,
+    a model the provider did not serve.
+
+    :param host: The host whose store holds the runs.
+    :ptype host: EvalHost
+    :param run_ids: Each arm's earlier runs, in arm order.
+    :ptype run_ids: Sequence[tuple[str, ...]]
+    :param cases: The cases the continuation runs.
+    :ptype cases: set[str]
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :return: Each arm's recorded cells, in arm order.
+    :rtype: list[StoredCells | None]
+    """
+    observed: list[StoredCells | None] = []
+    for held in run_ids:
+        done = tuple(
+            StoredCell.from_result(result)
+            for run_id in held
+            for result in list_results(host.storage, run_id, scope_id)
+            if result.test_case_id in cases and not runs_again(result)
+        )
+        observed.append(StoredCells(done=done) if done else None)
+    return observed
+
+
+def _archive_run_ids(host: EvalHost, run_ids: Sequence[str], scope_id: str) -> None:
+    """Archive runs launched to continue a comparison they could not: kept, and restorable, but out of every listing
+    and reading."""
+    for run_id in run_ids:
+        set_run_archived(host.storage, run_id, scope_id, archived=True, profile=host.profile)
 
 
 def _seed_judge_examples(
@@ -1855,6 +2004,9 @@ class _WiredArm:
     #: Whether the caller named ``model``. One it did not is launched as the kind's default, so the run records
     #: its model inherited rather than chosen, and no surface reads the label as a model moved off production.
     named: bool = True
+    #: The cells of its run's cases this arm's earlier runs recorded (a continued comparison's), which its run counts
+    #: as done and never runs again (``KindWiring.observed``); ``None`` runs every cell.
+    observed: StoredCells | None = None
 
     @property
     def requested_model(self) -> str | None:
@@ -1948,6 +2100,7 @@ def _launch_host(
                 default_candidate_model=None if arm.named else arm.model,
                 # What every kind the factory builds declares — the callable kind's, which a world cell adopts.
                 max_concurrent_cells=CallableKind.max_concurrent_cells,
+                observed=arm.observed,
             ),
         )
 
@@ -2160,7 +2313,30 @@ def _template_intent(arms: Sequence[CallableArm], graded_by: str, intent: str | 
     return f"Answer each case so that {graded_by} the answer well.", f"a generic default: {lacking}"
 
 
-async def run_arms(
+@dataclass(frozen=True)
+class Launched:
+    """What :func:`launch_arms` launched and reads, arm by arm in arm order.
+
+    :ivar summaries: Each arm's summary over every run it reads: one run, or a continued comparison's runs as one.
+    :ivar run_ids: Each arm's runs, oldest first.
+    :ivar launched: The runs this call launched, which a refusal after the run archives; none where a continued
+        comparison had no case to add.
+    :ivar continued: Whether it continued an earlier comparison.
+    :ivar said: The sentence saying how the comparison ran (:func:`~threetears.evals.quick.continuation.continued_sentence`
+        or :func:`~threetears.evals.quick.continuation.new_comparison_sentence`); ``None`` with no earlier comparison.
+    :ivar cancelled: Whether the call was cancelled while its runs ran: its runs are settled cancelled, every result
+        they recorded kept, and it is handed to the caller's ``on_cancel`` to file before the cancel goes on.
+    """
+
+    summaries: list[EvalSummary]
+    run_ids: list[tuple[str, ...]]
+    launched: list[str]
+    continued: bool = False
+    said: str | None = None
+    cancelled: bool = False
+
+
+async def launch_arms(
     cases: Sequence[Mapping[str, Any]],
     arms: Sequence[CallableArm],
     scorers: Sequence[Scorer] = (),
@@ -2179,8 +2355,24 @@ async def run_arms(
     subject: str | None = None,
     margins: Mapping[str, float] | None = None,
     measure_latency: bool = False,
-) -> list[EvalSummary]:
+    earlier: EarlierComparison | None = None,
+    control_index: int = 0,
+    said: str | None = None,
+    on_cancel: Callable[[Launched], Awaitable[None]] | None = None,
+) -> Launched:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
+
+    **Continuing a comparison.** With ``earlier``, the comparison the quick path filed last under this eval's name
+    (:func:`~threetears.evals.quick.continuation.earlier_comparison`), the launch continues it where it is the same
+    comparison: the same arms (``control_index`` the control), the same repeats, and every case it ran still at its
+    place, unedited, with the same rubric, intent and goal checks over them. Then only the cells no launch recorded
+    run, into its case set: each case a launch of it that stopped or was cancelled left short on some arm or repeat
+    (:attr:`~threetears.evals.quick.continuation.EarlierComparison.unfinished`), its recorded cells counted as done so
+    only its missing ones run, then the cases appended; and each arm reads its earlier runs with its new one. A
+    recorded cell is never run again, so every result a stopped launch observed counts. A new run whose variant key, measurement
+    context or graders' declarations differ from its arm's earlier runs is archived, and every case runs again. Where
+    it is not the same comparison, every case runs, and :attr:`Launched.said` names what changed. ``said`` is a
+    sentence the caller found already (a design that changed), which the launch keeps.
 
     The arms share the template, the case set, the host and the launch: one launch group, every arm's run prepared
     (every refusal made) before any starts, and all of them started together
@@ -2232,6 +2424,11 @@ async def run_arms(
     :ptype margins: Mapping[str, float] | None
     :param measure_latency: Declare latency under test: the cases run one at a time.
     :ptype measure_latency: bool
+    :param on_cancel: Handed what the runs recorded (:attr:`Launched.cancelled` set) when a cancel lands while they
+        run, once they are settled cancelled and before the cancel goes on, for the caller to file (a comparison's:
+        the results it observed are kept); waited for to its end even through a second cancel, and then the cancel
+        that landed is re-raised. ``None`` re-raises it once the runs are settled.
+    :ptype on_cancel: Callable[[Launched], Awaitable[None]] | None
     :return: Each arm's finished run's summary, read back from the store, in arm order.
     :rtype: list[EvalSummary]
     :raises ValueError: The cases, the arms, the graders, the cap or the world refused, each naming why; a host of the
@@ -2274,9 +2471,8 @@ async def run_arms(
         models.append(model)
     graded_by = "every scorer grades" if judge is None else "the judge and every scorer grade"
     template_intent, intent_source = _template_intent(arms, graded_by, intent)
-    template_id = _template_id(
-        addressed, labels, judge, seeds, goal_checks, intent=template_intent if judge is not None else None
-    )
+    addressed_intent = template_intent if judge is not None else None
+    template_id = _template_id(addressed, labels, judge, seeds, goal_checks, intent=addressed_intent)
     template = EvalTemplate(
         id=template_id,
         scope_id=scope_id,
@@ -2286,21 +2482,85 @@ async def run_arms(
         rubric=list(judge.dims) if judge is not None else [],
         goal_state_checks=goal_checks,
     )
-    test_cases = [
-        EvalTestCase(
-            id=f"{template_id}-{index}",
-            scope_id=scope_id,
-            template_id=template_id,
-            stratum=None if strata is None else strata[index],
-            # The author's own id names the case on the page; a case called by its position gets no name there.
-            name=names[index] if "id" in plain_cases[index] else None,
-            variation_params=stored_variation(case),
-            host_payload=_case_payload(
-                case, None if labels is None else labels[index], None if seeds is None else seeds[index]
-            ),
+
+    def cases_of(template_id: str) -> list[EvalTestCase]:
+        """The cases as the case set ``template_id`` stores them, each at its place."""
+        return [
+            EvalTestCase(
+                id=f"{template_id}-{index}",
+                scope_id=scope_id,
+                template_id=template_id,
+                stratum=None if strata is None else strata[index],
+                # The author's own id names the case on the page; a case called by its position gets no name there.
+                name=names[index] if "id" in plain_cases[index] else None,
+                variation_params=stored_variation(case),
+                host_payload=_case_payload(
+                    case, None if labels is None else labels[index], None if seeds is None else seeds[index]
+                ),
+            )
+            for index, case in enumerate(stimulus)
+        ]
+
+    test_cases = cases_of(template_id)
+    # A comparison continued: its case set, its runs read again, and only the cases appended after them run.
+    reading: list[tuple[str, ...]] = [() for _ in arms]
+    observed: list[StoredCells | None] = [None for _ in arms]
+    to_run = test_cases
+    keys = [launched_as(arm.arm, model, arm.levers) for arm, model in zip(arms, models, strict=True)]
+    if earlier is not None:
+        stored = await run_blocking(host.blocking_executor, host.storage.load_template, earlier.template_id, scope_id)
+        changed = (
+            "the case set it ran is no longer stored"
+            if stored is None
+            else await run_blocking(
+                host.blocking_executor,
+                _what_changed,
+                host,
+                earlier,
+                keys,
+                control_index,
+                k,
+                canonical_json(
+                    {
+                        "measures": {
+                            name: declaration_of(descriptor).model_dump(mode="json")
+                            for name in host.profile.measures.names
+                            if (descriptor := host.profile.measures.get(name)) is not None
+                        },
+                        "margins": dict(margins or {}),
+                    }
+                ),
+                cases_of(earlier.template_id),
+                names,
+                _template_id(
+                    addressed[: earlier.first_cases],
+                    None if labels is None else labels[: earlier.first_cases],
+                    judge,
+                    None if seeds is None else seeds[: earlier.first_cases],
+                    goal_checks,
+                    intent=addressed_intent,
+                ),
+            )
         )
-        for index, case in enumerate(stimulus)
-    ]
+        if changed is not None or stored is None:
+            said = new_comparison_sentence(changed or "the case set it ran is no longer stored")
+        else:
+            template, template_id = stored, earlier.template_id
+            test_cases = cases_of(template_id)
+            # The cases a launch that stopped left short on some arm or repeat, then the cases appended: each runs
+            # only the cells no launch recorded, and a recorded cell is read as it ran and never run again.
+            unfinished = set(earlier.unfinished)
+            held = len(earlier.case_ids)
+            to_run = [case for case in test_cases[:held] if case.id in unfinished] + test_cases[held:]
+            reading = [earlier.arms[key].run_ids for key in keys]
+            observed = await run_blocking(
+                host.blocking_executor,
+                _recorded_cells,
+                host,
+                reading,
+                {case.id for case in to_run},
+                scope_id,
+            )
     if world is not None and world.stateful:
         # The authoring gate itself, before anything is stored or run: the grammar, the paths, a string match
         # over model prose, a text comparison over a call parameter its schema does not close, and calls or
@@ -2321,7 +2581,12 @@ async def run_arms(
             )
         except ValidationFailedError as refused:
             raise ValueError(str(refused)) from refused
-    await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
+    continuing = any(reading)
+    if continuing:
+        # The template is the comparison's, stored when it first ran; only the cases appended after it are new.
+        await run_blocking(host.blocking_executor, _save_cases_unless_unchanged, host, to_run)
+    else:
+        await run_blocking(host.blocking_executor, _save_unless_unchanged, host, template, test_cases)
     if judge is not None and judge.examples:
         await run_blocking(host.blocking_executor, _seed_judge_examples, host, template, judge, expected)
     # Each scorer's declared range, which every score it returns is held to: the bounded tests read it as a fact. A
@@ -2377,23 +2642,38 @@ async def run_arms(
             arm=arm.arm,
             shared_subject=subject,
             named=arm.model is not None,
+            observed=done,
         )
-        for arm, model in zip(arms, models, strict=True)
+        for arm, model, done in zip(arms, models, observed, strict=True)
     ]
     preparing: list[_WiredArm] = []
     launch_host = _launch_host(
         host,
         wired,
-        test_cases,
+        to_run,
         judge,
         world,
         max_cost_usd=max_cost_usd,
         preparing=preparing,
     )
 
+    # The order the bet reads, committed before any answer: the earlier launches' cases where they stand, and this
+    # launch's new cases shuffled once and appended. Every arm plays this launch's cases case by case in it.
+    running = {case.id for case in to_run}
+    committed = [
+        case
+        for case in committed_order(
+            template_id, [*(earlier.launches if continuing and earlier is not None else ()), [c.id for c in to_run]]
+        )
+        if case in running
+    ]
+
     async def form() -> tuple[LaunchGroup, None]:
         # Every arm's model is a candidate of the launch, which is what its judge is chosen against.
-        return LaunchGroup(candidate_models=list(dict.fromkeys(models))), None
+        group = LaunchGroup(candidate_models=list(dict.fromkeys(models)))
+        group.play_cases_in(committed)
+        launched_in.append(group)
+        return group, None
 
     async def prepare(group: LaunchGroup, _formed: None) -> list[EvalRun]:
         prepared: list[EvalRun] = []
@@ -2417,53 +2697,208 @@ async def run_arms(
         preparing.clear()
         return prepared
 
-    runs = await launch_as_group(
-        launch_host,
-        len(arms),
-        settings=launch_host.settings(),
-        form=form,
-        prepare=prepare,
-        event="eval.quick",
-    )
-    try:
-        await launch_host.job_manager.wait_for([run.id for run in runs])
-    except asyncio.CancelledError:
-        # This call owns the runs it started: cancelled, it settles them as cancelled rather than
-        # leaving pending ones behind in a store that outlives it.
-        await launch_host.job_manager.shutdown()
-        raise
-    by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+    runs: list[EvalRun] = []
+    launched_in: list[LaunchGroup] = []
 
-    def summarized() -> list[EvalSummary]:
-        return [
-            _with_case_results(
-                host,
-                summarize_run(host, run.id, scope_id, case_names=by_id),
-                test_cases,
-                names,
-                behavior="classify" if expected is not None else "score",
+    async def read(*, cancelled: bool) -> Launched:
+        """Each arm read over every run it reads, as :class:`Launched` says, ``cancelled`` where a cancel landed."""
+        by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+        read_runs = [(*held, *((runs[index].id,) if runs else ())) for index, held in enumerate(reading)]
+
+        def summarized() -> list[EvalSummary]:
+            return [
+                _with_case_results(
+                    host,
+                    _ended_as_newest(host, summarize_runs(host, run_ids, scope_id, case_names=by_id), run_ids, scope_id)
+                    if len(run_ids) > 1
+                    else summarize_runs(host, run_ids, scope_id, case_names=by_id),
+                    run_ids,
+                    test_cases,
+                    names,
+                    behavior="classify" if expected is not None else "score",
+                )
+                for run_ids in read_runs
+            ]
+
+        # Summarizing reads each run and its results back from the store, so it runs off the loop.
+        summaries = await run_blocking(host.blocking_executor, summarized)
+        # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
+        # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
+        idle = (
+            world.did_nothing_passes(goal_checks, [(seeds[i], tc.variation_params) for i, tc in enumerate(test_cases)])
+            if world is not None and seeds is not None and goal_checks
+            else None
+        )
+        # The store keeps the intent but not where it came from; a judged run's summary carries both.
+        return Launched(
+            summaries=[
+                _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
+                for summary, arm in zip(summaries, arms, strict=True)
+            ],
+            run_ids=read_runs,
+            launched=[run.id for run in runs],
+            continued=continuing,
+            cancelled=cancelled,
+            said=(
+                continued_sentence(
+                    len(test_cases) - len(to_run),
+                    len(to_run),
+                    unreached=len(earlier.unrun) if earlier is not None else 0,
+                    incomplete=earlier.incomplete if earlier is not None else 0,
+                    redrawn=earlier.redrawn if earlier is not None else (0, 0),
+                )
+                if continuing
+                else said
+            ),
+        )
+
+    async def differs() -> bool:
+        """Whether a continuation's new runs read otherwise than their arms' earlier runs; where they do, they are
+        archived. Each new run must be its arm's earlier runs measured alike: the same variant, the same measurement
+        context (the graders' and the judge's definitions among it) and the same graders' declarations."""
+        if not (continuing and earlier is not None and runs):
+            return False
+        found = await run_blocking(host.blocking_executor, _reads_otherwise, host, earlier, keys, runs, scope_id)
+        if found:
+            await run_blocking(host.blocking_executor, _archive_run_ids, host, [run.id for run in runs], scope_id)
+        return found
+
+    async def drain(group: LaunchGroup | None, run_ids: list[str]) -> None:
+        """Let the runs' running cells finish and record, starting none, then settle every run; a cancel landing
+        meanwhile (a second interrupt) cuts the cells still running at once, each recorded cut (termination
+        ``cancelled``), which a continuation runs again.
+
+        In a terminal a second Ctrl+C is not a second cancel: ``asyncio.run`` raises ``KeyboardInterrupt`` wherever the
+        main thread is, and where that is this task's own step it arrives here. It is the cutting interrupt all the
+        same: the cells are cut and settled, and the caller files them and re-raises the cancel that landed first, which
+        ``asyncio.run`` reports as the interrupt it was.
+        """
+        manager = launch_host.job_manager
+
+        def cut_now() -> None:
+            for run_id in run_ids:
+                manager.cancel_job(run_id, reason="interrupted twice: the cells running were cut")
+
+        try:
+            if group is not None:
+                running = group.stop_starting()
+                said = f"{running} cell{'s' if running != 1 else ''}" if running else "the cells"
+                sys.stderr.write(f"Interrupted: finishing {said} in flight; interrupt again to stop now.\n")
+            # A further cancel cuts, and the wait goes on until every run has settled.
+            await wait_through_cancellation(asyncio.ensure_future(manager.wait_for(run_ids)), on_cancel=cut_now)
+        except KeyboardInterrupt:
+            # NOSILENT: the second Ctrl+C, delivered into this task; it cuts as a second cancel does, and the cancel
+            # that landed first is re-raised once the cut runs are settled and filed.
+            cut_now()
+            await wait_through_cancellation(asyncio.ensure_future(manager.wait_for(run_ids)))
+        # Nothing is left running or pending behind the call.
+        await wait_through_cancellation(asyncio.ensure_future(manager.shutdown()))
+
+    async def file_cancelled(deliver: Callable[[Launched], Awaitable[None]]) -> None:
+        """Hand what the cancelled runs recorded to ``deliver``, unless they were archived: then they are another
+        comparison's and nothing is left to keep. A failure is recorded, since the cancel goes on in its place."""
+        try:
+            if not await differs():
+                await deliver(await read(cancelled=True))
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="a cancelled comparison's runs could not be read to file; a run again starts a new comparison",
+                level="error",
             )
-            for run in runs
-        ]
 
-    # Summarizing reads each run and its results back from the store, so it runs off the loop.
-    summaries = await run_blocking(host.blocking_executor, summarized)
-    # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
-    # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
-    idle = (
-        world.did_nothing_passes(goal_checks, [(seeds[i], tc.variation_params) for i, tc in enumerate(test_cases)])
-        if world is not None and seeds is not None and goal_checks
-        else None
+    if to_run:
+        runs = await launch_as_group(
+            launch_host,
+            len(arms),
+            settings=launch_host.settings(),
+            form=form,
+            prepare=prepare,
+            event="eval.quick",
+        )
+        try:
+            await launch_host.job_manager.wait_for([run.id for run in runs])
+        except asyncio.CancelledError:
+            # This call owns the runs it started: cancelled, it settles them as cancelled rather than leaving pending
+            # ones behind in a store that outlives it. A comparison's first interrupt drains (it is bounded: each cell
+            # by its own deadline, and a second interrupt cuts): no further cell starts, the cells
+            # running finish and are recorded (their answers were being drawn, and cutting a slow one to draw it
+            # afresh would lean the bet toward fast answers), and each run ends cancelled. A second cuts at once.
+            # A comparison's caller then files them, so what they recorded is kept and a run again runs only the
+            # cells they never recorded; the cancel that landed first is the one re-raised.
+            if on_cancel is None:
+                # Not a comparison: no bet reads it, so the cancel cuts at once.
+                await launch_host.job_manager.shutdown()
+                raise
+            await drain(launched_in[0] if launched_in else None, [run.id for run in runs])
+            # Waited for to its end even through a further cancel.
+            await wait_through_cancellation(asyncio.ensure_future(file_cancelled(on_cancel)))
+            raise
+    if await differs():
+        # The comparison cannot continue: the new runs are archived, and every case runs as a new comparison.
+        return await launch_arms(
+            cases,
+            arms,
+            scorers,
+            scope_id=scope_id,
+            host=host,
+            template_name=template_name,
+            expected=expected,
+            label_field=label_field,
+            judge=judge,
+            intent=intent,
+            world=world,
+            goal_checks=goal_checks,
+            k=k,
+            max_cost_usd=max_cost_usd,
+            subject=subject,
+            margins=margins,
+            measure_latency=measure_latency,
+            said=new_comparison_sentence("an arm's levers, a grader's declaration or the judge changed"),
+            on_cancel=on_cancel,
+        )
+    return await read(cancelled=False)
+
+
+def _ended_as_newest(host: EvalHost, pooled: EvalSummary, run_ids: Sequence[str], scope_id: str) -> EvalSummary:
+    """A continued comparison's arm over every launch of it, as it stands: its results every run's together, its ending
+    its newest run's, and its cases each once.
+
+    A launch of it that stopped or was cancelled was taken up by the launches after it, which ran every cell it never
+    recorded (:func:`~threetears.evals.analysis.bundle.trials.taken_up`, which the campaign's page reads alike), so the
+    arm ends as its newest run ends: completed once that run completed, and stopped while it is stopped. A case a
+    launch left short is in a later run's cases too, and counts once.
+
+    :param host: The host whose store holds the runs.
+    :ptype host: EvalHost
+    :param pooled: The arm's runs summarised as one (:func:`~threetears.evals.analysis.summarize_runs`).
+    :ptype pooled: EvalSummary
+    :param run_ids: Its runs, oldest first.
+    :ptype run_ids: Sequence[str]
+    :param scope_id: The scope they live in.
+    :ptype scope_id: str
+    :return: The summary.
+    :rtype: EvalSummary
+    """
+    newest = summarize_run(host, run_ids[-1], scope_id)
+    cases: dict[str, None] = {}
+    for run_id in run_ids:
+        run = host.storage.load_eval_run(run_id, scope_id)
+        cases.update(dict.fromkeys(run.test_case_ids if run is not None else ()))
+    return pooled.model_copy(
+        update={"status": newest.status, "stopped_because": newest.stopped_because, "n_cases": len(cases)}
     )
-    # The store keeps the intent but not where it came from; a judged run's summary carries both.
-    return [
-        _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
-        for summary, arm in zip(summaries, arms, strict=True)
-    ]
 
 
 def _with_case_results(
-    host: EvalHost, summary: EvalSummary, test_cases: list[EvalTestCase], names: list[str], *, behavior: str
+    host: EvalHost,
+    summary: EvalSummary,
+    run_ids: Sequence[str],
+    test_cases: list[EvalTestCase],
+    names: list[str],
+    *,
+    behavior: str,
 ) -> EvalSummary:
     """The summary carrying every result read for a person, so they outlive the store the run was in.
 
@@ -2474,7 +2909,7 @@ def _with_case_results(
     """
     order = {test_case.id: index for index, test_case in enumerate(test_cases)}
     stored = sorted(
-        list_results(host.storage, summary.run_id, summary.scope_id),
+        (result for run_id in run_ids for result in list_results(host.storage, run_id, summary.scope_id)),
         key=lambda result: (order.get(result.test_case_id, len(order)), result.k_iteration),
     )
     payloads = {test_case.id: test_case.host_payload for test_case in test_cases}
@@ -2550,9 +2985,10 @@ __all__ = [
     "callable_kind",
     "callable_kind_contracts",
     "grade_judge_examples",
+    "launch_arms",
+    "launched_as_run",
     "refuse_an_unusable_cap",
     "refuse_unusable_guardrails",
     "refuse_unusable_margins",
-    "run_arms",
     "scorer_measure",
 ]

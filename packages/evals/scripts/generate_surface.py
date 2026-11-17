@@ -572,6 +572,11 @@ def _agent_lines(surface: Surface) -> Iterator[str]:
     yield from _wrapped("A comparison's first line says whether the evidence tells the arms apart. Rung 3a prints:")
     yield from _wrapped(printed_first_line("Rung 3a: two prompts, compared"), "  ")
     yield from _wrapped(
+        "Run again into its store with cases appended, a comparison continues (only new cases run) and its pass-rate "
+        "and ranged-score verdicts keep their error at every reading; a runner or grader is known by its name (a "
+        "judge by model and criteria), not its code: rename the eval to compare an edit."
+    )
+    yield from _wrapped(
         "Below it: each measure's rate, the top misses with why each missed, and where the report page is. A "
         "refusal before anything runs goes to stderr with exit 2; an action that refuses answers with refused: "
         "and a remedy: saying what to do instead."

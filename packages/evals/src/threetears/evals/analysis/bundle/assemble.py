@@ -175,7 +175,7 @@ from threetears.evals.analysis.bundle.comparisons import (
     reading_scope,
 )
 from threetears.evals.analysis.bundle.judges import judge_change
-from threetears.evals.analysis.bundle.trials import trials_and_census
+from threetears.evals.analysis.bundle.trials import bet_places, redrawn_cells, taken_up, trials_and_census
 from threetears.evals.analysis.bundle.time_axis import time_axis
 from threetears.evals.analysis.bundle.surface import measure_catalog
 from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -691,6 +691,7 @@ def assemble_context_bundle(
     # profile's identity is in the fingerprint's pre-image with it.
     tiers = judges_tiers(storage, scope_id, runs, results, ratings=ratings, templates=templates)
     person_scores = person_scores_by_result(ratings, results)
+    paused = taken_up(campaign.created_by, runs, results)
     bundle = AnalysisContextBundle(
         campaign_id=view.campaign_id,
         aspect=view.aspect,
@@ -744,7 +745,10 @@ def assemble_context_bundle(
         # removes a run, and a cancelled run that nobody archived stays pooled. Naming them
         # here is what lets the writer say a partial arm is partial instead of reading its
         # truncated case count as a real one.
-        incomplete_runs={run.id: str(run.status) for run in runs if run.status != "completed"},
+        # A quick-path comparison's launch that stopped is taken up once a later launch has run every cell it never
+        # recorded (:func:`~threetears.evals.analysis.bundle.trials.taken_up`): it is not unfinished, and the reading
+        # opens on the newest launch's ending. What it delivered short of its matrix is still said (``short_runs``).
+        incomplete_runs={run.id: str(run.status) for run in runs if run.status != "completed" and run.id not in paused},
         # Status cannot answer how much of the matrix a run delivered: a run that reaches the
         # end of its loop stamps ``completed`` whatever its cells produced, so the shortfall is
         # read off the completeness record instead. Rendered through the shared helper so this
@@ -942,6 +946,7 @@ def assemble_context_bundle(
     planned_looks = (
         looks.planned if looks is not None else declared_design.planned_looks if declared_design is not None else None
     )
+    reread_order = bet_places(campaign.created_by, runs, results, planned_looks=planned_looks)
     bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = multiple_comparisons(
         view.aspect,
         declared,
@@ -962,6 +967,16 @@ def assemble_context_bundle(
         # the question's family when one is asked with a margin, and for the floors whatever the family holds.
         rubric_threshold=profile.bars.pass_threshold(view.behavior),
         planned_looks=planned_looks,
+        # A quick-path comparison (filed by the quick path over runs of kinds only it launches, no arm observing a case
+        # twice, and no plan of looks) reads its paired contrasts on a range by the mixture bet, over the cases in the
+        # order the comparison observed them, launch by launch: the quick path continues one comparison by running only
+        # the cases no launch reached and those appended, so a case run later is bet on after every case observed
+        # before it, a stopped launch's included. Decided from stored facts alone,
+        # so every reader of a stored comparison reads it alike, and no campaign a host files over the same runs, nor
+        # any declaration, opts an engine campaign in.
+        reread_order=reread_order,
+        # Read only where the bet reads the comparison: no other family says it, nor reads the rows for it.
+        redrawn=redrawn_cells(results) if reread_order is not None else (0, 0),
     )
     # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
     # paired judged contrast's share of it, filled last so no other section copies them.

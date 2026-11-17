@@ -27,6 +27,7 @@ Part of the bundle assembler (:mod:`threetears.evals.analysis.bundle.assemble`).
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -56,11 +57,13 @@ from threetears.evals.analysis.bundle.schema import (
     TrialRow,
     TrialState,
 )
+from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
 from threetears.evals.kernel.errors import ConflictError
 from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.result_condition import (
     candidate_failure_cause,
     delivered_a_turn,
+    runs_again,
     trial_exclusion,
 )
 from threetears.evals.kernel.scoring import capability_scores, failed_checks, has_pass_criterion
@@ -74,7 +77,7 @@ from threetears.evals.schema.models import USAGE_ROLES, rubric_dim_scale
 
 if TYPE_CHECKING:  # runtime models — TYPE_CHECKING-only to keep the runtime import graph minimal.
     from threetears.evals.kernel.result_reading import ResultView, UsageView
-    from threetears.evals.schema.models import EvalResult, JudgeEvidence, RubricScale, RubricScore
+    from threetears.evals.schema.models import EvalResult, EvalRun, JudgeEvidence, RubricScale, RubricScore
 
 
 #: How much worse a lost or failed trial is than a passed one, for keeping trials under the cap: lost first.
@@ -309,7 +312,7 @@ def trials_and_census(
     :param names: The name each test case's author gave it, by case id, for the cases that have one.
     :ptype names: Mapping[str, str] | None
     :param case_lists: The member runs' frozen case lists (``EvalRun.test_case_ids``), in the bundle's run order: each
-        case's place is where it first stands in them, from 1 (:func:`_case_places`), carried on its rows
+        case's place is where it first stands in them, from 1 (:func:`case_places`), carried on its rows
         (:attr:`~threetears.evals.analysis.bundle.schema.TrialRow.case_place`), and whether they differ is
         ``case_lists_differ``. Empty carries no place.
     :ptype case_lists: Sequence[Sequence[str]]
@@ -355,7 +358,7 @@ def trials_and_census(
     evidence = load_judge_evidence(traced) if traced else {}
     labels = _case_labels(kept, strata, evidence, names or {})
     whole = _whole(kept, load_results)
-    places = _case_places(case_lists)
+    places = case_places(case_lists)
     rows = [
         _row(
             f"T{index}",
@@ -378,7 +381,7 @@ def trials_and_census(
     )
 
 
-def _case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
+def case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
     """Each case's place from 1: where it first stands in ``case_lists``, the member runs' frozen case lists chained
     in the bundle's run order (created, then id), each case kept where it first appears. Where every run holds one
     list (an ``Eval``'s every arm, the usual host campaign), that is the case's line in it, the line of a cases file.
@@ -394,6 +397,154 @@ def _case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
     """
     ordered = dict.fromkeys(case for cases in case_lists for case in cases)
     return {case: place for place, case in enumerate(ordered, start=1)}
+
+
+def committed_order(seed: str, launches: Sequence[Sequence[str]]) -> list[str]:
+    """The order a quick-path comparison reads its cases in, committed before any answer is seen: launch by launch, each
+    launch's new cases (those no launch before it held) in a fixed pseudo-random order of their own, appended after
+    every case before them. A case a launch left unfinished keeps its place; a later launch plays it again where it
+    stands. The order depends on the case set and the cases alone, never on an answer, a time or an id drawn at random,
+    so every reader of the store recomputes it and two runs of one comparison over one case set play it alike.
+
+    Each launch's new cases are ordered by a digest of ``seed`` (the comparison's case set, its runs' ``template_id``)
+    and the case's id, which places a case the same wherever it is first launched: the shuffle is once per case.
+
+    :param seed: What the shuffle is keyed on: the case set's id.
+    :ptype seed: str
+    :param launches: Each launch's cases, in launch order, each list as its runs hold it.
+    :ptype launches: Sequence[Sequence[str]]
+    :return: Every case, each once, in the committed order.
+    :rtype: list[str]
+    """
+    order: list[str] = []
+    held: set[str] = set()
+    for cases in launches:
+        new = [case for case in dict.fromkeys(cases) if case not in held]
+        new.sort(key=lambda case: hashlib.sha256(f"{seed}\x00{case}".encode()).digest())
+        order += new
+        held |= set(new)
+    return order
+
+
+def bet_places(
+    created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView], *, planned_looks: int | None
+) -> dict[str, int] | None:
+    """Each case's place in the longest complete prefix of a quick-path comparison's committed order, which the
+    mixture bet reads its paired contrasts in; ``None`` where the campaign is not one, and every reading is as an
+    engine campaign's.
+
+    **The order is committed before any answer** (:func:`committed_order` over the runs' launches, each a launch group
+    in the bundle's run order), and the quick path plays each launch's cells case by case in it. **The bet reads its
+    longest complete prefix**: the cases from the first, in order, up to the first case some arm has not recorded at
+    every repeat (each ``k_iteration`` 1 to the runs' ``k_runs``), counting a row that runs again
+    (:func:`~threetears.evals.kernel.result_condition.runs_again`) as not recorded. A case past that point is not read,
+    however much of it is recorded, until every case before it is complete.
+
+    So every reading is a prefix of one fixed sequence, each case's value final once read, and the order was fixed
+    before any answer: the bet's capital over that sequence is a supermartingale under the null, and Ville's inequality
+    bounds its running maximum at EVERY prefix, so a reading taken at any time, chosen however, by someone who watched
+    any cells (past the prefix included), keeps the error it states. Neither latency nor when a run stopped decides
+    what is read, only how far the prefix has reached.
+
+    A quick-path comparison is decided from stored facts only, so every reader of a stored campaign reads it alike:
+
+    - its origin: the quick path filed it (``EvalCampaign.created_by`` is
+      :data:`~threetears.evals.kernel.candidate_kind.QUICK_PATH_FILER`), so a host's campaign over the quick path's
+      runs (``campaign_create``, filed as its caller) is not one;
+    - every run is of a kind only the quick path launches
+      (:data:`~threetears.evals.kernel.candidate_kind.QUICK_PATH_KINDS`), and it holds a result;
+    - no arm recorded a cell (a case at a repeat) in two runs, a row that runs again aside, which is how the quick path
+      continues one comparison: a recorded cell is never run again, so the bet is one process;
+    - no plan of looks is in force (``planned_looks``), which reads α/L instead.
+
+    :param created_by: Who filed the campaign.
+    :ptype created_by: str
+    :param runs: The member runs, in the bundle's run order.
+    :ptype runs: Sequence[EvalRun]
+    :param results: Their results.
+    :ptype results: Sequence[ResultView]
+    :param planned_looks: The plan of looks in force, or ``None``.
+    :ptype planned_looks: int | None
+    :return: Each case of the complete prefix's place, from 1, by case id, or ``None``.
+    :rtype: dict[str, int] | None
+    """
+    if (
+        planned_looks is not None
+        or created_by != QUICK_PATH_FILER
+        or not results
+        or any(run.candidate_kind not in QUICK_PATH_KINDS for run in runs)
+    ):
+        return None
+    held: set[tuple[str, str, int]] = set()
+    repeats: dict[str, dict[str, set[int]]] = {}
+    for result in results:
+        if runs_again(result):
+            continue
+        cell = (result.variant_key, result.test_case_id, result.k_iteration)
+        if cell in held:
+            return None
+        held.add(cell)
+        repeats.setdefault(result.test_case_id, {}).setdefault(result.variant_key, set()).add(result.k_iteration)
+    arms = {result.variant_key for result in results}
+    every_repeat = set(range(1, max((run.k_runs for run in runs), default=1) + 1))
+    launches: dict[str, list[str]] = {}
+    for run in runs:
+        launches.setdefault(run.launch_group_id or run.id, []).extend(run.test_case_ids)
+    seed = next((run.template_id for run in runs if run.template_id is not None), "")
+    places: dict[str, int] = {}
+    for case in committed_order(seed, list(launches.values())):
+        on_arms = repeats.get(case, {})
+        if set(on_arms) != arms or any(ran != every_repeat for ran in on_arms.values()):
+            break
+        places[case] = len(places) + 1
+    return places
+
+
+def redrawn_cells(results: Sequence[ResultView]) -> tuple[int, int]:
+    """How many of ``results`` recorded no answer, so their cells run again
+    (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those an interrupt cut (termination
+    ``cancelled``): what a quick-path comparison's family says of them
+    (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`), read only where the bet reads it.
+
+    :param results: The campaign's results.
+    :ptype results: Sequence[ResultView]
+    :return: The rows that run again, and the cut ones among them.
+    :rtype: tuple[int, int]
+    """
+    again = [result for result in results if runs_again(result)]
+    return len(again), sum(1 for result in again if result.termination == "cancelled")
+
+
+def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView]) -> frozenset[str]:
+    """The member runs of a quick-path comparison that did not finish and that a later launch of the comparison took up:
+    every run that did not reach ``completed`` in any launch before the newest, where the bet reads the comparison
+    (:func:`bet_places`, with no plan of looks; empty otherwise).
+
+    The quick path continues a comparison by running every cell its launches never recorded, after the cells they
+    recorded, which it keeps (:mod:`threetears.evals.quick.continuation`). So a launch that stopped is taken up once a
+    later launch has run: that launch ran every cell it left, and whether the comparison opens with a verdict is the
+    newest launch's ending alone. A launch is a launch group (``EvalRun.launch_group_id``); a run with none takes up
+    nothing and is taken up by nothing.
+
+    :param created_by: Who filed the campaign.
+    :ptype created_by: str
+    :param runs: The member runs, in the bundle's run order.
+    :ptype runs: Sequence[EvalRun]
+    :param results: Their results.
+    :ptype results: Sequence[ResultView]
+    :return: The runs taken up, by id.
+    :rtype: frozenset[str]
+    """
+    if not runs or bet_places(created_by, runs, results, planned_looks=None) is None:
+        return frozenset()
+    newest = runs[-1].launch_group_id
+    if newest is None:
+        return frozenset()
+    return frozenset(
+        run.id
+        for run in runs
+        if run.status != "completed" and run.launch_group_id is not None and run.launch_group_id != newest
+    )
 
 
 def _whole(

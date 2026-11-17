@@ -68,6 +68,7 @@ __all__ = [
     "counted_score",
     "delivered_a_turn",
     "resolve_result_condition",
+    "runs_again",
 ]
 
 
@@ -517,6 +518,25 @@ DIFFERENTIAL_EXCLUSION_SHARE: float = 0.10
 #: measures — a dim it named, or the composite that needs every dim. Distinct from every
 #: :class:`ResultOutcome` value, so a reader of the row can count it apart from a fault.
 JUDGE_CANNOT_TELL_OUTCOME = "judge_cannot_tell"
+
+
+def runs_again(result: ResultView) -> bool:
+    """Whether a stored row's cell runs again when its run, or the comparison it belongs to, is continued: the one rule
+    the engine's take-up (:func:`~threetears.evals.run.resume.resume_run`) and the quick path's continuation
+    (:mod:`threetears.evals.quick.continuation`) both read.
+
+    A row cut short by a cancel (termination ``cancelled``: an attempt a shutdown or a second interrupt abandoned), one
+    whose call the provider account paying for the run refused (``account_refused``), and one whose model the provider
+    did not serve (``model_unserved``) each record no answer the cell would have given: an uninterrupted run on a
+    funded account and a served model stores none of them. Every other row is what that run would also have stored, so
+    its cell is done.
+
+    :param result: The stored row.
+    :ptype result: ResultView
+    :return: Whether its cell runs again.
+    :rtype: bool
+    """
+    return result.termination == "cancelled" or result.account_refused or result.model_unserved
 
 
 def trial_exclusion(result: ResultView) -> ExclusionCause | None:

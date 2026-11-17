@@ -220,7 +220,7 @@ the render's):
 
 v1 (control) vs v2 · 7 Nov 2026 · 30 cases × 3 repeats
 
-**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 20 points worse or 18 better. v2 may do worse than v1 on the No invented total score guardrail.**
+**Accuracy: the evidence cannot tell v2 and v1 apart. Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2. Over 30 paired cases, the interval allows v2 to be as much as 24 points worse or 22 better. v2 may do worse than v1 on the No invented total score guardrail.**
 
 **Scoreboard**
 
@@ -264,7 +264,7 @@ The first screen carries the minimum a reader needs to grasp the result; every c
   `case N`, N its place in the list of cases from 1); which arm passed more, when an arm is under the case floor; a comparison's contrasts on the measure its
   first grader reads (`Accuracy: the evidence cannot tell v2 and v1 apart.`), what the measure was on each arm, in its own verb
   (`Of 90 trials each, Accuracy was right on 90 for v1 and 89 for v2.`; only the pass rate's trials "passed") and what the interval allows the candidate to be (`Over 30 paired cases, the
-  interval allows v2 to be as much as 20 points worse or 18 better.`, its level the table's header), then what
+  interval allows v2 to be as much as 24 points worse or 22 better.`, its level the table's header), then what
   else the evidence tells apart; with no question, `Exploratory:` (linked to the glossary) and the same, or `the
   evidence cannot tell v2 and v1 apart on any reading`, never "no difference" and never "the same". A guardrail an
   arm is not shown safe on is the last sentence, what it means for the decision: `v2 may do worse than v1 on the No
@@ -530,10 +530,12 @@ of cases. Coarse scores need that: a regression that fails one case in ten leave
 of the time, and a t-test, or the exact sign-flip reading of a difference with no spread that the engine
 once used, called such samples equivalent up to three times in four. The price is that equivalence on a small margin
 takes many cases, whatever the test. Arms that give the same answer on every case and repeat show a pass rate
-within 0.25 from 12 shared cases and within 0.1 from 33, and a 1–5 score within 0.5 from 26, when it is the
-only reading the family tests (no valid test could do it in fewer than 11, 29 and 23). Each further reading
-in the family raises that: with a second (accuracy from a label's field grader, or a cost from `Answer`), a pass rate
-takes 15 and 41. Arms that disagree on some cases need more: in a seeded simulation at k=2 where about one
+on the quick path within 0.25 from 16 shared cases and within 0.1 from 45, and a 1–5 score within 0.5 from 35, when
+it is the only reading the family tests (no valid test could do it in fewer than 11, 29 and 23; the quick path's bet,
+which may be read again as cases are added, pays for that in cases, and a campaign read once at a count fixed ahead
+needs a few fewer). Each further reading in the family raises that: with a second (accuracy from a label's field
+grader, or a cost from `Answer`), a pass rate takes 20 and 53, so a cases file of 48 is too small to show a pass rate
+within 0.1 beside a second reading. Arms that disagree on some cases need more: in a seeded simulation at k=2 where about one
 answer in twelve departed from its case's usual one, a pass rate read `equivalent` within 0.25 in 18 of 20
 runs at 24 cases, and within 0.1 in 16 of 20 runs at 100. Below that the row reads `not_separated`, which
 claims nothing. A measure with a margin and no declared range

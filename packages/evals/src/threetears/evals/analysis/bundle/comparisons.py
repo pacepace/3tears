@@ -468,6 +468,9 @@ class _Tested(NamedTuple):
     value_range: tuple[float, float] | None = None
     #: Whether the reading is a rate (:func:`_is_rate`), whose contrast is drawn on the bounded interval.
     rate: bool = False
+    #: The paired samples in the order the cases were added, where the mixture bet read the comparison (a quick-path
+    #: comparison's, paired, on a declared range): its p and its interval are that bet's.
+    bet_samples: tuple[list[float], list[float]] | None = None
 
 
 def _compare(
@@ -481,6 +484,7 @@ def _compare(
     value_range: tuple[float, float] | None = None,
     no_turn: tuple[str, ...] = (),
     contended: tuple[str, ...] = (),
+    places: Mapping[str, int] | None = None,
 ) -> _Tested:
     """Test one contrast against the control on one reading, before correction.
 
@@ -520,17 +524,28 @@ def _compare(
         bundle withheld (:mod:`~threetears.evals.analysis.contention`) — so an untested comparison says that,
         rather than that too few cases carried the reading.
     :ptype contended: tuple[str, ...]
+    :param places: Each case's place in the complete prefix of the campaign's committed order
+        (:func:`~threetears.evals.analysis.bundle.trials.bet_places`), on a quick-path comparison (every result of a
+        kind only the quick path launches, read with no plan of looks); None otherwise. Where given, a paired reading on a declared range is read by the mixture bet over its cases in
+        that order (:func:`_bet_samples`), its p, its equivalence p and its interval alike.
+    :ptype places: Mapping[str, int] | None
     :return: The comparison with its adjusted p's, interval and verdict still unset, its raw p's (None where no
         test produced one) for the family's correction, and the samples the test read, for the interval.
     :rtype: _Tested
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
+    bet = _bet_samples(control_values, contrast_values, value_range, places) if paired else None
     # The separation test every surface reads a gap by (:func:`separation_test`): the t-test's where the values
     # have spread, and where they have none — every shared case moved by one amount, or each side constant — the
     # bounded test on the reading's declared range, decided on exact values. With no range a gap with no spread
-    # is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597).
-    separation = separation_test(a, b, paired=paired, value_range=value_range)
+    # is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597). On a quick-path
+    # comparison the mixture bet reads a paired reading on its range whatever its spread, in its committed order.
+    separation = (
+        separation_test(a, b, paired=paired, value_range=value_range)
+        if bet is None
+        else separation_test(*bet, paired=True, value_range=value_range, mixture=True)
+    )
     p_raw = separation.p
     hedges_g, _, _ = composite_significance(a, b, paired=paired)
     no_spread = (
@@ -558,6 +573,8 @@ def _compare(
             )
         elif len(a) < 2 or len(b) < 2:
             untested_reason = "fewer than two cases carry this reading on a side"
+        elif bet is not None and len(bet[0]) < 2:
+            untested_reason = _TOO_FEW_COMPLETE
         elif separation.refusal is None:
             untested_reason = "the values differ by less than floating point resolves, so no t statistic exists"
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
@@ -570,8 +587,12 @@ def _compare(
         margin = None
     # The differences of exact values, so a float residue cannot pass for a spread nor a spread for a constant; on
     # the measure's declared range the bounded test decides either, at the error rate it states.
+    ordered = (a, b) if bet is None else bet
     _, equivalence_p_raw = paired_equivalence(
-        [exact_decimal(y) - exact_decimal(x) for x, y in zip(a, b)], margin, value_range=value_range
+        [exact_decimal(y) - exact_decimal(x) for x, y in zip(*ordered)],
+        margin,
+        value_range=value_range,
+        mixture=bet is not None,
     )
     delta = None if mean_a is None or mean_b is None else mean_b - mean_a
     # What pairing bought: the arms' per-case correlation over exactly the cases the paired test read (#595).
@@ -611,7 +632,47 @@ def _compare(
         not_separated_reason=separation.refusal if untested_reason is None else None,
         materiality=None if delta is None else materiality(threshold, delta),
     )
-    return _Tested(comparison, p_raw, equivalence_p_raw, (a, b), value_range)
+    return _Tested(comparison, p_raw, equivalence_p_raw, (a, b), value_range, bet_samples=bet)
+
+
+#: Why a quick-path comparison is untested while fewer than two of its cases lead its committed order complete: the bet
+#: reads the longest prefix of that order whose every case is recorded on every arm and repeat
+#: (:func:`~threetears.evals.analysis.bundle.trials.bet_places`).
+_TOO_FEW_COMPLETE = (
+    "fewer than two cases at the head of its order have every arm and repeat recorded, and the bet reads them in that "
+    "order, so there is nothing to read yet"
+)
+
+
+def _bet_samples(
+    control_values: Mapping[str, float],
+    contrast_values: Mapping[str, float],
+    value_range: tuple[float, float] | None,
+    places: Mapping[str, int] | None,
+) -> tuple[list[float], list[float]] | None:
+    """The paired samples the mixture bet reads, over the cases of the campaign's complete prefix both sides carry the
+    reading on, in its committed order (``places``): None where no bet reads this comparison — no ``places`` (the aspect
+    is not a quick-path comparison), no declared range, fewer than two shared cases, or a value outside the range,
+    which bounds nothing then. Fewer than two cases in the prefix leave the bet nothing to read yet
+    (:data:`_TOO_FEW_COMPLETE`).
+
+    The order is fixed before any answer, each launch's new cases appended
+    (:func:`~threetears.evals.analysis.bundle.trials.committed_order`), and the prefix only grows, so a later reading's
+    bet is the earlier one's with more cases after it, one capital read again.
+    """
+    if places is None or value_range is None:
+        return None
+    cases, _, paired = contrast_cases(control_values, contrast_values)
+    if not paired:
+        return None
+    cases = [case for case in cases if case in places]
+    cases.sort(key=lambda case: (places[case], case))
+    control = [control_values[case] for case in cases]
+    contrast = [contrast_values[case] for case in cases]
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    if high <= low or any(not low <= exact_decimal(v) <= high for v in (*control, *contrast)):
+        return None
+    return control, contrast
 
 
 def _margin_of(
@@ -632,6 +693,74 @@ def _margin_of(
     return None, None
 
 
+#: What a comparison read by the mixture bet lets a reader do, what it costs, and exactly what it leaves out: the one
+#: sentence every surface says it in (the print under a comparison's first line, the family's disclosure on its page and
+#: in its bundle), on a quick-path comparison whose family the bet read. It covers the family's comparisons the bet read,
+#: and only those: their verdicts, p's and intervals. A guardrail's held or undecided, a floor's held, each arm's own
+#: rate interval, the gate's exit status, cost and latency are read at the cases run so far, and it names each of them
+#: as not covered. It is said of the store that keeps the runs, so it is true wherever it is read: the quick path
+#: continues one comparison run again into the store that holds it by running only the cases appended
+#: (:mod:`threetears.evals.quick.continuation`), so a reading after more cases is the same bet read later, and where the
+#: runs were kept in memory there is no such store, which the print says in its place
+#: (:data:`~threetears.evals.quick.continuation.UNKEPT_SENTENCE`). Each clause is held by a seeded simulation in
+#: ``tests/test_rereadable_bet.py``: the error at most α over re-runs of the quick path as cases are added, the same
+#: re-runs re-drawing every case exceeding it, and a single read's power against the bounded test read once.
+REREAD_SENTENCE = (
+    "Where its runs are kept in a store that outlives the run (a file, or a host's), add cases to the end and run it "
+    "again into that store as often as you like: each comparison of the arms on a pass rate, or on a score within its "
+    "declared range, keeps its error however many times it is read, and a single read gives up some power for that; "
+    "guardrails, floors, each arm's own rate, cost, latency and the exit status are read at the cases run so far, so "
+    "reading them again is not covered."
+)
+
+
+def redrawn_sentence(rows: int, cut: int) -> str:
+    """How many of a quick-path comparison's cells recorded no answer and run again, as a running total over every run
+    of it, and how many of those an interrupt cut: the one owner of the sentence, which the print of a continued
+    comparison and its family's disclosure on the page and in the bundle both say.
+
+    A row records no answer when an interrupt cut its cell, the account refused its call, or the provider did not serve
+    its model (:func:`~threetears.evals.kernel.result_condition.runs_again`); its cell runs again when the comparison
+    is continued. A cut cell drawn afresh can lean the reading where a slow answer is a wrong one, which a refused or
+    unserved call, turned away before any answer, cannot.
+
+    :param rows: The comparison's stored rows that recorded no answer, over all its runs.
+    :ptype rows: int
+    :param cut: How many of them an interrupt cut.
+    :ptype cut: int
+    :return: The sentence.
+    :rtype: str
+    """
+    counted = (
+        f"{rows} cell{'s' if rows != 1 else ''} of this comparison recorded no answer (a running total over its runs), "
+        f"and each runs again when it is continued"
+    )
+    if cut:
+        return (
+            f"{counted}; {cut} of {'them were' if rows != 1 else 'it was'} cut by a second interrupt, and a cut cell "
+            "drawn afresh can lean the reading where a slow answer is a wrong one."
+        )
+    return f"{counted}: {'calls' if rows != 1 else 'a call'} the account refused or the provider did not serve."
+
+
+def read_by_bet(family: ComparisonFamily) -> bool:
+    """Whether the mixture bet read some comparison of ``family``, a quick-path comparison's, so it may be read again as
+    cases are appended (:data:`REREAD_SENTENCE`).
+
+    Read off what the family stores of its correction, its ``disclosure``, which this module composes
+    (:func:`_family_disclosure`) and which closes on :data:`REREAD_SENTENCE` exactly where the bet read it: nothing
+    else is stored to say so, and a reader reads it as the page shows it. Whether the bet reads a campaign at all is
+    decided from its stored origin, kinds and case lists when its bundle is assembled
+    (:func:`~threetears.evals.analysis.bundle.trials.bet_places`).
+
+    :param family: The family.
+    :ptype family: ComparisonFamily
+    :return: Whether the bet read it.
+    :rtype: bool
+    """
+    return family.disclosure.endswith(REREAD_SENTENCE)
+
+
 def _family_disclosure(
     family_size: int,
     n_untested: int,
@@ -640,9 +769,13 @@ def _family_disclosure(
     n_equivalence: int = 0,
     campaign_wide: bool = False,
     looks: int | None = None,
+    rereadable: bool = False,
+    redrawn: tuple[int, int] = (0, 0),
 ) -> str:
     """The sentence a writer quotes about one family, composed from what the family holds: under a plan of ``looks``
-    looks, ``alpha`` is the level each look reads at, and what the intervals hold together is stated over the plan."""
+    looks, ``alpha`` is the level each look reads at, and what the intervals hold together is stated over the plan.
+    Where the bet read it (``rereadable``), it closes on :data:`REREAD_SENTENCE`, after how many of the comparison's
+    cells recorded no answer and run again (:func:`redrawn_sentence`), where any did."""
     asked = "the campaign holds" if campaign_wide else "this question asks about"
     if family_size == 0:
         sentence = f"No comparison {asked} carried a p, so it supports no separation between arms."
@@ -670,6 +803,10 @@ def _family_disclosure(
         )
     if n_untested:
         sentence += f" {n_untested} more could not be tested; each says why."
+    if rereadable:
+        if redrawn[0]:
+            sentence += f" {redrawn_sentence(*redrawn)}"
+        sentence += f" {REREAD_SENTENCE}"
     return f"{_NO_QUESTION_FAMILY} {sentence}" if campaign_wide else sentence
 
 
@@ -686,7 +823,13 @@ def _interval_withholds(interval: tuple[float, float] | None, *, rate: bool) -> 
 
 
 def _corrected_family(
-    aspect: str | None, axes: list[MeritAxis], tested: list[_Tested], *, looks: int | None = None
+    aspect: str | None,
+    axes: list[MeritAxis],
+    tested: list[_Tested],
+    *,
+    looks: int | None = None,
+    rereadable: bool = False,
+    redrawn: tuple[int, int] = (0, 0),
 ) -> ComparisonFamily:
     """Correct one family's tests together, and read each comparison's verdict and interval off the result.
 
@@ -723,6 +866,15 @@ def _corrected_family(
     :ptype axes: list[MeritAxis]
     :param tested: The family's comparisons, tested and uncorrected.
     :ptype tested: list[_Tested]
+    **On a quick-path comparison** (``rereadable``) a comparison the mixture bet read (``bet_samples``) takes its p, its
+    equivalence p and its interval from that bet, at the same ``1 − α/m``, so the interval excludes zero exactly where
+    its raw p is at most ``α/m``. Holm stays the correction, and stays valid over every re-read as cases are added:
+    each bet p is valid over all reads together, and a bet comparison's adjusted p is Holm's over the family with
+    every p no bet read (a t reading of cost or latency) held at 1, so a t reading's p, which is valid at one read
+    only, never lets a bet comparison step down. A true null read by the bet is then rejected at some read only where
+    the first true null among the bet readings reached ``α/|true nulls|`` at that read, which over all reads together
+    happens at most α of the time. The comparisons no bet read keep today's Holm-adjusted p's.
+
     :param looks: The looks the plan in force allows: each verdict is then read at α/L
         (:func:`~threetears.evals.analysis.significance.looks_alpha`, the family's ``look_alpha``), so the error the
         family states (``alpha``) holds over every look the plan allows whose size was fixed before its data; over
@@ -730,6 +882,9 @@ def _corrected_family(
         :func:`~threetears.evals.analysis.significance.plan_kept` shows it (on the bounded test in the simulated
         setting, not on the t test). None reads at α.
     :ptype looks: int | None
+    :param rereadable: Whether the aspect is a quick-path comparison, read again as cases are appended, so the comparisons the mixture bet read are
+        corrected as above and the disclosure says what that lets a reader do (:data:`REREAD_SENTENCE`).
+    :ptype rereadable: bool
     :return: The corrected family.
     :rtype: ComparisonFamily
     """
@@ -738,7 +893,17 @@ def _corrected_family(
     family_size = sum(1 for one in tested if one.p_raw is not None)
     n_equivalence = sum(1 for one in tested if one.equivalence_p_raw is not None)
     raw = [p for one in tested for p in (one.p_raw, one.equivalence_p_raw) if p is not None]
-    adjusted = iter(holm_adjust(raw, max_true=family_size) if raw else [])
+    # Which raw p each one is: a bet's, or another test's. A bet comparison's adjusted p holds every other p at 1.
+    by_bet = [
+        one.bet_samples is not None for one in tested for p in (one.p_raw, one.equivalence_p_raw) if p is not None
+    ]
+    held = holm_adjust(raw, max_true=family_size) if raw else []
+    bet_held = (
+        holm_adjust([p if bet else 1.0 for p, bet in zip(raw, by_bet, strict=True)], max_true=family_size)
+        if any(by_bet)
+        else held
+    )
+    adjusted = iter([bet if on_bet else plain for plain, bet, on_bet in zip(held, bet_held, by_bet, strict=True)])
     interval_level = 1.0 - alpha / family_size if family_size else None
     comparisons = []
     for one in tested:
@@ -757,11 +922,19 @@ def _corrected_family(
                     value_range=one.value_range,
                     confidence=interval_level,
                 )
+                if one.bet_samples is None
+                # The mixture bet's interval, off the capital its p was read from, over the cases in the order added.
+                else bounded_difference_interval(
+                    *one.bet_samples, paired=True, value_range=one.value_range, confidence=interval_level, mixture=True
+                )
             )
             # A rate is drawn on its bounded interval, the method every reading of a rate is read by, so a reading's
             # interval nests inside its contrast's. With no spread no t interval exists, and the bounded test's stands
-            # for it too, so a separation is never shown with no interval beside it (#597).
-            on_bounded = one.value_range is not None and (one.rate or comparison.basis in ("bounded", "identical"))
+            # for it too, so a separation is never shown with no interval beside it (#597). A bet's reading is drawn on
+            # the bet's interval, whatever the reading.
+            on_bounded = one.value_range is not None and (
+                one.rate or comparison.basis in ("bounded", "identical") or one.bet_samples is not None
+            )
             interval = (
                 bounded
                 if on_bounded
@@ -812,7 +985,14 @@ def _corrected_family(
         n_untested=n_untested,
         comparisons=comparisons,
         disclosure=_family_disclosure(
-            family_size, n_untested, alpha, n_equivalence=n_equivalence, campaign_wide=aspect is None, looks=planned
+            family_size,
+            n_untested,
+            alpha,
+            n_equivalence=n_equivalence,
+            campaign_wide=aspect is None,
+            looks=planned,
+            rereadable=rereadable and any(one.bet_samples is not None for one in tested),
+            redrawn=redrawn,
         ),
     )
 
@@ -834,6 +1014,8 @@ def multiple_comparisons(
     rigs: Mapping[str, str] | None = None,
     rubric_threshold: int,
     planned_looks: int | None = None,
+    reread_order: Mapping[str, int] | None = None,
+    redrawn: tuple[int, int] = (0, 0),
 ) -> tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]:
     """Test each contrast against the control in the aspect's one family, decide every guardrail, and carry what the
     floors read.
@@ -898,6 +1080,15 @@ def multiple_comparisons(
         read at α/L (:func:`~threetears.evals.analysis.significance.looks_alpha`) and a guardrail's ``held`` on the
         interval at :func:`~threetears.evals.analysis.significance.looks_confidence`. None reads every look at α.
     :ptype planned_looks: int | None
+    :param reread_order: On a quick-path comparison, each case's place in the complete prefix of its committed
+        order (:func:`~threetears.evals.analysis.bundle.trials.bet_places`): every paired comparison on
+        a declared range is then read by the mixture bet over its cases in that order, so it keeps its error however
+        often cases are added and it is read again (:func:`_corrected_family`). None reads every comparison as before.
+    :ptype reread_order: Mapping[str, int] | None
+    :param redrawn: On a quick-path comparison, how many of its stored rows recorded no answer and run again, and how
+        many of those an interrupt cut (:func:`~threetears.evals.analysis.bundle.trials.redrawn_cells`), which a family
+        the bet read says (:func:`redrawn_sentence`).
+    :ptype redrawn: tuple[int, int]
     :return: The aspect's question's family; the exploratory family over every reading when no question is
         asked; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
         against the control, and the floors' per-case values; with no control, each pair of arms' pass rate per case
@@ -999,6 +1190,7 @@ def multiple_comparisons(
                         and took_no_turn(results_by_cell[key])
                     ),
                     contended=_contended_sides(reading, (control_key, contrast_key), catalog, contended),
+                    places=reread_order,
                 )
                 confounds = pair_confounds[(control_key, contrast_key)]
                 tested.append(
@@ -1007,7 +1199,16 @@ def multiple_comparisons(
                         rate=_is_rate(reading, catalog, judged_ranges),
                     )
                 )
-        families.append(_corrected_family(family_aspect, axes, tested, looks=planned_looks))
+        families.append(
+            _corrected_family(
+                family_aspect,
+                axes,
+                tested,
+                looks=planned_looks,
+                rereadable=reread_order is not None,
+                redrawn=redrawn,
+            )
+        )
     checks = [
         _guardrail_check(
             reading,
@@ -1582,8 +1783,10 @@ def _guardrails_of(
 
 
 __all__ = [
+    "REREAD_SENTENCE",
     "PlanningReading",
     "multiple_comparisons",
+    "read_by_bet",
     "planning_readings",
     "reading_scope",
     "aspect_looks",

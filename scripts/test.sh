@@ -133,8 +133,9 @@ fi
 # the manifest's unit suite, `--suite default`, so it stays that suite whatever other suites the
 # manifest declares, and an `--area` resolves against it; a `--suite` given here names another
 # instead (one suite per run, the last one given). The unit suite's command carries
-# `-m "not integration and not loop_timing and not docker and not secrets"`, so a run there skips
-# those. A `-m` given here narrows that expression (testament sends `-m "(<manifest's>) and (<yours>)"`).
+# `-m "not integration and not loop_timing and not docker and not secrets and not long_simulation"`, so a
+# run there skips those (the manifest's `simulation` suite runs the long_simulation shards: `--suite
+# simulation`). A `-m` given here narrows that expression (testament sends `-m "(<manifest's>) and (<yours>)"`).
 #
 # A run gated by an environment variable (RECORD, THREETEARS_LIVE_*, TAVILY_API_KEY) stays local,
 # because it would reach runners that do not have it, so its tests would skip -- and a skip reads

@@ -80,9 +80,13 @@ runners instead (testament 0.45.1 or later: an older client refuses the manifest
 `fallback` key and runs nothing; upgrade with
 `uv tool install --force --python 3.14 git+ssh://git@github.com/brookstalley/testament@v<version>`,
 where `testament status --json` names the pool's `coordinator_version`), and none of the above applies. Testament distributes the tests itself, and a run
-there leaves out the integration and `loop_timing` tests, and the `docker` and `secrets` ones
-(`.testament.toml` selects `-m "not integration and not loop_timing and not docker and not
-secrets"`; CI runs `loop_timing` serially on its own runner). `docker` marks a test that drives a
+there leaves out the integration and `loop_timing` tests, the `docker` and `secrets` ones, and the
+`long_simulation` shards (`.testament.toml` selects `-m "not integration and not loop_timing and not
+docker and not secrets and not long_simulation"`; CI runs `loop_timing` serially on its own runner).
+A `long_simulation` test is a simulation, or one shard of one, that takes minutes of CPU, beyond the
+smoke check of it the unit suite keeps; the manifest's `simulation` suite runs
+them on the pool, `testament run --no-fallback --suite simulation`, and is run whenever the reading the
+simulation holds, or the path it drives, changes (the suite's comment states the rule and names the files). CI's GitHub shards still collect them. `docker` marks a test that drives a
 Docker daemon itself, which the pool's image has none of, and `secrets` one that reads a
 credential, which never ships to a runner; both run on this machine
 (`tests/enforcement/test_docker_marker.py` and `test_secrets_marker.py` hold them to it). A
@@ -210,9 +214,8 @@ that ran and why in both. `tests/test_ci_unit_pool_script.py` pins the script's 
 **What the pool runs.** `testament run --suite default --fresh --no-cache --no-fallback -- -m "not
 loop_timing"`. `.testament.toml`'s unit suite, `default` (the manifest is version 3, one table per
 suite; `test.sh` names it too), selects `packages/` and `tests/` with `-m "not integration and not loop_timing
-and not docker and not secrets"`: the tests `ci-unit-tests.sh` partitions, less the `loop_timing`
-ones (below), which this `-m`
-names again. `--fresh` runs every batch in a container started cold from the project's image (one
+and not docker and not secrets and not long_simulation"`: the tests `ci-unit-tests.sh` partitions, less the
+`loop_timing` ones and the `long_simulation` shards (both below); this `-m` names `loop_timing` again. `--fresh` runs every batch in a container started cold from the project's image (one
 per runner, removed when the run ends), so nothing an earlier run left in a warm container reaches
 the required check; it costs a cold start and a full `[setup]` (`uv sync`) on each runner it
 reaches. `--fresh` does not turn off the cache, so `--no-cache` makes every test run rather than
@@ -229,6 +232,12 @@ serving an earlier passing result on the same tree. Every difference from the sh
   does. When the pool is lost mid-run it skips that step, since the shards run them. The manifest
   leaves them out of every pool run too, so a local `test.sh` pool run never meets them;
   `./scripts/ci-unit-tests.sh --loop-timing` runs them serially here.
+- **`long_simulation`** tests are left out of the pool's unit suite, and the shards collect them. Each is a
+  simulation, or one shard of one, of minutes of CPU, past the smoke check the unit suite keeps, and a pool batch of
+  several would pass `batch_timeout_s`. The manifest's `simulation` suite runs them on the pool, side by side:
+  `testament run --no-fallback --suite simulation`. Run it on a change its comment in `.testament.toml` covers (the
+  reading the simulation holds, and every module of the path that launches, stops, files and continues the
+  comparisons it drives); a `default` run never starts it.
 - **`docker` and `secrets`** are left out on the pool; the shards collect them. Every `docker` test
   is also an integration test, so the shards leave it out too. The `secrets` tests outside the
   integration set (the live Claude CLI batch, the live Tavily call) skip on the shards, which have

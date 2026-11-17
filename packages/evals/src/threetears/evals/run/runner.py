@@ -266,6 +266,16 @@ class RunnerOptions:
     # What runs the cells (:class:`~threetears.evals.run.executor.CellExecutor`): a host's own pool or
     # queue, or ``None`` for the in-process default, which covers serial and concurrent alike.
     cell_executor: CellExecutor | None = None
+    # The order the run's cases are played in, case by case, every repeat of a case before the next case
+    # (:func:`cell_execution_order`): a comparison whose reading is committed to an order of its cases before any
+    # answer is seen (the quick path's, :func:`~threetears.evals.analysis.bundle.trials.committed_order`). ``None``,
+    # every other run, shuffles the whole matrix.
+    case_order: Sequence[str] | None = None
+    # Set, the run starts no further cell: the cells running finish and are recorded, and the run ends cancelled
+    # (``asyncio.CancelledError``, raised once they have) where it left a cell unstarted. A first interrupt of a
+    # comparison drains its runs this way (:meth:`~threetears.evals.run.launch.LaunchGroup.stop_starting`); a cancel of
+    # the run's job still cuts at once. ``None`` never drains.
+    stop_starting: asyncio.Event | None = None
 
     def __post_init__(self) -> None:
         """Refuse a width no run can execute at.
@@ -3948,6 +3958,7 @@ def cell_execution_order(
     *,
     rng: random.Random | None = None,
     seed: str | None = None,
+    case_order: Sequence[str] | None = None,
 ) -> list[tuple[int, EvalTestCase]]:
     """The order a run's cells are executed in — the full matrix, shuffled.
 
@@ -3997,10 +4008,21 @@ def cell_execution_order(
     :ptype rng: random.Random | None
     :param seed: What to derive an order shared with other runs from; ignored beside ``rng``.
     :ptype seed: str | None
+    :param case_order: Play the cases case by case in this order, each case's repeats in turn, in place of the
+        shuffle (``RunnerOptions.case_order``); ``rng`` and ``seed`` are then unread.
+    :ptype case_order: Sequence[str] | None
     :return: Every ``(k_iteration, test_case)`` cell exactly once, in the order the run will
         execute them. Every cell is at the run's one candidate model.
     :rtype: list[tuple[int, EvalTestCase]]
     """
+    if case_order is not None:
+        # Case by case in the committed order, every repeat of a case before the next: a case's arms and repeats run
+        # together in time, so a drift lands on all of them alike, which is what pairing them needs, and the cases
+        # stand in an order fixed before any answer, so drift is still spread across the cases rather than aligned
+        # with any one of them. A case the order does not name runs after, in the list's order.
+        placed = {case: place for place, case in enumerate(case_order)}
+        ordered = sorted(enumerate(test_cases), key=lambda item: (placed.get(item[1].id, len(placed)), item[0]))
+        return [(k, tc) for _, tc in ordered for k in range(1, run.k_runs + 1)]
     cells = [(k, tc) for k in range(1, run.k_runs + 1) for tc in test_cases]
     if rng is None and seed is not None:
         # A digest rather than a shuffle: a shuffle's permutation depends on the list's length and order, so two
@@ -4254,7 +4276,9 @@ async def execute_run(
     # matrix aligned with the coordinate being compared. See
     # :func:`cell_execution_order` for the order's derivation and why its seed is
     # not a measurement condition. Cells START in this order however many run at once.
-    order = cell_execution_order(run, test_cases, rng=options.cell_order_rng, seed=options.cell_order_seed)
+    order = cell_execution_order(
+        run, test_cases, rng=options.cell_order_rng, seed=options.cell_order_seed, case_order=options.case_order
+    )
     if stored.done:
         # Filtered after it is ordered, never ordered after it is filtered: the run's own order with its done cells
         # left out is the order an uninterrupted run would have run the rest in.
@@ -4369,9 +4393,13 @@ async def execute_run(
             reached.append(_CeilingReached("metered_calls", ledger.ceiling, ledger.landed_calls, 0, len(in_flight)))
         return reached
 
+    def draining() -> bool:
+        """Whether the run was asked to start no further cell (``RunnerOptions.stop_starting``)."""
+        return options.stop_starting is not None and options.stop_starting.is_set()
+
     async def run_cell(k: int, tc: EvalTestCase) -> None:
         """One cell of the matrix, waiting its turn on its case first when the run captures."""
-        if stop.decided:
+        if stop.decided or draining():
             return
         if case_turns is None:
             await one_cell(k, tc)
@@ -4381,8 +4409,8 @@ async def execute_run(
 
     async def one_cell(k: int, tc: EvalTestCase) -> None:
         nonlocal cells_started
-        # A stop decided while this cell waited for its turn reaches it here too.
-        if stop.decided:
+        # A stop decided, or a drain asked, while this cell waited for its turn reaches it here too.
+        if stop.decided or draining():
             return
         # Both per-run ceilings, read here: stop gracefully BEFORE starting a cell once what the recorded cells
         # landed has reached either. The cells already running are refused no candidate call; they finish, their
@@ -4847,6 +4875,17 @@ async def execute_run(
     # (the status and the provider's own message), rather than completing with a page that says to rerun.
     if total and len(infra_exclusions) == total:
         raise NothingMeasuredError(total, errors=infra_exclusions)
+    if draining() and cells_started < len(order):
+        # Asked to start no further cell: the cells that were running have finished and are recorded, and the run
+        # ends as a cancelled one does, its unstarted cells left for a take-up or a continuation.
+        log.warning(
+            "Eval run %s stopped starting cells: %d/%d results recorded, %d cell(s) left unstarted",
+            run.id,
+            done,
+            total,
+            len(order) - cells_started,
+        )
+        raise asyncio.CancelledError(f"stopped starting cells after {done}/{total} results; the running cells finished")
 
     return summaries
 
