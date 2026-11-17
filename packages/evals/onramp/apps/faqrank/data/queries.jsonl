@@ -1,0 +1,44 @@
+{"id": "q-01", "query": "forgot password"}
+{"id": "q-02", "query": "how do i reset my password?"}
+{"id": "q-03", "query": "password reset link expired"}
+{"id": "q-04", "query": "2fa"}
+{"id": "q-05", "query": "not getting 2fa codes"}
+{"id": "q-06", "query": "verification code never arrives, what now?"}
+{"id": "q-07", "query": "login with google"}
+{"id": "q-08", "query": "okta"}
+{"id": "q-09", "query": "sso?"}
+{"id": "q-10", "query": "can i get a refund?"}
+{"id": "q-11", "query": "refund"}
+{"id": "q-12", "query": "cancel subscription"}
+{"id": "q-13", "query": "how to cancel?"}
+{"id": "q-14", "query": "change billing email"}
+{"id": "q-15", "query": "where are my invoices?"}
+{"id": "q-16", "query": "download invoice pdf"}
+{"id": "q-17", "query": "receipts?"}
+{"id": "q-18", "query": "vat number on invoice"}
+{"id": "q-19", "query": "add VAT/tax id"}
+{"id": "q-20", "query": "charged twice!!"}
+{"id": "q-21", "query": "double-charged"}
+{"id": "q-22", "query": "upgrade plan"}
+{"id": "q-23", "query": "downgrade to monthly?"}
+{"id": "q-24", "query": "pay by bank transfer"}
+{"id": "q-25", "query": "update card"}
+{"id": "q-26", "query": "card expired, how do I change it?"}
+{"id": "q-27", "query": "export csv"}
+{"id": "q-28", "query": "export to excel?"}
+{"id": "q-29", "query": "import clients"}
+{"id": "q-30", "query": "import from spreadsheet"}
+{"id": "q-31", "query": "bank feed not updating"}
+{"id": "q-32", "query": "how do i connect my bank?"}
+{"id": "q-33", "query": "webhooks?"}
+{"id": "q-34", "query": "api limit?"}
+{"id": "q-35", "query": "429 error"}
+{"id": "q-36", "query": "invite team member"}
+{"id": "q-37", "query": "permissions/roles"}
+{"id": "q-38", "query": "remove user"}
+{"id": "q-39", "query": "reminders for overdue invoices"}
+{"id": "q-40", "query": "clients pay by card?"}
+{"id": "q-41", "query": "invoice in euros"}
+{"id": "q-42", "query": "how do i delete my account?"}
+{"id": "q-43", "query": "is there an iphone/android app?"}
+{"id": "q-44", "query": "send emails in french?"}

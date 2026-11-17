@@ -1,6 +1,6 @@
 # previews
 
-Notification previews for the Huddle team-chat app (`previews.py`). Before a message is opened, the phone shows a
+Notification previews for our team-chat app (`previews.py`). Before a message is opened, the phone shows a
 preview of it: `preview(body, channel)` builds it for one channel (`lock_screen`, `banner` or `watch`), and
 `previews(body)` for all three. Each channel has a character limit; the rules for fitting a message to it are in the
 module docstring.

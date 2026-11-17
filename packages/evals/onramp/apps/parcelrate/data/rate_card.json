@@ -1,5 +1,5 @@
 {
-  "courier": "Fenwick Parcels",
+  "courier": "our contract courier",
   "effective_from": "2026-01-05",
   "notes": "Prices in pence, excluding VAT. Each band covers weights up to and including its limit.",
   "signed_surcharge_pence": 150,
