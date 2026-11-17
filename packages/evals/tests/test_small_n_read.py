@@ -17,7 +17,7 @@ Held here, through ``Eval.run`` and its continuation, each claim on its Clopper-
 - the three first lines at eight cases (all wins, an effect near 0.3, none) and the family behind them;
 - under three nulls (pass/fail once a case; the on-ramp's shape, apps as cases with three trials and an arm-by-app
   spread; a skewed null whose mean difference is zero but whose differences are not symmetric), a single read at
-  twelve cases and a comparison continued to three reads, each add sized from the reading, separate at most α;
+  twelve cases and a comparison continued to five reads, each add sized from the reading, separate at most α;
 - under those continuations the evidence on either side ever reaches 10 at most one time in ten (Ville);
 - the interval on the primary covers the true difference at least the 90% it states.
 
@@ -335,7 +335,7 @@ class Continued:
 
 async def _continued(null: _Null, tag: str) -> Continued:
     """One newcomer under ``null`` who reads at eight cases and, while nothing separates, appends cases and runs the
-    comparison again into the same store, at most three reads: each add four cases plus up to sixteen more the nearer
+    comparison again into the same store, at most five reads: each add four cases plus up to sixteen more the nearer
     the primary's p came to zero. Every read is the product's continuation (only appended cases run)."""
     calls: Counter[tuple[int, int]] = Counter()
     arms = {"v1": _drawn(null, tag, 0, calls), "v2": _drawn(null, tag, 1, calls)}
@@ -343,7 +343,7 @@ async def _continued(null: _Null, tag: str) -> Continued:
     n = 8
     strong = EVIDENCE_STEPS[1]
     better = worse = False
-    for _ in range(3):
+    for _ in range(5):
         result = await Eval(_cases(n), arms, [_passed], k=_k(null), name="null", question=_QUESTION).run(
             store=store, scope="s"
         )
@@ -366,9 +366,52 @@ _ONCE_SEPARATED: dict[_Null, tuple[int, ...]] = {"binary": (1, 1), "onramp": (0,
 #: ever strong), as seeded.
 _CONTINUED_PER_SHARD = 150
 _CONTINUED: dict[_Null, tuple[tuple[int, int, int], ...]] = {
-    "binary": ((4, 4, 1), (3, 3, 2), (3, 5, 5), (4, 3, 3), (4, 4, 4), (3, 0, 2), (4, 6, 4), (3, 1, 1), (2, 4, 2), (3, 3, 4)),
-    "onramp": ((2, 4, 2), (0, 4, 1), (2, 0, 1), (0, 1, 2), (0, 1, 0), (0, 2, 1), (1, 1, 2), (0, 0, 1), (1, 4, 1), (0, 4, 1)),
-    "skewed": ((5, 3, 2), (10, 3, 2), (4, 4, 5), (4, 2, 4), (6, 3, 2), (3, 2, 1), (7, 6, 4), (6, 6, 6), (9, 5, 0), (4, 5, 2)),
+    "binary": (
+        (4, 6, 5),
+        (3, 3, 3),
+        (4, 6, 6),
+        (5, 4, 7),
+        (5, 4, 6),
+        (3, 0, 3),
+        (5, 6, 6),
+        (3, 1, 2),
+        (4, 6, 3),
+        (4, 3, 5),
+    ),
+    "onramp": (
+        (4, 5, 4),
+        (2, 5, 2),
+        (3, 1, 2),
+        (1, 1, 2),
+        (0, 2, 2),
+        (3, 5, 3),
+        (2, 4, 4),
+        (0, 1, 1),
+        (4, 5, 2),
+        (2, 4, 4),
+    ),
+    "skewed": (
+        (5, 3, 4),
+        (10, 3, 5),
+        (4, 4, 5),
+        (7, 3, 5),
+        (7, 4, 6),
+        (6, 3, 3),
+        (8, 6, 5),
+        (7, 6, 10),
+        (10, 6, 0),
+        (7, 7, 3),
+        (6, 3, 4),
+        (2, 1, 6),
+        (3, 2, 3),
+        (3, 1, 5),
+        (8, 3, 8),
+        (2, 4, 6),
+        (4, 1, 5),
+        (2, 2, 2),
+        (6, 3, 3),
+        (5, 3, 2),
+    ),
 }
 
 #: The cases a single read reads.
@@ -409,7 +452,7 @@ async def test_a_single_read_under_the_null_separates_as_seeded(null: _Null, sha
 async def test_a_continued_read_under_the_null_separates_and_grows_its_evidence_as_seeded(
     null: _Null, shard: int
 ) -> None:
-    """A shard of seeded newcomers, each continuing one comparison up to three reads (:func:`_continued`): as many
+    """A shard of seeded newcomers, each continuing one comparison up to five reads (:func:`_continued`): as many
     separate, and as many see the evidence on each side reach the strong step, as pinned."""
     tally = [0, 0, 0]
     for index in range(_CONTINUED_PER_SHARD):
@@ -425,13 +468,15 @@ def test_under_each_null_the_read_separates_at_most_alpha_and_the_evidence_is_st
     null: _Null,
 ) -> None:
     """The claims, read on the shards' seeded counts (each reproduced by its shard test above), on each Clopper-Pearson
-    95% upper bound: a single read at twelve cases separates at most α; a comparison continued to three reads, each add
+    95% upper bound: a single read at twelve cases separates at most α; a comparison continued to five reads, each add
     sized from the reading, separates at most α; and over those reads the evidence for v2, and against it, each ever
     reaches 10 at most one time in ten (Ville's inequality bounds it at 1/10 for an e-value read at any stops). As
-    seeded, continued, of 1,500 newcomers a null: pass/fail 33 separate (2.2%, upper 3.1%), the on-ramp's shape 6 (0.4%,
-    upper 0.9%), the skewed null 58 (3.9%, upper 4.97%), the null that spends most of α; the evidence for v2 is strong
-    on 33, 21 and 39, against it on 28, 12 and 28 (upper bounds 3.1% or below). Once, at twelve cases, of 400: 2, 0
-    and 0."""
+    seeded, continued: pass/fail 40 of 1,500 newcomers separate (2.7%, upper 3.6%), the on-ramp's shape 21 of 1,500
+    (1.4%, upper 2.1%), the skewed null 112 of 3,000 (3.7%, upper 4.5%), read on twice the newcomers because it spends
+    the most of α; the evidence for v2 is strong on 39, 33 and 68, against it on 46, 26 and 90 (upper bounds 4.1% or
+    below). Once, at twelve cases, of 400: 2, 0 and 0. Each count is the bet's own over the same draws read for read:
+    the newcomer restated without ``Eval.run`` reproduces every shard pinned here.
+    """
     once = exact_rate_interval(sum(_ONCE_SEPARATED[null]), _ONCE_PER_SHARD * len(_ONCE_SEPARATED[null]))
     replicates = _CONTINUED_PER_SHARD * len(_CONTINUED[null])
     sums = [sum(shard[column] for shard in _CONTINUED[null]) for column in range(3)]
