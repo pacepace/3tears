@@ -946,6 +946,7 @@ def assemble_context_bundle(
     planned_looks = (
         looks.planned if looks is not None else declared_design.planned_looks if declared_design is not None else None
     )
+    reread_order = bet_places(campaign.created_by, runs, results, planned_looks=planned_looks)
     bundle.multiple_comparisons, bundle.guardrails, bundle.floor_contrasts = multiple_comparisons(
         view.aspect,
         declared,
@@ -973,8 +974,9 @@ def assemble_context_bundle(
         # before it, a stopped launch's included. Decided from stored facts alone,
         # so every reader of a stored comparison reads it alike, and no campaign a host files over the same runs, nor
         # any declaration, opts an engine campaign in.
-        reread_order=bet_places(campaign.created_by, runs, results, planned_looks=planned_looks),
-        redrawn=redrawn_cells(results),
+        reread_order=reread_order,
+        # Read only where the bet reads the comparison: no other family says it, nor reads the rows for it.
+        redrawn=redrawn_cells(results) if reread_order is not None else (0, 0),
     )
     # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
     # paired judged contrast's share of it, filled last so no other section copies them.
