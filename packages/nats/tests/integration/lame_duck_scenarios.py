@@ -46,6 +46,10 @@ WORKLOAD_AFTER_LDM_SECONDS = 38.0
 #: stretches on either side where the feed must be in order
 STEADY_SECONDS = 1.0
 TICK_SECONDS = 0.02
+#: the failure-only bound on the feed's last messages reaching the pod once the publisher has flushed: a fixed 0.5 s
+#: sleep stood here, and a loaded runner can take longer than that to dispatch them (docs/testing.md: wait for the
+#: event, never a fixed sleep)
+FEED_SETTLED_SECONDS = 10.0
 
 
 @dataclass
@@ -267,7 +271,9 @@ async def hands_its_clients_over(cluster: Cluster) -> None:
             stop.set()
             await asyncio.gather(*workers)
             await service.flush()
-            await asyncio.sleep(0.5)
+            settle_by = time.monotonic() + FEED_SETTLED_SECONDS
+            while len(set(feed_seen)) < published and time.monotonic() < settle_by:
+                await asyncio.sleep(TICK_SECONDS)
 
             missing = sorted(set(range(1, published + 1)) - set(feed_seen))
             assert published_at_ldm is not None
@@ -288,7 +294,10 @@ async def hands_its_clients_over(cluster: Cluster) -> None:
             assert moved_at is not None, "the pod never moved to node B"
             assert moved_at - ldm_at < 3.0, "the pod did not move before node A began closing clients"
             assert failures == []
-            assert missing == []
+            assert missing == [], (
+                f"feed numbers never received: {missing[:20]} of {published}; lame duck at {published_at_ldm}, moved at "
+                f"{published_at_move}, old connection closed at {published_at_retired}, in flight {in_flight}"
+            )
             assert outside == sorted(outside), "the feed is in order outside the handover window"
             assert all(a in window and b in window for a, b in inversions), (
                 f"an inversion outside the handover window {window.start}..{window.stop - 1}: {inversions}"
