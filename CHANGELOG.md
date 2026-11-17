@@ -6,6 +6,16 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: an arm answered by two models reads no cost across aspects where only one of them was priced
+
+**Fixed:** a campaign's figures across aspects read an arm's cost per reply on an aspect off its scoreboard, which
+pools every model that answered it. Where the arm was answered by two models (or read under two definitions of a host
+measure) and only one of its cells there was priced, that pooled cost was taken as the arm's. It now reads no cost on
+that aspect, as its pass rate there already did, and the cost across aspects is withheld, naming the aspect.
+
+**For hosts:** a campaign page or report input that printed such an arm's cost across aspects (the equal-weight row
+and the cost/quality chart) prints none for it now, and says which aspect it lacks. Nothing stored moves.
+
 ### evals: what only the package's tests called is deleted or made private
 
 **Removed:** names that no production code calls, whose only callers were the package's own tests:

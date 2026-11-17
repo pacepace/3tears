@@ -50,9 +50,11 @@ _CONTROL, _ALIAS = "pinned", "latest"
 _MARCH, _JUNE = "m-03", "m-06"
 
 
-def _results(run: EvalRun, served: str, passing: int, cost: float = 0.002, step: float = 0.0) -> list[EvalResult]:
+def _results(
+    run: EvalRun, served: str, passing: int, cost: float | None = 0.002, step: float = 0.0
+) -> list[EvalResult]:
     """The run's trials, the first ``passing`` of them passing, each answered by ``served``; trial ``i`` costs
-    ``cost + i * step``."""
+    ``cost + i * step``, and none is priced where ``cost`` is None."""
     return [
         result_of(
             run,
@@ -62,7 +64,7 @@ def _results(run: EvalRun, served: str, passing: int, cost: float = 0.002, step:
                     role="candidate",
                     model=run.candidate_model,
                     served_model=served,
-                    cost_usd=cost + index * step,
+                    cost_usd=None if cost is None else cost + index * step,
                     call_count=1,
                 )
             ],
@@ -80,7 +82,7 @@ class _Read:
         alias_served: Sequence[str],
         *,
         control_served: Sequence[str] = ("pinned-1",),
-        alias_costs: Sequence[float] | None = None,
+        alias_costs: Sequence[float | None] | None = None,
     ) -> None:
         """``alias_costs``, one per alias run, also has every alias run pass as often as the control: the arms then
         differ on cost alone."""
@@ -494,6 +496,17 @@ def test_the_figures_across_aspects_never_call_an_arm_answered_by_two_models_dea
     assert aggregate is not None
     held = {figures.arm_label: figures for figures in aggregate.arms}
     assert (held[_ALIAS].cheaper_on, held[_ALIAS].dearer_on) == ([], [])
+
+
+def test_the_figures_across_aspects_read_no_cost_for_an_arm_answered_by_two_models_and_priced_by_one() -> None:
+    """Only one of its cells there is priced, so its scoreboard's cost per reply is that one model's, read as the
+    arm's: the cost across aspects is withheld, naming the aspect, as its pass rate is."""
+    aggregate = _across_two_aspects(_Read([_MARCH, _JUNE], alias_costs=[0.004, None])).aggregate
+
+    assert aggregate is not None
+    held = {figures.arm_label: figures for figures in aggregate.arms}
+    assert (held[_ALIAS].cost.value, held[_ALIAS].cost.interval, held[_ALIAS].cost.missing) == (None, None, [ASPECT])
+    assert held[_CONTROL].cost.value is not None and held[_CONTROL].cost.missing == []
 
 
 @pytest.mark.parametrize("stored", [False, True], ids=["built", "stored"])
