@@ -52,8 +52,11 @@ discussed the station PWA) and the rulings relayed on 2026-11-16 say what this i
   rollout. WebKit compares only the worker's own bytes: documented, the server appends the release]
 - [DECISION: `shell-worker.js` never answers worker or worklet loads: worker/worklet request
   destinations, and every request from a worker client (known from its script's
-  `resultingClientId`, else looked up once with `clients.get`) pass through; shell entries named
-  `*worker*.js`/`*worklet*.js` are dropped with a warning | owner, 2026-11-17: the station's
+  `resultingClientId`, else looked up once with `clients.get`) pass through; shell entries whose
+  file name has "worker"/"worklet" as a word (`moq-worker.js`, `decoderWorker.mjs`; not
+  `networker.js`) are dropped with a warning; the README states the rule as family policy, and for
+  a Workbox app (`appShell`, which does not enforce it) as guidance to keep worker files out of its
+  precache and routes [inference, not yet confirmed by the owner for Workbox apps] | owner, 2026-11-17: the station's
   v0.8.0-v0.8.1 installed iPhone app stalled its MoQ/LL-HLS workers while the shell worker answered
   their loads; the destination and client signals were probed in Chromium and Firefox (both set
   `resultingClientId` on worker script requests); a name check alone would miss imported modules]
