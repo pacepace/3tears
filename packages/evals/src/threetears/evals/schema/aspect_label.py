@@ -17,8 +17,6 @@ def aspect_label_for(behavior: str) -> str:
     key's parts.
 
     :param behavior: The campaign's behavior, e.g. ``tools/search``.
-    :ptype behavior: str
     :return: The label, e.g. ``tools-search``.
-    :rtype: str
     """
     return behavior.replace("/", "-")

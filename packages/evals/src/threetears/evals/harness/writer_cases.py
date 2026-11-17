@@ -120,9 +120,7 @@ class WriterCaseFile(EvalBaseModel):
         """Write the case to a file, its directory made when missing.
 
         :param path: The file, ending in ``.json.gz``.
-        :ptype path: str | Path
         :return: The file written.
-        :rtype: Path
         :raises ValueError: When the path does not end in ``.json.gz``, so no directory read would find it.
         """
         target = Path(path)
@@ -138,9 +136,7 @@ class WriterCaseFile(EvalBaseModel):
 
         :param path: The file; a relative path is read beside the eval file being loaded, else in the working
             directory.
-        :ptype path: str | Path
         :return: The case, its snapshot's identity checked.
-        :rtype: WriterCaseFile
         :raises ValueError: When the file is not gzip, or its content does not read as a writer case of this format.
         :raises OSError: When the file cannot be opened.
         """
@@ -163,20 +159,13 @@ class WriterCaseFile(EvalBaseModel):
         """Restore the snapshot into a scope and mint it there as a case of a writer template.
 
         :param host: The host whose store receives the snapshot and the case.
-        :ptype host: OpsHost
         :param template_id: The writer template.
-        :ptype template_id: str
         :param scope_id: The scope the template lives in, which the snapshot is restored into.
-        :ptype scope_id: str
         :param created_by: Who mints it, as the host names the caller.
-        :ptype created_by: str
         :param split: The sets the case joins; ``None`` for the default names and share.
-        :ptype split: WriterSplit | None
         :param skill: The skill the case's withheld notes are checked against, the one its arms run; ``None`` for the
             skill this build ships.
-        :ptype skill: AnalystSkill | None
         :return: The mint's receipt: the case, its stratum, its side and the set version listing it.
-        :rtype: MintedWriterCase
         :raises NotFoundError: The template is not in the scope.
         :raises ValidationFailedError: As :func:`~threetears.evals.ops.report_writer.writer_bank.writer_case_mint`
             refuses.
@@ -213,25 +202,15 @@ async def writer_case_freeze(
     (``OpsHost.reading(result.host)``), whose profile declares the eval's measures.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param name: The case's name.
-    :ptype name: str
     :param created_by: Who freezes it, as the host names the caller.
-    :ptype created_by: str
     :param campaign_id: The campaign to freeze; exactly one of it and ``analysis_id``.
-    :ptype campaign_id: str | None
     :param analysis_id: The stored analysis to freeze.
-    :ptype analysis_id: str | None
     :param group: The split group; ``None`` for the case's name.
-    :ptype group: str | None
     :param stratum: The kind of case it is.
-    :ptype stratum: str | None
     :param withhold: The notes its analyst is never given.
-    :ptype withhold: Collection[str]
     :return: The case, unwritten.
-    :rtype: WriterCaseFile
     :raises ValidationFailedError: As :func:`~threetears.evals.ops.analyst.report_snapshot_freeze` refuses.
     :raises NotFoundError: No such campaign or analysis in the scope.
     """
@@ -252,9 +231,7 @@ def read_writer_cases(directory: str | Path) -> tuple[WriterCaseFile, ...]:
 
     :param directory: The directory; only its ``*.json.gz`` files are read, and not its subdirectories. A relative
         path is read beside the eval file being loaded, else in the working directory.
-    :ptype directory: str | Path
     :return: The cases, in file-name order.
-    :rtype: tuple[WriterCaseFile, ...]
     :raises ValueError: When it is not a directory, holds no case file, holds one that does not read, or holds two
         cases of one name.
     """

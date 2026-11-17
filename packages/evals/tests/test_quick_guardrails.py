@@ -21,13 +21,11 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis import (
-    DisclosureBlock,
-    TableBlock,
-    get_campaign,
-    report_markdown,
-)
-from threetears.evals.kernel import AspectDesign, GuardrailMargin, refuse_an_undeclarable_design
+from threetears.evals.analysis import DisclosureBlock, TableBlock
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import report_markdown
+from threetears.evals.kernel import AspectDesign, GuardrailMargin
+from threetears.evals.kernel.declaration import refuse_an_undeclarable_design
 from threetears.evals.schema import EvalTemplate, RubricDim, StopReason
 from threetears.evals.kernel.host import MeasureRegistry
 from threetears.evals.kernel.metrics import MetricDescriptor

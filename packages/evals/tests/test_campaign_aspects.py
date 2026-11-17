@@ -27,7 +27,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.analysis import assemble_context_bundle
-from threetears.evals.analysis.aspects import aspect_view, aspect_views
+from threetears.evals.analysis.aspects import aspect_view
 from threetears.evals.analysis.bundle.schema import LateCriterion, late_criteria
 from threetears.evals.analysis.campaigns import (
     add_runs_to_campaign,
@@ -642,7 +642,7 @@ def test_a_stored_v15_campaign_reads_as_one_aspect_through_the_store_and_writes_
     read = storage.load_campaign(document["id"], document["scope_id"])
 
     assert read is not None and read.schema_version == DURABLE_SCHEMA_VERSION
-    (view,) = aspect_views(read)
+    view = aspect_view(read)
     assert (view.aspect, view.template_id, view.run_ids) == (document["behavior"], "tpl-tone", ["tpl-tone-a"])
     assert view.declared is not None and view.declared.control is not None
     assert view.declared.control.variant_key == document["declared_design"]["control"]
@@ -755,7 +755,8 @@ def test_a_campaign_of_two_aspects_is_two_views_and_none_is_implied() -> None:
     storage, _ = _store()
     campaign = _two_aspects(storage)
 
-    tone, tools = aspect_views(campaign)
+    tone, tools = aspect_view(campaign, "tone"), aspect_view(campaign, "tools")
+    assert [aspect.label for aspect in campaign.aspects] == ["tone", "tools"]
 
     assert (tone.aspect, tone.template_id, tone.run_ids) == ("tone", "tpl-tone", ["tpl-tone-a"])
     assert tools.declared is not None and tools.declared.question == campaign.question

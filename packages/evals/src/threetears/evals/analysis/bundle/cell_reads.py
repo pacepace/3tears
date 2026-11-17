@@ -87,12 +87,9 @@ def group_results_by_cell(cells: list[Cell], results: list[ResultView]) -> dict[
     set of observations the bundle already calls one cell.
 
     :param cells: The pooled cells.
-    :ptype cells: list[Cell]
     :param results: Every resolved member result.
-    :ptype results: list[ResultView]
     :return: ``{(variant_key, apparatus_class_id): [result, ...]}`` in coordinate order, each list in
         result-id order.
-    :rtype: dict[CellKey, list[ResultView]]
     """
     by_id = {result.id: result for result in results}
     return {
@@ -114,9 +111,7 @@ def member_run_ids(members: list[ResultView]) -> list[str]:
     verdict on one cell cannot name different runs.
 
     :param members: One cell's results, from :func:`group_results_by_cell`.
-    :ptype members: list[ResultView]
     :return: The distinct ``eval_run_id`` values, sorted.
-    :rtype: list[str]
     """
     return sorted({result.eval_run_id for result in members})
 
@@ -169,21 +164,15 @@ def judged_measures(
     and left out of it, because a judge reading a broken transcript is not measuring the candidate.
 
     :param records: The assembly's score projection rows.
-    :ptype records: list[ScoreRecord]
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
-    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :param design: The campaign's declaration, for the bar naming a dimension.
-    :ptype design: AspectDesign | None
     :param tiers: The judges' evidence tiers; each arm carries the weakest among the judges that served its
         counted scores (:func:`~threetears.evals.analysis.agreement.tier_for_judges`).
-    :ptype tiers: list[JudgeEvidenceTier]
     :param person_scores: People's scores per ``(result_id, dimension)``
         (:func:`~threetears.evals.analysis.agreement.person_scores_by_result`), from which each arm with a
         rated counted observation carries a prediction-powered estimate (:func:`_prediction_powered`); None
         reads as nobody rated anything.
-    :ptype person_scores: Mapping[tuple[str, str], Sequence[int]] | None
     :return: One entry per dimension scored anywhere, sorted by name.
-    :rtype: list[JudgedMeasure]
     """
     result_by_id = {result.id: result for members in results_by_cell.values() for result in members}
     cell_of_result = {result.id: key for key, members in results_by_cell.items() for result in members}
@@ -275,19 +264,13 @@ def _prediction_powered(
     disagreement about a turn the measure already floors.
 
     :param dimension: The judged dimension.
-    :ptype dimension: str
     :param valued: The arm's counted, valued score rows on it.
-    :ptype valued: list[ScoreRecord]
     :param result_by_id: Every result read, by id.
-    :ptype result_by_id: Mapping[str, ResultView]
     :param person_scores: People's scores per ``(result_id, dimension)``.
-    :ptype person_scores: Mapping[tuple[str, str], Sequence[int]]
     :param value_range: The dimension's scale, which the interval is clipped to.
-    :ptype value_range: tuple[float, float] | None
     :return: The estimate, its ``mean`` None with the reason below
         :data:`~threetears.evals.analysis.stats.PPI_MIN_LABELLED_RESULTS` labelled observations; or None when no
         counted observation here was rated.
-    :rtype: PredictionPoweredReading | None
     """
     human: list[float | None] = []
     for row in valued:
@@ -395,9 +378,7 @@ def cell_arm_exclusions(results_by_cell: Mapping[CellKey, list[ResultView]]) -> 
     it was sent; one that reported nothing makes the arm's cap unreported rather than guessed.
 
     :param results_by_cell: Each cell's results (:func:`group_results_by_cell`).
-    :ptype results_by_cell: Mapping[CellKey, list[ResultView]]
     :return: The arms' exclusions.
-    :rtype: list[ArmExclusions]
     """
     arms: list[ArmExclusions] = []
     for (variant_key, apparatus_class_id), members in results_by_cell.items():
@@ -439,12 +420,9 @@ def differential_exclusions(
     named are those under the same rig, the only arms a comparison reads the arm against.
 
     :param arms: The arms' exclusions (:func:`cell_arm_exclusions`).
-    :ptype arms: Sequence[ArmExclusions]
     :param rigs: Apparatus class id → the class of its rig alone, for each class split on the answering model
         (:func:`~threetears.evals.analysis.cells.rig_of`); a class absent here is its own rig.
-    :ptype rigs: Mapping[str, str] | None
     :return: The flags, in the arms' order and then by cause; empty when no cause took more than the threshold anywhere.
-    :rtype: list[DifferentialExclusion]
     """
     flags: list[DifferentialExclusion] = []
     rig = rigs or {}
@@ -501,9 +479,7 @@ def _judged_by_cell(measures_judged: list[JudgedMeasure]) -> dict[CellKey, list[
     """The judged measures transposed — each cell's readings, one per dimension it was scored on.
 
     :param measures_judged: Judged measures, from :func:`judged_measures`, sorted by name.
-    :ptype measures_judged: list[JudgedMeasure]
     :return: Each cell's readings, sorted by dimension, keyed by the cell's coordinates.
-    :rtype: dict[CellKey, list[JudgedReading]]
     """
     judged_by_cell: dict[CellKey, list[JudgedReading]] = {}
     # Judged measures are sorted by name, so each cell's readings arrive sorted by dimension.
@@ -551,24 +527,16 @@ def cell_strata(
     case of it.
 
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
-    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :param stratum_of_case: The stratum each case declares, by case id; a case that did not resolve is absent
         and reads as declaring none.
-    :ptype stratum_of_case: dict[str, str | None]
     :param records: The score projection, for judged dimensions.
-    :ptype records: list[ScoreRecord]
     :param design: The campaign's declaration, for the bar a judged dimension carries.
-    :ptype design: AspectDesign | None
     :param tiers: The judges' evidence tiers.
-    :ptype tiers: list[JudgeEvidenceTier]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param person_scores: People's scores per ``(result_id, dimension)``, for each stratum's prediction-powered
         estimates; see :func:`judged_measures`.
-    :ptype person_scores: Mapping[tuple[str, str], Sequence[int]] | None
     :return: Each broken-down cell's strata — named strata in name order, then the undeclared one — keyed by the
         cell's coordinates.
-    :rtype: dict[CellKey, list[StratumFacts]]
     """
     by_stratum: dict[_StratumKey, dict[CellKey, list[ResultView]]] = {}
     for key, members in results_by_cell.items():
@@ -632,27 +600,17 @@ def cell_measures(
     population rules happening to agree.
 
     :param cells: The pooled cells, for their replication.
-    :ptype cells: list[Cell]
     :param results_by_cell: Each cell's results, from :func:`group_results_by_cell`.
-    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :param measures_judged: The bundle's judged measures, from :func:`judged_measures`.
-    :ptype measures_judged: list[JudgedMeasure]
     :param strata: Each broken-down cell's strata, from :func:`cell_strata`; a cell absent from it carries none.
-    :ptype strata: dict[CellKey, list[StratumFacts]]
     :param short_runs: The bundle's short-run sentences, by run id.
-    :ptype short_runs: dict[str, str]
     :param incomplete_runs: The bundle's incomplete-run statuses, by run id.
-    :ptype incomplete_runs: dict[str, str]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param control: The declared control's variant key, or None.
-    :ptype control: str | None
     :param names: The bundle's arm names (:func:`~threetears.evals.analysis.arms.arm_names`), which order the arms.
-    :ptype names: Mapping[str, str]
     :return: One entry per cell, in the decision surface's row order
         (:func:`~threetears.evals.analysis.arms.surface_order`): the control's cells first, as the reference,
         then every other arm alphabetically by name, each arm's rigs by id. Not a ranking.
-    :rtype: list[CellFacts]
     """
     judged_by_cell = _judged_by_cell(measures_judged)
     facts = []

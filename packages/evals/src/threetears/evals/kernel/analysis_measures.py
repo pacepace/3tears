@@ -180,7 +180,6 @@ class MeasureSummary(EvalDocumentModel):
         :return: p05 when higher is better, p95 when lower is better, None for a categorical
             measure, one with no declared direction, or one with too few observations to
             estimate that tail (below 13).
-        :rtype: float | None
         """
         if self.higher_is_better is None:
             return None

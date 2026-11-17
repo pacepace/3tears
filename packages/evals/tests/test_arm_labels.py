@@ -34,13 +34,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
-from threetears.evals.analysis import (
-    Report,
-    assemble_context_bundle,
-    build_code_only_report,
-    report_html,
-    report_markdown,
-)
+from threetears.evals.analysis import Report, assemble_context_bundle, build_code_only_report, report_html
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.campaigns import campaign_arms, set_campaign_control
 from threetears.evals.analysis.arms import (
     ELISION,

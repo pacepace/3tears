@@ -171,12 +171,9 @@ def rescore_variance(repeated: Sequence[Repeated], *, value_range: tuple[float, 
     freedom per result would make it. With no disagreement at all the range runs from zero to one flip's bound.
 
     :param repeated: The repeated results.
-    :ptype repeated: Sequence[Repeated]
     :param value_range: The scale's inclusive bounds.
-    :ptype value_range: tuple[float, float]
     :return: The variance and its range at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`, or None with no
         repeated result.
-    :rtype: ArmVariance | None
     """
     if not repeated:
         return None
@@ -196,11 +193,8 @@ def fail_given_pass(repeated: Sequence[Repeated], *, passed: float) -> NoiseRang
     """``e``: how often a repeat fails a result whose first reading passed, with the Wilson interval over cases.
 
     :param repeated: The repeated results on a pass/fail dimension, as they count.
-    :ptype repeated: Sequence[Repeated]
     :param passed: The reading that is a pass.
-    :ptype passed: float
     :return: ``e`` and its range, or None where no first reading passed.
-    :rtype: NoiseRange | None
     """
     outcomes = [again != passed for entry in repeated if entry.first == passed for again in entry.again]
     cases = [entry.case for entry in repeated if entry.first == passed for _ in entry.again]
@@ -218,11 +212,8 @@ def pass_k_ceiling(e: float, k: int) -> float:
     """The ceiling a judge that fails a passing reply on ``e`` of its readings puts on pass^k: ``(1 − e)^(k − 1)``.
 
     :param e: The judge's fail rate on a reply whose first reading passed.
-    :ptype e: float
     :param k: The depth pass^k is read at.
-    :ptype k: int
     :return: The ceiling.
-    :rtype: float
     """
     return (1.0 - e) ** (k - 1)
 
@@ -238,18 +229,13 @@ def rescore_of(
     ceiling on pass^k at ``k``.
 
     :param repeated: The arm's repeated results on the dimension, as they count.
-    :ptype repeated: Sequence[Repeated]
     :param value_range: The scale's inclusive bounds.
-    :ptype value_range: tuple[float, float]
     :param k: The depth the ceiling is read at.
-    :ptype k: int
     :param passed: The reading that is a pass, on a pass/fail dimension that counts toward a trial's pass; None
         elsewhere, where no ceiling is read.
-    :ptype passed: float | None
     :return: The figures, ``not available`` with ``too_few`` below the floor (and the ceiling alone ``not available``,
         ``too_few``, where it is read and no first reading passed, or one case is behind every repeat that did); and
         the variance with its range, for the share, or None below the floor.
-    :rtype: tuple[Rescore, ArmVariance | None]
     """
     results, cases = len(repeated), len({entry.case for entry in repeated})
     if results < RESCORE_MIN_RESULTS or cases < RESCORE_MIN_CASES:
@@ -293,17 +279,12 @@ def judge_share(
     """The share of a paired contrast's variance that is its judge's re-score noise, with its range.
 
     :param control: The control's side.
-    :ptype control: SideNoise
     :param candidate: The candidate's side.
-    :ptype candidate: SideNoise
     :param cases: The cases the contrast paired.
-    :ptype cases: Sequence[str]
     :param differences: Each paired case's candidate mean minus its control mean, aligned with ``cases``.
-    :ptype differences: Sequence[float]
     :return: The share and its range, :func:`_gamma_range` on the sum of the two arms' terms (each arm's variance over
         its mean ``1/k``), their standard errors added in quadrature; None below two cases, or where the differences
         have no spread.
-    :rtype: NoiseRange | None
     """
     if len(differences) < 2:
         return None
@@ -436,15 +417,10 @@ def with_rescore_noise(
     figures; elsewhere it stays unset.
 
     :param measures: The bundle's judged measures.
-    :ptype measures: list[JudgedMeasure]
     :param comparisons: The aspect's corrected families.
-    :ptype comparisons: MultipleComparisons
     :param results_by_cell: Each cell's results, the grouping both were read over.
-    :ptype results_by_cell: Mapping[CellKey, list[ResultView]]
     :param records: The score projection rows the judged values were read off.
-    :ptype records: Sequence[ScoreRecord]
     :return: The judged measures and the families, each with its figures filled.
-    :rtype: tuple[list[JudgedMeasure], MultipleComparisons]
     :raises ValueError: A contrast's paired cases here are not the ones its test read.
     """
     rows: dict[str, list[ScoreRecord]] = defaultdict(list)

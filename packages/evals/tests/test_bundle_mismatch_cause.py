@@ -13,7 +13,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from threetears.evals.analysis import assemble_campaign_bundle, inspect_analysis_bundle
+from threetears.evals.analysis import inspect_analysis_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.bundle.schema import host_declarations_digest
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.host import EvalHost

@@ -44,7 +44,6 @@ import pytest
 from threetears.evals.analysis import (
     MIN_CASES,
     campaign_report,
-    frontier_text,
     comparison_sets,
     export_results,
     frontier,
@@ -54,6 +53,7 @@ from threetears.evals.analysis import (
     program_budget,
     reads,
 )
+from threetears.evals.analysis.lens_text import frontier_text
 from threetears.evals.analysis.lenses.frontier import FrontierResult
 from threetears.evals.kernel.run_pages import VERBATIM_RESULT_FIELDS
 from threetears.evals.kernel import ResultKey, ValidationFailedError
@@ -64,7 +64,9 @@ from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import GroupMeasure
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.quick import EXIT_REFUSED, run_cli
-from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch, history_text, pivot_text
+from threetears.evals.ops import RegressionAlert, RegressionSink, RegressionWatch
+from threetears.evals.ops.lenses import history_text
+from threetears.evals.ops.lenses import pivot_text
 from threetears.evals.run.reads import list_runs
 from threetears.evals.kernel.evidence_tiers import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import GoalStateOutcome, RoleUsage, RubricScore, WorldEvent

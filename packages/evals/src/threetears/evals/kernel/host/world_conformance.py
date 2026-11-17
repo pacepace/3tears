@@ -287,9 +287,7 @@ class WorldConformanceReport:
         """Every result speaking for one dimension.
 
         :param name: A declared dimension name.
-        :ptype name: str
         :return: Its results, in check-major order.
-        :rtype: tuple[ConformanceResult, ...]
         """
         return tuple(result for result in self.results if result.dimension == name)
 
@@ -308,9 +306,7 @@ def obligations(declared: WorldDimension) -> tuple[CheckName, ...]:
     N copies of a single answer would be a lie told by repetition.
 
     :param declared: The dimension.
-    :ptype declared: WorldDimension
     :return: Its checks, in the order the kit runs them.
-    :rtype: tuple[CheckName, ...]
     """
     owed: list[CheckName] = []
     if declared.seedable:
@@ -337,16 +333,13 @@ async def check_world_conformance(
     **This mutates the world the registry is bound to and does not restore it.**
 
     :param registry: The host's world registry.
-    :ptype registry: WorldRegistry
     :param expressions: The scenario expressions whose vocabulary this registry has to cover —
         preconditions and goal checks alike, since a path reads the same world whichever
         side of a run it is asked on. Bare text rather than a host's scenario type, because
         the kit resolves paths and knows nothing about how a host stores them; a caller that
         wants a failure to name a template does that naming itself. Supplying none is not a
         way to skip the check — it produces an ``unavailable`` verdict saying so.
-    :ptype expressions: Sequence[str]
     :return: Every verdict, in check-major order.
-    :rtype: WorldConformanceReport
     :raises WorldConformanceError: A declared schema is outside what the kit can synthesize values
         from. An engine gap, raised rather than recorded, so it is fixed rather than disclosed.
     """
@@ -381,11 +374,8 @@ async def _round_trip(registry: WorldRegistry, declared: WorldDimension) -> Conf
     is the host's obligation, which no single round trip can observe; see the module docstring.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: A seedable dimension.
-    :ptype declared: WorldDimension
     :return: The verdict.
-    :rtype: ConformanceResult
     """
     if unattended := _refuse_unattended("round_trip", declared):
         return unattended
@@ -469,11 +459,8 @@ async def _perception_ab(registry: WorldRegistry, declared: WorldDimension) -> C
     non-empty values would hold it still while it was wired correctly.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: A perceivable dimension.
-    :ptype declared: WorldDimension
     :return: The verdict.
-    :rtype: ConformanceResult
     """
     view = registry.subject_view
     assert view is not None, "a perceivable dimension implies a subject_view — the registry refuses one without"
@@ -540,11 +527,8 @@ async def _perception_stillness(registry: WorldRegistry, declared: WorldDimensio
     is outside this check; ambient isolation is no help there either, and the detail does not claim it.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: Any dimension.
-    :ptype declared: WorldDimension
     :return: The verdict.
-    :rtype: ConformanceResult
     """
     if unattended := _refuse_unattended("perception_stillness", declared):
         return unattended
@@ -664,16 +648,11 @@ async def _sweep(
     schema's boundaries (:func:`_boundary_values`), because a summary surface answers only at an edge.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: A settable, attended dimension — the caller checks.
-    :ptype declared: WorldDimension
     :param check: The check asking, for the verdict a failed setup records.
-    :ptype check: CheckName
     :param surfaces: The surfaces to attach when rendering.
-    :ptype surfaces: tuple[str, ...]
     :return: The renderings, or the verdict that ends the check: a setup that never landed, or a dimension
         whose values the schema or the host's coherence handle cannot supply.
-    :rtype: _Swept | ConformanceResult
     """
     view = registry.subject_view
     assert view is not None, "callers have a surface to render, which the registry refuses without a subject_view"
@@ -723,9 +702,7 @@ async def _ambient_isolation(registry: WorldRegistry) -> ConformanceResult:
     """Pin every declared dimension, move the surroundings, and require the view to stay put.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :return: The registry-wide verdict.
-    :rtype: ConformanceResult
     """
     handle = registry.perturb_ambient
     if handle is None:
@@ -831,11 +808,8 @@ async def _independence(registry: WorldRegistry, declared: WorldDimension) -> Co
     together are one dimension with a structured value.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: A seedable dimension.
-    :ptype declared: WorldDimension
     :return: The verdict.
-    :rtype: ConformanceResult
     """
     if unattended := _refuse_unattended("independence", declared):
         return unattended
@@ -907,21 +881,13 @@ async def _move_sibling(
     """Move one sibling to ``target`` and require ``declared`` to still hold ``mine``.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: The dimension under test, already holding ``mine``.
-    :ptype declared: WorldDimension
     :param mine: What it holds.
-    :ptype mine: Any
     :param sibling: The sibling to move.
-    :ptype sibling: WorldDimension
     :param target: A value the host holds for the sibling beside ``mine``.
-    :ptype target: Any
     :param moved: Appended with the sibling's name when it took ``target``.
-    :ptype moved: list[str]
     :param unmoved: Appended with the sibling's name when it did not.
-    :ptype unmoved: list[str]
     :return: A ``failed`` verdict naming the sibling when moving it moved ``declared``; None otherwise.
-    :rtype: ConformanceResult | None
     """
     read = declared.read
     assert read is not None and sibling.read is not None, "a settable dimension has a read handle"
@@ -954,21 +920,14 @@ async def _compose_beside_another(
     """Find another value of ``declared`` the host holds a moved ``sibling`` beside, and compose the two there.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: The dimension under test.
-    :ptype declared: WorldDimension
     :param tried: Its base value and the value the check first put it at, both already spent.
-    :ptype tried: tuple[Any, Any]
     :param sibling: A sibling the host held at nothing new beside the first value.
-    :ptype sibling: WorldDimension
     :param moved: Appended with the sibling's name when it took a new value.
-    :ptype moved: list[str]
     :param unmoved: Appended with the sibling's name when its write did not land.
-    :ptype unmoved: list[str]
     :return: The value of ``declared`` the sibling was composed beside, or a verdict that ends the check: ``failed``
         for a clobber or for a pair the host holds at no value of ``declared`` together, and the setup answer
         when a value of ``declared`` did not land.
-    :rtype: Any
     """
     read = declared.read
     assert read is not None and sibling.read is not None, "a settable dimension has a read handle"
@@ -1017,16 +976,11 @@ def _independence_prose(name: str, moved: list[str], unmoved: list[str], beside:
     verdict said it did.
 
     :param name: The dimension the verdict speaks for.
-    :ptype name: str
     :param moved: Siblings that took a new value.
-    :ptype moved: list[str]
     :param unmoved: Siblings that could not be moved off what they held.
-    :ptype unmoved: list[str]
     :param beside: Siblings composed beside a later value of ``name`` than the first, with that value — the
         host held them at nothing new beside the first.
-    :ptype beside: Mapping[str, Any]
     :return: The verdict's prose.
-    :rtype: str
     """
     if not moved and not unmoved:
         return f"{name} is the only settable dimension here, so nothing can compose with it"
@@ -1062,15 +1016,12 @@ def _vocabulary_completeness(registry: WorldRegistry, expressions: Sequence[str]
     let a scenario nothing can read sit in a corpus reported conformant.
 
     :param registry: The host's world registry.
-    :ptype registry: WorldRegistry
     :param expressions: Scenario expressions, preconditions and goal checks alike.
-    :ptype expressions: Sequence[str]
     :return: ``passed`` when every world path resolved; ``failed`` naming each that did not and each
         expression that would not parse; ``unavailable`` when nothing exercised the vocabulary at
         all — no expressions, or expressions that read no world state. That last is recorded
         rather than passed because "every path resolved" over no paths is vacuously true and would
         render identically to a corpus somebody actually checked.
-    :rtype: ConformanceResult
     """
     unreadable: list[str] = []
     unresolved: list[str] = []
@@ -1122,11 +1073,8 @@ def _vocabulary_prose(unresolved: list[str], unreadable: list[str]) -> str:
     is the difference between one pass over the corpus and one pass per typo.
 
     :param unresolved: Rendered ``path in expression`` pairs that resolved to no dimension.
-    :ptype unresolved: list[str]
     :param unreadable: Rendered expressions the language could not parse, with the reason.
-    :ptype unreadable: list[str]
     :return: One sentence a host can act on.
-    :rtype: str
     """
     parts: list[str] = []
     if unresolved:
@@ -1151,13 +1099,9 @@ def _too_narrow(check: CheckName, declared: WorldDimension, narrow: _SchemaTooNa
     synthesizer for a registration decision.
 
     :param check: The check that could not proceed.
-    :ptype check: CheckName
     :param declared: The dimension.
-    :ptype declared: WorldDimension
     :param narrow: The signal, whose message says what the schema admits.
-    :ptype narrow: _SchemaTooNarrow
     :return: The recorded answer.
-    :rtype: ConformanceResult
     """
     return ConformanceResult(
         check=check,
@@ -1180,13 +1124,9 @@ def _not_held(check: CheckName, declared: WorldDimension, not_held: _NotHeld) ->
     handle switch off any check it liked, a waiver authored by the host — which the kit's one rule forbids.
 
     :param check: The check that could not proceed.
-    :ptype check: CheckName
     :param declared: The dimension.
-    :ptype declared: WorldDimension
     :param not_held: The signal, whose message carries the host's reasons.
-    :ptype not_held: _NotHeld
     :return: The recorded answer.
-    :rtype: ConformanceResult
     """
     return ConformanceResult(
         check=check,
@@ -1214,15 +1154,10 @@ def _setup_never_landed(
     world. Two verdicts for one defect is how a report starts blaming innocent code.
 
     :param check: The check that could not proceed.
-    :ptype check: CheckName
     :param declared: The dimension it was setting up.
-    :ptype declared: WorldDimension
     :param value: What it tried to put there.
-    :ptype value: Any
     :param qualification: Why the value is not in the world.
-    :ptype qualification: Qualification
     :return: The recorded answer.
-    :rtype: ConformanceResult
     """
     reasons = {
         "arming_only": (
@@ -1250,11 +1185,8 @@ def _refuse_unattended(check: CheckName, declared: WorldDimension) -> Conformanc
     can instantiate the dimension, and the answer is no regardless of what the arming path does.
 
     :param check: The check asking.
-    :ptype check: CheckName
     :param declared: The dimension.
-    :ptype declared: WorldDimension
     :return: The recorded answer, or None when the dimension is not human-triggered.
-    :rtype: ConformanceResult | None
     """
     when = declared.when
     if not isinstance(when, Triggered) or when.kind != "human":
@@ -1275,9 +1207,7 @@ def _cannot_be_pinned(declared: WorldDimension) -> bool:
     """Whether the kit can put this dimension at a value of its choosing and leave it there.
 
     :param declared: The dimension.
-    :ptype declared: WorldDimension
     :return: True when nothing can set it, or when setting it only arms a condition nothing fires.
-    :rtype: bool
     """
     if not declared.settable:
         return True
@@ -1289,9 +1219,7 @@ def _condition_of(declared: WorldDimension) -> str:
     """The host's word for what fires this dimension, for a message about an unfired one.
 
     :param declared: A triggered dimension.
-    :ptype declared: WorldDimension
     :return: The condition.
-    :rtype: str
     """
     when = declared.when
     return when.condition if isinstance(when, Triggered) else ""
@@ -1308,9 +1236,7 @@ async def _rebase(registry: WorldRegistry) -> tuple[str, ...]:
     is the one verdict that names the defect.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :return: The base dimensions whose value did not read back, in base-world order; empty when all landed.
-    :rtype: tuple[str, ...]
     """
     unlanded: list[str] = []
     for name, value in registry.base_world.items():
@@ -1333,13 +1259,9 @@ def _base_never_landed(
     out of ``unlanded`` by its caller — that one IS the question it asks.
 
     :param check: The check that could not start.
-    :ptype check: CheckName
     :param declared: The dimension it speaks for, or None for a registry-wide check.
-    :ptype declared: WorldDimension | None
     :param unlanded: The base dimensions whose value did not read back.
-    :ptype unlanded: Sequence[str]
     :return: The recorded answer, or None.
-    :rtype: ConformanceResult | None
     """
     if not unlanded:
         return None
@@ -1364,13 +1286,9 @@ async def _incoherence(registry: WorldRegistry, declared: WorldDimension, value:
     the kit last asked for.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: The dimension the value is for.
-    :ptype declared: WorldDimension
     :param value: The candidate.
-    :ptype value: Any
     :return: The host's reasons; empty when it holds that world, or when it declares no coherence handle.
-    :rtype: list[str]
     """
     handle = registry.coherence
     if handle is None:
@@ -1398,13 +1316,9 @@ async def _apply(registry: WorldRegistry, declared: WorldDimension, value: Any) 
     """Put the dimension at ``value`` through the host's own handles, believing the result.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: The dimension. Must be settable — a caller checks first.
-    :ptype declared: WorldDimension
     :param value: A schema-valid value.
-    :ptype value: Any
     :return: Whether it holds the value or was only armed, and what the write handle returned.
-    :rtype: _Applied
     """
     handle = declared.write_handle
     assert handle is not None, "callers check settability before instantiating"
@@ -1426,14 +1340,10 @@ async def _put(registry: WorldRegistry, declared: WorldDimension, value: Any) ->
     asking, and it must report ``failed`` where this reports a setup that never got started.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: The dimension. Must be settable — a caller checks first.
-    :ptype declared: WorldDimension
     :param value: A schema-valid value.
-    :ptype value: Any
     :return: ``arming_only`` or ``seeding_did_not_take`` when the value is not in the world; None when
         it is.
-    :rtype: Qualification | None
     """
     if qualification := (await _apply(registry, declared, value)).qualification:
         return qualification
@@ -1450,13 +1360,9 @@ async def _distinct_held_values(registry: WorldRegistry, declared: WorldDimensio
     the schema offers, up to :data:`_VALUE_ATTEMPTS`.
 
     :param registry: The host's registry.
-    :ptype registry: WorldRegistry
     :param declared: The dimension.
-    :ptype declared: WorldDimension
     :param count: How many are needed.
-    :ptype count: int
     :return: The values.
-    :rtype: tuple[Any, ...]
     :raises _SchemaTooNarrow: The schema does not admit that many. A host declaration, so a check
         records it rather than letting it escape.
     :raises _NotHeld: The schema admits that many and the host holds fewer of them here.
@@ -1489,11 +1395,8 @@ def _boundary_values_beside(schema: Mapping[str, Any], pair: Sequence[Any]) -> l
     """The schema's boundary values that are not already in ``pair``, in order.
 
     :param schema: The dimension's schema.
-    :ptype schema: Mapping[str, Any]
     :param pair: The generated values already being tried.
-    :ptype pair: Sequence[Any]
     :return: The boundary values to try as well.
-    :rtype: list[Any]
     """
     beside: list[Any] = []
     for boundary in _boundary_values(schema):
@@ -1511,10 +1414,8 @@ def _boundary_values(schema: Mapping[str, Any]) -> list[Any]:
     returned, so every value here is one a run could seed.
 
     :param schema: The dimension's schema.
-    :ptype schema: Mapping[str, Any]
     :return: The boundary values, possibly none (an ``enum`` or ``const`` is already exhaustive, and a
         boolean already yields both values). An ``anyOf`` returns every branch's, in branch order.
-    :rtype: list[Any]
     """
     # Never raises here: the pair beside these values was synthesized from the same schema first.
     kind = _generator_for(schema, named="the dimension's schema")
@@ -1549,13 +1450,9 @@ async def _a_value_other_than(registry: WorldRegistry, declared: WorldDimension,
     held, and an empty list or a zero is exactly the value a schema offers first.
 
     :param registry: The host's registry, whose coherence handle (if any) says which values it holds here.
-    :ptype registry: WorldRegistry
     :param declared: The dimension.
-    :ptype declared: WorldDimension
     :param current: What it holds now.
-    :ptype current: Any
     :return: A value that compares unequal to ``current``.
-    :rtype: Any
     :raises _SchemaTooNarrow: Every value the schema admits is the one already there, so seeding
         could not be told apart from doing nothing.
     :raises _NotHeld: The schema offers other values and the host holds none of them beside the world.
@@ -1584,14 +1481,10 @@ def _synthesize(schema: Mapping[str, Any], wanted: int, *, named: str) -> list[A
     """Up to ``wanted`` distinct values drawn from a JSON Schema.
 
     :param schema: The schema, which may be a dimension's own or an ``items`` schema nested in one.
-    :ptype schema: Mapping[str, Any]
     :param wanted: How many to try for.
-    :ptype wanted: int
     :param named: The dimension this schema belongs to, for error messages — a host reading one needs
         to know which registration to open, and a nested schema cannot say on its own.
-    :ptype named: str
     :return: The distinct values found, in a deterministic order, possibly fewer than ``wanted``.
-    :rtype: list[Any]
     :raises WorldConformanceError: The schema uses a construct the kit cannot synthesize from. An
         ENGINE gap — extend the generators — never a property of the host.
     """
@@ -1623,13 +1516,9 @@ def _interleaved(branches: Sequence[Mapping[str, Any]], wanted: int, *, named: s
     which deduplicates under the seed check's equality.
 
     :param branches: The ``anyOf`` list, already audited by :func:`_generator_for`.
-    :ptype branches: Sequence[Mapping[str, Any]]
     :param wanted: How many values each branch is asked for.
-    :ptype wanted: int
     :param named: The dimension this schema belongs to, for error messages.
-    :ptype named: str
     :return: Candidates, not yet deduplicated.
-    :rtype: list[Any]
     """
     per_branch = [_synthesize(branch, wanted, named=named) for branch in branches]
     return [values[index] for index in range(wanted) for values in per_branch if index < len(values)]
@@ -1645,11 +1534,8 @@ def _generator_for(schema: Mapping[str, Any], *, named: str) -> str:
     once each kept their own copy and disagreed on a typeless schema and on a union.
 
     :param schema: The schema.
-    :ptype schema: Mapping[str, Any]
     :param named: The dimension it belongs to, for the error.
-    :ptype named: str
     :return: A key of :data:`~threetears.evals.kernel.host.world_schema.HONOURED_KEYWORDS`.
-    :rtype: str
     :raises WorldConformanceError: The schema is outside the honoured subset. Ignoring any part of it would
         seed a value the host's own schema forbids and pass a round trip over it, so it is loud — and
         it is an ENGINE gap, never a property of the host.
@@ -1667,15 +1553,10 @@ def _by_type(schema: Mapping[str, Any], kind: str, wanted: int, *, named: str) -
     """Candidate values for a schema that declares a type rather than enumerating values.
 
     :param schema: The schema.
-    :ptype schema: Mapping[str, Any]
     :param kind: The type generator to use, already resolved and audited by :func:`_synthesize`.
-    :ptype kind: str
     :param wanted: How many candidates to produce.
-    :ptype wanted: int
     :param named: The dimension this schema belongs to, for error messages.
-    :ptype named: str
     :return: Candidates, not yet deduplicated.
-    :rtype: list[Any]
     :raises WorldConformanceError: The schema's bounds contradict each other.
     """
     if kind == "boolean":
@@ -1699,15 +1580,10 @@ def _numbers(schema: Mapping[str, Any], kind: str, wanted: int, *, named: str) -
     empty one.
 
     :param schema: The schema.
-    :ptype schema: Mapping[str, Any]
     :param kind: ``integer`` or ``number``.
-    :ptype kind: str
     :param wanted: How many to produce.
-    :ptype wanted: int
     :param named: The dimension this schema belongs to, for error messages.
-    :ptype named: str
     :return: The numbers, possibly fewer than ``wanted`` where the bounds allow fewer.
-    :rtype: list[Any]
     :raises WorldConformanceError: The bounds contradict each other. Registration refuses this for
         every schema it can see, so reaching it means one arrived from outside a registry.
     """
@@ -1732,13 +1608,9 @@ def _strings(schema: Mapping[str, Any], wanted: int, *, named: str) -> list[str]
     stays distinct from every other.
 
     :param schema: The schema.
-    :ptype schema: Mapping[str, Any]
     :param wanted: How many to produce.
-    :ptype wanted: int
     :param named: The dimension this schema belongs to, for error messages.
-    :ptype named: str
     :return: The strings.
-    :rtype: list[str]
     :raises WorldConformanceError: The length bounds contradict each other (refused at registration for
         every schema a registry can see), or more values are wanted than the alphabet supplies.
     """
@@ -1773,13 +1645,9 @@ def _objects(schema: Mapping[str, Any], wanted: int, *, named: str) -> list[dict
     setting. It is listed as honoured for that reason, not ignored.
 
     :param schema: The object schema.
-    :ptype schema: Mapping[str, Any]
     :param wanted: How many to produce.
-    :ptype wanted: int
     :param named: The dimension this schema belongs to, for error messages.
-    :ptype named: str
     :return: The objects, possibly fewer than ``wanted`` where no property offers that many values.
-    :rtype: list[dict[str, Any]]
     :raises WorldConformanceError: A property schema admits no value. A property that is not a schema,
         or a ``required`` name no property describes, was already refused by
         :func:`_generator_for`, which audits the whole tree before any generator runs.
@@ -1824,13 +1692,9 @@ def _arrays(schema: Mapping[str, Any], wanted: int, *, named: str) -> list[list[
     :func:`_array_elements`, which keeps their keys distinct across shapes.
 
     :param schema: The schema.
-    :ptype schema: Mapping[str, Any]
     :param wanted: How many to produce.
-    :ptype wanted: int
     :param named: The dimension this schema belongs to, for error messages.
-    :ptype named: str
     :return: The arrays.
-    :rtype: list[list[Any]]
     :raises WorldConformanceError: The bounds contradict each other, or the schema needs elements and
         declares no ``items`` to draw them from.
     """
@@ -1863,11 +1727,8 @@ def _item_shapes(items: Mapping[str, Any], *, named: str) -> int:
     """How many element shapes an ``items`` schema admits: one per ``anyOf`` branch, else one.
 
     :param items: The array's ``items`` schema.
-    :ptype items: Mapping[str, Any]
     :param named: The dimension it belongs to, for error messages.
-    :ptype named: str
     :return: The number of shapes an array must hold one of each to exercise them all.
-    :rtype: int
     """
     return len(items["anyOf"]) if _generator_for(items, named=named) == "anyOf" else 1
 
@@ -1884,13 +1745,9 @@ def _array_elements(items: Mapping[str, Any], wanted: int, *, named: str) -> lis
     its last.
 
     :param items: The array's ``items`` schema.
-    :ptype items: Mapping[str, Any]
     :param wanted: How many elements the longest array needs.
-    :ptype wanted: int
     :param named: The dimension it belongs to, for error messages.
-    :ptype named: str
     :return: The elements, not deduplicated beyond what each shape supplies.
-    :rtype: list[Any]
     """
     if _generator_for(items, named=named) != "anyOf":
         return _synthesize(items, wanted, named=named)

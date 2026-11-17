@@ -174,12 +174,9 @@ def doc_page_markdown(page: DocPage, *, record: Sequence[str] = ()) -> str:
     """Write a report document's page as Markdown (this module's account).
 
     :param page: The page.
-    :ptype page: DocPage
     :param record: Lines this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
         out after the document under their own heading, the document left as it is; none by default.
-    :ptype record: Sequence[str]
     :return: The Markdown, ending in a newline.
-    :rtype: str
     """
     out: list[str] = []
     for lines in _lines(page):

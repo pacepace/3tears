@@ -426,10 +426,8 @@ class JudgeCase(EvalBaseModel):
         """The case a hand-written calibration case freezes into, read from no run.
 
         :param authored: The case as its author wrote it, its verdict already held to its criterion's scale.
-        :ptype authored: AuthoredJudgeCase
         :return: The case: the criterion and scenario as written, the output judged as the authored artifact declares,
             no variation and no goal outcomes, and the expected verdict as its one label.
-        :rtype: Self
         """
         return cls(
             dim=authored.criterion.name,
@@ -458,13 +456,9 @@ class JudgeCase(EvalBaseModel):
 
         :param rated: What the label's rater read (``CalibrationRating.rated``), proven against its label key when
             the rating was written.
-        :ptype rated: RatedOutput
         :param labels: The person labels on that output and criterion.
-        :ptype labels: list[JudgeCaseLabel]
         :param source: Where the content came from, as provenance (a label's run and result, which may be gone).
-        :ptype source: JudgeCaseSource
         :return: The case, its content field for field the rated content's.
-        :rtype: Self
         """
         return cls(
             dim=rated.dim,
@@ -486,7 +480,6 @@ class JudgeCase(EvalBaseModel):
         two questions under one name.
 
         :return: The digest.
-        :rtype: str
         """
         return judge_criterion_digest(self.dim, self.scale, self.criterion)
 
@@ -501,7 +494,6 @@ class JudgeCase(EvalBaseModel):
         does every authored case stored before the field existed.
 
         :return: The digest.
-        :rtype: str
         """
         frozen = self.model_dump(mode="json")
         for added in ("first_judge_sent_settings", "authored"):
@@ -520,14 +512,10 @@ def judge_criterion_digest(dim: str, scale: RubricScale, criterion: RubricDim | 
     a dimension reworded since is another criterion whose profile it never reads.
 
     :param dim: The criterion's id: a rubric dim's name, or a reserved axis id.
-    :ptype dim: str
     :param scale: The scale it is answered on.
-    :ptype scale: RubricScale
     :param criterion: The rubric dimension as the template words it; None for a reserved axis, whose criterion is
         the engine's own.
-    :ptype criterion: RubricDim | None
     :return: The digest.
-    :rtype: str
     """
     wording = None if criterion is None else criterion.model_dump(mode="json")
     return canonical_digest({"dim": dim, "scale": scale, "criterion": wording})
@@ -545,9 +533,7 @@ def judge_case_payload(case: JudgeCase) -> dict[str, Any]:
     ``host_payload`` is opaque, so no newer-minor tolerance reaches it. Only a relayed case carries the key.
 
     :param case: The case to store.
-    :ptype case: JudgeCase
     :return: The payload.
-    :rtype: dict[str, Any]
     """
     frozen = case.model_dump(mode="json")
     authored = frozen["source"]["authored"]
@@ -560,9 +546,7 @@ def judge_case_of(test_case: EvalTestCase) -> JudgeCase | None:
     """The judge case a test case carries, or ``None`` when it carries none.
 
     :param test_case: A stored case.
-    :ptype test_case: EvalTestCase
     :return: The case, or ``None`` when its ``host_payload`` holds nothing under :data:`JUDGE_CASE_KEY`.
-    :rtype: JudgeCase | None
     :raises ValueError: It holds something there that is not a judge case this build can read.
     """
     payload = test_case.host_payload
@@ -636,9 +620,7 @@ def judge_trial_of(kind_payload: object) -> JudgeTrial | None:
     """The judge trial a result's ``kind_payload`` carries, or ``None`` when it carries none.
 
     :param kind_payload: A result's ``kind_payload``.
-    :ptype kind_payload: object
     :return: The trial, or ``None`` when the result carries no ``kind_payload`` object at all.
-    :rtype: JudgeTrial | None
     :raises ValueError: It carries one that is not a judge trial this build can read — named apart from carrying none,
         as :func:`judge_case_of` names an unreadable case, so a reader can say why it left the result out.
     """

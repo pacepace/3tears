@@ -124,15 +124,10 @@ def unanswered_calls_said(arm: str, report_input: ReportInput, forms: PageForms,
     table's flag does.
 
     :param arm: The arm, by id.
-    :ptype arm: str
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param forms: The page's forms, which print each count.
-    :ptype forms: PageForms
     :param where: The keys' aspect prefix (``aspects.<aspect>.``), empty for the input's own scoreboard.
-    :ptype where: str
     :return: The counts in words, joined by ``; ``; None where no role counted any.
-    :rtype: str | None
     """
     at_least = _counted_in_part(arm, report_input, where)
     answered = held_figure(f"{where}calls.unanswered.{arm}.calls", report_input)
@@ -184,16 +179,11 @@ def arms_table(
     """The arms table, a report document's options table (this module's account).
 
     :param report_input: The report input the document was written from.
-    :ptype report_input: ReportInput
     :param look: The page's look.
-    :ptype look: PageLook
     :param recommends: The arms the document recommends, by id; empty for no call.
-    :ptype recommends: Collection[str]
     :param forms: The page's forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.of` over the same
         input), which state each arm's pass rate.
-    :ptype forms: PageForms
     :return: The table, a row per arm in the input's order.
-    :rtype: TableBlock
     :raises ValueError: The forms were built from another input.
     """
     forms = forms.checked(report_input)
@@ -412,16 +402,11 @@ def pass_rate_cell(report_input: ReportInput, arm: str, aspect: str | None = Non
     one, so the options, arms and full-results tables state one rate for an arm, in the pass rate's form on the page.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The arm, by id.
-    :ptype arm: str
     :param aspect: The aspect, by id (:func:`~threetears.evals.analysis.report_margins.aspect_board`); None for the
         lead aspect's, the input's own scoreboard.
-    :ptype aspect: str | None
     :param forms: The page's forms, which hold the pass rate's wherever a scoreboard counts passes.
-    :ptype forms: PageForms
     :return: The cell; a dash where neither the scoreboard nor, on the lead aspect, the figure states a rate.
-    :rtype: TableCell
     :raises ValueError: The forms were built from another input.
     """
     forms = forms.checked(report_input)
@@ -518,13 +503,9 @@ def arms_key(report_input: ReportInput, look: PageLook, *, forms: PageForms) -> 
     """The arms key (this module's account).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param look: The page's look.
-    :ptype look: PageLook
     :param forms: The page's forms, which state each arm's reasoning share.
-    :ptype forms: PageForms
     :return: The key, under code's eyebrow and takeaway.
-    :rtype: PageArmsKey
     :raises ValueError: The forms were built from another input.
     """
     forms = forms.checked(report_input)

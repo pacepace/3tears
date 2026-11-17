@@ -59,15 +59,10 @@ def encode_list_cursor(listing: str, filters: Mapping[str, Any], created_at: Any
     doc_id)``.
 
     :param listing: The listing's name (``"runs_list"``), which :func:`decode_list_cursor` checks.
-    :ptype listing: str
     :param filters: The listing's filters by name, each a JSON scalar, which :func:`decode_list_cursor` checks.
-    :ptype filters: Mapping[str, Any]
     :param created_at: The last document's ``created_at``, as the store holds it (``None`` where it holds none).
-    :ptype created_at: Any
     :param doc_id: The last document's id.
-    :ptype doc_id: str
     :return: The cursor.
-    :rtype: str
     """
     packed = json.dumps(
         [listing, dict(sorted(filters.items())), created_at, doc_id], separators=(",", ":"), ensure_ascii=False
@@ -79,13 +74,9 @@ def decode_list_cursor(listing: str, filters: Mapping[str, Any], cursor: str) ->
     """The place a cursor from :func:`encode_list_cursor` names in ``listing``'s order: ``(created_at, id)``.
 
     :param listing: The listing reading it.
-    :ptype listing: str
     :param filters: The filters this read of the listing names, as the page that returned the cursor named them.
-    :ptype filters: Mapping[str, Any]
     :param cursor: The cursor, as a page of the listing returned it.
-    :ptype cursor: str
     :return: ``(created_at, id)``, for :meth:`~threetears.evals.schema.DocumentStore.by_doc_type`'s ``after``.
-    :rtype: tuple[Any, str]
     :raises ValidationFailedError: The cursor does not decode, came from another listing, or was returned to a read
         with other filters.
     """
@@ -134,9 +125,7 @@ def check_page_limit(limit: int) -> int:
     """A listing's page size, checked: 1 to :data:`LIST_PAGE_MAX`.
 
     :param limit: The size asked for.
-    :ptype limit: int
     :return: ``limit``.
-    :rtype: int
     :raises ValidationFailedError: It is out of range.
     """
     if not 1 <= limit <= LIST_PAGE_MAX:

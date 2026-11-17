@@ -46,18 +46,13 @@ def campaign_title(
     """What a campaign compares, in a few words: ``<arms> · <measure> (<name>)`` (:attr:`CampaignLine.title`).
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param candidate_models: The distinct candidate models of its runs, read for a campaign that declares no arm.
-    :ptype candidate_models: Sequence[str]
     :param variants: How many distinct variants its runs ran, each model's recorded lever maps counted apart (a
         model and a lever map is one variant), read beside the models: more variants than models is a sweep of some
         model over another lever, titled by the model and its variant count where there is one model, else by the
         count alone. Two models each run at two settings are four variants, never two.
-    :ptype variants: int
     :param judges: Whether its runs are judge runs, whose arms are judges.
-    :ptype judges: bool
     :return: The title.
-    :rtype: str
     """
     arms = _title_arms(campaign, candidate_models, variants=variants, judges=judges)
     named = [name for names in title_arm_names(campaign.arms) for name in names] if campaign.arms else []
@@ -79,21 +74,15 @@ def declared_title(
     candidates), so no run is read for a model.
 
     :param name: The campaign's name.
-    :ptype name: str
     :param arms: The campaign's arms as a reader reads them.
-    :ptype arms: Sequence[CampaignArm]
     :param aspects: Each aspect's label and its declared short name (``None`` where it declares none), in the
         campaign's order.
-    :ptype aspects: Sequence[tuple[str, str | None]]
     :param given: The labels a person gave (the campaign's declared arms'); every other arm's label code computed,
         and is printed as every page prints it (:func:`~threetears.evals.analysis.style.arm_display_name`). None
         reads every label as given.
-    :ptype given: Collection[str] | None
     :param declared: Each lever's stored reader name, by id (a frozen bundle's ``lever_names``), which an arm whose
         label code computed from several levers is spelled with (:func:`title_arm_name`).
-    :ptype declared: Mapping[str, str] | None
     :return: The title.
-    :rtype: str
     """
     control, candidates = title_arm_names(arms, given, declared)
     return _named_title(name, control=control, candidates=candidates, aspects=aspects)
@@ -105,15 +94,10 @@ def _named_title(
     """The title over arms already named, for a page that names its arms its own way (a frozen bundle's).
 
     :param name: The campaign's name.
-    :ptype name: str
     :param control: The control's printed name, or none where the campaign has no control.
-    :ptype control: Sequence[str]
     :param candidates: Each other arm's printed name, in the page's order.
-    :ptype candidates: Sequence[str]
     :param aspects: Each aspect's label and its declared short name, in the campaign's order.
-    :ptype aspects: Sequence[tuple[str, str | None]]
     :return: The title.
-    :rtype: str
     """
     return _once(name, _arms_phrase(control, candidates), [*control, *candidates], _measure_phrase(aspects, name))
 
@@ -126,15 +110,10 @@ def arms_line(
     (the tables mark the control).
 
     :param name: The campaign's name, the page's heading.
-    :ptype name: str
     :param control: The control's printed name, or none where the campaign has no control.
-    :ptype control: Sequence[str]
     :param candidates: Each other arm's printed name, in the page's order.
-    :ptype candidates: Sequence[str]
     :param aspects: Each aspect's label and its declared short name, in the campaign's order.
-    :ptype aspects: Sequence[tuple[str, str | None]]
     :return: The line; empty where the name says all of it.
-    :rtype: str
     """
     arms = _arms_phrase(control, candidates)
     measure = _measure_phrase(aspects, name)
@@ -176,13 +155,9 @@ def title_arm_names(
     """The arms as a title names them (:func:`title_arm_name`), the control apart from the candidates.
 
     :param arms: The arms, as a reader reads them.
-    :ptype arms: Sequence[CampaignArm]
     :param given: The labels a person gave (:func:`declared_title`'s ``given``); None reads every label as given.
-    :ptype given: Collection[str] | None
     :param declared: Each lever's stored reader name, by id (:func:`title_arm_name`).
-    :ptype declared: Mapping[str, str] | None
     :return: The control's name (none where there is no control), and each candidate's, in order.
-    :rtype: tuple[list[str], list[str]]
     """
     control = [title_arm_name(arm, given, declared) for arm in arms if arm.role == "control"]
     candidates = [title_arm_name(arm, given, declared) for arm in arms if arm.role != "control"]
@@ -196,15 +171,11 @@ def title_arm_name(
     given, or its computed label as pages print it.
 
     :param arm: The arm.
-    :ptype arm: CampaignArm
     :param given: The labels a person gave (:func:`declared_title`'s ``given``); None reads every label as given.
-    :ptype given: Collection[str] | None
     :param declared: Each lever's stored reader name, by id (a frozen bundle's ``lever_names``): a label code computed
         from several levers is spelled with them (``prompt v2, effort low``), as every page spells it, never with
         their ids read as words. None or empty reads every lever by its id.
-    :ptype declared: Mapping[str, str] | None
     :return: The name printed.
-    :rtype: str
     """
     if arm.short_name:
         return arm.short_name

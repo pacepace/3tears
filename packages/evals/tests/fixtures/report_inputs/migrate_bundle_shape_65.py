@@ -37,7 +37,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from threetears.evals.analysis import CampaignBundle
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.stats import interval_permits_separation
 from threetears.evals.kernel.metrics import MetricDescriptor, reads_as_rate
 

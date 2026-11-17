@@ -79,19 +79,13 @@ def resolve_chart(
     """Draw one stored chart: its kind's resolver reads its query off the input the page's forms were built from.
 
     :param spec: The stored chart.
-    :ptype spec: ChartSpec
     :param look: The page's look.
-    :ptype look: PageLook
     :param title: The plan's title for the chart, its keys written out; empty where a headline says it.
-    :ptype title: str
     :param fallback_title: What the chart's block is titled where the plan's title is empty: the section's headline.
-    :ptype fallback_title: str
     :param forms: The page's number forms (an off-page reader's own), built once for the page: they carry the report
         input the plan was written against, which the chart reads, so a chart never reads one input in another's
         forms.
-    :ptype forms: PageForms
     :return: The chart as the page draws it.
-    :rtype: PageChart
     :raises UnresolvableReference: No resolver draws the chart's kind, or its resolver cannot draw it from the input.
     :raises ValueError: The forms are a code page's or an off-page surface's, which carry no report input.
     """

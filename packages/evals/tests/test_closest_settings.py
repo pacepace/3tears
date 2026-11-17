@@ -21,13 +21,13 @@ import pytest
 
 from threetears.evals.negotiation import (
     BUDGET_SHARES,
-    EFFORT_LADDER,
     SettingFacts,
     WireSettings,
     closest_settings,
     facts_from_router_catalogue,
     wire_settings_for,
 )
+from threetears.evals.negotiation.settings import EFFORT_LADDER
 from threetears.evals.run import JUDGE_REQUEST_SETTINGS, SIMULATOR_REQUEST_SETTINGS
 from threetears.evals.schema import REASONING_EFFORTS, ClientRequestSettings
 

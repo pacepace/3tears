@@ -34,14 +34,9 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import (
-    CampaignReport,
-    campaign_report,
-    campaign_report_html,
-    campaign_report_markdown,
-    report_html,
-    report_markdown,
-)
+from threetears.evals.analysis import CampaignReport, campaign_report, campaign_report_html, report_html
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.bundle.schema import TRIAL_PASS_NAME
 from threetears.evals.analysis.analyst.blocks import values_table
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart

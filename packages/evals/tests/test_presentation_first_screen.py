@@ -25,7 +25,9 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis import build_campaign_report, campaign_report_html, campaign_report_markdown
+from threetears.evals.analysis import campaign_report_html
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.campaign.provenance import caveat_blocks
 from threetears.evals.analysis.report.model import (
     FIRST_SCREEN,

@@ -180,17 +180,12 @@ def earlier_comparison(
     cell on some arm are :attr:`EarlierComparison.unfinished`. Reads the store.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param name: The eval's name, which its campaign's subject is.
-    :ptype name: str
     :param launched_as_run: How a stored run's arm was launched (:func:`launched_as` of its arm's name, model and
         levers), read by the module that writes a run's arm name
         (:func:`~threetears.evals.quick.one_call.launched_as_run`).
-    :ptype launched_as_run: Callable[[EvalRun], tuple[str | None, str, str]]
     :return: The comparison, or ``None``.
-    :rtype: EarlierComparison | None
     """
     filed = [
         campaign
@@ -346,7 +341,6 @@ def new_comparison_sentence(changed: str) -> str:
     that every case ran. The one owner of the sentence.
 
     :param changed: What changed, as a clause (``"the arms changed"``, ``"case 3 was edited, moved or removed"``).
-    :ptype changed: str
     """
     return (
         f"A new comparison: {changed} since the comparison run before under this name, so every case ran and the "

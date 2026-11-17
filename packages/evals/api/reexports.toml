@@ -13,8 +13,8 @@ home = "threetears.evals.analysis"
 also = ["threetears.evals.ops"]
 names = [
     "AnalysisGenerationEstimate", "EXPORT_PAGE_RESULTS", "EvalSummary", "FrontierResult", "HistoryResult",
-    "JudgeTemperatureComparison", "OutOfRunSpendReport", "PivotTable", "ScoreExport", "dollars_text", "frontier_text",
-    "out_of_run_spend_text", "scope_out_of_run_spend",
+    "JudgeTemperatureComparison", "OutOfRunSpendReport", "PivotTable", "ScoreExport", "dollars_text",
+    "scope_out_of_run_spend",
 ]
 why = """
 `actions` may reach `analysis` only through `ops` (tests/test_package_matrix.py), and the action catalogue names
@@ -36,7 +36,7 @@ action catalogue spells its texts by it.
 [[reexport]]
 home = "threetears.evals.kernel"
 also = ["threetears.evals.analysis"]
-names = ["ABSENT", "format_signed"]
+names = ["ABSENT"]
 why = """
 The number rule lives in `kernel` so `run` may spell by it too (tests/test_package_matrix.py); `analysis` exports
 these as the rule its surfaces spell by, where a host rendering an analysis reads them.

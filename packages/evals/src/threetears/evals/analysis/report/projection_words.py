@@ -53,15 +53,10 @@ def projection_note(
 
     :param projections: Each arm's projection over its floors (:func:`floors_projection`), not each floor's: what
         showing that arm's floors hold needs.
-    :ptype projections: Sequence[SampleProjection]
     :param run_cases: The cases the run used: the most any arm ran.
-    :ptype run_cases: int
     :param cost_clause: Whether the table shows a cost floor, whose no-difference cell is blank.
-    :ptype cost_clause: bool
     :param forms: The page's forms, which state each count.
-    :ptype forms: PageForms
     :return: The sentences.
-    :rtype: str
     """
     said = [
         "Each count is about: it reads the interval again over this run's cases repeated to that many, so it assumes "

@@ -345,11 +345,8 @@ def settle_label(context: ChartContext, row: SettleRow) -> str:
     is not the arm's overall figure.
 
     :param context: The chart being resolved.
-    :ptype context: ChartContext
     :param row: One ``settle_cases`` row.
-    :ptype row: SettleRow
     :return: The label.
-    :rtype: str
     """
     kind, _colon, line = row.against.partition(":")
     if row.against.startswith("criterion "):
@@ -404,9 +401,7 @@ def settle_notes(context: ChartContext) -> tuple[str, ...]:
     exactly on its line, which no size settles.
 
     :param context: The chart being resolved, over the settle source.
-    :ptype context: ChartContext
     :return: The note.
-    :rtype: tuple[str, ...]
     """
     levels = {
         str(row.item.level.value)
@@ -444,9 +439,7 @@ def price_notes(context: ChartContext) -> tuple[str, ...]:
     reaches zero and no price bounds it, so the reader never takes it for the firmest.
 
     :param context: The chart being resolved, over the prices source.
-    :ptype context: ChartContext
     :return: The note, or none where every step's interval is bounded or none is drawn.
-    :rtype: tuple[str, ...]
     """
     named = _open_steps(context)
     if not named or not context.level:

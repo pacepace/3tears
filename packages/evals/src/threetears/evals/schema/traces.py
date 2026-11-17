@@ -106,7 +106,6 @@ def current_cell_identity() -> CellIdentity | None:
     variable is per task. It is unbound again whenever the cell ends, however it ended.
 
     :return: The running cell's identity, or ``None`` when the caller is outside every cell.
-    :rtype: CellIdentity | None
     """
     return _CURRENT_CELL.get()
 
@@ -123,9 +122,7 @@ def bind_cell_identity(identity: CellIdentity) -> Iterator[None]:
     ``ValueError``.
 
     :param identity: The cell the block's work belongs to.
-    :ptype identity: CellIdentity
     :yield: Nothing.
-    :rtype: Iterator[None]
     """
     token = _CURRENT_CELL.set(identity)
     try:
@@ -201,10 +198,8 @@ class TraceSink(Protocol):
         the collection window.
 
         :param cell: The execution the scope belongs to.
-        :ptype cell: CellIdentity
         :return: A context manager yielding nothing. Nesting is not required of it: the engine
             opens exactly one per cell.
-        :rtype: AbstractContextManager[None]
         """
         ...
 
@@ -223,10 +218,8 @@ class TraceSink(Protocol):
         that, and the engine reads through what it is given rather than checking.
 
         :param cell: The execution being collected.
-        :ptype cell: CellIdentity
         :return: A context manager yielding the record to fill. A body that raises leaves the
             engine's read unreached and the cell recording no trace — the same answer as a
             cell that never ran its turns.
-        :rtype: AbstractContextManager[CellTrace]
         """
         ...

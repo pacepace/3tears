@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.kernel.campaign import EvidenceRow, EvidenceTier, FindingResolution, evidence_tier_of
-from threetears.evals.kernel.evidence_tiers import JUDGED_TIERS_WEAKEST_FIRST, JudgedEvidenceTier
+from threetears.evals.kernel.evidence_tiers import JudgedEvidenceTier
 
 
 def _row(reading: str, tier: JudgedEvidenceTier | None = None) -> EvidenceRow:
@@ -55,7 +55,7 @@ class TestTheTierIsReadOffTheRows:
 
     def test_the_derivation_reaches_every_tier_it_names(self):
         reached = {evidence_tier_of([]), evidence_tier_of([None])} | {
-            evidence_tier_of([tier]) for tier in JUDGED_TIERS_WEAKEST_FIRST
+            evidence_tier_of([tier]) for tier in typing.get_args(JudgedEvidenceTier)
         }
         assert reached == set(typing.get_args(EvidenceTier))
 

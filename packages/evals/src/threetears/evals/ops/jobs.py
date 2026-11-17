@@ -43,7 +43,7 @@ write of the lost holder ever revives it.
 **The one way back is a resume** (:func:`~threetears.evals.ops.resume.job_resume`), asked for and never made on its own. A run's job that was
 lost, cancelled by an operator, or stopped by its budget or its provider account is taken up again as the same run,
 under its lease's next epoch: the cells it has not measured run, and it ends as an uninterrupted run would have
-(:func:`~threetears.evals.run.resume_run`). A sweep's or a launch's job is taken up as a whole, its arms' runs taken up
+(:func:`~threetears.evals.run.resume.take_up_run`). A sweep's or a launch's job is taken up as a whole, its arms' runs taken up
 again and a sweep's never-launched arms launched, its arm schedule kept. A holding a job has passed from writes
 nothing more into it. :func:`~threetears.evals.run.resumable_jobs` lists what a resume would take up, for a host to
 offer at boot.
@@ -117,24 +117,24 @@ JobKind = Literal["launch", "run", "analysis", "sweep", "second_judge", "judge_t
 JobState = Literal["running", "completed", "stopped", "failed", "cancelled", "lost"]
 
 #: The states a job does not leave.
-TERMINAL_JOB_STATES: frozenset[str] = frozenset({"completed", "stopped", "failed", "cancelled", "lost"})
+_TERMINAL_JOB_STATES: frozenset[str] = frozenset({"completed", "stopped", "failed", "cancelled", "lost"})
 
 #: The prefix of a launched run's job id.
-RUN_JOB_PREFIX = "run:"
+_RUN_JOB_PREFIX = "run:"
 #: The prefix of an analysis generation's job id.
-ANALYSIS_JOB_PREFIX = "analysis:"
+_ANALYSIS_JOB_PREFIX = "analysis:"
 
 #: The prefix of a sweep's job id.
-SWEEP_JOB_PREFIX = "sweep:"
+_SWEEP_JOB_PREFIX = "sweep:"
 
 #: The prefix of a launch's job id.
-LAUNCH_JOB_PREFIX = "launch:"
+_LAUNCH_JOB_PREFIX = "launch:"
 
 #: The prefix of a second judge's pass's job id — a drift check's too.
-SECOND_JUDGE_JOB_PREFIX = "second-judge:"
+_SECOND_JUDGE_JOB_PREFIX = "second-judge:"
 
 #: The prefix of a judge temperature comparison's job id.
-JUDGE_TEMPERATURE_JOB_PREFIX = "judge-temperature:"
+_JUDGE_TEMPERATURE_JOB_PREFIX = "judge-temperature:"
 
 #: The prefix of a host action's job id.
 ACTION_JOB_PREFIX = "action:"
@@ -142,11 +142,11 @@ ACTION_JOB_PREFIX = "action:"
 #: Each single-id job kind by the prefix its id carries — every kind but the analysis generation, whose id
 #: carries its campaign too.
 _PREFIXED: dict[str, JobKind] = {
-    RUN_JOB_PREFIX: "run",
-    SWEEP_JOB_PREFIX: "sweep",
-    LAUNCH_JOB_PREFIX: "launch",
-    SECOND_JUDGE_JOB_PREFIX: "second_judge",
-    JUDGE_TEMPERATURE_JOB_PREFIX: "judge_temperature",
+    _RUN_JOB_PREFIX: "run",
+    _SWEEP_JOB_PREFIX: "sweep",
+    _LAUNCH_JOB_PREFIX: "launch",
+    _SECOND_JUDGE_JOB_PREFIX: "second_judge",
+    _JUDGE_TEMPERATURE_JOB_PREFIX: "judge_temperature",
     ACTION_JOB_PREFIX: "action",
 }
 
@@ -279,7 +279,7 @@ def generation_key(campaign_id: str, scope_id: str) -> str:
 
 def sweep_job_id(sweep_id: str) -> str:
     """The job id of a sweep."""
-    return f"{SWEEP_JOB_PREFIX}{sweep_id}"
+    return f"{_SWEEP_JOB_PREFIX}{sweep_id}"
 
 
 def sweep_key(sweep_id: str, scope_id: str) -> str:
@@ -291,12 +291,9 @@ def sweep_progress(sweep: EvalSweep, runs: dict[str, EvalRun]) -> dict[str, Any]
     """A sweep's progress: how many arms it has launched and finished, and each launched arm's run status.
 
     :param sweep: Its record.
-    :ptype sweep: EvalSweep
     :param runs: Its launched arms' runs, by id.
-    :ptype runs: dict[str, EvalRun]
     :return: ``{"arms_total", "arms_launched", "arms_finished", "arms": {label: status}}``, a never-launched arm's
         status ``not_launched``.
-    :rtype: dict[str, Any]
     """
     finished = {"completed", "budget_stopped", "exhausted", "failed", "cancelled"}
     statuses = {
@@ -315,11 +312,8 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
     """A sweep's job status from its record and its launched arms' runs.
 
     :param sweep: Its record, as settled.
-    :ptype sweep: EvalSweep
     :param runs: Its launched arms' runs, by id.
-    :ptype runs: dict[str, EvalRun]
     :return: The status, its progress counting the arms launched and finished.
-    :rtype: JobStatus
     """
     state: JobState = "lost" if sweep.lost is not None else _SWEEP_STATES[sweep.outcome]
     detail = sweep.detail
@@ -330,7 +324,7 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
         kind="sweep",
         state=state,
         status=sweep.outcome,
-        done=state in TERMINAL_JOB_STATES,
+        done=state in _TERMINAL_JOB_STATES,
         progress=sweep_progress(sweep, runs),
         run_ids=[arm.run_id for arm in sweep.arms if arm.run_id is not None],
         campaign_id=sweep.campaign_id,
@@ -344,51 +338,34 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
 
 def run_job_id(run_id: str) -> str:
     """The job id of a launched run."""
-    return f"{RUN_JOB_PREFIX}{run_id}"
+    return f"{_RUN_JOB_PREFIX}{run_id}"
 
 
 def analysis_job_id(campaign_id: str, attempt_id: str) -> str:
     """The job id of an analysis generation: its campaign, then its attempt."""
-    return f"{ANALYSIS_JOB_PREFIX}{campaign_id}:{attempt_id}"
+    return f"{_ANALYSIS_JOB_PREFIX}{campaign_id}:{attempt_id}"
 
 
 def launch_job_id(launch_id: str) -> str:
     """The job id of a launch."""
-    return f"{LAUNCH_JOB_PREFIX}{launch_id}"
-
-
-def second_judge_job_id(pass_id: str) -> str:
-    """The job id of a second judge's pass."""
-    return f"{SECOND_JUDGE_JOB_PREFIX}{pass_id}"
-
-
-def judge_temperature_job_id(check_id: str) -> str:
-    """The job id of a judge temperature comparison."""
-    return f"{JUDGE_TEMPERATURE_JOB_PREFIX}{check_id}"
-
-
-def action_job_id(record_id: str) -> str:
-    """The job id of a host action's job."""
-    return f"{ACTION_JOB_PREFIX}{record_id}"
+    return f"{_LAUNCH_JOB_PREFIX}{launch_id}"
 
 
 def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
     """Read a job id back into what it names.
 
     :param job_id: An id a start returned.
-    :ptype job_id: str
     :return: ``(kind, record_id, None)`` for every kind but a generation, and ``("analysis", campaign_id, attempt_id)``
         for a generation.
-    :rtype: tuple[JobKind, str, str | None]
     :raises ValidationFailedError: The id is none of the shapes — a typed or truncated id, which names no job.
     """
     for prefix, kind in _PREFIXED.items():
         if job_id.startswith(prefix) and job_id[len(prefix) :]:
             return kind, job_id[len(prefix) :], None
-    if job_id.startswith(ANALYSIS_JOB_PREFIX):
+    if job_id.startswith(_ANALYSIS_JOB_PREFIX):
         # The attempt id is a uuid and holds no colon, so the LAST colon splits it from a campaign id
         # that might hold one.
-        campaign_id, colon, attempt_id = job_id[len(ANALYSIS_JOB_PREFIX) :].rpartition(":")
+        campaign_id, colon, attempt_id = job_id[len(_ANALYSIS_JOB_PREFIX) :].rpartition(":")
         if colon and campaign_id and attempt_id:
             return "analysis", campaign_id, attempt_id
     raise ValidationFailedError(
@@ -405,9 +382,7 @@ def _run_status(run: EvalRun) -> JobStatus:
     """A run's job status from its stored document, as settled.
 
     :param run: The run as stored.
-    :ptype run: EvalRun
     :return: The status: ``lost`` when its record says so, else its own status's job state.
-    :rtype: JobStatus
     """
     state: JobState = "lost" if run.lost is not None else _RUN_STATES[run.status]
     # A ceiling stop is worded from its typed records, as the run's summary words it, never from the run
@@ -427,7 +402,7 @@ def _run_status(run: EvalRun) -> JobStatus:
         kind="run",
         state=state,
         status=run.status,
-        done=state in TERMINAL_JOB_STATES,
+        done=state in _TERMINAL_JOB_STATES,
         progress=dict(run.progress),
         run_id=run.id,
         detail=detail if state != "completed" else None,
@@ -439,11 +414,8 @@ def _attempt_status(job_id: str, attempt: EvalAnalysisAttempt) -> JobStatus:
     """A generation's job status from its attempt record, as settled.
 
     :param job_id: The job's id.
-    :ptype job_id: str
     :param attempt: Its attempt, as stored.
-    :ptype attempt: EvalAnalysisAttempt
     :return: The status: ``running`` while the attempt is, ``lost`` when its record says so, else its outcome's state.
-    :rtype: JobStatus
     """
     if attempt.lost is not None:
         state: JobState = "lost"
@@ -456,7 +428,7 @@ def _attempt_status(job_id: str, attempt: EvalAnalysisAttempt) -> JobStatus:
         kind="analysis",
         state=state,
         status=attempt.outcome,
-        done=state in TERMINAL_JOB_STATES,
+        done=state in _TERMINAL_JOB_STATES,
         campaign_id=attempt.campaign_id,
         analysis_id=attempt.analysis_id,
         detail=attempt.lost.cause if attempt.lost is not None else (attempt.error if state != "running" else None),
@@ -492,7 +464,6 @@ def _record_status(
     """A job's status from a record of the job-work shape (:mod:`threetears.evals.run.job_work`), as settled.
 
     :return: The status: ``lost`` when its record says so, else its outcome's state; the result only once completed.
-    :rtype: JobStatus
     """
     state: JobState = "lost" if record.lost is not None else _OUTCOME_STATES[record.outcome]
     detail = record.detail
@@ -505,7 +476,7 @@ def _record_status(
         kind=kind,
         state=state,
         status=record.outcome,
-        done=state in TERMINAL_JOB_STATES,
+        done=state in _TERMINAL_JOB_STATES,
         progress=progress or {},
         run_id=run_id,
         run_ids=run_ids or [],
@@ -516,15 +487,12 @@ def _record_status(
     )
 
 
-def launch_progress(launch: EvalLaunch, runs: dict[str, EvalRun]) -> dict[str, Any]:
+def _launch_progress(launch: EvalLaunch, runs: dict[str, EvalRun]) -> dict[str, Any]:
     """A launch's progress: its runs started and finished, and each started run's status by its arm.
 
     :param launch: Its record.
-    :ptype launch: EvalLaunch
     :param runs: Its started runs, by id.
-    :ptype runs: dict[str, EvalRun]
     :return: ``{"runs_started", "runs_finished", "runs": {run id: status}}``.
-    :rtype: dict[str, Any]
     """
     finished = {"completed", "budget_stopped", "exhausted", "failed", "cancelled"}
     statuses = {run_id: runs[run_id].status if run_id in runs else "not_found" for run_id in launch.run_ids}
@@ -589,13 +557,9 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
     lapsed is written lost first (:func:`~threetears.evals.kernel.job_leases.settle_job_record`).
 
     :param host: The host whose store holds the job's record.
-    :ptype host: OpsHost
     :param job_id: The id the start returned.
-    :ptype job_id: str
     :param scope_id: The scope the work's record lives in.
-    :ptype scope_id: str
     :return: The job's status.
-    :rtype: JobStatus
     :raises ValidationFailedError: The id names no job.
     :raises NotFoundError: No record of the job in the scope (another scope's job reads so), or a generation's
         attempt filed under another campaign than the id names.
@@ -626,7 +590,7 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
         started = await run_blocking(
             eval_host.blocking_executor, eval_host.storage.load_eval_runs, launch.run_ids, scope_id
         )
-        progress = launch_progress(launch, {run.id: run for run in started})
+        progress = _launch_progress(launch, {run.id: run for run in started})
         return _record_status(job_id, kind, launch, run_ids=list(launch.run_ids), progress=progress)
     if kind == "second_judge":
         judged = await _settled(host, SECOND_JUDGE_JOB, target_id, scope_id)
@@ -674,15 +638,10 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
     are one cancel.
 
     :param host: The host whose store holds the job's record and whose job manager may run it.
-    :ptype host: OpsHost
     :param job_id: The id the start returned.
-    :ptype job_id: str
     :param scope_id: The scope the work's record lives in.
-    :ptype scope_id: str
     :param reason: Why, recorded on the record and on a cancelled run.
-    :ptype reason: str | None
     :return: The job's status after the request.
-    :rtype: JobStatus
     :raises ValidationFailedError: The id names no job, or the job has already ended — lost included, which this
         read may have just written.
     :raises NotFoundError: No record of the job in the scope, or a generation's attempt filed under another campaign.
@@ -753,11 +712,8 @@ async def start_job(host: OpsHost, admitted: AdmittedJob) -> JobsStarted:
     The form every action's call takes, so the call returns at once and no transport waits on the work.
 
     :param host: The host whose job manager runs the job and whose store holds its record.
-    :ptype host: OpsHost
     :param admitted: The admitted operation.
-    :ptype admitted: AdmittedJob
     :return: The job's one handle.
-    :rtype: JobsStarted
     :raises ConflictError: A live job holds the admitted key.
     :raises StorageError: The record could not be written; nothing started.
     """
@@ -792,22 +748,14 @@ async def start_action_job(
     action is declared ``long_running`` with result :class:`JobsStarted`.
 
     :param host: The host whose job manager runs the job.
-    :ptype host: OpsHost
     :param scope_id: The caller's scope, where the record lives.
-    :ptype scope_id: str
     :param action: The action's name.
-    :ptype action: str
     :param run: The work: makes the calls and returns the action's typed result.
-    :ptype run: Callable[[], Awaitable[BaseModel]]
     :param label: A short line naming the work.
-    :ptype label: str
     :param budget_s: The work's wall-clock ceiling. Required: a forgotten budget is a ``TypeError`` here, never an hour
-        nobody chose (:data:`~threetears.evals.run.DEFAULT_ACTION_JOB_BUDGET_S` is the value to pass for that).
-    :ptype budget_s: float
+        nobody chose (:data:`~threetears.evals.run.job_work.DEFAULT_ACTION_JOB_BUDGET_S` is the value to pass for that).
     :param discard: Releases what the handler built for ``run`` when the work never runs.
-    :ptype discard: Callable[[], Awaitable[None]] | None
     :return: The job's one handle (``action:<id>``); its target is the action.
-    :rtype: JobsStarted
     :raises ValueError: ``budget_s`` is not positive.
     :raises StorageError: The record could not be written; nothing started.
     """
@@ -839,31 +787,19 @@ async def start_paid_call[R: BaseModel](
     the job never starts, and by ``make`` otherwise.
 
     :param host: The host the action runs on; its client factory builds the client.
-    :ptype host: OpsHost
     :param scope_id: The caller's scope, where the job's record lives.
-    :ptype scope_id: str
     :param action: The action's name, as the job records it.
-    :ptype action: str
     :param role: The completion role the client is built for.
-    :ptype role: CompletionRole
     :param model: The model named, or ``None`` for the role's default as the host resolves it.
-    :ptype model: str | None
     :param purpose: What the call is for, as the out-of-run ledger records it.
-    :ptype purpose: KnownOutOfRunPurpose
     :param budget: The out-of-run budget that admits the call and ledgers it once made.
-    :ptype budget: OutOfRunBudget
     :param call: The call, as planned.
-    :ptype call: PlannedCall
     :param make: Makes the admitted call on the client (through ``budget``) and reads its result; owns the client's
         release from the moment it is called.
-    :ptype make: Callable[[BoundCompletionClient, AdmittedCall], Awaitable[R]]
     :param label: What the job is, for a reader of ``job_poll``.
-    :ptype label: str
     :param budget_s: The job's wall-clock ceiling. Required, as :func:`start_action_job`'s is: a call takes as long as
         its model, and only the action knows what is too long.
-    :ptype budget_s: float
     :return: The started job; ``job_poll`` returns ``make``'s result once it completes.
-    :rtype: JobsStarted
     :raises ValueError: The host supplies no completion clients, or ``budget_s`` is not positive.
     :raises ValidationFailedError: The cap cannot pay for the call, or an enforced cap cannot price it; nothing was
         made.
@@ -905,13 +841,9 @@ async def await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[
     the cancel.
 
     :param host: The host whose job manager runs the jobs.
-    :ptype host: OpsHost
     :param started: What the start returned.
-    :ptype started: JobsStarted
     :param scope_id: The scope the jobs' records live in.
-    :ptype scope_id: str
     :return: Each job's final status, in the order started.
-    :rtype: list[JobStatus]
     :raises asyncio.CancelledError: The caller was cancelled; the jobs were asked to stop, and have settled.
     :raises KeyboardInterrupt: A second Ctrl+C reached the wait and cut the jobs; raised once they settled.
     """
@@ -945,23 +877,12 @@ async def await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[
 
 __all__ = [
     "ACTION_JOB_PREFIX",
-    "JUDGE_TEMPERATURE_JOB_PREFIX",
-    "LAUNCH_JOB_PREFIX",
-    "SECOND_JUDGE_JOB_PREFIX",
     "AdmittedJob",
     "SecondJudgeRead",
-    "action_job_id",
     "await_job",
-    "judge_temperature_job_id",
     "launch_job_id",
-    "launch_progress",
-    "second_judge_job_id",
     "start_action_job",
     "start_job",
-    "ANALYSIS_JOB_PREFIX",
-    "RUN_JOB_PREFIX",
-    "SWEEP_JOB_PREFIX",
-    "TERMINAL_JOB_STATES",
     "JobHandle",
     "JobKind",
     "JobState",

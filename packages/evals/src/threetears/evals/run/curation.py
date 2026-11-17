@@ -250,16 +250,12 @@ def require_delete_confirmation(
     echoed id can only confirm the thing it names.
 
     :param kind: Human-readable object kind, used in the refusal message.
-    :ptype kind: str
     :param object_id: The id being destroyed — also the required confirmation value.
-    :ptype object_id: str
     :param confirm: What the caller passed; surrounding whitespace is ignored.
-    :ptype confirm: str | None
     :param cascade: What else goes with the object, as a phrase reading on from its
         id (``"and its 3 stored eval results"``). A caller who is told the
         count before confirming can weigh the delete; one told only the id
         is weighing the wrong object. Omit when the delete takes nothing else.
-    :ptype cascade: str | None
     :param alternative: What to do instead of destroying it, as a phrase reading on
         from "or". Defaults to archiving, which is the answer for the eval
         objects that HAVE an ``archived`` field — ``EvalRun``, ``EvalAnalysis``,
@@ -267,7 +263,6 @@ def require_delete_confirmation(
         snapshot do not, so those call sites pass a replacement; taking the
         default there sends a refused caller to a surface the object has no
         access to, which is worse than saying nothing.
-    :ptype alternative: str
     :raises ValidationFailedError: ``confirm`` does not echo ``object_id``.
     """
     if (confirm or "").strip() != object_id:
@@ -278,7 +273,7 @@ def require_delete_confirmation(
         )
 
 
-def load_run_as_listed(storage: CurationStore, run_id: str, scope_id: str, *, profile: HostProfile) -> EvalRun:
+def _load_run_as_listed(storage: CurationStore, run_id: str, scope_id: str, *, profile: HostProfile) -> EvalRun:
     """Load one run the way a listing loads it: without the payload paths the host declares a listing leaves out.
 
     For a reader of a run's scalars. The returned run records what its payload is missing
@@ -286,15 +281,10 @@ def load_run_as_listed(storage: CurationStore, run_id: str, scope_id: str, *, pr
     value refuses rather than reading its absence; :func:`~threetears.evals.run.lifecycle.get_run` is the whole read.
 
     :param storage: Eval storage backend.
-    :ptype storage: CurationStore
     :param run_id: The run to load.
-    :ptype run_id: str
     :param scope_id: Partition key — the scope the run belongs to.
-    :ptype scope_id: str
     :param profile: The host, whose ``listing_elisions`` the read leaves out.
-    :ptype profile: HostProfile
     :return: The run, with the host's listing elisions (``HostProfile.listing_elisions``) left out and marked.
-    :rtype: EvalRun
     :raises NotFoundError: No run with that id in the scope.
     """
     runs = storage.load_eval_runs([run_id], scope_id, elide_payload=profile.listing_elisions)
@@ -315,32 +305,26 @@ def set_run_archived(
     restores it everywhere, which is the property that makes this the safe answer
     to a contaminated cohort and hard delete the last resort.
 
-    **The flag is written in place, and the run is read the way a listing reads it**
-    (:func:`load_run_as_listed`). Nothing here needs the host's payload, which is most
+    **The flag is written in place, and the run is read the way a listing reads it.**
+    Nothing here needs the host's payload, which is most
     of a run document, so the write sets the one field and never sends the document
     back — and so cannot lose a concurrent writer's edit to any other field.
 
     Idempotent: setting the state a run already carries writes nothing.
 
     :param storage: Eval storage backend.
-    :ptype storage: CurationStore
     :param run_id: Run to curate.
-    :ptype run_id: str
     :param scope_id: Partition key — the scope the run belongs to.
-    :ptype scope_id: str
     :param archived: Target state. ``True`` excludes, ``False`` restores.
-    :ptype archived: bool
     :param profile: The host, whose listing elisions the run is read without.
-    :ptype profile: HostProfile
     :return: The run as persisted, read as a listing reads it: its payload is missing the host's
         listing elisions and says so (:attr:`~threetears.evals.schema.models.EvalRun.elided_payload_paths`).
         Read it through ``get_run`` for the whole document.
-    :rtype: EvalRun
     :raises NotFoundError: No run with that id in the scope, including one deleted between the
         read and the write.
     :raises StorageError: The write failed.
     """
-    current = load_run_as_listed(storage, run_id, scope_id, profile=profile)
+    current = _load_run_as_listed(storage, run_id, scope_id, profile=profile)
     if current.archived == archived:
         return current
     if not storage.set_eval_run_archived(run_id, scope_id, archived=archived):
@@ -353,7 +337,7 @@ def set_run_archived(
     )
     # Re-read rather than returning ``current`` with the flag flipped: the caller is told this is
     # "the run as persisted", and only storage can say what that is.
-    return load_run_as_listed(storage, run_id, scope_id, profile=profile)
+    return _load_run_as_listed(storage, run_id, scope_id, profile=profile)
 
 
 def set_analysis_archived(
@@ -400,18 +384,12 @@ def set_analysis_archived(
     one with it.
 
     :param storage: Eval storage backend.
-    :ptype storage: CurationStore
     :param analysis_id: Analysis to curate.
-    :ptype analysis_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param archived: Target state. ``True`` marks it everywhere, ``False`` restores it.
-    :ptype archived: bool
     :param reason: Why, in the operator's words. Recorded when archiving; ignored when
         restoring, which clears whatever reason was there.
-    :ptype reason: str | None
     :return: The analysis as persisted.
-    :rtype: EvalAnalysis
     :raises NotFoundError: No analysis with that id in the scope.
     :raises StorageError: The updated analysis failed to persist.
     """
@@ -459,15 +437,10 @@ def set_campaign_archived(storage: CurationStore, campaign_id: str, scope_id: st
     Idempotent: setting the state a campaign already carries writes nothing.
 
     :param storage: Eval storage backend.
-    :ptype storage: CurationStore
     :param campaign_id: Campaign to curate.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param archived: Target state. ``True`` retires it, ``False`` restores it.
-    :ptype archived: bool
     :return: The campaign as persisted.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope, including one deleted between the
         write and the re-read.
     :raises StorageError: The write failed.
@@ -520,17 +493,12 @@ def delete_run(storage: CurationStore, run: EvalRun, scope_id: str, *, confirm: 
     import path for runs or results.
 
     :param storage: Eval storage backend.
-    :ptype storage: CurationStore
     :param run: The run to destroy, already loaded — the caller performs the
         not-found check, so a missing run is refused before ``confirm`` is
         even examined.
-    :ptype run: EvalRun
     :param scope_id: Partition key — the scope the run belongs to.
-    :ptype scope_id: str
     :param confirm: Must echo the run's id; see :func:`require_delete_confirmation`.
-    :ptype confirm: str | None
     :return: What was removed: ``{"run_id", "results_deleted", "campaigns_detached"}``.
-    :rtype: dict[str, Any]
     :raises ValidationFailedError: ``confirm`` does not echo the run id, or the run
         is still ``pending`` / ``running``.
     :raises StorageError: A result, a campaign detach, or the run itself failed to
@@ -637,18 +605,12 @@ def delete_unreadable_run(
     can settle or delete it.
 
     :param storage: Eval storage backend.
-    :ptype storage: UnreadableRunDeleteStore
     :param run_id: The run to destroy.
-    :ptype run_id: str
     :param row: Its stored row as the model refused it — the caller's read (``EvalStorage.scan_eval_run``) performs
         the not-found check, so a missing run is refused before ``confirm`` is examined.
-    :ptype row: RefusedRow
     :param scope_id: Partition key — the scope the run belongs to.
-    :ptype scope_id: str
     :param confirm: Must echo the run's id; see :func:`require_delete_confirmation`.
-    :ptype confirm: str | None
     :return: What was removed: ``{"run_id", "results_deleted", "campaigns_detached"}``, as :func:`delete_run` returns.
-    :rtype: dict[str, Any]
     :raises ValidationFailedError: ``confirm`` does not echo the run id, or the row is stored ``pending`` / ``running``
         under a lease that has not lapsed, or under one this build cannot read.
     :raises StorageError: A result, a campaign detach, or the run itself failed to persist; the message names how far
@@ -715,17 +677,12 @@ def delete_result(
     rather than shrinking a dimension's n with nothing saying why.
 
     :param storage: Eval storage backend.
-    :ptype storage: CurationStore
     :param result: The result to destroy, already loaded — the caller performs the
         not-found check.
-    :ptype result: EvalResult
     :param scope_id: Partition key — the scope the result belongs to.
-    :ptype scope_id: str
     :param confirm: Must echo the result's id.
-    :ptype confirm: str | None
     :return: ``{"result_id": ..., "run_id": ...}`` — the run the result belonged to,
         so the caller can re-read what its aggregates now say.
-    :rtype: dict[str, Any]
     :raises ValidationFailedError: ``confirm`` does not echo the result id.
     :raises StorageError: The result failed to delete, including when its trace could not be
         deleted: the result is then kept rather than leaving the trace unreachable
@@ -760,14 +717,10 @@ def delete_analysis(storage: CurationStore, analysis: EvalAnalysis, *, confirm: 
     remains available for an analysis nobody needs the record of.
 
     :param storage: Eval storage backend.
-    :ptype storage: CurationStore
     :param analysis: The analysis to destroy, already loaded — the caller performs
         the not-found check.
-    :ptype analysis: EvalAnalysis
     :param confirm: Must echo the analysis's id.
-    :ptype confirm: str | None
     :return: ``{"analysis_id": ..., "campaign_id": ...}``.
-    :rtype: dict[str, Any]
     :raises ValidationFailedError: ``confirm`` does not echo the analysis id.
     :raises StorageError: The analysis failed to delete.
     """
@@ -806,15 +759,10 @@ def delete_insight(
     read surface for a caller to have gone through first.
 
     :param storage: Eval storage backend.
-    :ptype storage: CurationStore
     :param insight_id: Insight to destroy.
-    :ptype insight_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param confirm: Must echo ``insight_id``.
-    :ptype confirm: str | None
     :return: ``{"insight_id": ..., "source_campaign_id": ...}``.
-    :rtype: dict[str, Any]
     :raises NotFoundError: No insight with that id in the scope.
     :raises ValidationFailedError: ``confirm`` does not echo ``insight_id``.
     :raises StorageError: The insight failed to delete.
@@ -846,11 +794,8 @@ def _detach_run_from_all_campaigns(
     so membership is scanned in Python rather than pushed into a store predicate.
 
     :param storage: Eval storage backend.
-    :ptype storage: _RunCascadeStore
     :param run_id: The run being removed from campaign membership.
-    :ptype run_id: str
     :param scope_id: The scope the run, and so every campaign holding it, lives in.
-    :ptype scope_id: str
     :param results_already_deleted: How many of the run's results the caller has
         already destroyed. Required, not defaulted: this helper only ever runs
         mid-cascade, and a default would let a future caller emit a truthful-
@@ -861,7 +806,6 @@ def _detach_run_from_all_campaigns(
         destroyed ..."); an operator who read only that a detach failed, and
         abandoned there, would be left holding a run that still reads intact
         through ``get_run`` while its results are already destroyed.
-    :ptype results_already_deleted: int
     :raises StorageError: A campaign failed to persist. The message names what has
         already been destroyed and what has already been detached.
     """
@@ -932,7 +876,6 @@ __all__ = [
     "delete_result",
     "delete_run",
     "delete_unreadable_run",
-    "load_run_as_listed",
     "require_delete_confirmation",
     "set_analysis_archived",
     "set_campaign_archived",

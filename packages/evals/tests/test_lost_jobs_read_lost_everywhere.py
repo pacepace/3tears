@@ -25,7 +25,8 @@ from pydantic import ValidationError
 
 from threetears.evals import PUBLIC_ROOTS
 from threetears.evals.actions import eval_catalogue, standard_tools
-from threetears.evals.kernel import EvalStorage, LeasedJobKind, StorageError, settle_job_record
+from threetears.evals.kernel import EvalStorage, LeasedJobKind, StorageError
+from threetears.evals.kernel.job_leases import settle_job_record
 from threetears.evals.kernel.campaign import EvalAnalysisAttempt, EvalSweep, SweepArmRecord
 from threetears.evals.run import (
     LAUNCH_JOB,

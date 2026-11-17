@@ -1519,9 +1519,7 @@ def report_input_digest(report_input: ReportInput) -> str:
     """The digest of a report input: sha256 of its canonical JSON (keys sorted, by alias).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     """
     return report_input_document_digest(report_input.model_dump(mode="json", by_alias=True))
 
@@ -1533,9 +1531,7 @@ def report_input_document_digest(document: Mapping[str, Any]) -> str:
     model the running build holds, which may have moved since the freeze.
 
     :param document: ``ReportInput.model_dump(mode="json", by_alias=True)``, or a document read back from one.
-    :ptype document: Mapping[str, Any]
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     """
     document = {key: value for key, value in document.items() if key not in _OUTSIDE_THE_DIGEST}
     if isinstance(aspects := document.get("aspects"), list):

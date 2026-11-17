@@ -190,11 +190,8 @@ def on_lead_aspect(report_input: ReportInput, contrast: Contrast) -> bool:
     names that aspect, or none. A contrast on another aspect pairs another aspect's figures, never the overall ones.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param contrast: One of its contrasts.
-    :ptype contrast: Contrast
     :return: Whether the contrast pairs the overall figures.
-    :rtype: bool
     """
     return contrast.aspect is None or contrast.aspect == lead_aspect(report_input)
 
@@ -295,13 +292,9 @@ def joint_guarantee(alpha: float | None, size: int, *, corrected: bool = True) -
     nothing: its interval reads ``95%``, never "adjusted for 1 comparisons".
 
     :param alpha: The family-wise error rate its comparisons hold at; None for none stated.
-    :ptype alpha: float | None
     :param size: How many comparisons it corrects together.
-    :ptype size: int
     :param corrected: Whether it corrects them at all.
-    :ptype corrected: bool
     :return: The joint level and the family's size, or None.
-    :rtype: tuple[float, int] | None
     """
     if alpha is None or not corrected or size < 2:
         return None
@@ -313,11 +306,8 @@ def plan_unshown(looks: Looks | None, tests: Iterable[SeparationTest] | None = N
     (:func:`~threetears.evals.analysis.caveats.unkept_plan`); None where it is, or no such plan is in force.
 
     :param looks: The aspect's looks (``reading_scope.looks``, or the report input's ``Aspect.looks``); None for none.
-    :ptype looks: Looks | None
     :param tests: The tests the readings whose level is printed use; None for every test the aspect's readings use.
-    :ptype tests: Iterable[SeparationTest] | None
     :return: Why the plan's level is not shown, or None.
-    :rtype: UnkeptPlan | None
     """
     return None if looks is None or (looks.planned or 0) < 2 else unkept_plan(looks, tests)
 
@@ -328,15 +318,10 @@ def plan_condition(level: str, unkept: UnkeptPlan, readings: Sequence[str], *, p
     :mod:`~threetears.evals.analysis.report.parts.words`. It never says the level holds for a reading.
 
     :param level: The level as the page prints it (``95% (adjusted for 16 comparisons)``).
-    :ptype level: str
     :param unkept: The plan, and why its level is not shown.
-    :ptype unkept: UnkeptPlan
     :param readings: What the page calls the readings behind it, at least one.
-    :ptype readings: Sequence[str]
     :param per_arm: Whether the correction runs per arm only (several candidates): the level is each arm's intervals'.
-    :ptype per_arm: bool
     :return: The sentence.
-    :rtype: str
     """
     named = readings[0] if len(readings) == 1 else f"{', '.join(readings[:-1])} and {readings[-1]}"
     clause = {"sized": PLAN_SIZED_CLAUSE, "past": PLAN_PAST_CLAUSE, "uncounted": PLAN_UNCOUNTED_CLAUSE}[unkept.why]
@@ -356,11 +341,8 @@ def joint_level(family: ContrastFamily | None, looks: Looks | None = None) -> tu
     aspect's plan of looks is not shown held (:func:`plan_unshown`, on every test the aspect uses).
 
     :param family: The contrast family, or None.
-    :ptype family: ContrastFamily | None
     :param looks: The looks of the family's aspect (``Aspect.looks``, :func:`looks_of`); None for none.
-    :ptype looks: Looks | None
     :return: The joint level and the family's size, or None.
-    :rtype: tuple[float, int] | None
     """
     if family is None or plan_unshown(looks) is not None:
         return None
@@ -372,11 +354,8 @@ def looks_of(report_input: ReportInput, aspect: str | None) -> Looks | None:
     """The looks of the aspect a family or a contrast is read on, as the input carries them; None for none.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param aspect: The aspect's id; None for none.
-    :ptype aspect: str | None
     :return: Its looks, or None.
-    :rtype: Looks | None
     """
     return next((held.looks for held in report_input.aspects if held.id == aspect), None)
 

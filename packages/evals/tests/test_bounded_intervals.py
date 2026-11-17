@@ -19,7 +19,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import IntervalRow, campaign_report, report_markdown
+from threetears.evals.analysis import IntervalRow, campaign_report
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.stats import mean_interval, observed_mean_interval, wilson_interval
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
 from threetears.evals.ops import CampaignDefinition, campaign_create

@@ -20,13 +20,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from threetears.evals.kernel import (
-    CandidateKindDefect,
-    CandidateOutput,
-    CandidateTelemetry,
-    CellSummary,
-    summarize_completeness,
-)
+from threetears.evals.kernel import CandidateKindDefect, CandidateOutput, CandidateTelemetry, CellSummary
+from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.schema import (
     ConversationStopCause,
     EvalResult,

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from packages.evals.tests.fixtures.toyhost.campaign import TOYHOST_AXIS
-from threetears.evals.analysis import CampaignBundle
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.cells import cell_ref, variant_of_cell_ref
 from threetears.evals.analysis.references import cell_aliases
 

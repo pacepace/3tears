@@ -51,11 +51,8 @@ from threetears.evals.schema.completion import PricedCompletion
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.reading_states import Maker
 from threetears.evals.kernel.text_block import under
-from threetears.evals.schema import (
-    SCALES,
-    CalibrationRating,
-    EvalResult,
-)
+from threetears.evals.schema import CalibrationRating, EvalResult
+from threetears.evals.schema.models import SCALES
 from threetears.evals.schema.blind_read import (
     BlindAnswer,
     BlindPreference,
@@ -119,9 +116,7 @@ def blind_read_csv(read: BlindRead) -> str:
     """``read`` as a sheet of rows in the drawn order: one per item, output and criterion, the labels blank.
 
     :param read: The read.
-    :ptype read: BlindRead
     :return: The CSV text, in :data:`SHEET_COLUMNS`. It names no arm, run or result, and carries no judge score.
-    :rtype: str
     """
     written = io.StringIO()
     writer = csv.DictWriter(written, fieldnames=SHEET_COLUMNS, lineterminator="\n")
@@ -161,13 +156,9 @@ def read_labels(path: Path, read: BlindRead, results: Sequence[EvalResult]) -> L
     ``served_model``, where the file has that column). A file's word for who answered is taken as written.
 
     :param path: The labels file.
-    :ptype path: Path
     :param read: This run's draw.
-    :ptype read: BlindRead
     :param results: The results the draw was over.
-    :ptype results: Sequence[EvalResult]
     :return: The answers, the ratings outside the read, and the rows not read.
-    :rtype: LabelsRead
     :raises ValueError: A missing column, a label not on its dimension's scale, a dimension the judge does not score,
         a preference that is not A, B or tie, or a rater kind that is not person or reference.
     """
@@ -498,9 +489,7 @@ def blind_read_html(sheet: BlindSheet) -> str:
     works where it does not.
 
     :param sheet: The blinded view of a read.
-    :ptype sheet: BlindSheet
     :return: The page.
-    :rtype: str
     """
     # Inlined as JSON in a script element: ``<`` is escaped so no output's text can close the element.
     data = json.dumps(sheet.model_dump(mode="json"), ensure_ascii=False).replace("<", "\\u003c")
@@ -532,11 +521,8 @@ def write_blind_read(out_dir: Path, read: BlindRead) -> dict[str, Path]:
     """Write ``read``'s page and sheet into ``out_dir``.
 
     :param out_dir: The directory; created when missing.
-    :ptype out_dir: Path
     :param read: The read.
-    :ptype read: BlindRead
     :return: The page under ``blind_read`` and the sheet under ``blind_read_csv``.
-    :rtype: dict[str, Path]
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     page, sheet = out_dir / BLIND_READ_HTML, out_dir / BLIND_READ_CSV
@@ -563,21 +549,13 @@ async def answer_sheet(
     unpriced, no further call is made and the reading says why, by the rule the judge's examples are held to.
 
     :param sheet: The blinded view of a read.
-    :ptype sheet: BlindSheet
     :param client: The reviewer's client.
-    :ptype client: PricedCompletion
     :param budget: The ledger the calls were admitted against and are written to.
-    :ptype budget: OutOfRunBudget
     :param admitted: Each item's admitted call, by item.
-    :ptype admitted: Mapping[str, AdmittedCall]
     :param reused: How many items were read from answers recorded earlier.
-    :ptype reused: int
     :param max_cost_usd: The eval's cost cap, over everything it spends; None for none.
-    :ptype max_cost_usd: float | None
     :param landed_usd: What the eval has landed before these calls; None where any of it went unpriced.
-    :ptype landed_usd: float | None
     :return: An answer per item asked, in order, and the reading.
-    :rtype: tuple[list[BlindAnswer], BlindReview]
     """
     forms = PageForms.off_page()
 
@@ -618,11 +596,8 @@ def keep_reviewed(path: Path, read: BlindRead, reviewer: str) -> None:
     """Write ``reviewer``'s answers on ``read`` to ``path`` as a labels file, so the same draw is not asked again.
 
     :param path: Where they are kept; its directory is created when missing.
-    :ptype path: Path
     :param read: The read, carrying the answers.
-    :ptype read: BlindRead
     :param reviewer: The reviewer's model id.
-    :ptype reviewer: str
     """
     items = {item.item: item for item in read.items}
     scales = {dim.name: SCALES[dim.scale] for dim in read.criteria}
@@ -823,21 +798,13 @@ def judge_lines(
 
     :param closed: The run's blind read, closed over its labels, with the readings its close computed; None where the
         run has no judged answer to show.
-    :ptype closed: BlindClose | None
     :param labels_name: The labels file's name, or None where the judge names none.
-    :ptype labels_name: str | None
     :param labels_there: Whether that file exists.
-    :ptype labels_there: bool
     :param loose: How many labels in the file are not on this draw and were kept, as not drawn at random.
-    :ptype loose: int
     :param unread: The rows that could not be read against this run, each with why.
-    :ptype unread: Sequence[str]
     :param shown: The name each arm is printed by, by its key.
-    :ptype shown: Mapping[str, str] | None
     :param kept: The file a model reviewer's answers are kept in, by name; None where they are not kept.
-    :ptype kept: str | None
     :return: The lines.
-    :rtype: list[str]
     """
     if closed is None:
         return ["judge: no judged answer to read blind: judge not checked"]

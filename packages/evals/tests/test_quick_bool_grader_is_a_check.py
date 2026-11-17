@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from threetears.evals import Eval, grader
-from threetears.evals.analysis import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.kernel.scoring import failed_checks, measure_catalog_of
 from threetears.evals.analysis.bundle.trials import PassCount
 from threetears.evals.analysis.report.verdict import ungraded_sentence

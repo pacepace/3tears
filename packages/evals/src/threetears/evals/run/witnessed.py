@@ -121,30 +121,20 @@ def stamp_witnessed_judge(
     (:class:`~threetears.evals.run.budget.EvalRunCostCap`).
 
     :param host: The host: where the judge configs are read and the judge clients come from.
-    :ptype host: EvalHost
     :param run: The witnessed run, unjudged and not yet identity-stamped.
-    :ptype run: EvalRun
     :param template: The template whose intent and rubric the judge reads; in the run's scope, and of the
         kind the run recorded.
-    :ptype template: EvalTemplate
     :param judge_model: The run-level judge pin, resolved.
-    :ptype judge_model: str
     :param judged_artifact: What the kind's judge reads, which picks the dims it scores.
-    :ptype judged_artifact: JudgedArtifact
     :param selection: Optional ``{dim_id: config_id}`` naming configs per dim, as a launch's
         ``judge_config_ids`` does; the rest inherit each dim's active config.
-    :ptype selection: dict[str, str] | None
     :param configured_max_cost_usd: The host's run cost ceiling, which the run inherits when ``max_cost_usd``
         names none (a launching host's ``LaunchSettings.max_cost_usd``).
-    :ptype configured_max_cost_usd: float
     :param enforcement_enabled: Whether the host enforces eval ceilings; when it does not, the run records
         none and its judging is unbounded, as a launched run's is.
-    :ptype enforcement_enabled: bool
     :param max_cost_usd: Optional per-run override; must be ``> 0`` and may only LOWER
         ``configured_max_cost_usd``, never raise it.
-    :ptype max_cost_usd: float | None
     :return: A copy of the run carrying the judge and its ceiling.
-    :rtype: EvalRun
     :raises ValueError: The run is not witnessed; it already names a judge or a template; its identity is
         already stamped; the template is in another scope or of another kind; ``judged_artifact``
         declares a kind no judge reads; or the host supplies no completion clients.
@@ -295,37 +285,23 @@ async def record_witnessed_cell(
     flag what its save returned.
 
     :param host: The host the run belongs to — its profile resolves the run's contestant identity.
-    :ptype host: EvalHost
     :param run: The witnessed run the cell belongs to.
-    :ptype run: EvalRun
     :param test_case: The case the observation answers; one of ``run.test_case_ids``.
-    :ptype test_case: EvalTestCase
     :param output: What the candidate produced.
-    :ptype output: CandidateOutput
     :param k_iteration: The repeat, ``1..run.k_runs``.
-    :ptype k_iteration: int
     :param result_id: The result's id — the caller's, so a re-capture of the same observation is the same record.
-    :ptype result_id: str
     :param scored_at: When the observation was recorded, as an ISO-8601 timestamp.
-    :ptype scored_at: str
     :param judged_artifact: What the kind that produced ``output`` declares a judge reads. Held to the
         output as the runner holds it, and kept on the trace beside any evidence.
-    :ptype judged_artifact: JudgedArtifact
     :param external_rates: The rate table that prices the output's external calls, or ``None`` for none.
-    :ptype external_rates: ExternalRateTable | None
     :param spans: The host's trace record of the session's own work, or ``None`` when it collected none —
         the trace's spans and the result's latency buckets are read off it.
-    :ptype spans: CellTrace | None
     :param world_events: What moved the session's world, or ``None`` when it had none.
-    :ptype world_events: Sequence[WorldEvent] | None
     :param end_state: The world the session left, or ``None`` when it was not read.
-    :ptype end_state: Mapping[str, Any] | None
     :param judging: For a judged run, the run's :class:`WitnessedJudging` — one per run, handed to every cell's
         recording, which serialises the cells' ceiling checks with the judgements they admit; required for a
         judged run and ignored for an unjudged one.
-    :ptype judging: WitnessedJudging | None
     :return: The result and its trace, unsaved.
-    :rtype: tuple[EvalResult, EvalTrace]
     :raises ValueError: The run is not ``witnessed``; it names a template and no judge, or a judge and no
         template; it is judged and ``judging`` is missing or judges another run; ``test_case`` is not one of its cases,
         sits in another scope, or names a template; ``k_iteration`` is outside ``1..run.k_runs``; the output's stop
@@ -474,7 +450,6 @@ def _refuse_rig_world_events(world_events: Sequence[WorldEvent]) -> None:
     the re-check would read it under the witnessed rule while the event itself asserts the seed's arming.
 
     :param world_events: What moved the session's world, as the host hands them over.
-    :ptype world_events: Sequence[WorldEvent]
     :raises ValueError: An event claims ``armed=True`` or ``caused_by="rig"``.
     """
     for index, event in enumerate(world_events):
@@ -514,41 +489,23 @@ def _assembled(
     """The witnessed cell through the runner's own assembly.
 
     :param run: The witnessed run.
-    :ptype run: EvalRun
     :param test_case: The case.
-    :ptype test_case: EvalTestCase
     :param output: What the candidate produced.
-    :ptype output: CandidateOutput
     :param measures: The host's measure registry, which types each of the output's ``host_measures``.
-    :ptype measures: MeasureRegistry
     :param goal_checks: The goal checks of the template the run is judged against; empty for an unjudged run.
-    :ptype goal_checks: Sequence[str]
     :param candidate_kind: The kind the run stamped.
-    :ptype candidate_kind: str
     :param k_iteration: The repeat.
-    :ptype k_iteration: int
     :param variant: The run's variant identity.
-    :ptype variant: Any
     :param judged_artifact: What the kind's judge reads.
-    :ptype judged_artifact: JudgedArtifact
     :param external_rates: The rate table, or ``None``.
-    :ptype external_rates: ExternalRateTable | None
     :param result_id: The result's id.
-    :ptype result_id: str
     :param scored_at: When it was recorded.
-    :ptype scored_at: str
     :param judged: The judge phase's outcome, or ``None`` unjudged.
-    :ptype judged: Any
     :param judge_ms: The judge phase's latency, or ``None``.
-    :ptype judge_ms: Any
     :param spans: The host's trace record, or ``None``.
-    :ptype spans: CellTrace | None
     :param world_events: What moved the world, or ``None``.
-    :ptype world_events: Sequence[WorldEvent] | None
     :param end_state: The world it left, or ``None``.
-    :ptype end_state: Mapping[str, Any] | None
     :return: The result and its trace.
-    :rtype: tuple[EvalResult, EvalTrace]
     """
     return assemble_completed_cell(
         scope_id=run.scope_id,
@@ -583,9 +540,7 @@ def _judge_spend(result: EvalResult) -> float | None | Literal[False]:
     """What ``result``'s judging cost: the sum of its judge rows, ``None`` when any is unpriced, ``False`` for none.
 
     :param result: A judged witnessed cell.
-    :ptype result: EvalResult
     :return: The judge spend; ``None`` for an unpriced one; ``False`` when the result carries no judge row.
-    :rtype: float | None | Literal[False]
     """
     judging = [row.cost_usd for row in result.usage if row.role == "judge"]
     if not judging:
@@ -617,7 +572,6 @@ class WitnessedJudging:
         """Judging for ``run_id``, nothing judged yet.
 
         :param run_id: The judged witnessed run.
-        :ptype run_id: str
         """
         self.run_id = run_id
         self._lock = asyncio.Lock()
@@ -638,7 +592,6 @@ class WitnessedJudging:
         judgement stays counted, since it was paid for, though the store will keep only this one.
 
         :param result: The cell just judged.
-        :ptype result: EvalResult
         """
         spend = _judge_spend(result)
         if spend is False:
@@ -653,7 +606,6 @@ class WitnessedJudging:
         """Count judging that was paid for and that no cell will carry — a judgement a protocol defect stopped.
 
         :param spend: What it cost; ``None`` when any of its calls went unpriced.
-        :ptype spend: float | None
         """
         self._superseded.append(spend)
 
@@ -668,9 +620,7 @@ class WitnessedJudging:
         :param saved: What each of the run's results as the store holds them spent on its judge, by result id: the
             sum of its judge rows, ``None`` when any is unpriced, ``False`` when it carries none. A pair per result,
             so the run is read a page at a time and none of its results is kept.
-        :ptype saved: Iterable[tuple[str, float | None | Literal[False]]]
         :return: Each judgement's spend; ``None`` for an unpriced one.
-        :rtype: list[float | None]
         """
         self._stored = {}
         for result_id, spend in saved:
@@ -689,7 +639,6 @@ class WitnessedJudging:
         """Hold the run's ceiling check and the judgement it admits — what :func:`record_witnessed_cell` enters.
 
         :yield: Nothing; the check and the judgement run while it is held.
-        :rtype: AsyncIterator[None]
         """
         async with self._lock:
             yield
@@ -714,11 +663,8 @@ async def _refuse_past_the_judge_ceiling(host: EvalHost, run: EvalRun, judging: 
     unpriced, never as $0, and stops an enforced ceiling.
 
     :param host: The host, whose store holds the run's saved cells.
-    :ptype host: EvalHost
     :param run: The judged witnessed run.
-    :ptype run: EvalRun
     :param judging: The run's judging in this process.
-    :ptype judging: WitnessedJudging
     :raises ValueError: The run records no ceiling origin — it was not stamped by :func:`stamp_witnessed_judge`.
     :raises BudgetStoppedError: The ceiling is enforced and the judge spend is past it, or unpriced.
     """
@@ -752,13 +698,9 @@ async def _recorded_judge(
     makes its own; the judge service is built on the loop, where its clients will run.
 
     :param host: The host: its store, its blocking executor and its judge clients.
-    :ptype host: EvalHost
     :param run: The judged witnessed run.
-    :ptype run: EvalRun
     :param judged_artifact: What the kind's judge reads.
-    :ptype judged_artifact: JudgedArtifact
     :return: The judge service and the template.
-    :rtype: tuple[JudgeService, EvalTemplate]
     :raises ValueError: The kind declares nothing a judge reads, or the host supplies no completion clients.
     :raises ValidationFailedError: The run's recorded apparatus cannot be reproduced (see the rejudge checks).
     :raises NotFoundError: The template or a recorded config does not load.
@@ -787,13 +729,9 @@ def _recorded_apparatus(
     Blocking: :func:`_recorded_judge` calls it on the host's blocking executor.
 
     :param host: The host, whose store holds both.
-    :ptype host: EvalHost
     :param run: The judged witnessed run.
-    :ptype run: EvalRun
     :param judged_artifact: What the kind's judge reads, which picks the dims scored.
-    :ptype judged_artifact: JudgedArtifact
     :return: The template and the recorded config of each scored dim that recorded one.
-    :rtype: tuple[EvalTemplate, dict[str, JudgeConfig]]
     """
     storage = host.storage
     template = judged_template(storage, run, run.scope_id)

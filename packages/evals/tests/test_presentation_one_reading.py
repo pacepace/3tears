@@ -24,14 +24,10 @@ from pathlib import Path
 
 import pytest
 
-from threetears.evals.analysis import (
-    GLOSSARY,
-    build_code_only_report,
-    campaign_report_html,
-    campaign_report_markdown,
-    report_html,
-    report_markdown,
-)
+from threetears.evals.analysis import build_code_only_report, campaign_report_html, report_html
+from threetears.evals.analysis.style import GLOSSARY
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import CHECK_PROOF_WORDS, NOT_SHOWN_TO_MEASURE, analysis_lead
 from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report_input_build import report_input

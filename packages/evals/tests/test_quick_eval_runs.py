@@ -24,15 +24,17 @@ import pydantic
 import pytest
 
 from threetears.evals import Eval, grader
-from threetears.evals.analysis import report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.verdict import verdict_line
 from threetears.evals.analysis.stats import wilson_interval
-from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell, confusion_of
+from threetears.evals.kernel import ValidationFailedError, classifier_label_measure, confusion_cell
+from threetears.evals.kernel.metrics import confusion_of
 from threetears.evals.kernel.host import EvalHost, KindContract
 from threetears.evals.providers.failures import error_from_response
 from threetears.evals.quick.graders import UNUSABLE_ANSWER, field_scorer
 from threetears.evals.quick.one_call import CALLABLE_KIND, CALLABLE_KIND_CONTRACT, callable_host
-from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
+from threetears.evals.run import get_result_trace, list_results, list_runs
+from threetears.evals.run.authoring import list_templates
 from packages.evals.tests.bundle_support import one_batch_bundle
 from packages.evals.tests.fixtures.courierhost import ON_TIME_RATE, courier_host
 from packages.evals.tests.off_loop import off_loop

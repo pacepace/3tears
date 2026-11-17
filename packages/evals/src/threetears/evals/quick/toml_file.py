@@ -243,9 +243,7 @@ def load_toml(path: str | Path) -> Eval:
     """The eval a TOML file declares.
 
     :param path: The file.
-    :ptype path: str | Path
     :return: The eval, not yet run.
-    :rtype: Eval
     :raises ValueError: A file that is not TOML, a key it does not take, a slot missing or malformed, a case lacking a
         field the prompt fills, or anything the eval refuses — each naming the file.
     """

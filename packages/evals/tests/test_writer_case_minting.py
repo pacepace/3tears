@@ -24,13 +24,17 @@ import pytest
 from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import HOST_CAMPAIGNS, held_out_path, host_case
 from packages.evals.tests.fixtures.writer_cases.export_writer_cases import FROZEN_AT, FROZEN_BY, PACKAGE
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.harness import CaseMint, ReasonedOn, WithheldNote, WriterCaseFile, writer_case_from_export
+from threetears.evals.harness import ReasonedOn
+from threetears.evals.harness.writer_cases import CaseMint
+from threetears.evals.harness.writer_cases import WithheldNote
+from threetears.evals.harness.writer_cases import WriterCaseFile
+from threetears.evals.harness.minting import writer_case_from_export
 from threetears.evals.harness.__main__ import main
 from threetears.evals.kernel import EvalInsight
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.kernel.host import HostProfile
 from threetears.evals.quick.cli import EXIT_FAILED, EXIT_OK, EXIT_REFUSED
-from threetears.evals.schema import eval_trace_doc_id
+from threetears.evals.schema.models import eval_trace_doc_id
 from threetears.evals.schema.hashing import identity_json
 
 #: The courier's capture: the export.

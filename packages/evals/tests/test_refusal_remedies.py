@@ -46,15 +46,15 @@ from threetears.evals.analysis.lenses.pivot import PivotError
 from threetears.evals.kernel import (
     AdmissionRefusedError,
     ConflictError,
-    DesignRefused,
     EvalServiceError,
     NotFoundError,
     ProviderRefusedError,
     RefusedInput,
     StorageError,
-    UndeclarableAxisError,
     ValidationFailedError,
 )
+from threetears.evals.kernel.declaration import DesignRefused
+from threetears.evals.kernel.declaration import UndeclarableAxisError
 from threetears.evals.kernel.errors import PROVIDER_REMEDY, STORAGE_REMEDY
 from threetears.evals.kernel.status_filter import StatusFilterError
 from threetears.evals.run import CeilingRaisedError

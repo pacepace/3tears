@@ -71,13 +71,9 @@ def policy_places(
 
     :param half_widths: The half-widths, as printed (a rate's in points); ``None``, zero and non-finite ones say nothing
         of the precision.
-    :ptype half_widths: Iterable[float | None]
     :param figures: The measure's figures, as printed, read only where no half-width is.
-    :ptype figures: Iterable[float | None]
     :param capped: Whether the measure is a rate or a change in points, which reads to at most one decimal.
-    :ptype capped: bool
     :return: The decimals.
-    :rtype: int
     """
     widths = [2 * abs(width) for width in half_widths if width is not None and math.isfinite(width) and width != 0]
     if widths:
@@ -96,13 +92,9 @@ def policy_interval_places(low: float, high: float, *, capped: bool = False) -> 
     figures of the lesser.
 
     :param low: The low end, as printed.
-    :ptype low: float
     :param high: The high end, as printed.
-    :ptype high: float
     :param capped: Whether the figure is a rate or a change in points, which reads to at most one decimal.
-    :ptype capped: bool
     :return: The decimals.
-    :rtype: int
     """
     return policy_places([(high - low) / 2], [low, high], capped=capped)
 
@@ -116,18 +108,12 @@ def policy_lone_interval(
     one function such a figure and its interval go through, so the two never read at two precisions.
 
     :param low: The low end, as printed.
-    :ptype low: float
     :param high: The high end, as printed.
-    :ptype high: float
     :param rate: Whether the figure is a percent or a change in points, which reads to at most one decimal and, as a
         level, is kept off 0% and 100%.
-    :ptype rate: bool
     :param change: Whether the figure is a change, its value and ends signed.
-    :ptype change: bool
     :param value: The figure the interval is on; None for an interval alone.
-    :ptype value: float | None
     :return: The figure's digits (empty for none), and the interval's text, ``low to high``, with no unit.
-    :rtype: tuple[str, str]
     """
     places = policy_interval_places(low, high, capped=rate)
     bounds = _RATE_BOUNDS if rate and not change else ()
@@ -144,12 +130,9 @@ def policy_interval_set(
     2026-11-14), never each row at its own interval's (``12.35`` above ``46``).
 
     :param rows: Each row's figure (None for an interval alone) and its interval's ends, as printed.
-    :ptype rows: Sequence[tuple[float | None, float, float]]
     :param rate: Whether the figures are percents or changes in points, which read to at most one decimal and, as a
         level, are kept off 0% and 100%.
-    :ptype rate: bool
     :return: Each row's figure's digits (empty for none) and its interval's text, ``low to high``, with no unit.
-    :rtype: list[tuple[str, str]]
     """
     places = policy_places(
         [(high - low) / 2 for _, low, high in rows], [end for _, low, high in rows for end in (low, high)], capped=rate
@@ -174,9 +157,7 @@ def policy_level(percent: float) -> str:
     (:attr:`~threetears.evals.analysis.report.keys.figure.Figure.level`).
 
     :param percent: The level, in percent (``99.6875``).
-    :ptype percent: float
     :return: Its text with its ``%``; an em dash for a non-finite one.
-    :rtype: str
     """
     if not math.isfinite(percent):
         return _ABSENT_TEXT
@@ -196,14 +177,10 @@ def policy_bounded_places(value: float, places: int, *, bounds: Collection[float
     :data:`~threetears.evals.kernel.numbers.WRITTEN_FROM` from it), reads at its measure's.
 
     :param value: The figure, as printed.
-    :ptype value: float
     :param places: Its measure's decimals (:func:`policy_places`).
-    :ptype places: int
     :param bounds: The boundaries it may not print onto: zero for a change in points, a rate's floor and ceiling for
         its level; none for a figure the exception does not cover.
-    :ptype bounds: Collection[float]
     :return: The decimals, at most six.
-    :rtype: int
     """
     at = max(0, places)
     if not math.isfinite(value) or _on_a_bound(value, bounds):
@@ -219,16 +196,11 @@ def policy_figure(value: float | None, places: int, *, bounds: Collection[float]
     states no precision.
 
     :param value: The figure, as printed.
-    :ptype value: float | None
     :param places: Its measure's decimals.
-    :ptype places: int
     :param bounds: The boundaries it may not print onto; none for a figure the boundary exception does not cover (an
         uncapped measure's level or change: ``+0.4 ms`` on a whole-millisecond measure reads ``0``).
-    :ptype bounds: Collection[float]
     :param signed: Whether a positive figure carries its ``+`` (a change).
-    :ptype signed: bool
     :return: Its digits; an em dash for an absent or non-finite one.
-    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return _ABSENT_TEXT
@@ -249,20 +221,13 @@ def policy_interval(
     absent figure, an em dash with no unit.
 
     :param low: The low end, as printed.
-    :ptype low: float
     :param high: The high end, as printed.
-    :ptype high: float
     :param places: The figure's measure's decimals.
-    :ptype places: int
     :param change: Whether the interval is a change's, whose ends carry their signs.
-    :ptype change: bool
     :param bounds: The boundaries beside zero neither end may print onto: a rate level's floor and ceiling; none for
         any other interval. Required, so a rate's interval never drops its ceiling by default.
-    :ptype bounds: Collection[float]
     :param unit: The unit written once after it; empty under a head that names it.
-    :ptype unit: str
     :return: The low end's digits, the high end's digits, and the interval's text.
-    :rtype: tuple[str, str, str]
     """
     if not (math.isfinite(low) and math.isfinite(high)):
         return _ABSENT_TEXT, _ABSENT_TEXT, _ABSENT_TEXT
@@ -287,11 +252,8 @@ def policy_percent(value: float | None, places: int) -> str:
     sign kept; an exact zero reads ``0%``, which states no precision.
 
     :param value: The percentage, in percent.
-    :ptype value: float | None
     :param places: The decimals.
-    :ptype places: int
     :return: ``63%``, ``62.9%``, ``0%``; an em dash for an absent or non-finite one.
-    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return _ABSENT_TEXT
@@ -307,11 +269,8 @@ def policy_rate(value: float | None, places: int) -> str:
     measure's decimals (``100%``); one under its floor, which no count gives, reads as given, its sign kept.
 
     :param value: The rate, in percent.
-    :ptype value: float | None
     :param places: Its measure's decimals (:func:`policy_places`, capped).
-    :ptype places: int
     :return: Its text.
-    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return _ABSENT_TEXT
@@ -323,9 +282,7 @@ def policy_p(p: float | None) -> str:
     three decimals below 0.1, two from it up. It is no measurement, so no measure's decimals reach it.
 
     :param p: The p-value.
-    :ptype p: float | None
     :return: ``< 0.001``, ``0.003``, ``0.50``, ``1.00``.
-    :rtype: str
     """
     return spell_p(p)
 
@@ -335,9 +292,7 @@ def policy_effect(value: float | None) -> str:
     (:func:`~threetears.evals.kernel.numbers.spell_effect`): ``0.08``, ``-0.19``.
 
     :param value: The effect.
-    :ptype value: float | None
     :return: Its text.
-    :rtype: str
     """
     return spell_effect(value)
 
@@ -348,11 +303,8 @@ def policy_declared(value: float | None, unit: str = "") -> str:
     whole (``-15 pts``, never ``-15.0 pts``). It was chosen, not measured, so no measure's decimals reach it.
 
     :param value: The value, in its unit.
-    :ptype value: float | None
     :param unit: Its unit; empty for none.
-    :ptype unit: str
     :return: Its text; an em dash, without the unit, for an absent or non-finite one.
-    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return _ABSENT_TEXT

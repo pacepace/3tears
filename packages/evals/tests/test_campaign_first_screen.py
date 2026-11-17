@@ -14,12 +14,9 @@ import pytest
 import re
 from html import escape
 
-from threetears.evals.analysis import (
-    build_campaign_report,
-    build_code_only_report,
-    campaign_report_html,
-    campaign_report_markdown,
-)
+from threetears.evals.analysis import build_code_only_report, campaign_report_html
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     CampaignReport,

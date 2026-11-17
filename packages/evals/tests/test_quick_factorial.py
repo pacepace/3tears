@@ -27,7 +27,8 @@ from threetears.evals.quick.one_call import (
     callable_host,
     callable_kind_contracts,
 )
-from threetears.evals.run import list_runs, list_templates
+from threetears.evals.run import list_runs
+from threetears.evals.run.authoring import list_templates
 from packages.evals.tests.off_loop import off_loop
 
 SCOPE = "compare-factors"

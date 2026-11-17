@@ -32,6 +32,63 @@ of a row that replaced nothing, so such rows are stored as before; a build befor
 under its newer-minor tolerance and ignores the field, which is correct (the row is the cell's one answer) and only
 misses the count. Roll forward in any order; a rollback loses nothing but that count on rows taken up meanwhile.
 
+### evals: an arm answered by two models reads no cost across aspects where only one of them was priced
+
+**Fixed:** a campaign's figures across aspects read an arm's cost per reply on an aspect off its scoreboard, which
+pools every model that answered it. Where the arm was answered by two models (or read under two definitions of a host
+measure) and only one of its cells there was priced, that pooled cost was taken as the arm's. It now reads no cost on
+that aspect, as its pass rate there already did, and the cost across aspects is withheld, naming the aspect.
+
+**For hosts:** a campaign page or report input that printed such an arm's cost across aspects (the equal-weight row
+and the cost/quality chart) prints none for it now, and says which aspect it lacks. Nothing stored moves.
+
+### evals: what only the package's tests called is deleted or made private
+
+**Removed:** names that no production code calls, whose only callers were the package's own tests:
+`run.resume.resume_run` (the `job_resume` action takes a run up through `take_up_run`, which now carries its
+description), `analysis.service.analysis_report` (reading one stored analysis by its id over the bundles frozen with
+it, which no door offered; `campaign_report` and `report_read` read a campaign's report) with its store port,
+`kernel.usage_capture.resolve_result_usage` with `ResolvedUsage` (on the `kernel` root until now; `MIGRATIONS.toml`
+records it), `gen.variation_gen.price_variations`, `schema.versioning.DURABLE_ADDRESSING_FIELDS`,
+`schema.judge_attribution.judges_sharing_a_candidate_model`, the `campaign_aggregate` wrapper and the report
+document reads' store protocol (the reads take `EvalStorage`). Twenty-eight names used only inside their own module
+are made private; the tests reach what they do through the module's public
+functions. Two sentences that said a run judged on a candidate's model is disclosed on every surface now say what
+happens: the run records it among its judges.
+
+**For hosts:** nothing to do. No root a host imports from loses a name its production code imports, and no stored or
+served shape moves.
+
+### evals: provisional names the package uses across its own modules leave the public roots too
+
+**Removed:** 240 more provisional root spellings (of 237 names) leave the public roots (`MIGRATIONS.toml` records
+the 201 a release shipped). Like the names before them, no declared name reaches them, no host's production code
+imports them, and no shipped example or page uses them; the package's own modules use each, and now import it from the
+module defining it, where it stays, unrenamed. Kept on their roots: what the package's own modules import through a
+root (`ops.frontier_text` and `ops.out_of_run_spend_text`, which the action catalogue reaches `analysis` through), the
+names the toy host imports, the names the shipped completion client (`providers`) imports, which reaches the engine
+only through the roots, `schema.extract_paths` and its result, which the reference page teaches, each leased job kind, the open vocabularies' registries, every type a name that stays
+reaches, and the names the recorded host's tests import. No stored or served shape moves.
+
+**For hosts:** nothing to do. Every name the recorded host's production code imports still resolves from its root,
+and so does every one its tests import that resolved before.
+
+### evals: provisional names nothing reaches leave the public roots
+
+**Removed:** 88 provisional names leave the public roots (`MIGRATIONS.toml` records the 87 a release shipped). Each
+is reached by no declared name's signature, field, base, raised error or docstring, is imported by no host's
+production code, and is used by no shipped example or page and by no module but the one defining it. Twelve that
+nothing called are deleted (`run.cancel_run`, whose work `job_cancel` does, `run.get_judge_config`,
+`run.get_rubric_dim`, `run.list_runs_disclosing`, `schema.JSON_OBJECT_RESPONSE_FORMAT`,
+`analysis.significance_disclosure`, `analysis.difference_was_declared_at_launch`, `analysis.metric_help`,
+`analysis.SCOPED_METRICS_HELP`, and the three job-id helpers `ops.action_job_id`, `ops.judge_temperature_job_id`
+and `ops.second_judge_job_id`); each of the rest stays in the module defining it. No stored or served shape moves,
+and no wire name: an action's parameters and results, and every stored document class, count as reached.
+
+**For hosts:** nothing to do. Every name the recorded host's production code imports still resolves from its root,
+and so do the two that its tests import from among the candidates (`kernel.INCOMPLETE_STOP_REASONS`,
+`kernel.host.UNSEATED_LEVEL`), which stay.
+
 ### evals: a second Ctrl+C on a quick comparison is raised as itself, and the comparison is filed wherever it lands
 
 **Fixed:** a quick comparison interrupted twice in a terminal raises the `KeyboardInterrupt` itself once its campaign

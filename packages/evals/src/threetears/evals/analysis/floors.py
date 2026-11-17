@@ -262,11 +262,8 @@ class FloorStatus(EvalDocumentModel):
 
         :param name: What the page calls what the reason is about (:func:`floor_subject`): the deciding rate, or the
             reading a floor found unmeasured; unread for a reason that names neither.
-        :ptype name: str
         :param control: What the page calls the control.
-        :ptype control: str
         :return: The sentence, its figures as a campaign's readings spell them (:meth:`Said.stored`).
-        :rtype: str
         """
         return _floor_reason(self.decision, name=name, control=control, candidate=self.arm_label).stored()
 
@@ -488,17 +485,12 @@ def floor_statement(
     ``no tone rate drops by more than 2 points``, ``v2 costs less per reply``.
 
     :param clause: The floor's clause.
-    :ptype clause: DecisionClause
     :param candidate: The arm it is read on, by name.
-    :ptype candidate: str
     :param readings: What the floor is read against, whose rate names a named reading is said by; None to say it
         from its key.
-    :ptype readings: FloorReadings | None
     :param check_names: Each goal check's name by its expression (``AnalysisContextBundle.named_checks``), for a
         floor on a check said without ``readings``; None reads the names ``readings`` carries.
-    :ptype check_names: Mapping[str, str] | None
     :return: The floor, lower case, with no closing stop.
-    :rtype: Said
     """
     if isinstance(clause, CostLower):
         return Said.of(f"{candidate} costs less per reply")
@@ -510,15 +502,10 @@ def read_floor(floor: Floor, readings: FloorReadings, *, control: str, candidate
     """Read ``floor`` on one candidate, rate by rate.
 
     :param floor: The floor.
-    :ptype floor: Floor
     :param readings: The control's and the candidate's figures (:func:`floor_readings`).
-    :ptype readings: FloorReadings
     :param control: The control, by the name the page gives it, which a reason says.
-    :ptype control: str
     :param candidate: The candidate, likewise.
-    :ptype candidate: str
     :return: The floor's outcome, with each rate's and reasons naming the arms.
-    :rtype: FloorVerdict
     """
     clause = floor.clause
     statement = floor_statement(clause, candidate=candidate, readings=readings)
@@ -542,18 +529,12 @@ def evaluate_floor(
     from the family comparison's per-case values at :data:`~threetears.evals.analysis.stats.INTERVAL_LEVEL`.
 
     :param floor: The floor.
-    :ptype floor: Floor
     :param readings: The control's and the candidate's figures on the floor's aspect (:func:`floor_readings`).
-    :ptype readings: FloorReadings
     :param arm: The candidate's variant key.
-    :ptype arm: str
     :param arm_label: What a reader calls the candidate, which the reason names it by.
-    :ptype arm_label: str
     :param control_label: What a reader calls the control, likewise.
-    :ptype control_label: str
     :return: The floor's status on the candidate, its interval in the floor's units (points of pass rate, or dollars
         per reply), the candidate minus the control.
-    :rtype: FloorStatus
     """
     verdict = read_floor(floor, readings, control=control_label, candidate=arm_label)
     margin = floor.clause.max_points if isinstance(floor.clause, RateDrop) else None
@@ -653,16 +634,11 @@ def _floor_reason(decision: FloorDecision, *, name: str, control: str, candidate
     say.
 
     :param decision: The reason, as facts.
-    :ptype decision: FloorDecision
     :param name: What the page calls what the reason is about (:func:`floor_subject`): the rate, or the reading a
         floor found unmeasured; unread for a reason that names neither.
-    :ptype name: str
     :param control: What the sentence calls the control.
-    :ptype control: str
     :param candidate: What it calls the candidate.
-    :ptype candidate: str
     :return: The reason, lower case, with no closing stop.
-    :rtype: Said
     :raises ValueError: The decision lacks a figure its reason states.
     """
     case = decision.case
@@ -780,14 +756,10 @@ def floor_subject(
     unmeasured, as :func:`reading_words` names it.
 
     :param decision: The decision.
-    :ptype decision: FloorDecision
     :param bundle: The evidence of the floor's aspect.
-    :ptype bundle: AnalysisContextBundle
     :param check_names: Each goal check's display name by its expression; None names a check by its expression, as
         code, as the campaign's readings read it.
-    :ptype check_names: Mapping[str, str] | None
     :return: The name.
-    :rtype: str
     """
     if decision.case == "unmeasured" and decision.reading is not None:
         return reading_words(decision.reading, None, check_names)
@@ -1053,23 +1025,17 @@ def floor_readings(
     (:class:`FloorDecision`), which a page words when it is rendered.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param control: The control's variant key.
-    :ptype control: str
     :param candidate: The candidate's variant key.
-    :ptype candidate: str
     :param confidence: The two-sided level every interval is read at: the nominal one for a floor; a campaign's
         readings pass the level their Holm step tests at.
-    :ptype confidence: float
     :param check_names: Each goal check's display name by its expression, which every rate, reason and floor sentence
         on a check names it by; None names each by its expression.
-    :ptype check_names: Mapping[str, str] | None
     :return: The readings; no rate where either arm is off the scoreboard, or where either holds a cell per answering
         model, or per definition of a host measure, on this aspect, or the two share no test setup because their
         definitions differ or are unrecorded (:func:`~threetears.evals.analysis.cells.unread_arms`): the arm has no one
         contrast against the other, and its counts pool the models its cells keep apart, so nothing is read for the
         arm and each cell's own contrast stands in the bundle.
-    :rtype: FloorReadings
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
     if control not in boards or candidate not in boards or _answer_split(bundle, control, candidate):
@@ -1183,15 +1149,10 @@ def _rate_name(
     ``AnalysisContextBundle.named_checks``); any other measure by the catalog's reader name, else its key in words.
 
     :param bundle: The aspect's evidence, whose catalog names a measure.
-    :ptype bundle: AnalysisContextBundle
     :param measure: The rate's measure key, a judged dimension's id where ``judged``; None for the trials' own.
-    :ptype measure: str | None
     :param judged: Whether ``measure`` is a judged dimension's id.
-    :ptype judged: bool
     :param check_names: Each goal check's display name by its expression; None names a check by its expression.
-    :ptype check_names: Mapping[str, str] | None
     :return: The name.
-    :rtype: str
     """
     if measure is None:
         return "the pass rate"
@@ -1215,18 +1176,13 @@ def aspect_pass_rate(
     shares its family compared, which a campaign's readings test across aspects.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param control: The control's variant key.
-    :ptype control: str
     :param candidate: The candidate's variant key.
-    :ptype candidate: str
     :param confidence: The two-sided level its interval is read at; the nominal one by default.
-    :ptype confidence: float
     :return: The rate, its bounded interval at ``confidence`` and the per-case shares it read (:class:`RateReading`),
         from the bundle's ``floor_contrasts`` whatever the family compares; its ``samples`` and ``interval`` None only
         where a side has fewer than two cases with a usable trial, or no control resolved. None where either arm is
         off the scoreboard, or is not read as one arm against the other on this aspect (as :func:`floor_readings` withholds).
-    :rtype: RateReading | None
     """
     boards = {board.variant_key: board for board in bundle.scoreboard}
     if control not in boards or candidate not in boards or _answer_split(bundle, control, candidate):
@@ -1273,20 +1229,13 @@ def control_cannot_show(
     every share is one, and no gain can show.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param control: The control's variant key.
-    :ptype control: str
     :param candidates: Each candidate's variant key read against it on the aspect.
-    :ptype candidates: Sequence[str]
     :param margin: The aspect's margin in points, 0 where a superiority question reads the drop against zero; None
         where no drop is read against one.
-    :ptype margin: float | None
     :param passed: The trials the control passed.
-    :ptype passed: int
     :param trials: The trials the control was measured on.
-    :ptype trials: int
     :return: ``drop``, ``gain``, both or neither, in that order; neither where the control has no trial.
-    :rtype: tuple[Literal["drop", "gain"], ...]
     """
     if not trials:
         return ()
@@ -1395,17 +1344,11 @@ def project_sample(
     floor reads the bounded interval, which this scaling overstates: :func:`project_rate` computes it again instead.
 
     :param half_width: How far the interval reaches past the observed difference on the worse side, at least 0.
-    :ptype half_width: float
     :param cases: The independent cases the interval was read over, at least 1.
-    :ptype cases: int
     :param margin: The worst true difference with which the floor still holds.
-    :ptype margin: float
     :param observed: The observed difference toward worse.
-    :ptype observed: float
     :param per_case_usd: What one case costs over every arm; None where unpriced.
-    :ptype per_case_usd: float | None
     :return: The projection.
-    :rtype: SampleProjection
     :raises ValueError: As :func:`~threetears.evals.analysis.stats.cases_to_clear`.
     """
     return SampleProjection(
@@ -1432,15 +1375,10 @@ def project_rate(
     drop within the margin as observed and the floor is met, only the lost trials kept it open (``lost``).
 
     :param rate: One rate read and left unclear.
-    :ptype rate: RateReading
     :param cases: The fewer usable cases of the two arms.
-    :ptype cases: int
     :param margin: The margin, in points.
-    :ptype margin: float
     :param per_case_usd: What one case costs over every arm; None where unpriced.
-    :ptype per_case_usd: float | None
     :return: The projection; None where the rate carries no per-case values or no level to read them at.
-    :rtype: SampleProjection | None
     """
     if rate.samples is None or rate.confidence is None:
         return None
@@ -1485,9 +1423,7 @@ def case_cost_usd(bundle: AnalysisContextBundle) -> float | None:
     cases an arm ran.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :return: The cost in US dollars; None where an arm went unpriced or no case ran.
-    :rtype: float | None
     """
     spent = [board.test_cost_usd for board in bundle.scoreboard]
     cases = max((board.cases for board in bundle.scoreboard), default=0)
@@ -1505,12 +1441,9 @@ def floor_projection(verdict: FloorVerdict, *, per_case_usd: float | None = None
     never shown cheaper.
 
     :param verdict: The floor as read on one candidate.
-    :ptype verdict: FloorVerdict
     :param per_case_usd: What one case costs over every arm (:func:`case_cost_usd`); None where unpriced.
-    :ptype per_case_usd: float | None
     :return: The projection; None for a floor broken or held, and where the cases were not counted or a rate it left
         unclear carries nothing to project from.
-    :rtype: SampleProjection | None
     """
     readings = verdict.readings
     fewest = readings.fewest_cases() if readings is not None else None
@@ -1536,13 +1469,10 @@ def rate_projections(
     very projections the count is made of.
 
     :param verdict: The floor as read on one candidate.
-    :ptype verdict: FloorVerdict
     :param per_case_usd: What one case costs over every arm (:func:`case_cost_usd`); None where unpriced.
-    :ptype per_case_usd: float | None
     :return: Each unclear rate and its projection, in the floor's order; None for a floor broken or held, a cost
         floor, where the cases were not counted, where no rate is unclear, and where any unclear rate carries nothing
         to project from (so the floor has no count).
-    :rtype: tuple[tuple[RateVerdict, SampleProjection], ...] | None
     """
     readings = verdict.readings
     fewest = readings.fewest_cases() if readings is not None else None
@@ -1567,11 +1497,8 @@ def floors_projection(
     (:func:`floor_projection`).
 
     :param verdicts: The floors as read on one candidate.
-    :ptype verdicts: Sequence[FloorVerdict]
     :param per_case_usd: What one case costs over every arm; None where unpriced.
-    :ptype per_case_usd: float | None
     :return: The projection; None where no floor is unclear, or one left unclear cannot be projected.
-    :rtype: SampleProjection | None
     """
     found = [
         floor_projection(verdict, per_case_usd=per_case_usd) for verdict in verdicts if verdict.outcome == "unclear"

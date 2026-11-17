@@ -53,13 +53,9 @@ import pytest
 from threetears.evals import Answer, Eval, Result, grader
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.actions.catalogue import Caller
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    ComparisonFamily,
-    assemble_context_bundle,
-    get_campaign,
-    list_campaigns,
-)
+from threetears.evals.analysis import AnalysisContextBundle, ComparisonFamily, assemble_context_bundle
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.campaigns import list_campaigns
 from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet, redrawn_sentence
 from threetears.evals.analysis.bundle.trials import committed_order, redrawn_cells
 from threetears.evals.analysis.stats import (

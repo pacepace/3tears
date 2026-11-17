@@ -184,7 +184,6 @@ def _paired_test(
     in per-case means cannot pass for a t-test's spread.
 
     :return: ``(interval, p)``, or None below two cases.
-    :rtype: tuple[tuple[float, float], float] | None
     """
     if len(a) < 2:
         return None
@@ -206,11 +205,8 @@ def judge_drift(results: Iterable[ResultView], *, pass_id: str | None = None) ->
     """Read how far each dimension's scores moved from the run's judge to a second judge on the same evidence.
 
     :param results: The results whose second-judge scores to read.
-    :ptype results: Iterable[ResultView]
     :param pass_id: Read only this pass's pairs; ``None`` for every pass.
-    :ptype pass_id: str | None
     :return: The movement per (dimension, scale, first judge, second judge), tested as one family.
-    :rtype: JudgeDrift
     """
     tally = JudgeDriftTally(pass_id=pass_id)
     for result in results:
@@ -226,7 +222,6 @@ class JudgeDriftTally:
         """Start a tally reading every pass's pairs, or only ``pass_id``'s.
 
         :param pass_id: Read only this pass's pairs; ``None`` for every pass.
-        :ptype pass_id: str | None
         """
         self._pass_id = pass_id
         self._pairs: dict[SecondJudgeGroup, dict[str, list[tuple[int, int]]]] = {}
@@ -236,7 +231,6 @@ class JudgeDriftTally:
         """Read one result's second-judge scores.
 
         :param result: The result.
-        :ptype result: ResultView
         """
         pairs, unanswered = self._pairs, self._unanswered
         for judging in result.judge_seconds:
@@ -262,7 +256,6 @@ class JudgeDriftTally:
         """The movement over every result read so far.
 
         :return: As :func:`judge_drift` returns it.
-        :rtype: JudgeDrift
         """
         pairs, unanswered = self._pairs, self._unanswered
         keys = sorted(pairs, key=second_judge_group_sort_key)

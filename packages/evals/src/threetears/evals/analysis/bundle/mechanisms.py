@@ -68,19 +68,14 @@ def _mechanism_value(result: ResultView, name: str, leaves: _NamedLeaves, *, des
     ambiguous result contributes nothing rather than one of its values chosen by order.
 
     :param result: The result to read.
-    :ptype result: ResultView
     :param name: A measure or covariate name.
-    :ptype name: str
     :param leaves: The result's leaves by name, as :func:`_named_leaves` read them.
-    :ptype leaves: _NamedLeaves
     :param describe: The host's measure registry, which resolves the name's population.
-    :ptype describe: Describer
     :return: The value, or None — a result outside the measure's population (a faulted one outside a ``scored``
         measure's; one that took no turn outside a ``delivered`` one's, which every cost or latency measure
         is read as unless it declares ``all_observed``), no observation, an ambiguous one, or one that is
         not a finite number. Any other measure that declares no population is read over every result here,
         as it always was.
-    :rtype: float | None
     """
     # Over every result where the measure declares nothing, as a mechanism always read — except a turn's
     # time or spend, which every reader takes over the turns taken (`summary_population`).
@@ -104,11 +99,8 @@ def mechanism_observations(results: Sequence[ResultView], *, profile: HostProfil
     reading of one measure read one set of values.
 
     :param results: Every resolved result in the campaign.
-    :ptype results: Sequence[ResultView]
     :param profile: The host whose declarations name the mechanisms.
-    :ptype profile: HostProfile
     :return: ``{name: {result id: (case id, value)}}``; a result that observed nothing of a name is absent under it.
-    :rtype: MechanismObservations
     """
     names = sorted({measure for _lever, measure in profile.sweepables.mechanisms} | set(OBSERVED_MECHANISMS))
     describe = describer(profile.measures)
@@ -131,13 +123,9 @@ def _named_leaves(result: ResultView, names: frozenset[str], *, describe: Descri
     single sub-models and the measures it implies at the per-result unit (``inner``). A row-level leaf is left out.
 
     :param result: The result to read.
-    :ptype result: ResultView
     :param names: The names to read.
-    :ptype names: frozenset[str]
     :param describe: The host's measure registry.
-    :ptype describe: Describer
     :return: ``{name: (outer, inner)}`` for each name the result carries at either level.
-    :rtype: _NamedLeaves
     """
     leaves: _NamedLeaves = {}
     for slot, value in walk_leaves(result, describe):
@@ -159,12 +147,9 @@ def _per_case_means(values: Mapping[str, tuple[str, float]], result_ids: Collect
     another would differ by float noise with no spread, which the separation test counts as a gap.
 
     :param values: Result id -> that result's ``(case id, value)``.
-    :ptype values: Mapping[str, tuple[str, float]]
     :param result_ids: The level's result ids.
-    :ptype result_ids: Collection[str]
     :return: Case id -> the exact mean of its results' observations; a case none of whose results observed it is
         absent.
-    :rtype: dict[str, Fraction]
     """
     by_case: dict[str, list[Fraction]] = defaultdict(list)
     for result_id in result_ids:
@@ -185,7 +170,6 @@ def _level_value(per_case: Mapping[str, Fraction]) -> Fraction:
     show a different number for the same arm wherever the repeats are unequal.
 
     :param per_case: The level's per-case means, from :func:`_per_case_means`; not empty.
-    :ptype per_case: Mapping[str, Fraction]
     """
     return sum(per_case.values(), Fraction(0)) / len(per_case)
 
@@ -196,11 +180,8 @@ def _level_means(
     """Each level's value of one mechanism (:func:`_level_value`), for every level that observed it.
 
     :param values: Result id -> that result's ``(case id, value)``.
-    :ptype values: Mapping[str, tuple[str, float]]
     :param result_ids_by_level: The comparison's level -> the result ids at that level.
-    :ptype result_ids_by_level: Mapping[str, Collection[str]]
     :return: The exact value per level that observed any; a level that observed none is absent.
-    :rtype: dict[str, Fraction]
     """
     return {
         level: _level_value(per_case)
@@ -232,11 +213,8 @@ def _levels_separate(
     none is not tested (the exact sign-flip test asks about symmetry, not the mean — #597).
 
     :param per_case: Level -> its exact per-case means, for every level that observed the measure.
-    :ptype per_case: Mapping[str, Mapping[str, Fraction]]
     :param value_range: The measure's declared inclusive bounds, or None when it declares none.
-    :ptype value_range: tuple[float, float] | None
     :return: The :class:`_LevelsSeparate`.
-    :rtype: _LevelsSeparate
     """
     raw: list[float] = []
     untestable = needs_range = False
@@ -263,16 +241,11 @@ def mechanism_check(
     """Decide whether a swept lever's declared mechanism measurably moved across its levels.
 
     :param measure: The lever's ``acts_on``, or None when it declares none.
-    :ptype measure: str | None
     :param result_ids_by_level: The lever's level -> the result ids at that level, over the row's cohort.
-    :ptype result_ids_by_level: Mapping[str, Collection[str]]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: MechanismObservations
     :param value_range: The mechanism measure's declared inclusive bounds, or None when it declares none.
-    :ptype value_range: tuple[float, float] | None
     :return: ``moved`` when some pair of observed levels separates; otherwise ``inert`` when every level observed
         the measure and every pair was tested; otherwise ``unchecked``, with the reason.
-    :rtype: MechanismCheck
     """
     if measure is None:
         return MechanismCheck(state="unchecked", reason="not_declared")
@@ -318,11 +291,8 @@ def _raises_observed_mechanism(lever: str, covariate: str, *, profile: HostProfi
     lever's own declared mechanism (``acts_on``): it moving is the lever's effect, not a rival to it.
 
     :param lever: The lever the comparison varies.
-    :ptype lever: str
     :param covariate: An observed-mechanism covariate.
-    :ptype covariate: str
     :param profile: The host whose declaration of the lever names its mechanism.
-    :ptype profile: HostProfile
     """
     if lever != CANDIDATE_MODEL_LEVER:
         return False
@@ -346,16 +316,11 @@ def observed_mechanism_confounds(
     :func:`_raises_observed_mechanism`'s answer, asked here so every caller gets it.
 
     :param lever: The lever the comparison varies.
-    :ptype lever: str
     :param result_ids_by_level: The comparison's level -> the result ids at that level.
-    :ptype result_ids_by_level: Mapping[str, Collection[str]]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: MechanismObservations
     :param profile: The host whose declaration of the lever names its mechanism.
-    :ptype profile: HostProfile
     :return: One ``observed_mechanism`` confound per diverged covariate, sorted by dimension; empty for a lever
         the predicate excludes.
-    :rtype: list[Confound]
     """
     confounds: list[Confound] = []
     for covariate, mechanism in sorted(OBSERVED_MECHANISMS.items()):
@@ -388,15 +353,10 @@ def model_contrast_confounds(
     them in. A side whose results name no single model is no model contrast, and names nothing.
 
     :param side_a: One side's results.
-    :ptype side_a: Sequence[ResultView]
     :param side_b: The other side's results.
-    :ptype side_b: Sequence[ResultView]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: MechanismObservations
     :param profile: The host whose declaration of the model lever names its mechanism.
-    :ptype profile: HostProfile
     :return: The confounds, or an empty list when the sides share a model or either names no single model.
-    :rtype: list[Confound]
     """
     models_a = {result.model for result in side_a}
     models_b = {result.model for result in side_b}
@@ -423,13 +383,9 @@ def arm_production_footings(
     arm carries every run's own, and says where they disagree, rather than one merged claim.
 
     :param arms: The campaign's arms. A run that resolved no arm is in none.
-    :ptype arms: CampaignArms
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, list[ResultView]]
     :param profile: The host whose declarations are read.
-    :ptype profile: HostProfile
     :return: Variant key -> the arm's pooled footing, for every arm.
-    :rtype: dict[str, PooledProductionFooting]
     """
     return {
         variant_key: PooledProductionFooting(
@@ -455,19 +411,13 @@ def design_with_mechanism_confounds(
     """The design with each contrast arm's observed confounds against the control arm.
 
     :param design: The derived design.
-    :ptype design: RealizedDesign
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, list[ResultView]]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: MechanismObservations
     :param served: Which model answered each result's candidate calls, from :func:`served_models`.
-    :ptype served: ServedModels
     :param profile: The host whose declaration of the model lever names its mechanism.
-    :ptype profile: HostProfile
     :return: The design, its contrasts qualified where they ran another model and a mechanism diverged, and where
         one requested model id was answered by more than one model across the two arms; unchanged when no
         control resolved.
-    :rtype: RealizedDesign
     """
     if design.control_arm is None:
         return design
@@ -487,13 +437,9 @@ def arm_mechanisms(
     """Each arm's mean of every observed-mechanism covariate, saying so where none was measured.
 
     :param arms: The campaign's arms. A run that resolved no arm is in none, and so in no reading.
-    :ptype arms: CampaignArms
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, list[ResultView]]
     :param observations: The campaign's mechanism observations.
-    :ptype observations: MechanismObservations
     :return: One reading per arm and covariate, sorted by arm then covariate.
-    :rtype: list[ArmMechanismReading]
     """
     readings: list[ArmMechanismReading] = []
     for variant_key, members in sorted(arms.keyed.items()):
@@ -528,9 +474,7 @@ def served_models(results: Iterable[ResultView], attested: Mapping[str, str] | N
     the pointer rather than the model behind it.
 
     :param results: The campaign's results.
-    :ptype results: Iterable[ResultView]
     :return: Each result's reading, for the results whose candidate left a usage row.
-    :rtype: ServedModels
     """
     stated = attested or {}
     return {
@@ -552,14 +496,11 @@ def served_model_confounds(result_ids: Iterable[str], served: ServedModels) -> l
     is constant within each requested id, and only there.
 
     :param result_ids: The results under comparison, every side together.
-    :ptype result_ids: Iterable[str]
     :param served: The campaign's readings, from :func:`served_models`.
-    :ptype served: ServedModels
     :return: One ``served_model`` confound, ``varied`` where some requested id was answered by two or more named
         models, ``undecided`` where none was but some candidate call named no model — which model answered
         cannot be established there, and unknown is never read as one model. Empty otherwise, including where
         no result under comparison called its candidate.
-    :rtype: list[Confound]
     """
     by_requested: dict[str, set[str]] = {}
     unrecorded = False
@@ -582,13 +523,9 @@ def arm_served_models(
     """Each arm's served models, as the provider's responses named them.
 
     :param arms: The campaign's arms. A run that resolved no arm is in none, and so in no reading.
-    :ptype arms: CampaignArms
     :param results_by_run: Each run's results.
-    :ptype results_by_run: Mapping[str, list[ResultView]]
     :param served: The campaign's readings, from :func:`served_models`.
-    :ptype served: ServedModels
     :return: One reading per arm whose candidate left a usage row, sorted by arm.
-    :rtype: list[ArmServedModel]
     """
     readings: list[ArmServedModel] = []
     for variant_key, members in sorted(arms.keyed.items()):

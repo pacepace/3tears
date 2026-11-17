@@ -63,9 +63,9 @@ from threetears.evals.run import (
     admit_launch,
     launchable_judge_kind,
     quote_launch,
-    resume_run,
     start_run,
 )
+from packages.evals.tests.resume_support import resumed_run
 from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import TRANSCRIPT_DIM_ID
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE
@@ -400,7 +400,7 @@ async def test_a_resume_in_a_fresh_process_whose_catalogue_cannot_be_read_is_ref
     restarted = off_loop(_Process, _FakeOpenRouter([_FLASH_ROW], list_fails=True), storage=first.host.eval_host.storage)
 
     with pytest.raises(ValidationFailedError) as refused:
-        await resume_run(restarted.host, run_id, TOYHOST_SCOPE, max_cost_usd=3.0)
+        await resumed_run(restarted.host, run_id, TOYHOST_SCOPE, max_cost_usd=3.0)
 
     assert "cannot be held to its $3.00 cap: the judge call on case" in refused.value.message
     assert "the price catalogue could not be read" in refused.value.message
@@ -414,7 +414,7 @@ async def test_a_resume_in_a_fresh_process_reads_the_catalogue_and_is_priced_and
     restarted = off_loop(_Process, _FakeOpenRouter([_FLASH_ROW]), storage=first.host.eval_host.storage)
     assert not restarted.clients.catalogue.loaded
 
-    taken_up = await resume_run(restarted.host, run_id, TOYHOST_SCOPE, max_cost_usd=3.0)
+    taken_up = await resumed_run(restarted.host, run_id, TOYHOST_SCOPE, max_cost_usd=3.0)
     async with asyncio.timeout(10):
         while restarted.host.job_manager.is_active(taken_up.id):
             await asyncio.sleep(0.01)

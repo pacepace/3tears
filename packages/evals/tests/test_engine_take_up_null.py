@@ -58,7 +58,8 @@ import pytest
 
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.actions.catalogue import Caller
-from threetears.evals.analysis import ComparisonFamily, assemble_context_bundle, get_campaign
+from threetears.evals.analysis import ComparisonFamily, assemble_context_bundle
+from threetears.evals.analysis.campaigns import get_campaign
 from threetears.evals.analysis.bundle.comparisons import redrawn_sentence
 from threetears.evals.analysis.bundle.trials import redrawn_cells
 from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, exact_rate_interval, separation_test
@@ -66,7 +67,8 @@ from threetears.evals.kernel import ValidationFailedError, default_job_timeout
 from threetears.evals.kernel.declaration import AspectDesign, ControlDeclaration, SweptAxis
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
 from threetears.evals.kernel.result_condition import runs_again
-from threetears.evals.ops import LaunchArguments, OpsHost, job_cancel, job_poll, job_resume, parse_job_id, run_launch
+from threetears.evals.ops import LaunchArguments, OpsHost, job_cancel, job_poll, job_resume, run_launch
+from threetears.evals.ops.jobs import parse_job_id
 from threetears.evals.quick.one_call import CALLABLE_KIND, callable_host, callable_kind
 from threetears.evals.run import (
     EvalLaunch,

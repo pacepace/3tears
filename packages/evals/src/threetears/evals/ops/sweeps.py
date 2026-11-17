@@ -265,18 +265,12 @@ async def _refuse_what_any_arm_would_refuse(
     """Quote every arm by the launch's own rule before anything is created, and refuse the sweep on any refusal.
 
     :param host: The launching host.
-    :ptype host: OpsHost
     :param arguments: The sweep.
-    :ptype arguments: SweepArguments
     :param shared: What its arms share, as the sweep records it.
-    :ptype shared: SweepLaunchArguments
     :param arms: Its arms, as the sweep records them.
-    :ptype arms: list[SweepArmRecord]
     :param scope_id: The scope it runs in.
-    :ptype scope_id: str
     :return: What quoting the arms told the caller beside refusing nothing: each served-model check that could not
         be made, once, in arm order.
-    :rtype: list[str]
     :raises ValidationFailedError: An arm's launch would be refused, named with its arm; the schedule is one latency
         cannot be read under; or it runs more arms at once than the host admits, or than one launch may start.
     :raises NotFoundError: The template, or the case set, is not in the scope.
@@ -368,16 +362,11 @@ async def sweep_launch(host: OpsHost, arguments: SweepArguments, scope_id: str, 
     an arm that never launched exactly as it would have.
 
     :param host: The launching host.
-    :ptype host: OpsHost
     :param arguments: The sweep.
-    :ptype arguments: SweepArguments
     :param scope_id: The scope the template is read in and the runs and campaign live in.
-    :ptype scope_id: str
     :param created_by: Who is starting it, recorded on the campaign.
-    :ptype created_by: str
     :return: The sweep's one job (``sweep:<sweep id>``), whose target is the campaign its runs join; polling it reports
         the arms launched and finished. Its ``notices`` say each served-model check an arm's quote could not make.
-    :rtype: JobsStarted
     :raises ValidationFailedError: An arm's launch would be refused, a schedule latency cannot be read under, arms at
         once above the host's admission ceiling or its launch ceiling, or the campaign definition is refused.
     :raises NotFoundError: The template or the case set is not in the scope.
@@ -483,11 +472,8 @@ class _TakingUp:
         """A sweep starting fresh: every arm is launched.
 
         :param host: The launching host.
-        :ptype host: LaunchHost
         :param sweep: The sweep.
-        :ptype sweep: EvalSweep
         :return: Every arm launched.
-        :rtype: _TakingUp
         """
         return cls(arms={arm.label: _ArmLaunched() for arm in sweep.arms}, take_up=TakeUp(host, {}))
 
@@ -495,9 +481,7 @@ class _TakingUp:
         """What the job does with one arm.
 
         :param label: The arm's label.
-        :ptype label: str
         :return: Its take-up.
-        :rtype: _ArmTakeUp
         :raises KeyError: The arm has none: every arm's is set before the job starts, so this is a defect.
         """
         return self.arms[label]
@@ -538,17 +522,12 @@ async def sweep_resume(
     every arm as it supervises a launched one, and the sweep ends completed or failed as it would have.
 
     :param host: The host, whose launcher wires the arms and whose job manager holds them.
-    :ptype host: OpsHost
     :param sweep_id: The sweep.
-    :ptype sweep_id: str
     :param scope_id: Its scope.
-    :ptype scope_id: str
     :param max_cost_usd: The cost cap every arm is taken up or launched under; ``None`` keeps each arm's own. Not
         part of the measurement: the sweep records it, and each holding records the cap it ran under.
-    :ptype max_cost_usd: float | None
     :return: The sweep's one job (``sweep:<sweep id>``), whose target is its campaign. Its ``notices`` say each
         served-model check an arm's take-up or quote could not make.
-    :rtype: JobsStarted
     :raises NotFoundError: There is no such sweep, or an arm's template is gone.
     :raises ValidationFailedError: The sweep cannot be taken up, it has no arm left to take up or launch, or an arm
         cannot be (every arm's refusal named).
@@ -687,19 +666,12 @@ def _reopened(
     """A sweep as a take-up reopens it: ``running`` again, its ending moved to the holding that ended, a new one open.
 
     :param sweep: The sweep as stored.
-    :ptype sweep: EvalSweep
     :param epoch: The lease epoch it is taken up under.
-    :ptype epoch: int
     :param holder: The process taking it up.
-    :ptype holder: str
     :param shared: What its arms share, a raised cap carried; ``None`` for a sweep stored before it recorded that.
-    :ptype shared: SweepLaunchArguments | None
     :param group_id: Its interleaved arms' launch group.
-    :ptype group_id: str | None
     :param cap: The cap the take-up named, or ``None``.
-    :ptype cap: float | None
     :return: The reopened record, its lease still the stored one (the take-up's write grants the next).
-    :rtype: EvalSweep
     """
     recorded_cap = sweep.arguments.max_cost_usd if sweep.arguments is not None else None
     first = SweepLifetime(
@@ -754,14 +726,10 @@ async def _run_sweep(host: OpsHost, sweep: EvalSweep, *, budget_s: float, taking
     and the sweep ends ``timed_out``, its detail naming the budget — never ``cancelled``, which is someone deciding.
 
     :param host: The launching host.
-    :ptype host: OpsHost
     :param sweep: Its record, as started or as reopened.
-    :ptype sweep: EvalSweep
     :param budget_s: The sweep's wall-clock budget.
-    :ptype budget_s: float
     :param taking_up: For a sweep taken up again, what it does with each arm; ``None`` for a sweep starting fresh, every
         arm of which is launched.
-    :ptype taking_up: _TakingUp | None
     """
     manager = host.launch.job_manager
     scope_id = sweep.scope_id

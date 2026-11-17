@@ -31,16 +31,9 @@ from packages.evals.tests.analyst_support import KAIRO, TEXT_BUDGET, action_call
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import OpsFixture, ops_fixture
 from packages.evals.tests.report_doc_support import LATER_DOCS, converted_doc, snapshot_of
-from threetears.evals.actions import (
-    ActionOutcome,
-    Caller,
-    MountedTool,
-    analyst_actions,
-    analyst_tools,
-    catalogue_primer,
-    eval_catalogue,
-    standard_tools,
-)
+from threetears.evals.actions import ActionOutcome, Caller, MountedTool, analyst_tools, eval_catalogue, standard_tools
+from threetears.evals.actions.analyst import analyst_actions
+from threetears.evals.actions.catalogue import catalogue_primer
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.doc_page.build import build
 from threetears.evals.analysis.report.doc_page.text import doc_page_text

@@ -174,9 +174,7 @@ def depth_of(repeats: Iterable[int]) -> Depth | None:
     """An arm's depth from its usable trials per case.
 
     :param repeats: Each case's usable trials; a case with none is not counted.
-    :ptype repeats: Iterable[int]
     :return: The depth, or None with no case.
-    :rtype: Depth | None
     """
     counts = sorted(count for count in repeats if count > 0)
     if not counts:
@@ -206,9 +204,7 @@ def depths_differ(depths: Iterable[Depth | None]) -> bool:
     """Whether the arms' repeats per case differ, fewest, median or most.
 
     :param depths: Each arm's depth; an arm with none is not compared.
-    :ptype depths: Iterable[Depth | None]
     :return: True where two arms differ.
-    :rtype: bool
     """
     return len({depth.spread() for depth in depths if depth is not None}) > 1
 
@@ -219,11 +215,8 @@ def depth_sentence(aspect: str, depths: Mapping[str, Depth | None]) -> str | Non
     much.``
 
     :param aspect: The aspect's label.
-    :ptype aspect: str
     :param depths: Each arm's depth, by the label a reader calls it.
-    :ptype depths: Mapping[str, Depth | None]
     :return: The sentence, or None.
-    :rtype: str | None
     """
     known = {label: depth for label, depth in depths.items() if depth is not None}
     if not depths_differ(known.values()):
@@ -255,9 +248,7 @@ def repeats_sentence(depths: Mapping[str, Mapping[str, Depth]]) -> str | None:
     tighten an arm's own estimate, not the comparison much.``
 
     :param depths: Each aspect's arms' depths, by the names a reader calls them, aspect then arm.
-    :ptype depths: Mapping[str, Mapping[str, Depth]]
     :return: The sentence, or None.
-    :rtype: str | None
     """
     rows = [(aspect, arm, depth) for aspect, arms in depths.items() for arm, depth in arms.items()]
     if not rows or not all(depth.uniform() for _, _, depth in rows):
@@ -306,9 +297,7 @@ def common_depth(attempts: Mapping[str, Mapping[str, Sequence[bool]]]) -> Common
     """The depth arms are compared at: the fewest times any arm ran any case every arm shares, over those cases.
 
     :param attempts: Each arm's scored attempts per case, by arm then case; an arm with none is not compared.
-    :ptype attempts: Mapping[str, Mapping[str, Sequence[bool]]]
     :return: The depth, the cases it counts and what each arm leaves out.
-    :rtype: CommonDepth
     """
     measured = {arm: {case: len(tries) for case, tries in cases.items() if tries} for arm, cases in attempts.items()}
     measured = {arm: cases for arm, cases in measured.items() if cases}
@@ -327,13 +316,9 @@ def pass_hat_k_over(attempts: Mapping[str, Sequence[bool]], cases: Iterable[str]
     attempts, the estimator every pass^k headline reads.
 
     :param attempts: The arm's scored attempts per case.
-    :ptype attempts: Mapping[str, Sequence[bool]]
     :param cases: The cases to average over; one it measured fewer than ``k`` times is left out.
-    :ptype cases: Iterable[str]
     :param k: The depth, at least 1.
-    :ptype k: int
     :return: The mean, or None where no named case was measured ``k`` times.
-    :rtype: float | None
     """
     estimates = [
         estimate for case in sorted(cases) if (estimate := case_pass_hat_k(attempts.get(case, ()), k)) is not None
@@ -345,13 +330,9 @@ def common_depth_sentence(where: str, k: int | None, *, left_out: int) -> str:
     """What depth a comparison of pass^k reads on ``where``, in plain sentences, or that the arms share no case.
 
     :param where: The aspect, and the subject where an aspect has several, as a sentence names it.
-    :ptype where: str
     :param k: The common depth (:func:`common_depth`); None where the arms share no case.
-    :ptype k: int | None
     :param left_out: The cases some arm ran that another never did, which the comparison leaves out.
-    :ptype left_out: int
     :return: The sentences.
-    :rtype: str
     """
     if k is None:
         return NO_SHARED_CASE.format(where=where)
@@ -365,13 +346,9 @@ def unmeasured_sentence(where: str, k: int, arms: Sequence[str]) -> str | None:
     """That pass^k at ``k`` is unmeasured on ``where`` for the arms that never reached it; None with none.
 
     :param where: The aspect, and the subject where an aspect has several, as a sentence names it.
-    :ptype where: str
     :param k: The depth read.
-    :ptype k: int
     :param arms: The arms, by label, that measured no case ``k`` times.
-    :ptype arms: Sequence[str]
     :return: The sentence, or None.
-    :rtype: str | None
     """
     if not arms:
         return None
@@ -440,21 +417,14 @@ def precision(
     """What limits one pass-rate comparison: each side's own half-width, the side limiting it, and the variance split.
 
     :param samples: Each side's per-case shares, aligned by case when ``paired``.
-    :ptype samples: tuple[Sequence[float], Sequence[float]]
     :param trials: Each side's usable trials per case, aligned with ``samples``; None where not carried, and then no
         variance split is read.
-    :ptype trials: tuple[Sequence[int], Sequence[int]] | None
     :param passes: Each side's trials passed per case, aligned with ``trials``; None where not carried, and then each
         case's passes are its share times its trials, rounded.
-    :ptype passes: tuple[Sequence[int], Sequence[int]] | None
     :param keys: Each side's variant key, in ``samples``' order.
-    :ptype keys: tuple[str, str]
     :param interval: The comparison's interval as a share, at the nominal level.
-    :ptype interval: tuple[float, float] | None
     :param paired: Whether the sides pair by case.
-    :ptype paired: bool
     :return: The attribution, or None where the comparison or a side has no interval.
-    :rtype: Precision | None
     """
     whole = _half_width(interval)
     sides = [_half_width(bounded_mean_interval(side, _SHARE_RANGE, confidence=INTERVAL_LEVEL)) for side in samples]
@@ -532,12 +502,9 @@ def model_pass_hat_k(attempts: Mapping[str, Sequence[bool]], k: int) -> ModelPas
     cases, and the two clamps above bend it at the edges. It is opt-in, labelled and never ranked, so that is accepted.
 
     :param attempts: One arm's scored attempts per case.
-    :ptype attempts: Mapping[str, Sequence[bool]]
     :param k: The depth, at least 1.
-    :ptype k: int
     :return: The model's reading, or None below two cases, or where every case ran once (the spread between cases
         cannot be told from each case's noise then). Every case passing all, or none, reads that share at every depth.
-    :rtype: ModelPassHatK | None
     :raises ValueError: ``k`` is below 1.
     """
     if k < 1:

@@ -44,11 +44,11 @@ then never name the host::
   (:func:`~threetears.evals.analysis.inspect_campaign_bundle`): what a generation would read, assembled
   without calling any model.
 - ``gate`` is the CI gate: it reads the campaign's typed verdicts as code reaches them on its evidence now
-  (:func:`~threetears.evals.analysis.campaign_verdicts`, never an analysis's words), prints what it came to and
+  (:func:`~threetears.evals.analysis.service.campaign_verdicts`, never an analysis's words), prints what it came to and
   every verdict that failed it or was not decided, and exits 4 when a verdict ``--fail-on`` names occurred.
   ``--fail-on`` takes a comma-separated list of ``regressed``, ``not-separated``, ``untested``, ``breached``,
   ``undecided-guardrail``, ``missed`` and ``undecided-bar``; the default is ``regressed,breached,undecided-guardrail``
-  (:data:`~threetears.evals.analysis.DEFAULT_FAIL_ON`): a regression, a breached guardrail, and a guardrail not shown
+  (:data:`~threetears.evals.analysis.gate.DEFAULT_FAIL_ON`): a regression, a breached guardrail, and a guardrail not shown
   held, since one not known to be safe must not ship as if it were. A verdict left undecided that ``--fail-on``
   does not name exits 0 and is printed as undecided, never as passed. ``--reading`` (repeatable) gates only those
   readings. A campaign with no verdict at all is refused (exit 2): a gate that read nothing passed nothing.
@@ -111,24 +111,24 @@ from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.schema.logs import contain, get_logger
 from threetears.evals.analysis import (
     read_judge_temperatures,
-    DEFAULT_FAIL_ON,
-    GATE_TOKENS,
     FrontierResult,
     ReportFormat,
     TrialDetail,
     campaign_report,
-    campaign_stopped_short,
-    campaign_verdicts,
     frontier,
-    frontier_text,
     gate_verdicts,
     inspect_campaign_bundle,
-    list_campaigns,
-    out_of_run_spend_text,
-    parse_fail_on,
     scope_out_of_run_spend,
     serialize_report,
 )
+from threetears.evals.analysis.gate import DEFAULT_FAIL_ON
+from threetears.evals.analysis.gate import GATE_TOKENS
+from threetears.evals.analysis.service import campaign_stopped_short
+from threetears.evals.analysis.service import campaign_verdicts
+from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.campaigns import list_campaigns
+from threetears.evals.analysis.out_of_run_spend import out_of_run_spend_text
+from threetears.evals.analysis.gate import parse_fail_on
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, OUT_OF_RUN_PURPOSES
 from threetears.evals.kernel import (
     DEFAULT_TEMPERATURE_REPEATS,
@@ -145,9 +145,9 @@ from threetears.evals.run import (
     judge_temperature_work,
     list_runs,
     run_job_work,
-    list_templates,
     start_run,
 )
+from threetears.evals.run.authoring import list_templates
 
 log = get_logger(__name__)
 
@@ -187,7 +187,6 @@ def _refuse_colliding_commands(commands: Sequence[HostCommand]) -> None:
     """Refuse host commands whose names would shadow an engine command or each other.
 
     :param commands: The host's commands.
-    :ptype commands: Sequence[HostCommand]
     :raises ValueError: A name is an engine command's, or two host commands share one.
     """
     seen: set[str] = set()
@@ -235,9 +234,7 @@ def _load_host_factory(spec: str) -> HostFactory:
     """The host factory a ``module:attribute`` spec names.
 
     :param spec: ``package.module:callable``.
-    :ptype spec: str
     :return: The callable.
-    :rtype: HostFactory
     :raises _Refused: The spec is not ``module:attribute``, the module cannot be imported, it has no such
         attribute, or the attribute is not callable.
     """
@@ -256,20 +253,16 @@ def _load_host_factory(spec: str) -> HostFactory:
     return factory  # type: ignore[no-any-return]
 
 
-def build_parser(
+def _build_parser(
     prog: str = DEFAULT_PROG, *, takes_host: bool = True, commands: Sequence[HostCommand] = ()
 ) -> argparse.ArgumentParser:
     """The command line's parser.
 
     :param prog: The program name usage lines print.
-    :ptype prog: str
     :param takes_host: Whether each command takes ``--host``. A product that mounts the commands with its
         own host factory passes ``False``, and the option does not exist.
-    :ptype takes_host: bool
     :param commands: The host's own subcommands, added after the engine's.
-    :ptype commands: Sequence[HostCommand]
     :return: The parser; ``command`` on the parsed namespace names the subcommand.
-    :rtype: argparse.ArgumentParser
     :raises ValueError: A host command's name is an engine command's, or two host commands share one.
     """
     _refuse_colliding_commands(commands)
@@ -488,24 +481,19 @@ def run_cli(
     """Parse ``argv`` and carry out the command, printing to stdout and refusals to stderr.
 
     :param argv: The arguments after the program name; ``None`` reads ``sys.argv``.
-    :ptype argv: Sequence[str] | None
     :param host_factory: The host to work in, for a product mounting these commands; ``None`` takes it
         from ``--host``.
-    :ptype host_factory: HostFactory | None
     :param prog: The program name usage lines print.
-    :ptype prog: str
     :param commands: The host's own subcommands, mounted beside the engine's (:data:`ENGINE_COMMANDS`); each
         one's handler is handed the host the factory built.
-    :ptype commands: Sequence[HostCommand]
     :return: The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused, 3 when
         it failed on an error nothing anticipated (its traceback is printed to stderr), 4 when ``gate`` read an
         outcome its ``--fail-on`` names, or whatever a host command's handler returned.
-    :rtype: int
     :raises ValueError: A host command's name is an engine command's, or two host commands share one —
         refused before ``argv`` is parsed, since it is the mounting product's code and not the
         user's command line.
     """
-    args = build_parser(prog, takes_host=host_factory is None, commands=commands).parse_args(argv)
+    args = _build_parser(prog, takes_host=host_factory is None, commands=commands).parse_args(argv)
     handlers = {host_command.name: host_command.handler for host_command in commands}
     try:
         factory = host_factory if host_factory is not None else _load_host_factory(args.host)
@@ -724,6 +712,5 @@ __all__ = [
     "EXIT_RUN_DID_NOT_COMPLETE",
     "HostCommand",
     "HostFactory",
-    "build_parser",
     "run_cli",
 ]

@@ -44,7 +44,8 @@ from threetears.evals.analysis.summary import CaseResult, EvalSummary
 from threetears.evals.kernel.eval_file import beside_eval_file
 from threetears.evals.kernel.eval_scope import eval_running
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel import CONFUSION_CELL_MEASURE, GuardrailMargin, confusion_of
+from threetears.evals.kernel import CONFUSION_CELL_MEASURE, GuardrailMargin
+from threetears.evals.kernel.metrics import confusion_of
 from threetears.evals.kernel.host import CompletionClients, EvalHost
 from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS, DocumentStore
 from threetears.evals.schema.logs import contain, get_logger
@@ -85,7 +86,7 @@ from threetears.evals.quick.result import (
 )
 from threetears.evals.quick.tools import RECORD_ENV
 from threetears.evals.quick.world import World, WorldRunner
-from threetears.evals.run import set_run_archived
+from threetears.evals.run.curation import set_run_archived
 from threetears.evals.storage import InMemoryDocumentStore, SqliteDocumentStore
 
 log = get_logger(__name__)
@@ -109,9 +110,7 @@ def load_cases(cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str]) -> l
     :param cases: A list of mappings, or a file: ``.jsonl`` (one object a line), ``.json`` (a list of objects, or an
         object whose ``cases`` is one), ``.csv`` (a header row, then one case a row, every value a string) or
         ``.toml`` (an array of tables, ``[[cases]]``).
-    :ptype cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str]
     :return: The cases, each a ``dict``.
-    :rtype: list[dict[str, Any]]
     :raises ValueError: No cases, a file that is not there or of no format named, or a case that is not a JSON object.
 
 
@@ -177,9 +176,7 @@ def open_store(store: StoreSpec) -> tuple[DocumentStore, str]:
     """The document store a ``store=`` names, and where it is, in words.
 
     :param store: ``None`` for :data:`DEFAULT_STORE`; :data:`MEMORY_STORE` for memory; a file; or a store of your own.
-    :ptype store: StoreSpec
     :return: The store, and what a result's footer calls it.
-    :rtype: tuple[DocumentStore, str]
     """
     if store is None:
         DEFAULT_STORE.parent.mkdir(parents=True, exist_ok=True)
@@ -383,38 +380,29 @@ class Eval:
         """Declare the eval; nothing runs until :meth:`run`.
 
         :param cases: The cases, or a file of them (:func:`load_cases`), read now.
-        :ptype cases: Sequence[Mapping[str, Any]] | str | os.PathLike[str]
         :param runner: The thing under test: a function, ``World(...)(agent)``, a ``Log``, or a mapping of them, whose
             first key is the control.
-        :ptype runner: Any
         :param grader: One grader or a list: functions, field names, expressions over a world, a ``Judge``, each of the
             first two optionally wrapped by ``grader(...)``. A function annotated ``-> bool``, or not annotated, grades
             pass or fail; one annotated ``-> float`` or ``-> int``, or given a range, grades a number
             (:func:`~threetears.evals.quick.graders.declares_a_check`).
-        :ptype grader: Any
         :param k: Repeats per case, per arm.
-        :ptype k: int
         :param name: What titles its report and names its scope, where its runs are kept; ``None`` takes the cases
             file's stem, else the runner's name (a single arm's name, for a mapping of one). Several arms with neither
             are refused: a name built from the arms would move the runs every time an arm is added, renamed or dropped.
-        :ptype name: str | None
         :param max_cost_usd: The most the eval may spend: each arm's run capped at an equal share, and a judge's examples
             held to what the arms left (:attr:`max_cost_usd`).
-        :ptype max_cost_usd: float | None
         :param measure_latency: Declare latency under test.
-        :ptype measure_latency: bool
         :param question: The one sentence a comparison answers (``"Does v2 read the currency right more often than
             v1?"``), as a writer eval's ``question`` is: filed as the campaign's question, so its page quotes it and
             reads its readings as asked rather than as leads. The question's measure is the first grader: the printed
             first line and the page's lead read it. Alone it asks whether a candidate does better (a superiority
             question): the pass rate reads shown better, shown worse or not separated, against zero, and no margin is
             filed. ``None`` asks none, and every reading is a lead.
-        :ptype question: str | None
         :param margin: How far a candidate's pass rate may fall below the control's before it is shown worse, in the
             measure's units as ``grader(margin=)``'s are (``0.05`` is 5 points): the author's own, which makes the
             question a non-inferiority one, its pass rate reading no worse than the margin, shown worse or neither.
             Needs ``question``; ``None`` declares none, and the package never assumes one.
-        :ptype margin: float | None
         :raises ValueError: A blank question, a margin that is no share strictly between 0 and 1 or one with no
             question, no cases, an unreadable case file, a runner of no known form, a mapping with no arm or a
             blank arm name, arms naming ``k=v`` factors unlike one another, arms on two worlds, no grader or one of no
@@ -564,11 +552,8 @@ class Eval:
         """The host this eval runs in when it is handed none: its graders' measures, its levers and its world.
 
         :param store: Where the runs are kept (:func:`open_store`).
-        :ptype store: DocumentStore | str | os.PathLike[str] | None
         :param clients: The completion clients the engine's own model calls use after the run; ``None`` for none.
-        :ptype clients: CompletionClients | None
         :return: The host.
-        :rtype: EvalHost
         """
         return as_host([self], store=store, clients=clients)
 
@@ -584,13 +569,9 @@ class Eval:
 
         :param store: Where the runs are kept: ``None`` for ``.evals/evals.sqlite`` under the working directory,
             ``":memory:"`` for this process alone, a file, or a document store of your own. Never with ``host``.
-        :ptype store: DocumentStore | str | os.PathLike[str] | None
         :param host: A host of your own (:func:`as_host`), whose storage and vocabulary the runs use.
-        :ptype host: EvalHost | None
         :param scope: The scope the runs and the campaign are stored in; ``None`` is the eval's name.
-        :ptype scope: str | None
         :return: The result: every arm's summary, the campaign and its report.
-        :rtype: Result
         :raises ValueError: ``store`` beside ``host``; a host that does not declare what the eval's graders read; or
             anything the cases, the runner or the graders refuse, before anything runs. Once the arms have run, a field
             grader whose field no answer of any arm carried (its runs are kept archived, out of every listing and
@@ -840,15 +821,10 @@ def _silent_served_model(
     An arm that is a log was told at launch, and is not told twice.
 
     :param host: The host whose store holds the runs.
-    :ptype host: EvalHost
     :param keyed: Each arm's summary, by the arm's name.
-    :ptype keyed: Mapping[str, EvalSummary]
     :param scope_id: The scope the runs are in.
-    :ptype scope_id: str
     :param given: The eval's arms as given, by name.
-    :ptype given: Mapping[str | None, Any]
     :return: One line per such arm.
-    :rtype: list[str]
     """
     logged = {name for name, runner in given.items() if isinstance(runner, Log)}
     lines: list[str] = []
@@ -1030,16 +1006,12 @@ def as_host(
 
     :param evals: The evals it hosts. Every function grader among them is one measure, declared with its margin, range
         and guardrail; they share their levers and their world.
-    :ptype evals: Sequence[Eval]
     :param store: Where the runs are kept: a file, ``":memory:"``, a document store of your own, or ``None`` for
         ``.evals/evals.sqlite`` under the working directory.
-    :ptype store: DocumentStore | str | os.PathLike[str] | None
     :param clients: The completion clients the engine's own model calls use after a run (a re-judge, an analysis), as
         :class:`~threetears.evals.kernel.host.EvalHost` takes them; ``None`` supplies none, and a call needing
         them is refused. A judge brings its own client for the run.
-    :ptype clients: CompletionClients | None
     :return: The host.
-    :rtype: EvalHost
     :raises ValueError: No evals, two graders of one name declared differently, evals stating different levers, or evals
         on two worlds.
     """

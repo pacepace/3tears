@@ -834,12 +834,9 @@ class ResultReading:
         """The reading of a hydrated result: each attribute copied from it, never recomputed.
 
         :param result: A result the store returned, hydrated and validated.
-        :ptype result: EvalResult
         :param shared: Where a read's repeated values are held once (:class:`SharedValues`); ``None`` shares none
             beyond this result's own.
-        :ptype shared: SharedValues | None
         :return: Its reading.
-        :rtype: ResultReading
         """
         held = SharedValues() if shared is None else shared
         text = held.text
@@ -917,11 +914,8 @@ class ResultReading:
         ``deep``, the replaced values taken as given.
 
         :param update: Attribute values to replace; a name the reading does not carry is refused (``TypeError``).
-        :ptype update: Mapping[str, Any] | None
         :param deep: Copy every held value too.
-        :ptype deep: bool
         :return: The copy.
-        :rtype: Self
         """
         source = copy.deepcopy(self) if deep else self
         return replace(source, **dict(update or {}))
@@ -948,11 +942,8 @@ class ReadingsRead:
         """Hold a read.
 
         :param path: The path that serves it.
-        :ptype path: ReadPath
         :param store_calls: The store calls made before the first page (its keys).
-        :ptype store_calls: int
         :param pages: Each page's readings, beside the store calls reading it took, read lazily.
-        :ptype pages: Iterator[tuple[int, list[ResultReading]]]
         """
         self.path = path
         self.store_calls = store_calls

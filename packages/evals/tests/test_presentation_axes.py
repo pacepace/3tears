@@ -46,7 +46,7 @@ import pytest
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.report_doc_support import REPORT_DOCS, snapshot_of
 from packages.evals.tests.report_shapes_support import s1_change, s2_choice
-from threetears.evals.analysis import build_campaign_report
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.report import ChartBlock
 from threetears.evals.analysis.report.block_spec import block_look
 from threetears.evals.analysis.report.chart_svg import AS_TABLE_NOTE, chart_drawing

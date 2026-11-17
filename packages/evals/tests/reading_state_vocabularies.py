@@ -228,7 +228,7 @@ NOT_ABOUT_A_READING: dict[str, tuple[str, ...]] = {
         "kernel/campaign.py:SweepOutcome",
         "kernel/host/profile.py:CoverageState",
         "kernel/host/world_conformance.py:Outcome",
-        "kernel/job_leases.py:RenewalVerdict",
+        "kernel/job_leases.py:_RenewalVerdict",
         "kernel/prompts/contract.py:ContractState",
         "kernel/prompts/drift.py:DriftState",
         "ops/analysis.py:ReportState",

@@ -321,9 +321,7 @@ def _launch_disclosure(runs: Collection[EvalRun]) -> str | None:
     another's shrinks that arm's sample.
 
     :param runs: The resolved member runs.
-    :ptype runs: Collection[EvalRun]
     :return: The sentence, or None where no launch of two or more of them ran its arms concurrently.
-    :rtype: str | None
     """
     # Decided on the members alone: an arm adopted from a concurrent launch whose sibling arms sit in another campaign
     # is not flagged, since the read store reads a campaign's own runs and not its launches. What co-loading costs such
@@ -403,11 +401,8 @@ def assemble_context_bundle(
     campaign's own fields, so how a campaign holds its aspects is the view's business alone.
 
     :param campaign: The campaign whose runs to summarise.
-    :ptype campaign: EvalCampaign
     :param aspect: The label of the aspect to read; None reads the campaign's only aspect.
-    :ptype aspect: str | None
     :param storage: Eval storage — the read surface for runs, results, and insights.
-    :ptype storage: CampaignReadStore
     :param insights_as_of: Read the subject's prior insights as the ledger stood at this
         instant — only those observed strictly before it. ``None`` reads the whole
         ledger, which is what a generation launched now reads. A re-assembly FOR a stored
@@ -418,11 +413,8 @@ def assemble_context_bundle(
         as. Retraction composes with it rather than being dated by it: of the insights read as of
         this instant, those whose analysis is archived NOW are retracted, because an archive
         says the insight was false when it was read too.
-    :ptype insights_as_of: str | None
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A schema-valid, JSON-serializable :class:`AnalysisContextBundle`.
-    :rtype: AnalysisContextBundle
     :raises RefusedInput: ``aspect`` is None and the campaign has several aspects, or it names none of them.
     :raises ValidationFailedError: The runs it reads are estimated past
         :data:`~threetears.evals.analysis.reads.BUNDLE_READ_BUDGET` results by their matrices (refused before any
@@ -1128,13 +1120,9 @@ def _lever_names(
     (:attr:`~threetears.evals.analysis.campaign_bundle.CampaignBundle.lever_names`).
 
     :param bundle: The bundle, assembled but for its lever names.
-    :ptype bundle: AnalysisContextBundle
     :param designs: Every declared design of the bundle's campaign, in aspect order.
-    :ptype designs: Sequence[AspectDesign]
     :param profile: The host it was assembled under.
-    :ptype profile: HostProfile
     :return: Lever id to reader name, sorted by id.
-    :rtype: dict[str, str]
     """
     levers = {lever for entry in bundle.variant_index for lever in entry.levers}
     levers |= {row.name for row in bundle.coverage}
@@ -1211,12 +1199,9 @@ def _as_launched(runs: Sequence[EvalRun], profile: HostProfile) -> tuple[HostPro
     that is named too. Runs that recorded none (runs their host assembled without a launch) are read on the reader's.
 
     :param runs: The resolved member runs.
-    :ptype runs: Sequence[EvalRun]
     :param profile: The reading host's profile.
-    :ptype profile: HostProfile
     :return: ``(profile, sentences)``: the profile every lens reads, and one sentence per measure read otherwise than
         the reader declares it.
-    :rtype: tuple[HostProfile, list[str]]
     """
     recorded = [run for run in runs if run.declared_measures]
     if not recorded:
@@ -1265,10 +1250,8 @@ def _run_margins(runs: Sequence[EvalRun]) -> tuple[dict[str, float], str | None]
     none, and one sentence says so, naming the measures.
 
     :param runs: The resolved member runs.
-    :ptype runs: Sequence[EvalRun]
     :return: ``(margins, withheld)``: the agreed margins by measure, in name order, and the sentence naming the
         measures whose declared margins disagree, or None.
-    :rtype: tuple[dict[str, float], str | None]
     """
     declared = sorted({name for run in runs for name in run.declared_margins})
     agreed: dict[str, float] = {}

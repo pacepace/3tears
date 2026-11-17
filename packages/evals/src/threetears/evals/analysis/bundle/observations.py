@@ -54,12 +54,9 @@ def classify_apparatus(
     downstream can tell which route produced it.
 
     :param runs: The campaign's resolved runs.
-    :ptype runs: list[EvalRun]
     :param apparatus_levels: Dimension → run id → level key, from :func:`read_apparatus_levels`. A
         ``None`` level means the run never recorded that dimension.
-    :ptype apparatus_levels: dict[str, dict[str, str | None]]
     :return: Run id → the class that run's observations belong to.
-    :rtype: dict[str, ApparatusClass]
     """
     dimensions = set(apparatus_levels)
     definitions = apparatus_levels.get(MEASURE_DEFINITIONS_DIMENSION, {})
@@ -92,16 +89,13 @@ def measure_definition_levels(
     read any dimension of the rig.
 
     :param runs: The campaign's resolved runs.
-    :ptype runs: Sequence[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
-    :ptype results_by_run: dict[str, list[ResultView]]
     :return: Run id → one digest of the run's recorded map, in any key order;
         :data:`~threetears.evals.analysis.cells.NO_MEASURE_DEFINITIONS` where it has none to record (an empty map,
         or none recorded and no host measure held); ``None`` where nothing says which definition its values were
         read under: its results hold a host measure and it recorded none, or a re-measure of it began and did not
         finish. EMPTY where every run says one known thing: the dimension separates nothing, so it is no dimension
         of this campaign's rig and no class id moves.
-    :rtype: dict[str, str | None]
     """
     levels: dict[str, str | None] = {}
     for run in runs:
@@ -129,12 +123,9 @@ def split_coordinates(runs: Sequence[EvalRun], results: Sequence[ResultView]) ->
     as it does in a campaign.
 
     :param runs: The runs the results belong to; others are ignored.
-    :ptype runs: Sequence[EvalRun]
     :param results: One arm's results: a contestant's, in one series point, one step or one pivot cell.
-    :ptype results: Sequence[ResultView]
     :return: The coordinates split on, in the order :data:`~threetears.evals.schema.reading_states.Coordinate`
         lists them; empty where the results are one cell on every coordinate the package reads.
-    :rtype: list[Coordinate]
     """
     results_by_run: dict[str, list[ResultView]] = {}
     for result in results:
@@ -184,21 +175,15 @@ def observations_of(
     engine resolves every run's candidate model and kind into its variant map.
 
     :param runs: The campaign's resolved runs, in bundle order.
-    :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
-    :ptype results_by_run: dict[str, list[ResultView]]
     :param classes: Run id → apparatus class, from :func:`classify_apparatus`.
-    :ptype classes: dict[str, ApparatusClass]
     :param scope_id: The scope these were read under.
-    :ptype scope_id: str
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: ``(observations, variant_index)`` — the observations in ``(run, result id)`` order, and
         one index entry per variant, carrying the lever map its key was
         digested from. The index is built HERE rather than beside the cells because this is the
         one place that holds both halves at once: a cell knows its variant key and nothing
         about the run and candidate model the levels came from.
-    :rtype: tuple[list[Observation], list[VariantIndexEntry]]
     """
     observations = []
     index: dict[str, VariantIndexEntry] = {}
@@ -243,11 +228,8 @@ def _variant_key_of(
     read it, so the arm stays described, while a derivation replays today's predicate and cannot.
 
     :param result: The observation.
-    :ptype result: ResultView
     :param run: The batch it belongs to.
-    :ptype run: EvalRun
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: ``(key, levers, unavailable)``. ``unavailable`` is the reason ``levers`` is empty, or ``None`` when it is
         empty because the host genuinely resolved no levers. **An empty map has two causes and they are not the same
         fact** — a host that registers no levers describes its arms exactly, with nothing; a key
@@ -255,7 +237,6 @@ def _variant_key_of(
         ``reproduces`` is already known, is what stops each caller re-deriving it from the shape of
         the map and getting it wrong in its own way. :func:`_undescribable_arm_reason` says which
         of the two undescribable cases it is, in the numbers that tell an operator what to do.
-    :rtype: tuple[str, dict[str, SweepableValue], str | None]
     :raises LeverCoordinateError: The host's variant map disagrees with its own registry.
         Reachable only on the DERIVED path — a run carrying its own pre-image is never
         checked against today's registry, because the registry says what a lever is now and
@@ -292,11 +273,8 @@ def _undescribable_arm_reason(result: ResultView, run: EvalRun) -> str:
     ago, and the remedy differs entirely.
 
     :param result: The observation whose stamped key cannot be described.
-    :ptype result: ResultView
     :param run: The batch it belongs to.
-    :ptype run: EvalRun
     :return: The reason, for :attr:`~threetears.evals.kernel.campaign.VariantIndexEntry.levels_unavailable`.
-    :rtype: str
     """
     if run.variant_levers is not None:
         return (
@@ -319,10 +297,8 @@ def variant_key_of_run(results: Sequence[ResultView]) -> str | None:
     run and this addresses it. A run is one arm, so it names one variant.
 
     :param results: One run's results, which carry the key the runner stamped on each.
-    :ptype results: Sequence[ResultView]
     :return: The variant key, or ``None`` for a run with no results yet — a run with no observation
         is in no arm.
-    :rtype: str | None
 
     **The key is taken from the first result.** Every result of a run is stamped from the one
     lever map the run carries, so two results differ in their stamped key only if they were
