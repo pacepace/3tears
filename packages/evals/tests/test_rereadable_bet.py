@@ -1390,7 +1390,7 @@ _PER_SHARD = 50
 #: How many of each continued shard's fifty newcomers separated, as seeded (shard by shard). The committed order is
 #: fixed by the cases alone and every launch here completes, so each reading is reproducible and each shard test
 #: reproduces its count exactly; their sum is the product's count, and the bound below is read on it.
-_CONTINUED_SEPARATED: tuple[int, ...] = (1, 3, 2, 2, 0, 1, 1, 2, 1, 2, 2, 2, 1, 1, 4, 2, 1, 1, 3, 0)
+_CONTINUED_SEPARATED: tuple[int, ...] = (1, 2, 3, 1, 1, 4, 5, 2, 2, 4, 3, 2, 1, 2, 6, 3, 0, 2, 8, 1)
 
 #: How many of each re-run-everything shard's fifty newcomers separated, as seeded.
 _RERUN_SEPARATED: tuple[int, ...] = (4, 6, 6, 5, 7, 10, 6, 4, 9, 5, 2, 7)
@@ -1434,8 +1434,11 @@ def test_under_the_null_a_continued_comparison_separates_at_most_alpha_and_re_ru
     - re-run whole each time (the quick path's re-runs before it continued a comparison, read by the same bet): the 95%
       lower bound is above α, so re-drawing every case on each run is not one bet and loses the bound.
 
-    As seeded: continued, 32 of 1,000 newcomers separate (3.2%, 95% interval 2.2% to 4.5%); re-run whole each time,
-    50 of 600 (8.3%, 6.3% to 10.9%)."""
+    As seeded: continued, 53 of 1,000 newcomers separate (5.3%, 95% interval 4.0% to 6.9%); re-run whole each time,
+    71 of 600 (11.8%, 9.4% to 14.7%). With the mixture's stakes weighted toward the larger ones the bet spends more of
+    its α under this plan than the even weighting did (32 of 1,000): over 3,000 seeded newcomers it separated on 131
+    (4.4%, 3.7% to 5.2%), within α as Ville's inequality holds it, and every reading is the bet read for read
+    (:func:`_watched` checks it), but the bound does not clear α at a count the pool can run."""
     replicates = _PER_SHARD * len(_CONTINUED_SEPARATED)
     rerun_replicates = _PER_SHARD * len(_RERUN_SEPARATED)
     continued, rerun = sum(_CONTINUED_SEPARATED), sum(_RERUN_SEPARATED)
