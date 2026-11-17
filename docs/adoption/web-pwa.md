@@ -27,7 +27,7 @@ README has the full table and how metallm, scriob and the station use it.
 
 **Cache the shell, never the rest.** Audio, API calls and sign-in are never cached; the shell is
 network-first where file names are not hashed, so a page and its scripts never come from two
-versions. **The person decides when to update.** **Extracted, not designed ahead:** every module
+versions. `shell-worker.js` never answers worker or worklet loads, listed or not. **The person decides when to update.** **Extracted, not designed ahead:** every module
 comes from code already working in one of the apps.
 
 ## When to adopt

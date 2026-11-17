@@ -26,6 +26,13 @@ Push on the page (`subscribePush`, `unsubscribePush`) and in the worker (`showPu
 `openOnNotificationClick`, `/worker`); `MediaSessionControl`, `ScreenWakeLock`, display mode and
 `safe-area.css`. An example app in `web/examples` is tested in headless Chromium against the real
 worker (`.github/workflows/web.yml`).
+`shell-worker.js` never answers a worker's or worklet's loads: requests whose `destination` is a
+worker or worklet, and every request from a worker client, go to the network even when listed in
+`shell` (answering them stalled an installed iPhone app's workers on WebKit); shell entries named
+like worker or worklet scripts are dropped with a warning. `safe-area.css` covers the strip WebKit
+can leave below an installed iOS app's layout at launch (WebKit bug 301994): `.safe-area-backdrop`
+and `--safe-full-height` (`100lvh` plus the bottom inset) for fixed full-screen backgrounds, and
+`--safe-background` for the root background.
 
 **Added:** `[tool.threetears-release] npm-lockstep-files`: a bump moves each listed `package.json`'s
 version, its pins on `@<family-prefix>/*` siblings, and a `package-lock.json`'s workspace entries;

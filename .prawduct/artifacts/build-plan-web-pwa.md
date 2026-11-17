@@ -50,5 +50,16 @@ discussed the station PWA) and the rulings relayed on 2026-11-16 say what this i
   `check()` on demand), with a 2 s gap for bursts and none for the timer | an open page never
   navigates, so a browser alone never looked; the station's open installed app missed the v0.8.1
   rollout. WebKit compares only the worker's own bytes: documented, the server appends the release]
+- [DECISION: `shell-worker.js` never answers worker or worklet loads: worker/worklet request
+  destinations, and every request from a worker client (known from its script's
+  `resultingClientId`, else looked up once with `clients.get`) pass through; shell entries named
+  `*worker*.js`/`*worklet*.js` are dropped with a warning | owner, 2026-11-17: the station's
+  v0.8.0-v0.8.1 installed iPhone app stalled its MoQ/LL-HLS workers while the shell worker answered
+  their loads; the destination and client signals were probed in Chromium and Firefox (both set
+  `resultingClientId` on worker script requests); a name check alone would miss imported modules]
+- [DECISION: `safe-area.css` gains `.safe-area-backdrop`, `--safe-full-height` (`100lvh` plus the
+  bottom inset) and `--safe-background` (root background, inert when unset) | owner, 2026-11-17:
+  WebKit bug 301994 lays an installed iOS app out short of the home indicator at launch; the
+  station's fix (PR #26) generalised, named in the package's existing `safe-*` scheme]
 
 Critic mode: final
