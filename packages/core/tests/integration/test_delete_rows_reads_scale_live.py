@@ -33,6 +33,7 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.calibrate import budget_problem, plain_keyed_delete_seconds
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
+from threetears.core.testing.plans import on_yugabyte
 
 pytestmark = pytest.mark.integration
 
@@ -133,15 +134,24 @@ async def test_every_message_carries_the_row_a_key_read_would_and_the_reads_are_
             enrolled[key] = row
             real_enroll(self, owner, key, row=row)
 
+        real_enroll_all = CallerTransaction.enroll_all
+
+        def enroll_all(self: CallerTransaction, enrollments: Any) -> None:
+            # a bulk delete enrolls its keys at once, each as enroll would (59eb1008d)
+            enrolled.update((key, row) for _owner, key, row in enrollments)
+            real_enroll_all(self, enrollments)
+
         real_restate_many = CallerTransaction.restate_many
 
-        def restate_many(self: CallerTransaction, owner: Any, rows: Any) -> None:
+        def restate_many(self: CallerTransaction, owner: Any, rows: Any, turns: Any = None) -> None:
             # the row a key's message carries is its enrollment's last word: a delete that returns its rows
-            # enrolls each key before it runs and restates it with the row it deleted
+            # enrolls each key before it runs and restates it with the row it deleted (from a worker thread taking
+            # turns with the loop, ``turns``)
             enrolled.update(rows)
-            real_restate_many(self, owner, rows)
+            real_restate_many(self, owner, rows, turns)
 
         monkeypatch.setattr(CallerTransaction, "enroll", enroll)
+        monkeypatch.setattr(CallerTransaction, "enroll_all", enroll_all)
         monkeypatch.setattr(CallerTransaction, "restate_many", restate_many)
         async with CallerTransaction(conn):
             assert await collection.delete_rows(keys, conn=conn, max_rows=1_000) == len(keys)
@@ -157,6 +167,7 @@ async def test_every_message_carries_the_row_a_key_read_would_and_the_reads_are_
 async def test_a_bulk_delete_keeps_within_twice_a_keyed_delete(pool: asyncpg.Pool) -> None:
     """Flips if deleting and reading a reload's rows takes over twice the database's keyed delete of them."""
     async with pool.acquire() as conn:
+        assert await on_yugabyte(conn), "a yugabyte_only test reached a server that is not YugabyteDB"
         baseline = await plain_keyed_delete_seconds(conn, _ROWS)
     collection = _collection(SqlL3Backend(pool))
     best = float("inf")

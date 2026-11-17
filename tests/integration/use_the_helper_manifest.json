@@ -3101,7 +3101,7 @@
   },
   "line": 4705,
   "method": "fetch",
-  "new_call": "(await keyset_page(self.l3_pool, 'conversation_memory_refs', columns=('conversation_id', 'item_id', 'item_type', 'short_desc', 'date_created', 'date_updated', 'agent_id'), by={'conversation_id': conversation_id, 'agent_id': agent_id}, order=[Sort('date_created', descending=True), Sort('item_id')], limit=limit, records=True)).rows",
+  "new_call": "(await keyset_page(self.l3_pool, 'conversation_memory_refs', columns=('conversation_id', 'item_id', 'item_type', 'short_desc', 'date_created', 'date_updated', 'agent_id'), by={'conversation_id': conversation_id, 'agent_id': agent_id}, order=[Sort('date_created', descending=True), Sort('item_id', descending=True)], limit=limit, records=True)).rows",
   "old_sql": "SELECT conversation_id, item_id, item_type, short_desc, date_created, date_updated, agent_id FROM conversation_memory_refs WHERE conversation_id = $1 AND agent_id = $2 ORDER BY date_created DESC LIMIT $3",
   "order": [
    {
@@ -3111,7 +3111,7 @@
    },
    {
     "column": "item_id",
-    "descending": false,
+    "descending": true,
     "nulls": null
    }
   ],
@@ -3153,7 +3153,7 @@
   },
   "line": 553,
   "method": "fetch",
-  "new_call": "(await keyset_page(self.required_l3_pool, 'workspace_file_versions', columns=None, by={'workspace_id': workspace_id}, order=[Sort('date_created', descending=True), Sort('version_id')], limit=limit, records=True)).rows",
+  "new_call": "(await keyset_page(self.required_l3_pool, 'workspace_file_versions', columns=None, by={'workspace_id': workspace_id}, order=[Sort('date_created', descending=True), Sort('version_id', descending=True)], limit=limit, records=True)).rows",
   "old_sql": "SELECT * FROM workspace_file_versions WHERE workspace_id = $1 ORDER BY date_created DESC LIMIT $2",
   "order": [
    {
@@ -3163,7 +3163,7 @@
    },
    {
     "column": "version_id",
-    "descending": false,
+    "descending": true,
     "nulls": null
    }
   ],
@@ -3198,7 +3198,7 @@
   },
   "line": 584,
   "method": "fetch",
-  "new_call": "(await keyset_page(self.required_l3_pool, 'workspace_file_versions', columns=None, by={'workspace_id': workspace_id, 'relative_path': relative_path}, order=[Sort('date_created', descending=True), Sort('version_id')], limit=limit, records=True)).rows",
+  "new_call": "(await keyset_page(self.required_l3_pool, 'workspace_file_versions', columns=None, by={'workspace_id': workspace_id, 'relative_path': relative_path}, order=[Sort('date_created', descending=True), Sort('version_id', descending=True)], limit=limit, records=True)).rows",
   "old_sql": "SELECT * FROM workspace_file_versions WHERE workspace_id = $1 AND relative_path = $2 ORDER BY date_created DESC LIMIT $3",
   "order": [
    {
@@ -3208,7 +3208,7 @@
    },
    {
     "column": "version_id",
-    "descending": false,
+    "descending": true,
     "nulls": null
    }
   ],

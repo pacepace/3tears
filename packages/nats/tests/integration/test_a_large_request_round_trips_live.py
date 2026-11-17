@@ -6,7 +6,8 @@ and CRLF as three pending items, and requests through nats-py's response mux its
 a responder answers each request with the size and sha256 of what it got, and a large publish between two small ones
 arrives between them.
 
-Gated on docker: a checkout without docker skips cleanly.
+Its server comes from ``threetears.core.testing.services``: a child process on the testament pool, a
+testcontainer elsewhere. A checkout with neither skips; the pool's integration suite fails instead.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from datetime import timedelta
 
 import pytest
 
-from threetears.core.testing.containers import check_docker_available
 from threetears.nats import IncomingMessage, NatsClient, Subject, set_default_namespace
 
 from .nats_support import running_nats
@@ -32,8 +32,6 @@ _CONFIG = "max_payload: 16MB\nmax_pending: 64MB\n"
 
 async def test_a_large_request_and_publish_cross_a_real_server_whole() -> None:
     """a 12 MB request is answered with its own size and digest; publishes keep their order around a large one."""
-    if not check_docker_available():
-        pytest.skip("Docker not available")
     set_default_namespace("bigpub")
     payload = (hashlib.sha256(b"large").digest() * (_LARGE // 32 + 1))[:_LARGE]
     with running_nats(_CONFIG) as uri:

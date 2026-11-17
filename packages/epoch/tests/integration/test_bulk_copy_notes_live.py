@@ -41,6 +41,7 @@ from threetears.core.testing.calibrate import budget_problem, plain_copy_seconds
 from threetears.core.testing.kv import FakeNatsClient
 from threetears.epoch import EpochGenerationSource
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
+from threetears.core.testing.plans import on_yugabyte
 
 pytestmark = pytest.mark.integration
 
@@ -181,6 +182,7 @@ class TestABulkCopyIsNotedWhole:
     async def test_a_bulk_copy_keeps_within_twice_a_plain_copy(self, noted: _Noted) -> None:
         """Flips if copying a state's rows into a noted table takes over twice a plain COPY of them here."""
         async with noted.pool.acquire() as conn:
+            assert await on_yugabyte(conn), "a yugabyte_only test reached a server that is not YugabyteDB"
             rows = _rows(_BULK_ROWS)
             records = [(row["id"], row["state"], row["votes"], row["pad"]) for row in rows]
             baseline = await plain_copy_seconds(

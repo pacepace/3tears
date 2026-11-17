@@ -327,9 +327,8 @@ Its speed tests (a speed ratio or a loop turn against a real database, marked `l
 batches they failed on numbers they hold alone (2026-11-16: the visible-customer set 3.0x its statement on brooks-nas,
 1.41-1.99x alone). With no quiet runner the timing suite ends with no verdict (exit 2), never a pass. An integration
 test that starts the host's idle loop unmarked fails at once (`tests/timing_suite.py`); mark every speed test
-`loop_timing`, whether or not it does. A test only YugabyteDB is held to (a storage-set budget, a key-led plan) is
-marked `yugabyte_only` and deselected on any other engine, the pool's Postgres included (`tests/require_services.py`);
-it runs where `THREETEARS_TEST_ENGINE=yugabyte`.
+`loop_timing`, whether or not it does. A speed test only YugabyteDB is held to is also `yugabyte_only` (below), so
+the pool's Postgres deselects it.
 
 `./scripts/test-integration.sh --here` runs the rest on this machine: the tests marked `docker` (the
 scrape sidecar pipe, SearXNG scoring, the nats lame-duck handover in Docker) and `secrets` (Redshift,
@@ -352,9 +351,11 @@ it covers two suites out of three.
 ### A skip is not a pass
 
 A run that exits 0 with tests skipped reads exactly like one that ran them all. On the pool the
-suite fails a skip at runtime (`THREETEARS_REQUIRE_SERVICES=1`, `tests/require_services.py`); its one
-accepted skip is the datasources microbenchmark, an unconditional `@pytest.mark.skip`. A test that cannot hold on
-the run's engine is deselected by its marker (`process_only`, `yugabyte_only`), never skipped from its body. For
+suite fails a skip at runtime (`THREETEARS_REQUIRE_SERVICES=1`, `tests/require_services.py`); its two
+accepted skips are the measurements run by hand, each carrying a written `@pytest.mark.skip`: the datasources
+microbenchmark and the reused note slot (`THREETEARS_MEASURE_REUSED_SLOT=1` runs it). A test that proves what
+YugabyteDB alone does (a plan, a budget) is marked `yugabyte_only`, and a run that does not name YugabyteDB
+(`THREETEARS_TEST_ENGINE=yugabyte`) deselects it rather than skipping it. For
 `--here`, and any run taken off the pool, run with `-rs` and account for every skip.
 
 This is not hypothetical: `test_a_real_display_is_driven_through_the_pipe` was unpassable on
@@ -387,7 +388,7 @@ integration tests fail rather than skip. A native build passes.
 
 In `--here`, the `secrets` tests without their credential: the Redshift live tests
 (`OTS_REDSHIFT_PASSWORD`), the live Claude CLI batch (below) and Tavily (`TAVILY_API_KEY`); the
-sidecar pipe without its image; and on the pool, the one deliberate manual microbenchmark. A run of
+sidecar pipe without its image; and on the pool, the two measurements run by hand. A run of
 the suite taken off the pool (`TESTAMENT=off`) also skips the backup suites without
 `pg_dump`/`pg_restore`/`psql` on PATH; any major from 16 up works there, since the test server
 follows the client's major. On the pool the image carries 16, and a missing tool fails. Anything else is a test turned off by accident. When reporting

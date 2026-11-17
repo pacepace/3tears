@@ -49,7 +49,7 @@ Guidance for each app's integration (the station's is done; metallm's and scriob
 |---|---|---|
 | **metallm** (React, Vite, vite-plugin-pwa, Workbox, push) | `vitePwa` in `vite.config.ts`; in `src/sw.ts`: `appShell` with its own Workbox modules, `listenForSkipWaiting`, `showPushes`, `openOnNotificationClick`; in the page: `useUpdatePrompt(() => updateServiceWorker(true))` with `checkForUpdates` from `useRegisterSW`'s `onRegisteredSW`, `subscribePush`/`unsubscribePush` around its `/api/v1/push` calls, `isStandalone` | manifest (as today, no `id`), `runtimeFiles: ["config.js"]`, `neverShell: [...NEVER_SHELL, /^\/s3\//]`, `networkFirst: [{ path: "/config.js", cacheName: "metallm-runtime-config" }]`, its payload-to-notification and tap-to-conversation functions, its banner markup |
 | **scriob** (React, Vite, hand-written manifest and worker, online only) | `shell-worker.js` copied to `public/` and registered with no config and `?update=immediate` (caches nothing, as its `sw.js` does); `watchVersion("/version.json", buildId, ..., { field: "buildId", win: window })` for its banner (at once, on focus and on return to view, as its own check does); `appManifest` in its manifest test | `public/manifest.webmanifest` as today; its banner |
-| **station** (plain modules, no build, one app per station) | `src/` served as `/player/pwa/`; `registerWorker` with `shell-worker.js?config=/player/shell.js`, and its `check()` when the station's server events report a new instance or another version; `MediaSessionControl`, `ScreenWakeLock`, `markDisplayMode`, `safe-area.css`; the server writes the manifest and head per station following `appManifest`/`headTags` | `/player/shell.js` (its files, never `/api/`, `/auth/`, audio), `Service-Worker-Allowed: /player/`, `shell-worker.js` served with its version appended (WebKit), per-station `id` `/stations/<id>`, its notice for an update |
+| **station** (plain modules, no build, one app per station) | `src/` served as `/player/pwa/`; `registerWorker` with `shell-worker.js?config=/player/shell.js`, and its `check()` when the station's server events report a new instance or another version; `MediaSessionControl`, `ScreenWakeLock`, `markDisplayMode`, `safe-area.css` (its stage is a full-height backdrop: `var(--safe-full-height)`); the server writes the manifest and head per station following `appManifest`/`headTags` | `/player/shell.js` (its pages, scripts and styles; never `/api/`, `/auth/`, audio, nor its worker and worklet files: `moq-worker.js`, `decoder-worker.js`, the modules they import, the AudioWorklet), `Service-Worker-Allowed: /player/`, `shell-worker.js` served with its version appended (WebKit), per-station `id` `/stations/<id>`, its notice for an update, `--safe-background` |
 
 ## Install conventions
 
@@ -70,6 +70,14 @@ Guidance for each app's integration (the station's is done; metallm's and scriob
 Agreed for the family (2026-11-09):
 
 - **Cache the app shell only.** Never audio, API calls or sign-in.
+- **Never answer a worker's or worklet's loads.** A worker's or worklet's own script, the modules
+  it imports, and every request a worker makes go to the network as if there were no service
+  worker. `shell-worker.js` enforces it; a Workbox app keeps worker and worklet files out of its
+  precache and runtime routes itself. Why: the station listed its MoQ and decoder workers, their
+  modules and its AudioWorklet in its shell (v0.8.0-v0.8.1), and in the installed iPhone app the
+  workers stalled or never started while the shell worker answered their loads
+  (`respondWith(fetch())`); taking them out of the shell restored them. So a worker-using feature
+  needs the network, as audio does.
 - **Show an update prompt; never replace a running page behind the person's back.** A new worker
   waits until the person agrees (`SKIP_WAITING` from the page), then the page reloads into it.
 - An app that needs no cache (online only) still gets the update protocol, and caches nothing.
@@ -103,6 +111,18 @@ self.SHELL_CONFIG = { version: "1.4.2", cache: "app", shell: ["/app/", "/app/app
   `// <app> <version>` line from the server, as the station does), so its own bytes change too.
 - Only the `shell` files are touched; anything else goes to the network untouched, and `never`
   is checked first.
+- **Worker and worklet loads are never answered, listed or not.** The worker passes through every
+  request whose `destination` is `worker`, `sharedworker`, `serviceworker`, `audioworklet` or
+  `paintworklet` (a worker's or worklet's script and its static imports), and every request from a
+  worker client (its `importScripts`, `import()` and `fetch`): it learns a worker's client id from
+  its script request (`resultingClientId`), or else looks the client up once (`clients.get`) and
+  knows it from then on. The gap: until that lookup returns, a request from a worker the service
+  worker did not see start (it started before the service worker last restarted, or the browser
+  gave no `resultingClientId`) is treated as a page's, so a listed file it loads can still be
+  answered. Hence the second rule: keep these files out of `shell`: an entry named like one
+  (`moq-worker.js`, `decoderWorker.mjs`, `audio-worklet.js`; not `networker.js`) is dropped with
+  a console warning, and a listed file seen loading for a worker is warned about once. Caching them buys nothing (they are never answered
+  offline) and on WebKit answering them stalled an installed app's workers.
 - The shell is **network-first**: online, every load is the server's current file (a page and its
   scripts never come from two versions); the cache answers only when the network does not. Only a
   plain 200 is stored, never a redirect to sign-in. Shell paths match exactly: a deep link of a
@@ -169,6 +189,20 @@ Python package is planned as `3tears-webpush`.
 - `safe-area.css`: `--safe-top/right/bottom/left` and `.safe-area-pad`, `.safe-area-top`,
   `.safe-area-bottom`, `.safe-area-fill`, with `VIEWPORT` (`viewport-fit=cover`). Pad every edge
   region, fixed ones included; `100dvh`, not `100vh`.
+- **The bottom strip at launch.** Installed on iOS, WebKit can lay the page out short of the home
+  indicator's strip at launch (WebKit bug 301994; the station measured 34 px), and whatever paints
+  below the layout shows there until something re-runs layout. So any fixed full-screen
+  background (a backdrop, a gradient, a canvas) is `.safe-area-backdrop` (fixed, behind the page,
+  `height: var(--safe-full-height)`, which is `calc(100lvh + env(safe-area-inset-bottom))`): it
+  runs on under the strip, and being fixed it adds no scroll height. And set `--safe-background`
+  to the colour at the bottom of the app's background: it becomes the root background, which
+  paints the whole screen behind everything. With a backdrop, put the colour there, not on
+  `body`, whose own background would paint over the backdrop.
+
+  ```css
+  :root { --safe-background: #14161a; }
+  .app-backdrop { background: linear-gradient(#262a40, #14161a); } /* <div class="safe-area-backdrop app-backdrop"> */
+  ```
 
 ## Tests
 
@@ -176,4 +210,7 @@ Python package is planned as `3tears-webpush`.
 example app (`web/examples/basic`, served by `web/examples/server.js`) in headless Chromium with
 the real shell worker: what it caches and never caches, offline, an open page learning of a deploy
 on return to view and on `check()` without navigating, an update that waits for the
-person, Media Session and display mode.
+person, Media Session and display mode; a page with a module worker, a classic worker and an
+AudioWorklet (`basic/lab/`) whose loads the worker never answers though its shell lists them; and
+the launch state of an installed iPhone app (a layout short of a 34 px bottom inset), whose strip
+the backdrop and root background cover without adding scrolling.

@@ -22,6 +22,12 @@ themselves, a cluster of child processes). Outside ``THREETEARS_TEST_SERVICES=pr
 integration job, a laptop's testcontainers run -- it is deselected, whatever named it, rather than
 run against the wrong services or skipped. ``scripts/test-integration.sh`` reads the same marker to
 leave such modules out of a run it takes off the pool.
+
+**``yugabyte_only``.** A test marked ``yugabyte_only`` proves what YugabyteDB alone does (a plan its planner picks, a
+budget measured on it); on Postgres it has nothing to assert. A run that does not name YugabyteDB
+(``THREETEARS_TEST_ENGINE``, PostgreSQL when unnamed, as ``tests/integration/conftest.py`` reads it) deselects it,
+rather than skipping it: the pool's suite runs on Postgres, where a skip fails. A run naming YugabyteDB runs it, and
+:func:`threetears.core.testing.fixtures.check_engine` stops that run when its server is not YugabyteDB.
 """
 
 from __future__ import annotations
@@ -38,9 +44,14 @@ REQUIRE_SERVICES_ENV = "THREETEARS_REQUIRE_SERVICES"
 SERVICES_ENV = "THREETEARS_TEST_SERVICES"
 PROCESS_MODE = "process"
 
+#: the variable naming the engine a run means its database to be, and the value that runs ``yugabyte_only``
+ENGINE_ENV = "THREETEARS_TEST_ENGINE"
+YUGABYTE = "yugabyte"
+
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """deselect every ``process_only`` test outside process mode.
+    """deselect every ``process_only`` test outside process mode, and every ``yugabyte_only`` test in a run that does
+    not name YugabyteDB.
 
     :param config: the session's config
     :ptype config: pytest.Config
@@ -49,12 +60,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     :return: None
     :rtype: None
     """
-    if os.environ.get(SERVICES_ENV) == PROCESS_MODE:
-        return
-    deselected = [item for item in items if item.get_closest_marker("process_only") is not None]
+    away: list[str] = []
+    if os.environ.get(SERVICES_ENV) != PROCESS_MODE:
+        away.append("process_only")
+    if os.environ.get(ENGINE_ENV) != YUGABYTE:
+        away.append("yugabyte_only")
+    deselected = [item for item in items if any(item.get_closest_marker(name) is not None for name in away)]
     if deselected:
         config.hook.pytest_deselected(items=deselected)
-        items[:] = [item for item in items if item.get_closest_marker("process_only") is None]
+        dropped = set(map(id, deselected))
+        items[:] = [item for item in items if id(item) not in dropped]
 
 
 #: the directory part every package's integration tests live under

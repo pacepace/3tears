@@ -6,8 +6,10 @@ into a scan of the table for every batch of keys. Checked here, never run (a wri
 analysed): under the custom plan and the forced generic one, the table is reached through its key, and no
 sequential scan of it appears anywhere in the plan.
 
-Asserted on YugabyteDB, the platform's database: against the session ``db_container`` (Postgres) it skips;
-set ``THREETEARS_TEST_POSTGRES_URL`` to a YugabyteDB URL to run it.
+Asserted on YugabyteDB, the platform's database (``yugabyte_only``): Postgres hashes the keys against a scan of every
+row their leading values hold, which here is the whole table, a plan of its own for the platform's test database only.
+A run that does not name YugabyteDB deselects it; run it with ``THREETEARS_TEST_ENGINE=yugabyte`` and
+``THREETEARS_TEST_POSTGRES_URL`` naming a YugabyteDB server.
 """
 
 from __future__ import annotations
@@ -62,13 +64,13 @@ def _nodes(plan: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
         yield from _nodes(child)
 
 
+@pytest.mark.yugabyte_only
 @pytest.mark.parametrize("mode", ["auto", "force_generic_plan"])
 async def test_a_whole_key_delete_and_read_reach_the_table_by_its_key(conn: asyncpg.Connection, mode: str) -> None:
     """Flips if a batch of whole keys is deleted, or read, by scanning the table rather than looking each key up."""
-    if not await on_yugabyte(conn):
-        # Postgres hashes the keys against a scan of every row their leading values hold, which here is the
-        # whole table: a plan of its own, for the platform's test database only
-        pytest.skip("the key-led plan is YugabyteDB's, the platform's database")
+    # the run names YugabyteDB (``yugabyte_only``), and check_engine held its server to that; asked again here so a
+    # plan read off Postgres can never pass as YugabyteDB's
+    assert await on_yugabyte(conn), "a yugabyte_only test reached a server that is not YugabyteDB"
     await conn.execute(f"SET plan_cache_mode = {mode}")
     keys = [(f"r{n % 500}", f"g{n}") for n in range(1, _KEYS + 1)]
     arrays = [list(column) for column in zip(*keys, strict=True)]

@@ -128,6 +128,7 @@ class TestATablesNotesAreReadThroughAnIndex:
         (the ring switched at the night's start), so it holds none since and is not part of the read. An earlier
         baseline read the same rows from plain tables holding only them; it left out the index read every real
         ask pays, and the path stayed at about 2.7x it however the ask was built."""
+        assert await on_yugabyte(ring.conn), "a yugabyte_only test reached a server that is not YugabyteDB"
         wait = await ring.conn.fetchval(f"SELECT wait_seconds FROM {ring.schema}.{RING_TABLE} WHERE id = 1")
         reach = ring.since - timedelta(seconds=float(wait)) / 2
         bare = (
