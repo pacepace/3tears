@@ -667,6 +667,12 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
     here at once as well. Request-then-converge: the work records ``cancelled`` as it unwinds, so the status
     returned may still read ``running`` for up to one renewal interval — poll to see it land.
 
+    **A first cancel drains, a further one cuts** (:meth:`~threetears.evals.run.jobs.EvalJobManager.cancel_job`): a
+    run, or every run of a launch or a sweep, starts no further cell, and the cells it is running finish and are
+    recorded, each within its own deadline; a second ``job_cancel``, from this process or another, cuts them, and a
+    take-up runs the cut cells again. Two cancels of a launch or a sweep landing before its job has heard the first
+    are one cancel.
+
     :param host: The host whose store holds the job's record and whose job manager may run it.
     :ptype host: OpsHost
     :param job_id: The id the start returned.
@@ -709,9 +715,9 @@ async def job_cancel(host: OpsHost, job_id: str, scope_id: str, *, reason: str |
     # This process may be the one running it: cancel it here now rather than at the next renewal. The record was
     # read in the caller's scope, so the id is one this caller may cancel.
     if kind == "run":
-        manager.cancel_job(record_id, reason=reason)
+        manager.cancel_job(record_id, reason=reason, requested=True)
     else:
-        manager.cancel_task(record_id)
+        manager.cancel_task(record_id, requested=True)
     return await job_poll(host, job_id, scope_id)
 
 

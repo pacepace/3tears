@@ -1482,6 +1482,8 @@ async def test_a_cut_short_cell_s_metered_calls_and_a_stored_cell_s_refused_call
     await until(lambda: len(off_loop(metered.storage.query_eval_results_by_run, launched.id, TOYHOST_SCOPE)) >= 3)
     # Both cells in flight (the run's width) have made their call and wait.
     await until(lambda: metered.hold.held == 2)
+    # Twice: the first lets the cells in flight finish, the second cuts them.
+    assert metered.launching.job_manager.cancel_job(launched.id, reason="shipping a fix")
     assert metered.launching.job_manager.cancel_job(launched.id, reason="shipping a fix")
     cancelled, rows = await metered.ended(launched.id)
     assert cancelled.status == "cancelled"

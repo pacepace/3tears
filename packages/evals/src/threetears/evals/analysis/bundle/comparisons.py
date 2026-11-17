@@ -735,7 +735,7 @@ def redrawn_sentence(cells: int, cut: int) -> str:
     """
     counted = (
         f"{cells} cell{'s' if cells != 1 else ''} of this comparison recorded no answer (a running total over its "
-        f"runs), and each runs again when the comparison is continued or its run taken up"
+        f"runs), and each runs again when it is continued"
     )
     if cut:
         whom = "it was" if cells == 1 else f"{cut} of them {'was' if cut == 1 else 'were'}"

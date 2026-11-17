@@ -45,6 +45,8 @@ by node id); the unit suite keeps the smoke check.
 from __future__ import annotations
 
 import asyncio
+import functools
+import math
 import random
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -56,7 +58,9 @@ import pytest
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.actions.catalogue import Caller
 from threetears.evals.analysis import ComparisonFamily, assemble_context_bundle, get_campaign
-from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, exact_rate_interval
+from threetears.evals.analysis.bundle.comparisons import redrawn_sentence
+from threetears.evals.analysis.bundle.trials import redrawn_cells
+from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA, exact_rate_interval, separation_test
 from threetears.evals.kernel import ValidationFailedError, default_job_timeout
 from threetears.evals.kernel.declaration import AspectDesign, ControlDeclaration, SweptAxis
 from threetears.evals.kernel.host.profile import CANDIDATE_MODEL_LEVER
@@ -103,6 +107,9 @@ _SECOND, _SECOND_AFTER_S = 0.3, 0.005
 #: The cases one comparison read at a fixed count runs; the cases each launch of a planned comparison adds, one look
 #: each (20, 40 and 60 cases at its three looks), and the looks it plans.
 _FIXED_CASES, _LOOK_CASES, _PLANNED = 40, 20, 3
+
+#: The reading's own rate under the plan of three looks, uninterrupted, as :func:`_exact_rate` computes it.
+_EXACT_LOOKS = 0.04485
 
 #: Comparisons in each long simulation at a fixed count, in each under a plan of looks, and in each smoke check: each
 #: long one a pool request of its own, inside its window.
@@ -164,6 +171,10 @@ class _Landings:
     drawn: Counter[tuple[str, bool]] = field(default_factory=Counter)
     arrived: Counter[tuple[str, bool]] = field(default_factory=Counter)
 
+    #: Where set, every coin waits on it once its answer is drawn, so a test holds cells in flight; and how many wait.
+    held: asyncio.Event | None = None
+    holding: int = 0
+
     def land(self) -> None:
         self.landed += 1
         if self.stop_at is not None and self.landed >= self.stop_at:
@@ -181,9 +192,10 @@ class _Engine:
     landings: _Landings
 
 
-def _engine(rng: random.Random, law: _Law, grader: _Grader) -> _Engine:
+def _engine(rng: random.Random, law: _Law, grader: _Grader, *, lease_s: float | None = None) -> _Engine:
     """A fresh engine host: the callable kind (``quick.one_call.callable_kind``) wired by a launcher of its own through
-    the engine's ``launch_run``, each arm a coin that lands right half the time and takes as long as ``law`` says."""
+    the engine's ``launch_run``, each arm a coin that lands right half the time and takes as long as ``law`` says; its
+    job leases last ``lease_s`` where given, the engine's default otherwise."""
     scorer, ranges = _GRADERS[grader]
     host = callable_host([scorer], ranges=ranges, store=InMemoryDocumentStore())
     off_loop(
@@ -196,6 +208,12 @@ def _engine(rng: random.Random, law: _Law, grader: _Grader) -> _Engine:
         async def run(case: Mapping[str, Any]) -> str:
             right = rng.random() < 0.5
             landings.drawn[arm, right] += 1
+            if landings.held is not None:
+                landings.holding += 1
+                try:
+                    await landings.held.wait()
+                finally:
+                    landings.holding -= 1
             await asyncio.sleep(_seconds(law, arm, right))
             landings.arrived[arm, right] += 1
             landings.land()
@@ -235,6 +253,7 @@ def _engine(rng: random.Random, law: _Law, grader: _Grader) -> _Engine:
         ),
         settings=lambda: _SETTINGS,
         job_timeout_factory=default_job_timeout,
+        **({} if lease_s is None else {"job_lease_s": lease_s}),
     )
     return _Engine(
         ops=OpsHost(launch=launching),
@@ -504,106 +523,239 @@ def _said(reading: _Reading, law: _Law, grader: _Grader, stop: _Stop, separated:
     )
 
 
+# --- the interrupt rule, held cell by cell -------------------------------------------------------------------------
+
+
+async def _held_launch(engine: _Engine, cases: int) -> tuple[str, str]:
+    """Launch both arms over ``cases`` cases with every coin held once drawn, and wait until the run's width of cells is
+    in flight. Returns the launch's job id and its id."""
+    engine.landings.held = asyncio.Event()
+    batch = _cases(0, cases)
+    for case in batch:
+        off_loop(engine.ops.launch.eval_host.storage.save_test_case, case)
+    engine.batch[:] = batch
+    started = await run_launch(
+        engine.ops, LaunchArguments(template_id=_TEMPLATE, subject_id=_SUBJECT, models=["a", "b"], k_runs=1), _SCOPE
+    )
+    (handle,) = started.jobs
+    async with asyncio.timeout(10):
+        while engine.landings.holding < _SETTINGS.max_concurrent_cells:
+            await asyncio.sleep(0.005)
+    return handle.job_id, parse_job_id(handle.job_id)[1]
+
+
+def _rows_of(engine: _Engine, launch_id: str) -> list[Any]:
+    storage = engine.ops.launch.eval_host.storage
+    return [row for run_id in _run_ids(engine, launch_id) for row in list_results(storage, run_id, _SCOPE)]
+
+
+async def _taken_up_and_read(engine: _Engine, job_id: str, launch_id: str) -> ComparisonFamily:
+    """Take the launch up to its end and read its runs as an engine campaign, control ``a``."""
+    engine.landings.held = None
+    await job_resume(engine.ops, job_id, _SCOPE)
+    await engine.ops.launch.job_manager.wait_for([launch_id])
+    assert (await job_poll(engine.ops, job_id, _SCOPE)).state == "completed"
+    a, b = sorted(
+        off_loop(engine.ops.launch.eval_host.storage.load_eval_runs, off_loop(_run_ids, engine, launch_id), _SCOPE),
+        key=lambda run: run.candidate_model,
+    )
+    filed = await _act(
+        engine,
+        "campaign_create",
+        name="held",
+        subject_id=_SUBJECT,
+        behavior="coin",
+        question="does b land right more often than a?",
+        aspects=[{"label": "coin", "run_ids": [a.id, b.id], "design": _design(None, "grade")}],
+        campaign_arms=[{"label": "a", "role": "control", "from_run_ids": [a.id]}],
+    )
+    return _family(engine, str(filed["id"]))
+
+
+async def test_an_operator_s_first_cancel_of_a_launch_lets_its_cells_in_flight_finish_and_the_take_up_runs_the_rest() -> (
+    None
+):
+    """One ``job_cancel`` of an engine launch starts no further cell: the cells in flight, held, keep it running, and
+    once they finish each records its answer; the launch ends cancelled with no cell cut, its take-up runs only the cells
+    never started, and the family says nothing ran again."""
+    engine = _engine(random.Random("drained"), "alike-20x", "grade")
+    job_id, launch_id = await _held_launch(engine, 8)
+    await job_cancel(engine.ops, job_id, _SCOPE, reason="shipping a fix")
+    await asyncio.sleep(0.05)
+    assert (await job_poll(engine.ops, job_id, _SCOPE)).state == "running", "the cells in flight keep it running"
+    assert engine.landings.holding == _SETTINGS.max_concurrent_cells
+    assert engine.landings.held is not None
+    engine.landings.held.set()
+    await engine.ops.launch.job_manager.wait_for([launch_id])
+    assert (await job_poll(engine.ops, job_id, _SCOPE)).state == "cancelled"
+    rows = off_loop(_rows_of, engine, launch_id)
+    assert len(rows) == _SETTINGS.max_concurrent_cells, "each cell in flight recorded, none started after"
+    assert {row.termination for row in rows} == {"completed"} and not any(runs_again(row) for row in rows)
+
+    family = await _taken_up_and_read(engine, job_id, launch_id)
+    rows = off_loop(_rows_of, engine, launch_id)
+    assert len(rows) == 16 and not any(row.written_over for row in rows)
+    assert redrawn_cells(rows) == (0, 0)
+    assert "recorded no answer" not in family.disclosure
+
+
+async def test_a_second_cancel_cuts_the_cells_in_flight_and_the_family_says_how_many_ran_again() -> None:
+    """A second ``job_cancel`` while the first lets the cells finish cuts them: each is recorded cut, the take-up runs it
+    again written over its row (``written_over``: ``cut``), and the engine family says how many cells ran again, the cut
+    ones among them, in the one sentence that says it (``redrawn_sentence``)."""
+    engine = _engine(random.Random("cut"), "alike-20x", "grade")
+    job_id, launch_id = await _held_launch(engine, 8)
+    await job_cancel(engine.ops, job_id, _SCOPE, reason="shipping a fix")
+    await asyncio.sleep(0.05)
+    await job_cancel(engine.ops, job_id, _SCOPE, reason="shipping a fix")
+    await engine.ops.launch.job_manager.wait_for([launch_id])
+    rows = off_loop(_rows_of, engine, launch_id)
+    cut = [row for row in rows if row.termination == "cancelled"]
+    assert len(cut) == _SETTINGS.max_concurrent_cells, "every cell in flight was cut"
+
+    family = await _taken_up_and_read(engine, job_id, launch_id)
+    rows = off_loop(_rows_of, engine, launch_id)
+    assert len(rows) == 16 and {row.id for row in rows if row.written_over == "cut"} == {row.id for row in cut}
+    assert redrawn_cells(rows) == (len(cut), len(cut))
+    assert redrawn_sentence(len(cut), len(cut)) in family.disclosure
+
+
+async def test_a_cancel_the_lease_then_finds_on_the_record_is_the_same_cancel_and_does_not_cut() -> None:
+    """An operator's ``job_cancel`` cancels the launch here at once and writes the request on its record; the launch's
+    lease, renewing, finds that request and does not deliver it again, so the launch drains rather than being cut by
+    its own first cancel."""
+    engine = _engine(random.Random("leased"), "alike-20x", "grade", lease_s=0.3)
+    job_id, launch_id = await _held_launch(engine, 8)
+    await job_cancel(engine.ops, job_id, _SCOPE, reason="shipping a fix")
+    await asyncio.sleep(0.5)  # several renewals, each reading the request
+    assert (await job_poll(engine.ops, job_id, _SCOPE)).state == "running", "the lease delivered no second cancel"
+    assert engine.landings.held is not None
+    engine.landings.held.set()
+    await engine.ops.launch.job_manager.wait_for([launch_id])
+    rows = off_loop(_rows_of, engine, launch_id)
+    assert rows and {row.termination for row in rows} == {"completed"}, "nothing was cut"
+
+
 # --- the simulations -------------------------------------------------------------------------------------------------
 
 
+@functools.cache
+def _separates_at(plus: int, minus: int, cases: int, level: float) -> bool:
+    """Whether the engine's reading separates coin pairs where ``plus`` cases went to ``b`` alone, ``minus`` to ``a``
+    alone, and the rest tied: the paired t test on the 0-1 range the family reads (``separation_test``), at ``level``."""
+    a = [0.0] * plus + [1.0] * minus + [0.0] * (cases - plus - minus)
+    b = [1.0] * plus + [0.0] * minus + [0.0] * (cases - plus - minus)
+    p = separation_test(a, b, paired=True, value_range=(0.0, 1.0)).p
+    return p is not None and p < level
+
+
+@functools.cache
+def _exact_rate(reading: _Reading) -> float:
+    """The rate the engine's reading separates arms of equal accuracy (0.5) at, uninterrupted, computed exactly: each
+    case goes to ``b`` alone, to ``a`` alone or ties with chances 1/4, 1/4 and 1/2, and the reading is read at the
+    fixed count (α), or after each look's cases with the watcher stopping at the first separation (α/L). What a
+    simulation with no lean draws around; the t test on such pairs is discrete, so this is not α itself."""
+    sizes, level = (
+        ([_FIXED_CASES], SIGNIFICANCE_ALPHA)
+        if reading == "fixed"
+        else ([_LOOK_CASES] * _PLANNED, SIGNIFICANCE_ALPHA / _PLANNED)
+    )
+    alive: dict[tuple[int, int], float] = {(0, 0): 1.0}
+    cases, separated = 0, 0.0
+    for size in sizes:
+        batch = {
+            (plus, minus): math.comb(size, plus)
+            * math.comb(size - plus, minus)
+            * 0.25 ** (plus + minus)
+            * 0.5 ** (size - plus - minus)
+            for plus in range(size + 1)
+            for minus in range(size + 1 - plus)
+        }
+        grown: dict[tuple[int, int], float] = {}
+        for (plus, minus), weight in alive.items():
+            for (more_plus, more_minus), chance in batch.items():
+                key = (plus + more_plus, minus + more_minus)
+                grown[key] = grown.get(key, 0.0) + weight * chance
+        cases += size
+        alive = {}
+        for (plus, minus), weight in grown.items():
+            if _separates_at(plus, minus, cases, level):
+                separated += weight
+            else:
+                alive[plus, minus] = weight
+    return separated
+
+
+def _tail(separated: int, count: int, rate: float) -> float:
+    """The chance of ``separated`` or more separations in ``count`` comparisons at ``rate``: the exact binomial tail."""
+    return sum(math.comb(count, k) * rate**k * (1 - rate) ** (count - k) for k in range(separated, count + 1))
+
+
+async def test_the_reading_s_own_rate_is_exact_and_above_alpha_at_a_fixed_count() -> None:
+    """The engine's paired t test on coin pairs, at a fixed count of 40, separates at 5.28% with no interrupt at all:
+    the test is discrete on such pairs, so an at-most-α claim on it fails before any cut. Under the plan of three looks
+    at α/3 it separates at the rate below. Held to the digits, so a change to the reading moves this first."""
+    assert _exact_rate("fixed") == pytest.approx(0.05276, abs=5e-5)
+    assert _exact_rate("looks") == pytest.approx(_EXACT_LOOKS, abs=5e-5)
+
+
 async def test_a_few_engine_comparisons_interrupted_and_taken_up_finish_whole_and_read_by_the_t_test() -> None:
-    """The unit suite's smoke check of every simulation: a few comparisons each, by a check and by a grade, every launch
-    held through its interrupts and take-ups to an end where every cell has one row and none runs again (inside
-    :func:`_launched`), each read by the paired t test over the family its grader gives, at α at a fixed count and at
-    α/L under the plan; and the reading separating at most one of each few, which at a rate of α happens with
-    probability above 0.99."""
+    """The unit suite's smoke check of every simulation: a few comparisons each, every launch held through its
+    interrupts and take-ups to an end where every cell has one row and none runs again (inside :func:`_launched`; a
+    drained launch's take-ups run no cell again), each read by the paired t test, at α at a fixed count and at α/L under
+    the plan; and the reading separating at most one of each few, which at a rate of α happens with probability above
+    0.99."""
     for reading in ("fixed", "looks"):
-        for grader in ("check", "grade"):
-            separated, cuts = await _simulate(reading, "b-slower-20x", grader, _SMOKE, "smoke")
-            assert separated <= 1, _said(reading, "b-slower-20x", grader, separated, _SMOKE, cuts)
+        for stop in ("drain", "second", "cut"):
+            separated, cuts = await _simulate(reading, "b-slower-20x", "check", stop, _SMOKE, "smoke")
+            assert separated <= 1, _said(reading, "b-slower-20x", "check", stop, separated, _SMOKE, cuts)
             assert cuts.holdings >= _SMOKE
+            if stop == "drain":
+                assert cuts.again == {"a": 0, "b": 0} and not cuts.lost
 
 
-#: What each simulation shows of its share's 95% Clopper-Pearson interval:
+#: What a simulation's share shows, against the reading's own exact rate (:func:`_exact_rate`) and its binomial tail
+#: (:func:`_tail`, one-sided, at :data:`_SURE`, so twenty-odd rows run together fail by chance about once in forty):
 #:
-#: - ``held``: its upper bound is at most α, the claim the reading makes;
-#: - ``at_alpha``: its lower bound is at most α, so no lean is shown (the control of a grade, read by a t test that errs
-#:   at α itself, so its upper bound lies above α at any count);
-#: - ``unheld``: its upper bound is above α, so "at most α" is not shown; the finding, reported;
-#: - ``leans``: its lower bound is above α, so the reading is shown to separate more often than α; the finding, reported.
-#:
-#: An ``unheld`` or ``leans`` row turns red when the take-up stops redrawing what a cut found in flight (the engine
-#: drains on a first interrupt, as the quick path does) and the share falls to α: its expectation then moves to ``held``
-#: or ``at_alpha``, with the share it draws.
-_Shown = Literal["held", "at_alpha", "unheld", "leans"]
+#: - ``no_lean``: its count is not above the exact rate at that level: the interrupts leaned nothing;
+#: - ``leans``: its count is above it at that level: the redrawn cells lean the reading.
+_Shown = Literal["no_lean", "leans"]
 
-#: Each simulation, as (reading, latency law, grader), and what it shows. As drawn for this change (95% Clopper-Pearson;
-#: holdings are the launches and take-ups; "lost" is the answers drawn by cells a cut found in flight, right/wrong):
-#:
-#: ================  ==============  =====================  ==========================================================
-#: reading           law             check (α/2 in effect)  grade (α)
-#: ================  ==============  =====================  ==========================================================
-#: fixed, 40 cases   alike-20x       2/300, 0.7% (0.1-2.4)  20/500, 4.0% (2.5-6.1); lost a 233/1118, b 256/1143
-#: fixed, 40 cases   b-slower-4x     9/300, 3.0% (1.4-5.6)  37/500, 7.4% (5.3-10.1); lost a 121/120, b 303/1071
-#: fixed, 40 cases   b-slower-20x    2/300, 0.7% (0.1-2.4)  35/500, 7.0% (4.9-9.6); lost a 108/120, b 282/2065
-#: 3 looks, α/3      alike-20x       4/300, 1.3% (0.4-3.4)  11/300, 3.7% (1.8-6.5); lost a 354/1696, b 402/1693
-#: 3 looks, α/3      b-slower-4x     4/300, 1.3% (0.4-3.4)  21/300, 7.0% (4.4-10.5); lost a 178/207, b 431/1640
-#: 3 looks, α/3      b-slower-20x    4/300, 1.3% (0.4-3.4)  39/300, 13.0% (9.4-17.3); lost a 174/154, b 429/2980
-#: ================  ==============  =====================  ==========================================================
-#:
-#: The check over three looks at 20x drew again at :data:`_LOOKS_REPLICATES` on the pool: 21/500, 4.2% (2.6-6.3), its
-#: upper bound above α (lost a 410/402, b 986/5373), so it is held to ``at_alpha``, not ``held``.
-#:
-#: Over another 600 comparisons at a fixed count, the check's raw p read at α (the family of one a grade gives): arms of
-#: different laws at 20x, 62 separated (10.3%, 8.0-13.1), 56 of them toward ``b``; one law, 33 (5.5%, 3.8-7.6), 17
-#: toward ``b``.
-_SHOWN: dict[tuple[_Reading, _Law, _Grader], _Shown] = {
-    **{(reading, law, "check"): "held" for reading in ("fixed", "looks") for law in _LAWS},
-    ("looks", "b-slower-20x", "check"): "at_alpha",
-    ("fixed", "alike-20x", "grade"): "at_alpha",
-    ("looks", "alike-20x", "grade"): "at_alpha",
-    ("fixed", "b-slower-4x", "grade"): "unheld",
-    ("fixed", "b-slower-20x", "grade"): "unheld",
-    ("looks", "b-slower-4x", "grade"): "unheld",
-    ("looks", "b-slower-20x", "grade"): "leans",
+#: The one-sided level each row's lean is decided at.
+_SURE = 0.001
+
+#: Each simulation, as (reading, latency law, grader, interrupt), and what it shows.
+_SHOWN: dict[tuple[_Reading, _Law, _Grader, _Stop], _Shown] = {
+    **{
+        (reading, law, grader, "drain"): "no_lean"
+        for reading in ("fixed", "looks")
+        for law in _LAWS
+        for grader in ("check", "grade")
+    },
 }
 
 
-def _shown(reading: _Reading, law: _Law, grader: _Grader, separated: int, count: int, cuts: _Cuts) -> None:
+def _shown(reading: _Reading, law: _Law, grader: _Grader, stop: _Stop, separated: int, count: int, cuts: _Cuts) -> None:
     """Hold a simulation's share to what :data:`_SHOWN` says it shows."""
-    said = _said(reading, law, grader, separated, count, cuts)
-    bound = exact_rate_interval(separated, count)
-    assert bound is not None
-    low, high = bound
-    shown = _SHOWN[reading, law, grader]
-    assert {
-        "held": high <= SIGNIFICANCE_ALPHA,
-        "at_alpha": low <= SIGNIFICANCE_ALPHA,
-        "unheld": high > SIGNIFICANCE_ALPHA,
-        "leans": low > SIGNIFICANCE_ALPHA,
-    }[shown], f"{shown}: {said}"
+    exact = _exact_rate(reading)
+    tail = _tail(separated, count, exact)
+    said = f"{_said(reading, law, grader, stop, separated, count, cuts)}; exact rate {exact:.4f}, tail {tail:.2g}"
+    shown = _SHOWN[reading, law, grader, stop]
+    assert (tail >= _SURE) if shown == "no_lean" else (tail < _SURE), f"{shown}: {said}"
 
 
-_CELLS = [(law, grader) for grader in ("check", "grade") for law in _LAWS]
+_CELLS = sorted(_SHOWN)
 
 
 @pytest.mark.long_simulation
 @pytest.mark.timeout(1700)
-@pytest.mark.parametrize(("law", "grader"), _CELLS)
-async def test_under_the_null_an_engine_comparison_interrupted_and_taken_up_read_at_a_fixed_count(
-    law: _Law, grader: _Grader
+@pytest.mark.parametrize(("reading", "law", "grader", "stop"), _CELLS)
+async def test_under_the_null_an_interrupted_engine_comparison_taken_up_and_read(
+    reading: _Reading, law: _Law, grader: _Grader, stop: _Stop
 ) -> None:
-    """:data:`_FIXED_REPLICATES` comparisons of :data:`_FIXED_CASES` cases (:func:`_at_a_fixed_count`), each launch
-    interrupted and taken up as :func:`_launched` holds it, read once by the engine's default reading; each share as
-    :data:`_SHOWN` states it."""
-    separated, cuts = await _simulate("fixed", law, grader, _FIXED_REPLICATES, "engine")
-    _shown("fixed", law, grader, separated, _FIXED_REPLICATES, cuts)
-
-
-@pytest.mark.long_simulation
-@pytest.mark.timeout(1700)
-@pytest.mark.parametrize(("law", "grader"), _CELLS)
-async def test_under_the_null_an_engine_comparison_interrupted_and_taken_up_watched_over_planned_looks(
-    law: _Law, grader: _Grader
-) -> None:
-    """:data:`_LOOKS_REPLICATES` comparisons under a plan of :data:`_PLANNED` looks
-    (:func:`_watched_over_planned_looks`), each look's launch interrupted and taken up as :func:`_launched` holds it, the
-    watcher stopping at the first look that separates; each share as :data:`_SHOWN` states it."""
-    separated, cuts = await _simulate("looks", law, grader, _LOOKS_REPLICATES, "engine")
-    _shown("looks", law, grader, separated, _LOOKS_REPLICATES, cuts)
+    """Comparisons of arms of equal accuracy (:func:`_at_a_fixed_count`, :data:`_FIXED_REPLICATES` of them, or
+    :func:`_watched_over_planned_looks`, :data:`_LOOKS_REPLICATES`), each launch interrupted as ``stop`` says and taken up
+    as :func:`_launched` holds it; the share that separates as :data:`_SHOWN` states it."""
+    count = _FIXED_REPLICATES if reading == "fixed" else _LOOKS_REPLICATES
+    separated, cuts = await _simulate(reading, law, grader, stop, count, "engine")
+    _shown(reading, law, grader, stop, separated, count, cuts)

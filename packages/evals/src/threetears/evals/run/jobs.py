@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+from collections import Counter
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from concurrent.futures import Executor
@@ -478,6 +479,9 @@ class EvalJobManager:
         self._drains: dict[str, Callable[[], object]] = {}
         #: The jobs, runs and tasks alike, whose first cancel has been asked: a further cancel cuts.
         self._asked: set[str] = set()
+        #: By job, the cancels this process asked of it directly that it also wrote on the job's record (an operator's
+        #: ``job_cancel``): each is the request the job's lease then finds, which is delivered once already.
+        self._requested_here: Counter[str] = Counter()
         # Whether each in-flight run's work function has started, keyed by run id.
         # Set False when the job is admitted and True immediately before the work
         # function is awaited, so a terminal status write can tell "this run never
@@ -642,7 +646,7 @@ class EvalJobManager:
         if tasks:
             await asyncio.wait(tasks)
 
-    def cancel_job(self, job_id: str, reason: str | None = None) -> bool:
+    def cancel_job(self, job_id: str, reason: str | None = None, *, requested: bool = False) -> bool:
         """Cancel a running job: the first cancel drains it, a further one cuts it.
 
         **The interrupt rule** (the quick path's, the engine's alike): a run started with a way to stop starting cells
@@ -665,6 +669,10 @@ class EvalJobManager:
             to ``error_details``. Every run :meth:`start_group` starts is saved
             before its task exists, so there is always a document to write it to.
         :ptype reason: str | None
+        :param requested: The caller also wrote this cancel on the run's record
+            (:func:`~threetears.evals.kernel.job_leases.request_job_cancel`), so the run's lease, finding it, does not
+            deliver it a second time.
+        :ptype requested: bool
         :return: True if cancellation was requested, False if the job
             is not found or already done.
         :rtype: bool
@@ -672,6 +680,8 @@ class EvalJobManager:
         task = self._tasks.get(job_id)
         if task is None or task.done():
             return False
+        if requested:
+            self._requested_here[job_id] += 1
         if reason is not None:
             self._cancel_reasons[job_id] = reason
         if job_id not in self._asked:
@@ -704,18 +714,22 @@ class EvalJobManager:
         task.cancel()
         return True
 
-    def _asked_to_cancel(self, job_id: str, reason: str | None) -> None:
-        """A cancel asked of a run on its record, as its lease's renewal delivers it: the run's first cancel, which an
-        in-process :meth:`cancel_job` may already have made (an operator's ``job_cancel`` asks both ways), so a run
-        already asked is left draining rather than cut.
+    def _asked_on_record(self, job_id: str, reason: str | None) -> None:
+        """A cancel request on a job's record, as its lease's renewal delivers it (each request once): a cancel of the
+        job, unless this process made it here already (``requested``), when the lease finding it is the same cancel.
 
-        :param job_id: The run.
+        :param job_id: The run, or the task.
         :ptype job_id: str
         :param reason: Why, as the request recorded it.
         :ptype reason: str | None
         """
-        if job_id not in self._asked:
+        if self._requested_here[job_id] > 0:
+            self._requested_here[job_id] -= 1
+            return
+        if job_id in self._tasks:
             self.cancel_job(job_id, reason=reason)
+        else:
+            self.cancel_task(job_id)
 
     async def shutdown(self, timeout: float = SHUTDOWN_SETTLE_TIMEOUT_S) -> list[str]:
         """Cancel all active jobs and wait for them to settle, the whole shutdown bounded by ``timeout``.
@@ -862,7 +876,7 @@ class EvalJobManager:
                 kind,
                 job_id,
                 scope_id,
-                cancel=lambda _reason: None if job_id in self._asked else self.cancel_task(job_id),
+                cancel=functools.partial(self._asked_on_record, job_id),
                 stop=lambda: self.cancel_task(job_id),
                 epoch=epoch,
             )
@@ -908,7 +922,7 @@ class EvalJobManager:
         task = self._detached.get(job_id)
         return task is not None and not task.done()
 
-    def cancel_task(self, job_id: str) -> bool:
+    def cancel_task(self, job_id: str, *, requested: bool = False) -> bool:
         """Request cancellation of a :meth:`start_task` task — request-then-converge, as :meth:`cancel_job` is.
 
         The task's work records its own ending as it unwinds (a generation writes a ``cancelled``
@@ -916,6 +930,9 @@ class EvalJobManager:
 
         :param job_id: The task's id, as :meth:`start_task` returned it.
         :ptype job_id: str
+        :param requested: The caller also wrote this cancel on the task's record, so its lease, finding it, does not
+            deliver it a second time.
+        :ptype requested: bool
         :return: True when cancellation was requested; False when no such task is tracked or it has
             already ended.
         :rtype: bool
@@ -923,9 +940,9 @@ class EvalJobManager:
         task = self._detached.get(job_id)
         if task is None or task.done():
             return False
-        # Each cancel is the task's: a launch's work drains its runs on the first and cuts them on a further one. A
-        # cancel asked on its record is delivered only where none was made here (its lease's ``cancel`` above).
-        self._asked.add(job_id)
+        if requested:
+            self._requested_here[job_id] += 1
+        # Each cancel is the task's: a launch's work drains its runs on the first and cuts them on a further one.
         task.cancel()
         return True
 
@@ -1003,7 +1020,7 @@ class EvalJobManager:
             # the work's own record already written.
             self._detached.pop(job_id, None)
             self._task_keys.pop(job_id, None)
-            self._asked.discard(job_id)
+            self._requested_here.pop(job_id, None)
             if self._leases is not None:
                 self._leases.release(job_id)
                 self._leases.forget(job_id)
@@ -1101,7 +1118,7 @@ class EvalJobManager:
                         RUN_JOB,
                         run.id,
                         run.scope_id,
-                        cancel=functools.partial(self._asked_to_cancel, run.id),
+                        cancel=functools.partial(self._asked_on_record, run.id),
                         stop=functools.partial(self._fence, run.id),
                         epoch=run.lease.epoch if run.lease is not None else 0,
                     )
@@ -1384,6 +1401,7 @@ class EvalJobManager:
             self._cancel_reasons.pop(run_id, None)
             self._drains.pop(run_id, None)
             self._asked.discard(run_id)
+            self._requested_here.pop(run_id, None)
             self._work_ran.pop(run_id, None)
             if self._leases is not None:
                 self._leases.forget(run_id)

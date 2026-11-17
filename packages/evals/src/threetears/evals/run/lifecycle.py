@@ -171,7 +171,7 @@ def cancel_run(
         raise NotFoundError("run", run_id, remedy=FIND_RUN)
     require_cancellable(run)
     request_job_cancel(storage, run_id, scope_id, reason=reason)
-    if job_manager is not None and job_manager.cancel_job(run_id, reason=reason):
+    if job_manager is not None and job_manager.cancel_job(run_id, reason=reason, requested=True):
         log.info("eval.cancel_run requested run=%s scope=%s reason=%s", run_id, scope_id, reason or "(none)")
     else:
         log.info(
