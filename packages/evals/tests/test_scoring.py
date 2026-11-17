@@ -58,9 +58,11 @@ from threetears.evals.kernel.scoring import (
     summarize_completeness,
 )
 from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.models import (
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
+    AsyncDeliveryStatus,
     EvalResult,
     EvalRun,
     LatencyMetrics,
@@ -73,6 +75,7 @@ from packages.evals.tests.factories import (
     make_eval_result,
     make_eval_run,
     make_scored_result,
+    memory_storage,
     result_capture_defaults,
 )
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
@@ -89,7 +92,7 @@ class TestPercentileRefusesTheOtherScale:
     """The failure this guard exists for returns a number, which is why it must raise."""
 
     @pytest.mark.parametrize("pct", [0.05, 0.5, 0.95, 0.99, 1.0])
-    def test_a_zero_to_one_quantile_is_refused_by_name(self, pct) -> None:
+    def test_a_zero_to_one_quantile_is_refused_by_name(self, pct: float) -> None:
         with pytest.raises(ValueError, match=r"\[0, 1\] scale"):
             percentile(_SORTED, pct)
 
@@ -117,12 +120,12 @@ class TestPercentileRefusesTheOtherScale:
         assert "bundle" in str(excinfo.value), "the message must name where the [0, 1] one lives"
 
     @pytest.mark.parametrize("pct", [-1.0, 100.5, 1000.0])
-    def test_a_quantile_outside_the_scale_entirely_is_refused(self, pct) -> None:
+    def test_a_quantile_outside_the_scale_entirely_is_refused(self, pct: float) -> None:
         with pytest.raises(ValueError, match=r"\[0, 100\]"):
             percentile(_SORTED, pct)
 
     @pytest.mark.parametrize("pct", [0.0, 1.5, 50.0, 95.0, 100.0])
-    def test_the_legitimate_boundaries_are_not_swept_up_by_the_guard(self, pct) -> None:
+    def test_the_legitimate_boundaries_are_not_swept_up_by_the_guard(self, pct: float) -> None:
         """The refused band is ``(0, 1]``, so both ends of the real scale still answer.
 
         0.0 and 100.0 are the scale's own endpoints and a guard that swallowed either would be
@@ -160,7 +163,7 @@ class TestPercentileIsNearestRank:
         assert bundle_p95 is None
 
 
-def _bundle_percentiles(costs: list[float]) -> tuple[float, float]:
+def _bundle_percentiles(costs: list[float]) -> tuple[float | None, float | None]:
     """The p50 and p95 the analysis bundle reports for one run whose results cost ``costs``.
 
     Read off an assembled bundle's telemetry rollup, which is where the bundle's own percentile
@@ -330,7 +333,7 @@ def test_the_denominator_comes_from_the_run_not_from_the_cells_it_was_handed() -
 # =============================================================================
 
 
-def _infra_result(test_case_id="tc1", model="m1", run_id="r1", k=1):
+def _infra_result(test_case_id: str = "tc1", model: str = "m1", run_id: str = "r1", k: int = 1) -> EvalResult:
     """A result that failed for an INFRA reason (excluded from scoring)."""
     return make_scored_result(
         test_case_id=test_case_id, model=model, run_id=run_id, k=k, infra_error="cell timeout: boom"
@@ -559,7 +562,7 @@ def test_compute_pass_hat_k_all_infra_run_reported_with_zero_measured_cases() ->
 
 
 @pytest.mark.parametrize("judge_model", [None, "judge-model"])
-def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_model) -> None:
+def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_model: str | None) -> None:
     """A result with no scoreable outcomes cannot pass: unmeasured with no judge (#688), a fail under one.
 
     With no goal-state check and no judge there is nothing for pass^k to conjoin, so the attempt is left out
@@ -691,7 +694,9 @@ def test_pass_hat_k_at_a_depth_the_curve_never_reached_is_unmeasured() -> None:
 # =============================================================================
 
 
-def _pooled_result(run_id: str, k: int, passed: bool, *, test_case_id: str = "tc1", variant_key: str = "vk-1"):
+def _pooled_result(
+    run_id: str, k: int, passed: bool, *, test_case_id: str = "tc1", variant_key: str = "vk-1"
+) -> EvalResult:
     """A result of ``run_id`` at iteration ``k`` for one variant, passing or failing its one check."""
     result = make_scored_result(test_case_id=test_case_id, run_id=run_id, k=k, goal_passes=(passed,))
     return result.model_copy(update={"variant_key": variant_key})
@@ -747,7 +752,7 @@ class TestPoolingAcrossRuns:
             pool_pass_hat_k([], cell_of_run={}, k=0, catalog={})
 
 
-def _stamped(run, profile):
+def _stamped(run: EvalRun, profile: HostProfile) -> EvalRun:
     """``run`` as the launch stamps it: its context identity, derived now, written onto it."""
     identity = derive_context_identity(run, profile)
     return run.model_copy(
@@ -932,7 +937,16 @@ class TestTheCellARunsAttemptsPoolUnder:
 # =============================================================================
 
 
-def _lat_result(model="m1", run_id="r1", k=1, total=100.0, llm=60.0, tool=20.0, latency: bool = True, **kwargs):
+def _lat_result(
+    model: str = "m1",
+    run_id: str = "r1",
+    k: int = 1,
+    total: float | None = 100.0,
+    llm: float | None = 60.0,
+    tool: float | None = 20.0,
+    latency: bool = True,
+    **kwargs: Any,
+) -> EvalResult:
     """EvalResult with (or without) LatencyMetrics for summary tests.
 
     ``kwargs`` carries the error fields ``classify_result`` reads, so a test can
@@ -1145,7 +1159,7 @@ _ASYNC_MEASURES = (
 
 
 def _delivery(
-    elapsed_ms: float | None = None, *, substituted: bool = False, status: str = "delivered"
+    elapsed_ms: float | None = None, *, substituted: bool = False, status: AsyncDeliveryStatus = "delivered"
 ) -> AsyncDelivery:
     """One piece of background work; a failed one carries its error, as the model requires."""
     return AsyncDelivery(
@@ -1214,6 +1228,15 @@ def test_async_summary_drops_an_infra_excluded_cell_as_the_latency_summary_does(
     assert (row["async_deliveries"], row["async_delivery_mean_elapsed_ms"]) == (1, 100.0)
 
 
+def _stored(run: EvalRun, results: list[EvalResult]) -> EvalStorage:
+    """An engine store holding ``run`` and its ``results``: the reads a run summary makes, every one of them."""
+    storage, _ = memory_storage()
+    storage.save_eval_run(run)
+    for result in results:
+        storage.save_eval_result(result)
+    return storage
+
+
 def test_a_toy_host_run_summary_carries_all_six_async_measures() -> None:
     """The run summary every host reads carries the engine's rollup, with the values the descriptors state."""
     run = make_eval_run(status="completed")
@@ -1228,10 +1251,8 @@ def test_a_toy_host_run_summary_carries_all_six_async_measures() -> None:
         )
         for i, t in enumerate(durations)
     ]
-    storage = ToyhostStorage([run], {run.id: results})
-
     summary = run_summary(
-        storage,
+        _stored(run, results),
         run.id,
         run.scope_id,
         load_run_listed=lambda _id, _scope: run,
@@ -1257,7 +1278,7 @@ def test_a_toy_host_run_with_no_async_tools_carries_none_of_them() -> None:
     results = [make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, model="m1")]
 
     summary = run_summary(
-        ToyhostStorage([run], {run.id: results}),
+        _stored(run, results),
         run.id,
         run.scope_id,
         load_run_listed=lambda _id, _scope: run,
@@ -1275,7 +1296,12 @@ def test_a_toy_host_run_with_no_async_tools_carries_none_of_them() -> None:
 
 
 def _cost_result(
-    model: str = "m1", run_id: str = "r1", k: int = 1, cost: float = 0.01, prod_cost: float | None = None, **kwargs: Any
+    model: str = "m1",
+    run_id: str = "r1",
+    k: int = 1,
+    cost: float | None = 0.01,
+    prod_cost: float | None = None,
+    **kwargs: Any,
 ) -> EvalResult:
     """EvalResult carrying a cost for the cost-summary tests.
 
@@ -1505,7 +1531,14 @@ def test_compute_cost_summary_empty_results() -> None:
 # =============================================================================
 
 
-def _dim_result(model="m1", run_id="r1", k=1, dims: dict[str, int] | None = None, test_case_id="tc1", **kwargs):
+def _dim_result(
+    model: str = "m1",
+    run_id: str = "r1",
+    k: int = 1,
+    dims: dict[str, int] | None = None,
+    test_case_id: str = "tc1",
+    **kwargs: Any,
+) -> EvalResult:
     """EvalResult carrying rubric_scores for the dimension-summary tests.
 
     ``kwargs`` carries the error fields ``classify_result`` reads
@@ -1709,7 +1742,7 @@ class TestResultComposite:
 class TestCompositeSummary:
     """``compute_composite_summary`` — per-(model, run) mean over cases."""
 
-    def _r(self, tc: str, score: int, **kw: Any):
+    def _r(self, tc: str, score: int, **kw: Any) -> EvalResult:
         return make_eval_result(
             eval_run_id="r",
             model="m",
@@ -1803,7 +1836,7 @@ class TestAJudgeThatCouldNotTell:
     """A rubric dim answered "can't tell" leaves pass^k and the composite; a scored one keeps it in."""
 
     @staticmethod
-    def _pair():
+    def _pair() -> tuple[EvalResult, EvalResult]:
         told = make_eval_result(
             test_case_id="tc-told",
             model="m1",

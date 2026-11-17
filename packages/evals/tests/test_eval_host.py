@@ -338,7 +338,7 @@ async def test_the_launch_stamps_the_requests_cassette_mode_and_corpus_with_no_l
     ],
     ids=["replay-without-corpus", "corpus-without-replay", "corpus-run-missing"],
 )
-async def test_a_replay_corpus_the_launch_cannot_serve_is_refused_before_anything_runs(arguments, said) -> None:
+async def test_a_replay_corpus_the_launch_cannot_serve_is_refused_before_anything_runs(arguments, said: str) -> None:
     host, storage, handed = off_loop(_launching_with, _wired)
 
     with pytest.raises(ValidationFailedError, match=said):
@@ -465,7 +465,9 @@ def _other_template_case() -> EvalTestCase:
         "generation-unasked",
     ],
 )
-async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(overrides, arguments, said) -> None:
+async def test_a_wiring_that_contradicts_its_request_is_refused_and_creates_no_run(
+    overrides, arguments, said: str
+) -> None:
     """Where the request and the wiring speak to one fact they must agree, or the run records one thing and runs another."""
     host, storage, _handed = off_loop(_launching_with, lambda request, world: _wired(request, world, **overrides()))
 

@@ -600,7 +600,7 @@ def test_a_naive_stamp_beside_an_aware_one_yields_no_duration_rather_than_a_wron
         ),
     ],
 )
-def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, why) -> None:
+def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, why: str) -> None:
     """The three failures read alike: the reason each stamp pair yielded no duration was swallowed."""
     windows = [
         _window("earlier", *first),
@@ -726,7 +726,7 @@ def test_a_run_set_too_small_to_pair_classifies_as_neither() -> None:
         (None, measurement_windows.UNCOMPUTABLE_GAP_CLAUSE),
     ],
 )
-def test_a_gap_renders_as_two_significant_units(seconds, rendered) -> None:
+def test_a_gap_renders_as_two_significant_units(seconds: int | None, rendered) -> None:
     """Compact and unit-word-free, so a list of pairs reads as numbers to weigh."""
     assert measurement_windows.format_window_gap(seconds) == rendered
 

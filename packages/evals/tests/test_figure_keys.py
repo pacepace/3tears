@@ -238,7 +238,7 @@ class TestAPathIsMatchedNotSplit:
         assert _figure("reasoning_ratio.qwen3.8-flash", "pct") == "68%"
         assert _figure("reading.qwen3.8-flash.change", "pts") == "-7.6"
 
-    def test_a_dimension_key_with_dots_resolves(self):
+    def test_a_dimension_key_with_dots_resolves(self) -> None:
         assert _figure("judged.persona.holds_character.1017", "pct") == "86.6%"
         assert _figure("contrast.1017.persona.holds_character.delta", "pts") == "-4.7"
 
@@ -324,11 +324,11 @@ class TestAPathIsMatchedNotSplit:
 
 
 class TestFilters:
-    def test_pct_reads_a_share_and_a_percent_alike(self):
+    def test_pct_reads_a_share_and_a_percent_alike(self) -> None:
         assert _figure("judged.persona.holds_character.September", "pct") == "91.5%"
         assert _figure("judged.persona.prod", "pct", name="r4") == "91.7%"
 
-    def test_pts_is_signed_and_one_decimal_at_most(self):
+    def test_pts_is_signed_and_one_decimal_at_most(self) -> None:
         # Kairo's pass rate reads to a tenth: its compared intervals set the measure's digits (owner ruling), two
         # significant figures of the narrowest one's width (owner ruling, 2026-11-14).
         assert _figure("reading.qwen3.8-flash.change", "pts") == "-7.6"
@@ -336,7 +336,7 @@ class TestFilters:
         assert _figure("contrast.cor.facts.delta", "pts", name="r4") == "+1.0"
         assert _figure("contrast.f64.task.delta", "pts", name="r4") == "+0.2"
 
-    def test_abs_drops_the_sign(self):
+    def test_abs_drops_the_sign(self) -> None:
         assert _figure("reading.qwen3.8-flash.change", "abs|pts") == "7.6"
         assert _figure("reading.qwen3.8-flash.interval", "abs|pts") == "3.4 to 10.8"
 
@@ -400,7 +400,7 @@ class TestFilters:
     def test_pct10_rounds_to_the_nearest_ten(self) -> None:
         assert _figure("strata.off_lane.loss_share", "pct10") == "50%"
 
-    def test_interval_joins_with_to(self):
+    def test_interval_joins_with_to(self) -> None:
         assert _figure("reading.1017.interval", "interval") == "-5.8 to +1.1"
         ci = _figure("measure.production_replicating_cost.September.ci", "interval|usd_per_1k")
         assert ci.startswith("$1.7") and ci.endswith(" per 1,000 replies to $2.03 per 1,000 replies")
@@ -425,7 +425,7 @@ class TestFilters:
             ("judge.model", "pct", "takes no filter"),
         ],
     )
-    def test_a_filter_that_does_not_suit_the_figure_is_refused(self, path, filters, why) -> None:
+    def test_a_filter_that_does_not_suit_the_figure_is_refused(self, path: str, filters: str, why: str) -> None:
         with pytest.raises(UnresolvableReference, match=why):
             _figure(path, filters)
 
@@ -439,7 +439,7 @@ class TestFilters:
             ("|pct", "has no path"),
         ],
     )
-    def test_a_malformed_key_is_refused(self, inner, why) -> None:
+    def test_a_malformed_key_is_refused(self, inner: str, why: str) -> None:
         with pytest.raises(UnresolvableReference, match=why):
             parse_key(inner)
 
@@ -509,7 +509,7 @@ class TestDerivedValues:
         assert per_arm["1017"] == pytest.approx(0.5281, abs=1e-4)
         assert resolve("strata.off_lane.loss_share", report_input).value == pytest.approx(per_arm["qwen3.8-flash"])
 
-    def test_a_flip_margin_is_the_readings_worst_drop(self):
+    def test_a_flip_margin_is_the_readings_worst_drop(self) -> None:
         # At the pass rate's tenth (owner ruling, set digits; the precision rule, 2026-11-14): 10.8 and 5.8 as they are.
         assert _figure("flip_margin.qwen3.8-flash") == "10.8"
         assert _figure("flip_margin.1017") == "5.8"

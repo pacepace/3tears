@@ -61,42 +61,42 @@ def registry() -> WorldRegistry:
 
 
 class TestTheAuthoringRuleOverProse:
-    def test_contains_over_message_content_is_refused(self, registry) -> None:
+    def test_contains_over_message_content_is_refused(self, registry: WorldRegistry) -> None:
         refused = world_prose_matches('contains(state.chat.messages[-1].content, "kitchen")', registry)
         assert [match.operand for match in refused] == [("chat", "messages", "[]", "content")]
         assert refused[0].predicate == "contains"
 
-    def test_contains_over_a_structured_list_is_still_accepted(self, registry) -> None:
+    def test_contains_over_a_structured_list_is_still_accepted(self, registry: WorldRegistry) -> None:
         assert world_prose_matches('contains(state.shop.cart, "Blue Kettle")', registry) == ()
 
-    def test_equality_against_a_literal_over_prose_is_refused(self, registry) -> None:
+    def test_equality_against_a_literal_over_prose_is_refused(self, registry: WorldRegistry) -> None:
         refused = world_prose_matches('state.chat.messages[0].content == "hello"', registry)
         assert [match.predicate for match in refused] == ["equality"]
 
-    def test_emptiness_over_prose_is_accepted(self, registry) -> None:
+    def test_emptiness_over_prose_is_accepted(self, registry: WorldRegistry) -> None:
         """Whether anything was written is structure, not a reading of what was written."""
         assert world_prose_matches('state.chat.messages[0].content == ""', registry) == ()
         assert world_prose_matches("state.chat.messages.length >= 1", registry) == ()
 
-    def test_a_non_prose_field_of_the_same_item_is_accepted(self, registry) -> None:
+    def test_a_non_prose_field_of_the_same_item_is_accepted(self, registry: WorldRegistry) -> None:
         assert world_prose_matches('contains(state.chat.messages[-1].author, "bob")', registry) == ()
 
-    def test_it_inside_a_generator_resolves_to_the_iterable_it_binds(self, registry) -> None:
+    def test_it_inside_a_generator_resolves_to_the_iterable_it_binds(self, registry: WorldRegistry) -> None:
         refused = world_prose_matches('any(it.content == "hi" for it in state.chat.messages)', registry)
         assert [match.operand for match in refused] == [("chat", "messages", "[]", "content")]
         assert world_prose_matches('any(it.title == "X" for it in state.shop.cart)', registry) == ()
 
-    def test_membership_in_an_array_of_prose_strings_is_refused(self, registry) -> None:
+    def test_membership_in_an_array_of_prose_strings_is_refused(self, registry: WorldRegistry) -> None:
         """Matching a literal against members that are prose is equality over prose."""
         assert len(world_prose_matches('contains(state.chat.replies, "ok")', registry)) == 1
 
-    def test_a_path_naming_no_dimension_is_left_to_the_vocabulary_gate(self, registry) -> None:
+    def test_a_path_naming_no_dimension_is_left_to_the_vocabulary_gate(self, registry: WorldRegistry) -> None:
         assert world_prose_matches('contains(state.nowhere.at_all, "x")', registry) == ()
 
     def test_a_host_declaring_no_world_refuses_nothing(self) -> None:
         assert world_prose_matches('contains(state.chat.messages[-1].content, "kitchen")', None) == ()
 
-    def test_a_malformed_expression_raises(self, registry) -> None:
+    def test_a_malformed_expression_raises(self, registry: WorldRegistry) -> None:
         with pytest.raises(DSLError):
             world_prose_matches("contains(state.chat.messages[-1].content, lambda: 1)", registry)
 

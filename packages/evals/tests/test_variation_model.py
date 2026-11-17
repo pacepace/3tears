@@ -379,7 +379,7 @@ async def test_the_writer_enters_no_identity() -> None:
     ],
     ids=["generation-needs-a-writer", "a-writer-for-no-generation", "a-writer-for-no-llm-axis", "a-writer-alone"],
 )
-async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spend(axes, arguments, said) -> None:
+async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spend(axes, arguments, said: str) -> None:
     template = _template(*axes)
     host, storage, clients, handed = off_loop(_generating_host, template)
 
@@ -422,7 +422,7 @@ async def test_a_generation_recording_another_writer_than_the_one_named_is_refus
     [({"n_variations": 2}, "cannot honour n_variations=2"), ({"variation_model": WRITER}, "generates none")],
     ids=["n_variations", "variation_model"],
 )
-async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, said) -> None:
+async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, said: str) -> None:
     fixture = off_loop(ops_fixture)
     launched = LaunchArguments(
         template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=[RUN_MODELS[0]], **arguments
@@ -437,7 +437,7 @@ async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, 
     [({"n_variations": 2}, "cannot honour n_variations=2"), ({"variation_model": WRITER}, "generates none")],
     ids=["n_variations", "variation_model"],
 )
-async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(arguments, said) -> None:
+async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(arguments, said: str) -> None:
     fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
     call = {
@@ -689,7 +689,7 @@ async def test_a_generating_arm_of_a_kind_that_plans_nothing_is_unpriceable() ->
     ],
     ids=["more-cases-than-planned", "another-model-than-named"],
 )
-async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said) -> None:
+async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said: str) -> None:
     template = _template(ENUM_AXIS)
     host, storage, _clients, _handed = off_loop(_generating_host, template, **plan)
 
@@ -708,7 +708,7 @@ async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said) 
         ({"case_count": 1, "candidate_model": "m", "simulator_model": " "}, "simulator_model is blank"),
     ],
 )
-def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said) -> None:
+def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said: str) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPlan(**{"judge": None, "simulator_model": None, **bad})
 
@@ -721,7 +721,7 @@ def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said) -> None:
         ({"predicted_usd": 1.0, "basis": "  "}, "basis is blank"),
     ],
 )
-def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad, said) -> None:
+def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad, said: str) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPrice(**bad)
 

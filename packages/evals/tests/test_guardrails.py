@@ -38,7 +38,9 @@ from threetears.evals.kernel.metrics import MetricDescriptor
 from threetears.evals.kernel.scoring import compute_composite_summary, compute_pass_hat_k, result_composite
 from packages.evals.tests.factories import make_eval_result
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
-from packages.evals.tests.guardrail_support import BOUNDARY, CAPABILITY, two_arm_bundle
+from packages.evals.tests.guardrail_support import BOUNDARY, CAPABILITY, Scored, two_arm_bundle
+from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
+from threetears.evals.schema.models import EvalResult
 
 N = 15
 
@@ -52,7 +54,7 @@ GUARDRAIL_LOST = ([1] * N, [0] * N)
 GUARDRAIL_AT_CEILING = ([1] * N, [1] * N)
 
 
-def _scored(capability: tuple[list[int], list[int]], boundary: tuple[list[int], list[int]]):
+def _scored(capability: tuple[list[int], list[int]], boundary: tuple[list[int], list[int]]) -> list[Scored]:
     return [(CAPABILITY, "capability", capability), (BOUNDARY, "boundary", boundary)]
 
 
@@ -60,7 +62,7 @@ def _scored(capability: tuple[list[int], list[int]], boundary: tuple[list[int], 
 
 
 class TestABoundaryScoreIsNeverAveragedWithCapability:
-    def _result(self, *scores: RubricScore):
+    def _result(self, *scores: RubricScore) -> EvalResult:
         return make_eval_result(goal_state_outcomes=[], rubric_scores=list(scores))
 
     def test_the_composite_reads_capability_scores_only(self) -> None:
@@ -186,7 +188,7 @@ def _with_guardrail_measure(*, margin: float | None, value_range: tuple[float, f
 
 class TestAMeasureDeclaredAGuardrail:
     def test_a_guardrail_has_a_better_end_and_no_merit_axis(self) -> None:
-        base = {
+        base: dict[str, object] = {
             "name": "x",
             "data_type": "numeric",
             "transferability_class": "mechanical",
@@ -195,15 +197,17 @@ class TestAMeasureDeclaredAGuardrail:
             "guardrail": True,
         }
         with pytest.raises(ValidationError, match="needs higher_is_better"):
-            MetricDescriptor(**base)
+            MetricDescriptor.model_validate(base)
         with pytest.raises(ValidationError, match="never optimized"):
-            MetricDescriptor(**base, higher_is_better=False, merit_axis="cost")
-        assert MetricDescriptor(**base, higher_is_better=False).guardrail
-        assert not MetricDescriptor(**{**base, "guardrail": False}).guardrail, "existing measures are unchanged"
+            MetricDescriptor.model_validate({**base, "higher_is_better": False, "merit_axis": "cost"})
+        assert MetricDescriptor.model_validate({**base, "higher_is_better": False}).guardrail
+        assert not MetricDescriptor.model_validate({**base, "guardrail": False}).guardrail, (
+            "existing measures are unchanged"
+        )
 
     def _bundle(
         self, contrast_calls: list[float], *, margin: float | None, value_range: tuple[float, float] | None = None
-    ):
+    ) -> AnalysisContextBundle:
         control = [{"destructive_calls": 0.0} for _ in range(N)]
         contrast = [{"destructive_calls": value} for value in contrast_calls]
         return two_arm_bundle(

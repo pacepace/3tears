@@ -56,7 +56,7 @@ class TestEvidenceRowsCarryTheirBasis:
             )
 
     @pytest.mark.parametrize("missing", ["n", "dispersion", "reading"])
-    def test_n_dispersion_and_the_reading_kind_are_required(self, missing) -> None:
+    def test_n_dispersion_and_the_reading_kind_are_required(self, missing: str) -> None:
         fields = {
             "cell_ref": "v:a",
             "measure_id": "cost_usd",

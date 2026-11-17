@@ -160,6 +160,6 @@ def test_a_ledger_declaring_none_with_a_ceiling_is_refused() -> None:
 
 
 @pytest.mark.parametrize("ceiling", [0, -1])
-def test_a_ledger_with_a_ceiling_below_one_and_not_declaring_none_is_refused(ceiling) -> None:
+def test_a_ledger_with_a_ceiling_below_one_and_not_declaring_none_is_refused(ceiling: int) -> None:
     with pytest.raises(ValueError, match="at least one call"):
         MeteredCallLedger("run-1", ceiling)

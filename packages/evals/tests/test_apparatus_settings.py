@@ -195,7 +195,7 @@ def test_the_component_hashes_the_values_and_their_types() -> None:
     ids=["another-apparatus", "the-engines-apparatus", "a-lever", "a-list", "none", "not-finite"],
 )
 async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_before_its_launcher_runs(
-    settings, said
+    settings, said: str
 ) -> None:
     host, storage = off_loop(_launching)
     handed: list[LaunchRequest] = []
@@ -226,7 +226,9 @@ async def test_a_setting_the_kind_does_not_read_or_cannot_be_stored_is_refused_b
     ],
     ids=["undeclared", "the-engines-own", "a-lever", "a-label"],
 )
-def test_a_kind_claiming_a_setting_the_host_does_not_declare_as_its_own_apparatus_is_refused(claimed, said) -> None:
+def test_a_kind_claiming_a_setting_the_host_does_not_declare_as_its_own_apparatus_is_refused(
+    claimed: str, said: str
+) -> None:
     host, _storage = _launching()
     (launchable,) = host.kinds.values()
 

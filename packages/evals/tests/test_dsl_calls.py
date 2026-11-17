@@ -97,7 +97,7 @@ class TestEvaluation:
             'calls("speechsay").length > 0',
         ],
     )
-    def test_a_spec_the_gate_could_not_name_is_refused_at_parse(self, expression) -> None:
+    def test_a_spec_the_gate_could_not_name_is_refused_at_parse(self, expression: str) -> None:
         """A computed or dotless spec would leave the gate unable to find the action's schema."""
         with pytest.raises(DSLError):
             parse(expression)
@@ -126,11 +126,11 @@ class TestTheExtractor:
 
 class TestTheCallParameterGate:
     @pytest.mark.parametrize("parameter", ["position", "mood", "kind", "speed", "labels"])
-    def test_a_value_the_schema_closes_may_be_compared(self, parameter) -> None:
+    def test_a_value_the_schema_closes_may_be_compared(self, parameter: str) -> None:
         assert _refusals(f'any(it.{parameter} == "x" for it in calls("speech.say"))') == []
 
     @pytest.mark.parametrize("parameter", ["text", "tags", "note"])
-    def test_free_text_may_not_be_compared(self, parameter) -> None:
+    def test_free_text_may_not_be_compared(self, parameter: str) -> None:
         assert _refusals(f'any(it.{parameter} == "x" for it in calls("speech.say"))') == [
             f"speech.say's {parameter} is free text"
         ]
@@ -211,7 +211,7 @@ class TestUndefinedCallReferences:
             'last_call_was("speech.sya")',
         ],
     )
-    def test_every_call_builtin_refuses_an_action_the_tool_does_not_have(self, expression) -> None:
+    def test_every_call_builtin_refuses_an_action_the_tool_does_not_have(self, expression: str) -> None:
         assert _undefined(expression) == ("speech has no action 'sya' (its actions: hush, say)",)
 
     @pytest.mark.parametrize(
@@ -222,7 +222,7 @@ class TestUndefinedCallReferences:
             'any(it.txet == "" for it in calls("speech.say"))',
         ],
     )
-    def test_a_parameter_the_schema_does_not_declare_is_refused_whether_compared_or_not(self, expression) -> None:
+    def test_a_parameter_the_schema_does_not_declare_is_refused_whether_compared_or_not(self, expression: str) -> None:
         assert _undefined(expression) == ("speech.say declares no parameter txet",)
 
     @pytest.mark.parametrize(
@@ -235,7 +235,7 @@ class TestUndefinedCallReferences:
             'any(it.position == "head" for it in calls("speech.say"))',
         ],
     )
-    def test_names_the_host_defines_pass(self, expression) -> None:
+    def test_names_the_host_defines_pass(self, expression: str) -> None:
         assert _undefined(expression) == ()
 
     def test_a_tool_or_action_the_host_cannot_describe_passes_unverified(self) -> None:

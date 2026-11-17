@@ -12,35 +12,75 @@ which is also what makes a name-branching regression visible here rather than in
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
+from typing import Any
+
 import pytest
 
 from threetears.evals.kernel.host.profile import HostProfile
-from threetears.evals.kernel.host.world import Triggered, WorldDimension, WorldRegistrationError, WorldRegistry
+from threetears.evals.kernel.host.world import (
+    Evidence,
+    Triggered,
+    When,
+    WorldDimension,
+    WorldRegistrationError,
+    WorldRegistry,
+)
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.world import toyhost_world
 
 
-def _sound_dimension(**overrides: object) -> WorldDimension:
+#: The schema a sound dimension declares.
+_SOUND_SCHEMA: Mapping[str, Any] = {"type": "integer", "minimum": 0}
+
+
+def _sound_dimension(
+    *,
+    name: str = "shelf_stock",
+    schema: Mapping[str, Any] = _SOUND_SCHEMA,
+    matters: str = "restocking scenarios presume a depleted shelf and prove nothing against a full one",
+    carrier: str = "shelf_sensor",
+    seed: str | None = "h.seed",
+    read: str | None = "h.read",
+    perturb: str | None = None,
+    evidence: Evidence = "machine",
+    perceived_by: tuple[str, ...] = (),
+    when: When = "initial",
+) -> WorldDimension:
     """A dimension that registers cleanly, so a test can break exactly one thing about it.
 
-    :param **overrides: Fields to replace.
-    :ptype overrides: object
+    Every field is a keyword whose default is the sound value; a test passes the one it breaks.
+
     :return: The dimension.
     :rtype: WorldDimension
     """
-    fields: dict[str, object] = {
-        "name": "shelf_stock",
-        "schema": {"type": "integer", "minimum": 0},
-        "matters": "restocking scenarios presume a depleted shelf and prove nothing against a full one",
-        "carrier": "shelf_sensor",
-        "seed": "h.seed",
-        "read": "h.read",
-    }
-    fields.update(overrides)
-    return WorldDimension(**fields)  # type: ignore[arg-type]
+    return WorldDimension(
+        name=name,
+        schema=schema,
+        matters=matters,
+        carrier=carrier,
+        seed=seed,
+        read=read,
+        perturb=perturb,
+        evidence=evidence,
+        perceived_by=perceived_by,
+        when=when,
+    )
 
 
-_SOUND_BINDINGS = {"h.seed": lambda value: None, "h.read": lambda: 0, "h.view": lambda **_: {}}
+def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
+    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
+
+    The tests that use it assert the registry refuses that value: the bad value is what they exercise.
+    """
+    return function
+
+
+_SOUND_BINDINGS: dict[str, Callable[..., object]] = {
+    "h.seed": lambda value: None,
+    "h.read": lambda: 0,
+    "h.view": lambda **_: {},
+}
 
 
 class TestRegistrationRefusals:
@@ -375,7 +415,7 @@ class TestRegistrationRefusals:
         caused it.
         """
         with pytest.raises(WorldRegistrationError, match="shelf_stock's schema is not a mapping"):
-            _sound_dimension(schema="integer")
+            _unchecked(_sound_dimension)(schema="integer")
 
     def test_two_dimensions_of_one_name_are_refused(self) -> None:
         """The registry keys by name, so a duplicate would shadow rather than collide."""
@@ -402,7 +442,9 @@ class TestRegistrationRefusals:
         door — a handle that resolves to something that cannot be called.
         """
         with pytest.raises(WorldRegistrationError, match="binding 'h.read' is not callable"):
-            WorldRegistry([_sound_dimension()], bindings={"h.seed": lambda value: None, "h.read": "https://tv/state"})
+            _unchecked(WorldRegistry)(
+                [_sound_dimension()], bindings={"h.seed": lambda value: None, "h.read": "https://tv/state"}
+            )
 
     def test_every_defect_in_one_set_is_reported_at_once(self) -> None:
         """A host fixing its registrations sees the whole list, not one per construction."""
@@ -591,7 +633,9 @@ class TestTheBindingTable:
         """
         world, _state = toyhost_world()
 
-        world.bindings["toy.read_language"] = lambda: "leaked"
+        handed = world.bindings
+        assert isinstance(handed, dict), "the table a caller is handed is a mutable dict, so it can try"
+        handed["toy.read_language"] = lambda: "leaked"
 
         assert await world.call("toy.read_language") == "en"
 

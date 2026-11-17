@@ -338,7 +338,7 @@ class TestPairedChange:
         assert verdict.not_separated_reason is None
 
     @pytest.mark.parametrize("n_pairs", [2, 3, 6, 40])
-    def test_a_uniform_move_on_a_measure_with_no_range_is_not_separated_and_says_why(self, n_pairs) -> None:
+    def test_a_uniform_move_on_a_measure_with_no_range_is_not_separated_and_says_why(self, n_pairs: int) -> None:
         """With no range no test of the mean can call a uniform move, at any n: not separated, naming the remedy.
 
         Never ``regressed`` (the sign-flip reading called six pairs that), and never ``untested`` either: the rule
@@ -440,7 +440,7 @@ class TestPairedChange:
             ([1.0] * 4, [0.0] * 4, "not_separated"),
         ],
     )
-    def test_a_label_no_t_test_produced_reports_no_p(self, baseline, current, expected_label) -> None:
+    def test_a_label_no_t_test_produced_reports_no_p(self, baseline, current, expected_label: str) -> None:
         """The absence is the disclosure: it says the label did not come from a test."""
         verdict = paired_change(
             baseline, current, min_absolute_change=0.05, min_relative_change=0.0, higher_is_better=True
@@ -580,7 +580,7 @@ class TestEquivalence:
 
     @pytest.mark.parametrize(("n_pairs", "label"), [(11, "not_separated"), (12, "equivalent")])
     def test_identical_samples_on_a_declared_range_are_equivalent_once_the_bounded_test_rejects(
-        self, n_pairs, label
+        self, n_pairs: int, label: str
     ) -> None:
         """On a 0-1 range at margin 0.25, a hidden full drop in one case of four survives n agreeing cases 0.75^n of
         the time; the bounded test needs twelve (any valid test, eleven)."""
@@ -612,7 +612,7 @@ class TestTCriticalTwoSided:
         [(1, 12.706), (2, 4.303), (5, 2.571), (10, 2.228), (30, 2.042), (1000, 1.962)],
         ids=["df1", "df2", "df5", "df10", "df30", "df1000"],
     )
-    def test_matches_the_published_95_percent_table(self, df, expected) -> None:
+    def test_matches_the_published_95_percent_table(self, df: int, expected: float) -> None:
         assert t_critical_two_sided(0.95, df) == pytest.approx(expected, abs=0.005)
 
     def test_approaches_the_normal_multiplier_only_at_large_df(self) -> None:
@@ -624,7 +624,7 @@ class TestTCriticalTwoSided:
         assert t_critical_two_sided(0.99, 10) > t_critical_two_sided(0.95, 10)
 
     @pytest.mark.parametrize(("confidence", "df"), [(0.95, 0), (0.95, -1), (0.0, 5), (1.0, 5)])
-    def test_rejects_inputs_with_no_answer(self, confidence, df) -> None:
+    def test_rejects_inputs_with_no_answer(self, confidence: float, df: int) -> None:
         with pytest.raises(ValueError):
             t_critical_two_sided(confidence, df)
 

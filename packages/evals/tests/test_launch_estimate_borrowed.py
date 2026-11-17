@@ -95,7 +95,7 @@ def _quote(template_id: str, **overrides: Any) -> ArmQuote:
     return ArmQuote(**fields)
 
 
-def test_a_template_with_no_history_borrows_from_a_matching_sibling_and_says_so():
+def test_a_template_with_no_history_borrows_from_a_matching_sibling_and_says_so() -> None:
     host, storage = _priced_host()
     sibling = _template(storage, "dj_character_v1")
     new = _template(storage, "dj_character_v2")
@@ -121,7 +121,7 @@ def test_a_template_with_no_history_borrows_from_a_matching_sibling_and_says_so(
     assert history_launch_pricer(host)(_quote(new.id)).method_id == COST_PREDICTION_METHOD
 
 
-def test_siblings_that_cost_alike_give_a_band_no_nearer_its_centre_than_the_margin_and_say_why():
+def test_siblings_that_cost_alike_give_a_band_no_nearer_its_centre_than_the_margin_and_say_why() -> None:
     """A flat per-call rate gives every sibling result one cost; that bounds nothing about how a new case costs."""
     host, storage = _priced_host()
     sibling, new = _template(storage, "persona_a"), _template(storage, "persona_b")
@@ -137,7 +137,7 @@ def test_siblings_that_cost_alike_give_a_band_no_nearer_its_centre_than_the_marg
     assert "Neither end stands nearer the estimate than 3% of it" in price.basis
 
 
-def test_a_borrowed_band_says_wider_only_where_it_is():
+def test_a_borrowed_band_says_wider_only_where_it_is() -> None:
     """Cases whose means spread no further than their observations, and a band past the margin: as wide, said so."""
     borrowed = compute_borrowed_cost(
         _observations({"a": [0.002, 0.008], "b": [0.002, 0.008], "c": [0.002, 0.008], "d": [0.002, 0.008]}),
@@ -150,7 +150,7 @@ def test_a_borrowed_band_says_wider_only_where_it_is():
     assert "wider than" not in borrowed.band_basis and "Neither end" not in borrowed.band_basis
 
 
-def test_a_borrowed_band_is_wider_than_the_band_the_same_results_give_as_the_templates_own():
+def test_a_borrowed_band_is_wider_than_the_band_the_same_results_give_as_the_templates_own() -> None:
     host, storage = _priced_host()
     sibling, new = _template(storage, "persona_a"), _template(storage, "persona_b")
     _ran(storage, sibling.id, SIBLING_CASES)
@@ -171,7 +171,7 @@ def _unpriced(price: ArmPrice, new: EvalTemplate) -> str:
     return price.basis
 
 
-def test_a_template_with_no_sibling_reads_unpriced_saying_neither_it_nor_a_sibling_has_priced_history():
+def test_a_template_with_no_sibling_reads_unpriced_saying_neither_it_nor_a_sibling_has_priced_history() -> None:
     host, storage = _priced_host()
     new = _template(storage, "persona_b")
 
@@ -192,7 +192,7 @@ def test_a_template_with_no_sibling_reads_unpriced_saying_neither_it_nor_a_sibli
 )
 def test_a_sibling_differing_in_a_launch_condition_is_not_drawn_on_and_is_named(
     model: str, run_fields: dict[str, Any], named: str
-):
+) -> None:
     host, storage = _priced_host()
     sibling, new = _template(storage, "persona_a"), _template(storage, "persona_b")
     _ran_on(storage, sibling.id, model, **run_fields)
@@ -226,7 +226,7 @@ def _ran_on(storage: EvalStorage, template_id: str, model: str, **run_fields: An
 )
 def test_a_sibling_whose_template_spends_otherwise_is_not_drawn_on_and_says_what_differs(
     sibling_changes: dict[str, Any], new_changes: dict[str, Any], named: str
-):
+) -> None:
     host, storage = _priced_host()
     sibling = _template(storage, "persona_a", **sibling_changes)
     new = _template(storage, "persona_b", **new_changes)
@@ -240,7 +240,7 @@ def test_a_sibling_whose_template_spends_otherwise_is_not_drawn_on_and_says_what
     ) in basis, basis
 
 
-def test_a_sibling_template_of_another_kind_is_never_drawn_on():
+def test_a_sibling_template_of_another_kind_is_never_drawn_on() -> None:
     host, storage = _priced_host()
     sibling = _template(storage, "persona_a", candidate_kind="another-kind")
     new = _template(storage, "persona_b")
@@ -251,7 +251,7 @@ def test_a_sibling_template_of_another_kind_is_never_drawn_on():
     assert sibling.id not in basis
 
 
-def test_sibling_results_over_too_few_cases_bound_nothing():
+def test_sibling_results_over_too_few_cases_bound_nothing() -> None:
     """Six repeats of one case say how that case costs, not how a new case will."""
     host, storage = _priced_host()
     sibling, new = _template(storage, "persona_a"), _template(storage, "persona_b")
@@ -262,7 +262,7 @@ def test_sibling_results_over_too_few_cases_bound_nothing():
     assert "cover 1 case(s), too few to bound an arm whose cases are new" in basis, basis
 
 
-def test_a_template_with_priced_results_of_its_own_never_borrows_however_few():
+def test_a_template_with_priced_results_of_its_own_never_borrows_however_few() -> None:
     host, storage = _priced_host()
     sibling, new = _template(storage, "persona_a"), _template(storage, "persona_b")
     _ran(storage, sibling.id, SIBLING_CASES)
@@ -282,7 +282,7 @@ def _observations(costs_by_case: dict[str, list[float | None]]) -> list[CostObse
     ]
 
 
-def test_a_borrowed_estimate_brackets_its_point_estimate_and_counts_what_went_unpriced():
+def test_a_borrowed_estimate_brackets_its_point_estimate_and_counts_what_went_unpriced() -> None:
     borrowed = compute_borrowed_cost(
         _observations({"a": [0.004, 0.0042, None], "b": [0.006, 0.0058], "c": [0.005, 0.0051]}),
         n_cases=10,
@@ -299,7 +299,7 @@ def test_a_borrowed_estimate_brackets_its_point_estimate_and_counts_what_went_un
     assert predicted.method_id == BORROWED_PREDICTION_METHOD
 
 
-def test_nothing_priced_borrows_nothing():
+def test_nothing_priced_borrows_nothing() -> None:
     assert compute_borrowed_cost(_observations({"a": [None, None]}), n_cases=3, k_runs=1) is None
 
 
@@ -308,7 +308,7 @@ def test_nothing_priced_borrows_nothing():
 # =============================================================================
 
 
-async def test_a_new_template_launched_after_borrowing_lands_its_own_spend_inside_the_borrowed_band():
+async def test_a_new_template_launched_after_borrowing_lands_its_own_spend_inside_the_borrowed_band() -> None:
     """Every figure here is the toy extractor's own spend through a real launch, never a figure the test chose.
 
     The toy's scripts cost each document a fixed amount, so the new template's cases (the same three invoices under

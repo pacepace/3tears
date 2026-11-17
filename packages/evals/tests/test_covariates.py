@@ -432,7 +432,7 @@ class TestFoldPhaseTimings:
 
 class TestTurnsEndedByBudget:
     @pytest.mark.parametrize("count", [0, 2])
-    def test_a_watched_count_is_written_zero_included(self, count) -> None:
+    def test_a_watched_count_is_written_zero_included(self, count: int) -> None:
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=None, turns_ended_by_budget=count)
         assert covariates["turns_ended_by_budget"] == count
 

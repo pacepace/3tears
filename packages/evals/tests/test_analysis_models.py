@@ -12,6 +12,7 @@ over the same in-memory evals-repo stand-in the campaign tests use.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -27,6 +28,7 @@ from threetears.evals.kernel.campaign import (
     FindingResolution,
     GenerationProvenance,
     LeverCoverage,
+    ReadingKind,
     RunIndexEntry,
 )
 from threetears.evals.kernel.declaration import Aspect
@@ -42,6 +44,7 @@ from packages.evals.tests.factories import (
     memory_storage,
 )
 from packages.evals.tests.fixtures.report_inputs.misfits import reference_data
+from packages.evals.tests.json_support import json_at
 
 
 def _finding(title: str = "v", *, invalidates: list[int] | None = None, **overrides: Any) -> dict[str, Any]:
@@ -229,19 +232,20 @@ def test_analysis_model_round_trip_preserves_every_field() -> None:
     # The nested objects most easily dropped by a shape change survive intact.
     document = reloaded.document
     assert document is not None
-    assert len(document["findings"]) == 2
+    findings = json_at(document, "findings")
+    assert isinstance(findings, list) and len(findings) == 2
     assert reloaded.resolutions[0].evidence[0].value == 41000.0
-    assert document["findings"][0]["trials"] == ["T1", "T4"]
+    assert json_at(document, "findings", 0, "trials") == ["T1", "T4"]
     assert reloaded.aspects[0].bundle == analysis.aspects[0].bundle
     assert reloaded.aspects[0].bundle["campaign_id"] == "camp-1"
-    assert document["findings"][0]["caveats"] == [
+    assert json_at(document, "findings", 0, "caveats") == [
         {"kind": "sampling", "text": "k=1 on this template is noise-dominated."}
     ]
-    assert document["findings"][1]["invalidates"] == [0]
-    assert document["recommendation"][0]["rests_on"] == [0]
-    assert document["recommendation"][0]["floors_overridden"][0]["floor"] == "planning/cost_lower/*"
-    assert document["aspect_summaries"][0]["aspect"] == "planning"
-    assert document["next"][0]["leverage"] == "high"
+    assert json_at(document, "findings", 1, "invalidates") == [0]
+    assert json_at(document, "recommendation", 0, "rests_on") == [0]
+    assert json_at(document, "recommendation", 0, "floors_overridden", 0, "floor") == "planning/cost_lower/*"
+    assert json_at(document, "aspect_summaries", 0, "aspect") == "planning"
+    assert json_at(document, "next", 0, "leverage") == "high"
     assert reloaded.resolutions[0].evidence[0].aspect == "planning"
     assert reloaded.aspects[0].coverage.levers[0].n == 15
     assert reloaded.aspects[0].coverage.levers[0].dispersion == "±0.10"
@@ -272,7 +276,7 @@ def test_load_missing_analysis_returns_none() -> None:
 
 
 @pytest.mark.parametrize("blank_field", ["campaign_id", "subject_id", "behavior"])
-def test_analysis_required_reference_fields_reject_empty(blank_field) -> None:
+def test_analysis_required_reference_fields_reject_empty(blank_field: str) -> None:
     # campaign_id/subject_id/task are min_length=1 — a blank reference (the "FK
     # present" contract) must be rejected at construction, not stored empty.
     with pytest.raises(ValidationError):
@@ -321,7 +325,9 @@ def test_insight_storage_round_trip_preserves_every_field() -> None:
         ),
     ],
 )
-def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad) -> None:
+def test_an_authored_confidence_is_a_tier_and_nothing_else(
+    build: Callable[[object], object], bad: float | str | None
+) -> None:
     """What an insight stores as its confidence is a tier; a typed probability is refused."""
     with pytest.raises(ValidationError):
         build(bad)
@@ -346,7 +352,9 @@ def test_a_lever_carries_no_confidence_looked_up_from_its_status() -> None:
     """A lever carries no confidence: how firmly a reading stands is its evidence tier, so the key is refused."""
     assert "confidence" not in LeverCoverage.model_fields
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="unswept", confidence="low")
+        LeverCoverage.model_validate(
+            {"name": "l", "cells": 1, "k": 1, "n": 1, "dispersion": "±0", "status": "unswept", "confidence": "low"}
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -356,16 +364,16 @@ def test_a_lever_carries_no_confidence_looked_up_from_its_status() -> None:
 
 def test_lever_coverage_requires_n() -> None:
     with pytest.raises(ValidationError):
-        LeverCoverage(name="l", cells=1, k=1, dispersion="±0", status="measured")
+        LeverCoverage.model_validate({"name": "l", "cells": 1, "k": 1, "dispersion": "±0", "status": "measured"})
 
 
 def test_lever_coverage_requires_dispersion() -> None:
     with pytest.raises(ValidationError):
-        LeverCoverage(name="l", cells=1, k=1, n=1, status="measured")
+        LeverCoverage.model_validate({"name": "l", "cells": 1, "k": 1, "n": 1, "status": "measured"})
 
 
 @pytest.mark.parametrize("missing", ["n", "dispersion"])
-def test_a_resolved_evidence_row_requires_its_basis(missing) -> None:
+def test_a_resolved_evidence_row_requires_its_basis(missing: str) -> None:
     """A resolved number is rendered with its sample size and spread, so neither may be absent."""
     fields: dict[str, Any] = dict(
         aspect="planning", cell_ref="vk:ac", measure_id="elapsed_ms", value=1.0, n=3, dispersion="±1"
@@ -406,8 +414,8 @@ class TestTheMemoIsHeldAsStored:
         analysis = _make_analysis()
         reloaded = EvalAnalysis.from_dict(analysis.to_dict())
         assert reloaded.document is not None
-        assert reloaded.document["recommendation"][0]["rests_on"] == [0]
-        assert reloaded.document["findings"][1]["invalidates"] == [0]
+        assert json_at(reloaded.document, "recommendation", 0, "rests_on") == [0]
+        assert json_at(reloaded.document, "findings", 1, "invalidates") == [0]
 
 
 class TestAspectsAreOneEach:
@@ -438,12 +446,14 @@ class TestAspectsAreOneEach:
     "build",
     [
         pytest.param(
-            lambda: LeverCoverage(name="l", cells=1, k=1, n=1, dispersion="±0", status="guessed"),
+            lambda: LeverCoverage.model_validate(
+                {"name": "l", "cells": 1, "k": 1, "n": 1, "dispersion": "±0", "status": "guessed"}
+            ),
             id="LeverCoverage.status",
         ),
     ],
 )
-def test_literal_fields_reject_out_of_set_values(build) -> None:
+def test_literal_fields_reject_out_of_set_values(build: Callable[[], object]) -> None:
     with pytest.raises(ValidationError):
         build()
 
@@ -452,20 +462,24 @@ def test_literal_fields_reject_out_of_set_values(build) -> None:
     ("build", "field"),
     [
         (
-            lambda: EvalInsight(
-                scope_id="uni-1",
-                subject_id="s",
-                subject_kind="agent",
-                statement=None,
-                confidence="medium",
-                invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
+            lambda: EvalInsight.model_validate(
+                {
+                    "scope_id": "uni-1",
+                    "subject_id": "s",
+                    "subject_kind": "agent",
+                    "statement": None,
+                    "confidence": "medium",
+                    "invalidation_trigger": (
+                        "retired when its analysis is archived, or replaced by a later analysis restating it"
+                    ),
+                }
             ),
             "statement",
         ),
     ],
     ids=["EvalInsight.statement"],
 )
-def test_required_prose_still_rejects_null(build, field) -> None:
+def test_required_prose_still_rejects_null(build: Callable[[], object], field: str) -> None:
     """A required prose field refuses null.
 
     Where the text is the claim itself, its absence IS the failure and must surface loudly
@@ -488,14 +502,18 @@ def test_an_insights_evidence_lists_check_their_elements() -> None:
     )
     assert insight.evidence_run_ids == ["run-a"]
     with pytest.raises(ValidationError):
-        EvalInsight(
-            scope_id="uni-1",
-            subject_id="s",
-            subject_kind="agent",
-            statement="st",
-            confidence="medium",
-            evidence_run_ids=[{"not": "a string"}],
-            invalidation_trigger="retired when its analysis is archived, or replaced by a later analysis restating it",
+        EvalInsight.model_validate(
+            {
+                "scope_id": "uni-1",
+                "subject_id": "s",
+                "subject_kind": "agent",
+                "statement": "st",
+                "confidence": "medium",
+                "evidence_run_ids": [{"not": "a string"}],
+                "invalidation_trigger": (
+                    "retired when its analysis is archived, or replaced by a later analysis restating it"
+                ),
+            }
         )
 
 
@@ -554,7 +572,7 @@ class TestAResolutionsTierIsReadOffItsRows:
     """What a finding's verdict stands on is read off its resolution's rows, never stored as a choice."""
 
     @staticmethod
-    def _pair(named: list[tuple[str, str]], resolved: list[tuple[str, str]]) -> EvalAnalysis:
+    def _pair(named: list[tuple[str, ReadingKind]], resolved: list[tuple[str, ReadingKind]]) -> EvalAnalysis:
         refs = [{"cell": "v:a", "measure_id": measure, "reading": kind} for measure, kind in named]
         rows = [
             EvidenceRow(
@@ -572,7 +590,7 @@ class TestAResolutionsTierIsReadOffItsRows:
         return _make_analysis(findings=[_finding("a", evidence=refs)], resolutions=[FindingResolution(evidence=rows)])
 
     def test_the_readings_resolved_as_named_are_accepted(self) -> None:
-        named = [("latency", "measure"), ("helpful", "judged")]
+        named: list[tuple[str, ReadingKind]] = [("latency", "measure"), ("helpful", "judged")]
         assert self._pair(named, named).resolutions[0].evidence_tier == "separation"
 
 

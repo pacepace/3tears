@@ -232,7 +232,7 @@ async def test_an_unpriced_simulator_call_leaves_its_source_unpriced_and_the_con
     assert sink.spent == {"simulator": None}, "unpriced spend leaves its source unpriced, never zero"
 
 
-async def _raising(*_args) -> None:
+async def _raising(*_args: object) -> None:
     raise RuntimeError("boom")
 
 
@@ -244,7 +244,7 @@ async def _raising(*_args) -> None:
         ("candidate", ConversationStopCause.CANDIDATE_ERROR),
     ],
 )
-async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(side, cause) -> None:
+async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(side: str, cause) -> None:
     driver = _driver(actors=[actor("a")], max_turns=2)
     table = ScriptedTable(lines={"a": [Raw("not json") if side == "simulator" else "a1"]})
     kind = _Kind()

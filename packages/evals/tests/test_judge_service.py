@@ -46,7 +46,7 @@ def _dim_of(system: str) -> str:
 class _CapturingClient:
     """Records the prompts it received and returns a fixed score for the asked dim."""
 
-    def __init__(self, *, score: Any = 4, reasoning: str = "ok", cost: float = 0.002, fail: bool = False):
+    def __init__(self, *, score: Any = 4, reasoning: str = "ok", cost: float = 0.002, fail: bool = False) -> None:
         self.score = score
         self.reasoning = reasoning
         self.cost = cost
@@ -162,7 +162,7 @@ async def test_score_dimension_returns_single_rubric_score() -> None:
 
 
 @pytest.mark.parametrize("off_scale", [9, 0, -1, 3.5, "9", "0", "4.0", " 4", "four", None, True])
-async def test_an_off_scale_score_is_refused_not_clamped(off_scale) -> None:
+async def test_an_off_scale_score_is_refused_not_clamped(off_scale: int | float | str | bool | None) -> None:
     """A score that is not one of "1" to "5", nor an integer on 1-5, fails the dim through the parse-failure path.
 
     Clamping 9 to 5, or rounding 3.5 up to 4, would store a score the judge never gave.
@@ -180,7 +180,7 @@ async def test_an_off_scale_score_is_refused_not_clamped(off_scale) -> None:
 
 
 @pytest.mark.parametrize("on_scale", ["1", "3", "5", 1, 3, 5, 4.0])
-async def test_an_on_scale_score_is_stored_as_given(on_scale) -> None:
+async def test_an_on_scale_score_is_stored_as_given(on_scale: str | int | float) -> None:
     """Every score on the scale lands unchanged, as the string the schema asks for or a bare integer — the positive
     case beside the refusal."""
     service = JudgeService(
@@ -200,7 +200,7 @@ async def test_an_on_scale_score_is_stored_as_given(on_scale) -> None:
 
 
 @pytest.mark.parametrize(("answer", "scored"), [(CANNOT_TELL, False), (4, True)])
-async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(answer, scored) -> None:
+async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(answer, scored: bool) -> None:
     """One fixture, both answers: the judge's reply decides, not the harness."""
     client = _CapturingClient(score=answer, reasoning="the transcript never reaches the moment this dim is about")
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
@@ -713,7 +713,7 @@ class _StopReasonClient:
 
     def __init__(
         self, *, stop_reason: str, content: str = "not json", output_tokens: int = 4096, reasoning: int | None = 3900
-    ):
+    ) -> None:
         self.stop_reason = stop_reason
         self.content = content
         self.output_tokens = output_tokens
@@ -744,7 +744,7 @@ class _StopReasonClient:
         ("max_tokens", 1, "cut short by the provider"),
     ],
 )
-async def test_a_finished_reply_is_retried_and_a_truncated_one_is_not(stop_reason, calls, names) -> None:
+async def test_a_finished_reply_is_retried_and_a_truncated_one_is_not(stop_reason: str, calls: int, names: str) -> None:
     client = _StopReasonClient(stop_reason=stop_reason)
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
     outcome = await service.score_dimension(

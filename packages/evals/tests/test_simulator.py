@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
@@ -18,8 +19,15 @@ from threetears.evals.run.simulator import (
     SimulatorTurn,
     TurnDriver,
 )
-from threetears.evals.schema.completion import CompletionProtocolDefect
-from threetears.evals.schema.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
+from threetears.evals.schema.completion import CompletionProtocolDefect, SimulatorLLM
+from threetears.evals.schema.models import (
+    ActorPolicy,
+    ConversationSpec,
+    ConversationStopCause,
+    KnownSimulatorPurpose,
+    KnownUsageRole,
+    RoleUsage,
+)
 
 # =============================================================================
 # Helpers
@@ -38,12 +46,12 @@ class _RecordingLLM:
     completion's raw text, for the tests that hand the driver a reply of their own shape.
     """
 
-    def __init__(self, responses: list[str]):
+    def __init__(self, responses: list[str]) -> None:
         self.responses = list(responses)
         self.calls: list[tuple[str, str]] = []
-        self.response_formats: list[dict | None] = []
+        self.response_formats: list[dict[str, Any] | None] = []
 
-    async def generate(self, *, system: str, user: str, response_format: dict | None = None):
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> "_Response":
         self.calls.append((system, user))
         self.response_formats.append(response_format)
         if not self.responses:
@@ -59,32 +67,30 @@ class _Raw(str):
 class _Response:
     """Minimal response shape matching ``getattr(resp, 'content', '')``."""
 
-    def __init__(self, content: str):
+    def __init__(self, content: str) -> None:
         self.content = content
 
 
-def _conversation(actors: list[ActorPolicy], **overrides) -> ConversationSpec:
+def _conversation(actors: list[ActorPolicy], **overrides: object) -> ConversationSpec:
     """A round-robin conversation whose rounds hold up to five utterances, so a test can take several in a row."""
-    kwargs = dict(actors=actors, max_turns=5, max_speakers_per_round=5)
-    kwargs.update(overrides)
-    return ConversationSpec(**kwargs)
+    return ConversationSpec.model_validate({"actors": actors, "max_turns": 5, "max_speakers_per_round": 5, **overrides})
 
 
-async def _speak(driver: TurnDriver, llm) -> SimulatorTurn:
+async def _speak(driver: TurnDriver, llm: SimulatorLLM) -> SimulatorTurn:
     """The next utterance of the current round: the scheduler's pick, then that actor's call."""
     actor = await driver.next_speaker(llm)
     assert actor is not None, "the round has room for another speaker"
     return await driver.next_user_turn(llm, actor)
 
 
-def _actor(actor_id: str, **overrides) -> ActorPolicy:
-    kwargs = dict(
+def _actor(actor_id: str, **overrides: object) -> ActorPolicy:
+    kwargs: dict[str, object] = dict(
         id=actor_id,
         policy=f"You speak as {actor_id}.",
         intent="Engage the candidate.",
     )
     kwargs.update(overrides)
-    return ActorPolicy(**kwargs)
+    return ActorPolicy.model_validate(kwargs)
 
 
 # =============================================================================
@@ -301,7 +307,7 @@ def test_explicit_stop_sets_cause() -> None:
     "refusal",
     ["I can't help with that.", "I'm unable to do that.", "I refuse to order that.", ""],
 )
-def test_a_refusal_does_not_end_the_conversation(refusal) -> None:
+def test_a_refusal_does_not_end_the_conversation(refusal: str) -> None:
     """What the candidate says is never a stop signal — a refusal's quality is the judge's to grade.
 
     Stopping on the words of a refusal truncated exactly the conversations whose refusals a
@@ -360,6 +366,27 @@ async def test_a_user_that_is_not_done_keeps_the_conversation_going() -> None:
     assert driver.transcript == [("a", "and another thing")]
 
 
+class _Billed:
+    """A billed completion whose text is handed to the driver as it came."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.model = "sim-model"
+        self.input_tokens = 9
+        self.output_tokens = 3
+        self.cost_usd = 0.001
+
+
+class _BilledLLM:
+    """Answers every call with one billed completion of ``content``."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+
+    async def generate(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> _Billed:
+        return _Billed(self._content)
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -371,22 +398,11 @@ async def test_a_user_that_is_not_done_keeps_the_conversation_going() -> None:
     ],
     ids=["prose", "missing-done", "done-not-bool", "extra-field", "empty"],
 )
-async def test_a_reply_that_breaks_the_schema_is_refused_with_its_spend(raw) -> None:
+async def test_a_reply_that_breaks_the_schema_is_refused_with_its_spend(raw: str) -> None:
     driver = TurnDriver(conversation=_conversation([_actor("a")]), variation={})
 
-    class _Billed:
-        content = raw
-        model = "sim-model"
-        input_tokens = 9
-        output_tokens = 3
-        cost_usd = 0.001
-
-    class _LLM:
-        async def generate(self, *, system, user, response_format=None):
-            return _Billed()
-
     with pytest.raises(SimulatorReplyInvalid):
-        await _speak(driver, _LLM())
+        await _speak(driver, _BilledLLM(raw))
     # The malformed reply was billed, so its call is on the driver's record before the refusal.
     [call] = driver.calls
     assert (call.purpose, call.actor_id) == ("utterance", "a")
@@ -495,7 +511,15 @@ class _UsageResponse:
     """Response shape carrying the token/cost fields an LLMResult would."""
 
     def __init__(
-        self, content="hi", *, model="sim-model", inp=12, out=34, reasoning=None, cost=0.004, price_source="rate_card"
+        self,
+        content: str = "hi",
+        *,
+        model: str | None = "sim-model",
+        inp: int | None = 12,
+        out: int | None = 34,
+        reasoning: int | None = None,
+        cost: float | None = 0.004,
+        price_source: str | None = "rate_card",
     ) -> None:
         self.content = _reply(content)
         self.model = model
@@ -507,10 +531,12 @@ class _UsageResponse:
 
 
 class _UsageLLM:
-    def __init__(self, response) -> None:
+    def __init__(self, response: _UsageResponse) -> None:
         self._response = response
 
-    async def generate(self, *, system: str, user: str, response_format: dict | None = None):
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
+    ) -> _UsageResponse:
         return self._response
 
 
@@ -522,7 +548,7 @@ def _usage_driver() -> TurnDriver:
     )
 
 
-async def _usage_of(llm) -> CallUsage:
+async def _usage_of(llm: SimulatorLLM) -> CallUsage:
     """The usage the driver recorded for one LLM-driven turn."""
     driver = _usage_driver()
     await _speak(driver, llm)
@@ -564,7 +590,7 @@ async def test_llm_turn_from_a_client_reporting_nothing_reads_as_unobserved() ->
 class _MistypedSentResponse(_UsageResponse):
     """A billed response whose ``sent_settings`` holds a word where request settings belong: the host's defect."""
 
-    def __init__(self, content="hi") -> None:
+    def __init__(self, content: str = "hi") -> None:
         super().__init__(content)
         self.sent_settings = "low"
 
@@ -572,10 +598,12 @@ class _MistypedSentResponse(_UsageResponse):
 class _SchedulerThenMistypedLLM:
     """Answers the ``llm_decided`` scheduler's pick with a mistyped ``sent_settings``."""
 
-    def __init__(self, next_actor: str):
+    def __init__(self, next_actor: str) -> None:
         self._next = next_actor
 
-    async def generate(self, *, system: str, user: str, response_format: dict | None = None):
+    async def generate(
+        self, *, system: str, user: str, response_format: dict[str, Any] | None = None
+    ) -> _MistypedSentResponse:
         response = _MistypedSentResponse()
         response.content = json.dumps({"next": self._next})
         return response
@@ -594,7 +622,8 @@ async def test_a_refused_sent_settings_is_raised_only_after_the_billed_utterance
     ledger = RoleUsageLedger(role="simulator")
     driver.fold_usage(ledger)
     [row] = ledger.rows()
-    assert (row.call_count, row.cost_usd, row.sent_settings) == (1, pytest.approx(0.004), None)
+    assert (row.call_count, row.sent_settings) == (1, None)
+    assert row.cost_usd == pytest.approx(0.004)
 
 
 async def test_a_refused_sent_settings_on_a_scheduling_pick_is_raised_after_the_pick_is_recorded() -> None:
@@ -646,17 +675,24 @@ async def test_fold_usage_lands_every_call_on_the_simulator_ledger() -> None:
 def test_an_actor_or_purpose_belongs_on_a_simulator_row_only() -> None:
     """The attribution names a simulated actor, which only the simulator role has; refused on every other row."""
     assert RoleUsage(role="simulator", actor_id="a", purpose="schedule").actor_id == "a"
-    for fields in ({"actor_id": "a"}, {"purpose": "utterance"}):
+    attributions: tuple[tuple[str | None, KnownSimulatorPurpose | None], ...] = (("a", None), (None, "utterance"))
+    for actor_id, purpose in attributions:
         with pytest.raises(ValueError, match="attribute simulator calls"):
-            RoleUsage(role="candidate", **fields)
+            RoleUsage(role="candidate", actor_id=actor_id, purpose=purpose)
         with pytest.raises(ValueError, match="attribute simulator calls"):
             RoleUsageLedger(role="judge").add(
-                model="m", prompt_tokens=None, completion_tokens=None, reasoning_tokens=None, cost_usd=None, **fields
+                model="m",
+                prompt_tokens=None,
+                completion_tokens=None,
+                reasoning_tokens=None,
+                cost_usd=None,
+                actor_id=actor_id,
+                purpose=purpose,
             )
 
 
 @pytest.mark.parametrize("role", ["candidate", "judge"])
-def test_fold_usage_refuses_another_roles_ledger(role) -> None:
+def test_fold_usage_refuses_another_roles_ledger(role: KnownUsageRole) -> None:
     """Simulator spend is the program's cost; landing it on the candidate's row would misstate what it costs."""
     with pytest.raises(ValueError, match="simulator ledger"):
         _usage_driver().fold_usage(RoleUsageLedger(role=role))

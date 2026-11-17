@@ -1,6 +1,8 @@
 """Per-role usage accumulation + cost-view derivation."""
 
+from collections.abc import Sequence
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -24,7 +26,15 @@ from packages.evals.tests.factories import make_eval_result, result_capture_defa
 _SOURCE = "provider:reported"
 
 
-def _result(*, model="m", inp=10, out=20, reasoning=None, cost=0.001, price_source=_SOURCE):
+def _result(
+    *,
+    model: str = "m",
+    inp: int = 10,
+    out: int = 20,
+    reasoning: int | None = None,
+    cost: float | None = 0.001,
+    price_source: str | None = _SOURCE,
+) -> SimpleNamespace:
     """An ``LLMResult``-shaped response object, naming where its price came from."""
     return SimpleNamespace(
         model=model,
@@ -161,7 +171,7 @@ def test_dollars_priced_two_ways_stay_in_two_rows() -> None:
     ]
 
 
-def _work(**spend):
+def _work(**spend: Any) -> AsyncDelivery:
     """One live piece of background work on its own model, reporting ``spend``."""
     return AsyncDelivery(tool="scout_ahead", status="delivered", model="inner", substituted=False, **spend)
 
@@ -193,7 +203,7 @@ def test_the_model_a_deliverys_responses_named_is_its_inner_agent_rows_served_mo
     assert unnamed.served_model is None
 
 
-def test_the_upstream_a_delivery_names_is_its_inner_agent_rows_served_provider_and_keys_it():
+def test_the_upstream_a_delivery_names_is_its_inner_agent_rows_served_provider_and_keys_it() -> None:
     """The host fills it; work two upstreams served is two rows, and work naming none is not recorded."""
     rows = async_delivery_usage(
         [_work(cost_usd=0.01, served_provider="Acme Cloud"), _work(cost_usd=0.02, served_provider="Other Cloud")],
@@ -204,7 +214,7 @@ def test_the_upstream_a_delivery_names_is_its_inner_agent_rows_served_provider_a
     assert unnamed.served_provider is None and "served_provider" not in unnamed.model_dump(mode="json")
 
 
-def test_work_one_model_had_answered_by_two_is_two_rows():
+def test_work_one_model_had_answered_by_two_is_two_rows() -> None:
     rows = async_delivery_usage(
         [_work(cost_usd=0.01, served_model="inner-a"), _work(cost_usd=0.02, served_model="inner-b")], rate_table=None
     )
@@ -260,7 +270,7 @@ def test_work_that_reports_no_spend_contributes_no_row() -> None:
         {"external_spend": [AsyncExternalSpend(provider="search_api", calls=1)]},
     ],
 )
-def test_a_substituted_delivery_cannot_carry_spend(spend) -> None:
+def test_a_substituted_delivery_cannot_carry_spend(spend: dict[str, Any]) -> None:
     """A replayed or seeded payload spent nothing, so no figure of spend can ride in on one."""
     with pytest.raises(ValidationError, match="spent nothing"):
         AsyncDelivery(tool="scout_ahead", status="delivered", substituted=True, **spend)
@@ -293,12 +303,12 @@ def test_external_units_are_reported_with_their_unit_or_not_at_all() -> None:
 _SEARCH_ONLY = ExternalRateTable(rates={("search_api", "credits"): 0.008})
 
 
-def _images(**charge):
+def _images(**charge: Any) -> AsyncDelivery:
     """Background work that generated two images at a provider billing per image."""
     return _work(cost_usd=0.01, external_spend=[AsyncExternalSpend(provider="image_api", calls=2, **charge)])
 
 
-def _external_row(rows):
+def _external_row(rows: Sequence[RoleUsage]) -> RoleUsage:
     (row,) = [row for row in rows if row.role == "external"]
     return row
 
@@ -382,7 +392,7 @@ def test_the_conversion_to_the_metering_vocabulary_carries_every_reported_field(
 # ---------------------------------------------------------------------------
 
 
-def _row(role, cost):
+def _row(role: str, cost: float | None) -> RoleUsage:
     return RoleUsage(role=role, cost_usd=cost, price_source=_SOURCE if cost is not None else None)
 
 
@@ -656,7 +666,7 @@ def test_count_substituted_deliveries_of_an_unobserved_lifecycle_is_zero() -> No
     assert count_substituted_deliveries(substituted) == 1
 
 
-def test_a_send_that_may_have_been_billed_is_priced_at_its_rows_price_per_call_for_the_cap():
+def test_a_send_that_may_have_been_billed_is_priced_at_its_rows_price_per_call_for_the_cap() -> None:
     """Only rows in the cost's roles count, and a row whose dollars or calls are unknown adds nothing here."""
     rows = [
         RoleUsage(role="judge", model="j", cost_usd=0.03, call_count=3, maybe_billed_sends=2),

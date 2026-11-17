@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, TypedDict
 
 import pytest
 import threetears.evals.kernel.dsl as _dsl
@@ -13,6 +14,14 @@ from threetears.evals.kernel.host import Triggered, WorldDimension, WorldRegistr
 from threetears.evals.schema import Firings, Precondition, WorldEvent
 from threetears.evals.schema.call_ledger import CallLedger
 from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse
+
+
+class _Cell(TypedDict):
+    """What one cell hands ``evaluate`` beside the expression, spread into its keywords."""
+
+    end_state: Mapping[str, Any]
+    ledger: CallLedger
+    world: WorldRegistry | None
 
 
 def _state_with(**dimensions: dict[str, Any]) -> dict[str, Any]:
@@ -114,7 +123,7 @@ _SHOP = {"shelf": {"stock": 3}, "till": {"float": 20}}
     [(False, "state.stock", "state.float"), (True, "state.shelf.stock", "state.till.float")],
     ids=["flat names", "composed names"],
 )
-def test_a_path_names_the_dimension_however_the_host_names_it(composed, stock, till_float) -> None:
+def test_a_path_names_the_dimension_however_the_host_names_it(composed: bool, stock: str, till_float: str) -> None:
     """``state.<dimension>`` reads the value the end state holds under that dimension's name."""
     world = _shop_world(composed=composed)
     end_state = world.named(_SHOP)
@@ -138,7 +147,7 @@ def test_a_path_inside_a_flat_dimension_s_value_resolves_below_it() -> None:
         ],
         bindings={"h.seed": lambda value: None, "h.read": list},
     )
-    cell = {"end_state": {"corrections": ["reprice", "void"]}, "ledger": CallLedger(), "world": world}
+    cell: _Cell = {"end_state": {"corrections": ["reprice", "void"]}, "ledger": CallLedger(), "world": world}
 
     assert evaluate("state.corrections.length == 2", **cell) is True
     assert evaluate('state.corrections[-1] == "void"', **cell) is True
@@ -146,7 +155,7 @@ def test_a_path_inside_a_flat_dimension_s_value_resolves_below_it() -> None:
 
 
 @pytest.mark.parametrize("composed", [False, True], ids=["flat names", "composed names"])
-def test_a_dimension_the_world_does_not_declare_or_the_end_state_does_not_hold_is_missing(composed) -> None:
+def test_a_dimension_the_world_does_not_declare_or_the_end_state_does_not_hold_is_missing(composed: bool) -> None:
     """Undeclared or absent — each is Missing, never another dimension's value."""
     world = _shop_world(composed=composed)
     stock = "state.shelf.stock" if composed else "state.stock"
@@ -182,7 +191,7 @@ def test_a_check_reading_only_calls_and_the_case_needs_no_world() -> None:
 
 
 @pytest.mark.parametrize("expression", ["length(state) == 0", 'state["shop"].length == 1', "not state"])
-def test_state_alone_is_not_a_value(expression) -> None:
+def test_state_alone_is_not_a_value(expression: str) -> None:
     """``state`` names no container of every dimension: a check reads one by name, as the gate resolves it."""
     with pytest.raises(DSLError, match="'state' is not a value"):
         evaluate(expression, **_state_with(shop={"cart": []}))
@@ -222,7 +231,7 @@ class TestNamingASeedShapedWorld:
         ],
         ids=["undeclared", "misplaced", "malformed"],
     )
-    def test_a_value_no_read_could_return_is_refused(self, namespaces, refusal) -> None:
+    def test_a_value_no_read_could_return_is_refused(self, namespaces: dict[str, object], refusal: str) -> None:
         with pytest.raises(ValueError, match=refusal):
             _shop_world(composed=False).named(namespaces)
 
@@ -300,7 +309,7 @@ def test_comparison_type_mismatch_raises_rather_than_failing_the_check() -> None
         "any(it == 1 for it in state.shop.count)",
     ],
 )
-def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression) -> None:
+def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression: str) -> None:
     """contains / intersects / any over an int: the world or the template is wrong, not the candidate."""
     with pytest.raises(DSLError):
         evaluate(expression, **_state_with(shop={"count": 3}))
@@ -357,7 +366,7 @@ def test_a_case_parameter_is_looked_for_as_one_value() -> None:
         ('variation.categories[0] == "kitchen"', r"an index into variation.categories"),
     ],
 )
-def test_a_case_parameter_read_as_a_collection_is_refused_where_it_is_parsed(expression, said) -> None:
+def test_a_case_parameter_read_as_a_collection_is_refused_where_it_is_parsed(expression: str, said: str) -> None:
     """A case stores every parameter as one string (#665): read as a collection it never meant what it says.
 
     ``intersects`` took the string as ONE element, so a parameter spelling several categories never
@@ -1091,7 +1100,7 @@ class TestFired:
         )
 
     def test_fired_is_true_exactly_for_a_dimension_that_fired(self) -> None:
-        call = {"end_state": {}, "ledger": CallLedger(), "world": None}
+        call: _Cell = {"end_state": {}, "ledger": CallLedger(), "world": None}
         alarm = frozenset({"restock_alarm"})
         assert evaluate('fired("restock_alarm")', fired=Firings(dimensions=alarm), **call) is True
         assert evaluate('fired("restock_alarm")', fired=Firings(), **call) is False
@@ -1099,7 +1108,7 @@ class TestFired:
 
     def test_fired_armed_is_true_only_for_a_firing_of_the_seed_s_armed_event(self) -> None:
         """Both directions on one dimension: the world's own firing satisfies fired() and not fired_armed()."""
-        call = {"end_state": {}, "ledger": CallLedger(), "world": None}
+        call: _Cell = {"end_state": {}, "ledger": CallLedger(), "world": None}
         alarm = frozenset({"restock_alarm"})
         worlds_own = Firings(dimensions=alarm)
         seeds = Firings(dimensions=alarm, armed=alarm)
@@ -1111,7 +1120,7 @@ class TestFired:
 
     def test_a_witnessed_cell_s_fired_armed_is_not_established_negated_or_not(self) -> None:
         """No seed armed a witnessed cell, so its armed=False events cannot say the seed's event did not fire."""
-        call = {"end_state": {}, "ledger": CallLedger(), "world": None}
+        call: _Cell = {"end_state": {}, "ledger": CallLedger(), "world": None}
         firing = WorldEvent(
             kind="event", dimension="restock_alarm", condition="low_stock", caused_by="world", event="restock-1"
         )

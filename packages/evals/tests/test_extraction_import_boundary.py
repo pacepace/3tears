@@ -462,7 +462,7 @@ def test_every_module_the_engine_names_is_declared() -> None:
         ("import fastapi\n", False),
     ],
 )
-def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path: Path, source, allowed) -> None:
+def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path: Path, source: str, allowed: bool) -> None:
     """Both directions on one fixture, so an inverted rule cannot pass."""
     planted = tmp_path / "threetears" / "evals" / "planted.py"
     planted.parent.mkdir(parents=True)
@@ -483,7 +483,7 @@ def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path: Path, s
         ("threetears.evals", False),
     ],
 )
-def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed) -> None:
+def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer: str, allowed: bool) -> None:
     """``fastmcp`` is the ``[fastmcp]`` extra's: its transport may name it; the core and the other extra may not."""
     assert _allowed("fastmcp.tools", importer=importer) is allowed
 

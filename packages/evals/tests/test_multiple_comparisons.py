@@ -40,7 +40,10 @@ from threetears.evals.analysis.stats import (
     pairing_correlation,
     separation_p,
 )
+from threetears.evals.analysis.report.blocks import CellValue, TableBlock
+from threetears.evals.analysis.report.model import Report
 from threetears.evals.kernel import CampaignArm
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.schema import EvalResult, RubricScore
 from threetears.evals.schema.models import LatencyMetrics
 from threetears.evals.kernel.host import HostProfile, MeasureRegistry
@@ -55,6 +58,19 @@ from packages.evals.tests.factories import (
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import TOYHOST_MEASURES, toyhost_profile
 from packages.evals.tests.simulation_support import ClusteredDesign, draw_paired_arms
+
+
+def _table(report: Report, name: str) -> TableBlock:
+    """The report's one table named ``name``."""
+    (table,) = [block for block in report.blocks if isinstance(block, TableBlock) and block.name == name]
+    return table
+
+
+def _text(value: CellValue) -> str:
+    """A text cell's value: a cell holding anything else fails here, naming it."""
+    assert isinstance(value, str), f"{value!r} is not a text cell"
+    return value
+
 
 #: Per-case score differences, contrast minus control, over twelve cases. Raw paired p ≈ 0.026: a
 #: separation at α=0.05 when tested alone, and not once nine other comparisons share its family.
@@ -159,6 +175,7 @@ def _bundle(
             label="control",
             role="control",
             variant_key=fixture_variant_key(control),
+            identity_version=IDENTITY_VERSION,
             named_at=asked if questions else None,
         )
         if control
@@ -256,6 +273,7 @@ class TestAFamilyOfTenCorrectsAVerdictAwayAndTheWriterSeesOnlyTheAdjustedP:
         asked = _family(_bundle([BORDERLINE]))
         (judged,) = _judged(asked)
         assert asked.family_size == 2 and judged.p_raw == pytest.approx(alone.p_raw)
+        assert judged.p_raw is not None
         assert judged.p_adjusted == pytest.approx(2 * judged.p_raw) and judged.verdict == "not_separated"
 
 
@@ -312,6 +330,7 @@ class TestVerdicts:
         assert moved.p_raw == separation_p([3.0] * cases, [4.0] * cases, paired=True, value_range=(1.0, 5.0))
         # The question's pass rate is the second member (every trial passes on both arms): the step is 1 − α/2.
         assert moved.verdict == "improved" and family.family_size == 2
+        assert expected is not None
         assert moved.p_adjusted == pytest.approx(2 * expected)
         assert moved.hedges_g is None, "no spread, so no finite effect size"
         assert moved.interval is not None and moved.interval[0] > 0.0, "the bounded test's own interval"
@@ -424,7 +443,8 @@ class TestWhatAFamilyCovers:
         measured = [c for c in family.comparisons if c.reading == "measure"]
         assert [c.name for c in measured] == ["accuracy"]
         (accuracy,) = measured
-        assert (accuracy.control.mean, accuracy.contrast.mean) == (0.5, pytest.approx(11 / 12))
+        assert accuracy.control.mean == 0.5
+        assert accuracy.contrast.mean == pytest.approx(11 / 12)
         # The classifier's verdict is the trial's pass/fail here, so the question's pass rate reads the same shares.
         assert family.family_size == 2 and _pass_rate(family).p_raw == pytest.approx(accuracy.p_raw)
 
@@ -481,9 +501,9 @@ def test_a_uniform_shift_on_a_measure_with_no_range_is_not_separated_and_says_wh
     assert on_range.basis == "bounded" and on_range.not_separated_reason is None
 
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
-    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    table = _table(report, "comparisons")
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
-    assert row["verdict"].startswith("cannot tell apart (") and "declare value_range" in row["verdict"]
+    assert _text(row["verdict"]).startswith("cannot tell apart (") and "declare value_range" in _text(row["verdict"])
 
 
 @pytest.mark.parametrize(("threshold", "expected"), [(0.05, "immaterial"), (0.01, "material"), (None, "material")])
@@ -506,16 +526,16 @@ def test_the_report_and_the_bundle_hold_an_immaterial_verdict_labelled() -> None
     profile = _accuracy_threshold(0.05)
     bundle = _bundle([], accuracy=_ACCURACY, profile=profile)
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
-    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    table = _table(report, "comparisons")
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
 
     # A margin on a share is stated in points, as the change it bounds is.
     assert (
-        " better than " in row["verdict"]
+        " better than " in _text(row["verdict"])
         and "immaterial: the observed delta is inside the margin of ±5 pts on Field accuracy, which does not show"
-        in row["verdict"]
+        in _text(row["verdict"])
     )
-    assert "materiality threshold" not in row["verdict"], "the reader's words: the margin they declared"
+    assert "materiality threshold" not in _text(row["verdict"]), "the reader's words: the margin they declared"
     (comparison,) = [c for c in _family(bundle).comparisons if c.name == "field_accuracy"]
     assert comparison.materiality == "immaterial"
 
@@ -532,11 +552,11 @@ def test_an_equivalent_row_does_not_carry_the_caveat_that_contradicts_it() -> No
     assert (comparison.verdict, comparison.materiality) == ("equivalent", "immaterial")
 
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
-    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    table = _table(report, "comparisons")
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
 
-    assert " equivalent, within the measure's margin (margin ±25 pts)" in row["verdict"]
-    assert "does not show" not in row["verdict"]
+    assert " equivalent, within the measure's margin (margin ±25 pts)" in _text(row["verdict"])
+    assert "does not show" not in _text(row["verdict"])
 
 
 # --- what a contrast states beside its verdict: interval, effect size, equivalence, the cases it read ---------
@@ -600,7 +620,7 @@ def test_two_arms_alike_on_every_case_are_tested_on_the_measures_range(cases: in
 
     assert (comparison.test, comparison.p_raw) == ("paired", 1.0)
     assert comparison.equivalence_p_raw == paired_equivalence([0.0] * cases, 0.25, value_range=(0.0, 1.0))[1]
-    assert comparison.equivalence_p_raw >= 0.75**cases
+    assert comparison.equivalence_p_raw is not None and comparison.equivalence_p_raw >= 0.75**cases
     assert family.n_equivalence_tests == 1
     assert comparison.verdict == expected
 
@@ -637,9 +657,9 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     accuracy = ([0.5] * 9 + [0.9] * 3, [0.6, 0.62, 0.61, 0.6, 0.63, 0.6, 0.61, 0.62, 0.6] + [0.0] * 3)
     bundle = _bundle([], accuracy=accuracy, contrast_cases=range(9), profile=profile)
     report = build_code_only_report(bundle, assembled_at="2026-10-06T00:00:00Z")
-    (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparisons"]
+    table = _table(report, "comparisons")
     (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
-    (folded,) = [block for block in report.blocks if getattr(block, "name", None) == "comparison_statistics"]
+    folded = _table(report, "comparison_statistics")
     (stats,) = [row for row in folded.values() if row["reading"] == "Field accuracy"]
 
     assert row["cases"] == "9 paired; 3 of the control's left out, not run by the other side"
@@ -647,7 +667,8 @@ def test_the_report_states_each_contrast_s_means_cases_interval_and_effect_size(
     assert stats["control_mean"] == pytest.approx(50.0)
     assert isinstance(row["interval"], str) and row["interval"].endswith(" pts")
     assert next(column.header for column in table.columns if column.key == "interval") == "95% interval"
-    assert stats["hedges_g"] is not None and stats["hedges_g"] > 0
+    hedges_g = stats["hedges_g"]
+    assert isinstance(hedges_g, float) and hedges_g > 0
 
 
 # --- what pairing bought (#595) ----------------------------------------------------------------------
@@ -720,7 +741,7 @@ class TestWhatPairingBought:
         accuracy = _correlated_accuracy(0.8, n_cases=12, seed=598)
         bundle = _bundle([], accuracy=accuracy, profile=profile)
         report = build_code_only_report(bundle, assembled_at="2026-10-11T00:00:00Z")
-        (table,) = [block for block in report.blocks if getattr(block, "name", None) == "comparison_statistics"]
+        table = _table(report, "comparison_statistics")
         (row,) = [row for row in table.values() if row["reading"] == "Field accuracy"]
 
         assert "Pairing r" in [column.header for column in table.columns]

@@ -71,7 +71,7 @@ def _raises_by_function(path: Path) -> dict[str, set[str]]:
 
 
 @pytest.mark.parametrize("path", _MODULES, ids=lambda p: p.relative_to(_ANALYSIS).as_posix())
-def test_only_the_listed_no_output_cases_raise_the_terminal_class(path: Path):
+def test_only_the_listed_no_output_cases_raise_the_terminal_class(path: Path) -> None:
     """A finished call's failure must be repairable; only a missing call is terminal."""
     offenders = sorted(
         fn

@@ -206,7 +206,7 @@ def test_every_non_test_eval_job_manager_site_holds_its_jobs_under_leases() -> N
 
 
 @pytest.mark.parametrize("symbol", ["EvalJobManager", "EvalService"])
-def test_every_non_test_site_names_where_its_blocking_storage_calls_run(symbol) -> None:
+def test_every_non_test_site_names_where_its_blocking_storage_calls_run(symbol: str) -> None:
     """The engine's executor default is the loop's default executor — correct for a bare host, wrong in web.
 
     Both take ``blocking_executor`` and default it to ``None`` — ``EvalService`` as well, because a
@@ -234,7 +234,7 @@ def test_every_non_test_site_names_where_its_blocking_storage_calls_run(symbol) 
 
 
 @pytest.mark.parametrize("symbol", ["EvalService", "JudgeService"])
-def test_every_non_test_site_names_how_a_failed_call_reads(symbol) -> None:
+def test_every_non_test_site_names_how_a_failed_call_reads(symbol: str) -> None:
     """A describer that cannot tell an account refusal means an unwired site never stops.
 
     ``withhold_failure_detail`` is right for a host with no error types and wrong for this one: it

@@ -1695,7 +1695,7 @@ class TestTheWalkSeesEveryPythonForm:
             ('t"{value:.2f}"', ("value", ".2f")),
         ],
     )
-    def test_the_walk_sees_every_way_python_spells_a_number(self, source, expected) -> None:
+    def test_the_walk_sees_every_way_python_spells_a_number(self, source: str, expected) -> None:
         assert _specs(source) == [expected]
 
     def test_a_t_string_field_is_its_own_form(self) -> None:
@@ -1704,7 +1704,7 @@ class TestTheWalkSeesEveryPythonForm:
     @pytest.mark.parametrize(
         "source", ['f"{name}"', 'f"{name!r}"', 'f"{count:d}"', 'f"{label:>10}"', 'f"{format_number(v)}"']
     )
-    def test_the_walk_leaves_what_chooses_no_digits(self, source) -> None:
+    def test_the_walk_leaves_what_chooses_no_digits(self, source: str) -> None:
         assert _specs(source) == []
 
     @pytest.mark.parametrize(
@@ -1732,14 +1732,14 @@ class TestTheWalkSeesEveryPythonForm:
             ("math.ceil(-math.log10(top / 5))", ("<module>", "ceil(log10)", "math.ceil(-math.log10(top / 5))")),
         ],
     )
-    def test_the_walk_sees_rounding_and_every_primitive(self, source, expected) -> None:
+    def test_the_walk_sees_rounding_and_every_primitive(self, source: str, expected) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_a_site_is_keyed_by_its_enclosing_definition(self) -> None:
         source = "class Look:\n    def text(self, v):\n        def inner():\n            return round(v)\n        return inner\n"
         assert _forms(_python_sites(source)) == [("Look.text.inner", "round()", "round(v)")]
 
-    def test_a_private_helper_is_never_a_site_by_its_name_alone(self):
+    def test_a_private_helper_is_never_a_site_by_its_name_alone(self) -> None:
         """A private name is matched only where the walk derived it as a wrapper in that module: by name alone it would
         also catch ``levers._places``, which lists where an effect is read, and ``_at``, which links a cell to a
         finding."""
@@ -1761,7 +1761,7 @@ class TestTheWalkSeesEveryPythonForm:
             "held_means(report_input, key)",
         ],
     )
-    def test_the_walk_leaves_what_decides_no_form(self, source) -> None:
+    def test_the_walk_leaves_what_decides_no_form(self, source: str) -> None:
         assert _python_sites(source) == []
 
 
@@ -1905,7 +1905,7 @@ class TestAWrapperIsAPrimitive:
     def test_forms_primitives_are_none_before_forms_exists(self, tmp_path: Path) -> None:
         assert _forms_primitives(tmp_path) == frozenset()
 
-    def test_the_forms_free_functions_are_pinned_wherever_their_module_moves(self):
+    def test_the_forms_free_functions_are_pinned_wherever_their_module_moves(self) -> None:
         """The free functions read as primitives, pinned by name: a function moved out of ``forms.py`` and its parts,
         or a part the walk stops reading, shrinks the set and fails here rather than letting its callers go unseen."""
         assert "threetears/evals/analysis/report/number_forms/policy.py" in _FORMS_MODULES
@@ -1928,7 +1928,7 @@ class TestAWrapperIsAPrimitive:
             "policy_rate",
         }
 
-    def test_an_owner_is_not_walked_so_routing_through_it_stays_the_remedy(self, tmp_path):
+    def test_an_owner_is_not_walked_so_routing_through_it_stays_the_remedy(self, tmp_path: Path) -> None:
         """``forms.py`` is an owner before it exists: the walk and the report trees both pass over it."""
         for module in (_FORMS, f"{_NUMBER_FORMS}/policy.py", _RULE, "threetears/evals/analysis/report/figures.py"):
             (tmp_path / module).parent.mkdir(parents=True, exist_ok=True)
@@ -1967,7 +1967,7 @@ class TestASiteHandedThroughAHelperIsStillASite:
         ],
         ids=["argument", "nested-call", "local"],
     )
-    def test_a_figure_handed_to_a_helper_makes_the_hander_a_wrapper(self, body, inner) -> None:
+    def test_a_figure_handed_to_a_helper_makes_the_hander_a_wrapper(self, body: str, inner) -> None:
         source = (
             _JOINED
             + "def _trimmed(text):\n    return text.strip()\n\n"
@@ -2063,7 +2063,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
         ],
         ids=["dict", "list", "bound-name"],
     )
-    def test_a_table_or_a_name_of_a_primitive_is_a_site(self, source, expected) -> None:
+    def test_a_table_or_a_name_of_a_primitive_is_a_site(self, source: str, expected) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_an_annotation_a_class_test_or_a_field_read_is_not(self) -> None:
@@ -2117,7 +2117,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
         ],
         ids=["positional", "keyword-only", "through-a-module", "lambda"],
     )
-    def test_a_primitive_as_a_parameter_s_default_is_a_site(self, source, expected) -> None:
+    def test_a_primitive_as_a_parameter_s_default_is_a_site(self, source: str, expected) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_a_primitive_returned_by_its_name_is_a_site_and_its_returner_is_a_factory(self) -> None:
@@ -2286,7 +2286,7 @@ class TestTheEngineRule:
             "m = importlib.import_module('threetears.evals.analysis.quantities')\n",
         ],
     )
-    def test_every_way_of_importing_the_analysis_package_is_seen(self, source) -> None:
+    def test_every_way_of_importing_the_analysis_package_is_seen(self, source: str) -> None:
         assert _imports_analysis("threetears/evals/run/launch.py", source) != []
 
     @pytest.mark.parametrize(
@@ -2298,7 +2298,7 @@ class TestTheEngineRule:
             "import threetears.evals.analysis_tools\n",
         ],
     )
-    def test_what_is_not_the_analysis_package_is_not_taken_for_it(self, source) -> None:
+    def test_what_is_not_the_analysis_package_is_not_taken_for_it(self, source: str) -> None:
         assert _imports_analysis("threetears/evals/kernel/surface.py", source) == []
 
     def test_a_numbers_primitive_is_the_route_in_the_engine_and_a_site_above_it(self) -> None:
@@ -2378,7 +2378,7 @@ class TestTheWalkSeesEveryKitForm:
             ("function a(v){return kShort(v,1);}", ("a", "kShort", "kShort(v,1)")),
         ],
     )
-    def test_the_walk_sees_every_way_the_kit_spells_a_number(self, source, expected) -> None:
+    def test_the_walk_sees_every_way_the_kit_spells_a_number(self, source: str, expected) -> None:
         assert _forms(_js_sites(source)) == [expected]
 
     @pytest.mark.parametrize(
@@ -2394,7 +2394,7 @@ class TestTheWalkSeesEveryKitForm:
             ("function b(v){return `${`${v.toFixed(1)}`}` + `${{a:1}.a}`;}", "b"),
         ],
     )
-    def test_a_kit_site_is_keyed_by_its_top_level_statement(self, source, expected) -> None:
+    def test_a_kit_site_is_keyed_by_its_top_level_statement(self, source: str, expected: str) -> None:
         assert [site.qualname for site in _js_sites(source)] == [expected]
 
     @pytest.mark.parametrize(
@@ -2420,7 +2420,7 @@ class TestTheWalkSeesEveryKitForm:
             "function kTickLabels(spec,ticks){return ticks.map(t=>Math.round(t)+kTickFmt(spec)(t));}",
         ],
     )
-    def test_the_walk_leaves_what_the_kit_does_not_decide(self, source) -> None:
+    def test_the_walk_leaves_what_the_kit_does_not_decide(self, source: str) -> None:
         assert _js_sites(source) == []
 
     @pytest.mark.parametrize(
@@ -2433,7 +2433,7 @@ class TestTheWalkSeesEveryKitForm:
             "function a(d){return namedFmt(d.x_fmt)+namedFmt(d.latency_fmt);}",
         ],
     )
-    def test_a_pick_by_a_data_field_is_not_a_site(self, source) -> None:
+    def test_a_pick_by_a_data_field_is_not_a_site(self, source: str) -> None:
         """The data's format is decided in Python, which the walk reads; the kit only applies it."""
         assert _js_sites(source) == []
 
@@ -2449,7 +2449,7 @@ class TestTheWalkSeesEveryKitForm:
             ("function a(d){return namedFmt(d.label);}", "namedFmt(d.label)"),
         ],
     )
-    def test_a_pick_the_kit_decides_is_a_site(self, source, expected) -> None:
+    def test_a_pick_the_kit_decides_is_a_site(self, source: str, expected: str) -> None:
         """A literal, a default beside the data's field, or anything but the field itself is the kit's choice."""
         assert _forms(_js_sites(source)) == [("a", "namedFmt", expected)]
 

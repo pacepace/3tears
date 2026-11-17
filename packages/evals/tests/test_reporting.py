@@ -12,7 +12,7 @@ import io
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
@@ -41,16 +41,29 @@ from threetears.evals.analysis.lenses.comparison_sets import (
     compute_comparison_sets,
     difference_was_declared_at_launch,
 )
-from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
+from threetears.evals.analysis.lenses.cost_estimate import (
+    CostEstimateCell,
+    CostEstimateError,
+    PredictedValue,
+    compute_estimate_cost,
+)
 from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
-from threetears.evals.analysis.lenses.frontier import FrontierError, FrontierPoint, SubjectFrontier, compute_frontier
-from threetears.evals.analysis.lenses.history import HistoryError, compute_history
+from threetears.evals.analysis.lenses.frontier import (
+    FrontierError,
+    FrontierPoint,
+    FrontierResult,
+    SubjectFrontier,
+    compute_frontier,
+)
+from threetears.evals.analysis.lenses.history import HistoryResult, SeriesPoint, HistoryError, compute_history
 from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.pivot import (
     CELL_MEASURED,
     CELL_UNMEASURED,
     CELL_WITHHELD,
+    PivotCell,
     PivotError,
+    PivotTable,
     compute_pivot,
 )
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
@@ -116,7 +129,7 @@ _HOST_NOUN_IN_PROSE = re.compile(rf"\b(?:{'|'.join(HOST_NOUNS)})s?\b", re.IGNORE
 _JUDGED_HOST = toyhost_profile(every_seat=True)
 
 
-def _catalog_names_of(row_name):
+def _catalog_names_of(row_name: str) -> list[str]:
     """Every registered measure name the surfaces resolve to ``row_name``, other than itself.
 
     The catalog (aggregate) names a row measure is published under, read through the public
@@ -128,11 +141,26 @@ def _catalog_names_of(row_name):
     )
 
 
-def _catalog_name_of(row_name):
+def _catalog_name_of(row_name: str) -> str:
     """The ONE catalog name ``row_name`` is published under; none, or two, is a failure here."""
     names = _catalog_names_of(row_name)
     assert len(names) == 1, f"{row_name!r} resolves from {names} -- it needs exactly one registered catalog name"
     return names[0]
+
+
+def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
+    """``function`` with its signature unchecked, for a call that leaves out a required argument on purpose.
+
+    The tests that use it assert the call raises ``TypeError``: the omission is what they exercise, so the call is
+    made through a ``Callable[..., object]`` rather than a signature the checker would refuse it against.
+    """
+    return function
+
+
+def _predicted(cell: CostEstimateCell) -> PredictedValue:
+    """``cell``'s prediction, which the test's cell has: a cell with none fails here rather than at an attribute."""
+    assert cell.predicted is not None, f"{cell.model} carries no prediction"
+    return cell.predicted
 
 
 def _run_with_results(
@@ -151,7 +179,7 @@ def _run_with_results(
     return run, result
 
 
-def _overlaid(**overlays):
+def _overlaid(**overlays: object) -> dict[str, Any]:
     """The run fields a launch of the toy extractor stamps for ``overlays``: its kind and the frozen model.
 
     :param **overlays: The knobs the launch turned, by field of the kind's overlay model.
@@ -161,7 +189,7 @@ def _overlaid(**overlays):
     return {"candidate_kind": TOY_EXTRACTOR_KIND, "overlays": freeze(validated)}
 
 
-def _stamped_run(**run_overrides):
+def _stamped_run(**run_overrides: Any) -> EvalRun:
     """Build a run stamped the way the launch path stamps one.
 
     Key, components and version together, over both role pins — a run carrying only
@@ -332,7 +360,7 @@ class TestProjectionCoordinates:
 class TestCompositeIsPerObservation:
     """A row is one measurement at one cell — never a k-average wearing k labels."""
 
-    def _scored(self, run, *, k_iteration, score):
+    def _scored(self, run: EvalRun, *, k_iteration: int, score: int) -> EvalResult:
         """Build a scored result for one k-iteration.
 
         :param run: The run the result belongs to.
@@ -480,7 +508,7 @@ class TestPerDimensionRows:
     disagrees with the composite.
     """
 
-    def _scored(self, run, **overrides):
+    def _scored(self, run: EvalRun, **overrides: Any) -> EvalResult:
         """Build a result belonging to ``run``.
 
         :param run: The run the result belongs to.
@@ -701,7 +729,7 @@ class TestPerDimensionRows:
         by_row = {cell.row: cell.value for cell in table.cells}
         assert by_row == {"reply.coverage": 3.0, "reply.grounding": 5.0}
 
-    def _uneven_corpus(self, run):
+    def _uneven_corpus(self, run: EvalRun) -> list[EvalResult]:
         """Two observations of one case and one of another, plus an unscored result.
 
         Deliberately uneven: with one observation per case the two weightings
@@ -850,7 +878,7 @@ class TestPerDimensionRows:
         ],
     )
     def test_the_pooled_caveat_names_the_dispersion_basis_the_weighting_actually_uses(
-        self, weighting, expected
+        self, weighting: str, expected: str
     ) -> None:
         """`_aggregate` branches on weighting, so one sentence cannot cover both.
 
@@ -1058,7 +1086,7 @@ class TestPerDimensionJudgeAttribution:
     whenever a dim's `JudgeConfig` names its own model.
     """
 
-    def _run(self, **overrides):
+    def _run(self, **overrides: Any) -> EvalRun:
         """Build a run pinned to `judge-pin`, with whatever attribution the test states.
 
         :param **overrides: Passed through to ``make_eval_run``.
@@ -1067,7 +1095,7 @@ class TestPerDimensionJudgeAttribution:
         run, _ = _run_with_results(judge_model="judge-pin", **overrides)
         return run
 
-    def _scored(self, run, *dims):
+    def _scored(self, run: EvalRun, *dims: str) -> EvalResult:
         """Build one result scoring each named dim.
 
         :param run: The run to wire the result to.
@@ -1082,7 +1110,7 @@ class TestPerDimensionJudgeAttribution:
             ],
         )
 
-    def _score_rows(self, run, result):
+    def _score_rows(self, run: EvalRun, result: EvalResult) -> list[ScoreRecord]:
         """Project one result and return its `score` rows.
 
         :param run: The run supplying the coordinates.
@@ -1577,18 +1605,23 @@ class TestPlacementHelper:
     @pytest.mark.parametrize(
         "call",
         [
-            pytest.param(lambda run, result: place_results([run], [result], None, source="test"), id="place_results"),
             pytest.param(
-                lambda run, result: project_score_records([run], [result], profile=_JUDGED_HOST),
+                lambda run, result: _unchecked(place_results)([run], [result], None, source="test"), id="place_results"
+            ),
+            pytest.param(
+                lambda run, result: _unchecked(project_score_records)([run], [result], profile=_JUDGED_HOST),
                 id="project_score_records",
             ),
-            pytest.param(lambda run, result: compute_frontier([run], [result]), id="compute_frontier"),
+            pytest.param(lambda run, result: _unchecked(compute_frontier)([run], [result]), id="compute_frontier"),
             pytest.param(
-                lambda run, result: compute_history([run], [result], profile=_JUDGED_HOST), id="compute_history"
+                lambda run, result: _unchecked(compute_history)([run], [result], profile=_JUDGED_HOST),
+                id="compute_history",
             ),
         ],
     )
-    def test_a_caller_that_never_states_archival_is_refused(self, call) -> None:
+    def test_a_caller_that_never_states_archival_is_refused(
+        self, call: Callable[[EvalRun, EvalResult], object]
+    ) -> None:
         """No default, so forgetting archival is a ``TypeError``, not a ``status`` filter blamed.
 
         With a ``None`` default, a caller that narrowed its cohort and omitted the
@@ -1794,7 +1827,7 @@ def _record(
     )
 
 
-def _grid(records):
+def _grid(records: PivotTable) -> dict[tuple[str, str], PivotCell]:
     """Index a pivot's cells by (row, column) for direct assertion.
 
     :param records: A `PivotTable`.
@@ -1949,7 +1982,7 @@ class TestPivotDisclosure:
 class TestPivotWeighting:
     """Weighting is a disclosed choice, and the disclosure matches the arithmetic."""
 
-    def _unbalanced(self):
+    def _unbalanced(self) -> list[ScoreRecord]:
         """One case measured three times at 0.0, another once at 1.0.
 
         :return: Records whose two weightings cannot coincide: equal-per-scenario
@@ -2052,7 +2085,7 @@ class TestPivotWeighting:
 class TestSimpsonsGuard:
     """A pooled ranking the per-row rankings contradict is flagged, not printed bare."""
 
-    def _reversal(self):
+    def _reversal(self) -> list[ScoreRecord]:
         """A textbook reversal: m2 wins every row, m1 wins the pool.
 
         m1 is measured mostly on the easy row and m2 mostly on the hard one, so
@@ -2071,7 +2104,7 @@ class TestSimpsonsGuard:
             _record(model="m2", template="tpl-hard", case="tc-4", value=0.20),
         ]
 
-    def _table(self):
+    def _table(self) -> PivotTable:
         """Pivot the reversal fixture with model on the compared (column) axis.
 
         :return: The `PivotTable`.
@@ -2507,13 +2540,20 @@ class TestPivotPoolingDisclosures:
     METERED = ["candidate", "external", "judge"]
 
     @staticmethod
-    def _result(run, *, case="tc-1", cost=0.10, **overrides):
+    def _result(run: EvalRun, *, case: str = "tc-1", cost: float = 0.10, **overrides: Any) -> EvalResult:
         return make_eval_result(
             eval_run_id=run.id, scope_id=run.scope_id, test_case_id=case, cost_usd=cost, **overrides
         )
 
     @staticmethod
-    def _cost_pivot(runs, results, *, column_factor="template_id", row_factor="model", metric=METRIC_COST_USD):
+    def _cost_pivot(
+        runs: list[EvalRun],
+        results: list[EvalResult],
+        *,
+        column_factor: str = "template_id",
+        row_factor: str = "model",
+        metric: str = METRIC_COST_USD,
+    ) -> PivotTable:
         projection = project_score_records(runs, results, profile=_JUDGED_HOST, archived_run_ids=None)
         return compute_pivot(
             projection.records,
@@ -2740,7 +2780,7 @@ class TestPivotDescribesWhatACellHolds:
         outright — the two failure modes are different and both need to stay so.
         """
 
-        def pivot():
+        def pivot() -> PivotTable:
             return compute_pivot(
                 [_record(metric=METRIC_COST_USD, value=1.0)],
                 row_factor="model",
@@ -2808,7 +2848,7 @@ class TestNormalizeStatusFilter:
             ("budget_stopped", "budget_stopped"),
         ],
     )
-    def test_resolves_every_caller_spelling(self, raw, expected) -> None:
+    def test_resolves_every_caller_spelling(self, raw: str | None, expected: str | None) -> None:
         """Blank means unsupplied (not "all"); `all` lifts the filter at any casing.
 
         The two load-bearing defaults live here: an absent or blank filter means
@@ -2821,7 +2861,7 @@ class TestNormalizeStatusFilter:
         assert normalize_status_filter(raw) == expected
 
     @pytest.mark.parametrize("raw", ["banana", "Completed", "COMPLETED", "complete", "done", "everything", "any"])
-    def test_refuses_a_status_no_run_can_carry(self, raw) -> None:
+    def test_refuses_a_status_no_run_can_carry(self, raw: str) -> None:
         """A filter that can match nothing is refused, never answered with an empty result.
 
         This row set replaces the earlier `("Completed", "Completed")` pin, which
@@ -2914,7 +2954,7 @@ class TestValidateStatusFilter:
             ("cancelled", "cancelled"),
         ],
     )
-    def test_an_unspecified_filter_is_no_filter(self, raw, expected) -> None:
+    def test_an_unspecified_filter_is_no_filter(self, raw: str | None, expected: str | None) -> None:
         """Absent, blank and `all` all mean every run — the distinction from the sibling.
 
         The defect this pins: a scope of 9 runs
@@ -2929,7 +2969,7 @@ class TestValidateStatusFilter:
         assert validate_status_filter(raw) == expected
 
     @pytest.mark.parametrize("raw", ["banana", "Completed", "COMPLETED", "complete", "done", "everything", "any"])
-    def test_refuses_a_status_no_run_can_carry(self, raw) -> None:
+    def test_refuses_a_status_no_run_can_carry(self, raw: str) -> None:
         """The same refusal as the comparison surfaces, on the same rows.
 
         A filter that can match nothing must not be answered with an empty list,
@@ -3137,7 +3177,8 @@ class TestProgramBudget:
         assert budget.total_cost_usd == pytest.approx(0.35)
         assert budget.n_runs == 2
         by_run = {r.run_id: r for r in budget.runs}
-        assert (by_run[run_a.id].cost_usd, by_run[run_a.id].n_results) == (pytest.approx(0.15), 2)
+        assert by_run[run_a.id].cost_usd == pytest.approx(0.15)
+        assert by_run[run_a.id].n_results == 2
         # Cumulative in created_at order: run_a (0.15) then run_b (0.35).
         assert [r.run_id for r in budget.runs] == [run_a.id, run_b.id]
         assert [r.cumulative_cost_usd for r in budget.runs] == pytest.approx([0.15, 0.35])
@@ -3548,7 +3589,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
     WRONG = "case-ambient"
 
     @classmethod
-    def _code_graded(cls):
+    def _code_graded(cls) -> tuple[EvalRun, list[EvalResult]]:
         """A classifier-shaped run: no rubric dims, the grade on ``host_measures``.
 
         :return: Tuple of (run, results) — one right cell and one wrong cell.
@@ -3573,7 +3614,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         return run, [right, wrong]
 
     @classmethod
-    def _exported_rows(cls, run, results):
+    def _exported_rows(cls, run: EvalRun, results: list[EvalResult]) -> list[dict[str, str]]:
         """Serialize through the real export seam and read the CSV back.
 
         :param run: The run supplying coordinates.
@@ -3691,7 +3732,15 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
 class TestCostEstimate:
     """A proposed sweep's cost comes back as an interval from historical per-cell costs."""
 
-    def _history(self, model, costs, *, cassette_mode="off", subject="ent-maple", template_id=None):
+    def _history(
+        self,
+        model: str,
+        costs: Sequence[float],
+        *,
+        cassette_mode: str = "off",
+        subject: str = "ent-maple",
+        template_id: str | None = None,
+    ) -> tuple[EvalRun, list[EvalResult]]:
         """Build one run plus a result per cost, all for one model at one cassette mode."""
         snapshot = make_subject(subject, subject)
         run = make_eval_run(
@@ -3720,18 +3769,18 @@ class TestCostEstimate:
         # Unfiltered, the basis pools both and lands between them — right for "what does a
         # run here cost on average", wrong for either specific proposal.
         pooled = compute_estimate_cost(runs, results, models=["sonnet"], k_runs=1, n_test_cases=1, profile=_JUDGED_HOST)
-        assert pooled.cells[0].predicted.value == pytest.approx(0.55)
+        assert _predicted(pooled.cells[0]).value == pytest.approx(0.55)
 
         cheap = compute_estimate_cost(
             runs, results, models=["sonnet"], k_runs=1, n_test_cases=1, template_id="tpl-cheap", profile=_JUDGED_HOST
         )
-        assert cheap.cells[0].predicted.value == pytest.approx(0.10)
+        assert _predicted(cheap.cells[0]).value == pytest.approx(0.10)
         assert cheap.cells[0].n_historical == 2
 
         dear = compute_estimate_cost(
             runs, results, models=["sonnet"], k_runs=1, n_test_cases=1, template_id="tpl-dear", profile=_JUDGED_HOST
         )
-        assert dear.cells[0].predicted.value == pytest.approx(1.00)
+        assert _predicted(dear.cells[0]).value == pytest.approx(1.00)
 
     def test_an_ad_hoc_run_is_no_basis_for_any_proposed_template(self) -> None:
         """A run built from explicit test cases carries ``template_id=None``, so it matches none.
@@ -3772,9 +3821,12 @@ class TestCostEstimate:
 
         cell = estimate.cells[0]
         # Estimate = mean(0.20) × (2 cases × 1 k) = 0.40, with a non-degenerate band around it.
-        assert cell.predicted.value == pytest.approx(0.40)
-        assert cell.predicted.interval_low is not None and cell.predicted.interval_high is not None
-        assert cell.predicted.interval_low < cell.predicted.value < cell.predicted.interval_high
+        predicted = _predicted(cell)
+        assert predicted.value == pytest.approx(0.40)
+        assert predicted.interval_low is not None and predicted.interval_high is not None
+        assert predicted.interval_low < predicted.value < predicted.interval_high
+        assert estimate.total_interval_low is not None and estimate.total_interval_high is not None
+        assert estimate.total_estimated_cost is not None
         assert estimate.total_interval_low < estimate.total_estimated_cost < estimate.total_interval_high
 
     def test_cost_is_matched_to_the_proposed_cassette_mode(self) -> None:
@@ -3809,7 +3861,7 @@ class TestCostEstimate:
         assert by_model["haiku"].predicted is None
         assert estimate.n_uncovered_models == 1
         # The covered model still contributes; the total prices only what it could.
-        assert estimate.total_estimated_cost == pytest.approx(by_model["sonnet"].predicted.value)
+        assert estimate.total_estimated_cost == pytest.approx(_predicted(by_model["sonnet"]).value)
 
     def test_a_single_historical_observation_has_unknown_spread_not_zero(self) -> None:
         run, results = self._history("sonnet", [0.10])
@@ -3820,9 +3872,9 @@ class TestCostEstimate:
 
         cell = estimate.cells[0]
         assert cell.n_historical == 1
-        assert cell.predicted.value == pytest.approx(0.10)
+        assert _predicted(cell).value == pytest.approx(0.10)
         # One sample: the point stands, the spread is unknown — never a false ± 0.
-        assert (cell.predicted.interval_low, cell.predicted.interval_high) == (None, None)
+        assert (_predicted(cell).interval_low, _predicted(cell).interval_high) == (None, None)
 
     def test_the_subject_filter_narrows_the_historical_basis(self) -> None:
         maple_run, maple_results = self._history("sonnet", [0.10, 0.10], subject="ent-maple")
@@ -3883,8 +3935,8 @@ class TestCostEstimate:
 
         cell = estimate.cells[0]
         assert cell.n_historical == 2
-        assert cell.predicted.value == pytest.approx(0.1956)
-        assert (cell.predicted.interval_low, cell.predicted.interval_high) == (None, None)
+        assert _predicted(cell).value == pytest.approx(0.1956)
+        assert (_predicted(cell).interval_low, _predicted(cell).interval_high) == (None, None)
         assert (estimate.total_interval_low, estimate.total_interval_high) == (None, None)
 
     def test_a_near_identical_pair_never_bounds_out_a_cost_twelve_percent_away(self) -> None:
@@ -3902,9 +3954,10 @@ class TestCostEstimate:
         )
 
         cell = estimate.cells[0]
-        twelve_percent_under = 0.88 * cell.predicted.value
-        assert cell.predicted.interval_low is None or cell.predicted.interval_low <= twelve_percent_under, (
-            f"a two-observation basis bounded the sweep out at {cell.predicted.interval_low}, "
+        predicted = _predicted(cell)
+        twelve_percent_under = 0.88 * predicted.value
+        assert predicted.interval_low is None or predicted.interval_low <= twelve_percent_under, (
+            f"a two-observation basis bounded the sweep out at {predicted.interval_low}, "
             f"excluding a cost only 12% below its own point estimate"
         )
 
@@ -3927,14 +3980,11 @@ class TestCostEstimate:
         )
 
         assert two.cells[0].n_historical == 2
-        assert (two.cells[0].predicted.interval_low, two.cells[0].predicted.interval_high) == (None, None)
+        assert (_predicted(two.cells[0]).interval_low, _predicted(two.cells[0]).interval_high) == (None, None)
         assert three.cells[0].n_historical == 3
-        assert three.cells[0].predicted.interval_low is not None and three.cells[0].predicted.interval_high is not None
-        assert (
-            three.cells[0].predicted.interval_low
-            < three.cells[0].predicted.value
-            < three.cells[0].predicted.interval_high
-        )
+        banded = _predicted(three.cells[0])
+        assert banded.interval_low is not None and banded.interval_high is not None
+        assert banded.interval_low < banded.value < banded.interval_high
 
     def test_the_band_predicts_the_sweep_rather_than_locating_the_historical_mean(self) -> None:
         """A confidence interval on the mean is a narrower claim than the caller is making.
@@ -3956,12 +4006,15 @@ class TestCostEstimate:
         )
 
         cell = estimate.cells[0]
-        half_width = cell.predicted.interval_high - cell.predicted.value
+        predicted = _predicted(cell)
+        assert predicted.interval_high is not None
+        half_width = predicted.interval_high - predicted.value
         sem = standard_error_of_mean(costs)
+        assert sem is not None
         assert half_width > 1.96 * n_obs * sem, "the band is no wider than the confidence interval it replaced"
 
         expected = lognormal_sum_prediction_band(costs, n_obs)
-        assert (cell.predicted.interval_low, cell.predicted.interval_high) == pytest.approx(expected)
+        assert (_predicted(cell).interval_low, _predicted(cell).interval_high) == pytest.approx(expected)
         assert cell.band_basis is not None and "lognormal" in cell.band_basis
 
     def test_a_priced_cell_without_a_band_leaves_the_whole_total_unbracketed(self) -> None:
@@ -3984,8 +4037,8 @@ class TestCostEstimate:
         )
 
         by_model = {cell.model: cell for cell in estimate.cells}
-        assert by_model["sonnet"].predicted.interval_low is not None, "the well-founded cell keeps its own band"
-        assert by_model["haiku"].predicted.interval_low is None
+        assert _predicted(by_model["sonnet"]).interval_low is not None, "the well-founded cell keeps its own band"
+        assert _predicted(by_model["haiku"]).interval_low is None
         assert estimate.total_estimated_cost == pytest.approx(0.30)
         assert (estimate.total_interval_low, estimate.total_interval_high) == (None, None)
 
@@ -4260,7 +4313,7 @@ class TestToolConfigBadge:
     """The candidate's own config differs — usually the point, and previously unsaid."""
 
     @staticmethod
-    def _run(**tool_configs):
+    def _run(**tool_configs: object) -> EvalRun:
         """A run whose subject carries ``tool_configs`` as its resolved tool-config component.
 
         The badge digests the subject's ``resolved_tool_configs`` component -- the configuration
@@ -4385,7 +4438,7 @@ class TestCassetteBadge:
     """
 
     @staticmethod
-    def _run(mode):
+    def _run(mode: str) -> EvalRun:
         snapshot = make_subject("ent-maple", "Maple")
         return make_eval_run(subject_snapshot=snapshot, judge_model="j", simulator_model="s", cassette_mode=mode)
 
@@ -4449,7 +4502,7 @@ class TestDifferenceWasDeclaredAtLaunch:
         assert difference_was_declared_at_launch(["chosen", "chosen"]) is True
 
     @pytest.mark.parametrize("origins", [["chosen", "inherited"], ["subject", "subject"], ["chosen", None]])
-    def test_one_arm_that_inherited_makes_the_whole_difference_undeclared(self, origins) -> None:
+    def test_one_arm_that_inherited_makes_the_whole_difference_undeclared(self, origins: list[str | None]) -> None:
         """Conservative by construction.
 
         A comparison cannot claim to be sweeping an axis one of its arms was never
@@ -4475,7 +4528,9 @@ class TestComparisonSetsScope:
     """
 
     @staticmethod
-    def _run(run_id, *, cassette_mode="off", test_case_ids=("tc-1",), subject="ent-maple"):
+    def _run(
+        run_id: str, *, cassette_mode: str = "off", test_case_ids: Sequence[str] = ("tc-1",), subject: str = "ent-maple"
+    ) -> EvalRun:
         snapshot = make_subject(subject, "Maple")
         return make_eval_run(
             id=run_id,
@@ -4487,10 +4542,10 @@ class TestComparisonSetsScope:
         )
 
     @staticmethod
-    def _result(run_id, scored_at):
+    def _result(run_id: str, scored_at: str) -> EvalResult:
         return make_eval_result(eval_run_id=run_id, scored_at=scored_at)
 
-    def _campaign_shaped_group(self):
+    def _campaign_shaped_group(self) -> tuple[list[EvalRun], list[EvalRun]]:
         """Four campaign members that recorded `off`, beside two non-members that did not.
 
         A campaign's shape, reduced to what decides the badge.
@@ -4690,7 +4745,7 @@ def _fr_result(
         ``None`` stamps the current one, as the runner does.
     :return: The constructed ``EvalResult``.
     """
-    overrides = dict(
+    overrides: dict[str, Any] = dict(
         eval_run_id=run.id,
         scope_id=run.scope_id,
         model=model,
@@ -4742,7 +4797,7 @@ def _point_by_model(subject_frontier: SubjectFrontier, model: str) -> FrontierPo
     return matches[0]
 
 
-def _fr_cases(run, n, *, spread=False, **kwargs):
+def _fr_cases(run: EvalRun, n: int, *, spread: bool = False, **kwargs: Any) -> list[EvalResult]:
     """``n`` results of one contestant, one per test case ``tc1``..``tc<n>``, each built by :func:`_fr_result`.
 
     The frontier decides domination and its bar by test over cases, so a fixture that is to show either
@@ -4753,7 +4808,7 @@ def _fr_cases(run, n, *, spread=False, **kwargs):
     case and a t-test reads it.
     """
 
-    def scaled(index):
+    def scaled(index: int) -> dict[str, Any]:
         if not spread:
             return kwargs
         factor = 1.0 + 0.02 * (index % 3)
@@ -5170,7 +5225,7 @@ class TestBothLensesGateOnTheIdentityVersion:
 
     def test_a_series_whose_older_run_recorded_its_lever_map_runs_through_the_bump(self) -> None:
         """Today's predicate over the run's recorded map reproduces the key, so the older stamp splits nothing."""
-        levers: dict = {}
+        levers: dict[str, SweepableValue] = {}
         key = compute_variant_key(levers)
         before = _fr_run(variant_levers=levers, identity_version=IDENTITY_VERSION - 1)
         after = _fr_run(variant_levers=levers, identity_version=IDENTITY_VERSION)
@@ -5522,7 +5577,7 @@ class TestFrontierCassetteSpan:
     as a side effect of a rendering fix and move every historical variant's identity.
     """
 
-    def _corpus(self):
+    def _corpus(self) -> tuple[list[EvalRun], list[EvalResult]]:
         capture = _fr_run(cassette_mode="capture")
         replay = _fr_run(cassette_mode="replay")
         results = [
@@ -5617,7 +5672,7 @@ class TestFrontierTemplateSpan:
     fix. So the pooling stays and the row says what it pooled.
     """
 
-    def _corpus(self):
+    def _corpus(self) -> tuple[list[EvalRun], list[EvalResult]]:
         easy = _fr_run(template_id="single_turn_plain_v1")
         hard = _fr_run(template_id="multi_turn_tools_v1")
         results = [
@@ -5790,7 +5845,7 @@ class TestFrontierTemplateSpan:
 class TestFrontierDomination:
     """A domination is shown by test before it is flagged; dominated points are flagged, not dropped."""
 
-    def _corpus(self):
+    def _corpus(self) -> tuple[EvalRun, list[EvalResult]]:
         """Three contestants over eight cases — enough for a constant gap to separate after Holm over three pairs.
 
         - cheap: passes every case, about $0.25, 50 ms (each varying a little by case).
@@ -6109,7 +6164,7 @@ class TestFrontierAllFailedVariantRanksAtZero:
 class TestFrontierBar:
     """The bar gates pass^k, is echoed back, and picks the cheapest above it."""
 
-    def _corpus(self):
+    def _corpus(self) -> tuple[EvalRun, list[EvalResult]]:
         # Twenty cases each: an all-pass interval clears 0.8 from twenty (at twelve it reaches only 0.70).
         run = _fr_run()
         results = [
@@ -6245,7 +6300,7 @@ class TestFrontierBarValidation:
     """A bar outside [0, 1] is refused, not clamped."""
 
     @pytest.mark.parametrize("bad_bar", [-0.1, 1.5, 2.0])
-    def test_out_of_range_bar_raises(self, bad_bar) -> None:
+    def test_out_of_range_bar_raises(self, bad_bar: float) -> None:
         run = _fr_run()
         result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
 
@@ -6262,14 +6317,14 @@ class TestFrontierPassHatKPoolsRepeatRuns:
     """
 
     @staticmethod
-    def _run(context_key, *, k_runs=1):
+    def _run(context_key: str, *, k_runs: int = 1) -> EvalRun:
         """A run as a launch records it: its context and the digest of what its template measured."""
         return _fr_run(
             context_key=context_key, identity_version=IDENTITY_VERSION, k_runs=k_runs, template_digest="digest-1"
         )
 
     @staticmethod
-    def _served(result):
+    def _served(result: EvalResult) -> EvalResult:
         """``result`` with a candidate call whose response named the model that answered it."""
         usage = RoleUsage(role="candidate", model=result.model, cost_usd=0.01, call_count=1, served_model="m-served")
         return result.model_copy(update={"usage": [usage]})
@@ -6396,7 +6451,7 @@ class TestFrontierHonestSampleSize:
 _BOUNDARY_DIM = "refuse.harm"
 
 
-def _with_boundary(results, score):
+def _with_boundary(results: list[EvalResult], score: int) -> list[EvalResult]:
     """``results`` each scored ``score`` on a pass/fail boundary (guardrail) dimension, as the judge stamps it."""
     for result in results:
         result.rubric_scores = [
@@ -6409,7 +6464,7 @@ def _with_boundary(results, score):
 class TestFrontierBoundaryPillar:
     """#613: a contestant that breaches a boundary dimension is disqualified, named by it, and never the pick."""
 
-    def _corpus(self):
+    def _corpus(self) -> tuple[EvalRun, list[EvalResult]]:
         run = _fr_run()
         control = _with_boundary(_fr_cases(run, 20, model="m-ctrl", variant_key="vk-ctrl", roles={"candidate": 0.5}), 1)
         cheap = _with_boundary(_fr_cases(run, 20, model="m-cheap", variant_key="vk-cheap", roles={"candidate": 0.1}), 0)
@@ -6754,12 +6809,14 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
     the rule is the catalog's and not a metric list kept in step by hand.
     """
 
-    def _declining(self, metric, **scores):
+    def _declining(self, metric: str, **scores: tuple[float, float]) -> HistoryResult:
         # Ten cases: every case moves by one amount, read by the bounded test on the 1-5 range (#597), which shows a
         # three-point move from ten cases and not from six.
         cases = [f"c{index}" for index in range(1, 11)]
-        run_a, res_a = _hist_run(cases=cases, created_at="2026-07-01T00:00:00Z", **{k: v[0] for k, v in scores.items()})
-        run_b, res_b = _hist_run(cases=cases, created_at="2026-07-02T00:00:00Z", **{k: v[1] for k, v in scores.items()})
+        before: dict[str, Any] = {k: v[0] for k, v in scores.items()}
+        after: dict[str, Any] = {k: v[1] for k, v in scores.items()}
+        run_a, res_a = _hist_run(cases=cases, created_at="2026-07-01T00:00:00Z", **before)
+        run_b, res_b = _hist_run(cases=cases, created_at="2026-07-02T00:00:00Z", **after)
         return compute_history(
             [run_a, run_b],
             res_a + res_b,
@@ -6843,7 +6900,7 @@ class TestHistoryCassetteStep:
     crossed.
     """
 
-    def _series(self, mode_a, mode_b):
+    def _series(self, mode_a: str, mode_b: str) -> list[SeriesPoint]:
         run_a, res_a = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z", variant_key="vk-1")
         run_b, res_b = _hist_run(cases=["c1", "c2"], score=3, created_at="2026-07-02T00:00:00Z", variant_key="vk-1")
         run_a, run_b = (
@@ -6894,8 +6951,10 @@ class TestHistoryCassetteStep:
         """Descriptive, exactly as `crosses_epoch` is — no label is withheld, no delta adjusted."""
         points = self._series("capture", "replay")
 
-        assert points[1].regression.label
-        assert points[1].regression.delta is not None
+        regression = points[1].regression
+        assert regression is not None
+        assert regression.label
+        assert regression.delta is not None
 
 
 class TestHistory:
@@ -7418,6 +7477,7 @@ class TestLatencyPartition:
 
         assert partition.orchestration_ms == 150.0
         assert partition.withheld is None
+        assert partition.llm_ms is not None and partition.tool_ms is not None
         assert partition.llm_ms + partition.tool_ms + partition.orchestration_ms == pytest.approx(partition.total_ms)
 
     def test_the_disjoint_measures_are_not_folded_into_the_remainder(self) -> None:
@@ -7442,6 +7502,7 @@ class TestLatencyPartition:
         partition = decompose_total_ms(LatencyMetrics(llm_ms=600.0))
 
         assert partition.orchestration_ms is None
+        assert partition.withheld is not None
         assert WITHHELD_UNMEASURED_COMPONENT in partition.withheld
         assert "total_ms" in partition.withheld
         assert "tool_ms" in partition.withheld
@@ -7461,6 +7522,7 @@ class TestLatencyPartition:
         partition = decompose_total_ms(LatencyMetrics(total_ms=100.0, llm_ms=600.0, tool_ms=250.0))
 
         assert partition.orchestration_ms is None
+        assert partition.withheld is not None
         assert WITHHELD_PARTS_EXCEED_WHOLE in partition.withheld
         assert "750ms" in partition.withheld
 
@@ -7471,6 +7533,7 @@ class TestLatencyPartition:
         """
         partition = decompose_total_ms(LatencyMetrics(total_ms=100.0, llm_ms=100.0, tool_ms=0.002))
 
+        assert partition.withheld is not None
         assert "0.002ms" in partition.withheld
 
     def test_the_tolerance_is_pinned_at_a_nanosecond(self) -> None:
@@ -7623,7 +7686,15 @@ class TestCompletenessDisclosure:
         assert completeness_disclosure(record) is None
 
 
-def _short_run(status, completeness, *, subject_id="ent-maple", model="sonnet", n_results=2, **run_overrides):
+def _short_run(
+    status: str,
+    completeness: RunCompleteness | None,
+    *,
+    subject_id: str = "ent-maple",
+    model: str = "sonnet",
+    n_results: int = 2,
+    **run_overrides: Any,
+) -> tuple[EvalRun, list[EvalResult]]:
     """Build one run of a given status and completeness, plus the results it measured.
 
     :param status: The run's terminal status.
@@ -7714,7 +7785,9 @@ class TestAggregatorsDiscloseShortRuns:
     """
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_projection_carries_the_sentence_for_a_short_run(self, status, completeness) -> None:
+    def test_the_projection_carries_the_sentence_for_a_short_run(
+        self, status: str, completeness: RunCompleteness | None
+    ) -> None:
         run, results = _short_run(status, completeness)
 
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7723,7 +7796,9 @@ class TestAggregatorsDiscloseShortRuns:
         assert DEGRADED_RUN_CLAUSE in projection.completeness_disclosures[run.id]
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_pivot_discloses_the_short_runs_behind_its_cells(self, status, completeness) -> None:
+    def test_the_pivot_discloses_the_short_runs_behind_its_cells(
+        self, status: str, completeness: RunCompleteness | None
+    ) -> None:
         """Every cell pools the shorter denominator, so the table states it once."""
         short, short_results = _short_run(status, completeness)
         whole, whole_results = _short_run("completed", COMPLETE, model="opus")
@@ -7748,7 +7823,9 @@ class TestAggregatorsDiscloseShortRuns:
         assert table.n_degraded_observations == 2, "the weight of the caveat is how many rows came from the short run"
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_frontier_marks_the_contestant_it_ranked_on_a_short_run(self, status, completeness) -> None:
+    def test_the_frontier_marks_the_contestant_it_ranked_on_a_short_run(
+        self, status: str, completeness: RunCompleteness | None
+    ) -> None:
         """The verdict surface: the pass^k and the cost a pick is named on pooled it."""
         short, short_results = _short_run(status, completeness)
         whole, whole_results = _short_run("completed", COMPLETE, model="opus")
@@ -7763,7 +7840,9 @@ class TestAggregatorsDiscloseShortRuns:
         assert points["opus"].completeness_disclosures == {}, "a caveat must not spread to a contestant it is not about"
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_history_point_carries_the_sentence_beside_its_regression_verdict(self, status, completeness) -> None:
+    def test_the_history_point_carries_the_sentence_beside_its_regression_verdict(
+        self, status: str, completeness: RunCompleteness | None
+    ) -> None:
         """A point IS one run, and it is handed a verdict against a complete neighbour."""
         whole, whole_results = _short_run("completed", COMPLETE, created_at="2026-08-01T00:00:00Z")
         short, short_results = _short_run(status, completeness, created_at="2026-08-02T00:00:00Z")
@@ -7775,19 +7854,21 @@ class TestAggregatorsDiscloseShortRuns:
         assert short.id in result.completeness_disclosures
         assert result.n_degraded_observations == 2
         by_run = {point.run_id: point for point in result.series[0].points}
-        assert by_run[short.id].completeness_disclosure is not None
-        assert DEGRADED_RUN_CLAUSE in by_run[short.id].completeness_disclosure
+        disclosure = by_run[short.id].completeness_disclosure
+        assert disclosure is not None
+        assert DEGRADED_RUN_CLAUSE in disclosure
         assert by_run[whole.id].completeness_disclosure is None
         assert by_run[short.id].regression is not None, (
             "the point still gets its verdict — the mark qualifies it, not replaces it"
         )
 
     @pytest.mark.parametrize("surface", ["pivot", "frontier", "history"])
-    def test_a_corpus_of_whole_runs_discloses_nothing_on_any_surface(self, surface) -> None:
+    def test_a_corpus_of_whole_runs_discloses_nothing_on_any_surface(self, surface: str) -> None:
         """The note is a warning; a surface that always shows one has trained the reader to skip it."""
         run, results = _short_run("completed", COMPLETE)
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
 
+        answer: PivotTable | FrontierResult | HistoryResult
         if surface == "pivot":
             answer = compute_pivot(
                 projection.records,
@@ -7806,11 +7887,12 @@ class TestAggregatorsDiscloseShortRuns:
         assert answer.n_degraded_observations == 0
 
     @pytest.mark.parametrize("surface", ["pivot", "frontier", "history"])
-    def test_a_run_with_no_completeness_record_is_not_warned_about(self, surface) -> None:
+    def test_a_run_with_no_completeness_record_is_not_warned_about(self, surface: str) -> None:
         """Absence of a record is not evidence of a shortfall — the rule `completeness_disclosure` sets."""
         run, results = _short_run("completed", None)
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
 
+        answer: PivotTable | FrontierResult | HistoryResult
         if surface == "pivot":
             answer = compute_pivot(
                 projection.records,
@@ -8103,7 +8185,7 @@ class TestGoalStatePivots:
     """A goal_state cell is one check's pass rate only when goal_check pins it — and says so when it does not."""
 
     @staticmethod
-    def goal_state_records():
+    def goal_state_records() -> list[ScoreRecord]:
         from threetears.evals.schema.models import GoalStateOutcome
 
         run, _ = _run_with_results()

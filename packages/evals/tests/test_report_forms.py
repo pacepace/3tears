@@ -27,8 +27,9 @@ import functools
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 from unittest import mock
 
 import pytest
@@ -38,7 +39,7 @@ from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.report.input_build import report_input
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.campaign_readings import AggregateFigure, CampaignReadings
+from threetears.evals.analysis.campaign_readings import AggregateFigure, CampaignReadings, campaign_readings
 from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell, TableColumn, bare_columns
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, ChartReference
@@ -153,7 +154,8 @@ def _arms_by_measure(held: ReportInput) -> TableBlock | None:
 def test_every_measure_the_input_holds_has_one_form(name: str) -> None:
     held = _written_inputs()[name]
     forms = PageForms.of(held)
-    expected = {(key, "measure") for key in held.measures} | {(key, "judged") for key in held.judged}
+    expected: set[tuple[str, str | None]] = {(key, "measure") for key in held.measures}
+    expected |= {(key, "judged") for key in held.judged}
     expected |= {(contrast.measure, contrast.kind) for contrast in held.contrasts}
     # A scoreboard that counts passes states the pass rate, whose form is there whether or not a comparison reads it.
     boards = [aspect_board(held, None), *(aspect_board(held, aspect.id) for aspect in held.aspects)]
@@ -269,7 +271,7 @@ def _scaled() -> _CodePage:
     """The scaled campaign's code page, and the readings and aspects' pages it was laid out over."""
     corpus = hot_path_corpus(scale=1)
     with mock.patch.object(
-        service, "build_campaign_report_in_aspect_forms", wraps=service.build_campaign_report_in_aspect_forms
+        service, "build_campaign_report_in_aspect_forms", wraps=build_campaign_report_in_aspect_forms
     ) as built:
         page = campaign_report(corpus.host, corpus.campaign.id, HOT_PATH_SCOPE)
     (call,) = built.call_args_list
@@ -513,7 +515,7 @@ def test_the_code_page_s_readings_set_the_precision_of_every_aspect_page_the_eng
     rate interval, each aspect's page, built by the service in the campaign's forms, prints the pass rate at the
     tenth that interval sets, as the code page does. An aspect page built over its own bundle alone, or in forms that
     leave the readings out, would read its own whole points."""
-    real = service.campaign_readings
+    real = campaign_readings
     monkeypatch.setattr(service, "campaign_readings", lambda *args, **kwargs: _narrowed_readings(real(*args, **kwargs)))
     page = _scaled_page(two_aspects=True)
     tenth = re.compile(r"[+-]\d+\.\d pts")
@@ -872,7 +874,20 @@ def test_a_column_of_measured_figures_reads_at_its_set_s_decimals(
 _RESPELLED_ROLES = frozenset({"half_width", "pass_k", "share"})
 
 
-def _respelled(forms: PageForms, entry) -> bool:
+class _LedgerEntry(Protocol):
+    """What a check reads of one entry of a page's ledger: the figure's measure, its kind and its role."""
+
+    @property
+    def measure(self) -> str: ...
+
+    @property
+    def kind(self) -> str | None: ...
+
+    @property
+    def role(self) -> str: ...
+
+
+def _respelled(forms: PageForms, entry: _LedgerEntry) -> bool:
     """Whether a code page prints an issued figure (an entry of ``forms.ledger``) bare, under a head naming its unit,
     by its measure and role:
 
@@ -1000,6 +1015,9 @@ def _printing(cell: TableCell, bare: bool) -> str | None:
 #: too (a table of an arm per row and a measure per column): what each rate or money cell states a figure of.
 _RowMeasures = Mapping[tuple[str, int] | tuple[str, int, str], tuple[str, str]]
 
+#: Each row's measure as a check builds them: a row by its table and place, or a cell by its column too.
+_RowMeasureMap = dict[tuple[str, int] | tuple[str, int, str], tuple[str, str]]
+
 
 def _unheld(
     tables: list[TableBlock], forms: PageForms, *, by_measure: bool = False, measures: _RowMeasures | None = None
@@ -1107,12 +1125,12 @@ def test_every_rate_and_money_cell_a_code_page_prints_is_in_its_ledger(page_of: 
 _NO_MEASURE_CODE_CELLS = frozenset({("precision", "between"), ("test_setup", "detail")})
 
 
-def _pass_rate_rows(_page: CampaignReport, tables: list[TableBlock]) -> dict[tuple[str, int], tuple[str, str]]:
+def _pass_rate_rows(_page: CampaignReport, tables: list[TableBlock]) -> _RowMeasureMap:
     """Each row's measure on a code page of pass-rate readings: every one is the pass rate's, how each trial ended."""
     return {(table.name, at): (TRIAL_PASS_NAME, "trial") for table in tables for at in range(len(table.rows))}
 
 
-def _measurement_rows(_page: CampaignReport, tables: list[TableBlock]) -> dict[tuple[str, int], tuple[str, str]]:
+def _measurement_rows(_page: CampaignReport, tables: list[TableBlock]) -> _RowMeasureMap:
     """Each row's measure on a code page of measurements, read off the readings its campaign's page is built from, in
     the order its tables lay their rows out: the measures table's a reading per row, the scorecard's an aspect's
     measure per row."""
@@ -1121,7 +1139,7 @@ def _measurement_rows(_page: CampaignReport, tables: list[TableBlock]) -> dict[t
         "measures": [reading.measure for reading in read],
         "scorecard": [measure for _aspect, measure in dict.fromkeys((one.aspect, one.measure) for one in read)],
     }
-    expected: dict[tuple[str, int], tuple[str, str]] = {}
+    expected: _RowMeasureMap = {}
     for table in tables:
         if table.name in by_table:
             assert len(by_table[table.name]) == len(table.rows), table.name
@@ -1140,7 +1158,7 @@ def _measurement_rows(_page: CampaignReport, tables: list[TableBlock]) -> dict[t
 )
 def test_every_rate_and_money_cell_a_code_page_prints_is_held_under_its_measure(
     page_of: Callable[[], CampaignReport],
-    measures_of: Callable[[CampaignReport, list[TableBlock]], dict[tuple[str, int], tuple[str, str]]],
+    measures_of: Callable[[CampaignReport, list[TableBlock]], _RowMeasureMap],
 ) -> None:
     """The code page's tables hold each rate and money cell under the measure its row states a figure of (the pass
     rate's levels, changes, pass^k and half-widths; each measure's value and interval), read off the page's readings,
@@ -1213,18 +1231,18 @@ def test_a_cell_recorded_under_another_measure_fails_the_written_and_code_pages_
         (("options", 0, "pass_rate"), "options.pass_rate"),
         (("arms_by_measure", 0, "measure:cost_usd"), "arms_by_measure.measure:cost_usd"),
     ):
-        moved = {**measures, cell: ("another_measure", "measure")}
+        moved: _RowMeasureMap = {**measures, cell: ("another_measure", "measure")}
         _, misheld = _unheld(tables, forms, by_measure=True, measures=moved)
         assert misheld and all(line.startswith(printed) and "another_measure" in line for line in misheld), misheld
 
     page, forms = _page_and_forms(lambda: s3_measurement().page())
     tables = [block for block in page.blocks if isinstance(block, TableBlock) and block.name == "scorecard"]
-    moved = {**_measurement_rows(page, tables), ("scorecard", 0): ("another_measure", "measure")}
-    _, misheld = _unheld(tables, forms, by_measure=True, measures=moved)
+    relocated: _RowMeasureMap = {**_measurement_rows(page, tables), ("scorecard", 0): ("another_measure", "measure")}
+    _, misheld = _unheld(tables, forms, by_measure=True, measures=relocated)
     assert misheld and all(line.startswith("scorecard.") and "another_measure" in line for line in misheld), misheld
 
 
-def _slice_rows(slices: list[Mapping[str, Mapping[str, object]]], arms: list[str]) -> list[str]:
+def _slice_rows(slices: Sequence[Mapping[str, Mapping[str, object]]], arms: list[str]) -> list[str]:
     """A slice table's measure per row, as it lays them out: each slice in the input's order, each measure the slices
     hold in the order they first hold it, a row wherever an arm the table shows holds the measure there."""
     measures = list(dict.fromkeys(key for per_arm in slices for figures in per_arm.values() for key in figures))
@@ -1296,7 +1314,7 @@ def _aspect_pages(source: str) -> dict[str, tuple[Report, PageForms]]:
     return pages
 
 
-def _aspect_row_measures(page: Report, tables: list[TableBlock]) -> dict[tuple[str, int], tuple[str, str]]:
+def _aspect_row_measures(page: Report, tables: list[TableBlock]) -> _RowMeasureMap:
     """Each row's measure on an aspect's page, read off its evidence in the order its tables lay their rows out: a
     contrast's row by the contrast (one under the case floor states none and has no row), a guardrail's by its check, a
     bar's by its verdict, a reading's by the heading it is printed under, and every scoreboard row's cost by the cost
@@ -1304,7 +1322,7 @@ def _aspect_row_measures(page: Report, tables: list[TableBlock]) -> dict[tuple[s
     bundle = page.bundle
     surface = bundle_decision_surface(bundle)
     rulers = report_rulers(surface, bundle.measure_catalog)
-    contrasts = [
+    contrasts: list[tuple[str, str]] = [
         (comparison.name, comparison.reading)
         for family in bundle.multiple_comparisons.families
         for comparison in family.comparisons
@@ -1325,7 +1343,7 @@ def _aspect_row_measures(page: Report, tables: list[TableBlock]) -> dict[tuple[s
         )
         for name in bundle.measure_catalog
     } | {judged_heading(cell.dimension): (cell.dimension, "judged") for one in surface.cells for cell in one.judged}
-    expected: dict[tuple[str, int], tuple[str, str]] = {}
+    expected: _RowMeasureMap = {}
     for table in tables:
         if table.name in by_table:
             assert len(by_table[table.name]) == len(table.rows), table.name
@@ -1352,7 +1370,7 @@ def test_every_rate_and_money_cell_an_aspect_page_prints_is_in_its_ledger_under_
         assert not missing, (name, missing)
         measures = _aspect_row_measures(page, tables)
         drawn = {table.name for table in tables} & {"comparisons", "bars", "scoreboard"}
-        assert {table for table, _ in measures} >= drawn, name
+        assert {key[0] for key in measures} >= drawn, name
         _, misheld = _unheld(tables, forms, by_measure=True, measures=measures)
         assert not misheld, (name, misheld)
 
@@ -1379,7 +1397,7 @@ def test_a_cell_recorded_under_another_measure_fails_the_aspect_page_s_check() -
     page, forms = _aspect_pages("s1_change")["s1 change/billing"]
     tables = [block for block in page.blocks if isinstance(block, TableBlock)]
     measures = _aspect_row_measures(page, tables)
-    moved = {**measures, ("comparisons", 0): ("another_measure", "measure")}
+    moved: _RowMeasureMap = {**measures, ("comparisons", 0): ("another_measure", "measure")}
     _, misheld = _unheld(tables, forms, by_measure=True, measures=moved)
     assert misheld and all(line.startswith("comparisons.") and "another_measure" in line for line in misheld), misheld
 
@@ -1411,6 +1429,7 @@ def test_a_chart_of_one_measure_records_each_value_it_draws_under_that_measure()
     )
     forms = PageForms.off_page()
     drawn = forms.chart_texts(data, measure="accuracy", kind="measure")
+    assert isinstance(drawn, BarsChart) and drawn.rows is not None
     (row,) = drawn.rows
     assert [(entry.measure, entry.kind, entry.role, entry.value, entry.text) for entry in forms.ledger] == [
         ("accuracy", "measure", "level", 62.9, row.value_text),
@@ -1640,7 +1659,7 @@ def test_the_key_walk_reaches_every_family() -> None:
     assert not unreached, sorted(unreached)
 
 
-def _tabled(held: ReportInput) -> dict[str, set[tuple[str, str, str]]]:
+def _tabled(held: ReportInput) -> dict[str, set[tuple[str, str | None, str]]]:
     """Every figure of a measure the page's tables print, by its value (to ten significant figures, which no
     rounding a table applies touches), with the measure, kind and role each is held under."""
     forms = PageForms.of(held)
@@ -1648,14 +1667,16 @@ def _tabled(held: ReportInput) -> dict[str, set[tuple[str, str, str]]]:
     every_table(held, look, forms=forms)
     arms_table(held, look, (), forms=forms)
     arms_key(held, look, forms=forms)
-    held_figures: dict[str, set[tuple[str, str, str]]] = {}
+    held_figures: dict[str, set[tuple[str, str | None, str]]] = {}
     for entry in forms.ledger:
         if entry.measure and entry.role in _FIGURE_ROLES and isinstance(entry.value, float):
             held_figures.setdefault(f"{entry.value:.10g}", set()).add((entry.measure, entry.kind, entry.role))
     return held_figures
 
 
-def _held_as(figure: Figure, tabled: Mapping[str, set[tuple[str, str, str]]], held: ReportInput) -> tuple[str, ...]:
+def _held_as(
+    figure: Figure, tabled: Mapping[str, set[tuple[str, str | None, str]]], held: ReportInput
+) -> tuple[str | None, ...]:
     """The table cell a key's figure is the figure of, by its value, never by how either prints it: its measure, kind
     and role, or nothing where no one cell's figure is the key's.
 
@@ -1721,7 +1742,7 @@ def test_a_key_records_a_figure_a_table_prints_under_the_measure_and_role_the_ta
     tabled = _tabled(held)
     forms = PageForms.of(held)
     checked: set[str] = set()
-    misheld: list[tuple[str, str, tuple[str, ...], set[tuple[str, str, str]]]] = []
+    misheld: list[tuple[str, str, tuple[str | None, ...], set[tuple[str, str | None, str]]]] = []
     for key in _every_key(name, _family_forms()):
         try:
             figure = resolve(key, held)
@@ -1733,7 +1754,7 @@ def test_a_key_records_a_figure_a_table_prints_under_the_measure_and_role_the_ta
             continue
         start = len(forms.ledger)
         written = format_figure(figure, forms=forms)
-        recorded = {
+        recorded: set[tuple[str, str | None, str]] = {
             (entry.measure, entry.kind, entry.role) for entry in forms.ledger[start:] if entry.role != "interval"
         }
         if recorded != {cell}:

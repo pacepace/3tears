@@ -33,10 +33,11 @@ from threetears.evals.analysis.report.model import (
     TableCell,
 )
 
+from packages.evals.tests.json_support import json_at, json_list, json_number
 from packages.evals.tests.report_shapes_support import SHAPES, Shape, s1_change, s3_measurement, s4_change
 
 #: A campaign's own sections, which no aspect page holds.
-_CAMPAIGN_SECTIONS = ("answer", "warnings", "scorecard", "findings", "next", "provenance")
+_CAMPAIGN_SECTIONS: tuple[ReportSection, ...] = ("answer", "warnings", "scorecard", "findings", "next", "provenance")
 
 
 @pytest.mark.parametrize("name", ["s1", "s4"])
@@ -57,7 +58,7 @@ def test_a_campaign_page_heads_every_section_in_reading_order_its_own_among_an_a
 @pytest.mark.parametrize("name", ["s1", "s2"])
 @pytest.mark.parametrize("section", ["scorecard", "findings", "next", "provenance"])
 def test_a_block_in_a_campaign_s_own_headed_section_is_laid_out_under_its_heading_before_the_folds(
-    section: str, name: str
+    section: ReportSection, name: str
 ) -> None:
     page = SHAPES[name]().page()
     said = f"A line placed in {section}."
@@ -73,7 +74,7 @@ def test_a_block_in_a_campaign_s_own_headed_section_is_laid_out_under_its_headin
 
 
 @pytest.mark.parametrize("section", sorted(_CAMPAIGN_SECTIONS))
-def test_an_aspect_s_page_refuses_a_block_in_a_campaign_s_own_section(section: str) -> None:
+def test_an_aspect_s_page_refuses_a_block_in_a_campaign_s_own_section(section: ReportSection) -> None:
     report = next(iter(s4_change().reports.values()))
     with pytest.raises(ValidationError, match=f"lays out no section {section}"):
         Report.model_validate(
@@ -141,7 +142,8 @@ def test_a_cost_quality_chart_draws_a_point_per_arm_and_prints_every_figure_as_a
     # The table states cost per 1,000 replies, as the chart's axis does: $0.004 a reply is $4. Each cost carries its
     # dollar sign as the scoreboard writes it (P17), so the head names the count alone.
     assert headers == ["Arm", "Cost per 1,000 replies", "Interval", "Pass rate (%)", "Interval (%)"]
-    assert chart.kit_chart()[1]["x_title"] == "Cost per 1,000 replies"  # type: ignore[index]
+    drawn = chart.kit_chart()
+    assert drawn is not None and drawn[1]["x_title"] == "Cost per 1,000 replies"
     assert [row[0] for row in rows] == ["alpha", "beta"]
     # One form over the chart's costs (#993): $0.80 needs cents, so $4 beside it reads $4.00.
     assert (rows[0][1], rows[0][2], rows[1][1]) == ("$4.00", "$3.60 to $4.40", "$0.80"), rows
@@ -184,9 +186,9 @@ def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_wor
     assert drawn is not None
     kind, data = drawn
     assert kind == "scatter_frontier" and "frontier" not in data, "no frontier is tested, so none is drawn"
-    points = data["points"]
-    assert isinstance(points, list) and [point["label"] for point in points] == ["alpha", "beta"]  # type: ignore[index]
-    assert points[0]["tip"] == [  # type: ignore[index]
+    points = json_list(data, "points")
+    assert [json_at(point, "label") for point in points] == ["alpha", "beta"]
+    assert json_at(points, 0, "tip") == [
         "alpha",
         # One form over the chart (#993), its interval on the chart's ruler: never $4 beside $0.8, nor a cost under a
         # cent spelled per reply.
@@ -194,8 +196,8 @@ def test_a_cost_quality_chart_is_drawn_one_point_per_arm_with_its_figures_in_wor
         "pass rate 85% (80 to 90)",
     ]
     # Each axis is set to the data (the review's P46): it holds every interval end, within 0 to 100 for the pass rate.
-    x_low, x_high = data["x_domain"]  # type: ignore[misc]
-    y_low, y_high = data["y_domain"]  # type: ignore[misc]
+    x_low, x_high = json_number(data, "x_domain", 0), json_number(data, "x_domain", 1)
+    y_low, y_high = json_number(data, "y_domain", 0), json_number(data, "y_domain", 1)
     assert 0 < x_low <= 0.72 and x_high >= 4.4, data["x_domain"]
     assert 0 < y_low <= 55 and 90 <= y_high <= 100, data["y_domain"]
 

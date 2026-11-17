@@ -24,7 +24,7 @@ from packages.evals.tests.off_loop import off_loop
 
 # parity-with: threetears.evals.gen.variation_gen.EvalTestCaseStore
 class _FakeStorage:
-    def __init__(self, existing: list[EvalTestCase] | None = None):
+    def __init__(self, existing: list[EvalTestCase] | None = None) -> None:
         self.test_cases: list[EvalTestCase] = list(existing or [])
         self.saved: list[EvalTestCase] = []
 
@@ -51,7 +51,7 @@ class _FakeLLM:
 
     model_name = "writer-model"
 
-    def __init__(self, responses: list[str], *, ceilings: list[float | None] | None = None):
+    def __init__(self, responses: list[str], *, ceilings: list[float | None] | None = None) -> None:
         self._responses = list(responses)
         self._ceilings = list(ceilings) if ceilings is not None else None
         self.calls: list[tuple[str, str]] = []
@@ -728,7 +728,7 @@ async def test_price_variations_refuses_a_template_no_model_writes() -> None:
 class _FakeThreadRecordingCaseStore(_FakeStorage):
     """Records the thread each store call ran on."""
 
-    def __init__(self, threads: list[tuple[str, int]], existing: list[EvalTestCase] | None = None):
+    def __init__(self, threads: list[tuple[str, int]], existing: list[EvalTestCase] | None = None) -> None:
         super().__init__(existing)
         self._threads = threads
 
@@ -745,7 +745,7 @@ class _FakeThreadRecordingCaseStore(_FakeStorage):
 class _FakeThreadRecordingLedger:
     """Records the thread each ledger write ran on."""
 
-    def __init__(self, threads: list[tuple[str, int]]):
+    def __init__(self, threads: list[tuple[str, int]]) -> None:
         self._threads = threads
         self.rows: list[OutOfRunSpend] = []
 
@@ -758,7 +758,7 @@ class _FakeThreadRecordingLedger:
 class _FakeThreadRecordingLLM(_FakeLLM):
     """Records the thread each model call ran on — the loop's, since the client is bound to it."""
 
-    def __init__(self, responses: list[str], threads: list[tuple[str, int]]):
+    def __init__(self, responses: list[str], threads: list[tuple[str, int]]) -> None:
         super().__init__(responses)
         self._threads = threads
 

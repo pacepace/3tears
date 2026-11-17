@@ -446,7 +446,7 @@ async def test_an_apparatus_fault_mid_cell_excludes_that_cell_with_its_spend_and
     assert [result.termination for result in others] == ["completed", "completed"]
 
 
-async def test_a_candidate_s_replay_miss_on_one_cell_fails_the_run_naming_the_call_with_its_spend():
+async def test_a_candidate_s_replay_miss_on_one_cell_fails_the_run_naming_the_call_with_its_spend() -> None:
     """One cell of three asks its cassettes what the corpus never recorded. That cell was once excluded and the run
     completed on the other two, so a replay read on fewer cells in silence. The next cell reads the same corpus, so a
     miss fails the run (owner ruling, #1162): the cell is recorded apparatus_failed naming the call, with what it
@@ -565,7 +565,7 @@ class _HostReplayMiss(ReplayMiss):
     """A host's own replay, which raises the engine's ``ReplayMiss`` for a call its recording does not hold."""
 
 
-async def test_a_host_s_own_replay_miss_out_of_prepare_fails_the_run_naming_the_call():
+async def test_a_host_s_own_replay_miss_out_of_prepare_fails_the_run_naming_the_call() -> None:
     """A miss met while the cell is prepared (a host's own replay, seeding its candidate) is a recording that cannot
     serve the run, as one out of ``invoke`` is: the cell is recorded apparatus_failed naming the call, never excluded
     alone, and the run raises the miss rather than going on to the next cell."""
@@ -621,7 +621,7 @@ class _RecordsALookupKind(ToyExtractorKind):
         return await super().invoke(instance, test_case, sink)
 
 
-async def test_a_refusal_while_recording_fails_the_run_with_its_cell_and_spend_recorded(tmp_path: Path):
+async def test_a_refusal_while_recording_fails_the_run_with_its_cell_and_spend_recorded(tmp_path: Path) -> None:
     """A recording run (``RECORD=1``) whose recording refuses a call it was sent (here: the file holds another
     model's calls) fails at the refusal, as a replay miss does (the #1162 ruling, extended to recording runs): a
     recording missing that call would fail its first replay anyway, and every cell after the refusal would be spend
@@ -650,7 +650,7 @@ async def test_a_refusal_while_recording_fails_the_run_with_its_cell_and_spend_r
     assert faulted.cost_usd == _SPENT_BEFORE_THE_FAULT
 
 
-async def test_a_run_whose_every_cell_the_rig_excluded_fails_after_recording_them_all():
+async def test_a_run_whose_every_cell_the_rig_excluded_fails_after_recording_them_all() -> None:
     """Every cell is still recorded; then the run fails, because it measured nothing."""
     documents = [case.variation_params[DOCUMENT_PARAM] for case in toyhost_test_cases(toyhost_template())]
     drive, go = off_loop(_drive, _breaking_on(*documents), n_cases=2)
@@ -730,7 +730,7 @@ async def test_a_cell_whose_judging_the_deadline_cut_is_recovered_by_a_rejudge_o
 # =============================================================================
 
 
-async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_the_conformance_check():
+async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_the_conformance_check() -> None:
     """Not an error on the dim: every call through the host's client returns the same type, so every cell would. The
     judge prices its calls, so the phase is admitted whole under the cap and its two calls go out side by side."""
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True, ceiling_usd=0.001)
@@ -756,7 +756,7 @@ async def test_a_judge_completion_carrying_no_temperature_fails_the_run_naming_t
     assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 
-async def test_an_unpriced_judge_s_defective_completion_fails_the_run_before_its_next_call_is_sent():
+async def test_an_unpriced_judge_s_defective_completion_fails_the_run_before_its_next_call_is_sent() -> None:
     """The same defect from a judge that cannot price its calls, under an enforcing cap: its phase is asked one call at
     a time, so the defect fails the run before the sibling dim's call is sent. One call is paid for, and counted."""
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
@@ -774,7 +774,7 @@ async def test_an_unpriced_judge_s_defective_completion_fails_the_run_before_its
     assert result.cost_usd is not None and cap.accumulated_usd == pytest.approx(result.cost_usd)
 
 
-async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_siblings_do():
+async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_siblings_do() -> None:
     judge = _ScriptedJudge(default=_scored(FAITHFULNESS_DIM), temperatureless=1, then_hang=True)
     drive, go = off_loop(_drive, judge=judge, n_cases=2, max_concurrent_cells=2, cell_timeout_s=30)
 
@@ -786,7 +786,7 @@ async def test_a_running_cell_beside_the_defect_ends_as_a_run_stopping_cell_s_si
     assert sorted(result.termination for result in drive.results) == ["apparatus_failed", "cancelled"]
 
 
-async def test_a_replayed_scoring_judge_whose_recording_misses_fails_the_run_naming_the_call(tmp_path: Path):
+async def test_a_replayed_scoring_judge_whose_recording_misses_fails_the_run_naming_the_call(tmp_path: Path) -> None:
     """The judge replays a recording that holds none of the prompts this run asks, as after the page it reads moved.
 
     It once failed the dim with the miss's text withheld, excluding the result, so a replay read on fewer judgments in
@@ -828,7 +828,7 @@ class _ResendingJudge(_ScriptedJudge):
         return _ResentCompletion(**dataclasses.asdict(reply))
 
 
-async def test_a_judge_send_that_may_have_been_billed_twice_is_on_its_row_and_in_the_cap():
+async def test_a_judge_send_that_may_have_been_billed_twice_is_on_its_row_and_in_the_cap() -> None:
     """The row's cost holds the answered call alone and counts the dropped send beside it; the cap counts the dropped
     send at its call's own price, so a run never ends past its cap by what no row could state."""
     cap = EvalRunCostCap("toy-run", 100.0, enabled=True)

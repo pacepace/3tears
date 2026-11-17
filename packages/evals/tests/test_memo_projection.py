@@ -49,7 +49,7 @@ class TestTheDocumentIsTheOnlyCarrier:
     @pytest.mark.parametrize(
         "field", ["memo", "findings", "methodology", "methods_appendix", "bluf", "decisions", "questions", "bundle"]
     )
-    def test_the_pre_document_fields_are_gone_from_the_model(self, field) -> None:
+    def test_the_pre_document_fields_are_gone_from_the_model(self, field: str) -> None:
         """A ratchet, not a restatement — the removal is total only while nothing re-adds them."""
         assert field not in EvalAnalysis.model_fields
 

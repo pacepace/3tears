@@ -164,7 +164,7 @@ async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis) -> N
         pytest.param("boundary", "graceful_decline", id="boundary-overrides-a-dim-key"),
     ],
 )
-async def test_the_proposer_stamps_its_own_axis_whatever_the_model_wrote(axis, written) -> None:
+async def test_the_proposer_stamps_its_own_axis_whatever_the_model_wrote(axis: str, written: str) -> None:
     """The axis is the one the proposer ran on, never the model's call — both directions on one draft.
 
     Each axis is fed the other one's literal as well as a dim key, so a proposer that kept a
@@ -186,7 +186,7 @@ async def test_the_proposer_stamps_its_own_axis_whatever_the_model_wrote(axis, w
 
 
 @pytest.mark.parametrize("axis", ["capability", "boundary"])
-async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis) -> None:
+async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis: str) -> None:
     """A boundary battery's own rubric dims are guardrails, so the judge must stamp them so; a draft that
     left them capability would put them in the composite they must stay out of."""
     draft = json.loads(_draft(suggestion_axis="graceful_decline"))
@@ -224,7 +224,9 @@ async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis) -> None
         ),
     ],
 )
-async def test_a_refused_draft_raises_and_still_releases_the_client(axis, refused_by, content, reason) -> None:
+async def test_a_refused_draft_raises_and_still_releases_the_client(
+    axis: str, refused_by: str, content, reason: str
+) -> None:
     """Both refusal paths raise the structured error, naming the axis's proposer and the call's cost, after release.
 
     The call was paid for whatever the reply said, so its ledger row is written before the reply is read.

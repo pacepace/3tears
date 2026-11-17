@@ -69,7 +69,7 @@ class TestTheAuthoredCriterion:
 
 class TestTheStoredScore:
     @pytest.mark.parametrize(("scale", "score"), [("ordinal", 0), ("ordinal", 6), ("pass_fail", 2), ("pass_fail", -1)])
-    def test_a_score_off_its_scale_is_refused(self, scale, score) -> None:
+    def test_a_score_off_its_scale_is_refused(self, scale: str, score: int) -> None:
         with pytest.raises(ValidationError, match="not on the"):
             RubricScore(dim="x.arc", scale=scale, score=score, axis="capability", judge_temperature=0.0)
 
@@ -111,7 +111,7 @@ class TestTheStoredScore:
 class _Replying:
     """A judge client that answers every call with one fixed reply."""
 
-    def __init__(self, content: str):
+    def __init__(self, content: str) -> None:
         self.content = content
         self.calls = 0
 
@@ -159,7 +159,7 @@ class TestTheJudgesAnswer:
 
 
 class _Judge:
-    def __init__(self, answer: Any):
+    def __init__(self, answer: Any) -> None:
         self.answer = answer
         self.systems: list[str] = []
 

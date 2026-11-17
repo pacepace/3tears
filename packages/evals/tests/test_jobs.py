@@ -215,7 +215,7 @@ async def test_a_terminal_branch_other_than_cancel_records_the_empty_matrix() ->
         async def __aenter__(self) -> None:
             raise EvalJobTimeout(budget_s=1.0, elapsed_s=1.0)
 
-        async def __aexit__(self, *exc):
+        async def __aexit__(self, *exc: object):
             return False
 
     storage = InMemoryRunStore()

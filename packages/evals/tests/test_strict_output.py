@@ -32,17 +32,19 @@ def _level(name: str, settings: ClientRequestSettings) -> Any:
         "judge_request_settings": "judge_asked_settings",
         "simulator_request_settings": "simulator_asked_settings",
     }[name]
-    run = EvalRun(
-        apparatus_provenance="commissioned",
-        id="run-1",
-        scope_id="scope-a",
-        subject_snapshot=_SUBJECT,
-        candidate_model="writer-a",
-        test_case_ids=["c-1"],
-        candidate_kind="test-kind",
-        k_runs=1,
-        rubric_scales={},
-        **{field: settings},
+    run = EvalRun.model_validate(
+        {
+            "apparatus_provenance": "commissioned",
+            "id": "run-1",
+            "scope_id": "scope-a",
+            "subject_snapshot": _SUBJECT,
+            "candidate_model": "writer-a",
+            "test_case_ids": ["c-1"],
+            "candidate_kind": "test-kind",
+            "k_runs": 1,
+            "rubric_scales": {},
+            field: settings,
+        }
     )
     return SHARED_CORE.read_role_pins(run)[name]
 

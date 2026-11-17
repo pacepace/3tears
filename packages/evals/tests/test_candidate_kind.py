@@ -1391,7 +1391,9 @@ def _judge_evidence() -> Any:
     ],
     ids=["a-document-with-no-evidence", "a-transcript-with-no-evidence", "an-unjudged-kind-with-evidence"],
 )
-async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_judge_call(declared, evidence) -> None:
+async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_judge_call(
+    declared, evidence: bool
+) -> None:
     """The axes follow the kind's declaration, and the evidence is the kind's to render.
 
     The engine renders nothing a judge reads, so a judged kind — transcript or document — that
@@ -1470,7 +1472,7 @@ async def test_a_judge_wired_to_an_unjudged_kind_is_refused_before_the_candidate
 
 
 @pytest.mark.parametrize("declared", [None, "document"], ids=["undeclared", "a-bare-string"])
-async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_built(declared) -> None:
+async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_built(declared: str | None) -> None:
     """A host kind written to the two-operation seam gets a refusal naming the contract, not an AttributeError."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}]))
     if declared is None:

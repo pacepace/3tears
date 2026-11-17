@@ -73,7 +73,7 @@ def _run(run_id: str = "doomed", *, status: str = "completed") -> Any:
 
 
 @pytest.mark.parametrize("confirm", [None, "", "yes", "DOOMED", "doome"])
-def test_confirmation_refuses_anything_that_is_not_the_id(confirm) -> None:
+def test_confirmation_refuses_anything_that_is_not_the_id(confirm: str | None) -> None:
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.require_delete_confirmation("run", "doomed", confirm)
     # The refusal names the id to echo, so the caller can act on it without
