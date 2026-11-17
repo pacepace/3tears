@@ -54,6 +54,9 @@ _RUNS = 9
 
 
 class _NoLog:
+    #: names no database on its records: the keeper reads this at construction (EpochGenerationSource.database)
+    database = None
+
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(name)
 

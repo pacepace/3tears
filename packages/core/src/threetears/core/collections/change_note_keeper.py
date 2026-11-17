@@ -138,8 +138,16 @@ schema. The log names a record's table by its bare name, and a second database s
 api-key write would be a missing note here. The owner keeps the schema rule because its database is written by
 processes whose classes its keeper does not import (it cannot know every noted table from its own process); a ring
 beside is its own service's, whose process gives every table it notes its trigger and backs that install up, and a
-table refused one is said at ERROR when it is refused. A table of the same name noted in both databases cannot be told
-apart by either scrub: the shared log's tables need unique names across its databases.
+table refused one is said at ERROR when it is refused.
+
+**A table of one name in both databases** (RC9, 2026-11-16). Both databases note ``coordination_revocations`` (3tears'
+coordination table, migrated into each one's schema), and by its name alone each scrub judged the other's every write
+of it as a missing note. So every record names the database it was written in (``EpochChange.database``, the ring's
+schema; :mod:`threetears.core.collections.epoch_change`), and the scrub judges a record naming one as its own exactly
+when it names this ring's; only an older writer's record, naming none, is judged by its table as above. The keeper takes
+the name from its log (``EpochGenerationSource(database=...)``), refuses one other than its ring's schema, and a ring
+beside refuses to start naming none; its restore's records name it too, so a follower of the other database walks
+past them.
 
 **Which columns can be noted.** A note carries its key and invalidation columns as text, and a restore
 names rows by that text, as an epoch record does. Only uuid, text, varchar and integer columns spell a
@@ -368,8 +376,6 @@ _RESTORE_CHUNK_ROWS: Final = 5000
 #: restored changes handed on between two turns of the loop when the reader takes them without waiting (a test's)
 _RESTORE_TURN_CHANGES: Final = 32
 
-#: a keyed record's form, for the restore's worker to assemble records in (:func:`keyed_record_form`)
-_KEYED_FORM: Final[KeyedRecordForm] = keyed_record_form()
 
 #: a restored row's bytes in its record beyond its key and columns, as the restore's estimate: generous,
 #: so a restore chosen to fit does fit
@@ -903,8 +909,26 @@ class ChangeNoteKeeper:
         :ptype keeps_log: bool
         :return: nothing
         :rtype: None
-        :raises ValueError: when the fence is not positive, a batch is under one or the switch size is
+        :raises ValueError: when the fence is not positive, a batch is under one or the switch size is; when the log
+            names a database other than ``notes_schema``; when a ring beside the log names none
         """
+        # the database the log's source names on every record (EpochGenerationSource.database); a log object without
+        # one (a stand-in that only reads) names none
+        named = getattr(log, "database", None)
+        database = named if isinstance(named, str) else None
+        # WHY (RC9, 2026-11-16): a record names the database it was written in, and this ring's scrub and restore
+        # judge and name records by it. The name is the ring's schema, never a second setting that could drift; and
+        # a ring beside another keeper's log exists only because two databases share it, so it may not start naming
+        # none -- its records and the owner's of a table both note would read as one table's again
+        if database is not None and database != notes_schema:
+            raise ValueError(
+                f"a keeper's log names its database by the ring's schema, {notes_schema!r}; it names {database!r}"
+            )
+        if not keeps_log and database is None:
+            raise ValueError(
+                "a ring beside another keeper's change log names its database on every record: build its "
+                f"EpochGenerationSource with database={notes_schema!r}"
+            )
         if (
             fence <= timedelta(0)
             or scrub_batch < 1
@@ -920,6 +944,9 @@ class ChangeNoteKeeper:
         self._owner = quote_identifier(notes_schema)
         self._log = log
         self._keeps_log = keeps_log
+        self._database = database
+        #: a keyed record's form, for the restore's worker to assemble records in, naming this ring's database
+        self._form = keyed_record_form(database)
         self._fence = fence
         self._scrub_batch = scrub_batch
         #: the noted tables refused a trigger for a column type, so each is said once
@@ -2157,7 +2184,7 @@ class ChangeNoteKeeper:
         :return: the changes, as an async iterable
         :rtype: _StreamedChanges
         """
-        return _StreamedChanges(self._pool, self._owner, (ring.current, ring.previous), since, folder)
+        return _StreamedChanges(self._pool, self._owner, (ring.current, ring.previous), since, folder, self._form)
 
     async def _scrub(self, ring: NoteRingState, state: ChangeLogState) -> ScrubPass:
         """check that the epochs after the floor, up to the log's head one pass ago, have their notes.
@@ -2190,9 +2217,16 @@ class ChangeNoteKeeper:
         read = await self._epochs_between(start, end)
         # WHY only this database's tables (RC5, 2026-11-16): the log is shared with another database's writers
         # (identity-core's), whose notes are in that database's ring; read here, each of their epochs was a missing
-        # note, raising threetears_change_notes_missing_total on every identity write
-        own = await self._own_tables({record.table for record in read})
-        records = [record for record in read if record.table in own]
+        # note, raising threetears_change_notes_missing_total on every identity write.
+        # WHY by the record's database first (RC9, 2026-11-16): both databases note coordination_revocations, so by
+        # its table's name each ring judged the other's every write of it as missing. A record naming its database
+        # is this ring's exactly when it names this one; only an older writer's, naming none, is judged by its table
+        own = await self._own_tables({record.table for record in read if record.database is None})
+        records = [
+            record
+            for record in read
+            if (record.database == self._database if record.database is not None else record.table in own)
+        ]
         fence = _seq_under(ring.fence_seq, incarnation)
         found = await self.notes_found(ring, records)
         result = ScrubPass(checked=len(records), position=_token(incarnation, end), others=len(read) - len(records))
@@ -2390,10 +2424,17 @@ class _StreamedChanges:
     """
 
     def __init__(
-        self, pool: _Pool, owner: str, slots: tuple[int, int], since: datetime | None, folder: RestoreFolder
+        self,
+        pool: _Pool,
+        owner: str,
+        slots: tuple[int, int],
+        since: datetime | None,
+        folder: RestoreFolder,
+        form: KeyedRecordForm,
     ) -> None:
         self._pool = pool
         self._folder = folder
+        self._form = form
         self._owner = owner
         self._current, self._previous = slots
         self._since = since
@@ -2527,12 +2568,12 @@ class _StreamedChanges:
         )
         copying.add_done_callback(lambda _done: arrived.set())
         form = (
-            _KEYED_FORM.head,
-            _KEYED_FORM.middle,
-            _KEYED_FORM.tail,
-            _KEYED_FORM.row_head,
-            _KEYED_FORM.row_columns,
-            _KEYED_FORM.row_tail,
+            self._form.head,
+            self._form.middle,
+            self._form.tail,
+            self._form.row_head,
+            self._form.row_columns,
+            self._form.row_tail,
         )
         carried = b""
         want = _RESTORE_PAGE_BYTES
@@ -2564,7 +2605,7 @@ class _StreamedChanges:
                 if not page:
                     return
                 folded, records = await self._folder.fold(
-                    page, final=final, form=form, chunk_rows=_RESTORE_CHUNK_ROWS, max_bytes=_KEYED_FORM.max_bytes
+                    page, final=final, form=form, chunk_rows=_RESTORE_CHUNK_ROWS, max_bytes=self._form.max_bytes
                 )
                 carried = page[folded:]
                 # a page holding no whole chunk yet is handed again with more: never the same page twice

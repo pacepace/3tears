@@ -45,6 +45,9 @@ class _Ring:
 class _NoLog:
     """the keeper's change log, never read by an emptying."""
 
+    #: names no database on its records: the keeper reads this at construction (EpochGenerationSource.database)
+    database = None
+
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(f"an emptying reads no change log ({name})")
 

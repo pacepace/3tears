@@ -45,6 +45,9 @@ class _Rings:
 class _NoLog:
     """the keeper's change log, never read by the count."""
 
+    #: names no database on its records: the keeper reads this at construction (EpochGenerationSource.database)
+    database = None
+
     def __getattr__(self, name: str) -> Any:
         raise AssertionError(f"the ring-read count reads no change log ({name})")
 

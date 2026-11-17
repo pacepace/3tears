@@ -186,7 +186,9 @@ async def _nats(url: str) -> AsyncIterator[NatsClient]:
 class _Pod:
     """one registry over the noted table, with its own L1, NATS connection, source and reader."""
 
-    def __init__(self, nc: NatsClient, pool: asyncpg.Pool, table: str, scope: str) -> None:
+    def __init__(
+        self, nc: NatsClient, pool: asyncpg.Pool, table: str, scope: str, *, database: str | None = None
+    ) -> None:
         schema = TableSchema(
             name=table,
             primary_key="id",
@@ -204,9 +206,11 @@ class _Pod:
         l1.initialize(metadata)
         self.registry = CollectionRegistry()
         self.registry.configure(l1_backend=l1, l2_client=nc, l3_pool=SqlL3Backend(pool), kv_key_scope=scope)
-        self.source = EpochGenerationSource(nc, restored_from_l3=True, restore_wait=timedelta(seconds=5))
+        self.source = EpochGenerationSource(
+            nc, restored_from_l3=True, restore_wait=timedelta(seconds=5), database=database
+        )
         self.registry.set_generation_source(self.source)
-        self.reader = EpochGenerationReader(nc)
+        self.reader = EpochGenerationReader(nc, database=database)
         declared = type(f"Noted_{scope}", (collection_for_schema(schema),), {"write_generation": WRITE_GENERATION})
         self.rows = declared(self.registry, DefaultCoreConfig())
 
@@ -1418,7 +1422,9 @@ class TestARingBesideALogAnotherKeeperKeeps:
         """Flips if a ring beside another keeper's log declares the log or marks it (it would race the owner's
         restore), or if its scrub reads another database's epochs as missing notes."""
         pool, schema, table = ring
-        source = EpochGenerationSource(FakeNatsClient())
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus, database=schema)
+        owners = EpochGenerationSource(bus, database=f"{schema}_owner")
         keeper = ChangeNoteKeeper(
             pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0), keeps_log=False
         )
@@ -1430,7 +1436,7 @@ class TestARingBesideALogAnotherKeeperKeeps:
         assert await source.log_state() is None, "the log's owner declares it, never this ring"
         assert (await keeper.ring()).log_incarnation is None
 
-        incarnation = await source.start_log()  # the owner declares it
+        incarnation = await owners.start_log()  # the owner declares it
         adopted = await keeper.run_pass()
         assert adopted.adopted == incarnation and (await keeper.ring()).log_incarnation == incarnation
         await asyncio.sleep(_FENCE.total_seconds() * 2)
@@ -1439,7 +1445,7 @@ class TestARingBesideALogAnotherKeeperKeeps:
 
         # an epoch of another database's table: no note of it here, and nothing says it is missing (its own scrub
         # skips it; RC8 gave the ring beside a scrub of its own tables, below)
-        await source.advance_with_change(f"{table}_theirs", [ChangedRow(ids=["another-database"])])
+        await owners.advance_with_change(f"{table}_theirs", [ChangedRow(ids=["another-database"])])
         await keeper.run_pass()
         scrub = (await keeper.run_pass()).scrub
         assert (scrub.checked, scrub.missing, scrub.others) == (0, 0, 1), "another database's epoch is skipped"
@@ -1462,8 +1468,11 @@ class TestARingBesideALogAnotherKeeperKeeps:
         pool, schema, table = ring
         plain = f"{table}_plain"
         await pool.execute(f"CREATE TABLE {schema}.{plain} (id TEXT PRIMARY KEY)")
-        source = EpochGenerationSource(FakeNatsClient())
-        await source.start_log()  # the owner declares it
+        bus = FakeNatsClient()
+        source = EpochGenerationSource(bus, database=schema)
+        # the owner's writer, built before records named their database: its records are judged by their table
+        owners = EpochGenerationSource(bus)
+        await owners.start_log()  # the owner declares it
         side = ChangeNoteKeeper(
             pool, notes_schema=schema, log=source, fence=_FENCE, scrub_every=timedelta(0), keeps_log=False
         )
@@ -1479,8 +1488,8 @@ class TestARingBesideALogAnotherKeeperKeeps:
         # an epoch of its own table whose write left no note: appended with no L3 write behind it
         await source.advance_with_change(table, [ChangedRow(ids=["unnoted"])])
         # the owner database's table of the same name as a plain table here, and one this database has not at all
-        await source.advance_with_change(plain, [ChangedRow(ids=["the-owners"])])
-        await source.advance_with_change(f"{table}_owners", [ChangedRow(ids=["the-owners"])])
+        await owners.advance_with_change(plain, [ChangedRow(ids=["the-owners"])])
+        await owners.advance_with_change(f"{table}_owners", [ChangedRow(ids=["the-owners"])])
         await side.run_pass()  # the scrub checks up to the head one pass ago
         counted = REGISTRY.get_sample_value("threetears_change_notes_missing_total", {"table": table}) or 0.0
 
@@ -1519,9 +1528,13 @@ class TestARingBesideALogAnotherKeeperKeeps:
         assert other is not None
         try:
             async with _nats(nats_container) as nc:
-                writer, follower = _Pod(nc, other, theirs, "writer"), _Pod(nc, other, theirs, "follower")
-                await writer.source.start_log()
-                owner = await _fenced(pool, schema, table, writer.source)
+                writer = _Pod(nc, other, theirs, "writer", database=beside)
+                follower = _Pod(nc, other, theirs, "follower", database=beside)
+                owners = EpochGenerationSource(
+                    nc, restored_from_l3=True, restore_wait=timedelta(seconds=5), database=schema
+                )
+                await owners.start_log()
+                owner = await _fenced(pool, schema, table, owners)
                 side = ChangeNoteKeeper(other, notes_schema=beside, log=writer.source, fence=_FENCE, keeps_log=False)
                 await side.install()
                 noted = NotedTable(table=theirs, keys=("id",), columns=("owner",))
@@ -1592,7 +1605,10 @@ class TestARingBesideALogAnotherKeeperKeeps:
                 for key in ("a", "b", "c"):
                     await pool.execute(f"INSERT INTO {table} VALUES ($1, 'o', '1')", key)
                     await source.advance_with_change(table, [ChangedRow(ids=[key])])
-                side = ChangeNoteKeeper(pool, notes_schema=beside, log=source, fence=_FENCE, keeps_log=False)
+                besides = EpochGenerationSource(
+                    nc, restored_from_l3=True, restore_wait=timedelta(seconds=5), database=beside
+                )
+                side = ChangeNoteKeeper(pool, notes_schema=beside, log=besides, fence=_FENCE, keeps_log=False)
                 await side.install()
                 await side.run_pass()
                 await pool.execute(
@@ -1629,20 +1645,22 @@ class TestARingBesideALogAnotherKeeperKeeps:
         # a table of the owner's own schema with no note trigger (refused one, or lost it): still judged
         await pool.execute(f"CREATE TABLE {schema}.{bare} (id TEXT PRIMARY KEY)")
         try:
-            source = EpochGenerationSource(FakeNatsClient())
+            source_bus = FakeNatsClient()
+            source = EpochGenerationSource(source_bus)
             await source.start_log()
             owner = await _keeper(pool, schema, table, source)
             await owner.run_pass()
             await asyncio.sleep(_FENCE.total_seconds() * 2)
             await owner.run_pass()
             assert (await owner.ring()).fence_seq is not None
-            side = ChangeNoteKeeper(pool, notes_schema=beside, log=source, fence=_FENCE, keeps_log=False)
+            besides = EpochGenerationSource(source_bus, database=beside)
+            side = ChangeNoteKeeper(pool, notes_schema=beside, log=besides, fence=_FENCE, keeps_log=False)
             await side.install()
             await side.install_triggers([NotedTable(table=theirs, keys=("id",), columns=("owner",))])
 
             # the other database's write: its note is in its own ring, never the owner's
             await pool.execute(f"INSERT INTO {beside}.{theirs} VALUES ('theirs', 'o', '1')")
-            await source.advance_with_change(theirs, [ChangedRow(ids=["theirs"])])
+            await besides.advance_with_change(theirs, [ChangedRow(ids=["theirs"])])
             await pool.execute(f"INSERT INTO {table} VALUES ('noted', 'o', '1')")
             await source.advance_with_change(table, [ChangedRow(ids=["noted"])])
             await source.advance_with_change(bare, [ChangedRow(ids=["bare"])])
@@ -1665,7 +1683,7 @@ class TestTheKeepingRunsUnderItsOwnLease:
         both keep it."""
         pool, schema, table = ring
         async with _nats(nats_container) as nc:
-            source = EpochGenerationSource(nc)
+            source = EpochGenerationSource(nc, database=schema)
             await source.start_log()
             keeper = ChangeNoteKeeper(pool, notes_schema=schema, log=source, fence=_FENCE, keeps_log=False)
             first = ChangeNoteKeeping(keeper, nc, lease="rc3-ring-a", key_scope="svc-rc3")
@@ -1684,3 +1702,142 @@ class TestTheKeepingRunsUnderItsOwnLease:
                 keeping.cancel()
                 beside.cancel()
                 await asyncio.gather(keeping, beside, return_exceptions=True)
+
+
+@asynccontextmanager
+async def _two_databases(
+    pool: asyncpg.Pool, schema: str, table: str, db_container: str, bus: Any
+) -> AsyncIterator[
+    tuple[asyncpg.Pool, str, EpochGenerationSource, EpochGenerationSource, ChangeNoteKeeper, ChangeNoteKeeper]
+]:
+    """the hub's database (``schema``, the log's owner) and identity-core's (a second schema, its own pool and ring
+    beside the log), each noting a table of the one name ``table``; both rings fenced, both sources over ``bus``."""
+    beside = f"{schema}_beside"
+    await pool.execute(f"CREATE SCHEMA {beside}")
+    try:
+        await pool.execute(f"CREATE TABLE {beside}.{table} (id TEXT PRIMARY KEY, owner TEXT, n TEXT)")
+        other = await asyncpg.create_pool(
+            db_container, min_size=2, max_size=12, server_settings={"search_path": beside}
+        )
+        assert other is not None
+        try:
+            hub = EpochGenerationSource(bus, database=schema)
+            identity = EpochGenerationSource(bus, database=beside)
+            await hub.start_log()
+            owner = await _fenced(pool, schema, table, hub)
+            side = ChangeNoteKeeper(
+                other, notes_schema=beside, log=identity, fence=_FENCE, scrub_every=timedelta(0), keeps_log=False
+            )
+            await side.install()
+            assert await side.install_triggers([NotedTable(table=table, keys=("id",), columns=("owner",))]) == [
+                f"{beside}.{table}"
+            ]
+            await side.run_pass()
+            await other.execute(
+                f"UPDATE {beside}.threetears_change_note_ring SET switched_at = now() - interval '1 hour'"
+            )
+            await side.run_pass()
+            assert (await side.ring()).fence_seq is not None
+            yield other, beside, hub, identity, owner, side
+        finally:
+            await other.close()
+    finally:
+        await pool.execute(f"DROP SCHEMA IF EXISTS {beside} CASCADE")
+
+
+class TestATableNamedInTwoDatabases:
+    """two databases on one change log each note a table of the same name (RC9, 2026-11-16): today the hub's and
+    identity-core's ``coordination_revocations``, 3tears' coordination table migrated into each one's schema."""
+
+    async def test_each_scrub_judges_only_its_own_databases_epochs_of_the_name(
+        self, ring: tuple[asyncpg.Pool, str, str], db_container: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Flips if either ring's scrub judges the other database's epoch of the shared name: the owner reads every
+        identity write of it as a missing note (the name is a table of its schema), and the ring beside every hub
+        write (the name is a table it triggers), both on threetears_change_notes_missing_total -- or if either stops
+        reporting its own write that left no note."""
+        pool, schema, table = ring
+        async with _two_databases(pool, schema, table, db_container, FakeNatsClient()) as databases:
+            other, beside, hub, identity, owner, side = databases
+            await pool.execute(f"INSERT INTO {schema}.{table} VALUES ('hubs', 'o', '1')")
+            await hub.advance_with_change(table, [ChangedRow(ids=["hubs"])])
+            await other.execute(f"INSERT INTO {beside}.{table} VALUES ('identitys', 'o', '1')")
+            await identity.advance_with_change(table, [ChangedRow(ids=["identitys"])])
+            # each database's epoch whose write left no note: appended with no L3 write behind it
+            await hub.advance_with_change(table, [ChangedRow(ids=["hub-unnoted"])])
+            await identity.advance_with_change(table, [ChangedRow(ids=["identity-unnoted"])])
+            await owner.run_pass()  # each scrub checks up to the head one pass ago
+            await side.run_pass()
+
+            found: dict[str, tuple[list[str], ScrubPass]] = {}
+            for name, keeper in (("owner", owner), ("beside", side)):
+                caplog.clear()
+                with caplog.at_level(logging.ERROR):
+                    scrub = (await keeper.run_pass()).scrub
+                said = [
+                    r.__dict__["extra_data"]["missing"] for r in caplog.records if "no change note" in r.getMessage()
+                ]
+                found[name] = (said, scrub)
+            assert found["owner"][0] == ["hub-unnoted"], "the owner says its own lost note, never identity's epochs"
+            assert found["beside"][0] == ["identity-unnoted"], "the ring beside says its own, never the hub's"
+            for name, (_, scrub) in found.items():
+                assert (scrub.checked, scrub.missing, scrub.others) == (2, 1, 2), name
+
+    async def test_a_follower_never_applies_the_other_databases_record_of_the_name(
+        self, ring: tuple[asyncpg.Pool, str, str], db_container: str
+    ) -> None:
+        """Flips if identity-core's follower of its own table applies the hub's records of the hub's table of that
+        name: a hub truncate drops its whole cache, a hub key evicts its row of the same key, and a hub keys-unknown
+        record's keys are paged from identity's own ring -- behind (``not_covered``) when its bracket is older than
+        that ring's coverage, until it restarts. Or if the hub's follower pages an identity bracket from the hub's
+        ring, evicting whatever the hub wrote in it."""
+        pool, schema, table = ring
+        bus = FakeNatsClient()
+        before_rings = datetime.now(tz=UTC) - timedelta(hours=2)
+        async with _two_databases(pool, schema, table, db_container, bus) as databases:
+            other, beside, hub, identity, _owner, _side = databases
+            # identity's ring has switched since its install: a bracket from before it is one it no longer covers
+            # (a ring switches on the log's bytes since its last switch, so one record of identity's goes first)
+            await identity.advance_with_change(f"{table}_elsewhere", [ChangedRow(ids=["x"])])
+            switching = ChangeNoteKeeper(
+                other, notes_schema=beside, log=identity, fence=_FENCE, switch_bytes=1, keeps_log=False
+            )
+            assert (await switching.run_pass()).switched_to is not None
+            followers: dict[str, tuple[CollectionRegistry, EpochGenerationReader, list[str], list[bool]]] = {}
+            for name, (notes, notes_schema) in {"hub": (pool, schema), "identity": (other, beside)}.items():
+                registry = CollectionRegistry()
+                registry.configure(l3_pool=notes)
+                registry.set_noted_keys_reader(PoolNotedKeysReader(notes, notes_schema=notes_schema, every_tenant=True))
+                registry.follow_generation(table)
+                heard: list[str] = []
+                dropped: list[bool] = []
+                registry.register_derived_cache(
+                    table,
+                    on_row=lambda message, heard=heard: heard.append(str(message.ids[0])),  # type: ignore[misc]
+                    on_table_dropped=lambda dropped=dropped: dropped.append(True),  # type: ignore[misc]
+                )
+                reader = EpochGenerationReader(bus, database=notes_schema)
+                await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+                followers[name] = (registry, reader, heard, dropped)
+
+            opened = datetime.now(tz=UTC) - timedelta(seconds=1)
+            await pool.execute(f"INSERT INTO {schema}.{table} VALUES ('same-key', 'o', '1')")
+            await hub.advance_with_change(table, [ChangedRow(ids=["same-key"])])
+            await hub.advance_with_change(table, None)
+            await hub.advance_with_change(
+                table, None, keys_unknown=True, noted_between=(before_rings, before_rings + timedelta(seconds=1))
+            )
+            await other.execute(f"INSERT INTO {beside}.{table} VALUES ('identitys', 'o', '1')")
+            closed = datetime.now(tz=UTC) + timedelta(seconds=1)
+            await identity.advance_with_change(table, None, keys_unknown=True, noted_between=(opened, closed))
+
+            for name, (registry, reader, _heard, _dropped) in followers.items():
+                await registry.catch_up_generation(table, await reader.read(table), changes=reader)
+                assert registry.behind_reason(table) is None, f"{name} is behind on another database's record"
+            _, _, hub_heard, hub_dropped = followers["hub"]
+            _, _, identity_heard, identity_dropped = followers["identity"]
+            assert identity_heard == ["identitys"], "identity applies its own bracket's key, no hub key"
+            assert not identity_dropped, "a hub truncate never drops identity's table"
+            assert hub_heard == ["same-key"] and hub_dropped == [True], (
+                "the hub applies its own key and truncate once, never identity's bracket paged from the hub's ring"
+            )

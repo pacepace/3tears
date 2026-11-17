@@ -44,6 +44,9 @@ _BIG = 12_345
 class _Log:
     """a lost change log that keeps every change a restore hands it."""
 
+    #: names no database on its records: the keeper reads this at construction (EpochGenerationSource.database)
+    database = None
+
     def __init__(self) -> None:
         self.declared = False
         self.changes: list[NotedChange] = []

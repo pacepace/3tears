@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### epoch, core: a change-log record names the database it was written in
+
+The hub's platform database and identity-core's share one change log, which names a record's table by its bare name,
+and both note `coordination_revocations` (3tears' coordination table, migrated into each one's schema). So a hub
+truncate of it dropped identity's whole cache, a hub key evicted identity's row of that key, a hub keys-unknown record
+was paged from identity's ring (behind until a restart once its bracket was older than that ring's coverage), and each
+ring's scrub read the other's every write of it as a missing note. Now `EpochGenerationSource(database=...)` names its
+database (its change-note ring's schema) on every record it appends, a restore's included (`EpochChange.database`);
+`EpochGenerationReader(database=...)` walks past a record naming another database
+(`threetears_epoch_change_other_database_records_total{table}`); and each ring's scrub judges a record naming a
+database as its own exactly when it names its ring's, an unnamed record by its table as before. `ChangeNoteKeeper`
+takes the name from its log, refuses one other than its ring's schema, and a `keeps_log=False` ring refuses to start
+naming none. Rolling upgrade: the field is optional; an older reader ignores it and every reader walks an unnamed
+record as before. Consumers: the hub builds every source and platform reader with `database=<platform schema>`;
+identity-core its source and follower reader with `database=<its schema>`.
+
 ### core: a ring beside the change log's owner scrubs its own tables
 
 The owner's scrub skips another database's epochs, so a missing note on one of identity-core's tables was reported by
