@@ -160,7 +160,7 @@ class _FakeSession:
 
     @property
     def action_seam(self) -> ActionSeam | None:
-        return self  # type: ignore[return-value]
+        return self
 
     @property
     def delivery_seams(self) -> Mapping[str, DeliverySeam]:

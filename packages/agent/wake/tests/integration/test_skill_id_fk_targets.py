@@ -45,7 +45,7 @@ async def _apply(conn: asyncpg.Connection, schema: str) -> None:
     register_skills(runner)
     register_wake(runner)
     store = AsyncpgStore(conn)
-    await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(store)
 
 
 class TestScheduleSkillIdFk:

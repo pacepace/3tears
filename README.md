@@ -158,7 +158,7 @@ Use the scripts; never run `pytest`, `ruff` or `mypy` directly. Extra arguments 
 | `./scripts/test-integration.sh` | The integration tests, against real Postgres, NATS and S3, on the testament pool; `--here` runs the ones that need Docker or a credential on this machine |
 | `./scripts/test-sidecar.sh` | The scrape package's nodriver sidecar tests |
 | `./scripts/lint.sh` | `ruff check` and the format check; `--fix` fixes |
-| `./scripts/typecheck.sh [package]` | `mypy`, strict |
+| `./scripts/typecheck.sh [--src\|--tests] [package]` | `mypy`, strict, sources and tests |
 
 Cross-pod behaviour is tested only in the integration tests. `check-all.sh` runs them on the pool. When a change touches scrape, search or a package that reads a credential, also run `./scripts/test-integration.sh --here -rs` and account for every skip, since a skip reads like a pass. [docs/testing.md](docs/testing.md) has the details, including building the sidecar image first and what to run when the pool is down.
 

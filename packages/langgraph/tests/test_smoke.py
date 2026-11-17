@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def test_package_imports():
+def test_package_imports() -> None:
     """All public symbols import without error."""
     from threetears.langgraph import (
         CheckpointL1Cache,
@@ -16,13 +16,13 @@ def test_package_imports():
     assert CheckpointL2Cache is not None
 
 
-def test_version():
+def test_version() -> None:
     from threetears.langgraph import __version__
 
     assert __version__ == "0.95.0"
 
 
-def test_protocols_are_runtime_checkable():
+def test_protocols_are_runtime_checkable() -> None:
     from threetears.langgraph.protocols import CheckpointL1Cache, CheckpointL2Cache, FlushCallback
 
     # Verify the protocols have __protocol_attrs__

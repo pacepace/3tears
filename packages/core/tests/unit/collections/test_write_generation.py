@@ -869,7 +869,7 @@ class TestABulkDeleteCarriesTheRowsItRemoved:
             ("sn_NC1", "00002"): {"office_key": "sn_NC1", "geo_id": "00002", "candidate": "grace"},
         }
         registry = CollectionRegistry()
-        registry.configure(l2_client=bus, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        registry.configure(l2_client=bus, kv_key_scope=_SCOPE)
         registry.set_generation_source(source)
         results = _Results(registry, DefaultCoreConfig())
         results.l3_pool = store

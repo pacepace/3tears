@@ -40,7 +40,7 @@ _SCOPE = "tool_pod-answersoffloop"
 def _answers() -> VersionedAnswers:
     nats = FakeNatsClient()
     registry = CollectionRegistry()
-    registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)
     return VersionedAnswers(registry, DefaultCoreConfig(), nats, table_name="offloop_answers")
 
 
@@ -525,7 +525,7 @@ class TestTheLoopRunsWhileALargeAnswerIsStoredAndRead:
             if l1:
                 backend = SQLiteBackend(db_name=f"offloop-l1-{uuid.uuid4().hex}")
                 backend.initialize(MetaData())
-            registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+            registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
             return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="offloop_large_answers")
 
         async def compute() -> str:
@@ -588,7 +588,7 @@ class TestAWorkerLetsTheLoopRunBetweenSlices:
         if l1:
             backend = SQLiteBackend(db_name=f"pauses-l1-{uuid.uuid4().hex}")
             backend.initialize(MetaData())
-        registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
         return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="pauses_answers")
 
     async def _pauses_storing_then_reading(self, text: str, monkeypatch: pytest.MonkeyPatch) -> tuple[list, list]:
@@ -624,14 +624,14 @@ def _l1_replica(bus: FakeNatsClient) -> VersionedAnswers:
     registry = CollectionRegistry()
     backend = SQLiteBackend(db_name=f"kept-l1-{uuid.uuid4().hex}")
     backend.initialize(MetaData())
-    registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=backend, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
     return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="kept_answers")
 
 
 def _l2_replica(bus: FakeNatsClient) -> VersionedAnswers:
     """a replica on ``bus`` keeping answers in L2 alone."""
     registry = CollectionRegistry()
-    registry.configure(l1_backend=None, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=None, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
     return VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name="kept_answers")
 
 

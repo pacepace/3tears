@@ -548,7 +548,7 @@ async def test_heartbeat_failure_does_not_break_release() -> None:
         attempted.append(key)
         raise NatsTimeoutError()
 
-    fake_kv.update = failing_update  # type: ignore[assignment, method-assign]
+    fake_kv.update = failing_update  # type: ignore[method-assign, method-assign]
     client = _FakeClient(fake_kv)
     async with nats_distributed_lock(
         client,  # type: ignore[arg-type]
@@ -1140,7 +1140,7 @@ class _OldReleaseLock:
 def _bucket_over(fake_kv: _FakeKv) -> NatsKvBucket:
     return NatsKvBucket(
         client=_UnreachableNats(fake_kv), full_name="itest-scheduler-locks", kv=fake_kv, ttl=timedelta(seconds=60)
-    )  # type: ignore[arg-type]
+    )
 
 
 class TestARollingUpgradeNeverFreesAHeldLock:

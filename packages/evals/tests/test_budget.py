@@ -25,7 +25,6 @@ import inspect
 import logging
 
 import pytest
-
 from threetears.evals.run.budget import BudgetStoppedError, CapBreach, EvalRunCostCap
 
 
@@ -38,7 +37,7 @@ def _cap(*, run_id="run-1", max_cost_usd=15.0, enabled=True) -> EvalRunCostCap:
 # ---------------------------------------------------------------------------
 
 
-def test_budget_stopped_error_carries_progress():
+def test_budget_stopped_error_carries_progress() -> None:
     err = BudgetStoppedError(3, 12, CapBreach(max_cost_usd=15.0, accumulated_usd=15.5, unpriced_results=0))
     assert err.completed == 3
     assert err.total == 12
@@ -50,13 +49,13 @@ def test_budget_stopped_error_carries_progress():
 # ---------------------------------------------------------------------------
 
 
-def test_new_cap_is_not_exceeded_and_has_zero_spend():
+def test_new_cap_is_not_exceeded_and_has_zero_spend() -> None:
     cap = _cap()
     assert cap.accumulated_usd == 0.0
     assert cap.exceeded is False
 
 
-def test_records_accumulate_in_memory():
+def test_records_accumulate_in_memory() -> None:
     cap = _cap(max_cost_usd=10.0)
     cap.record(1.5)
     cap.record(2.25)
@@ -64,7 +63,7 @@ def test_records_accumulate_in_memory():
     assert cap.exceeded is False
 
 
-def test_at_the_cap_is_not_exceeded_strictly_over_is():
+def test_at_the_cap_is_not_exceeded_strictly_over_is() -> None:
     """The cap trips on strictly-greater, so a run at exactly the ceiling proceeds."""
     cap = _cap(max_cost_usd=5.0)
     cap.record(5.0)
@@ -73,7 +72,7 @@ def test_at_the_cap_is_not_exceeded_strictly_over_is():
     assert cap.exceeded is True  # 5.01 > 5.0
 
 
-def test_max_cost_usd_is_exposed():
+def test_max_cost_usd_is_exposed() -> None:
     assert _cap(max_cost_usd=15.0).max_cost_usd == 15.0
 
 
@@ -82,7 +81,7 @@ def test_max_cost_usd_is_exposed():
 # ---------------------------------------------------------------------------
 
 
-def test_disabled_cap_never_exceeds_but_still_accumulates():
+def test_disabled_cap_never_exceeds_but_still_accumulates() -> None:
     cap = _cap(max_cost_usd=1.0, enabled=False)
     cap.record(100.0)
     assert cap.accumulated_usd == pytest.approx(100.0)  # observability preserved
@@ -95,25 +94,25 @@ def test_disabled_cap_never_exceeds_but_still_accumulates():
 # ---------------------------------------------------------------------------
 
 
-def test_an_omitted_override_inherits_the_default_the_caller_supplied():
+def test_an_omitted_override_inherits_the_default_the_caller_supplied() -> None:
     cap = EvalRunCostCap.for_run("run-x", None, configured_max_cost_usd=12.0, enforcement_enabled=True)
     assert cap.max_cost_usd == 12.0
 
 
-def test_an_override_replaces_the_default_and_is_what_enforcement_reads():
+def test_an_override_replaces_the_default_and_is_what_enforcement_reads() -> None:
     cap = EvalRunCostCap.for_run("run-x", 3.0, configured_max_cost_usd=12.0, enforcement_enabled=True)
     assert cap.max_cost_usd == 3.0
     cap.record(3.5)
     assert cap.exceeded is True
 
 
-def test_the_enforcement_flag_the_caller_passed_is_what_decides():
+def test_the_enforcement_flag_the_caller_passed_is_what_decides() -> None:
     cap = EvalRunCostCap("run-x", 1.0, enabled=False)
     cap.record(50.0)
     assert cap.exceeded is False
 
 
-def test_an_unenforced_run_still_gets_a_cap_that_knows_its_ceiling():
+def test_an_unenforced_run_still_gets_a_cap_that_knows_its_ceiling() -> None:
     """The cap keeps its number and switches enforcement off — the ledger does the opposite.
 
     :meth:`~threetears.evals.run.metering.MeteredCallLedger.for_run` reads enforcement-off as
@@ -129,13 +128,13 @@ def test_an_unenforced_run_still_gets_a_cap_that_knows_its_ceiling():
 
 
 @pytest.mark.parametrize("ceiling", [0.0, -1.0, float("inf"), float("nan")])
-def test_an_enforcing_cap_without_a_positive_finite_ceiling_is_refused(ceiling):
+def test_an_enforcing_cap_without_a_positive_finite_ceiling_is_refused(ceiling) -> None:
     with pytest.raises(ValueError, match="positive, finite ceiling"):
         EvalRunCostCap("run-x", ceiling, enabled=True)
     assert EvalRunCostCap("run-x", ceiling, enabled=False).exceeded is False
 
 
-def test_enforcement_must_be_stated_rather_than_defaulted():
+def test_enforcement_must_be_stated_rather_than_defaulted() -> None:
     """A cap that silently stops enforcing is worse than one that fails to construct."""
     with pytest.raises(TypeError):
         EvalRunCostCap("run-x", 1.0)  # type: ignore[call-arg]
@@ -146,7 +145,7 @@ def test_enforcement_must_be_stated_rather_than_defaulted():
 # ---------------------------------------------------------------------------
 
 
-def test_unpriced_spend_stops_an_enforcing_cap_however_far_below_its_ceiling(caplog):
+def test_unpriced_spend_stops_an_enforcing_cap_however_far_below_its_ceiling(caplog: pytest.LogCaptureFixture) -> None:
     """Counted as zero, an unpriced model let a capped run spend without bound inside a cap that read it as free."""
     cap = _cap(run_id="run-42", max_cost_usd=10.0)
     cap.record(0.5)
@@ -164,7 +163,7 @@ def test_unpriced_spend_stops_an_enforcing_cap_however_far_below_its_ceiling(cap
     assert "run-42" in warnings[0].getMessage()
 
 
-def test_priced_spend_alone_does_not_stop_a_cap_below_its_ceiling():
+def test_priced_spend_alone_does_not_stop_a_cap_below_its_ceiling() -> None:
     """The accepting side of the refusal above, on the same cap."""
     cap = _cap(max_cost_usd=10.0)
     cap.record(0.5)
@@ -173,7 +172,7 @@ def test_priced_spend_alone_does_not_stop_a_cap_below_its_ceiling():
     assert cap.check() is None
 
 
-def test_an_uncapped_run_counts_unpriced_spend_and_carries_on():
+def test_an_uncapped_run_counts_unpriced_spend_and_carries_on() -> None:
     cap = _cap(max_cost_usd=1.0, enabled=False)
     cap.record(None)
     cap.record(0.25)
@@ -182,7 +181,7 @@ def test_an_uncapped_run_counts_unpriced_spend_and_carries_on():
     assert cap.check() is None
 
 
-def test_the_stop_on_unpriced_spend_says_so_rather_than_claiming_the_cap_was_exceeded():
+def test_the_stop_on_unpriced_spend_says_so_rather_than_claiming_the_cap_was_exceeded() -> None:
     err = BudgetStoppedError(3, 8, CapBreach(max_cost_usd=2.0, accumulated_usd=0.4, unpriced_results=1))
     message = str(err)
     assert "1 result(s) spent what could not be priced" in message
@@ -195,7 +194,7 @@ def test_the_stop_on_unpriced_spend_says_so_rather_than_claiming_the_cap_was_exc
 # ---------------------------------------------------------------------------
 
 
-def test_cap_takes_no_budget_service_dependency():
+def test_cap_takes_no_budget_service_dependency() -> None:
     """The gate path is pure arithmetic — no BudgetService injected anywhere."""
     init_params = set(inspect.signature(EvalRunCostCap.__init__).parameters) - {"self"}
     assert init_params == {"run_id", "max_cost_usd", "enabled"}
@@ -220,21 +219,21 @@ class TestEffectiveCeilingMatchesTheEnforcingCap:
     ceiling would misreport what actually limited its spend.
     """
 
-    def test_the_recorded_ceiling_equals_the_caps_ceiling_when_enforcing(self):
+    def test_the_recorded_ceiling_equals_the_caps_ceiling_when_enforcing(self) -> None:
         cap = EvalRunCostCap.for_run("run-1", 7.5, configured_max_cost_usd=15.0, enforcement_enabled=True)
         assert (
             EvalRunCostCap.resolve_effective_ceiling(7.5, configured_max_cost_usd=15.0, enforcement_enabled=True)
             == cap.max_cost_usd
         )
 
-    def test_the_default_ceiling_also_agrees(self):
+    def test_the_default_ceiling_also_agrees(self) -> None:
         cap = EvalRunCostCap.for_run("run-1", None, configured_max_cost_usd=15.0, enforcement_enabled=True)
         assert (
             EvalRunCostCap.resolve_effective_ceiling(None, configured_max_cost_usd=15.0, enforcement_enabled=True)
             == cap.max_cost_usd
         )
 
-    def test_an_unenforced_run_records_no_ceiling(self):
+    def test_an_unenforced_run_records_no_ceiling(self) -> None:
         """Enforcement off means nothing bounded the run — recording a number would lie."""
         assert (
             EvalRunCostCap.resolve_effective_ceiling(7.5, configured_max_cost_usd=15.0, enforcement_enabled=False)
@@ -252,12 +251,12 @@ class TestTheStopSaysWhatItMeasured:
     was to go and reconstruct it. Both now ride the breach the cap reports.
     """
 
-    def test_the_gate_returns_nothing_while_the_run_is_within_its_cap(self):
+    def test_the_gate_returns_nothing_while_the_run_is_within_its_cap(self) -> None:
         cap = _cap(max_cost_usd=5.0)
         cap.record(4.99)
         assert cap.check() is None
 
-    def test_the_gate_reports_the_ceiling_and_the_spend_that_crossed_it(self):
+    def test_the_gate_reports_the_ceiling_and_the_spend_that_crossed_it(self) -> None:
         cap = _cap(max_cost_usd=5.0)
         cap.record(5.25)
         breach = cap.check()
@@ -265,13 +264,13 @@ class TestTheStopSaysWhatItMeasured:
         assert breach.max_cost_usd == 5.0
         assert breach.accumulated_usd == pytest.approx(5.25)
 
-    def test_an_unenforced_cap_never_reports_a_breach(self):
+    def test_an_unenforced_cap_never_reports_a_breach(self) -> None:
         """Enforcement off is uncapped, so there is no ceiling to have crossed."""
         cap = _cap(max_cost_usd=1.0, enabled=False)
         cap.record(100.0)
         assert cap.check() is None
 
-    def test_the_error_names_the_cap_and_the_spend_alongside_the_progress(self):
+    def test_the_error_names_the_cap_and_the_spend_alongside_the_progress(self) -> None:
         err = BudgetStoppedError(2, 4, CapBreach(max_cost_usd=0.02, accumulated_usd=0.0299, unpriced_results=0))
         assert err.breach.max_cost_usd == 0.02
         assert err.breach.accumulated_usd == pytest.approx(0.0299)
@@ -280,7 +279,7 @@ class TestTheStopSaysWhatItMeasured:
         assert "$0.0299" in message, "the spend that crossed the cap must be in the message"
         assert "$0.0200" in message, "the cap that was crossed must be in the message"
 
-    def test_the_error_cannot_be_raised_without_its_measurement(self):
+    def test_the_error_cannot_be_raised_without_its_measurement(self) -> None:
         """A breach or stop records are required: an unattributed stop is the defect, not a variant of it."""
         with pytest.raises(ValueError, match="names the ceiling"):
             BudgetStoppedError(2, 4)
@@ -295,13 +294,13 @@ class TestTheCeilingsOriginIsResolvedBesideIt:
     setting runs under a different ceiling, while the first does not.
     """
 
-    def test_a_launch_supplied_ceiling_is_chosen(self):
+    def test_a_launch_supplied_ceiling_is_chosen(self) -> None:
         assert EvalRunCostCap.resolve_ceiling_origin(0.02, enforcement_enabled=True) == "chosen"
 
-    def test_an_omitted_ceiling_is_inherited(self):
+    def test_an_omitted_ceiling_is_inherited(self) -> None:
         assert EvalRunCostCap.resolve_ceiling_origin(None, enforcement_enabled=True) == "inherited"
 
-    def test_enforcement_off_is_uncapped_whatever_the_launch_asked_for(self):
+    def test_enforcement_off_is_uncapped_whatever_the_launch_asked_for(self) -> None:
         """Uncapped is a recording, not a blank: it is what distinguishes an unbounded
         run from a run whose writer recorded no ceiling, which store the same null ceiling.
         """
@@ -311,7 +310,7 @@ class TestTheCeilingsOriginIsResolvedBesideIt:
             is None
         )
 
-    def test_the_origin_agrees_with_the_ceiling_about_whether_one_was_in_force(self):
+    def test_the_origin_agrees_with_the_ceiling_about_whether_one_was_in_force(self) -> None:
         """The two are written from one launch; disagreeing would leave a run claiming
         a cap it did not have, or an origin for a cap that is not there.
 

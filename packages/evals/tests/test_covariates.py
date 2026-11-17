@@ -10,7 +10,6 @@ plausible number that a marginal would then treat as an observation.
 from __future__ import annotations
 
 import pytest
-
 from threetears.evals.kernel.covariates import (
     count_dropped_tool_calls,
     count_refused_tool_attaches,
@@ -31,16 +30,16 @@ def _candidate(**kwargs) -> RoleUsage:
 
 
 class TestExecutionMode:
-    def test_one_running_run_is_serial(self):
+    def test_one_running_run_is_serial(self) -> None:
         """The probe counts this run too, so 1 means nothing else was executing."""
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=1)
         assert covariates["execution_mode"] == "serial"
 
-    def test_a_second_run_makes_the_cell_concurrent(self):
+    def test_a_second_run_makes_the_cell_concurrent(self) -> None:
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=2)
         assert covariates["execution_mode"] == "concurrent"
 
-    def test_an_unwired_probe_records_nothing_rather_than_serial(self):
+    def test_an_unwired_probe_records_nothing_rather_than_serial(self) -> None:
         """ "Nobody looked" must not become the clean-conditions claim.
 
         This is the covariate's whole failure mode: a cell measured under unknown
@@ -57,7 +56,7 @@ class TestExecutionMode:
 
 
 class TestTokenCovariates:
-    def test_context_tokens_sum_across_the_candidate_rows(self):
+    def test_context_tokens_sum_across_the_candidate_rows(self) -> None:
         """Rows are keyed by (role, model), so reading row[0] would undercount a cell
         whose candidate spent on more than one model."""
         covariates = derive_covariates(
@@ -69,7 +68,7 @@ class TestTokenCovariates:
         )
         assert covariates["context_tokens_in"] == 150
 
-    def test_other_roles_do_not_leak_into_the_candidate_context(self):
+    def test_other_roles_do_not_leak_into_the_candidate_context(self) -> None:
         """The covariate is the context the CANDIDATE faced — a judge's prompt is
         measurement apparatus and would inflate it."""
         covariates = derive_covariates(
@@ -81,21 +80,21 @@ class TestTokenCovariates:
         )
         assert covariates["context_tokens_in"] == 100
 
-    def test_a_candidate_that_reported_no_prompt_tokens_records_nothing(self):
+    def test_a_candidate_that_reported_no_prompt_tokens_records_nothing(self) -> None:
         covariates = derive_covariates(
             usage=[_candidate(prompt_tokens=None, completion_tokens=None)],
             concurrent_eval_jobs=None,
         )
         assert "context_tokens_in" not in covariates
 
-    def test_reasoning_ratio_is_the_reasoning_share_of_generation(self):
+    def test_reasoning_ratio_is_the_reasoning_share_of_generation(self) -> None:
         covariates = derive_covariates(
             usage=[_candidate(prompt_tokens=100, completion_tokens=80, reasoning_tokens=20)],
             concurrent_eval_jobs=None,
         )
         assert covariates["reasoning_ratio"] == pytest.approx(0.25)
 
-    def test_an_unreported_split_leaves_the_ratio_absent_not_zero(self):
+    def test_an_unreported_split_leaves_the_ratio_absent_not_zero(self) -> None:
         """0.0 would assert the model did no thinking. The provider merely didn't say."""
         covariates = derive_covariates(
             usage=[_candidate(prompt_tokens=100, completion_tokens=80, reasoning_tokens=None)],
@@ -103,7 +102,7 @@ class TestTokenCovariates:
         )
         assert "reasoning_ratio" not in covariates
 
-    def test_a_reported_zero_split_is_a_real_zero_ratio(self):
+    def test_a_reported_zero_split_is_a_real_zero_ratio(self) -> None:
         """The mirror of the case above: a non-reasoning model reporting 0 IS an
         observation, and dropping it would lose the distinction the field exists for."""
         covariates = derive_covariates(
@@ -112,7 +111,7 @@ class TestTokenCovariates:
         )
         assert covariates["reasoning_ratio"] == 0.0
 
-    def test_no_generation_means_no_ratio(self):
+    def test_no_generation_means_no_ratio(self) -> None:
         """A candidate turn that errored before generating has no denominator; a
         ZeroDivisionError or a 0.0 would both be wrong."""
         covariates = derive_covariates(
@@ -121,7 +120,7 @@ class TestTokenCovariates:
         )
         assert "reasoning_ratio" not in covariates
 
-    def test_a_result_whose_capture_attributed_no_roles_derives_an_empty_mapping(self):
+    def test_a_result_whose_capture_attributed_no_roles_derives_an_empty_mapping(self) -> None:
         """``usage=[]`` — capture ran and found no roles — supports no covariate."""
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=None)
         assert covariates == {}
@@ -154,7 +153,7 @@ def _candidate_turn(
 
 
 class TestDroppedToolCalls:
-    def test_a_reach_for_a_bounded_away_tool_is_counted(self):
+    def test_a_reach_for_a_bounded_away_tool_is_counted(self) -> None:
         """The defect: a candidate reaching past tools_allowed left no mark on the result."""
         trace = [_candidate_turn(["lookup"]), _candidate_turn([])]
         covariates = derive_covariates(
@@ -164,7 +163,7 @@ class TestDroppedToolCalls:
         )
         assert covariates["dropped_tool_calls"] == 1
 
-    def test_a_candidate_that_never_reached_reports_a_measured_zero(self):
+    def test_a_candidate_that_never_reached_reports_a_measured_zero(self) -> None:
         """0 is the point of the key: silence must not read the same as never trying."""
         trace = [_candidate_turn([]), _candidate_turn([])]
         covariates = derive_covariates(
@@ -174,17 +173,17 @@ class TestDroppedToolCalls:
         )
         assert covariates["dropped_tool_calls"] == 0
 
-    def test_no_candidate_turn_observed_yields_no_key(self):
+    def test_no_candidate_turn_observed_yields_no_key(self) -> None:
         """A degraded cell that never ran a candidate turn measured nothing here."""
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=None)
         assert "dropped_tool_calls" not in covariates
 
-    def test_counting_spans_every_candidate_turn_and_keeps_repeats(self):
+    def test_counting_spans_every_candidate_turn_and_keeps_repeats(self) -> None:
         """Drain-delivery turns append through the same path; two reaches count as two."""
         trace = [_candidate_turn(["lookup", "lookup"]), _candidate_turn(["image_gen"])]
         assert count_dropped_tool_calls(trace) == 3
 
-    def test_simulator_entries_and_unstamped_records_contribute_nothing(self):
+    def test_simulator_entries_and_unstamped_records_contribute_nothing(self) -> None:
         """Simulator turns carry no turn_record, and a turn loop that does not stamp the field has no list."""
         trace = [
             {"turn": 0, "role": "simulator", "content": "find something"},
@@ -193,7 +192,7 @@ class TestDroppedToolCalls:
         ]
         assert count_dropped_tool_calls(trace) == 1
 
-    def test_a_trace_with_no_candidate_turn_measured_nothing(self):
+    def test_a_trace_with_no_candidate_turn_measured_nothing(self) -> None:
         """The load-bearing zero must not be published for a cell nobody watched.
 
         The defect: a cell whose first ``process_input`` raised breaks out of the turn loop
@@ -205,7 +204,7 @@ class TestDroppedToolCalls:
         assert count_dropped_tool_calls([]) is None
         assert count_dropped_tool_calls([{"turn": 0, "role": "simulator", "content": "hi"}]) is None
 
-    def test_the_absent_count_produces_no_key(self):
+    def test_the_absent_count_produces_no_key(self) -> None:
         """End to end: the sparse rule is what turns the None into silence."""
         covariates = derive_covariates(
             usage=[],
@@ -222,7 +221,7 @@ class TestDroppedToolCalls:
 
 
 class TestRefusedToolAttaches:
-    def test_a_refused_self_attach_is_counted(self):
+    def test_a_refused_self_attach_is_counted(self) -> None:
         """The defect: a refusal reached the candidate and no read surface counted it."""
         trace = [_candidate_turn([], refused=["knowledge"]), _candidate_turn([], refused=[])]
         covariates = derive_covariates(
@@ -232,12 +231,12 @@ class TestRefusedToolAttaches:
         )
         assert covariates["refused_tool_attaches"] == 1
 
-    def test_repeats_count_because_asking_twice_is_a_different_observation(self):
+    def test_repeats_count_because_asking_twice_is_a_different_observation(self) -> None:
         """The reported run asked for `knowledge` AND `web_search` and was refused both."""
         trace = [_candidate_turn([], refused=["knowledge", "web_search"]), _candidate_turn([], refused=["knowledge"])]
         assert count_refused_tool_attaches(trace) == 3
 
-    def test_a_candidate_that_never_asked_reports_a_measured_zero(self):
+    def test_a_candidate_that_never_asked_reports_a_measured_zero(self) -> None:
         """0 is the point of the key: silence must not read the same as never asking."""
         trace = [_candidate_turn([], refused=[]), _candidate_turn([], refused=[])]
         covariates = derive_covariates(
@@ -247,7 +246,7 @@ class TestRefusedToolAttaches:
         )
         assert covariates["refused_tool_attaches"] == 0
 
-    def test_a_record_that_does_not_report_the_field_measured_nothing(self):
+    def test_a_record_that_does_not_report_the_field_measured_nothing(self) -> None:
         """A turn loop that does not stamp the field measured nothing. Publishing 0 for it would
         assert an observation the harness never made — the same conflation the sibling key
         exists to end.
@@ -261,16 +260,16 @@ class TestRefusedToolAttaches:
         )
         assert "refused_tool_attaches" not in covariates
 
-    def test_a_mixed_trace_counts_only_the_turns_that_reported(self):
+    def test_a_mixed_trace_counts_only_the_turns_that_reported(self) -> None:
         """One reporting turn is enough to make the cell measured; the silent one adds 0."""
         trace = [_candidate_turn([]), _candidate_turn([], refused=["web_search"])]
         assert count_refused_tool_attaches(trace) == 1
 
-    def test_no_candidate_turn_at_all_yields_no_key(self):
+    def test_no_candidate_turn_at_all_yields_no_key(self) -> None:
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=None)
         assert "refused_tool_attaches" not in covariates
 
-    def test_the_two_bound_covariates_are_independent(self):
+    def test_the_two_bound_covariates_are_independent(self) -> None:
         """A dropped CALL and a refused ATTACH are different reaches and count separately."""
         trace = [_candidate_turn(["lookup"], refused=["knowledge"])]
         covariates = derive_covariates(
@@ -291,7 +290,7 @@ class TestRefusedToolAttaches:
 
 
 class TestTruncatedRounds:
-    def test_a_round_cut_at_the_output_cap_is_counted(self):
+    def test_a_round_cut_at_the_output_cap_is_counted(self) -> None:
         """The defect: the cap ended the turn, the judge read the silence as the candidate's
         decision, and no eval read surface carried the finish_reason that said otherwise."""
         trace = [_candidate_turn([], truncated=1), _candidate_turn([], truncated=0)]
@@ -302,7 +301,7 @@ class TestTruncatedRounds:
         )
         assert covariates["truncated_rounds"] == 1
 
-    def test_a_cell_none_of_whose_rounds_were_cut_reports_a_measured_zero(self):
+    def test_a_cell_none_of_whose_rounds_were_cut_reports_a_measured_zero(self) -> None:
         """0 is the point of the key: a model that chose silence must not read like one the
         cap silenced, and only a recorded zero lets the first claim be made."""
         trace = [_candidate_turn([], truncated=0), _candidate_turn([], truncated=0)]
@@ -313,11 +312,11 @@ class TestTruncatedRounds:
         )
         assert covariates["truncated_rounds"] == 0
 
-    def test_counting_sums_over_every_turn_that_reported(self):
+    def test_counting_sums_over_every_turn_that_reported(self) -> None:
         trace = [_candidate_turn([], truncated=1), _candidate_turn([], truncated=1), _candidate_turn([], truncated=0)]
         assert count_truncated_rounds(trace) == 2
 
-    def test_a_record_that_does_not_report_the_field_measured_nothing(self):
+    def test_a_record_that_does_not_report_the_field_measured_nothing(self) -> None:
         """A turn loop that does not stamp the field was not watched for this; publishing 0
         for it would assert an observation the harness never made."""
         trace = [_candidate_turn(["lookup"]), _candidate_turn([], refused=[])]
@@ -329,17 +328,17 @@ class TestTruncatedRounds:
         )
         assert "truncated_rounds" not in covariates
 
-    def test_a_mixed_trace_counts_only_the_turns_that_reported(self):
+    def test_a_mixed_trace_counts_only_the_turns_that_reported(self) -> None:
         trace = [_candidate_turn([]), _candidate_turn([], truncated=1)]
         assert count_truncated_rounds(trace) == 1
 
-    def test_no_candidate_turn_at_all_yields_no_key(self):
+    def test_no_candidate_turn_at_all_yields_no_key(self) -> None:
         assert count_truncated_rounds([]) is None
         assert count_truncated_rounds([{"turn": 0, "role": "simulator", "content": "hi"}]) is None
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=None)
         assert "truncated_rounds" not in covariates
 
-    def test_the_three_mechanical_counters_are_independent(self):
+    def test_the_three_mechanical_counters_are_independent(self) -> None:
         """A dropped CALL, a refused ATTACH and a CUT round are three different events."""
         trace = [_candidate_turn(["lookup"], refused=["knowledge"], truncated=1)]
         covariates = derive_covariates(
@@ -360,7 +359,7 @@ class TestTruncatedRounds:
 
 
 class TestFoldPhaseTimings:
-    def test_phases_are_namespaced_by_their_source_tool(self):
+    def test_phases_are_namespaced_by_their_source_tool(self) -> None:
         """Two async tools may both call a phase 'synthesis'; without the prefix they
         would silently sum into one meaningless number."""
         acc: dict[str, float] = {}
@@ -368,7 +367,7 @@ class TestFoldPhaseTimings:
         fold_phase_timings(acc, source_tool="rss", timings={"synthesis": 5.0})
         assert acc == {"lookup_synthesis_ms": 120.0, "rss_synthesis_ms": 5.0}
 
-    def test_repeat_deliveries_sum_per_phase(self):
+    def test_repeat_deliveries_sum_per_phase(self) -> None:
         """A tool can re-fire within a cell; the covariate is wall-clock attributable
         to that phase across the whole cell, so the second window must not overwrite."""
         acc: dict[str, float] = {}
@@ -376,17 +375,17 @@ class TestFoldPhaseTimings:
         fold_phase_timings(acc, source_tool="lookup", timings={"synthesis": 50.5})
         assert acc == {"lookup_synthesis_ms": 150.5}
 
-    def test_a_phase_reported_as_none_stays_unmeasured(self):
+    def test_a_phase_reported_as_none_stays_unmeasured(self) -> None:
         acc: dict[str, float] = {}
         fold_phase_timings(acc, source_tool="lookup", timings={"synthesis": None, "grounding": 10.0})
         assert acc == {"lookup_grounding_ms": 10.0}
 
-    def test_a_delivery_with_no_timings_leaves_the_accumulator_untouched(self):
+    def test_a_delivery_with_no_timings_leaves_the_accumulator_untouched(self) -> None:
         acc: dict[str, float] = {"lookup_synthesis_ms": 7.0}
         fold_phase_timings(acc, source_tool="lookup", timings=None)
         assert acc == {"lookup_synthesis_ms": 7.0}
 
-    def test_a_non_mapping_payload_is_refused_to_the_caller(self, caplog):
+    def test_a_non_mapping_payload_is_refused_to_the_caller(self, caplog: pytest.LogCaptureFixture) -> None:
         """Metadata crosses an untyped process-internal boundary; a malformed carrier
         must not wedge the cell, and it must not vanish into a log either: the kind is told."""
         acc: dict[str, float] = {}
@@ -396,7 +395,7 @@ class TestFoldPhaseTimings:
         assert refused == ["delivery from lookup carried phase timings that are not a mapping ([1, 2, 3])"]
         assert "not a mapping" in caplog.text
 
-    def test_an_unparseable_duration_is_refused_to_the_caller(self, caplog):
+    def test_an_unparseable_duration_is_refused_to_the_caller(self, caplog: pytest.LogCaptureFixture) -> None:
         """It was logged and left out, reading to every reader as a phase the tool never measured."""
         acc: dict[str, float] = {}
         with caplog.at_level("WARNING"):
@@ -406,7 +405,9 @@ class TestFoldPhaseTimings:
         assert sentence.startswith("phase timing lookup.synthesis is not a number ('fast'")
         assert "not a number" in caplog.text
 
-    def test_a_negative_duration_is_not_a_measurement_and_is_refused_to_the_caller(self, caplog):
+    def test_a_negative_duration_is_not_a_measurement_and_is_refused_to_the_caller(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Nothing takes negative time; folding it would silently subtract from a real
         phase total on the next delivery."""
         acc: dict[str, float] = {}
@@ -416,7 +417,7 @@ class TestFoldPhaseTimings:
         assert refused == ["phase timing lookup.synthesis is negative (-5.0), which no phase takes"]
         assert "negative" in caplog.text
 
-    def test_a_well_formed_delivery_refuses_nothing(self):
+    def test_a_well_formed_delivery_refuses_nothing(self) -> None:
         acc: dict[str, float] = {}
         assert fold_phase_timings(acc, source_tool="lookup", timings={"synthesis": None, "grounding": 1}) == []
         assert fold_phase_timings(acc, source_tool="lookup", timings=None) == []
@@ -431,10 +432,10 @@ class TestFoldPhaseTimings:
 
 class TestTurnsEndedByBudget:
     @pytest.mark.parametrize("count", [0, 2])
-    def test_a_watched_count_is_written_zero_included(self, count):
+    def test_a_watched_count_is_written_zero_included(self, count) -> None:
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=None, turns_ended_by_budget=count)
         assert covariates["turns_ended_by_budget"] == count
 
-    def test_no_budget_watched_yields_no_key(self):
+    def test_no_budget_watched_yields_no_key(self) -> None:
         covariates = derive_covariates(usage=[], concurrent_eval_jobs=None)
         assert "turns_ended_by_budget" not in covariates

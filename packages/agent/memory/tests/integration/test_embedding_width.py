@@ -52,7 +52,7 @@ async def _migrate(url: str, schema: str, **register_kwargs: Any) -> None:
     conn = await asyncpg.connect(url)
     try:
         await conn.execute(f'SET search_path TO "{schema}", public')
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
     finally:
         await conn.close()
 
@@ -158,7 +158,7 @@ class TestAConfiguredWidth:
             assert {table: types.get(table) for table in _EMBEDDING_TABLES} == dict.fromkeys(
                 _EMBEDDING_TABLES, "vector(1536)"
             )
-            await verify_embedding_width(AsyncpgStore(conn), 1536)  # type: ignore[arg-type]
+            await verify_embedding_width(AsyncpgStore(conn), 1536)
         finally:
             await conn.close()
         pool = await _pool(url, schema)
@@ -216,9 +216,9 @@ class TestAnExistingSchema:
         conn = await _connect(url, schema)
         try:
             store = AsyncpgStore(conn)
-            await verify_embedding_width(store, 1024)  # type: ignore[arg-type]
+            await verify_embedding_width(store, 1024)
             with pytest.raises(EmbeddingWidthMismatch) as raised:
-                await verify_embedding_width(store, 1536)  # type: ignore[arg-type]
+                await verify_embedding_width(store, 1536)
         finally:
             await conn.close()
         assert raised.value.table == "memories"
@@ -241,7 +241,7 @@ class TestAnExistingSchema:
             options_before = await _embedding_index_options(conn, schema)
             assert options_before["ix_memories_embedding_hnsw"] == ["m=16", "ef_construction=64"]
 
-            cleared = await resize_embedding_width(AsyncpgStore(conn), 1536)  # type: ignore[arg-type]
+            cleared = await resize_embedding_width(AsyncpgStore(conn), 1536)
 
             assert cleared == 2
             types = await _column_types(conn, schema)
@@ -252,8 +252,8 @@ class TestAnExistingSchema:
             assert await conn.fetchval("SELECT count(*) FROM memories WHERE embedding IS NOT NULL") == 0
             assert await _embedding_index_definitions(conn, schema) == before
             assert await _embedding_index_options(conn, schema) == options_before
-            await verify_embedding_width(AsyncpgStore(conn), 1536)  # type: ignore[arg-type]
-            assert await resize_embedding_width(AsyncpgStore(conn), 1536) == 0  # type: ignore[arg-type]
+            await verify_embedding_width(AsyncpgStore(conn), 1536)
+            assert await resize_embedding_width(AsyncpgStore(conn), 1536) == 0
         finally:
             await conn.close()
         pool = await _pool(url, schema)
@@ -283,7 +283,7 @@ class TestAnExistingSchema:
                 "ALTER TABLE memories ALTER COLUMN embedding TYPE public.vector(1536) USING NULL::public.vector(1536)"
             )
 
-            await resize_embedding_width(AsyncpgStore(conn), 1536)  # type: ignore[arg-type]
+            await resize_embedding_width(AsyncpgStore(conn), 1536)
 
             assert await _embedding_index_definitions(conn, schema) == before
         finally:

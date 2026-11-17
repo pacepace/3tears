@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from packages.scrape.tests.driver_log_helpers import driver_warnings
-
 from threetears.scrape.drivers.listing_detail import ListingDetailDriver, ListingDetailDriverError
+
+from packages.scrape.tests.driver_log_helpers import driver_warnings
 
 _LISTING_FIELD_COLUMNS = {0: "employer", 1: "city", 2: "notice_date"}
 _DETAIL_LINK_COLUMN = 0
@@ -114,19 +114,19 @@ async def _render_detail_only(detail_html: str, labels: dict[str, str]) -> tuple
 
 
 class TestListingRowFields:
-    async def test_reads_requested_column_indices(self):
+    async def test_reads_requested_column_indices(self) -> None:
         _, records = await _render_listing_only(
             "<tr><td>Acme Corp</td><td>Springfield</td><td>Jun 1, 2026</td></tr>",
             {0: "employer", 1: "city", 2: "notice_date"},
         )
         assert records == [{"employer": "Acme Corp", "city": "Springfield", "notice_date": "Jun 1, 2026"}]
 
-    async def test_an_empty_cell_is_absent_not_an_empty_string(self):
+    async def test_an_empty_cell_is_absent_not_an_empty_string(self) -> None:
         header, records = await _render_listing_only("<tr><td>Acme Corp</td><td></td></tr>", {0: "employer", 1: "city"})
         assert header == ["employer"], "an empty cell became a field holding an empty string"
         assert records == [{"employer": "Acme Corp"}]
 
-    async def test_an_out_of_range_column_index_is_skipped_not_a_crash(self):
+    async def test_an_out_of_range_column_index_is_skipped_not_a_crash(self) -> None:
         header, records = await _render_listing_only("<tr><td>Acme Corp</td></tr>", {0: "employer", 5: "county"})
         assert header == ["employer"]
         assert records == [{"employer": "Acme Corp"}]
@@ -138,27 +138,27 @@ class TestListingRowFields:
 
 
 class TestDetailDefinitionList:
-    async def test_reads_labeled_fields_by_exact_label_text(self):
+    async def test_reads_labeled_fields_by_exact_label_text(self) -> None:
         _, records = await _render_detail_only(
             _detail_html(notice_date="Jun 17, 2026", affected_count="81"), _DETAIL_FIELD_LABELS
         )
         assert records == [{"notice_date": "Jun 17, 2026", "affected_count": "81"}]
 
-    async def test_a_blank_value_is_absent_not_an_empty_string(self):
+    async def test_a_blank_value_is_absent_not_an_empty_string(self) -> None:
         header, records = await _render_detail_only(
             _detail_html(notice_date="", affected_count="81"), _DETAIL_FIELD_LABELS
         )
         assert header == ["affected_count"], "a blank definition became a field holding an empty string"
         assert records == [{"affected_count": "81"}]
 
-    async def test_a_label_not_present_at_all_is_absent(self):
+    async def test_a_label_not_present_at_all_is_absent(self) -> None:
         header, records = await _render_detail_only(
             "<html><body><div class='definition-list'></div></body></html>", _DETAIL_FIELD_LABELS
         )
         assert header == []
         assert records == [{}]
 
-    async def test_a_requested_label_with_no_matching_field_name_is_ignored(self):
+    async def test_a_requested_label_with_no_matching_field_name_is_ignored(self) -> None:
         header, records = await _render_detail_only(
             _detail_html(notice_date="Jun 17, 2026"), {"notice_date": "Notice Date", "reason": "Reason -- Comments"}
         )
@@ -172,13 +172,13 @@ class TestDetailDefinitionList:
 
 
 class TestListingDetailDriver:
-    def test_name(self):
+    def test_name(self) -> None:
         driver = ListingDetailDriver(
             row_selector="tr", listing_field_columns={}, detail_link_column=0, detail_field_labels={}
         )
         assert driver.name == "listing_detail"
 
-    async def test_merges_listing_and_detail_fields_preferring_detail(self):
+    async def test_merges_listing_and_detail_fields_preferring_detail(self) -> None:
         listing = _listing_html([("Acme Corp", "/notices/1", "Springfield", "Jun 1, 2026")])
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -198,7 +198,7 @@ class TestListingDetailDriver:
         assert "Jun 2, 2026" in page.html
         assert "Jun 1, 2026" not in page.html
 
-    async def test_falls_back_to_listing_value_when_detail_field_is_blank(self):
+    async def test_falls_back_to_listing_value_when_detail_field_is_blank(self) -> None:
         """The real Kansas gap this driver exists to handle: a detail page's own
         Notice Date can be blank even though the listing row had a real one."""
         listing = _listing_html([("Acme Corp", "/notices/1", "Springfield", "Jun 1, 2026")])
@@ -214,7 +214,7 @@ class TestListingDetailDriver:
         assert "Jun 1, 2026" in page.html  # fell back to the listing's own value
         assert "42" in page.html
 
-    async def test_a_field_absent_on_both_layers_is_absent_not_fabricated(self):
+    async def test_a_field_absent_on_both_layers_is_absent_not_fabricated(self) -> None:
         """One record genuinely has no city (neither layer provides it); a sibling
         record does -- the city column exists (union across records), but the
         first record's own city cell must be empty, never a fabricated value."""
@@ -240,7 +240,7 @@ class TestListingDetailDriver:
         acme_row = next(r for r in rows if "Acme Corp" in r)
         assert "Springfield" not in acme_row  # never fabricated for the record that lacks it
 
-    async def test_a_failed_detail_fetch_still_yields_the_record_from_listing_fields_alone(self):
+    async def test_a_failed_detail_fetch_still_yields_the_record_from_listing_fields_alone(self) -> None:
         listing = _listing_html([("Acme Corp", "/notices/1", "Springfield", "Jun 1, 2026")])
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -255,7 +255,9 @@ class TestListingDetailDriver:
         assert "Springfield" in page.html
         assert "Jun 1, 2026" in page.html
 
-    async def test_a_detail_fetch_returning_an_error_status_still_yields_the_record_from_listing_fields_alone(self):
+    async def test_a_detail_fetch_returning_an_error_status_still_yields_the_record_from_listing_fields_alone(
+        self,
+    ) -> None:
         listing = _listing_html([("Acme Corp", "/notices/1", "Springfield", "Jun 1, 2026")])
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -269,7 +271,7 @@ class TestListingDetailDriver:
         assert "Acme Corp" in page.html
         assert "Springfield" in page.html
 
-    async def test_a_row_with_no_detail_link_still_yields_listing_fields_alone(self):
+    async def test_a_row_with_no_detail_link_still_yields_listing_fields_alone(self) -> None:
         listing = "<html><body><table><tbody><tr><td>Acme Corp</td><td>Springfield</td><td>Jun 1, 2026</td></tr></tbody></table></body></html>"
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -281,7 +283,7 @@ class TestListingDetailDriver:
         assert "Acme Corp" in page.html
         assert "Springfield" in page.html
 
-    async def test_a_detail_link_column_index_out_of_range_for_a_row_still_yields_listing_fields_alone(self):
+    async def test_a_detail_link_column_index_out_of_range_for_a_row_still_yields_listing_fields_alone(self) -> None:
         """Distinct from "cell exists but has no <a>" (the test above) -- here
         the configured detail_link_column index doesn't even exist on this
         row at all (fewer <td> cells than expected)."""
@@ -313,7 +315,7 @@ class TestListingDetailDriver:
         assert "Acme Corp" in page.html
         assert detail_fetch_count == 1  # only the listing fetch -- no detail fetch attempted at all
 
-    async def test_multiple_rows_all_resolved(self):
+    async def test_multiple_rows_all_resolved(self) -> None:
         listing = _listing_html(
             [
                 ("Acme Corp", "/notices/1", "Springfield", "Jun 1, 2026"),
@@ -334,7 +336,7 @@ class TestListingDetailDriver:
         assert "Acme Corp" in page.html and "10" in page.html
         assert "Beta LLC" in page.html and "20" in page.html
 
-    async def test_max_rows_caps_how_many_are_resolved(self):
+    async def test_max_rows_caps_how_many_are_resolved(self) -> None:
         rows = [(f"Corp {i}", f"/notices/{i}", "City", "Jun 1, 2026") for i in range(5)]
         listing = _listing_html(rows)
         detail_fetch_count = 0
@@ -351,7 +353,7 @@ class TestListingDetailDriver:
 
         assert detail_fetch_count == 2
 
-    async def test_pace_delay_is_awaited_between_detail_fetches(self):
+    async def test_pace_delay_is_awaited_between_detail_fetches(self) -> None:
         listing = _listing_html(
             [
                 ("Acme Corp", "/notices/1", "City", "Jun 1, 2026"),
@@ -388,7 +390,7 @@ class TestListingDetailDriver:
         assert sleep_mock.await_count == 1
         assert sleep_mock.await_args.args == (1.0,)
 
-    async def test_a_429_detail_response_backs_off_with_extra_delay_and_falls_back_to_listing_fields(self):
+    async def test_a_429_detail_response_backs_off_with_extra_delay_and_falls_back_to_listing_fields(self) -> None:
         """Live-found: the real Arizona/Delaware/
         Kansas/Vermont/Maine servers returned intermittent 429s at a 0.1s
         pace -- a 429 is the server's own explicit "slow down" signal, not
@@ -435,7 +437,7 @@ class TestListingDetailDriver:
         assert "Acme Corp" in page.html
         assert "Springfield" in page.html
 
-    async def test_listing_fetch_failure_raises(self):
+    async def test_listing_fetch_failure_raises(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(500, content=b"server error")
 
@@ -443,7 +445,7 @@ class TestListingDetailDriver:
         with pytest.raises(ListingDetailDriverError):
             await driver.render("https://example.gov/warn")
 
-    async def test_listing_fetch_transport_failure_raises(self):
+    async def test_listing_fetch_transport_failure_raises(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("boom", request=request)
 
@@ -451,7 +453,7 @@ class TestListingDetailDriver:
         with pytest.raises(ListingDetailDriverError):
             await driver.render("https://example.gov/warn")
 
-    async def test_default_pace_delay_is_nonzero(self, monkeypatch):
+    async def test_default_pace_delay_is_nonzero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """This module's own docstring, 'Politeness, on by default' -- unlike
         MultiDocumentDriver, this brand-new driver defaults to NOT hammering an
         unprotected government server.
@@ -502,7 +504,7 @@ class TestListingDetailAnnouncesADroppedSolve:
             return httpx.Response(200, content=_detail_html(notice_date="Jun 2, 2026", affected_count="42").encode())
         return httpx.Response(200, content=listing.encode())
 
-    async def test_render_warns_when_it_drops_a_solve(self, caplog):
+    async def test_render_warns_when_it_drops_a_solve(self, caplog: pytest.LogCaptureFixture) -> None:
         driver = _driver(self._handler)
 
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.listing_detail"):
@@ -513,7 +515,7 @@ class TestListingDetailAnnouncesADroppedSolve:
         mine = [r for r in driver_warnings(caplog, "listing_detail") if "cannot apply it" in r.getMessage()]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
-    async def test_an_ordinary_render_stays_quiet(self, caplog):
+    async def test_an_ordinary_render_stays_quiet(self, caplog: pytest.LogCaptureFixture) -> None:
         driver = _driver(self._handler)
 
         with caplog.at_level("WARNING", logger="threetears.scrape.drivers.listing_detail"):

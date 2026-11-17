@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from threetears.scrape.llm_retry import StructuredCallExhaustedError
 from threetears.scrape.extraction import (
     NOTICE_DOCUMENT_CLASS,
     OCR_PAGE_IMAGE_CLASS,
@@ -40,6 +39,7 @@ from threetears.scrape.extraction import (
     validate_regex_row_candidate,
     validate_row_candidate,
 )
+from threetears.scrape.llm_retry import StructuredCallExhaustedError
 
 from packages.scrape.tests.structured_output_fakes import fake_structured_model
 
@@ -72,7 +72,7 @@ _ROWS_PAGE_HTML = """
 
 
 class TestStripBoilerplate:
-    def test_removes_script_style_nav_header_footer_and_comments(self):
+    def test_removes_script_style_nav_header_footer_and_comments(self) -> None:
         html = (
             "<html><body>"
             "<script>var x = 1;</script>"
@@ -89,7 +89,7 @@ class TestStripBoilerplate:
         for gone in ("var x = 1", "color:red", "Site nav", "Site header", "Site footer", "a comment"):
             assert gone not in stripped
 
-    def test_content_with_no_boilerplate_is_unaffected(self):
+    def test_content_with_no_boilerplate_is_unaffected(self) -> None:
         html = "<html><body><table><tr><td>Acme Corp</td></tr></table></body></html>"
         assert "Acme Corp" in strip_boilerplate(html)
 
@@ -100,7 +100,7 @@ class TestStripBoilerplate:
 
 
 class TestValidateCandidate:
-    def test_valid_strategy_extracts_all_fields(self):
+    def test_valid_strategy_extracts_all_fields(self) -> None:
         strategy = {"employer": "td.employer", "affected_count": "td.count"}
         schema = {"employer": str, "affected_count": int}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
@@ -108,7 +108,7 @@ class TestValidateCandidate:
         assert result.extracted == {"employer": "Acme Corp", "affected_count": 42}
         assert result.errors == []
 
-    def test_missing_selector_for_required_field(self):
+    def test_missing_selector_for_required_field(self) -> None:
         strategy = {"employer": "td.employer"}
         schema = {"employer": str, "affected_count": int}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
@@ -116,40 +116,40 @@ class TestValidateCandidate:
         assert any("no selector proposed" in e for e in result.errors)
         assert "affected_count" not in result.extracted
 
-    def test_selector_matches_nothing(self):
+    def test_selector_matches_nothing(self) -> None:
         strategy = {"employer": "td.does-not-exist", "affected_count": "td.count"}
         schema = {"employer": str, "affected_count": int}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
         assert any("matched nothing" in e for e in result.errors)
 
-    def test_selector_matches_empty_element(self):
+    def test_selector_matches_empty_element(self) -> None:
         strategy = {"employer": "div.empty-field"}
         schema = {"employer": str}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
         assert any("empty element" in e for e in result.errors)
 
-    def test_type_mismatch_fails_validation(self):
+    def test_type_mismatch_fails_validation(self) -> None:
         strategy = {"affected_count": "td.employer"}  # "Acme Corp" doesn't parse as int
         schema = {"affected_count": int}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is False
         assert any("does not parse as int" in e for e in result.errors)
 
-    def test_str_field_never_needs_coercion(self):
+    def test_str_field_never_needs_coercion(self) -> None:
         strategy = {"employer": "td.employer"}
         schema = {"employer": str}
         result = validate_candidate(_PAGE_HTML, strategy, schema)
         assert result.valid is True
         assert result.extracted["employer"] == "Acme Corp"
 
-    def test_validation_result_is_frozen_dataclass_defaults(self):
+    def test_validation_result_is_frozen_dataclass_defaults(self) -> None:
         result = ValidationResult(valid=True)
         assert result.extracted == {}
         assert result.errors == []
 
-    def test_a_syntactically_invalid_selector_is_refused_by_name_not_a_crash(self):
+    def test_a_syntactically_invalid_selector_is_refused_by_name_not_a_crash(self) -> None:
         # Real bug, live-discovered via schema-discovery mode (real Maryland WARN page,
         # 2026-07-15): an LLM-proposed selector is not guaranteed to be valid CSS -- a jQuery-ism
         # like "td:eq(0)" raised an uncaught soupsieve.util.SelectorSyntaxError here, crashing
@@ -170,7 +170,7 @@ class TestValidateCandidate:
 
 
 class TestGenerateCandidates:
-    async def test_success_returns_selector_dicts(self):
+    async def test_success_returns_selector_dicts(self) -> None:
         parsed = {
             "candidates": [
                 {"selectors": {"employer": "td.employer"}},
@@ -183,7 +183,7 @@ class TestGenerateCandidates:
         assert candidates == [{"employer": "td.employer"}, {"employer": ".employer-name"}]
         assert ainvoke_mock.await_count == 1
 
-    async def test_retries_before_succeeding(self):
+    async def test_retries_before_succeeding(self) -> None:
         parsed = {"candidates": [{"selectors": {"employer": "td.employer"}}]}
         fake_model, ainvoke_mock = fake_structured_model(side_effect=[RuntimeError("transient"), parsed])
         with (
@@ -194,7 +194,7 @@ class TestGenerateCandidates:
         assert ainvoke_mock.await_count == 2
         assert candidates == [{"employer": "td.employer"}]
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -206,7 +206,7 @@ class TestGenerateCandidates:
             await generate_candidates(_PAGE_HTML, {"employer": str}, api_key="k")
         assert exc_info.value.last_error is boom
 
-    async def test_empty_candidate_list_from_llm_returns_empty(self):
+    async def test_empty_candidate_list_from_llm_returns_empty(self) -> None:
         parsed = {"candidates": []}
         fake_model, _ = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
@@ -228,25 +228,25 @@ def _validated_count(raw: str) -> ValidationResult:
 
 
 class TestNormalizeNumericText:
-    def test_plain_digits_pass_through(self):
+    def test_plain_digits_pass_through(self) -> None:
         assert _validated_count("42").extracted == {"count": 42}
 
-    def test_strips_thousands_separator_commas(self):
+    def test_strips_thousands_separator_commas(self) -> None:
         assert _validated_count("1,234").extracted == {"count": 1234}
 
-    def test_strips_currency_symbol(self):
+    def test_strips_currency_symbol(self) -> None:
         assert _validated_count("$1,234").extracted == {"count": 1234}
 
-    def test_expands_k_suffix(self):
+    def test_expands_k_suffix(self) -> None:
         assert _validated_count("2.5K").extracted == {"count": 2500}
 
-    def test_expands_m_suffix(self):
+    def test_expands_m_suffix(self) -> None:
         assert _validated_count("1M").extracted == {"count": 1000000}
 
-    def test_expands_b_suffix_lowercase(self):
+    def test_expands_b_suffix_lowercase(self) -> None:
         assert _validated_count("1.2b").extracted == {"count": 1200000000}
 
-    def test_non_numeric_text_passes_through_unparsed(self):
+    def test_non_numeric_text_passes_through_unparsed(self) -> None:
         # Normalization does not validate -- it leaves genuinely non-numeric text
         # alone, and the int() coercion after it is what refuses it.
         result = _validated_count("bad")
@@ -254,12 +254,12 @@ class TestNormalizeNumericText:
         assert "count" not in result.extracted
         assert any("does not parse as int" in e for e in result.errors)
 
-    def test_takes_leading_number_before_trailing_annotation(self):
+    def test_takes_leading_number_before_trailing_annotation(self) -> None:
         # Live finding (Maryland's real Total Employees column, 2026-07-14):
         # a genuine count with a trailing annotation the source site itself put there.
         assert _validated_count("5 (Remote workers in MD)").extracted == {"count": 5}
 
-    def test_takes_leading_number_with_suffix_before_trailing_annotation(self):
+    def test_takes_leading_number_with_suffix_before_trailing_annotation(self) -> None:
         assert _validated_count("2K (estimated)").extracted == {"count": 2000}
 
 
@@ -269,7 +269,7 @@ class TestNormalizeNumericText:
 
 
 class TestValidateRowCandidate:
-    def test_valid_strategy_extracts_every_full_row(self):
+    def test_valid_strategy_extracts_every_full_row(self) -> None:
         strategy = {
             "row_selector": "tbody tr",
             "field_selectors": {"employer": "td.employer", "affected_count": "td.count", "county": "td.county"},
@@ -285,25 +285,25 @@ class TestValidateRowCandidate:
             {"employer": "ZeniMax", "affected_count": 2500, "county": "Cockeysville"},
         ]
 
-    def test_whitespace_collapsed_within_a_row(self):
+    def test_whitespace_collapsed_within_a_row(self) -> None:
         strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer"}}
         result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
         assert result.records[0]["employer"] == "Dejana Truck"  # not "Dejana    Truck"
 
-    def test_no_row_selector_is_invalid(self):
+    def test_no_row_selector_is_invalid(self) -> None:
         result = validate_row_candidate(_ROWS_PAGE_HTML, {}, {"employer": str})
         assert result.valid is False
         assert result.total_rows_matched == 0
         assert any("no row_selector proposed" in e for e in result.errors)
 
-    def test_row_selector_matches_nothing_is_invalid(self):
+    def test_row_selector_matches_nothing_is_invalid(self) -> None:
         strategy = {"row_selector": ".does-not-exist", "field_selectors": {"employer": "td.employer"}}
         result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
         assert result.valid is False
         assert result.total_rows_matched == 0
         assert result.records == []
 
-    def test_syntactically_invalid_row_selector_degrades_gracefully_not_a_crash(self):
+    def test_syntactically_invalid_row_selector_degrades_gracefully_not_a_crash(self) -> None:
         # Regression test for the same live-discovered bug as TestValidateCandidate's own --
         # an invalid row_selector must never crash, and is refused by name, not read as "matched nothing".
         strategy = {"row_selector": "tr:eq(0)", "field_selectors": {"employer": "td.employer"}}
@@ -312,14 +312,14 @@ class TestValidateRowCandidate:
         assert result.total_rows_matched == 0
         assert any(e.startswith("row_selector: selector 'tr:eq(0)' is not valid CSS") for e in result.errors)
 
-    def test_syntactically_invalid_field_selector_degrades_gracefully_not_a_crash(self):
+    def test_syntactically_invalid_field_selector_degrades_gracefully_not_a_crash(self) -> None:
         strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td:eq(0)"}}
         result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
         assert result.valid is False
         assert result.records == []
         assert result.errors and all("'td:eq(0)' is not valid CSS" in e for e in result.errors)
 
-    def test_every_row_failing_is_invalid(self):
+    def test_every_row_failing_is_invalid(self) -> None:
         strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": ".nope"}}
         result = validate_row_candidate(_ROWS_PAGE_HTML, strategy, {"employer": str})
         assert result.valid is False
@@ -327,14 +327,14 @@ class TestValidateRowCandidate:
         assert result.records == []
         assert len(result.errors) == 3  # one "matched nothing" per row
 
-    def test_row_error_list_is_capped(self):
+    def test_row_error_list_is_capped(self) -> None:
         many_rows_html = "<table><tbody>" + "<tr><td>x</td></tr>" * 50 + "</tbody></table>"
         strategy = {"row_selector": "tbody tr", "field_selectors": {"missing": ".nope"}}
         result = validate_row_candidate(many_rows_html, strategy, {"missing": str})
         assert result.total_rows_matched == 50
         assert len(result.errors) == 20  # _MAX_ROW_ERRORS, not 50
 
-    def test_row_validation_result_is_frozen_dataclass_defaults(self):
+    def test_row_validation_result_is_frozen_dataclass_defaults(self) -> None:
         result = RowValidationResult(valid=False)
         assert result.records == []
         assert result.total_rows_matched == 0
@@ -363,7 +363,7 @@ class TestApplyRowRecipe:
         "field_selectors": {"employer": "td.employer", "affected_count": "td.count", "county": "td.county"},
     }
 
-    def test_returns_source_text_never_coerced_types(self):
+    def test_returns_source_text_never_coerced_types(self) -> None:
         # The same page `validate_row_candidate` parses into int 1234 / 2500 comes
         # back here as the source's own text -- bronze keeps "1,234" and "2.5K"
         # verbatim so a later contract, not this walk, decides what they mean.
@@ -371,7 +371,7 @@ class TestApplyRowRecipe:
         assert records[0] == {"employer": "Dejana Truck", "affected_count": "1,234", "county": "Baltimore"}
         assert records[1] == {"employer": "ZeniMax", "affected_count": "2.5K", "county": "Cockeysville"}
 
-    def test_partial_row_is_kept_where_the_scorer_drops_it(self):
+    def test_partial_row_is_kept_where_the_scorer_drops_it(self) -> None:
         # THE divergence this function exists for. Row 3 has an empty employer and a
         # non-numeric count, so `validate_row_candidate` excludes it entirely; a bronze
         # load must keep the real, addressable "Spacer Row" county rather than lose it.
@@ -379,22 +379,22 @@ class TestApplyRowRecipe:
         assert len(records) == 3
         assert records[2] == {"employer": None, "affected_count": "bad", "county": "Spacer Row"}
 
-    def test_missing_cell_is_none_not_a_dropped_field(self):
+    def test_missing_cell_is_none_not_a_dropped_field(self) -> None:
         strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer", "absent": ".nope"}}
         records = apply_row_recipe(_ROWS_PAGE_HTML, strategy)
         assert all("absent" in r for r in records)  # the key is always present, keeping rows rectangular
         assert {r["absent"] for r in records} == {None}
 
-    def test_all_empty_row_is_skipped(self):
+    def test_all_empty_row_is_skipped(self) -> None:
         strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer", "county": "td.county"}}
         records = apply_row_recipe(_EMPTY_ROW_PAGE_HTML, strategy)
         assert records == [{"employer": "ZeniMax", "county": "Cockeysville"}]
 
-    def test_whitespace_collapsed_like_the_scorer(self):
+    def test_whitespace_collapsed_like_the_scorer(self) -> None:
         records = apply_row_recipe(_ROWS_PAGE_HTML, self.STRATEGY)
         assert records[0]["employer"] == "Dejana Truck"  # not "Dejana    Truck"
 
-    def test_field_order_follows_declaration_not_the_dom(self):
+    def test_field_order_follows_declaration_not_the_dom(self) -> None:
         strategy = {
             "row_selector": "tbody tr",
             "field_selectors": {"county": "td.county", "employer": "td.employer"},
@@ -402,13 +402,13 @@ class TestApplyRowRecipe:
         records = apply_row_recipe(_ROWS_PAGE_HTML, strategy)
         assert list(records[0]) == ["county", "employer"]
 
-    def test_row_selector_matching_nothing_returns_empty_not_an_error(self):
+    def test_row_selector_matching_nothing_returns_empty_not_an_error(self) -> None:
         # An empty result is data the caller weighs (stale recipe? restructured page?),
         # not a failure this function can adjudicate.
         strategy = {"row_selector": ".does-not-exist", "field_selectors": {"employer": "td.employer"}}
         assert apply_row_recipe(_ROWS_PAGE_HTML, strategy) == []
 
-    def test_invalid_row_selector_raises_rather_than_matching_nothing(self):
+    def test_invalid_row_selector_raises_rather_than_matching_nothing(self) -> None:
         # Opposite of `validate_row_candidate`, which degrades an invalid selector to
         # "matched nothing" because it scores unproven LLM proposals. A recipe here is
         # already proven, so invalid CSS means corruption and must not read as no data.
@@ -416,16 +416,16 @@ class TestApplyRowRecipe:
         with pytest.raises(ValueError, match="invalid row_selector"):
             apply_row_recipe(_ROWS_PAGE_HTML, strategy)
 
-    def test_invalid_field_selector_raises_naming_the_field(self):
+    def test_invalid_field_selector_raises_naming_the_field(self) -> None:
         strategy = {"row_selector": "tbody tr", "field_selectors": {"employer": "td:eq(0)"}}
         with pytest.raises(ValueError, match="'employer'"):
             apply_row_recipe(_ROWS_PAGE_HTML, strategy)
 
-    def test_missing_row_selector_raises(self):
+    def test_missing_row_selector_raises(self) -> None:
         with pytest.raises(ValueError, match="no row_selector"):
             apply_row_recipe(_ROWS_PAGE_HTML, {"field_selectors": {"employer": "td.employer"}})
 
-    def test_missing_field_selectors_raises(self):
+    def test_missing_field_selectors_raises(self) -> None:
         with pytest.raises(ValueError, match="no field_selectors"):
             apply_row_recipe(_ROWS_PAGE_HTML, {"row_selector": "tbody tr"})
 
@@ -436,7 +436,7 @@ class TestApplyRowRecipe:
 
 
 class TestGenerateRowCandidates:
-    async def test_success_returns_row_and_field_selector_dicts(self):
+    async def test_success_returns_row_and_field_selector_dicts(self) -> None:
         parsed = {
             "candidates": [
                 {"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer"}},
@@ -448,7 +448,7 @@ class TestGenerateRowCandidates:
         assert candidates == [{"row_selector": "tbody tr", "field_selectors": {"employer": "td.employer"}}]
         assert ainvoke_mock.await_count == 1
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -467,12 +467,12 @@ class TestGenerateRowCandidates:
 
 
 class TestHtmlToText:
-    def test_extracts_text_with_one_rendered_line_per_output_line(self):
+    def test_extracts_text_with_one_rendered_line_per_output_line(self) -> None:
         html = "<html><body><p>Acme Corp</p><p>County: Oakland</p></body></html>"
         text = html_to_text(html)
         assert text == "Acme Corp\nCounty: Oakland"
 
-    def test_boilerplate_is_stripped_first(self):
+    def test_boilerplate_is_stripped_first(self) -> None:
         html = (
             "<html><body>"
             "<nav>Site nav</nav>"
@@ -484,19 +484,19 @@ class TestHtmlToText:
         text = html_to_text(html)
         assert text == "Real content"
 
-    def test_now_empty_lines_between_block_tags_are_dropped(self):
+    def test_now_empty_lines_between_block_tags_are_dropped(self) -> None:
         html = "<html><body><div></div><p>First</p><div>   </div><p>Second</p></body></html>"
         text = html_to_text(html)
         assert text == "First\nSecond"
 
-    def test_line_breaks_are_preserved_not_collapsed_to_a_single_space(self):
+    def test_line_breaks_are_preserved_not_collapsed_to_a_single_space(self) -> None:
         # Unlike per-field whitespace normalization -- a text-block page's
         # own paragraph/record boundaries are real structure, not noise.
         html = "<html><body><p>Line one</p><p>Line two</p><p>Line three</p></body></html>"
         text = html_to_text(html)
         assert text.count("\n") == 2
 
-    def test_inline_br_still_produces_separate_lines(self):
+    def test_inline_br_still_produces_separate_lines(self) -> None:
         html = "<html><body><p>Employer Name<br>County: Oakland</p></body></html>"
         text = html_to_text(html)
         assert text == "Employer Name\nCounty: Oakland"
@@ -510,7 +510,7 @@ _TEXT_PAGE = "Acme Corp\nCounty: Oakland\nAffected: 42"
 
 
 class TestValidateRegexCandidate:
-    def test_valid_pattern_extracts_all_fields(self):
+    def test_valid_pattern_extracts_all_fields(self) -> None:
         pattern = r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]+)\nAffected: (?P<affected_count>\d+)"
         schema = {"employer": str, "county": str, "affected_count": int}
         result = validate_regex_candidate(_TEXT_PAGE, pattern, schema)
@@ -518,35 +518,35 @@ class TestValidateRegexCandidate:
         assert result.extracted == {"employer": "Acme Corp", "county": "Oakland", "affected_count": 42}
         assert result.errors == []
 
-    def test_invalid_regex_syntax_is_reported_not_raised(self):
+    def test_invalid_regex_syntax_is_reported_not_raised(self) -> None:
         result = validate_regex_candidate(_TEXT_PAGE, r"(?P<employer>[unterminated", {"employer": str})
         assert result.valid is False
         assert any("invalid regex" in e for e in result.errors)
 
-    def test_pattern_matching_nothing_is_invalid(self):
+    def test_pattern_matching_nothing_is_invalid(self) -> None:
         result = validate_regex_candidate(_TEXT_PAGE, r"(?P<employer>NoSuchCompany)", {"employer": str})
         assert result.valid is False
         assert any("matched nothing" in e for e in result.errors)
 
-    def test_missing_named_group_for_a_schema_field_is_invalid(self):
+    def test_missing_named_group_for_a_schema_field_is_invalid(self) -> None:
         pattern = r"(?P<employer>[^\n]+)"
         result = validate_regex_candidate(_TEXT_PAGE, pattern, {"employer": str, "county": str})
         assert result.valid is False
         assert any("county" in e and "no named group" in e for e in result.errors)
 
-    def test_named_group_matching_empty_text_is_invalid(self):
+    def test_named_group_matching_empty_text_is_invalid(self) -> None:
         pattern = r"(?P<employer>)\nCounty: (?P<county>[^\n]+)"
         result = validate_regex_candidate(_TEXT_PAGE, pattern, {"employer": str, "county": str})
         assert result.valid is False
         assert any("matched empty text" in e for e in result.errors)
 
-    def test_type_mismatch_fails_validation(self):
+    def test_type_mismatch_fails_validation(self) -> None:
         pattern = r"(?P<affected_count>Acme Corp)"
         result = validate_regex_candidate(_TEXT_PAGE, pattern, {"affected_count": int})
         assert result.valid is False
         assert any("does not parse as int" in e for e in result.errors)
 
-    def test_whitespace_around_the_captured_value_is_normalized(self):
+    def test_whitespace_around_the_captured_value_is_normalized(self) -> None:
         text = "Acme Corp\nCounty:   Oakland  \n"
         pattern = r"(?P<employer>[^\n]+)\nCounty:(?P<county>.+)"
         result = validate_regex_candidate(text, pattern, {"employer": str, "county": str})
@@ -559,7 +559,7 @@ class TestValidateRegexCandidate:
 
 
 class TestGenerateRegexCandidates:
-    async def test_success_returns_pattern_strings(self):
+    async def test_success_returns_pattern_strings(self) -> None:
         parsed = {
             "candidates": [
                 {"pattern": r"(?P<employer>[^\n]+)"},
@@ -572,7 +572,7 @@ class TestGenerateRegexCandidates:
         assert candidates == [r"(?P<employer>[^\n]+)", r"(?P<employer>.+)\nCounty:.+"]
         assert ainvoke_mock.await_count == 1
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -584,7 +584,7 @@ class TestGenerateRegexCandidates:
             await generate_regex_candidates(_TEXT_PAGE, {"employer": str}, api_key="k")
         assert exc_info.value.last_error is boom
 
-    async def test_empty_candidate_list_from_llm_returns_empty(self):
+    async def test_empty_candidate_list_from_llm_returns_empty(self) -> None:
         parsed = {"candidates": []}
         fake_model, _ = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
@@ -606,7 +606,7 @@ _TEXT_ROWS_PAGE = (
 class TestValidateRegexRowCandidate:
     _PATTERN = r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]*)\nAffected: (?P<affected_count>[^\n]+)"
 
-    def test_valid_pattern_extracts_every_full_record(self):
+    def test_valid_pattern_extracts_every_full_record(self) -> None:
         schema = {"employer": str, "county": str, "affected_count": int}
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, self._PATTERN, schema)
         assert result.valid is True
@@ -616,23 +616,23 @@ class TestValidateRegexRowCandidate:
             {"employer": "Widgets Inc", "county": "Wayne", "affected_count": 7},
         ]
 
-    def test_invalid_regex_syntax_is_reported_not_raised(self):
+    def test_invalid_regex_syntax_is_reported_not_raised(self) -> None:
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, r"(?P<employer>[unterminated", {"employer": str})
         assert result.valid is False
         assert any("invalid regex" in e for e in result.errors)
 
-    def test_pattern_matching_nothing_is_invalid(self):
+    def test_pattern_matching_nothing_is_invalid(self) -> None:
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, r"(?P<employer>NoSuchCompany)", {"employer": str})
         assert result.valid is False
         assert result.total_rows_matched == 0
         assert result.records == []
 
-    def test_every_record_failing_is_invalid(self):
+    def test_every_record_failing_is_invalid(self) -> None:
         schema = {"employer": str, "county": str, "affected_count": int}
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, self._PATTERN, schema)
         assert len(result.errors) >= 1  # the "Bad Record" entry's empty county / non-numeric count
 
-    def test_row_error_list_is_capped(self):
+    def test_row_error_list_is_capped(self) -> None:
         many_records = "\n\n".join(f"Employer {i}\nCounty: \nAffected: bad" for i in range(50))
         result = validate_regex_row_candidate(many_records, self._PATTERN, {"employer": str, "county": str})
         assert result.total_rows_matched == 50
@@ -645,7 +645,7 @@ class TestValidateRegexRowCandidate:
 
 
 class TestGenerateRegexRowCandidates:
-    async def test_success_returns_pattern_strings(self):
+    async def test_success_returns_pattern_strings(self) -> None:
         parsed = {"candidates": [{"pattern": r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]+)"}]}
         fake_model, ainvoke_mock = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
@@ -653,7 +653,7 @@ class TestGenerateRegexRowCandidates:
         assert candidates == [r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]+)"]
         assert ainvoke_mock.await_count == 1
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -672,7 +672,7 @@ class TestGenerateRegexRowCandidates:
 
 
 class TestDiscoverCandidates:
-    async def test_discovers_and_validates_real_fields(self):
+    async def test_discovers_and_validates_real_fields(self) -> None:
         parsed = {
             "candidates": [
                 {
@@ -699,7 +699,7 @@ class TestDiscoverCandidates:
         assert {f.name for f in result.fields} == {"employer", "count"}
         assert ainvoke_mock.await_count == 1
 
-    async def test_a_proposed_field_that_does_not_validate_is_dropped_not_included(self):
+    async def test_a_proposed_field_that_does_not_validate_is_dropped_not_included(self) -> None:
         parsed = {
             "candidates": [
                 {
@@ -722,7 +722,7 @@ class TestDiscoverCandidates:
         assert "ghost" not in result.field_schema
         assert set(result.field_schema) == {"employer"}
 
-    async def test_most_fields_validated_wins_no_judge(self):
+    async def test_most_fields_validated_wins_no_judge(self) -> None:
         worse = {
             "fields": [{"name": "employer", "type_name": "str", "selector": "td.employer", "sample_value_hint": "x"}]
         }
@@ -738,7 +738,7 @@ class TestDiscoverCandidates:
             result = await discover_candidates(_PAGE_HTML, api_key="k")
         assert set(result.field_schema) == {"employer", "count"}
 
-    async def test_zero_fields_validate_returns_honest_empty_result(self):
+    async def test_zero_fields_validate_returns_honest_empty_result(self) -> None:
         parsed = {
             "candidates": [
                 {"fields": [{"name": "ghost", "type_name": "str", "selector": ".nope", "sample_value_hint": "?"}]}
@@ -751,7 +751,7 @@ class TestDiscoverCandidates:
         assert result.fields == []
         assert result.field_schema == {}
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -770,7 +770,7 @@ class TestDiscoverCandidates:
 
 
 class TestDiscoverRowCandidates:
-    async def test_discovers_and_validates_real_row_fields(self):
+    async def test_discovers_and_validates_real_row_fields(self) -> None:
         parsed = {
             "candidates": [
                 {
@@ -805,7 +805,7 @@ class TestDiscoverRowCandidates:
         assert len(result.sample_records) == 2
         assert ainvoke_mock.await_count == 1
 
-    async def test_one_candidates_invalid_jquery_style_selector_does_not_crash_the_whole_call(self):
+    async def test_one_candidates_invalid_jquery_style_selector_does_not_crash_the_whole_call(self) -> None:
         # Real, live-discovered failure mode (real Maryland WARN page, 2026-07-15): an LLM
         # genuinely proposed a jQuery-ism like "td:eq(0)" for one candidate. That candidate must
         # be skipped (or its field dropped), never crash the whole discovery call -- a good
@@ -835,7 +835,7 @@ class TestDiscoverRowCandidates:
         assert result.validated is True
         assert set(result.field_schema) == {"employer"}
 
-    async def test_disjoint_fields_that_never_co_occur_in_one_row_are_rejected(self):
+    async def test_disjoint_fields_that_never_co_occur_in_one_row_are_rejected(self) -> None:
         # Critic-caught, chunk review: _fields_matching_any_row only confirms each field
         # matches SOME row independently -- two fields whose non-empty rows are DISJOINT can
         # each survive that pre-filter yet never co-occur in a single row together, so
@@ -864,7 +864,7 @@ class TestDiscoverRowCandidates:
         assert result.validated is False
         assert result.sample_records == []
 
-    async def test_a_field_that_never_validates_across_any_row_is_dropped(self):
+    async def test_a_field_that_never_validates_across_any_row_is_dropped(self) -> None:
         parsed = {
             "candidates": [
                 {
@@ -882,7 +882,7 @@ class TestDiscoverRowCandidates:
         assert result.validated is True
         assert set(result.field_schema) == {"employer"}
 
-    async def test_bad_row_selector_returns_honest_empty_result(self):
+    async def test_bad_row_selector_returns_honest_empty_result(self) -> None:
         parsed = {
             "candidates": [
                 {
@@ -899,7 +899,7 @@ class TestDiscoverRowCandidates:
         assert result.validated is False
         assert result.sample_records == []
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -925,21 +925,21 @@ _NOTICES_HTML = """
 
 
 class TestSplitNoticeDocuments:
-    def test_splits_one_block_per_notice_div(self):
+    def test_splits_one_block_per_notice_div(self) -> None:
         result = split_notice_documents(_NOTICES_HTML)
         assert [d.text for d in result] == ["Acme Corp\n42 employees", "Beta LLC\n7 employees"]
         assert all(d.was_ocr is False for d in result)
         assert all(d.images == [] for d in result)
 
-    def test_no_notice_divs_returns_empty_list(self):
+    def test_no_notice_divs_returns_empty_list(self) -> None:
         assert split_notice_documents("<html><body><p>nothing here</p></body></html>") == []
 
-    def test_only_matches_the_documented_class_name(self):
+    def test_only_matches_the_documented_class_name(self) -> None:
         assert NOTICE_DOCUMENT_CLASS == "notice"
         html = '<html><body><div class="not-a-notice"><p>Acme</p></div></body></html>'
         assert split_notice_documents(html) == []
 
-    def test_preserves_page_order(self):
+    def test_preserves_page_order(self) -> None:
         html = """
         <html><body>
         <div class="notice">First</div>
@@ -949,23 +949,23 @@ class TestSplitNoticeDocuments:
         """
         assert [d.text for d in split_notice_documents(html)] == ["First", "Second", "Third"]
 
-    def test_data_was_ocr_true_attribute_is_read_as_was_ocr_true(self):
+    def test_data_was_ocr_true_attribute_is_read_as_was_ocr_true(self) -> None:
         html = '<html><body><div class="notice" data-was-ocr="true">Scanned</div></body></html>'
         result = split_notice_documents(html)
         assert len(result) == 1
         assert result[0].was_ocr is True
 
-    def test_data_was_ocr_false_attribute_is_read_as_was_ocr_false(self):
+    def test_data_was_ocr_false_attribute_is_read_as_was_ocr_false(self) -> None:
         html = '<html><body><div class="notice" data-was-ocr="false">Born digital</div></body></html>'
         result = split_notice_documents(html)
         assert result[0].was_ocr is False
 
-    def test_missing_data_was_ocr_attribute_defaults_to_false(self):
+    def test_missing_data_was_ocr_attribute_defaults_to_false(self) -> None:
         html = '<html><body><div class="notice">No attribute at all</div></body></html>'
         result = split_notice_documents(html)
         assert result[0].was_ocr is False
 
-    def test_embedded_ocr_page_images_are_decoded_from_base64(self):
+    def test_embedded_ocr_page_images_are_decoded_from_base64(self) -> None:
         import base64
 
         b64_a = base64.b64encode(b"page-a-png-bytes").decode("ascii")
@@ -985,7 +985,7 @@ class TestSplitNoticeDocuments:
         # ignores img content) -- only the real letter text survives into .text
         assert result[0].text == "Scanned letter"
 
-    def test_born_digital_document_has_no_images(self):
+    def test_born_digital_document_has_no_images(self) -> None:
         html = '<html><body><div class="notice" data-was-ocr="false"><p>Clean text</p></div></body></html>'
         result = split_notice_documents(html)
         assert result[0].images == []
@@ -1008,26 +1008,26 @@ class TestExtractFieldsDirectly:
     validates against any matching model, exactly like a real LLM response body would.
     """
 
-    async def test_success_returns_coerced_field_values(self):
+    async def test_success_returns_coerced_field_values(self) -> None:
         fake_model, ainvoke_mock = fake_structured_model({"employer": "Acme Corp", "affected_count": "1,234"})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
         assert result == {"employer": "Acme Corp", "affected_count": 1234}
         assert ainvoke_mock.await_count == 1
 
-    async def test_field_the_model_returned_null_for_is_simply_absent(self):
+    async def test_field_the_model_returned_null_for_is_simply_absent(self) -> None:
         fake_model, _ = fake_structured_model({"employer": "Acme Corp", "affected_count": None})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
         assert result == {"employer": "Acme Corp"}
 
-    async def test_field_that_fails_to_coerce_is_dropped_not_a_crash(self):
+    async def test_field_that_fails_to_coerce_is_dropped_not_a_crash(self) -> None:
         fake_model, _ = fake_structured_model({"employer": "Acme Corp", "affected_count": "not-a-number"})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
         assert result == {"employer": "Acme Corp"}
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -1039,13 +1039,13 @@ class TestExtractFieldsDirectly:
             await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
         assert exc_info.value.last_error is boom
 
-    async def test_whitespace_around_a_returned_value_is_normalized(self):
+    async def test_whitespace_around_a_returned_value_is_normalized(self) -> None:
         fake_model, _ = fake_structured_model({"employer": "  Acme   Corp  \n", "affected_count": "42"})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             result = await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k")
         assert result == {"employer": "Acme Corp", "affected_count": 42}
 
-    async def test_an_implausibly_long_field_value_triggers_a_retry_not_a_silent_accept(self):
+    async def test_an_implausibly_long_field_value_triggers_a_retry_not_a_silent_accept(self) -> None:
         """Live-reproduced against a real document: the model can echo its entire prompt into
         one field's value instead of a clean answer -- since every field is plain str,
         that garbage still type-validates, so only is_acceptable's own length sanity
@@ -1061,7 +1061,7 @@ class TestExtractFieldsDirectly:
         assert result == {"employer": "Acme Corp", "affected_count": 42}
         assert ainvoke_mock.await_count == 2
 
-    async def test_every_attempt_implausible_degrades_to_the_last_one_not_a_crash(self):
+    async def test_every_attempt_implausible_degrades_to_the_last_one_not_a_crash(self) -> None:
         garbage = {"employer": "x" * 5000, "affected_count": "42"}
         fake_model, _ = fake_structured_model(garbage)
         with (
@@ -1098,17 +1098,17 @@ class TestIsPlausibleDirectExtraction:
             await extract_fields_directly("Acme Corp letter text", _SCHEMA_DIRECT, api_key="k", attempts=2)
         return ainvoke_mock.await_count
 
-    async def test_normal_values_are_plausible(self):
+    async def test_normal_values_are_plausible(self) -> None:
         assert await self._attempts_spent_on({"employer": "Acme Corp", "affected_count": "42"}) == 1
 
-    async def test_none_values_are_plausible(self):
+    async def test_none_values_are_plausible(self) -> None:
         assert await self._attempts_spent_on({"employer": None, "affected_count": None}) == 1
 
-    async def test_a_wildly_long_string_value_is_not_plausible(self):
+    async def test_a_wildly_long_string_value_is_not_plausible(self) -> None:
         first = {"employer": "x" * (_PLAUSIBLE_FIELD_LENGTH_CEILING + 1), "affected_count": "42"}
         assert await self._attempts_spent_on(first) == 2
 
-    async def test_exactly_at_the_length_ceiling_is_still_plausible(self):
+    async def test_exactly_at_the_length_ceiling_is_still_plausible(self) -> None:
         first = {"employer": "x" * _PLAUSIBLE_FIELD_LENGTH_CEILING, "affected_count": "42"}
         assert await self._attempts_spent_on(first) == 1
 
@@ -1128,7 +1128,7 @@ class TestExtractFieldsDirectlyChunked:
     plain sync call made before that chunk's first await), so side_effect=[...] lets
     each chunk be independently controlled."""
 
-    async def test_splits_a_four_field_schema_into_two_chunks_and_merges(self):
+    async def test_splits_a_four_field_schema_into_two_chunks_and_merges(self) -> None:
         fake_a, ainvoke_a = fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
         fake_b, ainvoke_b = fake_structured_model({"effective_date": "June 1, 2026", "affected_count": "12"})
         with patch("threetears.scrape.llm_retry.create_chat_model", side_effect=[fake_a, fake_b]):
@@ -1142,7 +1142,7 @@ class TestExtractFieldsDirectlyChunked:
         assert ainvoke_a.await_count == 1
         assert ainvoke_b.await_count == 1
 
-    async def test_a_five_field_schema_splits_into_three_chunks(self):
+    async def test_a_five_field_schema_splits_into_three_chunks(self) -> None:
         schema = {**_SCHEMA_FOUR_FIELDS, "county": str}
         fake_a, _ = fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
         fake_b, _ = fake_structured_model({"effective_date": "June 1, 2026", "affected_count": "12"})
@@ -1152,7 +1152,7 @@ class TestExtractFieldsDirectlyChunked:
         assert result["county"] == "Baltimore"
         assert len(result) == 5
 
-    async def test_one_chunks_total_failure_fails_the_document_not_just_its_fields(self):
+    async def test_one_chunks_total_failure_fails_the_document_not_just_its_fields(self) -> None:
         """A chunk that never answered must not leave its fields looking absent from the document."""
         boom = RuntimeError("boom")
         fake_a, ainvoke_a = fake_structured_model({"employer": "Acme Corp", "notice_date": "May 1, 2026"})
@@ -1168,7 +1168,7 @@ class TestExtractFieldsDirectlyChunked:
         # The chunk that answered was awaited too, not left running unobserved.
         assert ainvoke_a.await_count == 1
 
-    async def test_every_chunk_failing_raises_never_an_empty_dict(self):
+    async def test_every_chunk_failing_raises_never_an_empty_dict(self) -> None:
         fake_model, _ = fake_structured_model(side_effect=RuntimeError("boom"))
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
@@ -1177,7 +1177,7 @@ class TestExtractFieldsDirectlyChunked:
         ):
             await extract_fields_directly_chunked("some document text", _SCHEMA_FOUR_FIELDS, api_key="k")
 
-    async def test_custom_fields_per_call_of_one_makes_one_call_per_field(self):
+    async def test_custom_fields_per_call_of_one_makes_one_call_per_field(self) -> None:
         schema = {"employer": str, "notice_date": str}
         fake_a, ainvoke_a = fake_structured_model({"employer": "Acme Corp"})
         fake_b, ainvoke_b = fake_structured_model({"notice_date": "May 1, 2026"})
@@ -1194,13 +1194,13 @@ class TestExtractFieldsDirectlyChunked:
 
 
 class TestExtractFieldsFromImages:
-    async def test_empty_images_returns_none_without_calling_the_model(self):
+    async def test_empty_images_returns_none_without_calling_the_model(self) -> None:
         with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
             result = await extract_fields_from_images([], _SCHEMA_DIRECT, api_key="k")
         assert result is None
         create_model.assert_not_called()
 
-    async def test_success_returns_coerced_field_values(self):
+    async def test_success_returns_coerced_field_values(self) -> None:
         fake_model, ainvoke_mock = fake_structured_model({"employer": "Acme Corp", "affected_count": "42"})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
             result = await extract_fields_from_images([b"fake-png-page-0"], _SCHEMA_DIRECT, api_key="k")
@@ -1210,13 +1210,13 @@ class TestExtractFieldsFromImages:
         # under "openrouter" in threetears-models' own capability registry)
         assert create_model.call_args.kwargs["provider"] == "openrouter"
 
-    async def test_uses_the_default_vision_model_id(self):
+    async def test_uses_the_default_vision_model_id(self) -> None:
         fake_model, _ = fake_structured_model({"employer": "Acme Corp", "affected_count": "1"})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model) as create_model:
             await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
         assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
 
-    async def test_multiple_images_are_all_included_in_one_call(self):
+    async def test_multiple_images_are_all_included_in_one_call(self) -> None:
         fake_model, ainvoke_mock = fake_structured_model({"employer": "Acme Corp", "affected_count": "1"})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             await extract_fields_from_images([b"page-0", b"page-1", b"page-2"], _SCHEMA_DIRECT, api_key="k")
@@ -1226,13 +1226,13 @@ class TestExtractFieldsFromImages:
         image_blocks = [block for block in message.content if block.get("type") == "image_url"]
         assert len(image_blocks) == 3
 
-    async def test_field_the_model_returned_null_for_is_simply_absent(self):
+    async def test_field_the_model_returned_null_for_is_simply_absent(self) -> None:
         fake_model, _ = fake_structured_model({"employer": "Acme Corp", "affected_count": None})
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             result = await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
         assert result == {"employer": "Acme Corp"}
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -1244,7 +1244,7 @@ class TestExtractFieldsFromImages:
             await extract_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
         assert exc_info.value.last_error is boom
 
-    async def test_an_implausibly_long_field_value_triggers_a_retry(self):
+    async def test_an_implausibly_long_field_value_triggers_a_retry(self) -> None:
         garbage = {"employer": "x" * 5000, "affected_count": "42"}
         good = {"employer": "Acme Corp", "affected_count": "42"}
         fake_model, ainvoke_mock = fake_structured_model(side_effect=[garbage, good])
@@ -1263,10 +1263,10 @@ class TestExtractFieldsFromImages:
 
 
 class TestExtractPageImages:
-    def test_no_images_returns_empty_list(self):
+    def test_no_images_returns_empty_list(self) -> None:
         assert extract_page_images("<html><body><p>no images here</p></body></html>") == []
 
-    def test_decodes_every_embedded_page_image_in_order(self):
+    def test_decodes_every_embedded_page_image_in_order(self) -> None:
         import base64
 
         b64_a = base64.b64encode(b"page-a-png-bytes").decode("ascii")
@@ -1279,7 +1279,7 @@ class TestExtractPageImages:
         )
         assert extract_page_images(html) == [b"page-a-png-bytes", b"page-b-png-bytes"]
 
-    def test_no_notice_div_wrapper_needed_unlike_split_notice_documents(self):
+    def test_no_notice_div_wrapper_needed_unlike_split_notice_documents(self) -> None:
         # multi_row_vision targets render through the plain DocumentDriver (one
         # document, no MultiDocumentDriver per-notice wrapping) -- images embedded
         # directly in <body>, not inside a div.notice, must still be found.
@@ -1296,13 +1296,13 @@ class TestExtractPageImages:
 
 
 class TestExtractMultiRowFieldsFromImages:
-    async def test_empty_images_returns_none_without_calling_the_model(self):
+    async def test_empty_images_returns_none_without_calling_the_model(self) -> None:
         with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
             result = await extract_multi_row_fields_from_images([], _SCHEMA_DIRECT, api_key="k")
         assert result is None
         create_model.assert_not_called()
 
-    async def test_success_returns_one_record_per_row_in_order(self):
+    async def test_success_returns_one_record_per_row_in_order(self) -> None:
         rows = {
             "records": [
                 {"employer": "Acme Corp", "affected_count": "42"},
@@ -1321,7 +1321,7 @@ class TestExtractMultiRowFieldsFromImages:
         assert ainvoke_mock.await_count == 1
         assert create_model.call_args.kwargs["provider"] == "openrouter"
 
-    async def test_multiple_images_are_all_included_in_one_call(self):
+    async def test_multiple_images_are_all_included_in_one_call(self) -> None:
         rows = {"records": [{"employer": "Acme Corp", "affected_count": "1"}]}
         fake_model, ainvoke_mock = fake_structured_model(rows)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
@@ -1331,14 +1331,14 @@ class TestExtractMultiRowFieldsFromImages:
         image_blocks = [block for block in message.content if block.get("type") == "image_url"]
         assert len(image_blocks) == 2
 
-    async def test_a_null_field_on_one_row_is_simply_absent_from_that_records_dict(self):
+    async def test_a_null_field_on_one_row_is_simply_absent_from_that_records_dict(self) -> None:
         rows = {"records": [{"employer": "Acme Corp", "affected_count": None}]}
         fake_model, _ = fake_structured_model(rows)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
             result = await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
         assert result == [{"employer": "Acme Corp"}]
 
-    async def test_zero_records_is_a_retry_worthy_result_not_silently_accepted(self):
+    async def test_zero_records_is_a_retry_worthy_result_not_silently_accepted(self) -> None:
         empty = {"records": []}
         good = {"records": [{"employer": "Acme Corp", "affected_count": "1"}]}
         fake_model, ainvoke_mock = fake_structured_model(side_effect=[empty, good])
@@ -1350,7 +1350,7 @@ class TestExtractMultiRowFieldsFromImages:
         assert result == [{"employer": "Acme Corp", "affected_count": 1}]
         assert ainvoke_mock.await_count == 2
 
-    async def test_total_failure_raises_never_an_empty_answer(self):
+    async def test_total_failure_raises_never_an_empty_answer(self) -> None:
         """A model that never answered has not said there is nothing here."""
         boom = RuntimeError("boom")
         fake_model, _ = fake_structured_model(side_effect=boom)
@@ -1362,7 +1362,7 @@ class TestExtractMultiRowFieldsFromImages:
             await extract_multi_row_fields_from_images([b"fake-png"], _SCHEMA_DIRECT, api_key="k")
         assert exc_info.value.last_error is boom
 
-    async def test_an_implausibly_long_field_value_on_any_row_triggers_a_retry(self):
+    async def test_an_implausibly_long_field_value_on_any_row_triggers_a_retry(self) -> None:
         garbage = {"records": [{"employer": "x" * 5000, "affected_count": "1"}]}
         good = {"records": [{"employer": "Acme Corp", "affected_count": "1"}]}
         fake_model, ainvoke_mock = fake_structured_model(side_effect=[garbage, good])
@@ -1396,7 +1396,7 @@ _ROW_SCHEMA = {"employer": str, "county": str, "affected_count": int, "effective
 
 class TestRegexCandidatesRunUnderATimeLimit:
     @pytest.mark.timeout(60)
-    def test_a_backtracking_row_candidate_is_rejected_not_left_running(self, monkeypatch):
+    def test_a_backtracking_row_candidate_is_rejected_not_left_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import time
 
         import threetears.scrape.extraction as extraction
@@ -1411,7 +1411,9 @@ class TestRegexCandidatesRunUnderATimeLimit:
         assert elapsed < 5, f"the candidate ran {elapsed:.1f}s despite a 0.5s limit"
 
     @pytest.mark.timeout(60)
-    def test_a_backtracking_single_match_candidate_is_rejected_not_left_running(self, monkeypatch):
+    def test_a_backtracking_single_match_candidate_is_rejected_not_left_running(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import time
 
         import threetears.scrape.extraction as extraction
@@ -1426,7 +1428,7 @@ class TestRegexCandidatesRunUnderATimeLimit:
         assert elapsed < 5, f"the candidate ran {elapsed:.1f}s despite a 0.5s limit"
 
     @pytest.mark.timeout(60)
-    def test_the_next_candidate_after_a_timeout_still_runs(self, monkeypatch):
+    def test_the_next_candidate_after_a_timeout_still_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import threetears.scrape.extraction as extraction
 
         monkeypatch.setattr(extraction, "REGEX_TIMEOUT_SECONDS", 0.5)
@@ -1438,7 +1440,7 @@ class TestRegexCandidatesRunUnderATimeLimit:
         assert result.valid is True
         assert len(result.records) == 2
 
-    def test_a_sound_pattern_over_a_large_page_is_not_cut_off(self):
+    def test_a_sound_pattern_over_a_large_page_is_not_cut_off(self) -> None:
         page = "".join(f"Employer {i}\nCounty: Wayne\nAffected: {i}\n\n" for i in range(20000))
         pattern = r"(?P<employer>[^\n]+)\nCounty: (?P<county>[^\n]+)\nAffected: (?P<affected_count>\d+)"
         result = validate_regex_row_candidate(page, pattern, {"employer": str, "county": str, "affected_count": int})
@@ -1446,12 +1448,12 @@ class TestRegexCandidatesRunUnderATimeLimit:
         assert result.total_rows_matched == 20000
 
     @pytest.mark.parametrize("pattern", [r"(?V1)(?P<employer>\w+)", r"(?au)(?P<employer>\w+)"])
-    def test_syntax_stdlib_re_refuses_is_still_an_invalid_candidate(self, pattern):
+    def test_syntax_stdlib_re_refuses_is_still_an_invalid_candidate(self, pattern) -> None:
         result = validate_regex_row_candidate(_TEXT_ROWS_PAGE, pattern, {"employer": str})
         assert result.valid is False
         assert any("invalid regex" in e for e in result.errors)
 
-    def test_the_limit_is_public(self):
+    def test_the_limit_is_public(self) -> None:
         from threetears.scrape import extraction
 
         assert "REGEX_TIMEOUT_SECONDS" in extraction.__all__
@@ -1480,7 +1482,7 @@ _DIFFERENTIAL_ROW_PATTERNS = [
 
 
 @pytest.mark.parametrize("pattern", _DIFFERENTIAL_ROW_PATTERNS)
-def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern):
+def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern) -> None:
     import re
 
     compiled = re.compile(pattern, re.MULTILINE | re.DOTALL)
@@ -1501,7 +1503,7 @@ def test_row_candidates_match_exactly_as_stdlib_re_in_process(pattern):
 
 class TestBoundedRegexIsThreadAndForkSafe:
     @pytest.mark.timeout(60)
-    def test_concurrent_threads_each_get_their_own_answer(self):
+    def test_concurrent_threads_each_get_their_own_answer(self) -> None:
         """One worker, many callers: the lock must keep each request paired with its own answer."""
         import re
         from concurrent.futures import ThreadPoolExecutor
@@ -1522,7 +1524,7 @@ class TestBoundedRegexIsThreadAndForkSafe:
 
     @pytest.mark.timeout(60)
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_a_forked_child_starts_its_own_worker_and_leaves_the_parents_alone(self):
+    def test_a_forked_child_starts_its_own_worker_and_leaves_the_parents_alone(self) -> None:
         """Fork while another thread is inside a slow match, holding the lock. The child inherits
         that held lock with no thread to release it, and the parent's worker pipes: without its
         own fresh lock and worker it would hang, or talk over the parent's request."""
@@ -1560,7 +1562,7 @@ class TestBoundedRegexIsThreadAndForkSafe:
         assert bounded_matches(r"(?P<c>z)", re.MULTILINE, "z", mode="search", timeout=10.0) == [{"c": "z"}]
 
 
-def _child_matches(results):  # a forked child's body; module level so the fork context can run it
+def _child_matches(results) -> None:  # a forked child's body; module level so the fork context can run it
     from threetears.scrape.bounded_regex import bounded_matches
 
     results.put(bounded_matches(r"(?P<b>y)", 0, "y", mode="search", timeout=10.0))
@@ -1576,7 +1578,7 @@ _ORPHAN_RUNAWAY_TIMEOUT_SECONDS = 1.5
 _ORPHAN_REQUEST_LANDS_SECONDS = 0.5
 
 
-def _child_runs_a_runaway():  # a forked child's body; the test kills it mid-match
+def _child_runs_a_runaway() -> None:  # a forked child's body; the test kills it mid-match
     from threetears.scrape.bounded_regex import bounded_matches
 
     bounded_matches(
@@ -1638,7 +1640,7 @@ def _signal_raises_interrupted_after(seconds: float) -> Iterator[None]:
 
 class TestBoundedRegexSurvivesInterruptionAndFailure:
     @pytest.mark.timeout(60)
-    def test_an_interrupted_call_never_hands_its_answer_to_the_next_caller(self):
+    def test_an_interrupted_call_never_hands_its_answer_to_the_next_caller(self) -> None:
         """Interrupt a call after its request is sent and before its answer is read. The worker
         still owes that answer; kept, it would give it to the next caller instead of theirs (or,
         still busy on it, give the next caller nothing before their deadline)."""
@@ -1651,7 +1653,7 @@ class TestBoundedRegexSurvivesInterruptionAndFailure:
         assert bounded_matches(r"(?P<nut>pecan)", 0, "pecan", mode="search", timeout=10.0) == [{"nut": "pecan"}]
 
     @pytest.mark.timeout(60)
-    def test_an_interrupted_runaway_does_not_block_the_next_large_request(self):
+    def test_an_interrupted_runaway_does_not_block_the_next_large_request(self) -> None:
         """Interrupt a call while its worker is deep in a runaway match. The next caller sends a
         large page: kept, the busy worker would never read it and the send would block forever."""
         import time
@@ -1670,7 +1672,7 @@ class TestBoundedRegexSurvivesInterruptionAndFailure:
 
     @pytest.mark.timeout(120)
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_a_child_forked_while_another_thread_is_sending_never_hangs(self):
+    def test_a_child_forked_while_another_thread_is_sending_never_hangs(self) -> None:
         """Fork repeatedly while another thread keeps sending large requests. A child that
         inherited a held buffer lock would hang in its fork hook; every child must finish."""
         import multiprocessing
@@ -1706,7 +1708,7 @@ class TestBoundedRegexSurvivesInterruptionAndFailure:
 
     @pytest.mark.timeout(120)
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_an_orphaned_worker_is_stopped_by_its_own_cpu_cap(self):
+    def test_an_orphaned_worker_is_stopped_by_its_own_cpu_cap(self) -> None:
         """If the parent dies mid-match nobody kills the worker; its per-request CPU cap (the
         caller's timeout plus a 10s margin) must stop a runaway match on its own. A child process
         starts a runaway and is SIGKILLed well inside its deadline, so nothing but the cap can stop
@@ -1735,10 +1737,10 @@ class TestBoundedRegexSurvivesInterruptionAndFailure:
             os.kill(worker_pid, signal.SIGKILL)  # never leave a runaway behind a failed run
         assert not ran_on, "the orphaned worker ran on past its own CPU cap"
 
-    def test_a_worker_failure_rejects_that_candidate_not_the_round(self, monkeypatch):
+    def test_a_worker_failure_rejects_that_candidate_not_the_round(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import threetears.scrape.extraction as extraction
 
-        def _broken(*args, **kwargs):
+        def _broken(*args, **kwargs) -> None:
             raise RuntimeError("regex worker exited without answering")
 
         monkeypatch.setattr(extraction, "bounded_matches", _broken)

@@ -61,7 +61,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
     """Header extraction and UUID7 fallback behavior."""
 
     @pytest.mark.asyncio
-    async def test_uses_header_when_valid(self):
+    async def test_uses_header_when_valid(self) -> None:
         sent: list[dict[str, Any]] = []
         observed_cid: list[str | None] = []
 
@@ -83,7 +83,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
         assert echo == b"abc-123-xyz"
 
     @pytest.mark.asyncio
-    async def test_generates_uuid7_when_header_absent(self):
+    async def test_generates_uuid7_when_header_absent(self) -> None:
         observed_cid: list[str | None] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -101,7 +101,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
         assert len(observed_cid[0]) > 0
 
     @pytest.mark.asyncio
-    async def test_generates_uuid7_when_header_empty(self):
+    async def test_generates_uuid7_when_header_empty(self) -> None:
         observed_cid: list[str | None] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -120,7 +120,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
         assert observed_cid[0] is not None
 
     @pytest.mark.asyncio
-    async def test_generates_uuid7_when_header_too_long(self):
+    async def test_generates_uuid7_when_header_too_long(self) -> None:
         observed_cid: list[str | None] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -141,7 +141,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
         assert len(observed_cid[0]) <= MAX_CORRELATION_LENGTH
 
     @pytest.mark.asyncio
-    async def test_generates_uuid7_when_header_non_ascii(self):
+    async def test_generates_uuid7_when_header_non_ascii(self) -> None:
         observed_cid: list[str | None] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -159,7 +159,7 @@ class TestCorrelationMiddlewareHeaderExtraction:
         assert observed_cid[0] is not None
 
     @pytest.mark.asyncio
-    async def test_header_lookup_is_case_insensitive(self):
+    async def test_header_lookup_is_case_insensitive(self) -> None:
         observed_cid: list[str | None] = []
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -181,7 +181,7 @@ class TestCorrelationMiddlewareContextLifecycle:
     """Context publish + clear semantics across requests."""
 
     @pytest.mark.asyncio
-    async def test_clears_cid_on_exit(self):
+    async def test_clears_cid_on_exit(self) -> None:
         async def app(scope: Any, receive: Any, send: Any) -> None:
             await send({"type": "http.response.start", "status": 200, "headers": []})
             await send({"type": "http.response.body", "body": b""})
@@ -196,7 +196,7 @@ class TestCorrelationMiddlewareContextLifecycle:
         assert "cid" not in get_context()
 
     @pytest.mark.asyncio
-    async def test_clears_cid_on_app_exception(self):
+    async def test_clears_cid_on_app_exception(self) -> None:
         async def app(scope: Any, receive: Any, send: Any) -> None:
             raise RuntimeError("boom")
 
@@ -211,7 +211,7 @@ class TestCorrelationMiddlewareContextLifecycle:
         assert "cid" not in get_context()
 
     @pytest.mark.asyncio
-    async def test_preserves_other_context_keys_set_by_inner_app(self):
+    async def test_preserves_other_context_keys_set_by_inner_app(self) -> None:
         from threetears.observe.logging import set_context
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -235,7 +235,7 @@ class TestCorrelationMiddlewareScopeRouting:
     """HTTP, WebSocket, and lifespan scope routing."""
 
     @pytest.mark.asyncio
-    async def test_websocket_publishes_context_but_does_not_inject_header(self):
+    async def test_websocket_publishes_context_but_does_not_inject_header(self) -> None:
         observed_cid: list[str | None] = []
         sent: list[dict[str, Any]] = []
 
@@ -255,7 +255,7 @@ class TestCorrelationMiddlewareScopeRouting:
         assert CORRELATION_HEADER not in dict(accept.get("headers", []))
 
     @pytest.mark.asyncio
-    async def test_lifespan_passes_through_unchanged(self):
+    async def test_lifespan_passes_through_unchanged(self) -> None:
         called = False
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -278,7 +278,7 @@ class TestCorrelationMiddlewareIntegrationWithTraced:
     """The whole point: ``@traced`` spans pick up the cid automatically."""
 
     @pytest.mark.asyncio
-    async def test_inner_traced_function_sees_cid_via_get_context(self):
+    async def test_inner_traced_function_sees_cid_via_get_context(self) -> None:
         from threetears.observe import traced
 
         observed: list[str | None] = []
@@ -306,7 +306,7 @@ class TestOTelMiddlewareScopeRouting:
     """Scope routing for the WebSocket tracer."""
 
     @pytest.mark.asyncio
-    async def test_http_passes_through(self):
+    async def test_http_passes_through(self) -> None:
         called = False
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -321,7 +321,7 @@ class TestOTelMiddlewareScopeRouting:
         assert called
 
     @pytest.mark.asyncio
-    async def test_websocket_health_path_passes_through(self):
+    async def test_websocket_health_path_passes_through(self) -> None:
         called = False
 
         async def app(scope: Any, receive: Any, send: Any) -> None:
@@ -337,7 +337,7 @@ class TestOTelMiddlewareScopeRouting:
         assert called
 
     @pytest.mark.asyncio
-    async def test_websocket_normal_path_runs_app(self):
+    async def test_websocket_normal_path_runs_app(self) -> None:
         # We are not asserting span emission here (OTel may or may not be
         # installed in this test environment); we are asserting the
         # middleware does not break the request flow.
@@ -356,7 +356,7 @@ class TestOTelMiddlewareScopeRouting:
         assert called
 
     @pytest.mark.asyncio
-    async def test_websocket_app_exception_propagates(self):
+    async def test_websocket_app_exception_propagates(self) -> None:
         async def app(scope: Any, receive: Any, send: Any) -> None:
             raise RuntimeError("ws-boom")
 

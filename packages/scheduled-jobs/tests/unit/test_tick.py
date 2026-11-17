@@ -445,7 +445,7 @@ class TestPerRowFailureIsolation:
         kept: list[dict[str, Any]] = []
 
         class _KeepsOutput(_FakeFireStore):
-            async def finalize_failed(  # type: ignore[override]
+            async def finalize_failed(
                 self,
                 partition_key: UUID,
                 fire_id: UUID,

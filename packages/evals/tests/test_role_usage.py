@@ -56,7 +56,7 @@ def _eval_result(**overrides) -> EvalResult:
 
 
 class TestRoleUsageModel:
-    def test_candidate_row_round_trips_through_model(self):
+    def test_candidate_row_round_trips_through_model(self) -> None:
         row = RoleUsage(
             role="candidate",
             model="m",
@@ -69,7 +69,7 @@ class TestRoleUsageModel:
         again = RoleUsage.model_validate(row.model_dump(mode="json"))
         assert again == row
 
-    def test_external_cost_only_row_keeps_none_tokens(self):
+    def test_external_cost_only_row_keeps_none_tokens(self) -> None:
         # missing != zero: an external (e.g. a search API) row has no token data.
         row = RoleUsage(role="external", cost_usd=0.01, price_source="search_api")
         assert row.prompt_tokens is None
@@ -80,17 +80,17 @@ class TestRoleUsageModel:
         assert again.reasoning_tokens is None
         assert again.cost_usd == pytest.approx(0.01)
 
-    def test_reasoning_none_is_distinct_from_zero(self):
+    def test_reasoning_none_is_distinct_from_zero(self) -> None:
         assert RoleUsage(role="candidate").reasoning_tokens is None
         assert RoleUsage(role="candidate", reasoning_tokens=0).reasoning_tokens == 0
 
-    def test_role_is_constrained_to_the_five_values(self):
+    def test_role_is_constrained_to_the_five_values(self) -> None:
         for role in ("candidate", "judge", "simulator", "inner_agent", "external"):
             assert RoleUsage(role=role).role == role
         with pytest.raises(Exception):
             RoleUsage(role="not-a-role")
 
-    def test_negative_tokens_rejected(self):
+    def test_negative_tokens_rejected(self) -> None:
         with pytest.raises(Exception):
             RoleUsage(role="candidate", prompt_tokens=-1)
 
@@ -98,7 +98,7 @@ class TestRoleUsageModel:
 class TestUsageIsAlwaysAnObservation:
     """``usage`` is a list on every result — ``[]`` (captured, no roles) or populated — never absent."""
 
-    def test_a_result_with_no_usage_is_refused(self):
+    def test_a_result_with_no_usage_is_refused(self) -> None:
         """The runner writes a list at every exit, so a result without one is not a shape anything produces."""
         with pytest.raises(ValidationError, match="usage"):
             _eval_result(usage=None)
@@ -107,7 +107,7 @@ class TestUsageIsAlwaysAnObservation:
         with pytest.raises(ValidationError, match="usage"):
             EvalResult(**base)
 
-    def test_empty_and_populated_are_distinct_through_storage_to_dict_from_dict(self):
+    def test_empty_and_populated_are_distinct_through_storage_to_dict_from_dict(self) -> None:
         # to_dict()/from_dict() is the persistence path (storage.save_eval_result → load_eval_result).
         populated = [
             RoleUsage(
@@ -131,7 +131,7 @@ class TestExternalRatePricing:
     all three reachable states: both known, units-only, and neither.
     """
 
-    def test_a_declared_rate_puts_dollars_on_the_reported_units(self):
+    def test_a_declared_rate_puts_dollars_on_the_reported_units(self) -> None:
         led = RoleUsageLedger.for_external(_SEARCH_RATE)
         led.add_external(_search(calls=3, credits=6))
 
@@ -146,7 +146,7 @@ class TestExternalRatePricing:
             "deciding whether to re-derive at current rates has to be able to tell them apart"
         )
 
-    def test_the_reported_volume_is_what_sets_the_total_not_the_call_count(self):
+    def test_the_reported_volume_is_what_sets_the_total_not_the_call_count(self) -> None:
         """The defect this shape closes: eval no longer re-derives units from a parameter.
 
         Two ledgers with identical call counts and different reported units must price
@@ -159,7 +159,7 @@ class TestExternalRatePricing:
         assert basic.rows()[0].provider_units == 3
         assert basic.rows()[0].cost_usd == pytest.approx(0.024)
 
-    def test_units_survive_an_undeclared_dollar_rate(self):
+    def test_units_survive_an_undeclared_dollar_rate(self) -> None:
         """Volume is knowable without a price, and saying so is the point of the split.
 
         An operator who never declared a rate still gets the quantity their provider bills
@@ -174,7 +174,7 @@ class TestExternalRatePricing:
         assert row.cost_usd is None
         assert row.price_source is None, "no dollars were produced, so nothing has a provenance to name"
 
-    def test_an_uncountable_call_prices_nothing_rather_than_assuming_a_volume(self):
+    def test_an_uncountable_call_prices_nothing_rather_than_assuming_a_volume(self) -> None:
         """A call whose unit the caller could not state must not fall through to a default.
 
         Assuming one would price a run at whatever the tool default happened to be that
@@ -189,7 +189,7 @@ class TestExternalRatePricing:
         assert row.provider_units is None
         assert row.cost_usd is None
 
-    def test_the_composition_names_external_only_when_dollars_could_be_folded_in(self):
+    def test_the_composition_names_external_only_when_dollars_could_be_folded_in(self) -> None:
         """``cost_roles`` is a claim about ``cost_usd``, so it tracks the dollars, not the calls.
 
         A run that counted units but priced none of them has a total no external call
@@ -199,7 +199,7 @@ class TestExternalRatePricing:
         assert "external" not in blended_cost_roles(ExternalRateTable(rates={}))
         assert "external" not in blended_cost_roles(None)
 
-    def test_the_composition_is_a_convention_not_an_observation(self):
+    def test_the_composition_is_a_convention_not_an_observation(self) -> None:
         """A priced run that made no external call still names the role.
 
         Same rule the judge role carries: the marker states what this run's totals sum

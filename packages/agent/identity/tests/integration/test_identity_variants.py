@@ -45,7 +45,7 @@ async def _apply_through_v002(url: str, schema: str) -> None:
         pkg.version(1)(create_identity_versions_table)
         pkg.version(2)(add_wants_needs_block_keys)
         runner.register(pkg)
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
     finally:
         await conn.close()
 

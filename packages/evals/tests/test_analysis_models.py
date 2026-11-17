@@ -16,7 +16,8 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-
+from threetears.evals.analysis.analyst.snapshot import report_snapshot
+from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.campaign import (
     CampaignDeclaration,
     CoverageLens,
@@ -28,8 +29,6 @@ from threetears.evals.kernel.campaign import (
     LeverCoverage,
     RunIndexEntry,
 )
-from threetears.evals.analysis.analyst.snapshot import report_snapshot
-from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel.declaration import Aspect
 from threetears.evals.kernel.storage import DroppedJudgeProfile
 from threetears.evals.schema.versioning import REGENERABLE_SCHEMA_VERSION
@@ -222,7 +221,7 @@ def _make_insight(**overrides: Any) -> EvalInsight:
 # ---------------------------------------------------------------------------
 
 
-def test_analysis_model_round_trip_preserves_every_field():
+def test_analysis_model_round_trip_preserves_every_field() -> None:
     analysis = _make_analysis()
     reloaded = EvalAnalysis.from_dict(analysis.to_dict())
 
@@ -251,7 +250,7 @@ def test_analysis_model_round_trip_preserves_every_field():
     assert reloaded.design_snapshot.question == "Which planner model?"
 
 
-def test_analysis_storage_round_trip_preserves_every_field():
+def test_analysis_storage_round_trip_preserves_every_field() -> None:
     storage, _ = memory_storage()
     analysis = _make_analysis()
 
@@ -267,13 +266,13 @@ def test_analysis_storage_round_trip_preserves_every_field():
     assert loaded.generation == analysis.generation
 
 
-def test_load_missing_analysis_returns_none():
+def test_load_missing_analysis_returns_none() -> None:
     storage, _ = memory_storage()
     assert storage.load_analysis("does-not-exist", "uni-1") is None
 
 
 @pytest.mark.parametrize("blank_field", ["campaign_id", "subject_id", "behavior"])
-def test_analysis_required_reference_fields_reject_empty(blank_field):
+def test_analysis_required_reference_fields_reject_empty(blank_field) -> None:
     # campaign_id/subject_id/task are min_length=1 — a blank reference (the "FK
     # present" contract) must be rejected at construction, not stored empty.
     with pytest.raises(ValidationError):
@@ -285,13 +284,13 @@ def test_analysis_required_reference_fields_reject_empty(blank_field):
 # ---------------------------------------------------------------------------
 
 
-def test_insight_model_round_trip_preserves_every_field():
+def test_insight_model_round_trip_preserves_every_field() -> None:
     insight = _make_insight()
     reloaded = EvalInsight.from_dict(insight.to_dict())
     assert reloaded == insight
 
 
-def test_insight_storage_round_trip_preserves_every_field():
+def test_insight_storage_round_trip_preserves_every_field() -> None:
     storage, _ = memory_storage()
     insight = _make_insight()
 
@@ -322,13 +321,13 @@ def test_insight_storage_round_trip_preserves_every_field():
         ),
     ],
 )
-def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad):
+def test_an_authored_confidence_is_a_tier_and_nothing_else(build, bad) -> None:
     """What an insight stores as its confidence is a tier; a typed probability is refused."""
     with pytest.raises(ValidationError):
         build(bad)
 
 
-def test_the_stored_tiers_are_the_authored_tiers():
+def test_the_stored_tiers_are_the_authored_tiers() -> None:
     """One declaration of the tiers: what a writer may author and what a stored analysis may hold cannot diverge."""
     from typing import get_args
 
@@ -343,7 +342,7 @@ def test_the_stored_tiers_are_the_authored_tiers():
 # ---------------------------------------------------------------------------
 
 
-def test_a_lever_carries_no_confidence_looked_up_from_its_status():
+def test_a_lever_carries_no_confidence_looked_up_from_its_status() -> None:
     """A lever carries no confidence: how firmly a reading stands is its evidence tier, so the key is refused."""
     assert "confidence" not in LeverCoverage.model_fields
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
@@ -355,18 +354,18 @@ def test_a_lever_carries_no_confidence_looked_up_from_its_status():
 # ---------------------------------------------------------------------------
 
 
-def test_lever_coverage_requires_n():
+def test_lever_coverage_requires_n() -> None:
     with pytest.raises(ValidationError):
         LeverCoverage(name="l", cells=1, k=1, dispersion="±0", status="measured")
 
 
-def test_lever_coverage_requires_dispersion():
+def test_lever_coverage_requires_dispersion() -> None:
     with pytest.raises(ValidationError):
         LeverCoverage(name="l", cells=1, k=1, n=1, status="measured")
 
 
 @pytest.mark.parametrize("missing", ["n", "dispersion"])
-def test_a_resolved_evidence_row_requires_its_basis(missing):
+def test_a_resolved_evidence_row_requires_its_basis(missing) -> None:
     """A resolved number is rendered with its sample size and spread, so neither may be absent."""
     fields: dict[str, Any] = dict(
         aspect="planning", cell_ref="vk:ac", measure_id="elapsed_ms", value=1.0, n=3, dispersion="±1"
@@ -381,14 +380,14 @@ def test_a_resolved_evidence_row_requires_its_basis(missing):
 # ---------------------------------------------------------------------------
 
 
-def test_analysis_check_doc_type_rejects_a_wrong_doc_type():
+def test_analysis_check_doc_type_rejects_a_wrong_doc_type() -> None:
     payload = _make_analysis().to_dict()
     payload["doc_type"] = "eval_campaign"
     with pytest.raises(ValidationError):
         EvalAnalysis.from_dict(payload)
 
 
-def test_insight_check_doc_type_rejects_a_wrong_doc_type():
+def test_insight_check_doc_type_rejects_a_wrong_doc_type() -> None:
     payload = _make_insight().to_dict()
     payload["doc_type"] = "eval_analysis"
     with pytest.raises(ValidationError):
@@ -403,7 +402,7 @@ def test_insight_check_doc_type_rejects_a_wrong_doc_type():
 class TestTheMemoIsHeldAsStored:
     """A retired memo is JSON the analysis holds: its links survive a stored reload as written."""
 
-    def test_the_positions_survive_the_from_dict_reload_path(self):
+    def test_the_positions_survive_the_from_dict_reload_path(self) -> None:
         analysis = _make_analysis()
         reloaded = EvalAnalysis.from_dict(analysis.to_dict())
         assert reloaded.document is not None
@@ -414,16 +413,16 @@ class TestTheMemoIsHeldAsStored:
 class TestAspectsAreOneEach:
     """An analysis covers its campaign's aspects once each."""
 
-    def test_an_aspect_held_twice_is_refused(self):
+    def test_an_aspect_held_twice_is_refused(self) -> None:
         aspect = _make_analysis().aspects[0]
         with pytest.raises(ValidationError, match="appear more than once"):
             _make_analysis(aspects=[aspect, aspect])
 
-    def test_an_analysis_covers_at_least_one_aspect(self):
+    def test_an_analysis_covers_at_least_one_aspect(self) -> None:
         with pytest.raises(ValidationError, match="aspects"):
             _make_analysis(aspects=[])
 
-    def test_an_aspect_is_found_by_its_label(self):
+    def test_an_aspect_is_found_by_its_label(self) -> None:
         analysis = _make_analysis()
         assert analysis.aspect("planning") is analysis.aspects[0]
         with pytest.raises(KeyError, match="no aspect 'routing'"):
@@ -444,7 +443,7 @@ class TestAspectsAreOneEach:
         ),
     ],
 )
-def test_literal_fields_reject_out_of_set_values(build):
+def test_literal_fields_reject_out_of_set_values(build) -> None:
     with pytest.raises(ValidationError):
         build()
 
@@ -466,7 +465,7 @@ def test_literal_fields_reject_out_of_set_values(build):
     ],
     ids=["EvalInsight.statement"],
 )
-def test_required_prose_still_rejects_null(build, field):
+def test_required_prose_still_rejects_null(build, field) -> None:
     """A required prose field refuses null.
 
     Where the text is the claim itself, its absence IS the failure and must surface loudly
@@ -476,7 +475,7 @@ def test_required_prose_still_rejects_null(build, field):
         build()
 
 
-def test_an_insights_evidence_lists_check_their_elements():
+def test_an_insights_evidence_lists_check_their_elements() -> None:
     """An insight's evidence id lists hold strings, and refuse anything else."""
     insight = EvalInsight(
         scope_id="uni-1",
@@ -505,7 +504,7 @@ def test_an_insights_evidence_lists_check_their_elements():
 # ---------------------------------------------------------------------------
 
 
-def test_list_analyses_by_campaign_returns_only_that_campaign():
+def test_list_analyses_by_campaign_returns_only_that_campaign() -> None:
     storage, _ = memory_storage()
     a1 = _make_analysis(campaign_id="camp-1")
     a2 = _make_analysis(campaign_id="camp-1")
@@ -517,7 +516,7 @@ def test_list_analyses_by_campaign_returns_only_that_campaign():
     assert ids == {a1.id, a2.id}
 
 
-def test_query_insights_filters_by_subject():
+def test_query_insights_filters_by_subject() -> None:
     """Storage owns the ID filters. It no longer owns `scope`, and could not.
 
     The second half of this test asserted `query_insights(scope='planning')`
@@ -540,7 +539,7 @@ def test_query_insights_filters_by_subject():
     assert by_subject == {maple_planning.id, maple_routing.id}
 
 
-def test_query_insights_filters_by_source_campaign():
+def test_query_insights_filters_by_source_campaign() -> None:
     storage, _ = memory_storage()
     from_camp_1 = _make_insight(source_campaign_id="camp-1")
     from_camp_2 = _make_insight(source_campaign_id="camp-2")
@@ -572,13 +571,13 @@ class TestAResolutionsTierIsReadOffItsRows:
         ]
         return _make_analysis(findings=[_finding("a", evidence=refs)], resolutions=[FindingResolution(evidence=rows)])
 
-    def test_the_readings_resolved_as_named_are_accepted(self):
+    def test_the_readings_resolved_as_named_are_accepted(self) -> None:
         named = [("latency", "measure"), ("helpful", "judged")]
         assert self._pair(named, named).resolutions[0].evidence_tier == "separation"
 
 
 @pytest.mark.parametrize("level", ["top", "nested"])
-def test_a_stored_analysis_carrying_an_unknown_key_is_refused_at_either_level(level: str):
+def test_a_stored_analysis_carrying_an_unknown_key_is_refused_at_either_level(level: str) -> None:
     """A stored `EvalAnalysis` is read as strictly as it is constructed, top-level and nested.
 
     The nested key rides on a `FindingResolution`, whose dump also echoes its computed
@@ -596,7 +595,7 @@ def test_a_stored_analysis_carrying_an_unknown_key_is_refused_at_either_level(le
         EvalAnalysis.from_dict(stored)
 
 
-def test_drop_derived_clears_analyses_insights_and_report_snapshots_and_keeps_the_campaign():
+def test_drop_derived_clears_analyses_insights_and_report_snapshots_and_keeps_the_campaign() -> None:
     """The operator step after a regenerable bump: every derived document goes, every kept and durable one stays.
 
     A report snapshot is derived: it freezes a report input built from evidence that stays, so it is frozen again.
@@ -634,7 +633,7 @@ def test_drop_derived_clears_analyses_insights_and_report_snapshots_and_keeps_th
     assert storage.load_campaign(campaign.id, "uni-1") is not None
 
 
-def test_drop_derived_returns_each_dropped_judge_profile_s_runs_to_record_it_again_from():
+def test_drop_derived_returns_each_dropped_judge_profile_s_runs_to_record_it_again_from() -> None:
     """A judge profile is recorded only by an operator, so the drop hands back the runs it was recorded from."""
     storage, store = memory_storage()
     old = {
@@ -655,7 +654,7 @@ def test_drop_derived_returns_each_dropped_judge_profile_s_runs_to_record_it_aga
     assert store.get("jp-1", "uni-1") is None
 
 
-def test_an_insight_from_before_the_bump_refuses_the_ledger_read_naming_the_operator_step():
+def test_an_insight_from_before_the_bump_refuses_the_ledger_read_naming_the_operator_step() -> None:
     """Assembly reads the subject's ledger through this read, so one old insight refuses every generation over it."""
     storage, store = memory_storage()
     insight = _make_insight()

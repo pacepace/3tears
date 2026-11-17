@@ -451,7 +451,7 @@ async def test_an_open_in_process_breaker_denies_before_any_io(health: ScrapeTar
 
     async def counting_get(entity_id: object, **kwargs: object) -> object:
         reads.append("read")
-        return await original(entity_id, **kwargs)  # type: ignore[arg-type]
+        return await original(entity_id, **kwargs)
 
     health.get = counting_get  # type: ignore[method-assign, assignment]
     breaker = _FakeBreaker()
@@ -1217,7 +1217,7 @@ async def test_an_unreadable_health_store_does_not_erase_an_open_circuit(
         if not failed_once:
             failed_once = True
             raise TimeoutError("health store read timed out")
-        return await original(entity_id, **kwargs)  # type: ignore[arg-type]
+        return await original(entity_id, **kwargs)
 
     health.get = flaky_get  # type: ignore[method-assign, assignment]
     await TargetCircuit(health, policy=policy).record_blocked(_T, now=_NOW)

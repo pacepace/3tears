@@ -51,7 +51,7 @@ def _errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 
 class TestOrRaise:
-    async def test_returns_the_first_good_answer(self):
+    async def test_returns_the_first_good_answer(self) -> None:
         fake_model, ainvoke_mock = _fake_structured_model(side_effect=[RuntimeError("once"), _Answer(value="ok")])
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
@@ -61,7 +61,7 @@ class TestOrRaise:
         assert answer == _Answer(value="ok")
         assert ainvoke_mock.await_count == 2
 
-    async def test_exhaustion_raises_carrying_the_last_cause(self, caplog: pytest.LogCaptureFixture):
+    async def test_exhaustion_raises_carrying_the_last_cause(self, caplog: pytest.LogCaptureFixture) -> None:
         last = ValueError("second")
         fake_model, _ = _fake_structured_model(side_effect=[RuntimeError("first"), last])
         with (
@@ -82,7 +82,7 @@ class TestOrRaise:
         assert "unit call" in errors[0].getMessage()
         assert "ValueError: second" in errors[0].getMessage()
 
-    async def test_cancellation_is_not_an_attempt(self):
+    async def test_cancellation_is_not_an_attempt(self) -> None:
         fake_model, ainvoke_mock = _fake_structured_model(side_effect=asyncio.CancelledError())
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
@@ -91,13 +91,13 @@ class TestOrRaise:
             await bounded_retry_structured_call_or_raise("p", _Answer, attempts=3, **_CALL)
         assert ainvoke_mock.await_count == 1
 
-    async def test_zero_attempts_is_refused(self):
+    async def test_zero_attempts_is_refused(self) -> None:
         with pytest.raises(ValueError, match="attempts"):
             await bounded_retry_structured_call_or_raise("p", _Answer, attempts=0, **_CALL)
 
 
 class TestDegradeToNone:
-    async def test_exhaustion_degrades_to_none_and_logs_one_error(self, caplog: pytest.LogCaptureFixture):
+    async def test_exhaustion_degrades_to_none_and_logs_one_error(self, caplog: pytest.LogCaptureFixture) -> None:
         fake_model, _ = _fake_structured_model(side_effect=RuntimeError("down"))
         with (
             caplog.at_level(logging.WARNING),

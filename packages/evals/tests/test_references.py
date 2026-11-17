@@ -8,17 +8,16 @@ compared against a literal, so a change to the method fails loudly instead of re
 from __future__ import annotations
 
 import pytest
-
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.errors import SoundnessRefusal, UnresolvableReference
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.references import (
     require_cell,
     resolve_reading,
 )
 from threetears.evals.analysis.stats import INTERVAL_LEVEL, t_critical_two_sided
 from threetears.evals.kernel.analysis_measures import MeasureCollection, MeasureSummary
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.kernel.surface import (
     CellFacts,
     DecisionSurface,
@@ -26,7 +25,6 @@ from threetears.evals.kernel.surface import (
     JudgedReading,
     MeasureFacts,
 )
-
 
 _REF = cell_ref("v1", "rig")
 
@@ -90,7 +88,7 @@ def _surface(*, n_independent: int = 4, judged_cases: int = 4, judged_sem: float
     )
 
 
-def test_a_measure_reads_its_mean_basis_and_frozen_facts():
+def test_a_measure_reads_its_mean_basis_and_frozen_facts() -> None:
     reading = resolve_reading(_surface(), _REF, "total_ms")
 
     assert (reading.mean, reading.n, reading.sem) == (1200.0, 4, 50.0)
@@ -99,7 +97,7 @@ def test_a_measure_reads_its_mean_basis_and_frozen_facts():
     assert reading.dispersion == "sem 50; 95% CI [1041, 1359]"
 
 
-def test_a_clustered_reading_states_its_interval_with_no_caveat():
+def test_a_clustered_reading_states_its_interval_with_no_caveat() -> None:
     """The interval is computed over the cases already, so a clustered cell's reading needs no warning (#590)."""
     reading = resolve_reading(_surface(n_independent=2), _REF, "total_ms")
 
@@ -107,7 +105,7 @@ def test_a_clustered_reading_states_its_interval_with_no_caveat():
     assert reading.dispersion == "sem 50; 95% CI [1041, 1359]"
 
 
-def test_a_clustered_judged_reading_takes_its_degrees_of_freedom_from_the_cases():
+def test_a_clustered_judged_reading_takes_its_degrees_of_freedom_from_the_cases() -> None:
     """Four scores over two cases are two draws: t on one degree of freedom, not three (#590)."""
     reading = resolve_reading(_surface(judged_cases=2), _REF, "reply.grounding", "judged")
 
@@ -117,7 +115,7 @@ def test_a_clustered_judged_reading_takes_its_degrees_of_freedom_from_the_cases(
     assert "obs over" not in reading.dispersion
 
 
-def test_a_reading_of_one_case_has_no_interval_and_says_why():
+def test_a_reading_of_one_case_has_no_interval_and_says_why() -> None:
     """Repeats of a single case carry no between-case spread, so there is no interval to state."""
     reading = resolve_reading(_surface(judged_cases=1, judged_sem=None), _REF, "reply.grounding", "judged")
 
@@ -125,7 +123,7 @@ def test_a_reading_of_one_case_has_no_interval_and_says_why():
     assert reading.dispersion == "unestimable: 4 obs of one case, which has no between-case spread"
 
 
-def test_an_unestimable_spread_counts_cases_never_observations():
+def test_an_unestimable_spread_counts_cases_never_observations() -> None:
     """Four scores over two cases with no interval say two cases: the count every interval is read over."""
     reading = resolve_reading(_surface(judged_cases=2, judged_sem=None), _REF, "reply.grounding", "judged")
 
@@ -133,7 +131,7 @@ def test_an_unestimable_spread_counts_cases_never_observations():
     assert reading.dispersion == "unestimable at 2 cases"
 
 
-def test_a_judged_reading_takes_a_t_interval_and_the_quality_axis():
+def test_a_judged_reading_takes_a_t_interval_and_the_quality_axis() -> None:
     reading = resolve_reading(_surface(), _REF, "reply.grounding", "judged")
 
     half = t_critical_two_sided(INTERVAL_LEVEL, 3) * 0.25
@@ -142,7 +140,7 @@ def test_a_judged_reading_takes_a_t_interval_and_the_quality_axis():
     assert (reading.merit_axis, reading.higher_is_better, reading.unit) == ("quality", True, None)
 
 
-def test_a_judged_interval_stays_inside_the_dimensions_scale():
+def test_a_judged_interval_stays_inside_the_dimensions_scale() -> None:
     """A mean near the top of a 1-5 scale: the t interval's upper half would overrun 5, and is clipped to it."""
     surface = _surface()
     near_the_top = surface.cells[0].judged[0].model_copy(update={"mean": 4.8, "sem": 0.2})
@@ -155,36 +153,36 @@ def test_a_judged_interval_stays_inside_the_dimensions_scale():
     assert reading.ci_high == 5.0
 
 
-def test_an_unresolvable_reference_is_a_repairable_refusal():
+def test_an_unresolvable_reference_is_a_repairable_refusal() -> None:
     assert issubclass(UnresolvableReference, SoundnessRefusal)
 
 
-def test_an_unknown_cell_names_the_cells_that_exist():
+def test_an_unknown_cell_names_the_cells_that_exist() -> None:
     with pytest.raises(UnresolvableReference, match=r"v1:rig"):
         require_cell(_surface(), "nope:rig")
 
 
-def test_a_judged_name_read_as_a_measure_says_which_namespace_it_is_in():
+def test_a_judged_name_read_as_a_measure_says_which_namespace_it_is_in() -> None:
     with pytest.raises(UnresolvableReference, match=r"IS a judged dimension .* set reading to 'judged'"):
         resolve_reading(_surface(), _REF, "reply.grounding")
 
 
-def test_a_measure_name_read_as_judged_says_which_namespace_it_is_in():
+def test_a_measure_name_read_as_judged_says_which_namespace_it_is_in() -> None:
     with pytest.raises(UnresolvableReference, match=r"IS a measure .* set reading to 'measure'"):
         resolve_reading(_surface(), _REF, "total_ms", "judged")
 
 
-def test_a_categorical_measure_has_no_point_estimate():
+def test_a_categorical_measure_has_no_point_estimate() -> None:
     with pytest.raises(UnresolvableReference, match=r"categorical"):
         resolve_reading(_surface(), _REF, "stop_reason")
 
 
-def test_a_numeric_measure_with_no_mean_is_refused():
+def test_a_numeric_measure_with_no_mean_is_refused() -> None:
     with pytest.raises(UnresolvableReference, match=r"no mean"):
         resolve_reading(_surface(), _REF, "meanless")
 
 
-def test_a_caller_that_bypasses_the_reference_models_is_a_programming_error_not_a_refusal():
+def test_a_caller_that_bypasses_the_reference_models_is_a_programming_error_not_a_refusal() -> None:
     """The repair round cannot correct a kind no model output can reach the resolver with."""
     with pytest.raises(ValueError, match=r"neither 'measure' nor 'judged'") as raised:
         resolve_reading(_surface(), _REF, "total_ms", "telemetry")  # type: ignore[arg-type]
@@ -199,19 +197,19 @@ class TestAnEntryTheSurfaceGuaranteesIsReadNotDefaulted:
     merit", pointing the repair round at the wrong fix.
     """
 
-    def test_a_measure_with_no_facts_entry_is_a_hard_error_naming_it(self):
+    def test_a_measure_with_no_facts_entry_is_a_hard_error_naming_it(self) -> None:
         broken = _surface().model_copy(update={"measures": {}})
         with pytest.raises(RuntimeError, match=r"measure 'total_ms'.*no `measures` entry") as raised:
             resolve_reading(broken, _REF, "total_ms")
         assert not isinstance(raised.value, SoundnessRefusal), "a repair round would meet the same surface"
 
-    def test_a_judged_dimension_with_no_facts_entry_is_a_hard_error_naming_it(self):
+    def test_a_judged_dimension_with_no_facts_entry_is_a_hard_error_naming_it(self) -> None:
         broken = _surface().model_copy(update={"dimensions": {}})
         with pytest.raises(RuntimeError, match=r"judged dimension 'reply.grounding'.*no `dimensions` entry") as raised:
             resolve_reading(broken, _REF, "reply.grounding", "judged")
         assert not isinstance(raised.value, SoundnessRefusal)
 
-    def test_a_lower_is_better_dimension_reads_its_own_polarity(self):
+    def test_a_lower_is_better_dimension_reads_its_own_polarity(self) -> None:
         """The positive half: the entry is read, so a declared polarity reaches the reading."""
         declared = _surface().model_copy(
             update={
@@ -228,7 +226,7 @@ class TestOneLevelComputesAndLabelsEveryInterval:
     kept its own copy of either would leave one of them behind, which is the mislabelled interval.
     """
 
-    def test_a_judged_interval_and_its_caption_follow_the_one_constant(self, monkeypatch):
+    def test_a_judged_interval_and_its_caption_follow_the_one_constant(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(stats, "INTERVAL_LEVEL", 0.8)
         reading = resolve_reading(_surface(), _REF, "reply.grounding", "judged")
 
@@ -236,12 +234,12 @@ class TestOneLevelComputesAndLabelsEveryInterval:
         assert (reading.ci_low, reading.ci_high) == (pytest.approx(4.0 - half), pytest.approx(4.0 + half))
         assert "; 80% CI [" in reading.dispersion
 
-    def test_a_measure_is_captioned_at_the_one_constant(self, monkeypatch):
+    def test_a_measure_is_captioned_at_the_one_constant(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(stats, "INTERVAL_LEVEL", 0.8)
         assert "; 80% CI [" in resolve_reading(_surface(), _REF, "total_ms").dispersion
 
 
-def test_a_value_and_its_interval_are_spelled_by_one_rule_on_one_line():
+def test_a_value_and_its_interval_are_spelled_by_one_rule_on_one_line() -> None:
     """An arm-table cell prints the value and the resolver's dispersion side by side.
 
     Under two formatters a 12345.6 ms latency read ``1.235e+04`` in the value slot beside an interval

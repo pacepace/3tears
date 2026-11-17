@@ -368,7 +368,7 @@ def _total(cases: int, dims: int = 1) -> float:
 
 
 class TestARepeatRunsAsAJob:
-    async def test_the_operation_returns_a_job_at_once_and_its_result_is_the_report(self):
+    async def test_the_operation_returns_a_job_at_once_and_its_result_is_the_report(self) -> None:
         """``ops.judge_repeat`` waited on the model inside the call; it starts a job, as every judge operation does."""
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge)
@@ -388,7 +388,7 @@ class TestARepeatRunsAsAJob:
 
 
 class TestARepeatMeasuresTheJudgeAndChangesNothing:
-    async def test_each_scored_dim_is_asked_again_exactly_as_first_asked_and_recorded_beside_its_score(self):
+    async def test_each_scored_dim_is_asked_again_exactly_as_first_asked_and_recorded_beside_its_score(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge)
         before = off_loop(_results, host, run_id)
@@ -410,7 +410,7 @@ class TestARepeatMeasuresTheJudgeAndChangesNothing:
             assert entry.repeat.score == max(1, first.score - 1)
         assert (report.scores_repeated, report.scores_unanswered) == (2, 0)
 
-    async def test_a_dim_the_judge_could_not_tell_on_is_not_repeated(self):
+    async def test_a_dim_the_judge_could_not_tell_on_is_not_repeated(self) -> None:
         judge = _PricedJudge(cannot_tell={_DIM})
         host, run_id = await _judged_run(judge, judged_artifact=JudgedArtifact.TRANSCRIPT)
         judge.calls.clear()
@@ -420,7 +420,7 @@ class TestARepeatMeasuresTheJudgeAndChangesNothing:
 
         assert {dim for dim, _, _ in judge.calls} == {TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID}
 
-    async def test_every_call_is_a_ledger_row_under_judge_stamped_with_the_run(self):
+    async def test_every_call_is_a_ledger_row_under_judge_stamped_with_the_run(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge)
         judge.calls.clear()
@@ -434,7 +434,7 @@ class TestARepeatMeasuresTheJudgeAndChangesNothing:
         }
         assert report.cost_usd == pytest.approx(sum(row.cost_usd or 0 for row in rows))
 
-    async def test_a_parse_retry_is_priced_and_ledgered_too(self):
+    async def test_a_parse_retry_is_priced_and_ledgered_too(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=1)
         judge.calls.clear()
@@ -446,7 +446,7 @@ class TestARepeatMeasuresTheJudgeAndChangesNothing:
         assert len(off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge")) == 2
         assert report.scores_repeated == 1
 
-    async def test_a_repeat_losing_a_write_race_is_re_applied_to_the_newer_result(self):
+    async def test_a_repeat_losing_a_write_race_is_re_applied_to_the_newer_result(self) -> None:
         judge = _PricedJudge()
         storage = _ConflictOnce()
         host, run_id = await _judged_run(judge, cases=1, storage=storage)
@@ -461,7 +461,7 @@ class TestARepeatMeasuresTheJudgeAndChangesNothing:
 
 
 class TestWhatWasPaidForIsReported:
-    async def test_a_result_that_cannot_be_read_back_is_unwritten_and_the_report_still_returns(self):
+    async def test_a_result_that_cannot_be_read_back_is_unwritten_and_the_report_still_returns(self) -> None:
         judge = _PricedJudge()
         storage = _UnreadableOnce()
         host, run_id = await _judged_run(judge, cases=2, storage=storage)
@@ -475,7 +475,7 @@ class TestWhatWasPaidForIsReported:
         assert report.repeated == [readable.id]
         assert report.calls_made == len(judge.calls) == 2, "both paid calls are on the report"
 
-    async def test_a_paid_call_whose_ledger_row_could_not_be_written_is_still_counted_and_costed(self):
+    async def test_a_paid_call_whose_ledger_row_could_not_be_written_is_still_counted_and_costed(self) -> None:
         """The ledger lost one row; the report still counts that call and its cost, rather than a total missing it."""
         judge = _PricedJudge()
         storage = _LedgerFailsOnce()
@@ -489,7 +489,7 @@ class TestWhatWasPaidForIsReported:
         assert report.calls_made == len(judge.calls) == 2, "the call the ledger lost is on the report"
         assert report.cost_usd == pytest.approx(0.002), "both calls at the 0.001 each reported"
 
-    async def test_an_account_refusal_stops_the_repeat_before_any_later_call(self):
+    async def test_an_account_refusal_stops_the_repeat_before_any_later_call(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=3, failure_describer=_describe_account_refusal)
         order = [
@@ -512,7 +512,7 @@ class TestWhatWasPaidForIsReported:
 
 
 class TestNothingIsPaidForThatTheCapWouldRefuse:
-    async def test_at_the_cap_every_call_is_admitted(self):
+    async def test_at_the_cap_every_call_is_admitted(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=3)
         judge.calls.clear()
@@ -521,7 +521,7 @@ class TestNothingIsPaidForThatTheCapWouldRefuse:
 
         assert len(report.repeated) == 3 and len(judge.calls) == 3
 
-    async def test_a_cent_under_it_nothing_is_called_or_ledgered_or_stored(self):
+    async def test_a_cent_under_it_nothing_is_called_or_ledgered_or_stored(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=3)
         judge.calls.clear()
@@ -533,7 +533,7 @@ class TestNothingIsPaidForThatTheCapWouldRefuse:
         assert off_loop(host.storage.query_out_of_run_spend, _SCOPE) == []
         assert all(result.judge_repeats == [] for result in off_loop(_results, host, run_id))
 
-    async def test_an_unpriceable_call_under_an_enforced_cap_is_refused_before_any_call(self):
+    async def test_an_unpriceable_call_under_an_enforced_cap_is_refused_before_any_call(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge)
         judge.calls.clear()
@@ -543,7 +543,7 @@ class TestNothingIsPaidForThatTheCapWouldRefuse:
             await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=100.0)
         assert judge.calls == []
 
-    async def test_with_no_cap_enforced_an_unpriceable_call_is_made_and_ledgered(self):
+    async def test_with_no_cap_enforced_an_unpriceable_call_is_made_and_ledgered(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge)
         judge.calls.clear()
@@ -558,7 +558,7 @@ class TestNothingIsPaidForThatTheCapWouldRefuse:
 
 class TestTheEstimateIsTheRepeatsOwnAnswer:
     @pytest.mark.parametrize(("cap_delta", "starts"), [(0.0, True), (-0.01, False)])
-    async def test_it_prices_every_attempt_and_makes_no_call(self, cap_delta: float, starts: bool):
+    async def test_it_prices_every_attempt_and_makes_no_call(self, cap_delta: float, starts: bool) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=3)
         judge.calls.clear()
@@ -571,7 +571,7 @@ class TestTheEstimateIsTheRepeatsOwnAnswer:
         assert estimate.would_start is starts
         assert (estimate.refusal is None) is starts
 
-    async def test_an_unpriceable_call_has_no_ceiling(self):
+    async def test_an_unpriceable_call_has_no_ceiling(self) -> None:
         judge = _PricedJudge(ceiling=None)
         host, run_id = await _judged_run(judge)
 
@@ -581,7 +581,7 @@ class TestTheEstimateIsTheRepeatsOwnAnswer:
 
 
 class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
-    async def test_a_run_still_running_is_refused(self):
+    async def test_a_run_still_running_is_refused(self) -> None:
         judge = _PricedJudge()
         # Still being written: its process holds a lease it renews.
         lease = JobLease(holder="the-writer", expires_at=(datetime.now(UTC) + timedelta(hours=1)).isoformat())
@@ -592,7 +592,7 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
             await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
         assert judge.calls == []
 
-    async def test_a_run_that_recorded_no_request_settings_is_refused(self):
+    async def test_a_run_that_recorded_no_request_settings_is_refused(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, judge_asked_settings=None)
         judge.calls.clear()
@@ -601,7 +601,7 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
             await _repeated(host, run_id, _SCOPE, out_of_run_cap_usd=1.0)
         assert judge.calls == []
 
-    async def test_a_result_without_stored_evidence_is_named_and_left_out(self):
+    async def test_a_result_without_stored_evidence_is_named_and_left_out(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge)
         bare, kept = off_loop(_results, host, run_id)
@@ -620,7 +620,7 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
         (skip,) = report.skipped
         assert skip.result_id == bare.id and "stores no judge evidence" in skip.reason
 
-    async def test_a_result_judged_by_a_built_in_prompt_it_did_not_record_is_named_and_left_out(self):
+    async def test_a_result_judged_by_a_built_in_prompt_it_did_not_record_is_named_and_left_out(self) -> None:
         """A repeat pairs with the first score, so it must be asked by the built-in prompt that asked that one."""
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge)
@@ -637,7 +637,7 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
         (skip,) = report.skipped
         assert skip.result_id == older.id and "records no judge for" in skip.reason
 
-    async def test_a_result_outside_the_run_is_refused(self):
+    async def test_a_result_outside_the_run_is_refused(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge)
 
@@ -646,7 +646,9 @@ class TestWhatCannotBeReproducedIsRefusedBeforeAnySpend:
 
 
 class TestARepeatReadsItsRunAPageAtATime:
-    async def test_it_plans_from_pages_and_reads_only_the_results_it_names(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_it_plans_from_pages_and_reads_only_the_results_it_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         store = BatchRecordingStore()
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=5, storage=EvalStorage(store))
@@ -668,7 +670,7 @@ class TestARepeatReadsItsRunAPageAtATime:
 
 
 class TestAgreeingRepeatsSeparateTheJudge:
-    async def test_the_stored_repeats_decide_separation(self):
+    async def test_the_stored_repeats_decide_separation(self) -> None:
         # Separation's floor: 120 results.
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=SEPARATION_MIN_RESULTS)
@@ -679,7 +681,7 @@ class TestAgreeingRepeatsSeparateTheJudge:
         (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
         assert (tier.separation.n, tier.separation.agreement, tier.tier) == (SEPARATION_MIN_RESULTS, 1.0, "separation")
 
-    async def test_twenty_agreeing_repeats_are_short_of_the_floor_and_say_by_how_much(self):
+    async def test_twenty_agreeing_repeats_are_short_of_the_floor_and_say_by_how_much(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=20)
 
@@ -690,7 +692,7 @@ class TestAgreeingRepeatsSeparateTheJudge:
         assert (tier.separation.agreement, tier.separation.state, tier.tier) == (1.0, "insufficient", "undetermined")
         assert tier.separation.results_needed == SEPARATION_MIN_RESULTS - 20
 
-    async def test_nineteen_repeats_do_not(self):
+    async def test_nineteen_repeats_do_not(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=20)
         ids = [result.id for result in off_loop(_results, host, run_id)][:19]
@@ -701,7 +703,7 @@ class TestAgreeingRepeatsSeparateTheJudge:
         (tier,) = judge_evidence_tiers(judge_agreement([], results), judge_self_agreement(results), {_KEY})
         assert (tier.separation.state, tier.tier) == ("insufficient", "undetermined")
 
-    async def test_two_results_repeated_ten_times_do_not(self):
+    async def test_two_results_repeated_ten_times_do_not(self) -> None:
         # Twenty agreeing pairs about two results — the shape that reached separation when the floor counted pairs.
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=4)
@@ -716,7 +718,7 @@ class TestAgreeingRepeatsSeparateTheJudge:
         assert (tier.separation.n, tier.separation.results, tier.separation.agreement) == (20, 2, 1.0)
         assert (tier.separation.state, tier.tier) == ("insufficient", "undetermined")
 
-    async def test_a_judge_declining_a_third_of_its_repeats_does_not(self):
+    async def test_a_judge_declining_a_third_of_its_repeats_does_not(self) -> None:
         judge = _PricedJudge()
         host, run_id = await _judged_run(judge, cases=SEPARATION_MIN_RESULTS)
         judge.cannot_tell_parties = set(range(SEPARATION_MIN_RESULTS // 3))

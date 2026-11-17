@@ -7,24 +7,24 @@ import pytest
 from threetears.core.config import CoreConfig, DefaultCoreConfig
 
 
-def test_default_config_values():
+def test_default_config_values() -> None:
     cfg = DefaultCoreConfig()
     assert cfg.collection_flush == "ON_CHECKPOINT"
     assert cfg.collection_flush_interval == 30
     assert cfg.collection_flush_tables == "messages,token_usage_logs"
 
 
-def test_protocol_compliance():
+def test_protocol_compliance() -> None:
     cfg = DefaultCoreConfig()
     assert isinstance(cfg, CoreConfig)
 
 
-def test_invalid_flush_strategy_raises():
+def test_invalid_flush_strategy_raises() -> None:
     with pytest.raises(ValueError, match="collection_flush must be one of"):
         DefaultCoreConfig(collection_flush="NEVER")
 
 
-def test_custom_config_satisfies_protocol():
+def test_custom_config_satisfies_protocol() -> None:
     class MyConfig:
         collection_flush: str = "ALWAYS"
         collection_flush_interval: int = 10

@@ -198,7 +198,7 @@ def _probe(source: str) -> subprocess.CompletedProcess[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_the_walk_reads_the_engine():
+def test_the_walk_reads_the_engine() -> None:
     """Non-vacuity: a walk that read no module would pass every assertion below."""
     files = _engine_files()
 
@@ -206,12 +206,12 @@ def test_the_walk_reads_the_engine():
     assert sum(1 for path in files for _ in named_modules(path, root=SOURCE_ROOT)) > 100
 
 
-def test_the_dependency_map_is_the_manifests():
+def test_the_dependency_map_is_the_manifests() -> None:
     """The import roots the walk admits are exactly those of the dependencies the manifest declares."""
     assert sorted(IMPORT_ROOTS_BY_DEPENDENCY) == sorted(_declared_dependencies())
 
 
-def test_the_extras_map_is_the_manifests():
+def test_the_extras_map_is_the_manifests() -> None:
     """Each extra the walk admits is one the manifest declares, with exactly its dependencies."""
     assert {extra: sorted(deps) for extra, (_, deps) in IMPORT_ROOTS_BY_EXTRA.items()} == {
         extra: sorted(deps) for extra, deps in _declared_extras().items()
@@ -221,7 +221,7 @@ def test_the_extras_map_is_the_manifests():
         assert path.is_dir(), f"an extra serves {subpackage}, which does not exist"
 
 
-def test_root_extras_names_only_public_roots_each_under_the_extra_that_serves_it():
+def test_root_extras_names_only_public_roots_each_under_the_extra_that_serves_it() -> None:
     """``threetears.evals.ROOT_EXTRAS`` maps a public root to the extra whose subpackage it is, and to no other."""
     from threetears.evals import PUBLIC_ROOTS, ROOT_EXTRAS
 
@@ -253,7 +253,7 @@ def _optional_roots() -> list[str]:
 
 
 @pytest.mark.parametrize("root", _optional_roots())
-def test_root_extras_lists_every_module_its_root_names_past_the_base_install(root):
+def test_root_extras_lists_every_module_its_root_names_past_the_base_install(root) -> None:
     """The modules a root's entry lists are exactly the ones its source names that the base install lacks, sorted:
     a gate that checks them checks everything the root may fail on, and nothing it does not import."""
     from threetears.evals import ROOT_EXTRAS
@@ -265,7 +265,7 @@ def test_root_extras_lists_every_module_its_root_names_past_the_base_install(roo
     assert set(needs.modules) <= set(_extra_roots(needs.extra)), "a module its extra does not bring in"
 
 
-def test_the_root_extras_walk_finds_a_module_named_past_the_base_install():
+def test_the_root_extras_walk_finds_a_module_named_past_the_base_install() -> None:
     """Non-vacuity: the walk behind the equality above sees the FastMCP transport's own import, and nothing the base
     install provides (the client's ``httpx`` is a base dependency)."""
     assert _names_outside_the_base_install("threetears.evals.transports.fastmcp") == {"fastmcp"}
@@ -331,7 +331,7 @@ def _extra_roots(*extras: str) -> list[str]:
     return sorted({root for extra in extras for roots in IMPORT_ROOTS_BY_EXTRA[extra][1].values() for root in roots})
 
 
-def test_each_extra_dependency_names_its_own_root():
+def test_each_extra_dependency_names_its_own_root() -> None:
     """The per-extra probe blocks each distribution's own root; one the map did not name would block nothing."""
     declared = {dist: roots for _, deps in IMPORT_ROOTS_BY_EXTRA.values() for dist, roots in deps.items()}
 
@@ -354,7 +354,7 @@ def _failing_roots(blocked: list[str]) -> set[str]:
     return set(json.loads(proc.stdout))
 
 
-def test_on_the_base_install_exactly_the_listed_roots_fail_to_import():
+def test_on_the_base_install_exactly_the_listed_roots_fail_to_import() -> None:
     """With every extra's dependencies unimportable, each root ``ROOT_EXTRAS`` lists fails to import and every other
     public root imports: the map is what an install without the extras meets."""
     from threetears.evals import ROOT_EXTRAS
@@ -363,7 +363,7 @@ def test_on_the_base_install_exactly_the_listed_roots_fail_to_import():
 
 
 @pytest.mark.parametrize("extra", sorted(IMPORT_ROOTS_BY_EXTRA))
-def test_each_extra_alone_missing_fails_exactly_the_roots_listed_under_it(extra):
+def test_each_extra_alone_missing_fails_exactly_the_roots_listed_under_it(extra) -> None:
     """With one extra's dependencies unimportable and the rest installed, the roots that fail are the ones the map lists
     under that extra: each listed root needs the extra it is listed under, and no other."""
     from threetears.evals import ROOT_EXTRAS
@@ -389,7 +389,7 @@ def _listed_modules() -> list[tuple[str, str]]:
 
 
 @pytest.mark.parametrize(("root", "module"), _listed_modules())
-def test_each_module_root_extras_lists_is_one_its_root_cannot_import_without(root, module):
+def test_each_module_root_extras_lists_is_one_its_root_cannot_import_without(root, module) -> None:
     """With any one listed module unimportable and everything else installed, its root fails to import: every module
     a gate is told to check is one the root needs at import, not only somewhere in a call."""
     proc = subprocess.run(
@@ -405,14 +405,14 @@ def test_each_module_root_extras_lists_is_one_its_root_cannot_import_without(roo
     assert json.loads(proc.stdout) is False, f"{root} imported with {module} unimportable"
 
 
-def test_the_probe_reports_a_root_that_fails_without_a_blocked_root():
+def test_the_probe_reports_a_root_that_fails_without_a_blocked_root() -> None:
     """Non-vacuity: blocking pydantic, the base install's one dependency, fails every public root."""
     from threetears.evals import PUBLIC_ROOTS
 
     assert _failing_roots(["pydantic"]) == set(PUBLIC_ROOTS)
 
 
-def test_no_engine_module_names_the_first_host():
+def test_no_engine_module_names_the_first_host() -> None:
     """No module under ``threetears/evals`` names any module of the host it was cut from."""
     offenders = [
         f"{path.relative_to(SOURCE_ROOT)}:{line} imports {module}"
@@ -428,7 +428,7 @@ def test_no_engine_module_names_the_first_host():
     )
 
 
-def test_every_module_the_engine_names_is_declared():
+def test_every_module_the_engine_names_is_declared() -> None:
     """The stdlib, the engine, or a declared dependency -- an undeclared import is an ``ImportError`` elsewhere."""
     offenders = [
         f"{path.relative_to(SOURCE_ROOT)}:{line} imports {module}"
@@ -462,7 +462,7 @@ def test_every_module_the_engine_names_is_declared():
         ("import fastapi\n", False),
     ],
 )
-def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path, source, allowed):
+def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path: Path, source, allowed) -> None:
     """Both directions on one fixture, so an inverted rule cannot pass."""
     planted = tmp_path / "threetears" / "evals" / "planted.py"
     planted.parent.mkdir(parents=True)
@@ -483,17 +483,17 @@ def test_the_rule_admits_what_is_declared_and_refuses_the_rest(tmp_path, source,
         ("threetears.evals", False),
     ],
 )
-def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed):
+def test_each_extra_is_admitted_only_inside_its_own_subpackage(importer, allowed) -> None:
     """``fastmcp`` is the ``[fastmcp]`` extra's: its transport may name it; the core and the other extra may not."""
     assert _allowed("fastmcp.tools", importer=importer) is allowed
 
 
-def test_an_extras_subpackage_may_not_name_an_undeclared_dependency():
+def test_an_extras_subpackage_may_not_name_an_undeclared_dependency() -> None:
     """An extra admits its own dependencies and nothing more: the transport may not name another 3tears package."""
     assert _allowed("threetears.models", importer="threetears.evals.transports.fastmcp") is False
 
 
-def test_a_relative_import_is_judged_where_it_lands(tmp_path):
+def test_a_relative_import_is_judged_where_it_lands(tmp_path: Path) -> None:
     """A relative import walking out of the package is a crossing, not an import that names nothing."""
     planted = tmp_path / "threetears" / "evals" / "planted.py"
     planted.parent.mkdir(parents=True)
@@ -520,14 +520,14 @@ _LOADS_EVERY_MODULE = (
 )
 
 
-def test_importing_every_engine_module_loads_no_first_host_module():
+def test_importing_every_engine_module_loads_no_first_host_module() -> None:
     """The transitive closure, which a per-file walk cannot report."""
     proc = _probe(_LOADS_EVERY_MODULE)
 
     assert proc.returncode == 0, f"importing the engine loaded first-host modules:\n{proc.stderr}"
 
 
-def test_the_probe_reports_a_load_when_there_is_one():
+def test_the_probe_reports_a_load_when_there_is_one() -> None:
     """Positive control: the probe program fails when a first-host module is in ``sys.modules``."""
     planted = "import sys, types\nsys.modules['discodon.planted'] = types.ModuleType('discodon.planted')\n"
 
@@ -541,7 +541,7 @@ def test_the_probe_reports_a_load_when_there_is_one():
 # ---------------------------------------------------------------------------
 
 
-def test_the_engine_owns_the_apparatus_error_and_the_external_spend_type():
+def test_the_engine_owns_the_apparatus_error_and_the_external_spend_type() -> None:
     """A host raises ``ApparatusError`` and reports ``ExternalSpend``; both are DEFINED here.
 
     A host re-exports them rather than declaring twins: two classes with one name would let a
@@ -560,7 +560,7 @@ def test_the_engine_owns_the_apparatus_error_and_the_external_spend_type():
 # ---------------------------------------------------------------------------
 
 
-def test_the_portable_test_support_names_no_barred_package():
+def test_the_portable_test_support_names_no_barred_package() -> None:
     """The factories, the resolver and the toy host name no host package, at any depth.
 
     An AST walk, because an import deferred into a function body never executes on import and a
@@ -578,7 +578,7 @@ def test_the_portable_test_support_names_no_barred_package():
     assert not offenders, "portable test support names a host package:\n  " + "\n  ".join(offenders)
 
 
-def test_importing_the_portable_test_support_loads_no_barred_package():
+def test_importing_the_portable_test_support_loads_no_barred_package() -> None:
     """The transitive half: importing the support modules loads no host package in a fresh interpreter."""
     probe = (
         "import sys\n"

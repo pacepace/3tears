@@ -572,7 +572,7 @@ def test_the_kit_prints_a_bar_s_note_whole_where_it_does_not_fit(tmp_path: Path,
     page.write_text(report_page([block]), encoding="utf-8")
     drawn, errors = rendered(page, _BAR_TEXTS, width=width)
     assert errors == []
-    assert all(row["note"] in drawn for row in _LONG_NOTE_BARS["rows"]), drawn  # type: ignore[index]
+    assert all(row["note"] in drawn for row in _LONG_NOTE_BARS["rows"]), drawn
     assert not {"-8", "+5"} & set(drawn), drawn
 
 

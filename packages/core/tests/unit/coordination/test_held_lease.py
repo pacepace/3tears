@@ -41,7 +41,7 @@ _RENEW = timedelta(seconds=0.05)
 
 
 def _lease(client: FakeNatsClient, pod: str) -> KVLease:
-    return KVLease(nats_client=client, bucket_name=_BUCKET, pod_id=pod)  # type: ignore[arg-type]
+    return KVLease(nats_client=client, bucket_name=_BUCKET, pod_id=pod)
 
 
 async def _bucket(client: FakeNatsClient) -> FakeKvBucket:
@@ -349,7 +349,7 @@ def test_a_lease_takes_a_client_or_a_bucket_never_both_nor_neither() -> None:
         KVLease(None)
     bucket = asyncio.run(FakeNatsClient().kv_bucket(name="pointers"))
     with pytest.raises(ValueError, match="one of the two"):
-        KVLease(FakeNatsClient(), bucket=bucket)  # type: ignore[arg-type]
+        KVLease(FakeNatsClient(), bucket=bucket)
 
 
 @in_virtual_time

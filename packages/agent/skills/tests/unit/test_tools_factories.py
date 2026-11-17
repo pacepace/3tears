@@ -1261,6 +1261,6 @@ class TestToolSkillsAreOfferedOnlyWhenTheyCanRun:
         coll = FakeSkillsCollection()
         reg = FakeRegistry(permitted_tools={"loki.query"})
         [create] = load_skill_create_tool(agent_id=agent_id, user_id=user_id, skills_collection=coll, registry=reg)
-        out = await create.coroutine(name="errors", summary="s", tool="loki.query", arguments={"q": "error"})  # type: ignore[misc]
+        out = await create.coroutine(name="errors", summary="s", tool="loki.query", arguments={"q": "error"})
         assert out == f"[TOOL ERROR] skill_create: {TOOL_SKILLS_NOT_OFFERED}"
         assert coll.rows == {}

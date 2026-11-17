@@ -93,7 +93,7 @@ async def test_join_on_a_visible_on_b(
 
     members = await _await_until(lambda: pod_b.state.members(room))
     assert members, "pod B never saw the member from pod A"
-    assert [m.connection_id for m in members] == [conn]  # type: ignore[union-attr]
+    assert [m.connection_id for m in members] == [conn]
     assert members[0].pod_id == "pod-a"  # type: ignore[index]
     assert members[0].user_id == "user-1"  # type: ignore[index]
 

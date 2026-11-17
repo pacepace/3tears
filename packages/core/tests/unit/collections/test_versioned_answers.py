@@ -30,7 +30,7 @@ _TABLE = "report_answers"
 
 def _replica(nats: FakeNatsClient, l1_backend: Any = None) -> VersionedAnswers:
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1_backend, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1_backend, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)
     return VersionedAnswers(registry, DefaultCoreConfig(), nats, table_name=_TABLE)
 
 
@@ -336,7 +336,7 @@ class TestRetiredKeysArePurged:
 
         nats = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)
         answers = VersionedAnswers(registry, DefaultCoreConfig(), nats, table_name=_TABLE, purger=purger)
         await answers.answer("v1", "a", _Computer("old"), order=1)
         await answers.answer("v2", "a", _Computer("new"), order=2)
@@ -354,7 +354,7 @@ class TestRetiredKeysArePurged:
 
         nats = FakeNatsClient()
         registry = CollectionRegistry()
-        registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+        registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)
         answers = VersionedAnswers(registry, DefaultCoreConfig(), nats, table_name=_TABLE, purger=unreachable)
         for order in (1, 2, 3):
             await answers.answer(f"v{order}", "a", _Computer("x"), order=order)
@@ -423,7 +423,7 @@ class TestRetiredKeysArePurged:
 
 def _with_purger(nats: FakeNatsClient, purger: Callable[[list[str]], Awaitable[int]]) -> VersionedAnswers:
     registry = CollectionRegistry()
-    registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=None, l2_client=nats, l3_pool=None, kv_key_scope=_SCOPE)
     return VersionedAnswers(registry, DefaultCoreConfig(), nats, table_name=_TABLE, purger=purger)
 
 

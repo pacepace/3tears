@@ -7,6 +7,9 @@ sibling test reaches into. No real browser is launched and no Camoufox binary is
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from typing import Any
+
 __all__ = [
     "FakeCamoufoxBrowser",
     "FakeCamoufoxLocator",
@@ -20,12 +23,18 @@ __all__ = [
 
 # parity-exempt: hand-rolled subset stub of Playwright's third-party Locator (only scroll_into_view_if_needed, the only surface CamoufoxDriver calls)
 class FakeCamoufoxLocator:
-    def __init__(self, selector: str, *, scroll_into_view_calls: list[dict], scroll_into_view_exc=None) -> None:
+    def __init__(
+        self,
+        selector: str,
+        *,
+        scroll_into_view_calls: list[dict[str, Any]],
+        scroll_into_view_exc: BaseException | None = None,
+    ) -> None:
         self._selector = selector
         self._scroll_into_view_calls = scroll_into_view_calls
         self._scroll_into_view_exc = scroll_into_view_exc
 
-    async def scroll_into_view_if_needed(self, *, timeout=None):
+    async def scroll_into_view_if_needed(self, *, timeout: float | None = None) -> None:
         self._scroll_into_view_calls.append({"selector": self._selector, "timeout": timeout})
         if self._scroll_into_view_exc is not None:
             raise self._scroll_into_view_exc
@@ -33,10 +42,10 @@ class FakeCamoufoxLocator:
 
 # parity-exempt: hand-rolled subset stub of Playwright's third-party Mouse (only wheel, the only surface CamoufoxDriver calls)
 class FakeCamoufoxMouse:
-    def __init__(self, *, wheel_calls: list[dict]) -> None:
+    def __init__(self, *, wheel_calls: list[dict[str, Any]]) -> None:
         self._wheel_calls = wheel_calls
 
-    async def wheel(self, delta_x, delta_y):
+    async def wheel(self, delta_x: float, delta_y: float) -> None:
         self._wheel_calls.append({"delta_x": delta_x, "delta_y": delta_y})
 
 
@@ -45,19 +54,19 @@ class FakeCamoufoxPage:
     def __init__(
         self,
         *,
-        goto_result=None,
-        goto_exc=None,
-        wait_for_exc=None,
-        click_exc=None,
-        fill_exc=None,
-        scroll_into_view_exc=None,
-        evaluate_returns=None,
-        evaluate_exc=None,
-        html="<html>ok</html>",
-        url=None,
-        network_responses=None,
-        viewport_size=None,
-    ):
+        goto_result: Any = None,
+        goto_exc: BaseException | None = None,
+        wait_for_exc: BaseException | None = None,
+        click_exc: BaseException | None = None,
+        fill_exc: BaseException | None = None,
+        scroll_into_view_exc: BaseException | None = None,
+        evaluate_returns: Sequence[Any] | None = None,
+        evaluate_exc: BaseException | None = None,
+        html: str = "<html>ok</html>",
+        url: str | None = None,
+        network_responses: Sequence[Any] | None = None,
+        viewport_size: dict[str, int] | None = None,
+    ) -> None:
         self._goto_result = goto_result
         self._goto_exc = goto_exc
         self._wait_for_exc = wait_for_exc
@@ -69,22 +78,22 @@ class FakeCamoufoxPage:
         self._html = html
         self.url = url or "https://example.gov/final"
         self.viewport_size = viewport_size or {"width": 1920, "height": 1080}
-        self.goto_calls: list[dict] = []
-        self.wait_for_calls: list[dict] = []
-        self.click_calls: list[dict] = []
-        self.fill_calls: list[dict] = []
+        self.goto_calls: list[dict[str, Any]] = []
+        self.wait_for_calls: list[dict[str, Any]] = []
+        self.click_calls: list[dict[str, Any]] = []
+        self.fill_calls: list[dict[str, Any]] = []
         self.wait_for_timeout_calls: list[int] = []
-        self.scroll_into_view_calls: list[dict] = []
-        self.wheel_calls: list[dict] = []
+        self.scroll_into_view_calls: list[dict[str, Any]] = []
+        self.wheel_calls: list[dict[str, Any]] = []
         self.evaluate_calls: list[str] = []
         self.mouse = FakeCamoufoxMouse(wheel_calls=self.wheel_calls)
         self.closed = False
         # Simulates the responses Playwright would have fired via page.on("response", ...)
         # during navigation -- goto() replays these into the registered handler.
-        self._network_responses = network_responses or []
-        self._response_handler = None
+        self._network_responses = list(network_responses or [])
+        self._response_handler: Callable[[Any], object] | None = None
 
-    async def goto(self, url, *, timeout=None, wait_until=None):
+    async def goto(self, url: str, *, timeout: float | None = None, wait_until: str | None = None) -> Any:
         self.goto_calls.append({"url": url, "timeout": timeout, "wait_until": wait_until})
         if self._goto_exc is not None:
             raise self._goto_exc
@@ -93,44 +102,44 @@ class FakeCamoufoxPage:
                 self._response_handler(resp)
         return self._goto_result
 
-    async def wait_for_selector(self, selector, *, timeout=None):
+    async def wait_for_selector(self, selector: str, *, timeout: float | None = None) -> None:
         self.wait_for_calls.append({"selector": selector, "timeout": timeout})
         if self._wait_for_exc is not None:
             raise self._wait_for_exc
 
-    async def click(self, selector, *, timeout=None):
+    async def click(self, selector: str, *, timeout: float | None = None) -> None:
         self.click_calls.append({"selector": selector, "timeout": timeout})
         if self._click_exc is not None:
             raise self._click_exc
 
-    async def fill(self, selector, value, *, timeout=None):
+    async def fill(self, selector: str, value: str, *, timeout: float | None = None) -> None:
         self.fill_calls.append({"selector": selector, "value": value, "timeout": timeout})
         if self._fill_exc is not None:
             raise self._fill_exc
 
-    async def wait_for_timeout(self, ms):
+    async def wait_for_timeout(self, ms: int) -> None:
         self.wait_for_timeout_calls.append(ms)
 
-    def locator(self, selector):
+    def locator(self, selector: str) -> FakeCamoufoxLocator:
         return FakeCamoufoxLocator(
             selector,
             scroll_into_view_calls=self.scroll_into_view_calls,
             scroll_into_view_exc=self._scroll_into_view_exc,
         )
 
-    async def evaluate(self, expression):
+    async def evaluate(self, expression: str) -> Any:
         self.evaluate_calls.append(expression)
         if self._evaluate_exc is not None:
             raise self._evaluate_exc
         return self._evaluate_returns.pop(0) if self._evaluate_returns else None
 
-    async def content(self):
+    async def content(self) -> str:
         return self._html
 
-    async def close(self):
+    async def close(self) -> None:
         self.closed = True
 
-    def on(self, event, handler):
+    def on(self, event: str, handler: Callable[[Any], object]) -> None:
         if event == "response":
             self._response_handler = handler
 
@@ -152,13 +161,13 @@ class FakeCamoufoxNetworkResponse:
         url: str,
         status: int = 200,
         resource_type: str = "xhr",
-        body: str = "{}",
+        body: str | bytes = "{}",
         content_type: str = "application/json",
         text_exc: Exception | None = None,
         headers_exc: Exception | None = None,
         method: str = "GET",
         post_data: str | None = None,
-    ):
+    ) -> None:
         self.url = url
         self.status = status
         self.request = FakeCamoufoxRequest(resource_type, method=method, post_data=post_data)
@@ -167,19 +176,19 @@ class FakeCamoufoxNetworkResponse:
         self._text_exc = text_exc
         self._headers_exc = headers_exc
 
-    async def text(self):
+    async def text(self) -> str:
         if self._text_exc is not None:
             raise self._text_exc
         if isinstance(self._body, bytes):
             return self._body.decode()  # mirrors Playwright: UTF-8 only, raises UnicodeDecodeError
         return self._body
 
-    async def body(self):
+    async def body(self) -> bytes:
         if isinstance(self._body, bytes):
             return self._body
         return self._body.encode()
 
-    async def all_headers(self):
+    async def all_headers(self) -> dict[str, str]:
         if self._headers_exc is not None:
             raise self._headers_exc
         return {"content-type": self._content_type}
@@ -197,7 +206,7 @@ class FakeCamoufoxBrowser:
         self._pages = page if isinstance(page, list) else [page]
         self.new_page_calls = 0
 
-    async def new_page(self):
+    async def new_page(self) -> FakeCamoufoxPage:
         # Repeats the last page if new_page() is called more times than pages
         # were supplied -- single-page callers never need to think about this.
         result = self._pages[min(self.new_page_calls, len(self._pages) - 1)]

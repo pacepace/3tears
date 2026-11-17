@@ -203,7 +203,7 @@ async def executor(db_container: str) -> AsyncIterator[AsyncpgPoolAdapter]:
         await conn.execute(f'SET search_path TO "{schema}"')
         runner = MigrationRunner()
         register_langgraph(runner)
-        await runner.apply_for_agent_schema(_MigrationStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(_MigrationStore(conn))
     finally:
         await conn.close()
     pool = await asyncpg.create_pool(db_container, min_size=1, max_size=2, server_settings={"search_path": schema})
@@ -309,7 +309,7 @@ async def test_an_older_refill_cannot_replace_a_newer_checkpoint(executor: Async
 
     interleaving.between = _a_newer_checkpoint_lands
     reader = ThreeTierCheckpointSaver(
-        interleaving,  # type: ignore[arg-type]
+        interleaving,
         l2_cache=NatsCheckpointL2Cache(nc),
         l2_bucket=_BUCKET,
         scope=_UNSCOPED,

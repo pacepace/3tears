@@ -11,7 +11,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from threetears.observe.tracing import set_span_attribute, traced
 
 
@@ -41,7 +40,7 @@ def _tracing_without_otel(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleTyp
 class TestOtelCheck:
     """OTel availability detection, observed through whether a traced call makes a span."""
 
-    def test_otel_available_when_installed(self):
+    def test_otel_available_when_installed(self) -> None:
         # OTel is a dev dependency, so a traced call goes to a tracer
         with patch("opentelemetry.trace.get_tracer") as get_tracer:
 
@@ -52,7 +51,7 @@ class TestOtelCheck:
             assert add(1, 2) == 3
         get_tracer.assert_called_once()
 
-    def test_otel_cached_after_first_check(self, monkeypatch: pytest.MonkeyPatch):
+    def test_otel_cached_after_first_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the first check decides for the process: OTel arriving later does not change it."""
         with _tracing_without_otel(monkeypatch) as tracing:
 
@@ -101,14 +100,14 @@ def _arg_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
 class TestParamNames:
     """Parameter names, as the keys recorded arguments are filed under."""
 
-    def test_get_param_names(self):
-        def foo(a, b, c=3):
+    def test_get_param_names(self) -> None:
+        def foo(a, b, c=3) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(foo, 1, 2, 3)) == {"arg.a": 1, "arg.b": 2, "arg.c": 3}
 
-    def test_get_param_names_empty(self):
-        def foo():
+    def test_get_param_names_empty(self) -> None:
+        def foo() -> None:
             pass
 
         assert _arg_attributes(_span_attributes(foo)) == {}
@@ -117,50 +116,50 @@ class TestParamNames:
 class TestSafeAttrs:
     """Span attribute safety filtering, observed on the span a traced call records into."""
 
-    def test_set_safe_attr_string(self):
-        def f(name):
+    def test_set_safe_attr_string(self) -> None:
+        def f(name) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, "hello")) == {"arg.name": "hello"}
 
-    def test_set_safe_attr_int(self):
-        def f(count):
+    def test_set_safe_attr_int(self) -> None:
+        def f(count) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, 42)) == {"arg.count": 42}
 
-    def test_set_safe_attr_uuid(self):
+    def test_set_safe_attr_uuid(self) -> None:
         from uuid import UUID
 
-        def f(id):
+        def f(id) -> None:
             pass
 
         uid = UUID("12345678-1234-5678-1234-567812345678")
         assert _arg_attributes(_span_attributes(f, uid)) == {"arg.id": str(uid)}
 
-    def test_set_safe_attr_sensitive_redacted(self):
-        def f(password):
+    def test_set_safe_attr_sensitive_redacted(self) -> None:
+        def f(password) -> None:
             pass
 
         assert _arg_attributes(_span_attributes(f, "secret123")) == {}
 
-    def test_set_safe_attr_long_string_truncated(self):
-        def f(data):
+    def test_set_safe_attr_long_string_truncated(self) -> None:
+        def f(data) -> None:
             pass
 
         recorded = _arg_attributes(_span_attributes(f, "x" * 300))
         assert len(recorded["arg.data"]) == 256
 
-    def test_record_safe_args_skips_self(self):
+    def test_record_safe_args_skips_self(self) -> None:
         class Foo:
-            def bar(self, name):
+            def bar(self, name) -> None:
                 pass
 
         recorded = _arg_attributes(_span_attributes(Foo.bar, Foo(), "hello"))
         assert "arg.self" not in recorded
         assert recorded == {"arg.name": "hello"}
 
-    def test_record_safe_result(self):
+    def test_record_safe_result(self) -> None:
         def f():
             return [1, 2, 3]
 
@@ -172,58 +171,58 @@ class TestSafeAttrs:
 class TestTracedDecorator:
     """@traced decorator behavior."""
 
-    def test_traced_bare_sync(self):
+    def test_traced_bare_sync(self) -> None:
         @traced
         def add(a, b):
             return a + b
 
         assert add(1, 2) == 3
 
-    def test_traced_parameterised_sync(self):
+    def test_traced_parameterised_sync(self) -> None:
         @traced(name="custom.span")
         def add(a, b):
             return a + b
 
         assert add(1, 2) == 3
 
-    async def test_traced_bare_async(self):
+    async def test_traced_bare_async(self) -> None:
         @traced
         async def add(a, b):
             return a + b
 
         assert await add(1, 2) == 3
 
-    async def test_traced_parameterised_async(self):
+    async def test_traced_parameterised_async(self) -> None:
         @traced(name="custom.async.span")
         async def add(a, b):
             return a + b
 
         assert await add(1, 2) == 3
 
-    def test_traced_preserves_function_name(self):
+    def test_traced_preserves_function_name(self) -> None:
         @traced
-        def my_function():
+        def my_function() -> None:
             pass
 
         assert my_function.__name__ == "my_function"
 
-    def test_traced_sync_exception_propagates(self):
+    def test_traced_sync_exception_propagates(self) -> None:
         @traced
-        def explode():
+        def explode() -> None:
             raise ValueError("boom")
 
         with pytest.raises(ValueError, match="boom"):
             explode()
 
-    async def test_traced_async_exception_propagates(self):
+    async def test_traced_async_exception_propagates(self) -> None:
         @traced
-        async def explode():
+        async def explode() -> None:
             raise ValueError("boom")
 
         with pytest.raises(ValueError, match="boom"):
             await explode()
 
-    def test_traced_passthrough_without_otel(self, monkeypatch: pytest.MonkeyPatch):
+    def test_traced_passthrough_without_otel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with _tracing_without_otel(monkeypatch) as tracing:
 
             @tracing.traced(record_args=True, record_result=True)
@@ -232,7 +231,7 @@ class TestTracedDecorator:
 
             assert add(1, 2) == 3
 
-    async def test_traced_async_passthrough_without_otel(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_traced_async_passthrough_without_otel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with _tracing_without_otel(monkeypatch) as tracing:
 
             @tracing.traced(record_args=True)
@@ -245,11 +244,11 @@ class TestTracedDecorator:
 class TestSetSpanAttribute:
     """set_span_attribute() -- attach attributes to the current active span."""
 
-    def test_noop_without_otel(self, monkeypatch: pytest.MonkeyPatch):
+    def test_noop_without_otel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with _tracing_without_otel(monkeypatch) as tracing:
             tracing.set_span_attribute("key", "value")  # must not raise
 
-    def test_noop_without_recording_span(self):
+    def test_noop_without_recording_span(self) -> None:
         with patch("opentelemetry.trace.get_current_span") as mock_get_span:
             mock_span = MagicMock()
             mock_span.is_recording.return_value = False
@@ -259,7 +258,7 @@ class TestSetSpanAttribute:
 
             mock_span.set_attribute.assert_not_called()
 
-    def test_sets_attribute_on_recording_span(self):
+    def test_sets_attribute_on_recording_span(self) -> None:
         with patch("opentelemetry.trace.get_current_span") as mock_get_span:
             mock_span = MagicMock()
             mock_span.is_recording.return_value = True
@@ -269,7 +268,7 @@ class TestSetSpanAttribute:
 
             mock_span.set_attribute.assert_called_once_with("survey.completion_rate", 0.75)
 
-    def test_sensitive_key_redacted(self):
+    def test_sensitive_key_redacted(self) -> None:
         with patch("opentelemetry.trace.get_current_span") as mock_get_span:
             mock_span = MagicMock()
             mock_span.is_recording.return_value = True
@@ -279,7 +278,7 @@ class TestSetSpanAttribute:
 
             mock_span.set_attribute.assert_not_called()
 
-    def test_uuid_value_converted_to_str(self):
+    def test_uuid_value_converted_to_str(self) -> None:
         from uuid import UUID
 
         with patch("opentelemetry.trace.get_current_span") as mock_get_span:
@@ -292,7 +291,7 @@ class TestSetSpanAttribute:
 
             mock_span.set_attribute.assert_called_once_with("survey.survey_id", str(uid))
 
-    def test_works_inside_traced_function(self):
+    def test_works_inside_traced_function(self) -> None:
         """integration: set_span_attribute reaches the span @traced opened, end to end."""
 
         @traced

@@ -26,22 +26,19 @@ from typing import Annotated, Any, Literal
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
-
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel.host import (
     SHARED_CORE,
-    SweepableRegistry,
     HostProfile,
     Interval,
     KindContract,
     KindContractError,
     MeasureRegistry,
     Ordinal,
+    SweepableRegistry,
     freeze,
 )
-from threetears.evals.schema import IntervalScale, NominalScale
 from threetears.evals.kernel.host.profile import ProfileRegistrationError
-from threetears.evals.schema.values import OrdinalScale
 from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.run import (
     LaunchGroup,
@@ -51,15 +48,18 @@ from threetears.evals.run import (
     start_run,
     update_template,
 )
+from threetears.evals.schema import IntervalScale, NominalScale
+from threetears.evals.schema.values import OrdinalScale
+from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.factories import make_eval_run
+from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT, ExtractorOverlays, ExtractorSpec
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
+from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
-from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT, ExtractorOverlays, ExtractorSpec
-from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template
-from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop
 
 
@@ -110,7 +110,7 @@ class _MapKeyedByNumber(BaseModel):
     ],
     ids=["no-description", "no-title", "alias", "ordinal-without-order", "interval-over-text", "map-keyed-by-number"],
 )
-def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_name(model, said):
+def test_a_field_the_engine_cannot_read_as_a_lever_is_refused_at_declaration_by_name(model, said) -> None:
     with pytest.raises(KindContractError) as refused:
         KindContract("probe", overlays=model)
 
@@ -127,7 +127,7 @@ class _DefaultItsFieldRefuses(BaseModel):
     knob: int = Field(-1, ge=0, title="knob", description="a knob whose default its own constraint refuses")
 
 
-def test_an_overlay_model_with_a_required_field_has_no_default_to_compare_against():
+def test_an_overlay_model_with_a_required_field_has_no_default_to_compare_against() -> None:
     contract = KindContract("probe", overlays=_RequiredKnob)
 
     run = make_eval_run(candidate_kind="probe", overlays={"knob": 3})
@@ -135,7 +135,7 @@ def test_an_overlay_model_with_a_required_field_has_no_default_to_compare_agains
     assert declared.departs_production is not None and declared.departs_production(run, []) is None
 
 
-def test_an_overlay_model_refusing_its_own_defaults_is_refused_at_declaration():
+def test_an_overlay_model_refusing_its_own_defaults_is_refused_at_declaration() -> None:
     """It read as a model with a required field: every run's departure from production went unchecked, unsaid."""
     with pytest.raises(KindContractError, match="refuses its own defaults") as refused:
         KindContract("probe", overlays=_DefaultItsFieldRefuses)
@@ -169,7 +169,7 @@ class _NestedExclusion(BaseModel):
     ids=["excluded", "excluded-conditionally", "excluded-inside-a-nested-model"],
 )
 @pytest.mark.parametrize("as_spec", [False, True], ids=["overlay", "spec"])
-def test_a_field_the_record_would_drop_is_refused_at_declaration_by_name(model, path, as_spec):
+def test_a_field_the_record_would_drop_is_refused_at_declaration_by_name(model, path, as_spec) -> None:
     """A field serialization leaves out is one the frozen record cannot see, so it would merge runs.
 
     The launcher acts on the validated model, which still holds the field; the run records the model's
@@ -182,7 +182,7 @@ def test_a_field_the_record_would_drop_is_refused_at_declaration_by_name(model, 
     assert path in str(refused.value) and "left out of the frozen record" in str(refused.value)
 
 
-def test_a_set_freezes_in_one_order_whatever_order_it_was_built_in():
+def test_a_set_freezes_in_one_order_whatever_order_it_was_built_in() -> None:
     """A set has no order, so its record must not have one: one configuration is one key in every process.
 
     Built from two orders whose sets iterate differently (8 and 0 share a hash slot, so insertion
@@ -204,14 +204,14 @@ def test_a_set_freezes_in_one_order_whatever_order_it_was_built_in():
     assert one == other == {"open_tables": [0, 8], "rules_by_table": {"a": [0, 8]}}
 
 
-def test_a_blank_kind_or_prefix_is_refused():
+def test_a_blank_kind_or_prefix_is_refused() -> None:
     with pytest.raises(KindContractError, match="needs the kind's name"):
         KindContract(" ", overlays=ExtractorOverlays)
     with pytest.raises(KindContractError, match="lever prefix"):
         KindContract(TOY_EXTRACTOR_KIND, overlays=ExtractorOverlays, prefix="")
 
 
-def test_every_field_is_a_lever_under_the_prefix_and_a_map_adds_its_family():
+def test_every_field_is_a_lever_under_the_prefix_and_a_map_adds_its_family() -> None:
     assert TOY_EXTRACTOR_CONTRACT.lever_names == (
         "extractor.prompt_style",
         "extractor.page_limit",
@@ -227,7 +227,7 @@ def test_every_field_is_a_lever_under_the_prefix_and_a_map_adds_its_family():
 # --- validation at launch -----------------------------------------------------------------------------
 
 
-def test_an_overlay_the_model_refuses_is_refused_naming_each_field():
+def test_an_overlay_the_model_refuses_is_refused_naming_each_field() -> None:
     with pytest.raises(ValidationFailedError) as refused:
         TOY_EXTRACTOR_CONTRACT.validate_overlays({"prompt_style": "shouty", "page_limit": 0})
 
@@ -235,14 +235,14 @@ def test_an_overlay_the_model_refuses_is_refused_naming_each_field():
     assert [error["loc"] for error in refused.value.details["errors"]] == [("prompt_style",), ("page_limit",)]
 
 
-def test_an_overlay_the_model_does_not_have_is_refused_naming_it_and_the_ones_it_has():
+def test_an_overlay_the_model_does_not_have_is_refused_naming_it_and_the_ones_it_has() -> None:
     with pytest.raises(
         ValidationFailedError, match=r"has no overlay page_limt; supply only its overlays: field_aliases"
     ):
         TOY_EXTRACTOR_CONTRACT.validate_overlays({"page_limt": 3})
 
 
-def test_a_kind_with_no_overlay_model_refuses_any_overlay_and_admits_none():
+def test_a_kind_with_no_overlay_model_refuses_any_overlay_and_admits_none() -> None:
     bare = KindContract("bare")
 
     with pytest.raises(ValidationFailedError, match="declares no overlays, so a launch cannot turn knob"):
@@ -251,7 +251,7 @@ def test_a_kind_with_no_overlay_model_refuses_any_overlay_and_admits_none():
     assert bare.lever_names == ()
 
 
-def test_the_validated_model_freezes_whole_so_naming_a_default_and_naming_nothing_record_alike():
+def test_the_validated_model_freezes_whole_so_naming_a_default_and_naming_nothing_record_alike() -> None:
     named = freeze(TOY_EXTRACTOR_CONTRACT.validate_overlays({"prompt_style": "standard"}))
     silent = freeze(TOY_EXTRACTOR_CONTRACT.validate_overlays(None))
 
@@ -261,7 +261,7 @@ def test_the_validated_model_freezes_whole_so_naming_a_default_and_naming_nothin
 # --- levers and levels --------------------------------------------------------------------------------
 
 
-def test_each_field_sits_on_the_axis_its_declaration_implies():
+def test_each_field_sits_on_the_axis_its_declaration_implies() -> None:
     levels = TOY_EXTRACTOR_CONTRACT.levels(
         _run_of_the_kind(prompt_style="verbose", page_limit=3, instructions="read the footer first")
     )
@@ -276,7 +276,7 @@ def test_each_field_sits_on_the_axis_its_declaration_implies():
     )
 
 
-def test_an_enum_marked_ordinal_ranks_in_declaration_order_and_an_unmarked_one_is_nominal():
+def test_an_enum_marked_ordinal_ranks_in_declaration_order_and_an_unmarked_one_is_nominal() -> None:
     class Tier(Enum):
         LOW = "low"
         HIGH = "high"
@@ -297,7 +297,7 @@ def test_an_enum_marked_ordinal_ranks_in_declaration_order_and_an_unmarked_one_i
     assert levels["tiers.unranked"].scale == NominalScale()
 
 
-def test_a_long_text_level_is_joined_by_content_and_shown_cut():
+def test_a_long_text_level_is_joined_by_content_and_shown_cut() -> None:
     first = TOY_EXTRACTOR_CONTRACT.levels(_run_of_the_kind(instructions="x" * 200 + "a"))["extractor.instructions"]
     second = TOY_EXTRACTOR_CONTRACT.levels(_run_of_the_kind(instructions="x" * 200 + "b"))["extractor.instructions"]
 
@@ -305,7 +305,7 @@ def test_a_long_text_level_is_joined_by_content_and_shown_cut():
     assert first.content_hash != second.content_hash, "two texts are two levels however alike they render"
 
 
-def test_a_run_of_another_kind_sits_at_one_shared_level_and_reads_as_no_value():
+def test_a_run_of_another_kind_sits_at_one_shared_level_and_reads_as_no_value() -> None:
     elsewhere = make_eval_run(candidate_kind="another-kind")
     levels = TOY_EXTRACTOR_CONTRACT.levels(elsewhere)
 
@@ -313,7 +313,7 @@ def test_a_run_of_another_kind_sits_at_one_shared_level_and_reads_as_no_value():
     assert toyhost_profile().sweepables.read_all(elsewhere)["extractor.prompt_style"] is None
 
 
-def test_the_registry_reads_each_field_and_each_entry_of_the_map_as_its_own_lever():
+def test_the_registry_reads_each_field_and_each_entry_of_the_map_as_its_own_lever() -> None:
     run = _run_of_the_kind(prompt_style="terse", field_aliases={"vendor_name": "supplier", "total_amount": "sum"})
 
     resolved = toyhost_profile().sweepables.resolve_levers(run)
@@ -326,7 +326,7 @@ def test_the_registry_reads_each_field_and_each_entry_of_the_map_as_its_own_leve
     ) == {"total_amount": "sum"}
 
 
-def test_a_campaign_may_name_an_entry_of_the_map_as_its_axis_and_never_the_family_itself():
+def test_a_campaign_may_name_an_entry_of_the_map_as_its_axis_and_never_the_family_itself() -> None:
     sweepables = toyhost_profile().sweepables
 
     assert sweepables.refuse_as_axis("extractor.field_aliases.vendor_name") is None
@@ -341,7 +341,7 @@ def _variant_key(run) -> str:
     return derive_variant_identity(run=run, profile=toyhost_profile()).variant_key
 
 
-def test_the_variant_key_is_computed_over_what_ran_not_over_what_the_launch_named():
+def test_the_variant_key_is_computed_over_what_ran_not_over_what_the_launch_named() -> None:
     assert _variant_key(_run_of_the_kind(page_limit=10)) == _variant_key(_run_of_the_kind()), (
         "a launch restating a default ran the same knob at the same level"
     )
@@ -354,7 +354,7 @@ def test_the_variant_key_is_computed_over_what_ran_not_over_what_the_launch_name
 # --- the profile ---------------------------------------------------------------------------------------
 
 
-def test_a_profile_registers_its_kinds_levers_itself_and_refuses_a_second_contract_for_a_kind():
+def test_a_profile_registers_its_kinds_levers_itself_and_refuses_a_second_contract_for_a_kind() -> None:
     """Named once, on ``kinds``: every lens reads the contract's levers off the profile's registry."""
     # Seats dropped: they name the toy host's own apparatus, which this bare shared-core host does not declare.
     contract = replace(TOY_EXTRACTOR_CONTRACT, seats=None)
@@ -375,7 +375,7 @@ def test_a_profile_registers_its_kinds_levers_itself_and_refuses_a_second_contra
         replace(profile, kinds=(contract, contract))
 
 
-def test_a_profile_refuses_a_kinds_lever_the_host_registered_by_hand():
+def test_a_profile_refuses_a_kinds_lever_the_host_registered_by_hand() -> None:
     """A second registration is a second place to name the kind — refused, naming the levers."""
     with pytest.raises(ProfileRegistrationError) as refused:
         HostProfile(
@@ -399,7 +399,7 @@ class _Table(BaseModel):
     [("gm", "gm"), ("gm", "gm.house_rules"), ("gm.house_rules", "gm")],
     ids=["equal", "second-inside-first", "first-inside-second"],
 )
-def test_a_profile_refuses_two_contracts_whose_lever_prefixes_overlap(first, second):
+def test_a_profile_refuses_two_contracts_whose_lever_prefixes_overlap(first, second) -> None:
     """Overlapping prefixes can name one lever twice, and the later kind's level would overwrite the earlier's.
 
     ``gm`` and ``gm.house_rules`` overlap even with different fields: the first kind's open family
@@ -417,7 +417,7 @@ def test_a_profile_refuses_two_contracts_whose_lever_prefixes_overlap(first, sec
         )
 
 
-def test_two_contracts_whose_prefixes_only_share_letters_are_admitted():
+def test_two_contracts_whose_prefixes_only_share_letters_are_admitted() -> None:
     """The acceptance case on the same fixture: ``gm`` and ``gmx`` cannot name one lever."""
     profile = HostProfile(
         host_id="apart",
@@ -429,7 +429,7 @@ def test_two_contracts_whose_prefixes_only_share_letters_are_admitted():
     assert {"gm.house_rules", "gmx.house_rules"} <= set(profile.sweepables.names)
 
 
-def test_a_profile_refuses_a_registry_without_the_levers_the_engine_resolves():
+def test_a_profile_refuses_a_registry_without_the_levers_the_engine_resolves() -> None:
     with pytest.raises(ProfileRegistrationError, match="model, candidate_kind"):
         HostProfile(host_id="coreless", host_sweepables=SweepableRegistry(()), measures=MeasureRegistry(()))
 
@@ -447,7 +447,7 @@ def _two_kind_host() -> HostProfile:
     )
 
 
-def test_runs_of_two_kinds_at_one_model_with_no_overlays_are_two_variants():
+def test_runs_of_two_kinds_at_one_model_with_no_overlays_are_two_variants() -> None:
     """A router and a game master on one model are two contestants, so their observations never pool.
 
     The variant key is what cells group on, and a campaign may hold runs of any template — so a key
@@ -466,7 +466,7 @@ def test_runs_of_two_kinds_at_one_model_with_no_overlays_are_two_variants():
     )
 
 
-def test_a_run_of_another_kind_never_shares_a_level_with_a_none_overlay():
+def test_a_run_of_another_kind_never_shares_a_level_with_a_none_overlay() -> None:
     """The "not a run of this kind" level hashes apart from every value, ``None`` included.
 
     Rendered differently and hashed alike, a pivot over the lever joined a run of another kind with
@@ -509,7 +509,7 @@ async def _launch(host: LaunchHost, **overlays: Any):
     return runs
 
 
-async def test_a_launch_records_the_validated_overlays_and_stamps_them_into_the_variant():
+async def test_a_launch_records_the_validated_overlays_and_stamps_them_into_the_variant() -> None:
     host, storage = off_loop(_launching)
 
     (run,) = await _launch(host, prompt_style="verbose", field_aliases={"vendor_name": "supplier"})
@@ -526,7 +526,7 @@ async def test_a_launch_records_the_validated_overlays_and_stamps_them_into_the_
     assert levers["extractor.prompt_style"].display == "verbose"
 
 
-async def test_a_refused_overlay_creates_no_run_and_gives_its_admission_back():
+async def test_a_refused_overlay_creates_no_run_and_gives_its_admission_back() -> None:
     """Refused at the dispatch, before any arm is prepared — and the launch that follows is admitted.
 
     The ceiling admits one run: if the refused launch had kept its reservation, or left a run behind
@@ -543,7 +543,7 @@ async def test_a_refused_overlay_creates_no_run_and_gives_its_admission_back():
     assert run.overlays["page_limit"] == 2
 
 
-async def test_a_kind_whose_contract_declares_no_overlays_refuses_any_overlay_at_launch():
+async def test_a_kind_whose_contract_declares_no_overlays_refuses_any_overlay_at_launch() -> None:
     host, storage = off_loop(_launching)
     spec_only = KindContract(TOY_EXTRACTOR_KIND, spec=ExtractorSpec)
     uncontracted = replace(
@@ -558,7 +558,7 @@ async def test_a_kind_whose_contract_declares_no_overlays_refuses_any_overlay_at
     assert run.overlays == {}, "a kind with no overlay model records none"
 
 
-def test_a_launcher_reads_the_overlays_as_its_kinds_own_model():
+def test_a_launcher_reads_the_overlays_as_its_kinds_own_model() -> None:
     """``overlays_as`` hands back the typed model, and refuses a model the kind does not declare."""
     validated = TOY_EXTRACTOR_CONTRACT.validate_overlays({"page_limit": 4})
     request = LaunchRequest(
@@ -598,7 +598,7 @@ def test_a_launcher_reads_the_overlays_as_its_kinds_own_model():
         request.kind_spec_as(ExtractorSpec)
 
 
-def test_a_literal_level_outside_its_declaration_cannot_be_ranked():
+def test_a_literal_level_outside_its_declaration_cannot_be_ranked() -> None:
     """A frozen value the model's ``Literal`` does not list reads nominal rather than being given a rank."""
 
     class Ladder(BaseModel):
@@ -617,7 +617,7 @@ class _AliasedSpec(BaseModel):
     labels: list[str] = Field(alias="classes")
 
 
-def test_a_spec_field_with_an_alias_is_refused_at_declaration_by_name():
+def test_a_spec_field_with_an_alias_is_refused_at_declaration_by_name() -> None:
     with pytest.raises(KindContractError, match=r"router\.labels: declares an alias"):
         KindContract("router", spec=_AliasedSpec)
 
@@ -634,14 +634,14 @@ def test_a_spec_field_with_an_alias_is_refused_at_declaration_by_name():
     ],
     ids=["empty", "a-field-the-spec-does-not-grade", "a-name-the-spec-does-not-have"],
 )
-def test_a_spec_the_kinds_model_refuses_is_refused_naming_the_field(kind_spec, named):
+def test_a_spec_the_kinds_model_refuses_is_refused_naming_the_field(kind_spec, named) -> None:
     with pytest.raises(ValidationFailedError) as refused:
         TOY_EXTRACTOR_CONTRACT.validate_spec(kind_spec)
 
     assert named in str(refused.value)
 
 
-def test_a_kind_with_no_spec_model_refuses_any_spec_and_admits_none():
+def test_a_kind_with_no_spec_model_refuses_any_spec_and_admits_none() -> None:
     with pytest.raises(ValidationFailedError, match="declares no kind_spec fields, so a template cannot state labels"):
         KindContract("bare").validate_spec({"labels": ["a"]})
     assert KindContract("bare").validate_spec({}) is None
@@ -656,7 +656,7 @@ def _definition(**kind_spec: Any) -> dict[str, Any]:
     }
 
 
-def test_authoring_refuses_a_spec_the_kinds_model_refuses_naming_the_template_and_the_field():
+def test_authoring_refuses_a_spec_the_kinds_model_refuses_naming_the_template_and_the_field() -> None:
     host = toyhost_host()
 
     with pytest.raises(ValidationFailedError) as refused:
@@ -666,7 +666,7 @@ def test_authoring_refuses_a_spec_the_kinds_model_refuses_naming_the_template_an
     assert host.storage.query_templates(TOYHOST_SCOPE) == [], "a refused template is not stored"
 
 
-def test_authoring_stores_the_spec_the_model_resolved_and_an_omitted_spec_resolves_to_the_defaults():
+def test_authoring_stores_the_spec_the_model_resolved_and_an_omitted_spec_resolves_to_the_defaults() -> None:
     host = toyhost_host()
 
     stated = create_template(host, _definition(graded_fields=["total_amount"]), scope_id=TOYHOST_SCOPE)
@@ -676,7 +676,7 @@ def test_authoring_stores_the_spec_the_model_resolved_and_an_omitted_spec_resolv
     assert silent.kind_spec == {"graded_fields": list(ExtractorSpec().graded_fields)}
 
 
-def test_an_update_writing_the_spec_is_refused_and_one_writing_another_field_is_not():
+def test_an_update_writing_the_spec_is_refused_and_one_writing_another_field_is_not() -> None:
     """Scoped to the writes that touch the spec, like every authoring guard over stored state."""
     host = toyhost_host()
     template = create_template(host, _definition(), scope_id=TOYHOST_SCOPE)
@@ -691,7 +691,7 @@ def test_an_update_writing_the_spec_is_refused_and_one_writing_another_field_is_
     assert repaired.kind_spec == {"graded_fields": ["vendor_name"]}
 
 
-async def test_a_launch_freezes_the_spec_onto_its_runs_and_the_kind_grades_what_it_states():
+async def test_a_launch_freezes_the_spec_onto_its_runs_and_the_kind_grades_what_it_states() -> None:
     host, storage = off_loop(_launching)
     off_loop(
         storage.save_template,
@@ -708,7 +708,7 @@ async def test_a_launch_freezes_the_spec_onto_its_runs_and_the_kind_grades_what_
     )
 
 
-async def test_a_launch_refuses_a_stored_spec_the_kinds_model_now_refuses_and_creates_no_run():
+async def test_a_launch_refuses_a_stored_spec_the_kinds_model_now_refuses_and_creates_no_run() -> None:
     host, storage = off_loop(_launching)
     off_loop(
         storage.save_template, toyhost_template().model_copy(update={"kind_spec": {"graded_fields": ["tip_amount"]}})
@@ -721,7 +721,7 @@ async def test_a_launch_refuses_a_stored_spec_the_kinds_model_now_refuses_and_cr
     assert off_loop(storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
-def test_the_frozen_spec_is_part_of_the_runs_measurement_context():
+def test_the_frozen_spec_is_part_of_the_runs_measurement_context() -> None:
     """Two runs alike but for what their templates stated are two conditions; the same spec is one."""
     profile = toyhost_profile()
 

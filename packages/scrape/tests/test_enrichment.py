@@ -59,7 +59,7 @@ def _errors(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 
 class TestRunEnrichment:
-    async def test_success_returns_notes(self):
+    async def test_success_returns_notes(self) -> None:
         parsed = {"notes": {"context": "closure tied to Q3 restructuring"}}
         fake_model, ainvoke_mock = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
@@ -67,7 +67,7 @@ class TestRunEnrichment:
         assert notes == {"context": "closure tied to Q3 restructuring"}
         assert ainvoke_mock.await_count == 1
 
-    async def test_retries_before_succeeding(self):
+    async def test_retries_before_succeeding(self) -> None:
         parsed = {"notes": {"note": "ok"}}
         fake_model, ainvoke_mock = fake_structured_model(side_effect=[RuntimeError("transient"), parsed])
         with (
@@ -78,7 +78,7 @@ class TestRunEnrichment:
         assert ainvoke_mock.await_count == 2
         assert notes == {"note": "ok"}
 
-    async def test_total_failure_raises_with_the_reason_never_returns_empty_notes(self):
+    async def test_total_failure_raises_with_the_reason_never_returns_empty_notes(self) -> None:
         boom = RuntimeError("boom")
         fake_model, ainvoke_mock = fake_structured_model(side_effect=boom)
         with (
@@ -92,7 +92,7 @@ class TestRunEnrichment:
         assert exc_info.value.reason == "RuntimeError: boom"
         assert exc_info.value.__cause__ is boom
 
-    async def test_total_failure_is_logged_once_with_its_cause(self, caplog: pytest.LogCaptureFixture):
+    async def test_total_failure_is_logged_once_with_its_cause(self, caplog: pytest.LogCaptureFixture) -> None:
         fake_model, _ = fake_structured_model(side_effect=RuntimeError("provider down"))
         with (
             caplog.at_level(logging.WARNING),
@@ -109,7 +109,7 @@ class TestRunEnrichment:
         assert "scrape enrichment" in errors[0].getMessage()
         assert "RuntimeError: provider down" in errors[0].getMessage()
 
-    async def test_cancellation_propagates_and_is_not_retried(self):
+    async def test_cancellation_propagates_and_is_not_retried(self) -> None:
         fake_model, ainvoke_mock = fake_structured_model(side_effect=asyncio.CancelledError())
         with (
             patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model),
@@ -119,7 +119,7 @@ class TestRunEnrichment:
             await run_enrichment(_PAGE_HTML, _STRUCTURED_FIELDS, api_key="k")
         assert ainvoke_mock.await_count == 1
 
-    async def test_genuinely_nothing_noteworthy_returns_empty_dict(self):
+    async def test_genuinely_nothing_noteworthy_returns_empty_dict(self) -> None:
         parsed = {"notes": {}}
         fake_model, _ = fake_structured_model(parsed)
         with patch("threetears.scrape.llm_retry.create_chat_model", return_value=fake_model):
@@ -128,14 +128,14 @@ class TestRunEnrichment:
 
 
 class TestEnrichExtraction:
-    async def test_a_row_never_enriched_says_so(self):
+    async def test_a_row_never_enriched_says_so(self) -> None:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
         assert original.enrichment_notes is None
         assert original.enrichment_status is None
         assert original.enrichment_failure is None
 
-    async def test_enrichment_notes_stored_separately_from_structured_fields(self):
+    async def test_enrichment_notes_stored_separately_from_structured_fields(self) -> None:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
@@ -165,7 +165,7 @@ class TestEnrichExtraction:
         assert refetched.enrichment_notes == {"context": "closure tied to Q3 restructuring"}
         assert refetched.structured_fields == _STRUCTURED_FIELDS
 
-    async def test_nothing_to_add_is_recorded_as_enriched_with_empty_notes(self):
+    async def test_nothing_to_add_is_recorded_as_enriched_with_empty_notes(self) -> None:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
@@ -179,7 +179,7 @@ class TestEnrichExtraction:
         assert enriched.enrichment_notes == {}
         assert enriched.enrichment_failure is None
 
-    async def test_total_failure_is_recorded_as_failed_with_the_reason_never_as_empty_notes(self):
+    async def test_total_failure_is_recorded_as_failed_with_the_reason_never_as_empty_notes(self) -> None:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
@@ -207,7 +207,7 @@ class TestEnrichExtraction:
         assert refetched.enrichment_failure == "RuntimeError: boom"
         assert refetched.enrichment_notes is None
 
-    async def test_a_failed_row_can_be_enriched_again(self):
+    async def test_a_failed_row_can_be_enriched_again(self) -> None:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
@@ -232,7 +232,7 @@ class TestEnrichExtraction:
         assert retried.enrichment_failure is None
         assert retried.enrichment_notes == {"context": "second try"}
 
-    async def test_cancellation_propagates_and_persists_nothing(self):
+    async def test_cancellation_propagates_and_persists_nothing(self) -> None:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         original = await _persisted_extraction(extraction_collection)
 
@@ -250,10 +250,10 @@ class TestEnrichExtraction:
 
 
 class TestEnrichmentStatusField:
-    def test_the_vocabulary_is_exactly_enriched_and_failed(self):
+    def test_the_vocabulary_is_exactly_enriched_and_failed(self) -> None:
         assert ENRICHMENT_STATUSES == frozenset({"enriched", "failed"})
 
-    def test_an_unknown_stored_status_is_refused_rather_than_read_as_either(self):
+    def test_an_unknown_stored_status_is_refused_rather_than_read_as_either(self) -> None:
         extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         row = extraction_collection.create(
             {"target_id": "warn_act_ca", "source_url": "https://edd.ca.gov/warn", "enrichment_status": "partial"}
@@ -287,35 +287,35 @@ class TestARowWrittenBeforeTheStatusExisted:
         assert stored is not None
         return stored
 
-    async def test_empty_notes_with_no_status_read_as_failed_with_the_legacy_reason(self):
+    async def test_empty_notes_with_no_status_read_as_failed_with_the_legacy_reason(self) -> None:
         stored = await self._read_back({})
         assert stored.enrichment_status == "failed"
         assert stored.enrichment_notes is None
         assert stored.enrichment_failure == LEGACY_EMPTY_ENRICHMENT_FAILURE
 
-    async def test_empty_notes_as_json_text_read_as_failed(self):
+    async def test_empty_notes_as_json_text_read_as_failed(self) -> None:
         stored = await self._read_back("{}")
         assert stored.enrichment_status == "failed"
         assert stored.enrichment_failure == LEGACY_EMPTY_ENRICHMENT_FAILURE
 
-    async def test_empty_notes_double_encoded_read_as_failed(self):
+    async def test_empty_notes_double_encoded_read_as_failed(self) -> None:
         stored = await self._read_back('"{}"')
         assert stored.enrichment_status == "failed"
         assert stored.enrichment_failure == LEGACY_EMPTY_ENRICHMENT_FAILURE
 
-    async def test_notes_with_content_and_no_status_read_as_enriched(self):
+    async def test_notes_with_content_and_no_status_read_as_enriched(self) -> None:
         stored = await self._read_back({"context": "q3"})
         assert stored.enrichment_status == "enriched"
         assert stored.enrichment_notes == {"context": "q3"}
         assert stored.enrichment_failure is None
 
-    async def test_no_notes_and_no_status_still_reads_as_never_ran(self):
+    async def test_no_notes_and_no_status_still_reads_as_never_ran(self) -> None:
         stored = await self._read_back(None)
         assert stored.enrichment_status is None
         assert stored.enrichment_notes is None
         assert stored.enrichment_failure is None
 
-    def test_a_row_that_has_a_status_is_never_translated(self):
+    def test_a_row_that_has_a_status_is_never_translated(self) -> None:
         collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         row = collection.create({"target_id": "warn_act_ca", "enrichment_notes": {}, "enrichment_status": "enriched"})
         assert row.enrichment_status == "enriched"

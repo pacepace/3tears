@@ -300,7 +300,7 @@ class TestBuildFtsQuery:
 
     async def _fts_text(self, authorizer: MemoryAuthorizerDependencies, text: str, **kwargs: int) -> str | None:
         pool = _HybridPool([_vector_row(created=datetime.now(timezone.utc))])
-        await _hybrid(authorizer, pool, user_text=text, **kwargs)  # type: ignore[arg-type]
+        await _hybrid(authorizer, pool, user_text=text, **kwargs)
         assert len(pool.fts_params) <= 1
         # the rank's query text, bound last before the limit (the keyword match binds the same text among the guards)
         return pool.fts_params[0][-2] if pool.fts_params else None

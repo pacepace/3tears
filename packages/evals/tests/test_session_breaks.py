@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
+from threetears.evals.schema.models import ConversationSpec
 
 from packages.evals.tests.scripted_table import DONE, ScriptedTable, actor
-from threetears.evals.schema.models import ConversationSpec
-from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
 
 
 def _driver(*, max_turns: int, sessions: int, actor_ids: tuple[str, ...] = ("a",)) -> TurnDriver:
@@ -33,7 +33,7 @@ async def _rounds(driver: TurnDriver, table: ScriptedTable) -> list[SimulatorTur
     [(6, 3, [2, 4]), (5, 2, [2]), (4, 4, [1, 2, 3]), (6, 1, [])],
     ids=["even", "uneven", "one-turn-sessions", "one-session"],
 )
-async def test_the_breaks_fall_where_sessions_places_them(max_turns, sessions, breaks_before_round):
+async def test_the_breaks_fall_where_sessions_places_them(max_turns, sessions, breaks_before_round) -> None:
     driver = _driver(max_turns=max_turns, sessions=sessions)
     table = ScriptedTable(lines={"a": [f"line {index}" for index in range(max_turns)]})
 
@@ -47,7 +47,7 @@ async def test_the_breaks_fall_where_sessions_places_them(max_turns, sessions, b
     ]
 
 
-async def test_a_break_rides_the_first_delivered_turn_not_a_departure():
+async def test_a_break_rides_the_first_delivered_turn_not_a_departure() -> None:
     """An actor leaving right after a boundary says nothing to the candidate, so the break waits for one who speaks."""
     driver = _driver(max_turns=4, sessions=2, actor_ids=("a", "b"))
     table = ScriptedTable(lines={"a": ["a1", DONE], "b": ["b1", "b2", "b3"]})
@@ -65,7 +65,7 @@ async def test_a_break_rides_the_first_delivered_turn_not_a_departure():
     assert driver.departed == {"a"}
 
 
-async def test_the_simulator_transcript_spans_the_break():
+async def test_the_simulator_transcript_spans_the_break() -> None:
     """Only the candidate's history is the kind's to clear; the actors stay coherent across the break."""
     driver = _driver(max_turns=2, sessions=2)
     table = ScriptedTable(lines={"a": ["pre-break turn", "post-break turn"]})
@@ -81,11 +81,11 @@ async def test_the_simulator_transcript_spans_the_break():
     assert [turn.session_break for turn in turns] == [False, True]
 
 
-def test_nothing_outside_the_driver_can_mark_a_break():
+def test_nothing_outside_the_driver_can_mark_a_break() -> None:
     """The breaks a run holds are the ones its template declared: there is no public way to add one."""
     assert not hasattr(TurnDriver, "mark_session_break")
 
 
-def test_more_sessions_than_turns_is_refused():
+def test_more_sessions_than_turns_is_refused() -> None:
     with pytest.raises(ValueError, match="sessions=3 exceeds max_turns=2"):
         ConversationSpec(actors=[actor("a")], max_turns=2, sessions=3)

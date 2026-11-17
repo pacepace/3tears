@@ -43,7 +43,7 @@ async def _migrate(url: str, schema: str, **register_kwargs: Any) -> None:
     conn = await asyncpg.connect(url)
     try:
         await conn.execute(f'SET search_path TO "{schema}", public')
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
     finally:
         await conn.close()
 
@@ -129,7 +129,7 @@ class TestAConfiguredWidth:
         conn = await _connect(url, schema)
         try:
             assert await _column_type(conn, schema) == "vector(1536)"
-            await verify_embedding_width(AsyncpgStore(conn), 1536)  # type: ignore[arg-type]
+            await verify_embedding_width(AsyncpgStore(conn), 1536)
         finally:
             await conn.close()
         pool = await make_pool(url, schema)
@@ -182,9 +182,9 @@ class TestAnExistingSchema:
         conn = await _connect(url, schema)
         try:
             store = AsyncpgStore(conn)
-            await verify_embedding_width(store, 1024)  # type: ignore[arg-type]
+            await verify_embedding_width(store, 1024)
             with pytest.raises(EmbeddingWidthMismatch) as raised:
-                await verify_embedding_width(store, 1536)  # type: ignore[arg-type]
+                await verify_embedding_width(store, 1536)
         finally:
             await conn.close()
         assert raised.value.table == "intentions"
@@ -202,7 +202,7 @@ class TestAnExistingSchema:
             assert set(before) == {"ix_intentions_embedding_hnsw"}
             options_before = await _embedding_index_options(conn, schema)
 
-            cleared = await resize_embedding_width(AsyncpgStore(conn), 1536)  # type: ignore[arg-type]
+            cleared = await resize_embedding_width(AsyncpgStore(conn), 1536)
 
             assert cleared == 1
             assert await _column_type(conn, schema) == "vector(1536)"

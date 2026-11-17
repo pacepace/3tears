@@ -234,7 +234,7 @@ class _TransactionalDurableStore(_InMemoryDurableStore):
         self.batches: list[list[tuple[str, dict[str, Any]]]] = []
         self.direct_writes: list[tuple[str, dict[str, Any]]] = []
 
-    async def upsert(  # type: ignore[override]
+    async def upsert(
         self,
         table: str,
         row: Mapping[str, Any],

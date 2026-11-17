@@ -29,25 +29,18 @@ loud, so it needs a test that fires it.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Collection
 from typing import Any
 
 import pytest
-
 from threetears.evals.analysis import assemble_context_bundle, run_summary
+from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS
-from threetears.evals.schema.models import (
-    TRANSCRIPT_DIM_ID,
-    AsyncDelivery,
-    EvalResult,
-    LatencyMetrics,
-    RoleUsage,
-    RubricScore,
-)
 from threetears.evals.kernel.result_condition import ResultOutcome
 from threetears.evals.kernel.scoring import (
-    PassHatKCell,
     NO_PASS_CRITERION_REASON,
     CellSummary,
+    PassHatKCell,
     compute_async_delivery_summary,
     compute_composite_summary,
     compute_cost_summary,
@@ -64,12 +57,26 @@ from threetears.evals.kernel.scoring import (
     result_composite,
     summarize_completeness,
 )
-from threetears.evals.kernel.identity import IDENTITY_VERSION, derive_context_identity
-from packages.evals.tests.factories import make_eval_result, make_eval_run, make_scored_result, make_campaign
+from threetears.evals.kernel.host.profile import HostProfile
+from threetears.evals.schema.models import (
+    TRANSCRIPT_DIM_ID,
+    AsyncDelivery,
+    EvalResult,
+    EvalRun,
+    LatencyMetrics,
+    RoleUsage,
+    RubricScore,
+)
+
+from packages.evals.tests.factories import (
+    make_campaign,
+    make_eval_result,
+    make_eval_run,
+    make_scored_result,
+    result_capture_defaults,
+)
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.factories import result_capture_defaults
-
 
 # =============================================================================
 # percentile — the shared primitive, and the scale its neighbour does not share
@@ -82,11 +89,11 @@ class TestPercentileRefusesTheOtherScale:
     """The failure this guard exists for returns a number, which is why it must raise."""
 
     @pytest.mark.parametrize("pct", [0.05, 0.5, 0.95, 0.99, 1.0])
-    def test_a_zero_to_one_quantile_is_refused_by_name(self, pct):
+    def test_a_zero_to_one_quantile_is_refused_by_name(self, pct) -> None:
         with pytest.raises(ValueError, match=r"\[0, 1\] scale"):
             percentile(_SORTED, pct)
 
-    def test_the_closed_end_at_one_is_refused_because_it_is_where_the_scales_invert(self):
+    def test_the_closed_end_at_one_is_refused_because_it_is_where_the_scales_invert(self) -> None:
         """1.0 is the worst value to let through, not the safest, so the band closes on it.
 
         On the neighbour's [0, 1] scale it means the MAXIMUM; nearest-rank on 0-100 resolves it
@@ -103,19 +110,19 @@ class TestPercentileRefusesTheOtherScale:
         assert "pass 100" in message, "a caller who meant the maximum must be told how to ask"
         assert "FIRST percentile" in message, "and told what 1.0 means on this scale instead"
 
-    def test_the_refusal_names_the_neighbour_a_caller_confused_it_with(self):
+    def test_the_refusal_names_the_neighbour_a_caller_confused_it_with(self) -> None:
         """A message saying only 'bad input' leaves the caller to find the other convention."""
         with pytest.raises(ValueError) as excinfo:
             percentile(_SORTED, 0.95)
         assert "bundle" in str(excinfo.value), "the message must name where the [0, 1] one lives"
 
     @pytest.mark.parametrize("pct", [-1.0, 100.5, 1000.0])
-    def test_a_quantile_outside_the_scale_entirely_is_refused(self, pct):
+    def test_a_quantile_outside_the_scale_entirely_is_refused(self, pct) -> None:
         with pytest.raises(ValueError, match=r"\[0, 100\]"):
             percentile(_SORTED, pct)
 
     @pytest.mark.parametrize("pct", [0.0, 1.5, 50.0, 95.0, 100.0])
-    def test_the_legitimate_boundaries_are_not_swept_up_by_the_guard(self, pct):
+    def test_the_legitimate_boundaries_are_not_swept_up_by_the_guard(self, pct) -> None:
         """The refused band is ``(0, 1]``, so both ends of the real scale still answer.
 
         0.0 and 100.0 are the scale's own endpoints and a guard that swallowed either would be
@@ -128,17 +135,17 @@ class TestPercentileRefusesTheOtherScale:
 class TestPercentileIsNearestRank:
     """The convention, pinned — an interpolated answer here would be a number nothing observed."""
 
-    def test_it_returns_an_observed_value_never_an_interpolated_one(self):
+    def test_it_returns_an_observed_value_never_an_interpolated_one(self) -> None:
         assert percentile(_SORTED, 95) == 100.0
         assert percentile(_SORTED, 50) == 3.0
         # The bottom of the scale, taken above the refused (0, 1] band.
         assert percentile(_SORTED, 20) == 1.0
 
-    def test_a_single_sample_is_every_percentile_of_itself(self):
+    def test_a_single_sample_is_every_percentile_of_itself(self) -> None:
         assert percentile([7.0], 50) == 7.0
         assert percentile([7.0], 95) == 7.0
 
-    def test_nearest_rank_is_not_the_tail_the_bundle_reports(self):
+    def test_nearest_rank_is_not_the_tail_the_bundle_reports(self) -> None:
         """Same data, different answers, and why the tail is not read nearest-rank.
 
         Read on each function's own scale, so this is not the scale confusion above. Nearest-rank's
@@ -190,7 +197,7 @@ def _bundle_percentiles(costs: list[float]) -> tuple[float, float]:
 # =============================================================================
 
 
-def test_cell_summary_holds_no_unbounded_field():
+def test_cell_summary_holds_no_unbounded_field() -> None:
     """A summary cannot carry a trace — enforced over the type, not by review.
 
     The check is on every field's *value type* rather than on the two field
@@ -234,7 +241,7 @@ def _cell(*, persisted: bool = True, outcome: ResultOutcome = ResultOutcome.OK) 
     )
 
 
-def test_completeness_of_a_whole_matrix_is_not_degraded():
+def test_completeness_of_a_whole_matrix_is_not_degraded() -> None:
     run = make_eval_run(candidate_model="m1", k_runs=2, test_case_ids=["tc-1", "tc-2"])
 
     record = summarize_completeness(run, [_cell() for _ in range(4)])
@@ -246,7 +253,7 @@ def test_completeness_of_a_whole_matrix_is_not_degraded():
     assert record.degraded is False
 
 
-def test_a_lost_write_degrades_the_run_and_is_told_apart_from_a_cell_that_never_ran():
+def test_a_lost_write_degrades_the_run_and_is_told_apart_from_a_cell_that_never_ran() -> None:
     """The two shortfalls a row count collapses into one number.
 
     Storage holds three rows either way — whether the loop ran four cells and
@@ -266,7 +273,7 @@ def test_a_lost_write_degrades_the_run_and_is_told_apart_from_a_cell_that_never_
     assert never_ran.produced_cells == 3
 
 
-def test_an_infra_exclusion_degrades_the_run_but_a_candidate_failure_does_not():
+def test_an_infra_exclusion_degrades_the_run_but_a_candidate_failure_does_not() -> None:
     """The distinction the whole record turns on.
 
     A candidate that failed is a measurement — scored as a hard fail, in the
@@ -287,7 +294,7 @@ def test_an_infra_exclusion_degrades_the_run_but_a_candidate_failure_does_not():
     assert candidate.degraded is False
 
 
-def test_a_cell_that_was_both_excluded_and_lost_is_subtracted_once():
+def test_a_cell_that_was_both_excluded_and_lost_is_subtracted_once() -> None:
     """``measured_cells`` is a subtraction, so double-counting would go negative.
 
     Counting exclusions over every cell rather than over the persisted ones
@@ -303,7 +310,7 @@ def test_a_cell_that_was_both_excluded_and_lost_is_subtracted_once():
     assert record.measured_cells == 1
 
 
-def test_the_denominator_comes_from_the_run_not_from_the_cells_it_was_handed():
+def test_the_denominator_comes_from_the_run_not_from_the_cells_it_was_handed() -> None:
     """A run launched against fewer cases than it recorded must be visible.
 
     Counting the matrix off the loop's own cells would make every run complete
@@ -335,7 +342,7 @@ def _curve(entry: dict[str, Any]) -> list[tuple[int, float | None, int]]:
     return [(point["k"], point["pass_hat_k"], point["n_cases"]) for point in entry["pass_hat_k_curve"]]
 
 
-def test_compute_pass_hat_k_all_pass_yields_one():
+def test_compute_pass_hat_k_all_pass_yields_one() -> None:
     results = [make_scored_result(test_case_id=f"tc{i}", k=1) for i in range(3)]
     out = compute_pass_hat_k(results, catalog={})
     assert out[("m1", "r1")]["pass_hat_k"] == 1.0
@@ -343,7 +350,7 @@ def test_compute_pass_hat_k_all_pass_yields_one():
     assert out[("m1", "r1")]["n_cases_at_k"] == 3
 
 
-def test_compute_pass_hat_k_partial_pass():
+def test_compute_pass_hat_k_partial_pass() -> None:
     results = [
         make_scored_result(test_case_id="tc1", goal_passes=(True,)),
         make_scored_result(test_case_id="tc2", goal_passes=(False,)),
@@ -353,7 +360,7 @@ def test_compute_pass_hat_k_partial_pass():
     assert out[("m1", "r1")]["n_cases_at_k"] == 2
 
 
-def test_compute_pass_hat_k_failure_in_any_k_iter_fails_the_case_at_that_depth():
+def test_compute_pass_hat_k_failure_in_any_k_iter_fails_the_case_at_that_depth() -> None:
     """At depth k every one of k attempts must pass; one failure of two zeroes pass^2 for the case."""
     results = [
         make_scored_result(test_case_id="tc1", k=1, goal_passes=(True,)),
@@ -366,7 +373,7 @@ def test_compute_pass_hat_k_failure_in_any_k_iter_fails_the_case_at_that_depth()
     assert _curve(entry) == [(1, 0.5, 1), (2, 0.0, 1)]
 
 
-def test_compute_pass_hat_k_is_the_unbiased_per_case_estimate_not_the_all_pass_indicator():
+def test_compute_pass_hat_k_is_the_unbiased_per_case_estimate_not_the_all_pass_indicator() -> None:
     """Per case, C(c, k) / C(n, k): the share of the case's k-subsets of attempts that all passed.
 
     Four attempts, three passed. The all-pass indicator over all four reads 0; pass^2 is
@@ -381,7 +388,7 @@ def test_compute_pass_hat_k_is_the_unbiased_per_case_estimate_not_the_all_pass_i
     assert _curve(entry) == [(1, 0.75, 1), (2, 0.5, 1), (3, 0.25, 1), (4, 0.0, 1)]
 
 
-def test_compute_pass_hat_k_pass_1_is_the_per_case_pass_rate_averaged_over_cases():
+def test_compute_pass_hat_k_pass_1_is_the_per_case_pass_rate_averaged_over_cases() -> None:
     """pass^1 weighs each case once, however many attempts it took: (2/3 + 1/1) / 2, not 3/4."""
     results = [
         make_scored_result(test_case_id="tc-a", k=1, goal_passes=(True,)),
@@ -396,18 +403,18 @@ def test_compute_pass_hat_k_pass_1_is_the_per_case_pass_rate_averaged_over_cases
     assert point["n_cases"] == 2
 
 
-def test_compute_pass_hat_k_reads_the_headline_at_the_depth_asked():
+def test_compute_pass_hat_k_reads_the_headline_at_the_depth_asked() -> None:
     results = [make_scored_result(test_case_id="tc1", k=i, goal_passes=(i != 3,)) for i in (1, 2, 3)]
     entry = compute_pass_hat_k(results, k=2, catalog={})[("m1", "r1")]
     assert (entry["k"], entry["pass_hat_k"], entry["n_cases_at_k"]) == (2, pytest.approx(1 / 3), 1)
 
 
-def test_compute_pass_hat_k_refuses_a_depth_below_one():
+def test_compute_pass_hat_k_refuses_a_depth_below_one() -> None:
     with pytest.raises(ValueError, match="k >= 1"):
         compute_pass_hat_k([make_scored_result()], k=0, catalog={})
 
 
-def test_compute_pass_hat_k_respects_rubric_threshold():
+def test_compute_pass_hat_k_respects_rubric_threshold() -> None:
     results = [
         make_scored_result(test_case_id="tc1", rubric_scores=(("x.v", 3),)),
         make_scored_result(test_case_id="tc2", rubric_scores=(("x.v", 2),)),
@@ -416,7 +423,7 @@ def test_compute_pass_hat_k_respects_rubric_threshold():
     assert out[("m1", "r1")]["pass_hat_k"] == 0.5
 
 
-def test_compute_pass_hat_k_separates_models():
+def test_compute_pass_hat_k_separates_models() -> None:
     results = [
         make_scored_result(test_case_id="tc1", model="m1"),
         make_scored_result(test_case_id="tc1", model="m2", goal_passes=(False,)),
@@ -426,11 +433,11 @@ def test_compute_pass_hat_k_separates_models():
     assert out[("m2", "r1")]["pass_hat_k"] == 0.0
 
 
-def test_compute_pass_hat_k_empty_results():
+def test_compute_pass_hat_k_empty_results() -> None:
     assert compute_pass_hat_k([], catalog={}) == {}
 
 
-def test_compute_pass_hat_k_candidate_error_fails_not_passes():
+def test_compute_pass_hat_k_candidate_error_fails_not_passes() -> None:
     """A candidate-error result FAILS (counts, 0.0) — it must not slip through the
     vacuous-result guard as a pass, and it is NOT excluded (a broken candidate fails).
     """
@@ -453,7 +460,7 @@ class TestTheOutputCapsSilenceFails:
     turn did nothing, so every check passed and the judge scored the silence as restraint.
     """
 
-    def test_a_cut_off_hold_trial_whose_checks_and_judge_all_passed_fails(self):
+    def test_a_cut_off_hold_trial_whose_checks_and_judge_all_passed_fails(self) -> None:
         held = make_scored_result(goal_passes=(True, True), rubric_scores=(("reply.restraint", 5),))
         assert (
             compute_pass_hat_k([held], catalog={})[("m1", "r1")]["pass_hat_k"] == 1.0
@@ -462,14 +469,14 @@ class TestTheOutputCapsSilenceFails:
         assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_test_cases"] == 1  # counted as a fail, not excluded
 
-    def test_a_cut_off_act_trial_whose_checks_passed_on_earlier_rounds_fails(self):
+    def test_a_cut_off_act_trial_whose_checks_passed_on_earlier_rounds_fails(self) -> None:
         acted = make_scored_result(goal_passes=(True,), rubric_scores=(("reply.thread_fit", 4),))
         assert (
             compute_pass_hat_k([acted], catalog={})[("m1", "r1")]["pass_hat_k"] == 1.0
         )  # the control: uncut, it passes
         assert compute_pass_hat_k([_cut_off(acted)], catalog={})[("m1", "r1")]["pass_hat_k"] == 0.0
 
-    def test_a_cut_off_trial_fails_even_where_the_judge_could_not_tell(self):
+    def test_a_cut_off_trial_fails_even_where_the_judge_could_not_tell(self) -> None:
         silent = make_scored_result(goal_passes=(True,)).model_copy(
             update={"judge_cannot_tell": {"reply.thread_fit": "nothing was queued"}}
         )
@@ -477,7 +484,7 @@ class TestTheOutputCapsSilenceFails:
         assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
-    def test_a_zero_count_is_an_observation_that_nothing_was_cut(self):
+    def test_a_zero_count_is_an_observation_that_nothing_was_cut(self) -> None:
         assert (
             compute_pass_hat_k([_cut_off(make_scored_result(), rounds=0)], catalog={})[("m1", "r1")]["pass_hat_k"]
             == 1.0
@@ -489,20 +496,20 @@ class TestAFailedTrialIsNeverExcluded:
 
     _UNSCORED = {"judge_cannot_tell": {"reply.thread_fit": "no additions to assess"}}
 
-    def test_a_failed_goal_check_fails_the_trial_the_judge_could_not_finish(self):
+    def test_a_failed_goal_check_fails_the_trial_the_judge_could_not_finish(self) -> None:
         failed = make_scored_result(goal_passes=(False, True)).model_copy(update=self._UNSCORED)
         out = compute_pass_hat_k([failed], catalog={})
         assert out[("m1", "r1")]["n_test_cases"] == 1
         assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
-    def test_a_scored_dim_below_the_bar_fails_it_too(self):
+    def test_a_scored_dim_below_the_bar_fails_it_too(self) -> None:
         failed = make_scored_result(rubric_scores=(("reply.handoff_spoken", 1),)).model_copy(update=self._UNSCORED)
         out = compute_pass_hat_k([failed], rubric_threshold=3, catalog={})
         assert out[("m1", "r1")]["pass_hat_k"] == 0.0
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 0
 
-    def test_a_trial_the_unscored_dim_would_decide_is_still_left_out(self):
+    def test_a_trial_the_unscored_dim_would_decide_is_still_left_out(self) -> None:
         undecided = make_scored_result(rubric_scores=(("reply.handoff_spoken", 4),)).model_copy(update=self._UNSCORED)
         out = compute_pass_hat_k([undecided], rubric_threshold=3, catalog={})
         assert out[("m1", "r1")]["n_test_cases"] == 0
@@ -510,7 +517,7 @@ class TestAFailedTrialIsNeverExcluded:
         assert out[("m1", "r1")]["n_cannot_tell_excluded"] == 1
 
 
-def test_compute_pass_hat_k_infra_iteration_excluded_case_scored_on_the_rest():
+def test_compute_pass_hat_k_infra_iteration_excluded_case_scored_on_the_rest() -> None:
     """An infra-error iteration is EXCLUDED — the case is scored on its other
     iterations, not floored to a fail (the candidate/infra split).
     """
@@ -526,7 +533,7 @@ def test_compute_pass_hat_k_infra_iteration_excluded_case_scored_on_the_rest():
     assert (entry["k"], entry["pass_hat_k"], entry["n_cases_at_k"]) == (2, None, 0)
 
 
-def test_compute_pass_hat_k_all_iterations_excluded_case_drops_from_denominator():
+def test_compute_pass_hat_k_all_iterations_excluded_case_drops_from_denominator() -> None:
     """A case whose every iteration is infra-excluded drops from n_test_cases."""
     results = [
         make_scored_result(test_case_id="tc1", goal_passes=(True,)),  # a real, measured case
@@ -538,7 +545,7 @@ def test_compute_pass_hat_k_all_iterations_excluded_case_drops_from_denominator(
     assert _curve(entry) == [(1, 1.0, 1)]
 
 
-def test_compute_pass_hat_k_all_infra_run_reported_with_zero_measured_cases():
+def test_compute_pass_hat_k_all_infra_run_reported_with_zero_measured_cases() -> None:
     """A run whose every result is infra-excluded still appears — as n_test_cases
     0 with no pass rate (nothing measured), not absent, not a floored fail, and not
     a pass rate of zero, which would read as every case failing.
@@ -552,7 +559,7 @@ def test_compute_pass_hat_k_all_infra_run_reported_with_zero_measured_cases():
 
 
 @pytest.mark.parametrize("judge_model", [None, "judge-model"])
-def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_model):
+def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_model) -> None:
     """A result with no scoreable outcomes cannot pass: unmeasured with no judge (#688), a fail under one.
 
     With no goal-state check and no judge there is nothing for pass^k to conjoin, so the attempt is left out
@@ -601,7 +608,7 @@ def test_compute_pass_hat_k_empty_score_lists_with_no_error_never_pass(judge_mod
 # =============================================================================
 
 
-def test_compute_pass_hat_k_leaves_a_shallow_case_out_of_the_depths_it_never_reached():
+def test_compute_pass_hat_k_leaves_a_shallow_case_out_of_the_depths_it_never_reached() -> None:
     """``tc-shallow`` kept one passed attempt; it informs pass^1 and nothing deeper.
 
     The all-pass indicator read this run as 0.5 — the shallow case's one pass standing in
@@ -620,7 +627,7 @@ def test_compute_pass_hat_k_leaves_a_shallow_case_out_of_the_depths_it_never_rea
     assert _curve(entry) == [(1, pytest.approx((2 / 3 + 1) / 2), 2), (2, pytest.approx(1 / 3), 1), (3, 0.0, 1)]
 
 
-def test_compute_pass_hat_k_every_point_rests_on_every_case_when_the_run_measured_them_alike():
+def test_compute_pass_hat_k_every_point_rests_on_every_case_when_the_run_measured_them_alike() -> None:
     """A complete run's cases all reached the planned depth, so no point loses a case."""
     results = [make_scored_result(test_case_id=f"tc{i}", k=k, goal_passes=(True,)) for i in range(3) for k in (1, 2)]
 
@@ -629,7 +636,7 @@ def test_compute_pass_hat_k_every_point_rests_on_every_case_when_the_run_measure
     assert _curve(entry) == [(1, 1.0, 3), (2, 1.0, 3)]
 
 
-def test_compute_pass_hat_k_reports_the_depth_reached_by_the_model_it_is_keyed_on():
+def test_compute_pass_hat_k_reports_the_depth_reached_by_the_model_it_is_keyed_on() -> None:
     """One model's deeper cells must not speak for a model that never got past its first.
 
     A partial run stops mid-permutation, so the arms are not all equally far
@@ -650,7 +657,7 @@ def test_compute_pass_hat_k_reports_the_depth_reached_by_the_model_it_is_keyed_o
     assert out[("m2", "r1")]["k"] == 1
 
 
-def test_compute_pass_hat_k_depth_counts_attempts_and_the_curve_counts_scored_ones():
+def test_compute_pass_hat_k_depth_counts_attempts_and_the_curve_counts_scored_ones() -> None:
     """``k`` and the curve answer different questions and must not be conflated.
 
     An infra-excluded iteration was attempted — it raises ``k`` — and contributed
@@ -668,7 +675,7 @@ def test_compute_pass_hat_k_depth_counts_attempts_and_the_curve_counts_scored_on
     assert len(entry["pass_hat_k_curve"]) == 1
 
 
-def test_pass_hat_k_at_a_depth_the_curve_never_reached_is_unmeasured():
+def test_pass_hat_k_at_a_depth_the_curve_never_reached_is_unmeasured() -> None:
     assert pass_hat_k_at([], 2) == {"k": 2, "pass_hat_k": None, "n_cases": 0}
     with pytest.raises(ValueError, match="k >= 1"):
         pass_hat_k_at([], 0)
@@ -693,7 +700,7 @@ def _pooled_result(run_id: str, k: int, passed: bool, *, test_case_id: str = "tc
 class TestPoolingAcrossRuns:
     """Repeat runs of one configuration add depth; runs of different configurations never pool."""
 
-    def test_two_runs_of_one_cell_are_more_attempts_at_the_same_case(self):
+    def test_two_runs_of_one_cell_are_more_attempts_at_the_same_case(self) -> None:
         results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, False)]
 
         entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a", "r2": "cell-a"}, k=2, catalog={})
@@ -702,7 +709,7 @@ class TestPoolingAcrossRuns:
         assert (entry["pass_hat_k"], entry["n_cases_at_k"]) == (0.0, 1)
         assert _curve(entry) == [(1, 0.5, 1), (2, 0.0, 1)]
 
-    def test_two_cells_keep_one_test_case_as_two_cases(self):
+    def test_two_cells_keep_one_test_case_as_two_cases(self) -> None:
         results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, False)]
 
         entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a", "r2": "cell-b"}, k=2, catalog={})
@@ -711,21 +718,21 @@ class TestPoolingAcrossRuns:
         assert (entry["pass_hat_k"], entry["n_cases_at_k"]) == (None, 0)
         assert _curve(entry) == [(1, 0.5, 2)]
 
-    def test_a_run_the_map_does_not_name_is_its_own_cell(self):
+    def test_a_run_the_map_does_not_name_is_its_own_cell(self) -> None:
         results = [_pooled_result("r1", 1, True), _pooled_result("r2", 1, True)]
 
         entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1, catalog={})
 
         assert entry["n_test_cases"] == 2
 
-    def test_two_variants_never_pool_even_under_one_cell(self):
+    def test_two_variants_never_pool_even_under_one_cell(self) -> None:
         results = [_pooled_result("r1", 1, True), _pooled_result("r1", 2, True, variant_key="vk-2")]
 
         entry = pool_pass_hat_k(results, cell_of_run={"r1": "cell-a"}, k=1, catalog={})
 
         assert entry["n_test_cases"] == 2
 
-    def test_the_pool_drops_and_counts_exclusions_as_the_per_run_estimate_does(self):
+    def test_the_pool_drops_and_counts_exclusions_as_the_per_run_estimate_does(self) -> None:
         unscored = make_scored_result(rubric_scores=(("reply.tone", 4),)).model_copy(
             update={"judge_cannot_tell": {"reply.fit": "nothing to read"}}
         )
@@ -735,7 +742,7 @@ class TestPoolingAcrossRuns:
 
         assert (entry["n_test_cases"], entry["pass_hat_k"], entry["n_cannot_tell_excluded"]) == (1, 1.0, 1)
 
-    def test_a_pool_needs_a_depth(self):
+    def test_a_pool_needs_a_depth(self) -> None:
         with pytest.raises(ValueError, match="k >= 1"):
             pool_pass_hat_k([], cell_of_run={}, k=0, catalog={})
 
@@ -759,12 +766,18 @@ _DIGEST = "measured-digest-1"
 _SERVED = ("served-model-1",)
 
 
-def _launched(run):
+def _launched(run: EvalRun) -> EvalRun:
     """``run`` with the template digest a launch freezes on it."""
     return run.model_copy(update={"template_digest": _DIGEST})
 
 
-def _cell_of(run, profile=None, *, served=_SERVED, served_unrecorded=False):
+def _cell_of(
+    run: EvalRun,
+    profile: HostProfile | None = None,
+    *,
+    served: Collection[str] = _SERVED,
+    served_unrecorded: bool = False,
+) -> PassHatKCell:
     """The cell of ``run`` for a contestant whose responses named ``served`` (and, ``served_unrecorded``, one named none)."""
     return pass_hat_k_cell(run, profile, served=served, served_unrecorded=served_unrecorded)
 
@@ -772,23 +785,23 @@ def _cell_of(run, profile=None, *, served=_SERVED, served_unrecorded=False):
 class TestTheCellARunsAttemptsPoolUnder:
     """Runs pool only when what they recorded says they held the same conditions fixed."""
 
-    def test_two_runs_sharing_a_context_key_are_one_cell(self):
+    def test_two_runs_sharing_a_context_key_are_one_cell(self) -> None:
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION, k_runs=3))
         assert _cell_of(a) == _cell_of(b)
 
-    def test_a_different_context_is_a_different_cell(self):
+    def test_a_different_context_is_a_different_cell(self) -> None:
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(make_eval_run(id="r2", context_key="ctx-2", identity_version=IDENTITY_VERSION))
         assert pass_hat_k_cell_reason(_cell_of(a), _cell_of(b)) == ("changed_context", "context_key")
 
-    def test_without_a_host_one_key_stamped_under_two_predicates_is_two_cells(self):
+    def test_without_a_host_one_key_stamped_under_two_predicates_is_two_cells(self) -> None:
         """Nothing re-derives the older stamp, so it cannot be shown to be this build's key."""
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION - 1))
         assert pass_hat_k_cell_reason(_cell_of(a), _cell_of(b)) == ("changed_context", "identity_version")
 
-    def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it(self):
+    def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it(self) -> None:
         """The cell is the context as it resolves at this build's version, never the stamp."""
         profile = toyhost_profile()
         after = _launched(_stamped(make_eval_run(id="r1"), profile))
@@ -799,7 +812,7 @@ class TestTheCellARunsAttemptsPoolUnder:
         )
         assert _cell_of(before, profile) == _cell_of(after, profile)
 
-    def test_two_runs_over_different_case_sets_are_one_cell(self):
+    def test_two_runs_over_different_case_sets_are_one_cell(self) -> None:
         """More cases are more samples of one condition, never a condition of their own."""
         profile = toyhost_profile()
         a = _launched(_stamped(make_eval_run(id="r1", test_case_ids=["tc1", "tc2"]), profile))
@@ -807,13 +820,13 @@ class TestTheCellARunsAttemptsPoolUnder:
         assert a.context_key == b.context_key
         assert _cell_of(a, profile) == _cell_of(b, profile)
 
-    def test_a_run_of_another_template_is_another_cell(self):
+    def test_a_run_of_another_template_is_another_cell(self) -> None:
         profile = toyhost_profile()
         a = _launched(_stamped(make_eval_run(id="r1"), profile))
         b = _launched(_stamped(make_eval_run(id="r2", template_id="tpl-2"), profile))
         assert pass_hat_k_cell_reason(_cell_of(a, profile), _cell_of(b, profile)) == ("other_template", "template_id")
 
-    def test_a_commissioned_and_a_witnessed_run_are_two_cells(self):
+    def test_a_commissioned_and_a_witnessed_run_are_two_cells(self) -> None:
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(
             make_eval_run(
@@ -822,7 +835,7 @@ class TestTheCellARunsAttemptsPoolUnder:
         )
         assert pass_hat_k_cell_reason(_cell_of(a), _cell_of(b)) == ("changed_context", "apparatus_provenance")
 
-    def test_a_run_with_no_recorded_context_pools_with_nothing(self):
+    def test_a_run_with_no_recorded_context_pools_with_nothing(self) -> None:
         a, b = _launched(make_eval_run(id="r1")), _launched(make_eval_run(id="r2"))
         assert a.context_key is None
         assert pass_hat_k_cell_reason(_cell_of(a, toyhost_profile()), _cell_of(b, toyhost_profile())) == (
@@ -830,7 +843,7 @@ class TestTheCellARunsAttemptsPoolUnder:
             "recorded",
         )
 
-    def test_a_run_that_froze_no_template_digest_pools_with_nothing_and_says_so(self):
+    def test_a_run_that_froze_no_template_digest_pools_with_nothing_and_says_so(self) -> None:
         """A silent digest is never evidence of a match: the revision it ran is unknown, so it is a cell of its own."""
         recorded = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         silent = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION)
@@ -845,7 +858,7 @@ class TestTheCellARunsAttemptsPoolUnder:
             "template_digest",
         )
 
-    def test_a_run_whose_responses_named_no_model_pools_with_nothing_and_says_so(self):
+    def test_a_run_whose_responses_named_no_model_pools_with_nothing_and_says_so(self) -> None:
         """A silent served model is never evidence of a match: which model answered is unknown."""
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
@@ -854,7 +867,7 @@ class TestTheCellARunsAttemptsPoolUnder:
         assert pass_hat_k_cell_alone(silent) == ("no_recorded_served_model", "served")
         assert pass_hat_k_cell_reason(silent, _cell_of(a)) == ("no_recorded_served_model", "served")
 
-    def test_a_run_some_of_whose_responses_named_no_model_pools_with_nothing(self):
+    def test_a_run_some_of_whose_responses_named_no_model_pools_with_nothing(self) -> None:
         """One unnamed response leaves which model answered it unknown, whatever the others named."""
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
@@ -862,19 +875,19 @@ class TestTheCellARunsAttemptsPoolUnder:
         assert partial.served == _SERVED and partial.run_id == "r2"
         assert pass_hat_k_cell_reason(partial, _cell_of(a)) == ("no_recorded_served_model", "served")
 
-    def test_two_runs_whose_candidate_made_no_model_call_pool(self):
+    def test_two_runs_whose_candidate_made_no_model_call_pool(self) -> None:
         """No call is a recorded fact, not a silence: the runs pool on everything else."""
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         assert _cell_of(a, served=()) == _cell_of(b, served=())
         assert pass_hat_k_cell_alone(_cell_of(a, served=())) is None
 
-    def test_a_run_that_made_no_model_call_does_not_pool_with_one_that_called_a_model(self):
+    def test_a_run_that_made_no_model_call_does_not_pool_with_one_that_called_a_model(self) -> None:
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = _launched(make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         assert pass_hat_k_cell_reason(_cell_of(a, served=()), _cell_of(b)) == ("other_served_model", "served")
 
-    def test_two_silent_runs_each_stand_apart(self):
+    def test_two_silent_runs_each_stand_apart(self) -> None:
         """Two runs silent alike are no more one cell than a silent run and a recorded one."""
         a = make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION)
         b = make_eval_run(id="r2", context_key="ctx-1", identity_version=IDENTITY_VERSION)
@@ -888,13 +901,13 @@ class TestTheCellARunsAttemptsPoolUnder:
             "served",
         )
 
-    def test_a_silent_run_that_also_ran_another_template_reads_its_silence(self):
+    def test_a_silent_run_that_also_ran_another_template_reads_its_silence(self) -> None:
         """It stands apart for what it did not record, whatever else differs."""
         a = _launched(make_eval_run(id="r1", context_key="ctx-1", identity_version=IDENTITY_VERSION))
         b = make_eval_run(id="r2", template_id="tpl-2", context_key="ctx-1", identity_version=IDENTITY_VERSION)
         assert pass_hat_k_cell_reason(_cell_of(b), _cell_of(a)) == ("no_recorded_template", "template_digest")
 
-    def test_runs_of_one_cell_over_different_case_sets_cover_the_union_of_their_cases(self):
+    def test_runs_of_one_cell_over_different_case_sets_cover_the_union_of_their_cases(self) -> None:
         """A top-up over the cases a run missed adds those cases; a case both ran gains depth."""
         profile = toyhost_profile()
         a = _launched(_stamped(make_eval_run(id="r1", test_case_ids=["tc1", "tc2"]), profile))
@@ -936,7 +949,7 @@ def _lat_result(model="m1", run_id="r1", k=1, total=100.0, llm=60.0, tool=20.0, 
     )
 
 
-def test_compute_latency_summary_aggregates_per_model_run():
+def test_compute_latency_summary_aggregates_per_model_run() -> None:
     results = [
         _lat_result(k=1, total=100.0, llm=60.0, tool=20.0),
         _lat_result(k=2, total=200.0, llm=120.0, tool=40.0),
@@ -949,7 +962,7 @@ def test_compute_latency_summary_aggregates_per_model_run():
     assert stats["n_results"] == 2
 
 
-def test_compute_latency_summary_median_and_tail_at_small_n():
+def test_compute_latency_summary_median_and_tail_at_small_n() -> None:
     results = [_lat_result(k=i, total=float(t)) for i, t in enumerate([10, 20, 30, 40, 100], start=1)]
     stats = compute_latency_summary(results)[("m1", "r1")]
     assert stats["median_total_ms"] == 30.0  # the middle of 5 values
@@ -958,14 +971,14 @@ def test_compute_latency_summary_median_and_tail_at_small_n():
     assert stats["max_total_ms"] == 100.0
 
 
-def test_compute_latency_summary_median_of_an_even_count_is_the_mean_of_the_middle_two():
+def test_compute_latency_summary_median_of_an_even_count_is_the_mean_of_the_middle_two() -> None:
     """Nearest-rank took the lower middle value (20); the median of 10, 20, 30, 40 is 25."""
     results = [_lat_result(k=i, total=float(t)) for i, t in enumerate([40, 10, 30, 20], start=1)]
     stats = compute_latency_summary(results)[("m1", "r1")]
     assert stats["median_total_ms"] == 25.0
 
 
-def test_compute_latency_summary_p95_is_type_8_from_thirteen_totals():
+def test_compute_latency_summary_p95_is_type_8_from_thirteen_totals() -> None:
     totals = [float(t) for t in range(10, 210, 10)]  # 20 totals, 10..200
     results = [_lat_result(k=i, total=t) for i, t in enumerate(totals, start=1)]
     stats = compute_latency_summary(results)[("m1", "r1")]
@@ -974,7 +987,7 @@ def test_compute_latency_summary_p95_is_type_8_from_thirteen_totals():
     assert stats["max_total_ms"] == 200.0
 
 
-def test_compute_latency_summary_skips_none_latency():
+def test_compute_latency_summary_skips_none_latency() -> None:
     results = [
         _lat_result(k=1, total=100.0),
         _lat_result(k=2, latency=False),  # factory-failure slot — no measured time
@@ -984,12 +997,12 @@ def test_compute_latency_summary_skips_none_latency():
     assert stats["mean_total_ms"] == 100.0
 
 
-def test_compute_latency_summary_omits_group_with_all_none():
+def test_compute_latency_summary_omits_group_with_all_none() -> None:
     out = compute_latency_summary([_lat_result(latency=False)])
     assert out == {}
 
 
-def test_compute_latency_summary_drops_an_infra_excluded_cells_timings():
+def test_compute_latency_summary_drops_an_infra_excluded_cells_timings() -> None:
     """A harness failure's timings measure the harness, not the configuration.
 
     The run that surfaced this reported ``mean_llm_ms (n=2)`` beside ``Cases 1``:
@@ -1009,7 +1022,7 @@ def test_compute_latency_summary_drops_an_infra_excluded_cells_timings():
     assert stats["mean_total_ms"] == 100.0
 
 
-def test_compute_latency_summary_keeps_a_candidate_failures_timings():
+def test_compute_latency_summary_keeps_a_candidate_failures_timings() -> None:
     """A candidate that fails is an outcome of the configuration — it still took time."""
     results = [
         _lat_result(k=1, total=100.0, llm=60.0, tool=20.0),
@@ -1022,7 +1035,7 @@ def test_compute_latency_summary_keeps_a_candidate_failures_timings():
     assert stats["mean_total_ms"] == 200.0
 
 
-def test_compute_latency_summary_omits_a_group_whose_every_cell_was_excluded():
+def test_compute_latency_summary_omits_a_group_whose_every_cell_was_excluded() -> None:
     """Same shape as the all-``None`` group: omitted rather than reported as zero."""
     results = [
         _lat_result(k=1, judge_error="judge LLM returned 500"),
@@ -1032,7 +1045,7 @@ def test_compute_latency_summary_omits_a_group_whose_every_cell_was_excluded():
     assert compute_latency_summary(results) == {}
 
 
-def test_an_unmeasured_component_is_dropped_rather_than_averaged_as_zero():
+def test_an_unmeasured_component_is_dropped_rather_than_averaged_as_zero() -> None:
     """A cell with an llm timing but no turn-root must not pull the total mean down.
 
     This is the candidate-fails-outside-the-turn-wrapper shape. Averaging its
@@ -1051,7 +1064,7 @@ def test_an_unmeasured_component_is_dropped_rather_than_averaged_as_zero():
     assert stats["mean_tool_ms"] == 20.0
 
 
-def test_components_disclose_that_they_rest_on_different_samples():
+def test_components_disclose_that_they_rest_on_different_samples() -> None:
     """Each mean carries its own denominator; n_results counts results, not measurements.
 
     Without the per-component counts a mean over one observation prints
@@ -1071,7 +1084,7 @@ def test_components_disclose_that_they_rest_on_different_samples():
     assert stats["n_tool_ms"] == 1
 
 
-def test_a_denominator_is_absent_exactly_when_its_mean_is():
+def test_a_denominator_is_absent_exactly_when_its_mean_is() -> None:
     """A count without its mean (or the reverse) would be a row nobody can read."""
     stats = compute_latency_summary([_lat_result(total=None, llm=60.0, tool=None)])[("m1", "r1")]
 
@@ -1086,7 +1099,7 @@ def test_a_denominator_is_absent_exactly_when_its_mean_is():
     assert "n_total_ms" not in stats
 
 
-def test_a_component_nothing_measured_is_absent_not_zero():
+def test_a_component_nothing_measured_is_absent_not_zero() -> None:
     results = [_lat_result(k=1, total=None, llm=60.0, tool=None)]
 
     stats = compute_latency_summary(results)[("m1", "r1")]
@@ -1097,7 +1110,7 @@ def test_a_component_nothing_measured_is_absent_not_zero():
     assert stats["mean_llm_ms"] == 60.0
 
 
-def test_a_harvested_group_that_measured_nothing_is_distinct_from_never_harvested():
+def test_a_harvested_group_that_measured_nothing_is_distinct_from_never_harvested() -> None:
     """Empty-but-present says "we tried and got no timings"; omission says nobody ran."""
     tried = compute_latency_summary([_lat_result(total=None, llm=None, tool=None)])
     never = compute_latency_summary([_lat_result(latency=False)])
@@ -1106,7 +1119,7 @@ def test_a_harvested_group_that_measured_nothing_is_distinct_from_never_harveste
     assert never == {}
 
 
-def test_compute_latency_summary_separates_models():
+def test_compute_latency_summary_separates_models() -> None:
     results = [
         _lat_result(model="m1", total=100.0),
         _lat_result(model="m2", total=300.0),
@@ -1150,7 +1163,7 @@ def _async_result(deliveries: list[AsyncDelivery] | None, *, k: int = 1, **kwarg
     )
 
 
-def test_async_summary_counts_real_and_substituted_and_times_only_the_real_ones():
+def test_async_summary_counts_real_and_substituted_and_times_only_the_real_ones() -> None:
     """A substituted delivery is counted apart and its clock is no duration of the tool."""
     results = [
         _async_result([_delivery(100.0), _delivery(300.0, status="failed"), _delivery(5.0, substituted=True)], k=1),
@@ -1167,7 +1180,7 @@ def test_async_summary_counts_real_and_substituted_and_times_only_the_real_ones(
     assert "async_delivery_p95_elapsed_ms" not in row, "three durations cannot give a 95th percentile"
 
 
-def test_async_summary_reads_the_tail_type_8_from_thirteen_durations():
+def test_async_summary_reads_the_tail_type_8_from_thirteen_durations() -> None:
     durations = [float(t) for t in range(10, 210, 10)]  # 20 durations, 10..200
     results = [_async_result([_delivery(t)], k=i) for i, t in enumerate(durations, start=1)]
 
@@ -1179,18 +1192,18 @@ def test_async_summary_reads_the_tail_type_8_from_thirteen_durations():
     assert row["async_delivery_elapsed_n"] == 20
 
 
-def test_a_host_with_no_async_tools_gets_the_measures_absent_not_zero():
+def test_a_host_with_no_async_tools_gets_the_measures_absent_not_zero() -> None:
     """``async_deliveries=None`` is "nothing watched": no group, so no count of zero that reads as "never called"."""
     assert compute_async_delivery_summary([_async_result(None)]) == {}
 
 
-def test_watched_with_nothing_started_is_a_real_zero_and_no_duration():
+def test_watched_with_nothing_started_is_a_real_zero_and_no_duration() -> None:
     row = compute_async_delivery_summary([_async_result([])])[("m1", "r1")]
 
     assert row == {"async_deliveries": 0, "async_deliveries_substituted": 0}
 
 
-def test_async_summary_drops_an_infra_excluded_cell_as_the_latency_summary_does():
+def test_async_summary_drops_an_infra_excluded_cell_as_the_latency_summary_does() -> None:
     results = [
         _async_result([_delivery(100.0)], k=1),
         _async_result([_delivery(1.0)], k=2, infra_error="apparatus: cassette miss in replay mode"),
@@ -1201,7 +1214,7 @@ def test_async_summary_drops_an_infra_excluded_cell_as_the_latency_summary_does(
     assert (row["async_deliveries"], row["async_delivery_mean_elapsed_ms"]) == (1, 100.0)
 
 
-def test_a_toy_host_run_summary_carries_all_six_async_measures():
+def test_a_toy_host_run_summary_carries_all_six_async_measures() -> None:
     """The run summary every host reads carries the engine's rollup, with the values the descriptors state."""
     run = make_eval_run(status="completed")
     durations = [float(t) for t in range(10, 140, 10)]  # 13 durations: the fewest a p95 is read from
@@ -1239,7 +1252,7 @@ def test_a_toy_host_run_summary_carries_all_six_async_measures():
     assert all(name in METRIC_DESCRIPTORS for name in _ASYNC_MEASURES)
 
 
-def test_a_toy_host_run_with_no_async_tools_carries_none_of_them():
+def test_a_toy_host_run_with_no_async_tools_carries_none_of_them() -> None:
     run = make_eval_run(status="completed")
     results = [make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, model="m1")]
 
@@ -1261,7 +1274,9 @@ def test_a_toy_host_run_with_no_async_tools_carries_none_of_them():
 # =============================================================================
 
 
-def _cost_result(model="m1", run_id="r1", k=1, cost=0.01, prod_cost=None, **kwargs):
+def _cost_result(
+    model: str = "m1", run_id: str = "r1", k: int = 1, cost: float = 0.01, prod_cost: float | None = None, **kwargs: Any
+) -> EvalResult:
     """EvalResult carrying a cost for the cost-summary tests.
 
     ``prod_cost`` attaches a candidate usage row — a production-replicating role —
@@ -1280,7 +1295,7 @@ def _cost_result(model="m1", run_id="r1", k=1, cost=0.01, prod_cost=None, **kwar
     )
 
 
-def test_compute_cost_summary_groups_by_model_and_run():
+def test_compute_cost_summary_groups_by_model_and_run() -> None:
     results = [
         _cost_result(model="m1", run_id="r1", k=1, cost=0.01, prod_cost=0.006),
         _cost_result(model="m1", run_id="r1", k=2, cost=0.03, prod_cost=0.014),
@@ -1318,7 +1333,7 @@ def test_compute_cost_summary_groups_by_model_and_run():
     }
 
 
-def test_compute_cost_summary_counts_zero_cost_results():
+def test_compute_cost_summary_counts_zero_cost_results() -> None:
     """A priced zero is a cost, and is never skipped — zero-cost slots still count."""
     results = [
         _cost_result(model="m1", k=1, cost=0.0, prod_cost=0.0),
@@ -1336,7 +1351,7 @@ def test_compute_cost_summary_counts_zero_cost_results():
     }
 
 
-def test_compute_cost_summary_omits_unmeasured_prod_cost_from_the_mean():
+def test_compute_cost_summary_omits_unmeasured_prod_cost_from_the_mean() -> None:
     """A result with no usage decomposition is absent from the prod mean, not a zero in it.
 
     The mean is over the measured subset, so it answers "what did a measured
@@ -1357,7 +1372,7 @@ def test_compute_cost_summary_omits_unmeasured_prod_cost_from_the_mean():
     assert row["mean_cost_usd"] == pytest.approx(0.03)
 
 
-def test_compute_cost_summary_omits_prod_keys_when_nothing_measured():
+def test_compute_cost_summary_omits_prod_keys_when_nothing_measured() -> None:
     """Absent, not zero — the group survives carrying only what it measured."""
     row = compute_cost_summary([_cost_result(k=1, cost=0.01), _cost_result(k=2, cost=0.03)])[("m1", "r1")]
 
@@ -1368,7 +1383,7 @@ def test_compute_cost_summary_omits_prod_keys_when_nothing_measured():
     assert row == {"total_cost_usd": 0.04, "mean_cost_usd": 0.02, "n_cost_usd": 2, "n_results": 2}
 
 
-def test_an_unpriced_result_is_left_out_of_the_program_cost_and_counted_not_averaged_in_as_zero():
+def test_an_unpriced_result_is_left_out_of_the_program_cost_and_counted_not_averaged_in_as_zero() -> None:
     """Unpriced is unknown, not free: averaged in as zero it would rank the unpriced model cheapest."""
     results = [
         _cost_result(k=1, cost=0.04),
@@ -1383,13 +1398,13 @@ def test_an_unpriced_result_is_left_out_of_the_program_cost_and_counted_not_aver
     assert row["n_results"] == 3
 
 
-def test_a_group_with_no_priced_result_reports_no_program_cost_at_all():
+def test_a_group_with_no_priced_result_reports_no_program_cost_at_all() -> None:
     row = compute_cost_summary([_cost_result(k=1, cost=None), _cost_result(k=2, cost=None)])[("m1", "r1")]
 
     assert row == {"n_cost_usd": 0, "n_results": 2}
 
 
-def test_compute_cost_summary_cancelled_cell_measures_no_prod_cost():
+def test_compute_cost_summary_cancelled_cell_measures_no_prod_cost() -> None:
     """A cell cancelled during its only call reported no usage — that is unmeasured, not free.
 
     Its ``usage`` is ``[]``, which resolves to the ``lost`` view rather than to a
@@ -1406,7 +1421,7 @@ def test_compute_cost_summary_cancelled_cell_measures_no_prod_cost():
     assert row["n_results"] == 2
 
 
-def test_compute_cost_summary_least_measured_config_does_not_rank_cheapest():
+def test_compute_cost_summary_least_measured_config_does_not_rank_cheapest() -> None:
     """The defect this shape exists to prevent, stated as a comparison.
 
     Two models spend the same per measured result; one simply recorded fewer
@@ -1430,7 +1445,7 @@ def test_compute_cost_summary_least_measured_config_does_not_rank_cheapest():
     assert out[("patchy", "r1")]["n_results"] == 3
 
 
-def test_compute_cost_summary_still_counts_an_infra_excluded_cells_spend():
+def test_compute_cost_summary_still_counts_an_infra_excluded_cells_spend() -> None:
     """Program spend is the family's deliberate exception, and this pins it as a decision.
 
     pass^k, latency, the dimension means and the composite all drop an
@@ -1456,7 +1471,7 @@ def test_compute_cost_summary_still_counts_an_infra_excluded_cells_spend():
     assert all_excluded[("m1", "r1")]["n_results"] == 1
 
 
-def test_compute_cost_summary_a_faulted_cell_does_not_lower_the_comparison_cost():
+def test_compute_cost_summary_a_faulted_cell_does_not_lower_the_comparison_cost() -> None:
     """#619: the production-replicating axis compares configurations, so a fault-shortened cell is not in it.
 
     The apparatus broke the second cell after it had spent a fraction of a whole one. Averaged in, the arm's
@@ -1481,7 +1496,7 @@ def test_compute_cost_summary_a_faulted_cell_does_not_lower_the_comparison_cost(
     assert "mean_prod_cost_usd" not in faulted[("m1", "r1")]
 
 
-def test_compute_cost_summary_empty_results():
+def test_compute_cost_summary_empty_results() -> None:
     assert compute_cost_summary([]) == {}
 
 
@@ -1511,7 +1526,7 @@ def _dim_result(model="m1", run_id="r1", k=1, dims: dict[str, int] | None = None
     )
 
 
-def test_compute_dimension_summary_aggregates_mean_min_max_per_dim():
+def test_compute_dimension_summary_aggregates_mean_min_max_per_dim() -> None:
     results = [
         _dim_result(k=1, dims={"reply.grounding": 4, "reply.coverage": 2}),
         _dim_result(k=2, dims={"reply.grounding": 2, "reply.coverage": 4}),
@@ -1533,7 +1548,7 @@ def test_compute_dimension_summary_aggregates_mean_min_max_per_dim():
     }
 
 
-def test_compute_dimension_summary_separates_models_and_dims():
+def test_compute_dimension_summary_separates_models_and_dims() -> None:
     results = [
         _dim_result(model="m1", dims={"reply.grounding": 5}),
         _dim_result(model="m2", dims={"reply.grounding": 1}),
@@ -1543,17 +1558,17 @@ def test_compute_dimension_summary_separates_models_and_dims():
     assert out[("m2", "r1", "reply.grounding")]["mean_score"] == 1.0
 
 
-def test_compute_dimension_summary_skips_results_with_no_rubric_scores():
+def test_compute_dimension_summary_skips_results_with_no_rubric_scores() -> None:
     """Goal-only / factory-failure slots carry no rubric_scores → no dimension rows."""
     out = compute_dimension_summary([_dim_result(dims={})])
     assert out == {}
 
 
-def test_compute_dimension_summary_empty_results():
+def test_compute_dimension_summary_empty_results() -> None:
     assert compute_dimension_summary([]) == {}
 
 
-def test_compute_dimension_summary_drops_an_infra_excluded_results_score():
+def test_compute_dimension_summary_drops_an_infra_excluded_results_score() -> None:
     """The judge's reading of a broken transcript must not enter the dimension mean.
 
     An infra-excluded cell is dropped from pass^k and from the case count, and it
@@ -1576,7 +1591,7 @@ def test_compute_dimension_summary_drops_an_infra_excluded_results_score():
     assert row["max_score"] == 5
 
 
-def test_compute_dimension_summary_drops_a_judge_error_score_too():
+def test_compute_dimension_summary_drops_a_judge_error_score_too() -> None:
     """``judge_error`` is infra, always — the same arm, so the same exclusion."""
     results = [
         _dim_result(k=1, dims={"reply.grounding": 4}),
@@ -1592,7 +1607,7 @@ def test_compute_dimension_summary_drops_a_judge_error_score_too():
     }
 
 
-def test_compute_dimension_summary_keeps_a_candidate_failure_score():
+def test_compute_dimension_summary_keeps_a_candidate_failure_score() -> None:
     """A broken candidate is the candidate's own outcome, not the harness's.
 
     Pinned alongside the exclusion tests because one predicate decides both, and
@@ -1610,7 +1625,7 @@ def test_compute_dimension_summary_keeps_a_candidate_failure_score():
     assert row["mean_score"] == 3.0
 
 
-def test_compute_dimension_summary_all_excluded_group_reports_no_dimension_row():
+def test_compute_dimension_summary_all_excluded_group_reports_no_dimension_row() -> None:
     """An entirely infra-excluded group vanishes from this table, as it does from pass^k's denominator.
 
     A dimension key exists here only because some judge scored it, so there is no
@@ -1626,7 +1641,7 @@ def test_compute_dimension_summary_all_excluded_group_reports_no_dimension_row()
     assert compute_dimension_summary(results) == {}
 
 
-def test_compute_dimension_summary_excludes_the_same_cells_pass_k_does():
+def test_compute_dimension_summary_excludes_the_same_cells_pass_k_does() -> None:
     """The two aggregates must agree about which cells were measured.
 
     The defect this pins is the run-summary row that read ``Cases 1`` beside a
@@ -1809,7 +1824,7 @@ class TestAJudgeThatCouldNotTell:
         )
         return told, scored
 
-    def test_pass_k_counts_the_scored_trial_and_leaves_out_the_other(self):
+    def test_pass_k_counts_the_scored_trial_and_leaves_out_the_other(self) -> None:
         told, scored = self._pair()
         entry = compute_pass_hat_k([told, scored], catalog={})[("m1", "r1")]
         assert entry["n_test_cases"] == 1
@@ -1817,18 +1832,18 @@ class TestAJudgeThatCouldNotTell:
         # Left out, and counted as left out for this reason — never a silent shrink.
         assert entry["n_cannot_tell_excluded"] == 1
 
-    def test_the_composite_is_unmeasured_not_the_mean_of_the_rest(self):
+    def test_the_composite_is_unmeasured_not_the_mean_of_the_rest(self) -> None:
         told, scored = self._pair()
         assert result_composite(told) is None
         assert result_composite(scored) is not None
 
-    def test_a_cannot_tell_on_a_reserved_axis_leaves_the_whole_trial_measures_alone(self):
+    def test_a_cannot_tell_on_a_reserved_axis_leaves_the_whole_trial_measures_alone(self) -> None:
         """The transcript and outcome axes are in neither measure, so they cannot exclude from them."""
         result = make_eval_result(judge_cannot_tell={TRANSCRIPT_DIM_ID: "no turns"})
         assert result_composite(result) is not None
         assert compute_pass_hat_k([result], catalog={})[("sonnet", "run-1")]["n_test_cases"] == 1
 
-    def test_a_candidate_failure_still_fails_whatever_the_judge_could_not_tell(self):
+    def test_a_candidate_failure_still_fails_whatever_the_judge_could_not_tell(self) -> None:
         failed = make_eval_result(candidate_error="402", judge_cannot_tell={"reply.refusal": "nothing to read"})
         entry = compute_pass_hat_k([failed], catalog={})[("sonnet", "run-1")]
         assert entry["n_test_cases"] == 1 and entry["pass_hat_k"] == 0.0
@@ -1841,7 +1856,7 @@ class TestWhatAJudgedDimCountsAs:
     def _dims(*results: EvalResult) -> dict[str, float]:
         return {dim: row["mean_score"] for (_m, _r, dim), row in compute_dimension_summary(list(results)).items()}
 
-    def test_a_cut_off_hold_turn_the_judge_passed_counts_as_a_fail(self):
+    def test_a_cut_off_hold_turn_the_judge_passed_counts_as_a_fail(self) -> None:
         silent = _cut_off(
             make_scored_result(goal_passes=()).model_copy(
                 update={
@@ -1873,11 +1888,11 @@ class TestWhatAJudgedDimCountsAs:
         assert self._dims(delivered)["reply.treats_as_present"] == 1.0  # the control
         assert self._dims(silent, delivered)["reply.treats_as_present"] == 0.5
 
-    def test_a_model_failure_counts_its_judged_level_at_the_bottom_of_the_scale(self):
+    def test_a_model_failure_counts_its_judged_level_at_the_bottom_of_the_scale(self) -> None:
         failed = make_scored_result(candidate_error="candidate turn LLM error: 502", rubric_scores=(("reply.tone", 4),))
         assert self._dims(failed)["reply.tone"] == 1.0
 
-    def test_a_harness_fault_contributes_nothing(self):
+    def test_a_harness_fault_contributes_nothing(self) -> None:
         faulted = make_scored_result(infra_error="delivery never landed", rubric_scores=(("reply.tone", 5),))
         healthy = make_scored_result(test_case_id="tc2", rubric_scores=(("reply.tone", 3),))
         assert self._dims(faulted, healthy) == {"reply.tone": 3.0}

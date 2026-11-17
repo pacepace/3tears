@@ -36,7 +36,7 @@ _SHUTDOWN_POLL_S = 0.01
 class TestTelemetryConfig:
     """TelemetryConfig dataclass defaults and construction."""
 
-    def test_defaults(self):
+    def test_defaults(self) -> None:
         config = TelemetryConfig()
         assert config.enabled is False
         assert config.endpoint == "http://localhost:4317"
@@ -47,7 +47,7 @@ class TestTelemetryConfig:
         assert config.loki_endpoint is None
         assert len(config.suppressed_env_vars) > 0
 
-    def test_custom_config(self):
+    def test_custom_config(self) -> None:
         config = TelemetryConfig(
             enabled=True,
             endpoint="http://tempo:4317",
@@ -61,7 +61,7 @@ class TestTelemetryConfig:
         assert config.sample_rate == 0.5
         assert config.loki_endpoint == "loki:3100"
 
-    def test_frozen(self):
+    def test_frozen(self) -> None:
         config = TelemetryConfig()
         import dataclasses
 
@@ -72,7 +72,7 @@ class TestTelemetryConfig:
 class TestInitDisabled:
     """init_telemetry when disabled."""
 
-    def test_init_returns_false_when_disabled(self):
+    def test_init_returns_false_when_disabled(self) -> None:
         from threetears.observe.setup import init_telemetry
 
         config = TelemetryConfig(enabled=False)
@@ -82,7 +82,7 @@ class TestInitDisabled:
 class TestResetTelemetry:
     """reset_telemetry for test isolation."""
 
-    def test_reset_is_safe_when_not_initialized(self):
+    def test_reset_is_safe_when_not_initialized(self) -> None:
         # Should not raise even when nothing was initialized
         reset_telemetry()
 
@@ -176,12 +176,12 @@ def _record() -> logging.LogRecord:
 class TestCallSiteEnrichingHandler:
     """The log export handler enriches records with ThreeTearsLogger's call site before OTel sees them."""
 
-    def test_enriches_pathname(self, log_export_handler: logging.Handler):
+    def test_enriches_pathname(self, log_export_handler: logging.Handler) -> None:
         record = _record()
-        record.call_site_file = "module.py"  # type: ignore[attr-defined]
-        record.call_site_class = "MyClass"  # type: ignore[attr-defined]
-        record.call_site_func = "handle"  # type: ignore[attr-defined]
-        record.call_site_line = 42  # type: ignore[attr-defined]
+        record.call_site_file = "module.py"
+        record.call_site_class = "MyClass"
+        record.call_site_func = "handle"
+        record.call_site_line = 42
 
         log_export_handler.emit(record)
 
@@ -189,9 +189,9 @@ class TestCallSiteEnrichingHandler:
         assert record.funcName == "MyClass.handle"
         assert record.lineno == 42
 
-    def test_enriches_without_class(self, log_export_handler: logging.Handler):
+    def test_enriches_without_class(self, log_export_handler: logging.Handler) -> None:
         record = _record()
-        record.call_site_func = "my_function"  # type: ignore[attr-defined]
+        record.call_site_func = "my_function"
 
         log_export_handler.emit(record)
 

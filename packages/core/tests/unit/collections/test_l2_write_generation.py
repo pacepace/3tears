@@ -43,7 +43,7 @@ async def _replica(bus: FakeNatsClient) -> VersionedAnswers:
     l1 = SQLiteBackend(db_name=f"l2generation-{uuid.uuid4().hex}")
     l1.initialize(MetaData())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
     answers = VersionedAnswers(registry, DefaultCoreConfig(), bus, table_name=_TABLE)
     await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
     return answers

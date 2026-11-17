@@ -290,7 +290,7 @@ class TestBuildScopeClause:
         memories = MemoriesCollection(registry=registry, config=config, authorizer=permissive_memory_authorizer)
 
         with pytest.raises(TypeError):
-            await memories.hybrid_search(user_id=uuid7(), customer_id=uuid7(), **_SEARCH_KWARGS)  # type: ignore[call-arg]
+            await memories.hybrid_search(user_id=uuid7(), customer_id=uuid7(), **_SEARCH_KWARGS)
 
     async def test_customer_id_required(self, permissive_memory_authorizer: MemoryAuthorizerDependencies) -> None:
         """omitting ``customer_id`` raises (no longer optional)."""
@@ -298,4 +298,4 @@ class TestBuildScopeClause:
         memories = MemoriesCollection(registry=registry, config=config, authorizer=permissive_memory_authorizer)
 
         with pytest.raises(TypeError):
-            await memories.hybrid_search(user_id=uuid7(), agent_id=uuid7(), **_SEARCH_KWARGS)  # type: ignore[call-arg]
+            await memories.hybrid_search(user_id=uuid7(), agent_id=uuid7(), **_SEARCH_KWARGS)

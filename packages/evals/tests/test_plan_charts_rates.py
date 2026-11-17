@@ -339,7 +339,7 @@ def test_a_heatmap_of_cells_draws_the_target_matrix_its_counts_and_the_cell_floo
     floor = _criterion(report_input, key, "each_cell")
     for arm, panel in zip(arms, panels, strict=True):
         if data.panels is not None:
-            assert panel.title == _look(name).arm(arm).name  # type: ignore[union-attr]
+            assert panel.title == _look(name).arm(arm).name
         assert [row.label for row in panel.rows or []] == [level.name or level.id for level in matrix.rows.levels]
         columns = data.columns if panel.columns is None else panel.columns
         assert [column.label for column in columns or []] == [level.name or level.id for level in matrix.columns.levels]

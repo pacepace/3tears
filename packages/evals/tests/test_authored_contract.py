@@ -65,18 +65,18 @@ def _schema_nodes(node: Any):
 
 
 class TestTheStrictProjection:
-    def test_every_object_is_closed_and_fully_required(self):
+    def test_every_object_is_closed_and_fully_required(self) -> None:
         for node in _walk(_schema()):
             if "properties" in node:
                 assert node["additionalProperties"] is False
                 assert set(node["required"]) == set(node["properties"])
 
-    def test_a_reference_stands_alone(self):
+    def test_a_reference_stands_alone(self) -> None:
         refs = [node for node in _walk(_schema()) if "$ref" in node]
         assert refs, "the schema has nested definitions, so it has references"
         assert all(set(node) == {"$ref"} for node in refs)
 
-    def test_nothing_the_providers_refuse_survives(self):
+    def test_nothing_the_providers_refuse_survives(self) -> None:
         # Checked on schema NODES, never on the name maps under `properties` and `$defs`, where a property may be
         # named like a keyword and must survive.
         offenders = [
@@ -84,13 +84,13 @@ class TestTheStrictProjection:
         ]
         assert not offenders, offenders[:3]
 
-    def test_one_of_becomes_any_of_and_a_ref_loses_its_siblings(self):
+    def test_one_of_becomes_any_of_and_a_ref_loses_its_siblings(self) -> None:
         projected = authored.strict_schema(
             {"type": "object", "properties": {"x": {"oneOf": [{"$ref": "#/$defs/A", "description": "d"}]}}}
         )
         assert projected["properties"]["x"] == {"anyOf": [{"$ref": "#/$defs/A"}]}
 
-    def test_a_map_is_refused_rather_than_sent(self):
+    def test_a_map_is_refused_rather_than_sent(self) -> None:
         class _Map(BaseModel):
             m: dict[str, str]
 
@@ -101,14 +101,14 @@ class TestTheStrictProjection:
 class TestOneVocabulary:
     """The contract states its vocabularies standalone, so nothing else must disagree with it."""
 
-    def test_the_confidence_tiers_are_the_analysis_models_tiers(self):
+    def test_the_confidence_tiers_are_the_analysis_models_tiers(self) -> None:
         import typing
 
         from threetears.evals.kernel.campaign import ConfidenceTier
 
         assert set(typing.get_args(authored.Confidence)) == set(typing.get_args(ConfidenceTier))
 
-    def test_the_reading_kinds_are_the_analysis_models_kinds(self):
+    def test_the_reading_kinds_are_the_analysis_models_kinds(self) -> None:
         import typing
 
         from threetears.evals.kernel.campaign import ReadingKind

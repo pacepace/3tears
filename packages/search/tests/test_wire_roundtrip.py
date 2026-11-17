@@ -81,7 +81,7 @@ def test_every_failure_roundtrips_through_its_record(failure_class: str) -> None
         remediation="teaching text",
         egress="warp",
         occurred_at=OCCURRED_AT,
-        **kwargs,  # type: ignore[arg-type]
+        **kwargs,
     )
 
     record = FailureRecord.model_validate_json(original.to_record().model_dump_json())

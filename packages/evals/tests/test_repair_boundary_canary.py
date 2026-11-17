@@ -87,7 +87,7 @@ def test_only_the_listed_no_output_cases_raise_the_terminal_class(path: Path):
     )
 
 
-def test_the_walk_reads_the_analysis_package():
+def test_the_walk_reads_the_analysis_package() -> None:
     """Non-vacuity: the module list is derived from a path, and a wrong path derives nothing.
 
     Every parametrised case above vanishes when the glob matches nothing, which reads as a pass.

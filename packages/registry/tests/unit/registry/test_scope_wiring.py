@@ -320,4 +320,4 @@ class TestTheTeardownSeamIsBoundInEveryAuthorizerMode:
         on_shutdown = captured["on_shutdown"]
         assert callable(on_shutdown)
         # the bug was a NameError raised the moment this ran
-        asyncio.run(on_shutdown())  # type: ignore[operator]
+        asyncio.run(on_shutdown())

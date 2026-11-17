@@ -105,7 +105,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            count = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            count = await runner.apply_for_agent_schema(store)
             assert count > 0
 
             sched_cols = await _columns(conn, schema, "agent_wake_schedules")
@@ -178,7 +178,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             for index_name in (
                 "idx_wake_schedules_next_fire_asc",
                 "idx_wake_schedules_conv_status",
@@ -204,7 +204,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             for constraint in (
                 "agent_wake_schedules_skill_fk",
                 "agent_wake_schedules_context_from_fk",
@@ -235,7 +235,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             row = await conn.fetchrow(
                 """
                 SELECT 1 FROM pg_constraint c
@@ -263,7 +263,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             row = await conn.fetchrow(
                 """
                 SELECT 1 FROM pg_constraint c
@@ -292,9 +292,9 @@ class TestIdempotency:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            first = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            first = await runner.apply_for_agent_schema(store)
             assert first > 0
-            second = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            second = await runner.apply_for_agent_schema(store)
             assert second == 0
         finally:
             await conn.close()

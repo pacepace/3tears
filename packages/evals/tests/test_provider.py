@@ -13,19 +13,18 @@ from dataclasses import dataclass
 from typing import get_args
 
 import pytest
-
-from threetears.evals.schema.completion import (
-    COMPLETION_RESULT_ATTRIBUTES,
-    JSON_OBJECT_RESPONSE_FORMAT,
-    USAGE_LEDGER_ATTRIBUTES,
-    StopReason,
-)
 from threetears.evals.kernel.provider import (
     INCOMPLETE_STOP_REASONS,
     describe_incomplete_completion,
     extract_json,
     extract_json_array,
     sum_optional_tokens,
+)
+from threetears.evals.schema.completion import (
+    COMPLETION_RESULT_ATTRIBUTES,
+    JSON_OBJECT_RESPONSE_FORMAT,
+    USAGE_LEDGER_ATTRIBUTES,
+    StopReason,
 )
 from threetears.evals.testing import CompletionConformanceFailure, check_completion_conformance
 
@@ -55,66 +54,66 @@ class _Completion:
 class TestSumOptionalTokens:
     """Missing is not zero, and that distinction is the whole reason this exists."""
 
-    def test_all_unreported_stays_unreported(self):
+    def test_all_unreported_stays_unreported(self) -> None:
         assert sum_optional_tokens(None, None, None) is None
 
-    def test_no_values_at_all_is_unreported(self):
+    def test_no_values_at_all_is_unreported(self) -> None:
         assert sum_optional_tokens() is None
 
-    def test_all_reported_sums(self):
+    def test_all_reported_sums(self) -> None:
         assert sum_optional_tokens(100, 25, 8) == 133
 
-    def test_partially_reported_sums_what_is_known(self):
+    def test_partially_reported_sums_what_is_known(self) -> None:
         """Five real measurements describe a turn better than discarding them."""
         assert sum_optional_tokens(100, None, 30) == 130
 
-    def test_a_reported_zero_is_an_observation(self):
+    def test_a_reported_zero_is_an_observation(self) -> None:
         assert sum_optional_tokens(0, 0) == 0
         assert sum_optional_tokens(None, 0) == 0
 
 
 class TestJsonObjectResponseFormat:
-    def test_is_the_provider_wire_literal(self):
+    def test_is_the_provider_wire_literal(self) -> None:
         assert JSON_OBJECT_RESPONSE_FORMAT == {"type": "json_object"}
 
 
 class TestExtractJsonArray:
-    def test_plain_array(self):
+    def test_plain_array(self) -> None:
         assert extract_json_array('[{"a": 1}, {"b": 2}]') == [{"a": 1}, {"b": 2}]
 
-    def test_markdown_fence(self):
+    def test_markdown_fence(self) -> None:
         assert extract_json_array('```json\n[{"a": 1}]\n```') == [{"a": 1}]
 
-    def test_code_fence_no_lang(self):
+    def test_code_fence_no_lang(self) -> None:
         assert extract_json_array('```\n[{"a": 1}]\n```') == [{"a": 1}]
 
-    def test_a_bare_object_becomes_a_one_element_batch(self):
+    def test_a_bare_object_becomes_a_one_element_batch(self) -> None:
         """A model asked for an array of cases that returns one case returned one case."""
         assert extract_json_array('{"a": 1}') == [{"a": 1}]
 
-    def test_prose_around_the_array(self):
+    def test_prose_around_the_array(self) -> None:
         assert extract_json_array('Sure! [{"a": 1}] — hope that helps') == [{"a": 1}]
 
-    def test_a_trailing_note_holding_a_bracket_does_not_lose_the_batch(self):
+    def test_a_trailing_note_holding_a_bracket_does_not_lose_the_batch(self) -> None:
         """An outermost-bracket slice would span the note and fail; the batch is already paid for."""
         assert extract_json_array('[{"a": 1}]\n\nNote: see [1] for the source.') == [{"a": 1}]
 
-    def test_both_parsers_read_the_same_fence(self):
+    def test_both_parsers_read_the_same_fence(self) -> None:
         """One fence rule, so a block one parser reads the other reads too."""
         fenced = 'Here you go:\n```json\n{"a": 1}\n```\nthanks'
         assert extract_json(fenced) == {"a": 1}
         assert extract_json_array(fenced) == [{"a": 1}]
 
-    def test_unparseable_raises_rather_than_reading_as_an_empty_batch(self):
+    def test_unparseable_raises_rather_than_reading_as_an_empty_batch(self) -> None:
         """The generation is already paid for; "the parser could not read it" is not "nothing"."""
         with pytest.raises(ValueError, match="no JSON array"):
             extract_json_array("no json here")
 
-    def test_a_scalar_document_raises(self):
+    def test_a_scalar_document_raises(self) -> None:
         with pytest.raises(ValueError, match="not an array"):
             extract_json_array("42")
 
-    def test_an_empty_array_is_an_empty_batch(self):
+    def test_an_empty_array_is_an_empty_batch(self) -> None:
         """A model that answered with no cases answered; that is the generator's to judge."""
         assert extract_json_array("[]") == []
 
@@ -122,7 +121,7 @@ class TestExtractJsonArray:
 class TestCompletionPort:
     """The injected client must still fit the shape eval was written against."""
 
-    def test_the_eval_call_usage_record_carries_every_attribute_the_ledger_reads(self):
+    def test_the_eval_call_usage_record_carries_every_attribute_the_ledger_reads(self) -> None:
         """``CallUsage`` is fed to the same ledger method as a real completion, so it carries the ledger's declared set.
 
         Read off the declaration the ledger itself reads, never a list typed here: a hand-typed list
@@ -135,16 +134,16 @@ class TestCompletionPort:
         for field in (*USAGE_LEDGER_ATTRIBUTES, *CALL_USAGE_ONLY_ATTRIBUTES):
             assert hasattr(usage, field), f"CallUsage lost {field!r}, which the ledger's duck type needs"
 
-    def test_every_attribute_the_ledger_reads_off_a_completion_is_a_protocol_member(self):
+    def test_every_attribute_the_ledger_reads_off_a_completion_is_a_protocol_member(self) -> None:
         """The declaration names nothing the protocol does not promise, so a host held to the protocol supplies it."""
         assert set(USAGE_LEDGER_ATTRIBUTES) <= set(COMPLETION_RESULT_ATTRIBUTES)
 
-    def test_the_protocol_member_list_is_read_off_the_protocol(self):
+    def test_the_protocol_member_list_is_read_off_the_protocol(self) -> None:
         """``served_model`` and ``stop_reason`` are members; ``calls`` is not — it is ``CallUsage``'s alone."""
         assert {"content", "served_model", "stop_reason", "price_source"} <= set(COMPLETION_RESULT_ATTRIBUTES)
         assert "calls" not in COMPLETION_RESULT_ATTRIBUTES
 
-    def test_a_conforming_completion_passes_the_hosts_check(self):
+    def test_a_conforming_completion_passes_the_hosts_check(self) -> None:
         """The toy host's completion type is what a host's own suite would hand the check."""
         check_completion_conformance(
             ToyJudgeCompletion(
@@ -153,7 +152,7 @@ class TestCompletionPort:
         )
 
     @pytest.mark.parametrize("renamed", USAGE_LEDGER_ATTRIBUTES)
-    def test_renaming_any_attribute_the_ledger_reads_fails_naming_it(self, renamed):
+    def test_renaming_any_attribute_the_ledger_reads_fails_naming_it(self, renamed) -> None:
         """A rename the ledger would read as "unreported" in silence fails the host's check by name."""
         fields = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
         fields.update(content="{}", stop_reason="end_turn")
@@ -163,7 +162,7 @@ class TestCompletionPort:
         with pytest.raises(CompletionConformanceFailure, match=rf"missing {renamed}\b.*usage ledger"):
             check_completion_conformance(completion)
 
-    def test_a_raw_provider_stop_reason_fails_the_check(self):
+    def test_a_raw_provider_stop_reason_fails_the_check(self) -> None:
         """OpenAI's ``length`` passed through reads as finished; the check says so."""
         fields: dict[str, object] = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
         fields.update(content="{}", stop_reason="length")
@@ -172,14 +171,14 @@ class TestCompletionPort:
             check_completion_conformance(type("RawCompletion", (), fields)())
 
     @pytest.mark.parametrize("reason", get_args(StopReason))
-    def test_every_member_of_the_vocabulary_passes_the_check(self, reason):
+    def test_every_member_of_the_vocabulary_passes_the_check(self, reason) -> None:
         """``truncated`` included: a host mapping an unnamed stop onto it conforms."""
         fields: dict[str, object] = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
         fields.update(content="{}", stop_reason=reason)
 
         check_completion_conformance(type("MappedCompletion", (), fields)())
 
-    def test_the_ledger_reads_the_served_model_never_the_requested_one(self):
+    def test_the_ledger_reads_the_served_model_never_the_requested_one(self) -> None:
         """A completion naming the alias in ``model`` and the concrete model in ``served_model`` lands both, apart."""
         from threetears.evals.kernel.usage_capture import RoleUsageLedger
 
@@ -204,12 +203,12 @@ class TestDescribeIncompleteCompletion:
     JSON", true and causally useless. These pin the causal sentence instead, per branch.
     """
 
-    def test_a_normal_finish_has_nothing_to_explain(self):
+    def test_a_normal_finish_has_nothing_to_explain(self) -> None:
         """``None`` lets a caller append this unconditionally and add a clause only when there is one."""
         assert describe_incomplete_completion(_Completion(content='{"ok": true}', stop_reason="end_turn")) is None
         assert describe_incomplete_completion(_Completion(content="", stop_reason="tool_use")) is None
 
-    def test_a_cap_hit_names_the_truncation_and_the_move_that_fixes_it(self):
+    def test_a_cap_hit_names_the_truncation_and_the_move_that_fixes_it(self) -> None:
         """A caller told only "not valid JSON" retries or blames the prompt; neither helps here."""
         note = describe_incomplete_completion(
             _Completion(content='{"bluf": {"headl', stop_reason="max_tokens", output_tokens=16384, reasoning_tokens=0)
@@ -222,7 +221,7 @@ class TestDescribeIncompleteCompletion:
         # Retrying unchanged truncates again — say so, or the caller burns another generation.
         assert "retrying the same request unchanged will truncate again" in note
 
-    def test_an_unreported_reasoning_split_says_unreported_rather_than_zero(self):
+    def test_an_unreported_reasoning_split_says_unreported_rather_than_zero(self) -> None:
         """``reasoning_tokens=None`` is "the provider reported no split", not a measured zero.
 
         The port keeps those apart deliberately; rendering the unknown as ``0`` would
@@ -234,7 +233,7 @@ class TestDescribeIncompleteCompletion:
         assert "500 output token(s), reasoning split unreported" in note
         assert "were reasoning" not in note
 
-    def test_a_reported_zero_reasoning_split_is_reported_as_zero(self):
+    def test_a_reported_zero_reasoning_split_is_reported_as_zero(self) -> None:
         """The mirror of the case above: a reported ``0`` is an observation and must survive."""
         note = describe_incomplete_completion(
             _Completion(content="x", stop_reason="max_tokens", output_tokens=500, reasoning_tokens=0)
@@ -244,7 +243,7 @@ class TestDescribeIncompleteCompletion:
         assert "of which 0 were reasoning" in note
         assert "unreported" not in note
 
-    def test_an_empty_completion_is_called_out_separately_from_a_partial_one(self):
+    def test_an_empty_completion_is_called_out_separately_from_a_partial_one(self) -> None:
         """``0 chars`` after a cap hit is a different diagnosis from a half-written object.
 
         The empty case is what reached prod, and "not valid JSON (0 chars)" reads as a
@@ -261,7 +260,7 @@ class TestDescribeIncompleteCompletion:
         assert "completion is empty" in empty
         assert "completion is empty" not in partial
 
-    def test_a_content_filter_says_the_request_needs_changing_not_retrying(self):
+    def test_a_content_filter_says_the_request_needs_changing_not_retrying(self) -> None:
         """A filtered completion is deterministic in a way a truncation is not."""
         note = describe_incomplete_completion(_Completion(content="", stop_reason="content_filter"))
 
@@ -269,7 +268,7 @@ class TestDescribeIncompleteCompletion:
         assert "content filter" in note
         assert "not retrying" in note
 
-    def test_a_choiceless_response_says_nothing_was_generated(self):
+    def test_a_choiceless_response_says_nothing_was_generated(self) -> None:
         """A host's no-choices branch stamps ``error``; the caller is owed that fact."""
         note = describe_incomplete_completion(_Completion(content="", stop_reason="error", output_tokens=0))
 
@@ -277,7 +276,7 @@ class TestDescribeIncompleteCompletion:
         assert "no choices at all" in note
         assert "reported an ERROR in place of a completion" in note
 
-    def test_a_truncation_with_no_named_cause_is_not_told_it_failed_or_hit_the_cap(self):
+    def test_a_truncation_with_no_named_cause_is_not_told_it_failed_or_hit_the_cap(self) -> None:
         """``truncated`` had output and stopped early: neither "no choices at all" nor the cap's remedy fits it.
 
         Reading an unnamed stop as ``error`` told the operator nothing was generated about a completion that had
@@ -298,7 +297,7 @@ class TestDescribeIncompleteCompletion:
         assert note.split(" [")[0] != error.split(" [")[0]
         assert "truncated" in INCOMPLETE_STOP_REASONS
 
-    def test_every_cut_short_reason_gets_its_own_sentence(self):
+    def test_every_cut_short_reason_gets_its_own_sentence(self) -> None:
         """Exhaustive AND distinct — "returns something" is what a fallthrough also does.
 
         The set is derived from the wording map, so a member with no sentence cannot exist;
@@ -314,12 +313,12 @@ class TestDescribeIncompleteCompletion:
         assert all(note is not None for note in notes.values())
         assert len(set(notes.values())) == len(notes), f"two cut-short reasons share one diagnosis: {notes}"
 
-    def test_the_stop_reason_vocabulary_is_one_finish_and_the_cut_short_reasons(self):
+    def test_the_stop_reason_vocabulary_is_one_finish_and_the_cut_short_reasons(self) -> None:
         """The literal a host maps onto and the set eval reads truncation off are one vocabulary."""
         assert set(get_args(StopReason)) == INCOMPLETE_STOP_REASONS | {"end_turn"}
         assert "end_turn" not in INCOMPLETE_STOP_REASONS
 
-    def test_a_reason_outside_the_vocabulary_is_not_described_at_all(self):
+    def test_a_reason_outside_the_vocabulary_is_not_described_at_all(self) -> None:
         """The other half of totality: an unknown reason reads as finished, not as a guess.
 
         ``describe_incomplete_completion`` indexes the wording map directly, so this is the

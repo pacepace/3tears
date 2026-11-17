@@ -149,8 +149,8 @@ class _Generations:
 
 def _reconciler(queue: _Queue, source: _Generations, **kwargs: Any) -> WriteMarkReconciler:
     return WriteMarkReconciler(
-        queue,  # type: ignore[arg-type]
-        generation_source=source,  # type: ignore[arg-type]
+        queue,
+        generation_source=source,
         marks_schema="platform",
         tables=lambda: ("groups", "revocations"),
         **kwargs,
@@ -194,7 +194,7 @@ async def test_an_l2_first_table_gets_no_trigger() -> None:
     queue = _Queue([], missing=[("platform", "election_results"), ("platform", "groups")])
 
     created = await install_write_mark_triggers(
-        queue,  # type: ignore[arg-type]
+        queue,
         marks_schema="platform",
         tables=("election_results", "groups"),
     )
@@ -253,7 +253,7 @@ async def test_only_the_declaring_schemas_tables_without_the_trigger_get_one(cap
     caplog.set_level(logging.INFO)
     queue = _Queue([], missing=[("agent_a", "groups"), ("platform", "revocations")])
 
-    created = await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups", "revocations"))  # type: ignore[arg-type]
+    created = await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups", "revocations"))
 
     assert created == ["platform.revocations"]
     assert all(WRITE_MARK_TRIGGER in statement for statement in queue.created)
@@ -266,7 +266,7 @@ async def test_a_pod_table_named_as_a_switched_on_table_is_never_switched_on_by_
     """two schemas share a table name: the hub's declaration switches on its own, never the pod's."""
     queue = _Queue([], missing=[("platform", "coordination_redemptions"), ("ns_pod", "coordination_redemptions")])
     reconciler = WriteMarkReconciler(
-        queue,  # type: ignore[arg-type]
+        queue,
         generation_source=_Generations(),
         marks_schema="platform",
         tables=lambda: ["coordination_redemptions"],
@@ -283,7 +283,7 @@ async def test_the_install_serves_the_schema_it_is_named() -> None:
     queue = _Queue([], missing=[("agent_a", "groups"), ("platform", "groups")])
 
     created = await install_write_mark_triggers(
-        queue,  # type: ignore[arg-type]
+        queue,
         marks_schema="platform",
         tables=("groups",),
         table_schema="agent_a",
@@ -312,7 +312,7 @@ def test_the_trigger_fires_per_row_and_marks_a_transaction_once_into_the_one_que
 async def test_an_install_replaces_the_function_and_the_statement_trigger_before_its_row_trigger() -> None:
     queue = _Queue([], missing=[("platform", "groups")])
 
-    await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",))  # type: ignore[arg-type]
+    await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",))
 
     assert queue.replaced[0].startswith('CREATE OR REPLACE FUNCTION "platform"."threetears_mark_collection_write"')
     assert queue.replaced[1] == 'DROP TRIGGER IF EXISTS "threetears_collection_write_mark" ON "platform"."groups"'
@@ -377,7 +377,7 @@ async def test_a_table_that_keeps_failing_does_not_stall_the_others() -> None:
 async def test_the_install_takes_the_ddl_lock_and_creates_only_under_it() -> None:
     queue = _Queue([], missing=[("platform", "groups")])
 
-    created = await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",))  # type: ignore[arg-type]
+    created = await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",))
 
     assert created == ["platform.groups"]
     assert queue.ddl_without_lock == []
@@ -387,7 +387,7 @@ async def test_nothing_missing_means_no_lock_and_no_ddl() -> None:
     queue = _Queue([])
     queue.lock_free = False  # a busy lock would defer; nothing should even ask for it
 
-    assert await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",)) == []  # type: ignore[arg-type]
+    assert await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",)) == []
 
 
 async def test_a_busy_ddl_lock_defers_the_install_and_never_the_drain() -> None:
@@ -397,7 +397,7 @@ async def test_a_busy_ddl_lock_defers_the_install_and_never_the_drain() -> None:
     reconciler = _reconciler(queue, source)
 
     fast = DdlLockPolicy(poll_interval=0.01, max_wait=0.05)
-    assert await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",), policy=fast) == []  # type: ignore[arg-type]
+    assert await install_write_mark_triggers(queue, marks_schema="platform", tables=("groups",), policy=fast) == []
     assert queue.created == []
     done = await reconciler.run_pass()
     assert (done.applied, source.advanced) == (1, ["groups"])

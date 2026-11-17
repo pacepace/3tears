@@ -20,7 +20,7 @@ from pathlib import Path
 
 # the walker lives in a support module beside both test modules, under a public name, so this
 # meta-test exercises exactly the function the enforcement test runs.
-from packages.core.tests.enforcement.partition_column_walker import (  # type: ignore[import-not-found]
+from packages.core.tests.enforcement.partition_column_walker import (
     tied_columns,
     unique_keys,
     violations_in_file,

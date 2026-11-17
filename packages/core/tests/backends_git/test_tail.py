@@ -538,7 +538,7 @@ async def test_a_cancelled_commit_finishes_before_the_cancel_gets_out(make_repo:
         time.sleep(0.4)
         return real(*args, **kwargs)
 
-    repo.git.commit = slow  # type: ignore[method-assign]
+    repo.git.commit = slow
     task = asyncio.create_task(repo.commit_files({"a.md": b"a\n"}, "slow"))
     await asyncio.sleep(0.1)
     task.cancel()

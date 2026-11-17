@@ -97,7 +97,7 @@ class _OverflowRaw:
 def _client(raw: Any) -> NatsClient:
     """build a bare wrapper over a fake raw client (no connect())."""
     set_default_namespace("3tears")
-    return NatsClient(raw=raw, namespace="3tears", client_name="test")  # type: ignore[arg-type]
+    return NatsClient(raw=raw, namespace="3tears", client_name="test")
 
 
 # ---------------------------------------------------------------------------

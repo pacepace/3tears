@@ -223,7 +223,7 @@ class TestTheCollectionStackRidesTheLifecycle:
         """
         nats = FakeNatsClient()
         nats.ensure_kv_bucket = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
-        nats.subscribe_typed = AsyncMock(return_value=MagicMock())  # type: ignore[attr-defined]
+        nats.subscribe_typed = AsyncMock(return_value=MagicMock())
         nats.unsubscribe = AsyncMock()  # type: ignore[method-assign]
         await nats.kv_bucket(name="collections", create_if_missing=True)
         server = _FakeToolServer(pod_id=str(uuid.uuid4()))

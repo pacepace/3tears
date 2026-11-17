@@ -122,7 +122,7 @@ def test_a_range_stopping_short_of_a_change_names_that_side_and_its_nearest_flip
         nearest = (
             max(past, key=lambda flip: float(flip.at.value))
             if side == "below_range_low"
-            else min(  # type: ignore[arg-type]
+            else min(
                 past,
                 key=lambda flip: float(flip.at.value),  # type: ignore[arg-type]
             )

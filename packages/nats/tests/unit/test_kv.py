@@ -1034,7 +1034,7 @@ class TestABindOnlyOpenWaitsForItsDeclarer:
         await healed.put("nonce", b"1")
         js = _DeclaredLateJs(absent_for=2, healed=healed)
         bucket = NatsKvBucket(
-            client=_client_over(js),  # type: ignore[arg-type]
+            client=_client_over(js),
             full_name="ns-proxy_assertion_nonces",
             kv=stale,  # type: ignore[arg-type]
             ttl=None,

@@ -133,7 +133,7 @@ class _JudgeCampaign:
             profile=dataclasses.replace(
                 profile, kinds=(*profile.kinds, dataclasses.replace(JUDGE_KIND_CONTRACT, seats=None))
             ),
-            clients=lambda _role, _model, *, temperature=None: self.client,  # type: ignore[arg-type, return-value]
+            clients=lambda _role, _model, *, temperature=None: self.client,  # type: ignore[arg-type]
             settings=lambda: settings,
         )
 

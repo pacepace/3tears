@@ -335,7 +335,7 @@ async def test_a_collection_deferring_its_l3_writes_is_refused() -> None:
     class _Deferred(type(_collection())):  # type: ignore[misc]
         l3_write_policy = "write_behind"
 
-    collection = _Deferred(CollectionRegistry(), DefaultCoreConfig(), None, write_buffer=_Buffer())  # type: ignore[arg-type]
+    collection = _Deferred(CollectionRegistry(), DefaultCoreConfig(), None, write_buffer=_Buffer())
     collection.l3_pool = _Pool()
     conn = _Conn()
     with pytest.raises(ValueError, match="defers its L3 writes"):

@@ -20,13 +20,12 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.models import LlmPurpose
-
 from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
 from threetears.scrape.eval_loop import run_eval_loop, run_eval_loop_multi_row
 from threetears.scrape.llm_retry import StructuredCallExhaustedError, StructuredCallTimeoutError
-from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.config import DefaultCoreConfig
 
 from packages.scrape.tests.structured_output_fakes import fake_structured_model
 
@@ -91,14 +90,14 @@ def _dispatch_by_purpose(extraction_model, judge_model):
     return _dispatch
 
 
-def _collections():
+def _collections() -> tuple[ScrapeRecipeCollection, ScrapeExtractionCollection]:
     recipe_collection = ScrapeRecipeCollection(get_registry(), get_config(), nats_client=None)
     extraction_collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
     return recipe_collection, extraction_collection
 
 
 class TestRunEvalLoopFirstRun:
-    async def test_no_existing_recipe_generates_and_persists_winner(self):
+    async def test_no_existing_recipe_generates_and_persists_winner(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"selectors": _WINNING_STRATEGY}]}
         judge_verdict = {
@@ -134,7 +133,7 @@ class TestRunEvalLoopFirstRun:
         assert recipe.extraction_strategy == {"selectors": _WINNING_STRATEGY}
         assert recipe.consecutive_validation_failures == 0
 
-    async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self):
+    async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self) -> None:
         recipe_collection, extraction_collection = _collections()
         # Every proposed selector matches nothing in the page.
         candidates = {"candidates": [{"selectors": {"employer": ".nope", "affected_count": ".also-nope"}}]}
@@ -155,7 +154,7 @@ class TestRunEvalLoopFirstRun:
         assert extraction.extraction_recipe_id is None
         assert await recipe_collection.get("warn_act_ca") is None
 
-    async def test_judge_picks_no_winner_persists_needs_review_no_recipe(self):
+    async def test_judge_picks_no_winner_persists_needs_review_no_recipe(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"selectors": _WINNING_STRATEGY}]}
         judge_verdict = {"winning_candidate_index": None, "reasoning": "none of these look right"}
@@ -182,7 +181,7 @@ class TestRunEvalLoopFirstRun:
         assert extraction.field_confidences is None  # the judge answered; nothing failed
         assert await recipe_collection.get("warn_act_ca") is None
 
-    async def test_judge_failure_degrades_to_needs_review_not_a_crash(self):
+    async def test_judge_failure_degrades_to_needs_review_not_a_crash(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"selectors": _WINNING_STRATEGY}]}
         fake_extraction_model, _ = fake_structured_model(candidates)
@@ -211,7 +210,7 @@ class TestRunEvalLoopFirstRun:
 
 
 class TestRunEvalLoopRecipeReuse:
-    async def test_healthy_recipe_reused_without_any_llm_call(self):
+    async def test_healthy_recipe_reused_without_any_llm_call(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -243,7 +242,7 @@ class TestRunEvalLoopRecipeReuse:
         recipe = await recipe_collection.get("warn_act_ca")
         assert recipe.consecutive_validation_failures == 0
 
-    async def test_below_threshold_failure_keeps_recipe_and_increments_counter(self):
+    async def test_below_threshold_failure_keeps_recipe_and_increments_counter(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -278,7 +277,7 @@ class TestRunEvalLoopRecipeReuse:
         assert recipe.consecutive_validation_failures == 1
         assert recipe.extraction_strategy == {"selectors": {"employer": ".gone", "affected_count": ".also-gone"}}
 
-    async def test_threshold_crossed_triggers_regeneration(self):
+    async def test_threshold_crossed_triggers_regeneration(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -319,7 +318,7 @@ class TestRunEvalLoopRecipeReuse:
         assert recipe.extraction_strategy == {"selectors": _WINNING_STRATEGY}
         assert recipe.consecutive_validation_failures == 0
 
-    async def test_second_run_against_same_healthy_recipe_reuses_it_again(self):
+    async def test_second_run_against_same_healthy_recipe_reuses_it_again(self) -> None:
         """The build plan's own acceptance criteria: a second run against the
         same page reuses the recipe rather than re-invoking candidate generation."""
         recipe_collection, extraction_collection = _collections()
@@ -364,7 +363,7 @@ class TestRunEvalLoopRecipeReuse:
 
 
 class TestRunEvalLoopMultiRowFirstRun:
-    async def test_no_existing_recipe_generates_and_persists_every_row(self):
+    async def test_no_existing_recipe_generates_and_persists_every_row(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{**_WINNING_ROW_STRATEGY}]}
         judge_verdict = {
@@ -404,7 +403,7 @@ class TestRunEvalLoopMultiRowFirstRun:
         assert recipe.extraction_strategy == _WINNING_ROW_STRATEGY
         assert recipe.consecutive_validation_failures == 0
 
-    async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self):
+    async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"row_selector": ".nope", "field_selectors": {"employer": ".also-nope"}}]}
         fake_extraction_model, _ = fake_structured_model(candidates)
@@ -425,7 +424,7 @@ class TestRunEvalLoopMultiRowFirstRun:
         assert extraction.extraction_recipe_id is None
         assert await recipe_collection.get("warn_act_md") is None
 
-    async def test_judge_picks_no_winner_surfaces_best_row_count_candidate(self):
+    async def test_judge_picks_no_winner_surfaces_best_row_count_candidate(self) -> None:
         """Unlike the single-record path, "best" has a real comparable signal
         here (row count captured), not just "first proposed"."""
         recipe_collection, extraction_collection = _collections()
@@ -462,7 +461,7 @@ class TestRunEvalLoopMultiRowFirstRun:
 
 
 class TestRunEvalLoopMultiRowRecipeReuse:
-    async def test_healthy_recipe_reused_without_any_llm_call(self):
+    async def test_healthy_recipe_reused_without_any_llm_call(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -493,7 +492,7 @@ class TestRunEvalLoopMultiRowRecipeReuse:
         recipe = await recipe_collection.get("warn_act_md")
         assert recipe.consecutive_validation_failures == 0
 
-    async def test_below_threshold_failure_keeps_recipe_and_increments_counter(self):
+    async def test_below_threshold_failure_keeps_recipe_and_increments_counter(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -526,7 +525,7 @@ class TestRunEvalLoopMultiRowRecipeReuse:
         recipe = await recipe_collection.get("warn_act_md")
         assert recipe.consecutive_validation_failures == 1
 
-    async def test_threshold_crossed_triggers_regeneration(self):
+    async def test_threshold_crossed_triggers_regeneration(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -567,7 +566,7 @@ class TestRunEvalLoopMultiRowRecipeReuse:
         assert recipe.extraction_strategy == _WINNING_ROW_STRATEGY
         assert recipe.consecutive_validation_failures == 0
 
-    async def test_second_run_against_same_healthy_recipe_reuses_it_again(self):
+    async def test_second_run_against_same_healthy_recipe_reuses_it_again(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{**_WINNING_ROW_STRATEGY}]}
         judge_verdict = {"winning_candidate_index": 0, "reasoning": "matches"}
@@ -616,7 +615,7 @@ class TestRunEvalLoopMultiRowRecipeReuse:
 
 
 class TestRunEvalLoopRegexStrategyFirstRun:
-    async def test_no_existing_recipe_generates_and_persists_winner(self):
+    async def test_no_existing_recipe_generates_and_persists_winner(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"pattern": _WINNING_REGEX_PATTERN}]}
         judge_verdict = {
@@ -652,7 +651,7 @@ class TestRunEvalLoopRegexStrategyFirstRun:
         assert recipe.extraction_strategy == {"pattern": _WINNING_REGEX_PATTERN}
         assert recipe.consecutive_validation_failures == 0
 
-    async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self):
+    async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"pattern": r"NOPE: (?P<employer>x)(?P<affected_count>x)"}]}
         fake_extraction_model, _ = fake_structured_model(candidates)
@@ -673,7 +672,7 @@ class TestRunEvalLoopRegexStrategyFirstRun:
         assert extraction.extraction_recipe_id is None
         assert await recipe_collection.get("warn_act_pa") is None
 
-    async def test_invalid_regex_pattern_is_rejected_not_a_crash(self):
+    async def test_invalid_regex_pattern_is_rejected_not_a_crash(self) -> None:
         """A malformed pattern (unbalanced parens) must fail structural
         validation cleanly, not raise out of the eval loop."""
         recipe_collection, extraction_collection = _collections()
@@ -696,7 +695,7 @@ class TestRunEvalLoopRegexStrategyFirstRun:
 
 
 class TestRunEvalLoopRegexStrategyRecipeReuse:
-    async def test_healthy_recipe_reused_without_any_llm_call(self):
+    async def test_healthy_recipe_reused_without_any_llm_call(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -725,7 +724,7 @@ class TestRunEvalLoopRegexStrategyRecipeReuse:
         assert extraction.validation_status == "validated"
         assert extraction.structured_fields == {"records": [{"employer": "Acme Corp", "affected_count": 42}]}
 
-    async def test_below_threshold_failure_keeps_recipe_and_increments_counter(self):
+    async def test_below_threshold_failure_keeps_recipe_and_increments_counter(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -759,7 +758,7 @@ class TestRunEvalLoopRegexStrategyRecipeReuse:
 
 
 class TestRunEvalLoopMultiRowRegexStrategyFirstRun:
-    async def test_no_existing_recipe_generates_and_persists_every_row(self):
+    async def test_no_existing_recipe_generates_and_persists_every_row(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"pattern": _WINNING_REGEX_ROW_PATTERN}]}
         judge_verdict = {
@@ -798,7 +797,7 @@ class TestRunEvalLoopMultiRowRegexStrategyFirstRun:
         assert recipe is not None
         assert recipe.extraction_strategy == {"pattern": _WINNING_REGEX_ROW_PATTERN}
 
-    async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self):
+    async def test_no_structurally_valid_candidates_persists_failed_no_recipe(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"pattern": r"NOPE: (?P<employer>x)(?P<affected_count>x)"}]}
         fake_extraction_model, _ = fake_structured_model(candidates)
@@ -821,7 +820,7 @@ class TestRunEvalLoopMultiRowRegexStrategyFirstRun:
 
 
 class TestRunEvalLoopMultiRowRegexStrategyRecipeReuse:
-    async def test_healthy_recipe_reused_without_any_llm_call(self):
+    async def test_healthy_recipe_reused_without_any_llm_call(self) -> None:
         recipe_collection, extraction_collection = _collections()
         recipe_entity = recipe_collection.create(
             {
@@ -850,7 +849,7 @@ class TestRunEvalLoopMultiRowRegexStrategyRecipeReuse:
         assert extraction.validation_status == "validated"
         assert len(extraction.structured_fields["records"]) == 2
 
-    async def test_second_run_against_same_healthy_recipe_reuses_it_again(self):
+    async def test_second_run_against_same_healthy_recipe_reuses_it_again(self) -> None:
         recipe_collection, extraction_collection = _collections()
         candidates = {"candidates": [{"pattern": _WINNING_REGEX_ROW_PATTERN}]}
         judge_verdict = {"winning_candidate_index": 0, "reasoning": "matches"}
@@ -908,7 +907,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
     logic; extraction's and the default judge's own behaviour get their own dedicated
     tests in test_extraction.py and TestJudgeOneDocumentExtraction below."""
 
-    async def test_extracts_one_confirmed_record_per_document(self):
+    async def test_extracts_one_confirmed_record_per_document(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -947,7 +946,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.extraction_recipe_id == "warn_act_wv"
         assert judge_mock.await_count == 2
 
-    async def test_a_judge_rejected_record_is_dropped_even_though_structurally_complete(self):
+    async def test_a_judge_rejected_record_is_dropped_even_though_structurally_complete(self) -> None:
         """The whole point of the per-document grounding check: a well-typed,
         complete-looking extraction that the judge says is wrong/hallucinated must
         never count as a real record."""
@@ -977,7 +976,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.validation_status == "failed"
         assert extraction.structured_fields == {"records": []}
 
-    async def test_second_run_always_calls_the_llm_again_no_caching(self):
+    async def test_second_run_always_calls_the_llm_again_no_caching(self) -> None:
         """Unlike css/regex, a healthy "recipe" (there isn't a reusable one) never
         skips the LLM call -- every document, every poll, gets its own fresh call."""
         import threetears.scrape.eval_loop as eval_loop_module
@@ -1014,7 +1013,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
 
         assert extract_mock.await_count == 2
 
-    async def test_a_document_missing_a_required_field_is_dropped_without_spending_a_judge_call(self):
+    async def test_a_document_missing_a_required_field_is_dropped_without_spending_a_judge_call(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1043,7 +1042,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.extraction_recipe_id is None
         judge_mock.assert_not_called()
 
-    async def test_no_notice_divs_found_persists_failed_not_a_crash(self):
+    async def test_no_notice_divs_found_persists_failed_not_a_crash(self) -> None:
         recipe_collection, extraction_collection = _collections()
 
         with patch("threetears.scrape.llm_retry.create_chat_model") as create_model:
@@ -1062,7 +1061,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.validation_status == "failed"
         assert extraction.structured_fields == {"records": []}
 
-    async def test_one_document_llm_total_failure_does_not_sink_the_others(self):
+    async def test_one_document_llm_total_failure_does_not_sink_the_others(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1090,7 +1089,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert extraction.validation_status == "validated"
         assert extraction.structured_fields == {"records": [{"employer": "Beta LLC", "affected_count": 7}]}
 
-    async def test_one_document_hanging_past_the_deadline_does_not_block_the_others(self):
+    async def test_one_document_hanging_past_the_deadline_does_not_block_the_others(self) -> None:
         """Live-reproduced against a real document: the underlying chat client can hang well
         past its own per-attempt timeout with zero further retry activity -- a real
         West Virginia document reproduced this directly. asyncio.wait_for's outer
@@ -1154,13 +1153,13 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert await _rows_for(extraction_collection, "warn_act_wv_hang") == []
         assert await recipe_collection.get("warn_act_wv_hang") is None
 
-    async def test_a_hanging_judge_call_is_bounded_the_same_as_a_hanging_extraction(self):
+    async def test_a_hanging_judge_call_is_bounded_the_same_as_a_hanging_extraction(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
         single_notice_html = '<html><body><div class="notice"><p>Acme Corp</p></div></body></html>'
 
-        async def hanging_judge(document, extracted, schema, *, api_key, judge_model_id):
+        async def hanging_judge(document, extracted, schema, *, api_key, judge_model_id) -> None:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1189,7 +1188,7 @@ class TestRunEvalLoopMultiRowPerDocumentStrategy:
         assert await _rows_for(extraction_collection, "warn_act_wv_judge_hang") == []
         assert await recipe_collection.get("warn_act_wv_judge_hang") is None
 
-    async def test_consecutive_failures_tracked_on_the_marker_recipe(self):
+    async def test_consecutive_failures_tracked_on_the_marker_recipe(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1242,7 +1241,7 @@ _MIXED_SHAPE_PAGE_HTML = """
 
 
 class TestRunEvalLoopMultiRowVisionRouting:
-    async def test_scanned_document_routes_to_vision_born_digital_routes_to_text(self):
+    async def test_scanned_document_routes_to_vision_born_digital_routes_to_text(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1288,7 +1287,7 @@ class TestRunEvalLoopMultiRowVisionRouting:
         assert {"employer": "Acme Corp", "affected_count": 1} in records
         assert {"employer": "Scanned Co", "affected_count": 2} in records
 
-    async def test_a_hanging_vision_call_is_bounded_the_same_as_a_hanging_text_call(self):
+    async def test_a_hanging_vision_call_is_bounded_the_same_as_a_hanging_text_call(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1298,7 +1297,7 @@ class TestRunEvalLoopMultiRowVisionRouting:
             "</div></body></html>"
         )
 
-        async def hanging_vision(images, schema, *, api_key):
+        async def hanging_vision(images, schema, *, api_key) -> None:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1331,7 +1330,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
     and the judge's own internals get their own dedicated unit tests below and in
     test_extraction.py."""
 
-    async def test_all_records_confirmed_is_validated(self):
+    async def test_all_records_confirmed_is_validated(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1360,7 +1359,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         assert extraction.structured_fields == {"records": records}
         assert extraction.extraction_recipe_id == "warn_act_nv"
 
-    async def test_some_records_rejected_is_needs_review_not_silently_validated(self):
+    async def test_some_records_rejected_is_needs_review_not_silently_validated(self) -> None:
         """The real teeth of the multi-row grounding requirement: a 17-row table
         that's 15/17 right must never look identical to a 17/17 clean pass."""
         import threetears.scrape.eval_loop as eval_loop_module
@@ -1398,7 +1397,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         # the rejected row is dropped, never persisted as if it were correct
         assert {"employer": "Wrong Row", "affected_count": 999} not in extraction.structured_fields["records"]
 
-    async def test_zero_records_confirmed_is_failed(self):
+    async def test_zero_records_confirmed_is_failed(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1423,7 +1422,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         assert extraction.validation_status == "failed"
         assert extraction.structured_fields == {"records": []}
 
-    async def test_no_page_images_fails_without_calling_extraction_or_judge(self):
+    async def test_no_page_images_fails_without_calling_extraction_or_judge(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1450,7 +1449,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         extract_mock.assert_not_called()
         judge_mock.assert_not_called()
 
-    async def test_no_page_images_still_persists_a_recipe_bumping_the_failure_counter(self):
+    async def test_no_page_images_still_persists_a_recipe_bumping_the_failure_counter(self) -> None:
         """Independent-review finding: the zero-images early return skipped
         _save_recipe entirely, contradicting this strategy's own claim to persist
         a marker recipe for the same operational-observability reason per_document
@@ -1476,7 +1475,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         assert recipe is not None
         assert recipe.consecutive_validation_failures == 1
 
-    async def test_a_record_missing_a_required_field_is_dropped_before_spending_a_judge_call(self):
+    async def test_a_record_missing_a_required_field_is_dropped_before_spending_a_judge_call(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1508,7 +1507,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         judge_mock.assert_awaited_once()
         assert judge_mock.await_args.args[1] == [{"employer": "Acme Corp", "affected_count": 42}]
 
-    async def test_extraction_returning_none_is_failed_not_a_crash(self):
+    async def test_extraction_returning_none_is_failed_not_a_crash(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1533,7 +1532,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         assert extraction.validation_status == "failed"
         judge_mock.assert_not_called()
 
-    async def test_a_hanging_extraction_call_is_bounded_and_moves_no_counter(self):
+    async def test_a_hanging_extraction_call_is_bounded_and_moves_no_counter(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -1548,7 +1547,7 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         )
         await recipe_collection.save_entity(recipe)
 
-        async def hanging_extraction(images, schema, *, api_key):
+        async def hanging_extraction(images, schema, *, api_key) -> None:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1576,13 +1575,13 @@ class TestRunEvalLoopMultiRowVisionStrategy:
         assert stored is not None
         assert stored.consecutive_validation_failures == 1
 
-    async def test_a_hanging_judge_call_is_bounded_and_fails_the_poll(self):
+    async def test_a_hanging_judge_call_is_bounded_and_fails_the_poll(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
         records = [{"employer": "Acme Corp", "affected_count": 42}]
 
-        async def hanging_judge(images, records, schema, *, api_key):
+        async def hanging_judge(images, records, schema, *, api_key) -> None:
             await asyncio.sleep(1)
             raise AssertionError("should have been cancelled by the outer deadline")
 
@@ -1651,28 +1650,28 @@ async def _judge_one_document(html, fake_model, *, judge_model_id="deepseek/deep
 
 
 class TestJudgeOneDocumentExtraction:
-    async def test_confirmed_verdict_keeps_the_record(self):
+    async def test_confirmed_verdict_keeps_the_record(self) -> None:
         verdict = {"winning_candidate_index": 0, "reasoning": "matches the document"}
         fake_model, ainvoke_mock = fake_structured_model(verdict)
         extraction, _ = await _judge_one_document(_TEXT_DOCUMENT_HTML, fake_model)
         assert extraction.structured_fields == {"records": [_EXTRACTED]}
         assert ainvoke_mock.await_count == 1
 
-    async def test_rejected_verdict_drops_the_record(self):
+    async def test_rejected_verdict_drops_the_record(self) -> None:
         verdict = {"winning_candidate_index": None, "reasoning": "affected_count is not stated anywhere"}
         fake_model, _ = fake_structured_model(verdict)
         extraction, _ = await _judge_one_document(_TEXT_DOCUMENT_HTML, fake_model)
         assert extraction.structured_fields == {"records": []}
         assert extraction.validation_status == "failed"
 
-    async def test_total_judge_failure_raises_never_reads_as_a_rejection(self):
+    async def test_total_judge_failure_raises_never_reads_as_a_rejection(self) -> None:
         """A judge that could not be asked has not rejected the record; the record is still
         never kept, because the failure stops the poll rather than answering ``True``."""
         fake_model, _ = fake_structured_model(side_effect=RuntimeError("boom"))
         with pytest.raises(StructuredCallExhaustedError):
             await _judge_one_document(_TEXT_DOCUMENT_HTML, fake_model)
 
-    async def test_text_document_uses_the_given_judge_model_no_provider_override(self):
+    async def test_text_document_uses_the_given_judge_model_no_provider_override(self) -> None:
         fake_model, _ = fake_structured_model({"winning_candidate_index": 0, "reasoning": "ok"})
         _, create_model = await _judge_one_document(
             _TEXT_DOCUMENT_HTML, fake_model, judge_model_id="deepseek/deepseek-chat-v3-0324"
@@ -1680,7 +1679,7 @@ class TestJudgeOneDocumentExtraction:
         assert create_model.call_args.args[0] == "deepseek/deepseek-chat-v3-0324"
         assert create_model.call_args.kwargs["provider"] is None
 
-    async def test_scanned_document_uses_the_vision_model_and_provider_ignoring_judge_model_id(self):
+    async def test_scanned_document_uses_the_vision_model_and_provider_ignoring_judge_model_id(self) -> None:
         fake_model, _ = fake_structured_model({"winning_candidate_index": 0, "reasoning": "matches the image"})
         extraction, create_model = await _judge_one_document(
             _SCANNED_DOCUMENT_HTML, fake_model, judge_model_id="this-should-be-ignored"
@@ -1689,7 +1688,7 @@ class TestJudgeOneDocumentExtraction:
         assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
         assert create_model.call_args.kwargs["provider"] == "openrouter"
 
-    async def test_scanned_document_judge_prompt_includes_the_images(self):
+    async def test_scanned_document_judge_prompt_includes_the_images(self) -> None:
         fake_model, ainvoke_mock = fake_structured_model({"winning_candidate_index": 0, "reasoning": "ok"})
         await _judge_one_document(_SCANNED_DOCUMENT_HTML, fake_model)
         [call] = ainvoke_mock.await_args_list
@@ -1740,7 +1739,7 @@ async def _judge_multi_row(fake_model, *, images=(b"fake-png-page-0",), records=
 
 
 class TestJudgeMultiRowExtraction:
-    async def test_every_confirmed_record_is_kept(self):
+    async def test_every_confirmed_record_is_kept(self) -> None:
         verdict = {"confirmed_record_indices": [0, 1], "reasoning": "both rows match"}
         fake_model, ainvoke_mock = fake_structured_model(verdict)
         extraction, _ = await _judge_multi_row(fake_model)
@@ -1748,14 +1747,14 @@ class TestJudgeMultiRowExtraction:
         assert extraction.validation_status == "validated"
         assert ainvoke_mock.await_count == 1
 
-    async def test_a_subset_of_records_confirmed(self):
+    async def test_a_subset_of_records_confirmed(self) -> None:
         verdict = {"confirmed_record_indices": [0], "reasoning": "row 1 bled into row 0's count"}
         fake_model, _ = fake_structured_model(verdict)
         extraction, _ = await _judge_multi_row(fake_model)
         assert extraction.structured_fields == {"records": [_MULTI_ROW_RECORDS[0]]}
         assert extraction.validation_status == "needs_review"
 
-    async def test_out_of_range_indices_are_filtered_out_fail_closed(self):
+    async def test_out_of_range_indices_are_filtered_out_fail_closed(self) -> None:
         """A hallucinated index (the judge names a record that doesn't exist) must
         never crash the caller or silently pass through as a confirmed record."""
         verdict = {"confirmed_record_indices": [0, 99], "reasoning": "oops"}
@@ -1764,24 +1763,24 @@ class TestJudgeMultiRowExtraction:
         assert extraction.structured_fields == {"records": [_MULTI_ROW_RECORDS[0]]}
         assert extraction.validation_status == "needs_review"
 
-    async def test_total_judge_failure_raises_never_an_empty_confirmation(self):
+    async def test_total_judge_failure_raises_never_an_empty_confirmation(self) -> None:
         fake_model, _ = fake_structured_model(side_effect=RuntimeError("boom"))
         with pytest.raises(StructuredCallExhaustedError):
             await _judge_multi_row(fake_model)
 
-    async def test_empty_records_never_call_the_model(self):
+    async def test_empty_records_never_call_the_model(self) -> None:
         fake_model, _ = fake_structured_model({"confirmed_record_indices": [], "reasoning": "unused"})
         extraction, create_model = await _judge_multi_row(fake_model, records=[])
         assert extraction.structured_fields == {"records": []}
         create_model.assert_not_called()
 
-    async def test_always_uses_the_vision_model_and_provider(self):
+    async def test_always_uses_the_vision_model_and_provider(self) -> None:
         fake_model, _ = fake_structured_model({"confirmed_record_indices": [0], "reasoning": "ok"})
         _, create_model = await _judge_multi_row(fake_model)
         assert create_model.call_args.args[0] == "anthropic/claude-sonnet-5"
         assert create_model.call_args.kwargs["provider"] == "openrouter"
 
-    async def test_judge_prompt_includes_every_image_in_one_call(self):
+    async def test_judge_prompt_includes_every_image_in_one_call(self) -> None:
         fake_model, ainvoke_mock = fake_structured_model({"confirmed_record_indices": [0, 1], "reasoning": "ok"})
         await _judge_multi_row(fake_model, images=(b"page-0", b"page-1"))
         assert ainvoke_mock.await_count == 1
@@ -1792,7 +1791,9 @@ class TestJudgeMultiRowExtraction:
 
 
 class TestRegexValidationRunsOffTheEventLoop:
-    async def test_a_backtracking_candidate_does_not_stall_the_event_loop(self, monkeypatch):
+    async def test_a_backtracking_candidate_does_not_stall_the_event_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A regex candidate may take up to REGEX_TIMEOUT_SECONDS to be rejected. The eval loop
         validates off the event loop, so other tasks keep running meanwhile: a heartbeat every 20ms
         must never see a gap anywhere near the candidate's 0.5s."""
@@ -1860,7 +1861,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
     confirmation" or "no record", and persist that as a page nothing could be extracted from.
     It now raises, persists no row and moves no recipe counter."""
 
-    async def test_candidate_generation_outage_raises_and_persists_nothing(self):
+    async def test_candidate_generation_outage_raises_and_persists_nothing(self) -> None:
         recipe_collection, extraction_collection = _collections()
         fake_model, _ = fake_structured_model(side_effect=RuntimeError("provider down"))
         with (
@@ -1881,7 +1882,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
         assert await _rows_for(extraction_collection, "warn_outage_css") == []
         assert await recipe_collection.get("warn_outage_css") is None
 
-    async def test_row_candidate_generation_outage_raises_and_persists_nothing(self):
+    async def test_row_candidate_generation_outage_raises_and_persists_nothing(self) -> None:
         recipe_collection, extraction_collection = _collections()
         fake_model, _ = fake_structured_model(side_effect=RuntimeError("provider down"))
         with (
@@ -1906,7 +1907,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
     # with {} / False / None / set()), so a fake that raises in their place would pass against
     # the unfixed code too.
 
-    async def test_per_document_extraction_outage_fails_the_poll_after_every_document_ran(self):
+    async def test_per_document_extraction_outage_fails_the_poll_after_every_document_ran(self) -> None:
         recipe_collection, extraction_collection = _collections()
         boom = RuntimeError("provider down")
 
@@ -1941,7 +1942,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
         assert await _rows_for(extraction_collection, "warn_outage_docs") == []
         assert await recipe_collection.get("warn_outage_docs") is None
 
-    async def test_per_document_judge_outage_fails_the_poll(self):
+    async def test_per_document_judge_outage_fails_the_poll(self) -> None:
         recipe_collection, extraction_collection = _collections()
         fake_extraction_model, _ = fake_structured_model({"employer": "Acme Corp", "affected_count": "42"})
         fake_judge_model, _ = fake_structured_model(side_effect=RuntimeError("judge down"))
@@ -1967,7 +1968,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
         assert await _rows_for(extraction_collection, "warn_outage_doc_judge") == []
         assert await recipe_collection.get("warn_outage_doc_judge") is None
 
-    async def test_multi_row_vision_extraction_outage_moves_no_recipe_counter(self):
+    async def test_multi_row_vision_extraction_outage_moves_no_recipe_counter(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -2004,7 +2005,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
         assert stored is not None
         assert stored.consecutive_validation_failures == 1
 
-    async def test_multi_row_vision_judge_outage_fails_the_poll(self):
+    async def test_multi_row_vision_judge_outage_fails_the_poll(self) -> None:
         import threetears.scrape.eval_loop as eval_loop_module
 
         recipe_collection, extraction_collection = _collections()
@@ -2037,7 +2038,7 @@ class TestAModelOutageIsNotRecordedAsAnExtraction:
 
 
 class TestACancelledPollIsNotADeadlineFailure:
-    async def test_a_cancellation_is_never_translated_into_a_deadline_failure(self):
+    async def test_a_cancellation_is_never_translated_into_a_deadline_failure(self) -> None:
         """Only the loop's own ``wait_for`` deadline is a failure. A ``CancelledError`` that
         reaches a document's call from anywhere else -- the poll being cancelled, a shutdown --
         is not a model failure and must reach the caller untranslated, with nothing persisted.
@@ -2049,7 +2050,7 @@ class TestACancelledPollIsNotADeadlineFailure:
 
         recipe_collection, extraction_collection = _collections()
 
-        async def cancelled_extract(text, schema, *, model_id, api_key):
+        async def cancelled_extract(text, schema, *, model_id, api_key) -> None:
             raise asyncio.CancelledError()
 
         with (

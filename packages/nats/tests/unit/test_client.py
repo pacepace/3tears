@@ -291,7 +291,7 @@ async def test_subscribe_is_kw_only() -> None:
         pass
 
     with pytest.raises(TypeError):
-        await client.subscribe(Subjects.tools_call(), handler)  # type: ignore[misc]
+        await client.subscribe(Subjects.tools_call(), handler)  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
@@ -2211,8 +2211,8 @@ async def _stopping_pull_consumer(
                 batch=1,
                 fetch_timeout_seconds=0.01,
                 ack_wait_seconds=60.0,
-                bound_to=fake,  # type: ignore[arg-type]
-                current_connection=lambda: fake,  # type: ignore[arg-type,return-value]
+                bound_to=fake,
+                current_connection=lambda: fake,
                 resubscribe=AsyncMock(),
             )
             yield consumer, fake, server.sid_for("_INBOX.pull")

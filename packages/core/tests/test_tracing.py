@@ -44,7 +44,7 @@ def _make_mock_span() -> MagicMock:
     return span
 
 
-def test_traced_sync_function():
+def test_traced_sync_function() -> None:
     """With a mock tracer, verify span is created for sync function."""
     mock_span = _make_mock_span()
     mock_tracer = MagicMock()
@@ -63,7 +63,7 @@ def test_traced_sync_function():
     mock_tracer.start_as_current_span.assert_called_once()
 
 
-def test_traced_async_function():
+def test_traced_async_function() -> None:
     """With a mock tracer, verify span is created for async function."""
     mock_span = _make_mock_span()
     mock_tracer = MagicMock()
@@ -82,7 +82,7 @@ def test_traced_async_function():
     mock_tracer.start_as_current_span.assert_called_once()
 
 
-def test_sensitive_params_filtered():
+def test_sensitive_params_filtered() -> None:
     """Sensitive parameter names (password, token, etc.) are redacted."""
     mock_span = _make_mock_span()
     mock_tracer = MagicMock()
@@ -108,7 +108,7 @@ def test_sensitive_params_filtered():
     assert "arg.token" not in attrs
 
 
-def test_traced_records_exception():
+def test_traced_records_exception() -> None:
     """Exceptions are recorded on the span with ERROR status."""
     mock_span = _make_mock_span()
     mock_tracer = MagicMock()

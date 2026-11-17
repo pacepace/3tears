@@ -5,10 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from threetears.evals.schema.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
-from threetears.evals.schema.completion import CompletionProtocolDefect
 from threetears.evals.run.simulator import (
     SIMULATED_USER_RESPONSE_FORMAT,
     SIMULATOR_ANSWER_BUDGET_TOKENS,
@@ -21,6 +18,8 @@ from threetears.evals.run.simulator import (
     SimulatorTurn,
     TurnDriver,
 )
+from threetears.evals.schema.completion import CompletionProtocolDefect
+from threetears.evals.schema.models import ActorPolicy, ConversationSpec, ConversationStopCause, RoleUsage
 
 # =============================================================================
 # Helpers
@@ -93,7 +92,7 @@ def _actor(actor_id: str, **overrides) -> ActorPolicy:
 # =============================================================================
 
 
-def test_a_conversation_requires_at_least_one_actor():
+def test_a_conversation_requires_at_least_one_actor() -> None:
     """A conversation with nobody and nothing on the other side is unrepresentable, so no driver can be built over one.
 
     Since #578 the world can be the other side (``world_rounds``); with no world round either, no round has a stimulus.
@@ -102,7 +101,7 @@ def test_a_conversation_requires_at_least_one_actor():
         _conversation(actors=[])
 
 
-def test_driver_rejects_unknown_turn_scheduler():
+def test_driver_rejects_unknown_turn_scheduler() -> None:
     actors = [_actor("shopper")]
     conversation = _conversation(actors)
     # Bypass Pydantic so we can verify the runtime check.
@@ -116,7 +115,7 @@ def test_driver_rejects_unknown_turn_scheduler():
 # =============================================================================
 
 
-def test_initial_utterance_renders_variation_placeholders():
+def test_initial_utterance_renders_variation_placeholders() -> None:
     actor = _actor(
         "curious_shopper",
         initial_utterance_template="Can you put together a bundle of {variation.category_pair}?",
@@ -133,7 +132,7 @@ def test_initial_utterance_renders_variation_placeholders():
     assert driver.user_turns == 1
 
 
-def test_a_templated_opener_cannot_reach_an_llm_at_all():
+def test_a_templated_opener_cannot_reach_an_llm_at_all() -> None:
     """The opener is a string substitution, so no model choice can affect it.
 
     This is a signature-level guarantee, not an observation about one call:
@@ -150,7 +149,7 @@ def test_a_templated_opener_cannot_reach_an_llm_at_all():
     assert "llm" in inspect.signature(TurnDriver.next_speaker).parameters
 
 
-def test_max_turns_one_stops_before_any_follow_up_is_requested():
+def test_max_turns_one_stops_before_any_follow_up_is_requested() -> None:
     """At ``max_turns=1`` the driver stops before ``next_user_turn`` is reachable.
 
     ``next_user_turn`` is the sole consumer of the simulator LLM, and the runner
@@ -185,7 +184,7 @@ def test_max_turns_one_stops_before_any_follow_up_is_requested():
     assert roomier.should_continue() is True
 
 
-def test_initial_utterance_returns_none_when_no_template():
+def test_initial_utterance_returns_none_when_no_template() -> None:
     actor = _actor("speak_first_via_llm")  # no initial_utterance_template
     conversation = _conversation([actor])
     driver = TurnDriver(conversation=conversation, variation={})
@@ -193,7 +192,7 @@ def test_initial_utterance_returns_none_when_no_template():
     assert driver.user_turns == 0
 
 
-def test_unknown_placeholder_left_in_text():
+def test_unknown_placeholder_left_in_text() -> None:
     actor = _actor(
         "x",
         initial_utterance_template="Hello {variation.missing_field}!",
@@ -211,7 +210,7 @@ def test_unknown_placeholder_left_in_text():
 # =============================================================================
 
 
-async def test_round_robin_with_three_actors_cycles_in_order():
+async def test_round_robin_with_three_actors_cycles_in_order() -> None:
     actors = [_actor("a"), _actor("b"), _actor("c")]
     conversation = _conversation(actors)
     driver = TurnDriver(conversation=conversation, variation={})
@@ -225,7 +224,7 @@ async def test_round_robin_with_three_actors_cycles_in_order():
     assert [t.actor_id for t in (turn1, turn2, turn3, turn4)] == ["a", "b", "c", "a"]
 
 
-async def test_initial_utterance_advances_scheduler_past_first_actor():
+async def test_initial_utterance_advances_scheduler_past_first_actor() -> None:
     """After initial_utterance(), the next LLM-driven turn comes from actor 2."""
     actors = [_actor("a", initial_utterance_template="hi"), _actor("b"), _actor("c")]
     conversation = _conversation(actors)
@@ -242,7 +241,7 @@ async def test_initial_utterance_advances_scheduler_past_first_actor():
 # =============================================================================
 
 
-async def test_transcript_captures_both_sides_in_order():
+async def test_transcript_captures_both_sides_in_order() -> None:
     actors = [_actor("shopper")]
     conversation = _conversation(actors)
     driver = TurnDriver(conversation=conversation, variation={})
@@ -268,14 +267,14 @@ async def test_transcript_captures_both_sides_in_order():
 # =============================================================================
 
 
-def test_should_continue_initially_true():
+def test_should_continue_initially_true() -> None:
     actors = [_actor("a")]
     conversation = _conversation(actors, max_turns=3)
     driver = TurnDriver(conversation=conversation, variation={})
     assert driver.should_continue() is True
 
 
-def test_max_turns_stops_after_candidate_count():
+def test_max_turns_stops_after_candidate_count() -> None:
     actors = [_actor("a")]
     conversation = _conversation(actors, max_turns=2)
     driver = TurnDriver(conversation=conversation, variation={})
@@ -288,7 +287,7 @@ def test_max_turns_stops_after_candidate_count():
     assert driver.stop_cause is ConversationStopCause.MAX_TURNS
 
 
-def test_explicit_stop_sets_cause():
+def test_explicit_stop_sets_cause() -> None:
     actors = [_actor("a")]
     conversation = _conversation(actors)
     driver = TurnDriver(conversation=conversation, variation={})
@@ -302,7 +301,7 @@ def test_explicit_stop_sets_cause():
     "refusal",
     ["I can't help with that.", "I'm unable to do that.", "I refuse to order that.", ""],
 )
-def test_a_refusal_does_not_end_the_conversation(refusal):
+def test_a_refusal_does_not_end_the_conversation(refusal) -> None:
     """What the candidate says is never a stop signal — a refusal's quality is the judge's to grade.
 
     Stopping on the words of a refusal truncated exactly the conversations whose refusals a
@@ -314,7 +313,7 @@ def test_a_refusal_does_not_end_the_conversation(refusal):
     assert driver.stop_cause is None
 
 
-def test_stop_is_idempotent():
+def test_stop_is_idempotent() -> None:
     actors = [_actor("a")]
     conversation = _conversation(actors)
     driver = TurnDriver(conversation=conversation, variation={})
@@ -328,7 +327,7 @@ def test_stop_is_idempotent():
 # =============================================================================
 
 
-async def test_every_user_turn_sends_the_strict_reply_schema():
+async def test_every_user_turn_sends_the_strict_reply_schema() -> None:
     llm = _RecordingLLM(["hi"])
     await _speak(TurnDriver(conversation=_conversation([_actor("a")]), variation={}), llm)
 
@@ -339,7 +338,7 @@ async def test_every_user_turn_sends_the_strict_reply_schema():
     assert schema["additionalProperties"] is False
 
 
-async def test_a_user_that_says_it_is_done_stops_the_conversation():
+async def test_a_user_that_says_it_is_done_stops_the_conversation() -> None:
     driver = TurnDriver(conversation=_conversation([_actor("a")], max_turns=5), variation={})
     turn = await _speak(driver, _RecordingLLM([_Raw(_reply("thanks, bye", done=True))]))
 
@@ -350,7 +349,7 @@ async def test_a_user_that_says_it_is_done_stops_the_conversation():
     assert driver.transcript == []
 
 
-async def test_a_user_that_is_not_done_keeps_the_conversation_going():
+async def test_a_user_that_is_not_done_keeps_the_conversation_going() -> None:
     driver = TurnDriver(conversation=_conversation([_actor("a")], max_turns=5), variation={})
     turn = await _speak(driver, _RecordingLLM([_Raw(_reply("and another thing", done=False))]))
 
@@ -372,7 +371,7 @@ async def test_a_user_that_is_not_done_keeps_the_conversation_going():
     ],
     ids=["prose", "missing-done", "done-not-bool", "extra-field", "empty"],
 )
-async def test_a_reply_that_breaks_the_schema_is_refused_with_its_spend(raw):
+async def test_a_reply_that_breaks_the_schema_is_refused_with_its_spend(raw) -> None:
     driver = TurnDriver(conversation=_conversation([_actor("a")]), variation={})
 
     class _Billed:
@@ -402,7 +401,7 @@ async def test_a_reply_that_breaks_the_schema_is_refused_with_its_spend(raw):
 # =============================================================================
 
 
-async def test_system_prompt_carries_the_actor_policy_and_variation():
+async def test_system_prompt_carries_the_actor_policy_and_variation() -> None:
     actor = _actor("shopper", policy="You are casual and curious.")
     conversation = _conversation([actor])
     driver = TurnDriver(conversation=conversation, variation={"tone": "casual", "category": "kitchen"})
@@ -419,7 +418,7 @@ async def test_system_prompt_carries_the_actor_policy_and_variation():
     assert "persona" not in system.lower()
 
 
-async def test_user_prompt_carries_intent_and_transcript():
+async def test_user_prompt_carries_intent_and_transcript() -> None:
     actor = _actor("shopper", intent="Get them to add the Blue Kettle.")
     conversation = _conversation([actor])
     driver = TurnDriver(conversation=conversation, variation={})
@@ -438,7 +437,7 @@ async def test_user_prompt_carries_intent_and_transcript():
     assert "You (shopper): initial" in user
 
 
-async def test_multi_actor_transcript_labels_other_actors():
+async def test_multi_actor_transcript_labels_other_actors() -> None:
     """In multi-actor scenarios, the user prompt distinguishes 'You (...)' from 'Actor (...)'."""
     actors = [_actor("alice"), _actor("bob")]
     conversation = _conversation(actors)
@@ -471,15 +470,15 @@ def _opening(template_text: str, variation: dict[str, str]) -> str:
     return turn.content
 
 
-def test_variation_placeholder_substitution_simple():
+def test_variation_placeholder_substitution_simple() -> None:
     assert _opening("find {variation.category}", {"category": "kitchen"}) == "find kitchen"
 
 
-def test_variation_placeholder_unknown_left_in_place():
+def test_variation_placeholder_unknown_left_in_place() -> None:
     assert _opening("find {variation.missing}", {"category": "kitchen"}) == "find {variation.missing}"
 
 
-def test_variation_placeholder_multiple_substitutions():
+def test_variation_placeholder_multiple_substitutions() -> None:
     out = _opening(
         "{variation.a} and {variation.b}",
         {"a": "AA", "b": "BB"},
@@ -497,7 +496,7 @@ class _UsageResponse:
 
     def __init__(
         self, content="hi", *, model="sim-model", inp=12, out=34, reasoning=None, cost=0.004, price_source="rate_card"
-    ):
+    ) -> None:
         self.content = _reply(content)
         self.model = model
         self.input_tokens = inp
@@ -508,7 +507,7 @@ class _UsageResponse:
 
 
 class _UsageLLM:
-    def __init__(self, response):
+    def __init__(self, response) -> None:
         self._response = response
 
     async def generate(self, *, system: str, user: str, response_format: dict | None = None):
@@ -532,7 +531,7 @@ async def _usage_of(llm) -> CallUsage:
     return call.usage
 
 
-async def test_llm_turn_carries_the_calls_usage():
+async def test_llm_turn_carries_the_calls_usage() -> None:
     usage = await _usage_of(_UsageLLM(_UsageResponse()))
 
     assert usage.model == "sim-model"
@@ -542,15 +541,15 @@ async def test_llm_turn_carries_the_calls_usage():
     assert usage.price_source == "rate_card", "where the dollars came from is the client's to say"
 
 
-async def test_llm_turn_reasoning_unreported_stays_none():
+async def test_llm_turn_reasoning_unreported_stays_none() -> None:
     assert (await _usage_of(_UsageLLM(_UsageResponse(reasoning=None)))).reasoning_tokens is None
 
 
-async def test_llm_turn_reasoning_zero_is_kept():
+async def test_llm_turn_reasoning_zero_is_kept() -> None:
     assert (await _usage_of(_UsageLLM(_UsageResponse(reasoning=0)))).reasoning_tokens == 0
 
 
-async def test_llm_turn_from_a_client_reporting_nothing_reads_as_unobserved():
+async def test_llm_turn_from_a_client_reporting_nothing_reads_as_unobserved() -> None:
     """A minimal client (content only) reports no spend — not a spend of zero dollars."""
     usage = await _usage_of(_RecordingLLM(["hi"]))
 
@@ -565,7 +564,7 @@ async def test_llm_turn_from_a_client_reporting_nothing_reads_as_unobserved():
 class _MistypedSentResponse(_UsageResponse):
     """A billed response whose ``sent_settings`` holds a word where request settings belong: the host's defect."""
 
-    def __init__(self, content="hi"):
+    def __init__(self, content="hi") -> None:
         super().__init__(content)
         self.sent_settings = "low"
 
@@ -582,7 +581,7 @@ class _SchedulerThenMistypedLLM:
         return response
 
 
-async def test_a_refused_sent_settings_is_raised_only_after_the_billed_utterance_is_recorded():
+async def test_a_refused_sent_settings_is_raised_only_after_the_billed_utterance_is_recorded() -> None:
     """The call was paid for: its spend is in ``calls`` (unverified) before the host's defect leaves."""
     driver = _usage_driver()
 
@@ -598,7 +597,7 @@ async def test_a_refused_sent_settings_is_raised_only_after_the_billed_utterance
     assert (row.call_count, row.cost_usd, row.sent_settings) == (1, pytest.approx(0.004), None)
 
 
-async def test_a_refused_sent_settings_on_a_scheduling_pick_is_raised_after_the_pick_is_recorded():
+async def test_a_refused_sent_settings_on_a_scheduling_pick_is_raised_after_the_pick_is_recorded() -> None:
     driver = TurnDriver(
         conversation=_conversation(
             [ActorPolicy(id="a", policy="p", intent="i"), ActorPolicy(id="b", policy="p", intent="i")],
@@ -619,7 +618,7 @@ async def test_a_refused_sent_settings_on_a_scheduling_pick_is_raised_after_the_
     )
 
 
-def test_scripted_initial_utterance_records_no_call():
+def test_scripted_initial_utterance_records_no_call() -> None:
     """A templated opener runs no LLM at all — distinct from an LLM call that reported nothing."""
     driver = TurnDriver(
         conversation=_conversation([ActorPolicy(id="a", policy="p", intent="i", initial_utterance_template="Hello")]),
@@ -629,7 +628,7 @@ def test_scripted_initial_utterance_records_no_call():
     assert driver.calls == []
 
 
-async def test_fold_usage_lands_every_call_on_the_simulator_ledger():
+async def test_fold_usage_lands_every_call_on_the_simulator_ledger() -> None:
     driver = _usage_driver()
     await _speak(driver, _UsageLLM(_UsageResponse()))
     await _speak(driver, _UsageLLM(_UsageResponse()))
@@ -644,7 +643,7 @@ async def test_fold_usage_lands_every_call_on_the_simulator_ledger():
     assert driver.cost_usd == pytest.approx(0.008)
 
 
-def test_an_actor_or_purpose_belongs_on_a_simulator_row_only():
+def test_an_actor_or_purpose_belongs_on_a_simulator_row_only() -> None:
     """The attribution names a simulated actor, which only the simulator role has; refused on every other row."""
     assert RoleUsage(role="simulator", actor_id="a", purpose="schedule").actor_id == "a"
     for fields in ({"actor_id": "a"}, {"purpose": "utterance"}):
@@ -657,7 +656,7 @@ def test_an_actor_or_purpose_belongs_on_a_simulator_row_only():
 
 
 @pytest.mark.parametrize("role", ["candidate", "judge"])
-def test_fold_usage_refuses_another_roles_ledger(role):
+def test_fold_usage_refuses_another_roles_ledger(role) -> None:
     """Simulator spend is the program's cost; landing it on the candidate's row would misstate what it costs."""
     with pytest.raises(ValueError, match="simulator ledger"):
         _usage_driver().fold_usage(RoleUsageLedger(role=role))
@@ -675,7 +674,7 @@ def test_the_simulator_asks_for_its_reasoning_by_effort_under_a_derived_cap() ->
     assert SIMULATOR_MAX_TOKENS == SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
 
 
-def test_a_candidate_turn_carries_only_what_the_simulator_reads():
+def test_a_candidate_turn_carries_only_what_the_simulator_reads() -> None:
     """The reply's words are all the driver reads; a field it never read invited tool calls nobody would see."""
     from dataclasses import fields
 

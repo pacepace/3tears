@@ -7,14 +7,14 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-
-from threetears.evals.kernel import AdmittedGeneration, EvalStorage, OutOfRunBudget, plan_variation_calls
-from threetears.evals.schema import OutOfRunSpend
-from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.schema.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.gen import price_variations
 from threetears.evals.gen.variation_gen import generate_variations
+from threetears.evals.kernel import AdmittedGeneration, EvalStorage, OutOfRunBudget, plan_variation_calls
+from threetears.evals.kernel.errors import ValidationFailedError
+from threetears.evals.schema import OutOfRunSpend
+from threetears.evals.schema.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.off_loop import off_loop
 
 # =============================================================================
@@ -75,7 +75,7 @@ class _FakeLLM:
 
         return _R()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name) -> None:
         raise AttributeError(name)
 
 
@@ -116,7 +116,7 @@ def _template(*axes, name="t", scope_id="uni") -> EvalTemplate:
 # =============================================================================
 
 
-async def test_enum_axis_yields_every_value_once_within_cap():
+async def test_enum_axis_yields_every_value_once_within_cap() -> None:
     template = _template(VariationAxis(name="tone", generator="enum", values=["casual", "cocky", "uncertain"]))
     storage = _FakeStorage()
     out = (
@@ -127,7 +127,7 @@ async def test_enum_axis_yields_every_value_once_within_cap():
     assert tones == ["casual", "cocky", "uncertain"]
 
 
-async def test_enum_axis_persists_each_unique_test_case():
+async def test_enum_axis_persists_each_unique_test_case() -> None:
     template = _template(VariationAxis(name="tone", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
     out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
@@ -135,7 +135,7 @@ async def test_enum_axis_persists_each_unique_test_case():
     assert len(storage.saved) == 2
 
 
-async def test_existing_test_case_reused_not_duplicated():
+async def test_existing_test_case_reused_not_duplicated() -> None:
     """A second call with the same template+scope returns the same test cases."""
     template = _template(VariationAxis(name="tone", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
@@ -155,7 +155,7 @@ async def test_existing_test_case_reused_not_duplicated():
 # =============================================================================
 
 
-async def test_sample_axis_chooses_n_distinct_values():
+async def test_sample_axis_chooses_n_distinct_values() -> None:
     template = _template(VariationAxis(name="x", generator="sample", values=["a", "b", "c", "d", "e"]))
     storage = _FakeStorage()
     rng = random.Random(42)
@@ -170,7 +170,7 @@ async def test_sample_axis_chooses_n_distinct_values():
     assert all(v in {"a", "b", "c", "d", "e"} for v in values)
 
 
-async def test_sample_axis_handles_n_larger_than_values():
+async def test_sample_axis_handles_n_larger_than_values() -> None:
     template = _template(VariationAxis(name="x", generator="sample", values=["a", "b"]))
     storage = _FakeStorage()
     out = (await generate_variations(template, 10, storage=storage, scope_id="u", blocking_executor=None)).cases
@@ -178,7 +178,7 @@ async def test_sample_axis_handles_n_larger_than_values():
     assert len(out) == 2
 
 
-async def test_an_axis_with_no_values_refuses_rather_than_generating_nothing():
+async def test_an_axis_with_no_values_refuses_rather_than_generating_nothing() -> None:
     template = _template(VariationAxis(name="x", generator="sample", values=[]))
     storage = _FakeStorage()
     with pytest.raises(ValidationFailedError, match="'x'"):
@@ -186,7 +186,7 @@ async def test_an_axis_with_no_values_refuses_rather_than_generating_nothing():
     assert storage.saved == []
 
 
-async def test_an_empty_axis_does_not_fall_back_to_the_templates_stored_cases():
+async def test_an_empty_axis_does_not_fall_back_to_the_templates_stored_cases() -> None:
     """The fallback froze a case set nobody asked for under a run that said it generated one."""
     template = _template(VariationAxis(name="x", generator="sample", values=[]))
     storage = _FakeStorage()
@@ -200,7 +200,7 @@ async def test_an_empty_axis_does_not_fall_back_to_the_templates_stored_cases():
 # =============================================================================
 
 
-async def test_llm_axis_parses_json_object_response():
+async def test_llm_axis_parses_json_object_response() -> None:
     template = _template(VariationAxis(name="category_pair", generator="llm", description="Category pairings"))
     storage = _FakeStorage()
     llm = _FakeLLM(['{"values": ["kitchen + garden", "toys + stationery", "tools + linen"]}'])
@@ -218,7 +218,7 @@ async def test_llm_axis_parses_json_object_response():
     assert sorted(pairs) == ["kitchen + garden", "tools + linen", "toys + stationery"]
 
 
-async def test_llm_axis_sends_the_values_schema_it_was_planned_with():
+async def test_llm_axis_sends_the_values_schema_it_was_planned_with() -> None:
     """The axis generator sends its envelope as a strict schema, as planned and priced."""
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
@@ -236,7 +236,7 @@ async def test_llm_axis_sends_the_values_schema_it_was_planned_with():
     assert planned.response_format is not None and planned.response_format["type"] == "json_schema"
 
 
-async def test_llm_axis_strips_code_fences_and_commentary():
+async def test_llm_axis_strips_code_fences_and_commentary() -> None:
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     llm = _FakeLLM(['Sure! Here are three: ```json\n{"values": ["a", "b", "c"]}\n```'])
@@ -253,7 +253,7 @@ async def test_llm_axis_strips_code_fences_and_commentary():
     assert sorted(tc.variation_params["x"] for tc in out) == ["a", "b", "c"]
 
 
-async def test_llm_axis_dedupes_against_existing():
+async def test_llm_axis_dedupes_against_existing() -> None:
     """LLM-generated values that match existing test cases are excluded from output.
 
     Existing test cases are *reused* only when the new generation re-discovers
@@ -288,7 +288,7 @@ async def test_llm_axis_dedupes_against_existing():
     assert saved_values == ["novel1", "novel2"]
 
 
-async def test_enum_axis_with_existing_reuses_matching_test_cases():
+async def test_enum_axis_with_existing_reuses_matching_test_cases() -> None:
     """When an enum axis produces a combo matching an existing test case, the existing case is returned (not re-saved)."""
     template = _template(VariationAxis(name="x", generator="enum", values=["a", "b"]))
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "a"})
@@ -302,7 +302,7 @@ async def test_enum_axis_with_existing_reuses_matching_test_cases():
     assert storage.saved[0].variation_params == {"x": "b"}
 
 
-async def test_llm_axis_dedupes_passed_to_prompt():
+async def test_llm_axis_dedupes_passed_to_prompt() -> None:
     """The existing values block is rendered into the prompt for the LLM to see."""
     template = _template(VariationAxis(name="x", generator="llm"))
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "Stale Category"})
@@ -321,7 +321,7 @@ async def test_llm_axis_dedupes_passed_to_prompt():
     assert "Stale Category" in user
 
 
-async def test_an_llm_axis_whose_response_is_unparseable_refuses():
+async def test_an_llm_axis_whose_response_is_unparseable_refuses() -> None:
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     llm = _FakeLLM(["I'm sorry but I cannot help with that request."])
@@ -337,7 +337,7 @@ async def test_an_llm_axis_whose_response_is_unparseable_refuses():
         )
 
 
-async def test_an_llm_axis_whose_object_has_no_values_key_refuses():
+async def test_an_llm_axis_whose_object_has_no_values_key_refuses() -> None:
     """A parseable JSON object that carries no 'values' array refuses by name, not a crash."""
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
@@ -353,7 +353,7 @@ async def test_an_llm_axis_whose_object_has_no_values_key_refuses():
         )
 
 
-async def test_llm_axis_requires_an_admitted_generation():
+async def test_llm_axis_requires_an_admitted_generation() -> None:
     template = _template(VariationAxis(name="x", generator="llm"))
     storage = _FakeStorage()
     with pytest.raises(ValueError, match="no admitted generation was supplied"):
@@ -365,7 +365,7 @@ async def test_llm_axis_requires_an_admitted_generation():
 # =============================================================================
 
 
-async def test_multi_axis_combines_via_cartesian_product():
+async def test_multi_axis_combines_via_cartesian_product() -> None:
     template = _template(
         VariationAxis(name="tone", generator="enum", values=["casual", "cocky"]),
         VariationAxis(name="depth", generator="enum", values=["short", "long"]),
@@ -384,7 +384,7 @@ async def test_multi_axis_combines_via_cartesian_product():
     ]
 
 
-async def test_multi_axis_truncates_when_product_exceeds_n_variations():
+async def test_multi_axis_truncates_when_product_exceeds_n_variations() -> None:
     template = _template(
         VariationAxis(name="a", generator="enum", values=["1", "2", "3"]),
         VariationAxis(name="b", generator="enum", values=["x", "y", "z"]),
@@ -407,7 +407,7 @@ async def test_multi_axis_truncates_when_product_exceeds_n_variations():
 # =============================================================================
 
 
-async def test_preview_mode_does_not_persist():
+async def test_preview_mode_does_not_persist() -> None:
     template = _template(VariationAxis(name="x", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
     out = (
@@ -417,7 +417,7 @@ async def test_preview_mode_does_not_persist():
     assert storage.saved == []
 
 
-async def test_preview_mode_does_not_dedup_against_storage():
+async def test_preview_mode_does_not_dedup_against_storage() -> None:
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "a"})
     storage = _FakeStorage(existing=[existing])
@@ -434,13 +434,13 @@ async def test_preview_mode_does_not_dedup_against_storage():
 # =============================================================================
 
 
-async def test_n_variations_zero_raises():
+async def test_n_variations_zero_raises() -> None:
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     with pytest.raises(ValueError, match="positive"):
         await generate_variations(template, 0, storage=_FakeStorage(), scope_id="u", blocking_executor=None)
 
 
-async def test_the_dedup_key_is_stable_under_key_order():
+async def test_the_dedup_key_is_stable_under_key_order() -> None:
     """A stored case written in another key order is the same case, so it is reused, not re-minted."""
     template = _template(
         VariationAxis(name="x", generator="enum", values=["1"]),
@@ -455,7 +455,7 @@ async def test_the_dedup_key_is_stable_under_key_order():
     assert storage.saved == []
 
 
-async def test_the_dedup_key_distinguishes_different_values():
+async def test_the_dedup_key_distinguishes_different_values() -> None:
     """A stored case with a different value blocks nothing: the new combination is persisted."""
     template = _template(VariationAxis(name="x", generator="enum", values=["2"]))
     existing = EvalTestCase(template_id=template.id, scope_id="u", variation_params={"x": "1"})
@@ -472,7 +472,7 @@ async def test_the_dedup_key_distinguishes_different_values():
 # =============================================================================
 
 
-async def test_generated_cases_are_content_hashed():
+async def test_generated_cases_are_content_hashed() -> None:
     """A generated artifact carries a pinned identity, or 'the same cell' can drift.
 
     Without it, a regenerated variation set silently becomes different inputs
@@ -490,14 +490,14 @@ async def test_generated_cases_are_content_hashed():
         assert tc.content_hash is not None
 
 
-async def test_distinct_variations_get_distinct_content_hashes():
+async def test_distinct_variations_get_distinct_content_hashes() -> None:
     template = _template(VariationAxis(name="tone", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
     out = (await generate_variations(template, 5, storage=storage, scope_id="u", blocking_executor=None)).cases
     assert len({tc.content_hash for tc in out}) == 2
 
 
-async def test_dedup_and_content_identity_agree():
+async def test_dedup_and_content_identity_agree() -> None:
     """Two cases the generator considers duplicates must hash identically.
 
     These are two independent notions of 'same generated artifact' — the
@@ -524,7 +524,7 @@ async def test_dedup_and_content_identity_agree():
     assert compute_content_hash(params_a) == compute_content_hash(params_b)
 
 
-async def test_a_case_with_no_generated_content_carries_no_content_hash():
+async def test_a_case_with_no_generated_content_carries_no_content_hash() -> None:
     """A template with no variation axes generates nothing to pin.
 
     ``None`` here means 'no generated content', which is why an empty params
@@ -542,7 +542,7 @@ async def test_a_case_with_no_generated_content_carries_no_content_hash():
 # =============================================================================
 
 
-async def test_a_short_generation_says_it_ran_short():
+async def test_a_short_generation_says_it_ran_short() -> None:
     """Two enum values cannot make five cases; the counts say so rather than the run looking whole."""
     template = _template(VariationAxis(name="x", generator="enum", values=["a", "b"]))
     counts = (
@@ -552,7 +552,7 @@ async def test_a_short_generation_says_it_ran_short():
     assert counts.short
 
 
-async def test_a_full_generation_is_not_short_and_counts_what_it_reused():
+async def test_a_full_generation_is_not_short_and_counts_what_it_reused() -> None:
     template = _template(VariationAxis(name="x", generator="enum", values=["a", "b"]))
     storage = _FakeStorage()
     await generate_variations(template, 2, storage=storage, scope_id="u", blocking_executor=None)
@@ -561,7 +561,7 @@ async def test_a_full_generation_is_not_short_and_counts_what_it_reused():
     assert not counts.short
 
 
-async def test_the_counts_name_the_model_that_wrote_the_llm_axis():
+async def test_the_counts_name_the_model_that_wrote_the_llm_axis() -> None:
     """Read off the client that made the calls, so the run cannot record a writer other than the one called."""
     template = _template(VariationAxis(name="x", generator="llm"))
     counts = (
@@ -577,7 +577,7 @@ async def test_the_counts_name_the_model_that_wrote_the_llm_axis():
     assert counts.variation_model == "writer-model"
 
 
-async def test_the_counts_name_no_writer_when_no_axis_is_llm():
+async def test_the_counts_name_no_writer_when_no_axis_is_llm() -> None:
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     counts = (
         await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u", blocking_executor=None)
@@ -585,7 +585,7 @@ async def test_the_counts_name_no_writer_when_no_axis_is_llm():
     assert counts.variation_model is None
 
 
-async def test_a_generation_for_a_template_no_model_writes_is_refused():
+async def test_a_generation_for_a_template_no_model_writes_is_refused() -> None:
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     stray = AdmittedGeneration(writer=_FakeLLM([]), budget=_budget(), calls={})
     with pytest.raises(ValueError, match="no llm-generated axis"):
@@ -606,7 +606,7 @@ def _two_llm_axes() -> EvalTemplate:
     )
 
 
-async def test_every_llm_axis_is_planned_and_admitted_together_before_the_first_call_is_made():
+async def test_every_llm_axis_is_planned_and_admitted_together_before_the_first_call_is_made() -> None:
     """Admitted one axis at a time, the first would be paid for and the second then refused."""
     llm = _FakeLLM(['{"values": ["a"]}', '{"values": ["b"]}'], ceilings=[0.4, 0.7])
     budget = _budget(cap_usd=1.0)
@@ -620,7 +620,7 @@ async def test_every_llm_axis_is_planned_and_admitted_together_before_the_first_
     assert budget.recorded == ()
 
 
-async def test_a_generation_admitting_other_axes_than_the_template_writes_is_refused_before_any_call():
+async def test_a_generation_admitting_other_axes_than_the_template_writes_is_refused_before_any_call() -> None:
     llm = _FakeLLM(['{"values": ["a"]}'])
     one_axis = _template(VariationAxis(name="x", generator="llm"))
     admitted = _admitted(one_axis, 1, llm)
@@ -631,7 +631,7 @@ async def test_a_generation_admitting_other_axes_than_the_template_writes_is_ref
     assert llm.calls == []
 
 
-async def test_generation_admits_nothing_of_its_own():
+async def test_generation_admits_nothing_of_its_own() -> None:
     """The caller's admission is what is made: the writer is priced once, by the caller, and never again."""
     llm = _FakeLLM(['{"values": ["a"]}', '{"values": ["b"]}'], ceilings=[0.4, 0.5])
     template = _two_llm_axes()
@@ -645,7 +645,7 @@ async def test_generation_admits_nothing_of_its_own():
     assert llm.priced == priced_before and len(llm.calls) == 2
 
 
-async def test_an_admitted_generation_ledgers_one_row_per_llm_call_and_returns_them():
+async def test_an_admitted_generation_ledgers_one_row_per_llm_call_and_returns_them() -> None:
     llm = _FakeLLM(['{"values": ["a"]}', '{"values": ["b"]}'], ceilings=[0.4, 0.5])
     ledger = EvalStorage(InMemoryDocumentStore())
     budget = OutOfRunBudget(
@@ -672,13 +672,13 @@ async def test_an_admitted_generation_ledgers_one_row_per_llm_call_and_returns_t
     assert budget.committed_usd == pytest.approx(0.9)
 
 
-async def test_a_generation_no_model_writes_ledgers_nothing():
+async def test_a_generation_no_model_writes_ledgers_nothing() -> None:
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     generated = await generate_variations(template, 1, storage=_FakeStorage(), scope_id="u", blocking_executor=None)
     assert generated.spend == ()
 
 
-async def test_price_variations_quotes_what_a_generation_would_admit_and_calls_nothing():
+async def test_price_variations_quotes_what_a_generation_would_admit_and_calls_nothing() -> None:
     llm = _FakeLLM([], ceilings=[0.4, 0.5])
     budget = _budget(cap_usd=1.0)
 
@@ -690,7 +690,7 @@ async def test_price_variations_quotes_what_a_generation_would_admit_and_calls_n
     assert llm.calls == [] and budget.committed_usd == 0.0, "a quote commits nothing"
 
 
-async def test_price_variations_refuses_what_the_generation_would_refuse():
+async def test_price_variations_refuses_what_the_generation_would_refuse() -> None:
     llm = _FakeLLM([], ceilings=[0.4, 0.7])
     with pytest.raises(ValidationFailedError, match="above the out-of-run cap"):
         await price_variations(
@@ -705,7 +705,7 @@ async def test_price_variations_refuses_what_the_generation_would_refuse():
     assert llm.calls == []
 
 
-async def test_price_variations_refuses_a_template_no_model_writes():
+async def test_price_variations_refuses_a_template_no_model_writes() -> None:
     template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
     with pytest.raises(ValueError, match="no llm-generated axis"):
         await price_variations(
@@ -768,7 +768,7 @@ class _FakeThreadRecordingLLM(_FakeLLM):
 
 
 @pytest.mark.parametrize("named_pool", [True, False], ids=["host-pool", "default-executor"])
-async def test_no_store_call_from_a_generation_runs_on_the_loop_thread(named_pool: bool):
+async def test_no_store_call_from_a_generation_runs_on_the_loop_thread(named_pool: bool) -> None:
     """Every store call — the dedup read, each save, each ledger row — leaves the loop; the model call does not.
 
     One existing case so the dedup read has something to find, an ``llm`` axis so a ledger row is written,
@@ -815,7 +815,7 @@ async def test_no_store_call_from_a_generation_runs_on_the_loop_thread(named_poo
         assert {ident for _, ident in store_threads} == {pool_thread}, "the executor named is the one used"
 
 
-async def test_pricing_a_generation_reads_its_cases_off_the_loop_thread():
+async def test_pricing_a_generation_reads_its_cases_off_the_loop_thread() -> None:
     threads: list[tuple[str, int]] = []
     loop_thread = threading.get_ident()
     storage = _FakeThreadRecordingCaseStore(threads)

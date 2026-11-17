@@ -80,7 +80,7 @@ async def apply_migrations(url: str, schema: str) -> None:
         await conn.execute(f'SET search_path TO "{schema}", public')
         store = AsyncpgStore(conn)
         runner = build_runner()
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(store)
     finally:
         await conn.close()
 

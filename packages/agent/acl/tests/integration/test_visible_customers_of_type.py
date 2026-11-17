@@ -56,7 +56,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         runner = MigrationRunner()
         register_acl(runner)
         register_tools_platform(runner, depends_on=("agent_acl",))
-        await runner.apply_for_platform_schema(_Store(connection))  # type: ignore[arg-type]
+        await runner.apply_for_platform_schema(_Store(connection))
         await connection.execute("CREATE TABLE listed_things (thing_id uuid PRIMARY KEY, customer_id uuid)")
         yield connection
     finally:

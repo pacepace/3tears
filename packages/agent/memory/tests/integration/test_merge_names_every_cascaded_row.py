@@ -132,7 +132,7 @@ async def test_every_row_the_collision_cascade_removed_is_named(pg_schema: tuple
     conn = await asyncpg.connect(url)
     try:
         await conn.execute(f'SET search_path TO "{schema}", public')
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
 
         agent = uuid.uuid4()
         source, master = uuid.uuid4(), uuid.uuid4()
@@ -190,7 +190,7 @@ async def test_a_merge_with_no_collision_deletes_and_names_nothing(pg_schema: tu
     conn = await asyncpg.connect(url)
     try:
         await conn.execute(f'SET search_path TO "{schema}", public')
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
 
         agent = uuid.uuid4()
         source, master = uuid.uuid4(), uuid.uuid4()
@@ -263,7 +263,7 @@ async def test_a_merge_naming_its_agent_moves_the_same_rows(pg_schema: tuple[str
     conn = await asyncpg.connect(url)
     try:
         await conn.execute(f'SET search_path TO "{schema}", public')
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
 
         agent = uuid.uuid4()
         source, master, bystander = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()

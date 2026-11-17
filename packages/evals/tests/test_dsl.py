@@ -5,15 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
-
 import threetears.evals.kernel.dsl as _dsl
 import threetears.evals.schema.goal_grammar as _grammar
-from threetears.evals.schema import Firings, Precondition, WorldEvent
+from pydantic import ValidationError
 from threetears.evals.kernel.dsl import NOT_ESTABLISHED, Missing, evaluate, evaluate_with_detail
-from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse
 from threetears.evals.kernel.host import Triggered, WorldDimension, WorldRegistry
+from threetears.evals.schema import Firings, Precondition, WorldEvent
 from threetears.evals.schema.call_ledger import CallLedger
+from threetears.evals.schema.goal_grammar import DSLError, extract_paths, parse
 
 
 def _state_with(**dimensions: dict[str, Any]) -> dict[str, Any]:
@@ -54,17 +53,17 @@ def _state_with(**dimensions: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 
-def test_path_resolves_namespace_dict():
+def test_path_resolves_namespace_dict() -> None:
     state = _state_with(shop={"cart": [1, 2, 3]})
     assert evaluate("state.shop.cart.length == 3", **state) is True
 
 
-def test_path_with_subscript_positive_index():
+def test_path_with_subscript_positive_index() -> None:
     state = _state_with(shop={"cart": [{"title": "A"}, {"title": "B"}]})
     assert evaluate('state.shop.cart[0].title == "A"', **state) is True
 
 
-def test_path_with_subscript_negative_index():
+def test_path_with_subscript_negative_index() -> None:
     state = _state_with(chat={"messages": [{"content": "hi"}, {"content": "thanks"}]})
     assert evaluate('state.chat.messages[-1].content == "thanks"', **state) is True
 
@@ -115,7 +114,7 @@ _SHOP = {"shelf": {"stock": 3}, "till": {"float": 20}}
     [(False, "state.stock", "state.float"), (True, "state.shelf.stock", "state.till.float")],
     ids=["flat names", "composed names"],
 )
-def test_a_path_names_the_dimension_however_the_host_names_it(composed, stock, till_float):
+def test_a_path_names_the_dimension_however_the_host_names_it(composed, stock, till_float) -> None:
     """``state.<dimension>`` reads the value the end state holds under that dimension's name."""
     world = _shop_world(composed=composed)
     end_state = world.named(_SHOP)
@@ -124,7 +123,7 @@ def test_a_path_names_the_dimension_however_the_host_names_it(composed, stock, t
     assert evaluate_with_detail(f"{stock} > 2", end_state=end_state, ledger=CallLedger(), world=world) == (True, "True")
 
 
-def test_a_path_inside_a_flat_dimension_s_value_resolves_below_it():
+def test_a_path_inside_a_flat_dimension_s_value_resolves_below_it() -> None:
     """The rest of the path addresses inside the value, as it does below a composed name."""
     world = WorldRegistry(
         [
@@ -147,7 +146,7 @@ def test_a_path_inside_a_flat_dimension_s_value_resolves_below_it():
 
 
 @pytest.mark.parametrize("composed", [False, True], ids=["flat names", "composed names"])
-def test_a_dimension_the_world_does_not_declare_or_the_end_state_does_not_hold_is_missing(composed):
+def test_a_dimension_the_world_does_not_declare_or_the_end_state_does_not_hold_is_missing(composed) -> None:
     """Undeclared or absent — each is Missing, never another dimension's value."""
     world = _shop_world(composed=composed)
     stock = "state.shelf.stock" if composed else "state.stock"
@@ -162,13 +161,13 @@ def test_a_dimension_the_world_does_not_declare_or_the_end_state_does_not_hold_i
     assert evaluate(f"{stock} == 3", end_state={}, ledger=CallLedger(), world=world) is False
 
 
-def test_a_state_path_on_a_host_that_declares_no_world_raises():
+def test_a_state_path_on_a_host_that_declares_no_world_raises() -> None:
     """No layout is read in place of a registry: a worldless host has no dimension for a path to name."""
     with pytest.raises(DSLError, match="declares no world"):
         evaluate("state.shop.cart.length >= 1", end_state={"shop": {"cart": [1]}}, ledger=CallLedger(), world=None)
 
 
-def test_a_check_reading_only_calls_and_the_case_needs_no_world():
+def test_a_check_reading_only_calls_and_the_case_needs_no_world() -> None:
     """The ledger and the case are not world state, so a worldless host grades them."""
     ledger = CallLedger()
     ledger.record("shop", "search", {"query": "linen"})
@@ -183,7 +182,7 @@ def test_a_check_reading_only_calls_and_the_case_needs_no_world():
 
 
 @pytest.mark.parametrize("expression", ["length(state) == 0", 'state["shop"].length == 1', "not state"])
-def test_state_alone_is_not_a_value(expression):
+def test_state_alone_is_not_a_value(expression) -> None:
     """``state`` names no container of every dimension: a check reads one by name, as the gate resolves it."""
     with pytest.raises(DSLError, match="'state' is not a value"):
         evaluate(expression, **_state_with(shop={"cart": []}))
@@ -192,11 +191,11 @@ def test_state_alone_is_not_a_value(expression):
 class TestNamingASeedShapedWorld:
     """``WorldRegistry.named`` turns a seed-shaped world into the name-keyed end state a check reads."""
 
-    def test_each_key_is_named_through_the_host_s_addressing(self):
+    def test_each_key_is_named_through_the_host_s_addressing(self) -> None:
         assert _shop_world(composed=True).named(_SHOP) == {"shelf.stock": 3, "till.float": 20}
         assert _shop_world(composed=False).named(_SHOP) == {"stock": 3, "float": 20}
 
-    def test_the_values_are_copies(self):
+    def test_the_values_are_copies(self) -> None:
         seed = {"shelf": {"stock": [1]}}
         world = WorldRegistry(
             [
@@ -223,12 +222,12 @@ class TestNamingASeedShapedWorld:
         ],
         ids=["undeclared", "misplaced", "malformed"],
     )
-    def test_a_value_no_read_could_return_is_refused(self, namespaces, refusal):
+    def test_a_value_no_read_could_return_is_refused(self, namespaces, refusal) -> None:
         with pytest.raises(ValueError, match=refusal):
             _shop_world(composed=False).named(namespaces)
 
 
-def test_variation_resolves_from_variation_dict():
+def test_variation_resolves_from_variation_dict() -> None:
     state = _state_with()
     assert (
         evaluate(
@@ -240,18 +239,18 @@ def test_variation_resolves_from_variation_dict():
     )
 
 
-def test_missing_namespace_resolves_to_missing_and_comparison_returns_false():
+def test_missing_namespace_resolves_to_missing_and_comparison_returns_false() -> None:
     state = _state_with()
     # No shop namespace at all
     assert evaluate("state.shop.cart.length >= 1", **state) is False
 
 
-def test_missing_index_resolves_to_missing():
+def test_missing_index_resolves_to_missing() -> None:
     state = _state_with(shop={"cart": []})
     assert evaluate('state.shop.cart[0].title == "X"', **state) is False
 
 
-def test_missing_dict_key_resolves_to_missing():
+def test_missing_dict_key_resolves_to_missing() -> None:
     state = _state_with(shop={"cart": []})
     # No 'catalog' key
     assert evaluate('state.shop.catalog[0].title == "X"', **state) is False
@@ -262,12 +261,12 @@ def test_missing_dict_key_resolves_to_missing():
 # =============================================================================
 
 
-def test_int_equality():
+def test_int_equality() -> None:
     state = _state_with(shop={"cart": [1]})
     assert evaluate("state.shop.cart.length == 1", **state) is True
 
 
-def test_int_ordering_operators():
+def test_int_ordering_operators() -> None:
     state = _state_with(shop={"cart": [1, 2, 3]})
     assert evaluate("state.shop.cart.length >= 2", **state) is True
     assert evaluate("state.shop.cart.length > 3", **state) is False
@@ -276,12 +275,12 @@ def test_int_ordering_operators():
     assert evaluate("state.shop.cart.length != 3", **state) is False
 
 
-def test_string_comparison():
+def test_string_comparison() -> None:
     state = _state_with(shop={"cart": [{"title": "Blue Kettle"}]})
     assert evaluate('state.shop.cart[0].title != "Other"', **state) is True
 
 
-def test_comparison_type_mismatch_raises_rather_than_failing_the_check():
+def test_comparison_type_mismatch_raises_rather_than_failing_the_check() -> None:
     """An uncomparable pair is a fault in the template or the rig, not the candidate failing it.
 
     Raised, so the runner excludes the cell; a False here was scored as a failed goal.
@@ -301,7 +300,7 @@ def test_comparison_type_mismatch_raises_rather_than_failing_the_check():
         "any(it == 1 for it in state.shop.count)",
     ],
 )
-def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression):
+def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression) -> None:
     """contains / intersects / any over an int: the world or the template is wrong, not the candidate."""
     with pytest.raises(DSLError):
         evaluate(expression, **_state_with(shop={"count": 3}))
@@ -312,13 +311,13 @@ def test_a_builtin_over_a_value_of_the_wrong_type_raises(expression):
 # =============================================================================
 
 
-def test_contains_list_membership():
+def test_contains_list_membership() -> None:
     state = _state_with(shop={"cart": ["a", "b", "c"]})
     assert evaluate('contains(state.shop.cart, "b")', **state) is True
     assert evaluate('contains(state.shop.cart, "z")', **state) is False
 
 
-def test_contains_string_substring():
+def test_contains_string_substring() -> None:
     state = _state_with(chat={"messages": [{"content": "thank you very much"}]})
     assert (
         evaluate(
@@ -329,18 +328,18 @@ def test_contains_string_substring():
     )
 
 
-def test_intersects_lists():
+def test_intersects_lists() -> None:
     state = _state_with(shop={"cart": ["kitchen", "garden"]})
     assert evaluate('intersects(state.shop.cart, ["kitchen", "outdoor"])', **state) is True
     assert evaluate('intersects(state.shop.cart, ["toys"])', **state) is False
 
 
-def test_intersects_missing_path_returns_false():
+def test_intersects_missing_path_returns_false() -> None:
     state = _state_with()
     assert evaluate('intersects(state.shop.cart, ["kitchen"])', **state) is False
 
 
-def test_a_case_parameter_is_looked_for_as_one_value():
+def test_a_case_parameter_is_looked_for_as_one_value() -> None:
     """A parameter is one string, as a case stores it, so it is the needle, never the haystack."""
     state = _state_with(shop={"cart": ["kitchen", "garden"]})
     assert evaluate("contains(state.shop.cart, variation.category)", **state, variation={"category": "kitchen"})
@@ -358,7 +357,7 @@ def test_a_case_parameter_is_looked_for_as_one_value():
         ('variation.categories[0] == "kitchen"', r"an index into variation.categories"),
     ],
 )
-def test_a_case_parameter_read_as_a_collection_is_refused_where_it_is_parsed(expression, said):
+def test_a_case_parameter_read_as_a_collection_is_refused_where_it_is_parsed(expression, said) -> None:
     """A case stores every parameter as one string (#665): read as a collection it never meant what it says.
 
     ``intersects`` took the string as ONE element, so a parameter spelling several categories never
@@ -377,7 +376,7 @@ def test_a_case_parameter_read_as_a_collection_is_refused_where_it_is_parsed(exp
             )
 
 
-def test_length_function_form_matches_attribute_form():
+def test_length_function_form_matches_attribute_form() -> None:
     state = _state_with(shop={"cart": [1, 2, 3]})
     assert evaluate("length(state.shop.cart) == 3", **state) is True
     assert evaluate("state.shop.cart.length == 3", **state) is True
@@ -388,7 +387,7 @@ def test_length_function_form_matches_attribute_form():
 # =============================================================================
 
 
-def test_and_short_circuits_on_missing():
+def test_and_short_circuits_on_missing() -> None:
     state = _state_with(shop={"cart": []})
     # First clause is true; second's path is missing → overall false.
     assert (
@@ -400,7 +399,7 @@ def test_and_short_circuits_on_missing():
     )
 
 
-def test_or_ignores_missing_in_favor_of_truthy_sibling():
+def test_or_ignores_missing_in_favor_of_truthy_sibling() -> None:
     state = _state_with(shop={"cart": ["x"]})
     assert (
         evaluate(
@@ -411,7 +410,7 @@ def test_or_ignores_missing_in_favor_of_truthy_sibling():
     )
 
 
-def test_not_inverts_truthy():
+def test_not_inverts_truthy() -> None:
     state = _state_with(shop={"cart": []})
     assert evaluate("not state.shop.cart.length >= 1", **state) is True
 
@@ -528,8 +527,9 @@ def test_not_established_names_a_missing_variation_and_an_index_past_the_end() -
 
 def test_a_negated_presumption_over_a_value_the_seeded_world_lacks_does_not_hold() -> None:
     """A precondition goes through the same evaluator: an unknown is never a presumption the world satisfied."""
-    from packages.evals.tests.factories import make_template, make_test_case
     from threetears.evals.run import assert_preconditions
+
+    from packages.evals.tests.factories import make_template, make_test_case
 
     template = make_template(
         preconditions=[Precondition(expression='not state.chat.status == "open"', presumes="the chat is not open")]
@@ -565,7 +565,7 @@ def test_grading_records_a_not_established_check_as_failed_and_says_so() -> None
 # =============================================================================
 
 
-def test_called_before_finds_first_occurrences():
+def test_called_before_finds_first_occurrences() -> None:
     state = _state_with()
     state["ledger"].record("shop", "search", {"query": "kitchen"})
     state["ledger"].record("shop", "add_item", {"item_ref": "r1"})
@@ -575,7 +575,7 @@ def test_called_before_finds_first_occurrences():
     assert evaluate('called_before("shop.add_item", "shop.search")', **state) is False
 
 
-def test_called_before_cross_tool():
+def test_called_before_cross_tool() -> None:
     state = _state_with()
     state["ledger"].record("shop", "add_item", {"item_ref": "r1"})
     state["ledger"].record("chat", "send_message", {"content": "added"})
@@ -583,7 +583,7 @@ def test_called_before_cross_tool():
     assert evaluate('called_before("shop.add_item", "chat.send_message")', **state) is True
 
 
-def test_called_before_returns_false_if_either_missing():
+def test_called_before_returns_false_if_either_missing() -> None:
     state = _state_with()
     state["ledger"].record("shop", "search", {})
 
@@ -591,7 +591,7 @@ def test_called_before_returns_false_if_either_missing():
     assert evaluate('called_before("shop.add_item", "shop.search")', **state) is False
 
 
-def test_called_after_uses_last_occurrences():
+def test_called_after_uses_last_occurrences() -> None:
     state = _state_with()
     state["ledger"].record("shop", "search", {})
     state["ledger"].record("shop", "add_item", {})
@@ -601,7 +601,7 @@ def test_called_after_uses_last_occurrences():
     assert evaluate('called_after("shop.search", "shop.add_item")', **state) is True
 
 
-def test_call_count_returns_int_for_comparison():
+def test_call_count_returns_int_for_comparison() -> None:
     state = _state_with()
     state["ledger"].record("shop", "add_item", {})
     state["ledger"].record("shop", "add_item", {})
@@ -626,7 +626,7 @@ def test_call_count_returns_int_for_comparison():
 # =============================================================================
 
 
-def test_negated_and_equality_restraint_forms_agree():
+def test_negated_and_equality_restraint_forms_agree() -> None:
     """`not call_count(...) >= 1` and `call_count(...) == 0` are interchangeable.
 
     Both parse and both evaluate; the equality form is the one the committed
@@ -644,7 +644,7 @@ def test_negated_and_equality_restraint_forms_agree():
         )
 
 
-def test_last_call_was_matches_most_recent():
+def test_last_call_was_matches_most_recent() -> None:
     state = _state_with()
     state["ledger"].record("shop", "search", {})
     state["ledger"].record("shop", "add_item", {})
@@ -654,12 +654,12 @@ def test_last_call_was_matches_most_recent():
     assert evaluate('last_call_was("shop.add_item")', **state) is False
 
 
-def test_last_call_was_empty_state_false():
+def test_last_call_was_empty_state_false() -> None:
     state = _state_with()
     assert evaluate('last_call_was("shop.search")', **state) is False
 
 
-def test_ordering_predicate_rejects_unparseable_spec():
+def test_ordering_predicate_rejects_unparseable_spec() -> None:
     state = _state_with()
     state["ledger"].record("shop", "search", {})
 
@@ -704,7 +704,7 @@ def test_a_unary_operator_over_a_value_it_cannot_apply_to_raises_a_dsl_error() -
         evaluate("-state.shop.name == 1", **_state_with(shop={"name": "x"}))
 
 
-def test_dunder_attribute_access_blocked():
+def test_dunder_attribute_access_blocked() -> None:
     """``_``-prefixed attrs resolve to Missing — closes the dunder-escape gap.
 
     Without this guard, an expression like ``state.shop.__class__`` would
@@ -723,7 +723,7 @@ def test_dunder_attribute_access_blocked():
 # =============================================================================
 
 
-def test_any_finds_matching_element():
+def test_any_finds_matching_element() -> None:
     state = _state_with(
         shop={
             "cart": [
@@ -748,7 +748,7 @@ def test_any_finds_matching_element():
     )
 
 
-def test_any_with_intersects_predicate():
+def test_any_with_intersects_predicate() -> None:
     state = _state_with(
         shop={
             "cart": [
@@ -760,7 +760,7 @@ def test_any_with_intersects_predicate():
     assert evaluate('any(intersects(it.tags, ["kitchen", "klezmer"]) for it in state.shop.cart)', **state) is True
 
 
-def test_all_requires_every_element_to_match():
+def test_all_requires_every_element_to_match() -> None:
     state = _state_with(
         shop={
             "cart": [
@@ -786,29 +786,29 @@ def test_all_requires_every_element_to_match():
     )
 
 
-def test_any_over_empty_iterable_is_false():
+def test_any_over_empty_iterable_is_false() -> None:
     state = _state_with(shop={"cart": []})
     assert evaluate('any(it.title == "X" for it in state.shop.cart)', **state) is False
 
 
-def test_all_over_empty_iterable_is_true():
+def test_all_over_empty_iterable_is_true() -> None:
     """Vacuous truth — all(empty) is True (matches Python's all([]))."""
     state = _state_with(shop={"cart": []})
     assert evaluate('all(it.title == "X" for it in state.shop.cart)', **state) is True
 
 
-def test_any_over_missing_iterable_is_false():
+def test_any_over_missing_iterable_is_false() -> None:
     state = _state_with()
     assert evaluate('any(it.title == "X" for it in state.shop.cart)', **state) is False
 
 
-def test_any_requires_it_as_binding_variable():
+def test_any_requires_it_as_binding_variable() -> None:
     state = _state_with(shop={"cart": []})
     with pytest.raises(DSLError):
         evaluate('any(item.title == "X" for item in state.shop.cart)', **state)
 
 
-def test_any_rejects_if_filters():
+def test_any_rejects_if_filters() -> None:
     state = _state_with(shop={"cart": []})
     with pytest.raises(DSLError):
         evaluate('any(it.title == "X" for it in state.shop.cart if it.tag)', **state)
@@ -819,39 +819,39 @@ def test_any_rejects_if_filters():
 # =============================================================================
 
 
-def test_parse_rejects_empty_string():
+def test_parse_rejects_empty_string() -> None:
     with pytest.raises(DSLError):
         parse("")
     with pytest.raises(DSLError):
         parse("   ")
 
 
-def test_parse_rejects_syntax_errors():
+def test_parse_rejects_syntax_errors() -> None:
     with pytest.raises(DSLError):
         parse("state.shop.cart ==")
 
 
-def test_parse_rejects_disallowed_root_names():
+def test_parse_rejects_disallowed_root_names() -> None:
     with pytest.raises(DSLError):
         parse("os.environ == 'production'")
 
 
-def test_parse_rejects_unknown_functions():
+def test_parse_rejects_unknown_functions() -> None:
     with pytest.raises(DSLError):
         parse("eval(\"os.system('rm -rf /')\")")
 
 
-def test_parse_rejects_lambda():
+def test_parse_rejects_lambda() -> None:
     with pytest.raises(DSLError):
         parse("(lambda x: x)(state)")
 
 
-def test_parse_rejects_dict_literal():
+def test_parse_rejects_dict_literal() -> None:
     with pytest.raises(DSLError):
         parse('{"a": 1} == variation.thing')
 
 
-def test_it_outside_generator_raises():
+def test_it_outside_generator_raises() -> None:
     state = _state_with()
     with pytest.raises(DSLError):
         evaluate('it.title == "X"', **state)
@@ -862,11 +862,11 @@ def test_it_outside_generator_raises():
 # =============================================================================
 
 
-def test_missing_singleton_is_falsy():
+def test_missing_singleton_is_falsy() -> None:
     assert bool(Missing) is False
 
 
-def test_missing_all_comparisons_return_false():
+def test_missing_all_comparisons_return_false() -> None:
     # Every operator on Missing returns False — Missing is "unknown".
     assert (Missing == 1) is False
     assert (Missing != 1) is False
@@ -874,15 +874,15 @@ def test_missing_all_comparisons_return_false():
     assert (Missing > 1) is False
 
 
-def test_missing_in_returns_false():
+def test_missing_in_returns_false() -> None:
     assert (1 in Missing) is False
 
 
-def test_missing_len_returns_zero():
+def test_missing_len_returns_zero() -> None:
     assert len(Missing) == 0
 
 
-def test_missing_iter_yields_nothing():
+def test_missing_iter_yields_nothing() -> None:
     assert list(Missing) == []
 
 
@@ -891,14 +891,14 @@ def test_missing_iter_yields_nothing():
 # =============================================================================
 
 
-def test_evaluate_with_detail_passes_through_value():
+def test_evaluate_with_detail_passes_through_value() -> None:
     state = _state_with(shop={"cart": [1, 2]})
     result, detail = evaluate_with_detail("state.shop.cart.length >= 1", **state)
     assert result is True
     assert "True" in detail
 
 
-def test_evaluate_with_detail_reports_missing_leaf():
+def test_evaluate_with_detail_reports_missing_leaf() -> None:
     """When the entire expression evaluates to Missing, detail says it was not established."""
     state = _state_with()
     # Bare path → resolves to Missing → detail labels it.
@@ -907,7 +907,7 @@ def test_evaluate_with_detail_reports_missing_leaf():
     assert detail.startswith(_dsl.NOT_ESTABLISHED)
 
 
-def test_evaluate_with_detail_reports_a_compared_missing_value_as_not_established():
+def test_evaluate_with_detail_reports_a_compared_missing_value_as_not_established() -> None:
     state = _state_with()
     result, detail = evaluate_with_detail("state.shop.cart.length >= 1", **state)
     assert result is False
@@ -920,7 +920,7 @@ def test_evaluate_with_detail_reports_a_compared_missing_value_as_not_establishe
 # =============================================================================
 
 
-def test_variation_resolves_inside_generator_body():
+def test_variation_resolves_inside_generator_body() -> None:
     state = _state_with(
         shop={
             "cart": [
@@ -962,7 +962,7 @@ def _docstring_examples() -> list[str]:
     ]
 
 
-def test_every_documented_example_parses():
+def test_every_documented_example_parses() -> None:
     """A documented form the language cannot read teaches an author an expression that fails.
 
     This found one: ``intersects`` was documented in infix position, which is not Python and
@@ -980,7 +980,7 @@ def test_every_documented_example_parses():
     assert not unparseable
 
 
-def test_every_documented_example_is_extractable():
+def test_every_documented_example_is_extractable() -> None:
     """Extraction runs over the whole documented surface, not the shapes it was written against.
 
     Paths, indexing, generators, ledger predicates and bare literals all appear there, so a form
@@ -990,18 +990,18 @@ def test_every_documented_example_is_extractable():
         extract_paths(example)
 
 
-def test_a_path_reports_the_dimension_and_what_it_addresses_beneath_it():
+def test_a_path_reports_the_dimension_and_what_it_addresses_beneath_it() -> None:
     """The whole dotted path comes back; which prefix is the dimension is the registry's call."""
     assert extract_paths("state.shop.cart.length >= 1").world == ("shop.cart.length",)
 
 
-def test_an_index_ends_the_path_because_a_dimension_is_the_value_not_one_element():
+def test_an_index_ends_the_path_because_a_dimension_is_the_value_not_one_element() -> None:
     """Nothing under a subscript can name a dimension, so reporting it would invent one."""
     assert extract_paths('state.shop.cart[0].title == "Blue Kettle"').world == ("shop.cart",)
     assert extract_paths("state.chat.messages[-1].content").world == ("chat.messages",)
 
 
-def test_a_path_inside_an_index_is_extracted_too():
+def test_a_path_inside_an_index_is_extracted_too() -> None:
     """An index is an expression, and one that reads world state reads it as much as any other."""
     reads = extract_paths('state.shop.cart[variation.position].title == "x"')
 
@@ -1009,14 +1009,14 @@ def test_a_path_inside_an_index_is_extracted_too():
     assert reads.variation == ("position",)
 
 
-def test_the_generator_binding_contributes_nothing_and_its_iterable_contributes_everything():
+def test_the_generator_binding_contributes_nothing_and_its_iterable_contributes_everything() -> None:
     """``it`` addresses inside an element of a path that is itself already reported."""
     reads = extract_paths('any(it.title == "X" for it in state.shop.cart)')
 
     assert reads.world == ("shop.cart",)
 
 
-def test_variation_is_reported_apart_from_world_state():
+def test_variation_is_reported_apart_from_world_state() -> None:
     """A case parameter is not something a world declares, and merging the two would refuse
     every expression that reads its own case."""
     reads = extract_paths('contains(state.shop.cart, variation.categories) and variation.tone != "hostile"')
@@ -1025,7 +1025,7 @@ def test_variation_is_reported_apart_from_world_state():
     assert reads.variation == ("categories", "tone")
 
 
-def test_a_builtin_call_is_not_a_path():
+def test_a_builtin_call_is_not_a_path() -> None:
     """Extraction must not assume everything it sees roots at a dimension, or a ledger predicate
     reads as an unresolvable one and a gate refuses a correct expression."""
     reads = extract_paths('called_before("shop.search", "shop.add_item") and call_count("shop.skip") >= 2')
@@ -1034,12 +1034,12 @@ def test_a_builtin_call_is_not_a_path():
     assert reads.variation == ()
 
 
-def test_a_path_under_a_builtin_call_is_still_extracted():
+def test_a_path_under_a_builtin_call_is_still_extracted() -> None:
     """``length(state.x) >= 2`` reads ``x`` as surely as ``state.x.length >= 2`` does."""
     assert extract_paths("length(state.shop.cart) >= 2").world == ("shop.cart",)
 
 
-def test_repeated_paths_are_reported_once_in_first_appearance_order():
+def test_repeated_paths_are_reported_once_in_first_appearance_order() -> None:
     """A gate resolving the same path four times reports the same defect four times."""
     reads = extract_paths(
         "state.shop.history.length >= 1 and state.shop.cart.length >= 1 and state.shop.history.length < 9"
@@ -1048,7 +1048,7 @@ def test_repeated_paths_are_reported_once_in_first_appearance_order():
     assert reads.world == ("shop.history.length", "shop.cart.length")
 
 
-def test_extraction_refuses_what_evaluation_would_refuse():
+def test_extraction_refuses_what_evaluation_would_refuse() -> None:
     """One parser, so a path that cannot be extracted is one that could never have been run."""
     with pytest.raises(DSLError):
         extract_paths("state.shop.cart.length >= ")

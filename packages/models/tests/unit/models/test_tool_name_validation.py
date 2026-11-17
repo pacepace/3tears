@@ -251,7 +251,7 @@ class TestFilterInvalidToolCalls:
         keep it.
         """
         call = {"name": 5, "args": "{}", "id": "1"}
-        kept, rejected = filter_invalid_tool_calls([call])  # type: ignore[list-item]
+        kept, rejected = filter_invalid_tool_calls([call])
         assert kept == []
         assert rejected == [call]
 

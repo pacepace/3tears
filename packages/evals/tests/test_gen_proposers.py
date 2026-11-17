@@ -18,12 +18,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
+from threetears.evals.gen import RUBRIC_PROPOSAL_CONTRACT, plan_draft, propose_draft
 from threetears.evals.kernel import EvalStorage, OutOfRunBudget
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.models import RubricProposal
-from threetears.evals.gen import RUBRIC_PROPOSAL_CONTRACT, plan_draft, propose_draft
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
 from packages.evals.tests.off_loop import off_loop
 
@@ -127,7 +127,7 @@ _AXES = [
 
 
 @pytest.mark.parametrize("axis", _AXES)
-async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis):
+async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis) -> None:
     """The user message is the subject feed, then the catalog feed, ending in one newline."""
     client = _RecordingClient(_draft(suggestion_axis=axis))
     budget, _storage = _budget()
@@ -164,7 +164,7 @@ async def test_the_feeds_are_sent_verbatim_subject_first_in_json_mode(axis):
         pytest.param("boundary", "graceful_decline", id="boundary-overrides-a-dim-key"),
     ],
 )
-async def test_the_proposer_stamps_its_own_axis_whatever_the_model_wrote(axis, written):
+async def test_the_proposer_stamps_its_own_axis_whatever_the_model_wrote(axis, written) -> None:
     """The axis is the one the proposer ran on, never the model's call — both directions on one draft.
 
     Each axis is fed the other one's literal as well as a dim key, so a proposer that kept a
@@ -186,7 +186,7 @@ async def test_the_proposer_stamps_its_own_axis_whatever_the_model_wrote(axis, w
 
 
 @pytest.mark.parametrize("axis", ["capability", "boundary"])
-async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis):
+async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis) -> None:
     """A boundary battery's own rubric dims are guardrails, so the judge must stamp them so; a draft that
     left them capability would put them in the composite they must stay out of."""
     draft = json.loads(_draft(suggestion_axis="graceful_decline"))
@@ -224,7 +224,7 @@ async def test_the_drafted_rubric_dims_take_the_proposers_axis_too(axis):
         ),
     ],
 )
-async def test_a_refused_draft_raises_and_still_releases_the_client(axis, refused_by, content, reason):
+async def test_a_refused_draft_raises_and_still_releases_the_client(axis, refused_by, content, reason) -> None:
     """Both refusal paths raise the structured error, naming the axis's proposer and the call's cost, after release.
 
     The call was paid for whatever the reply said, so its ledger row is written before the reply is read.
@@ -261,7 +261,7 @@ async def _propose(client: _RecordingClient, budget: OutOfRunBudget, *, subject_
     )
 
 
-async def test_a_proposal_returns_and_ledgers_what_its_call_cost():
+async def test_a_proposal_returns_and_ledgers_what_its_call_cost() -> None:
     client = _RecordingClient(_draft(suggestion_axis="capability"))
     budget, storage = _budget(subject_id="s")
 
@@ -283,7 +283,7 @@ async def test_a_proposal_returns_and_ledgers_what_its_call_cost():
     assert (spend.priced_ceiling_usd, spend.cap_usd, spend.subject_id) == (_CEILING, 1.0, "s")
 
 
-async def test_a_call_priced_above_the_cap_is_refused_before_it_is_made():
+async def test_a_call_priced_above_the_cap_is_refused_before_it_is_made() -> None:
     client = _RecordingClient(_draft(suggestion_axis="capability"), ceiling=2.5)
     budget, storage = _budget(cap_usd=1.0)
 
@@ -293,7 +293,7 @@ async def test_a_call_priced_above_the_cap_is_refused_before_it_is_made():
     assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == []
 
 
-async def test_a_call_the_client_cannot_price_is_refused_under_an_enforced_cap():
+async def test_a_call_the_client_cannot_price_is_refused_under_an_enforced_cap() -> None:
     client = _RecordingClient(_draft(suggestion_axis="capability"), ceiling=None)
     budget, storage = _budget(cap_usd=1.0)
 
@@ -303,7 +303,7 @@ async def test_a_call_the_client_cannot_price_is_refused_under_an_enforced_cap()
     assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == []
 
 
-async def test_with_no_enforced_cap_an_unpriced_call_is_made_and_ledgered_unpriced():
+async def test_with_no_enforced_cap_an_unpriced_call_is_made_and_ledgered_unpriced() -> None:
     client = _RecordingClient(_draft(suggestion_axis="capability"), ceiling=None)
     budget, storage = _budget(cap_usd=None)
 
@@ -314,7 +314,7 @@ async def test_with_no_enforced_cap_an_unpriced_call_is_made_and_ledgered_unpric
     assert off_loop(storage.query_out_of_run_spend, _SCOPE) == [spend]
 
 
-async def test_a_call_that_raises_is_ledgered_with_its_failure_class_and_no_usage():
+async def test_a_call_that_raises_is_ledgered_with_its_failure_class_and_no_usage() -> None:
     client = _RecordingClient("", raises=TimeoutError("provider said: account acct_123 timed out"))
     budget, storage = _budget()
 
@@ -327,7 +327,7 @@ async def test_a_call_that_raises_is_ledgered_with_its_failure_class_and_no_usag
     assert client.aclose_calls == 1
 
 
-async def test_a_budget_for_another_subject_is_refused_before_the_call_is_made():
+async def test_a_budget_for_another_subject_is_refused_before_the_call_is_made() -> None:
     client = _RecordingClient(_draft(suggestion_axis="capability"))
     budget, storage = _budget(subject_id="someone-else")
 
@@ -343,14 +343,14 @@ async def test_a_budget_for_another_subject_is_refused_before_the_call_is_made()
 # =============================================================================
 
 
-def test_the_plan_is_the_call_as_sent_feeds_subject_first():
+def test_the_plan_is_the_call_as_sent_feeds_subject_first() -> None:
     call = plan_draft(
         reset=_RESET, axis="capability", system_prompt=_SYSTEM, subject_feed="# Subject\n", catalog_feed="# Catalog\n\n"
     )
     assert (call.system, call.user) == (_SYSTEM, "# Subject\n\n# Catalog\n")
 
 
-async def test_a_proposal_makes_the_call_its_host_admitted_and_prices_nothing_itself():
+async def test_a_proposal_makes_the_call_its_host_admitted_and_prices_nothing_itself() -> None:
     client = _RecordingClient(_draft(suggestion_axis="capability"))
     budget, _storage = _budget()
     call = plan_draft(reset=_RESET, axis="capability", system_prompt=_SYSTEM, subject_feed="F", catalog_feed="C")
@@ -363,7 +363,7 @@ async def test_a_proposal_makes_the_call_its_host_admitted_and_prices_nothing_it
     assert client.calls == [{"system": call.system, "user": call.user, "response_format": call.response_format}]
 
 
-async def test_an_admission_for_another_purpose_is_refused_and_nothing_is_called():
+async def test_an_admission_for_another_purpose_is_refused_and_nothing_is_called() -> None:
     client = _RecordingClient(_draft(suggestion_axis="capability"))
     budget, storage = _budget()
     [admitted] = budget.admit(
@@ -378,7 +378,7 @@ async def test_an_admission_for_another_purpose_is_refused_and_nothing_is_called
     assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == [] and client.aclose_calls == 1
 
 
-async def test_an_admission_another_budget_made_is_refused_and_nothing_is_called():
+async def test_an_admission_another_budget_made_is_refused_and_nothing_is_called() -> None:
     client = _RecordingClient(_draft(suggestion_axis="capability"))
     admitting, _ = _budget()
     making, storage = _budget()
@@ -394,7 +394,7 @@ async def test_an_admission_another_budget_made_is_refused_and_nothing_is_called
     assert client.calls == [] and off_loop(storage.query_out_of_run_spend, _SCOPE) == [] and client.aclose_calls == 1
 
 
-async def test_a_draft_in_the_strict_shape_keeps_only_the_guide_levels_it_wrote():
+async def test_a_draft_in_the_strict_shape_keeps_only_the_guide_levels_it_wrote() -> None:
     """The schema makes every level a key, null where not written; the draft keeps the written ones."""
     levels = {"1": None, "2": None, "3": None, "4": None, "5": None, "pass": "declines and redirects", "fail": None}
     dim = {"name": "boundary.decline", "description": "declines", "scale": "pass_fail", "scoring_guide": levels}

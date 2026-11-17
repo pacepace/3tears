@@ -32,19 +32,19 @@ def client() -> FakeNatsClient:
 class TestIncrement:
     @pytest.mark.asyncio
     async def test_increment_creates_key_at_delta_when_absent(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         result = await counter.increment("k")
         assert result == 1
 
     @pytest.mark.asyncio
     async def test_increment_with_custom_delta(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         result = await counter.increment("k", delta=5)
         assert result == 5
 
     @pytest.mark.asyncio
     async def test_repeated_increment_accumulates(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         await counter.increment("k")
         await counter.increment("k")
         result = await counter.increment("k")
@@ -52,7 +52,7 @@ class TestIncrement:
 
     @pytest.mark.asyncio
     async def test_independent_keys_do_not_share_counts(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         await counter.increment("a")
         await counter.increment("a")
         await counter.increment("b")
@@ -64,28 +64,28 @@ class TestIncrement:
 class TestDecrement:
     @pytest.mark.asyncio
     async def test_decrement_subtracts_from_existing_value(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         await counter.increment("k", delta=5)
         result = await counter.decrement("k")
         assert result == 4
 
     @pytest.mark.asyncio
     async def test_decrement_with_custom_delta(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         await counter.increment("k", delta=10)
         result = await counter.decrement("k", delta=3)
         assert result == 7
 
     @pytest.mark.asyncio
     async def test_decrement_below_zero_is_not_clamped(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         result = await counter.decrement("k")
         assert result == -1
 
     @pytest.mark.asyncio
     async def test_concurrent_increment_then_decrement_pattern_stays_race_free(self, client: FakeNatsClient) -> None:
         """mirrors RateLimitingCallback._check_concurrent_limit's own increment-then-compensate pattern."""
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         limit = 5
 
         async def try_acquire_slot() -> bool:
@@ -104,12 +104,12 @@ class TestDecrement:
 class TestGet:
     @pytest.mark.asyncio
     async def test_get_returns_zero_for_absent_key(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         assert await counter.get("never-seen") == 0
 
     @pytest.mark.asyncio
     async def test_get_returns_current_value(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         await counter.increment("k", delta=7)
         assert await counter.get("k") == 7
 
@@ -117,7 +117,7 @@ class TestGet:
 class TestConcurrency:
     @pytest.mark.asyncio
     async def test_concurrent_increments_sum_exactly_no_lost_updates(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
         num_concurrent = 30
 
         await asyncio.gather(*(counter.increment("k") for _ in range(num_concurrent)))
@@ -126,7 +126,7 @@ class TestConcurrency:
 
     @pytest.mark.asyncio
     async def test_concurrent_mixed_increment_decrement_nets_correctly(self, client: FakeNatsClient) -> None:
-        counter = DistributedCounter(client, bucket_name="c")  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="c")
 
         await asyncio.gather(
             *(counter.increment("k") for _ in range(20)),
@@ -248,7 +248,7 @@ class TestOwnerScopedCounterKeys:
 
     async def test_counts_land_under_the_scope_and_read_back_through_it(self) -> None:
         client = FakeNatsClient()
-        counter = DistributedCounter(client, bucket_name="ratelimits", key_scope=self._SCOPE)  # type: ignore[arg-type]
+        counter = DistributedCounter(client, bucket_name="ratelimits", key_scope=self._SCOPE)
         assert await counter.increment("http.u1") == 1
         assert await counter.increment("http.u1", delta=2) == 3
         assert await counter.decrement("http.u1") == 2
@@ -259,12 +259,12 @@ class TestOwnerScopedCounterKeys:
 
     async def test_two_owners_count_apart_in_one_bucket(self) -> None:
         client = FakeNatsClient()
-        mine = DistributedCounter(client, bucket_name="ratelimits", key_scope=self._SCOPE)  # type: ignore[arg-type]
-        theirs = DistributedCounter(client, bucket_name="ratelimits", key_scope="agent_pod-other")  # type: ignore[arg-type]
+        mine = DistributedCounter(client, bucket_name="ratelimits", key_scope=self._SCOPE)
+        theirs = DistributedCounter(client, bucket_name="ratelimits", key_scope="agent_pod-other")
         await mine.increment("k")
         assert await theirs.get("k") == 0
 
     @pytest.mark.parametrize("scope", ["", "a.b", "a*", ">"])
     def test_a_scope_that_is_not_one_literal_token_is_refused(self, scope: str) -> None:
         with pytest.raises(ValueError, match="key_scope"):
-            DistributedCounter(FakeNatsClient(), bucket_name="ratelimits", key_scope=scope)  # type: ignore[arg-type]
+            DistributedCounter(FakeNatsClient(), bucket_name="ratelimits", key_scope=scope)

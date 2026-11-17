@@ -469,7 +469,7 @@ class TestAuthorizeConversationAccess:
             _ = entity
             namespace_collection.resolved_entity = ns_existing
 
-        namespace_collection.save_entity = _save  # type: ignore[assignment]
+        namespace_collection.save_entity = _save  # type: ignore[method-assign]
 
         deps = _build_deps(namespace_collection=namespace_collection)
 

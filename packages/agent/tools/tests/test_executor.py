@@ -34,7 +34,7 @@ def _make_mock_tool(name: str, return_value: str = "tool result") -> MagicMock:
     return tool
 
 
-async def test_invoke_text_response():
+async def test_invoke_text_response() -> None:
     model = AsyncMock()
     model.ainvoke = AsyncMock(return_value=_make_text_response("Hello!"))
     executor = ToolExecutor(max_rounds=3)
@@ -45,7 +45,7 @@ async def test_invoke_text_response():
     assert result.error is None
 
 
-async def test_invoke_with_tool_calls():
+async def test_invoke_with_tool_calls() -> None:
     tool = _make_mock_tool("calculator", "42")
     tc_response = _make_tool_call_response(
         [
@@ -73,7 +73,7 @@ async def test_invoke_with_tool_calls():
     )
 
 
-async def test_a_tool_message_answer_is_kept_whole_with_its_artifact():
+async def test_a_tool_message_answer_is_kept_whole_with_its_artifact() -> None:
     """§4.7: the structured artifact survives the executor.
 
     ``page_finder`` runs through this executor and returns its structure as
@@ -98,7 +98,7 @@ async def test_a_tool_message_answer_is_kept_whole_with_its_artifact():
     assert tool_messages[0].content == "found 1 page"
 
 
-async def test_a_plain_value_answer_still_becomes_content():
+async def test_a_plain_value_answer_still_becomes_content() -> None:
     """A tool that is not artifact-aware behaves exactly as it did before."""
     tool = _make_mock_tool("calculator", "42")
     tc_response = _make_tool_call_response([{"name": "calculator", "args": {"expr": "6*7"}, "id": "tc_1"}])
@@ -115,7 +115,7 @@ async def test_a_plain_value_answer_still_becomes_content():
     assert tool_messages[0].artifact is None
 
 
-async def test_a_raising_tool_still_answers_with_error_text():
+async def test_a_raising_tool_still_answers_with_error_text() -> None:
     """The failure path keeps its shape: one ToolMessage, naming the tool."""
     tool = _make_mock_tool("calculator")
     tool.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
@@ -134,7 +134,7 @@ async def test_a_raising_tool_still_answers_with_error_text():
     assert "boom" in str(tool_messages[0].content)
 
 
-async def test_max_rounds_exhausted():
+async def test_max_rounds_exhausted() -> None:
     tool = _make_mock_tool("search", "result")
     tc_response = _make_tool_call_response(
         [
@@ -156,7 +156,7 @@ async def test_max_rounds_exhausted():
     assert result.error == "max rounds exhausted"
 
 
-async def test_tool_not_found():
+async def test_tool_not_found() -> None:
     tc_response = _make_tool_call_response(
         [
             {"name": "nonexistent", "args": {}, "id": "tc_1"},
@@ -174,7 +174,7 @@ async def test_tool_not_found():
     assert result.tool_calls_made[0]["name"] == "nonexistent"
 
 
-async def test_execution_result_fields():
+async def test_execution_result_fields() -> None:
     tool = _make_mock_tool("t1", "r1")
     tc_response = _make_tool_call_response(
         [

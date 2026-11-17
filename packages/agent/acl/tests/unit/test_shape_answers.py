@@ -202,7 +202,7 @@ async def _replica(bus: FakeNatsClient, store: _Store, *, token: str = "inc:0") 
     l1 = SQLiteBackend(db_name=f"shapes-l1-{_fresh_id().hex}")
     l1.initialize(MetaData())
     registry = CollectionRegistry()
-    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
+    registry.configure(l1_backend=l1, l2_client=bus, l3_pool=None, kv_key_scope=_SCOPE)
     actors = ShapeActors(store)
     acl = AclCache(membership_loader=actors, grant_loader=store)
     dependencies = ShapeDependencies(registry, _TABLES)

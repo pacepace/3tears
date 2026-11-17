@@ -149,7 +149,7 @@ _REPIN = (
 )
 
 
-def test_the_goldens_cover_every_arm_of_both_fixture_hosts():
+def test_the_goldens_cover_every_arm_of_both_fixture_hosts() -> None:
     """So a fixture growing an arm cannot leave it unpinned while this file stays green."""
     assert {(g.host, g.model) for g in GOLDENS} == {
         *(("toy", model) for model in RUN_MODELS),
@@ -157,7 +157,7 @@ def test_the_goldens_cover_every_arm_of_both_fixture_hosts():
     }
 
 
-def test_the_goldens_were_pinned_under_the_current_identity_version():
+def test_the_goldens_were_pinned_under_the_current_identity_version() -> None:
     assert IDENTITY_VERSION == PINNED_IDENTITY_VERSION, (
         f"IDENTITY_VERSION is {IDENTITY_VERSION} and the goldens were pinned under {PINNED_IDENTITY_VERSION}: "
         "re-derive and re-pin every golden in this file under the new version"
@@ -165,7 +165,7 @@ def test_the_goldens_were_pinned_under_the_current_identity_version():
 
 
 @pytest.mark.parametrize("golden", GOLDENS, ids=lambda g: f"{g.host}-{g.model}")
-def test_a_runs_keys_are_the_golden_ones(golden: Golden):
+def test_a_runs_keys_are_the_golden_ones(golden: Golden) -> None:
     run, profile = _BUILDERS[golden.host](golden.model)
 
     context = derive_context_identity(run, profile)
@@ -180,7 +180,7 @@ def test_a_runs_keys_are_the_golden_ones(golden: Golden):
     assert variant.variant_key == golden.variant_key, message
 
 
-def test_arms_differ_in_variant_and_share_their_context():
+def test_arms_differ_in_variant_and_share_their_context() -> None:
     """The goldens' own shape: one condition per host, one contestant per arm — so a pin cannot be a copy."""
     for host in _BUILDERS:
         pinned = [g for g in GOLDENS if g.host == host]
@@ -196,7 +196,7 @@ _LEDGER_ENTRY = re.compile(r"^#: - \*\*v(\d+)\*\*", re.MULTILINE)
 _BASELINE_IDENTITY_VERSION = 24
 
 
-def test_every_identity_version_has_a_recorded_reason_in_the_ledger():
+def test_every_identity_version_has_a_recorded_reason_in_the_ledger() -> None:
     """A bump without a reason is the regrouping the ledger exists to explain, left unexplained.
 
     The ledger is the ``#:`` block above ``IDENTITY_VERSION`` in ``identity.py``. Every version from

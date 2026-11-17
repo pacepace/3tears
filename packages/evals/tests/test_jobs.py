@@ -17,18 +17,18 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
-
 from threetears.evals.kernel import EvalJobTimeout, default_job_timeout
 from threetears.evals.kernel.errors import ConflictError
-from threetears.evals.schema.models import EvalRun
 from threetears.evals.kernel.scoring import CellSummary
-from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.jobs import (
     JOB_TIMEOUT_CAP_S,
     JOB_TIMEOUT_FLOOR_S,
     EvalJobManager,
     adaptive_job_timeout_s,
 )
+from threetears.evals.run.lifecycle import record_completeness
+from threetears.evals.schema.models import EvalRun
+
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.job_support import InMemoryRunStore, blocked_work, cancelled, settled, start_tracked
 
@@ -212,7 +212,7 @@ async def test_a_terminal_branch_other_than_cancel_records_the_empty_matrix() ->
     """
 
     class _RaisingTimeout:
-        async def __aenter__(self):
+        async def __aenter__(self) -> None:
             raise EvalJobTimeout(budget_s=1.0, elapsed_s=1.0)
 
         async def __aexit__(self, *exc):
@@ -1050,7 +1050,7 @@ class TestShutdownSaysWhatItCouldNotSettle:
             await asyncio.sleep(0.01)
         raise AssertionError(f"{run_id} never started")
 
-    async def test_every_job_settled_reports_none(self, caplog):
+    async def test_every_job_settled_reports_none(self, caplog: pytest.LogCaptureFixture) -> None:
         storage = InMemoryRunStore()
         manager = EvalJobManager(storage)
 
@@ -1065,7 +1065,7 @@ class TestShutdownSaysWhatItCouldNotSettle:
         assert storage.runs["run-quick"].status == "cancelled"
         assert not [r for r in caplog.records if "eval.shutdown gave up" in r.getMessage()]
 
-    async def test_a_job_outlasting_the_wait_is_returned_and_named(self, caplog):
+    async def test_a_job_outlasting_the_wait_is_returned_and_named(self, caplog: pytest.LogCaptureFixture) -> None:
         storage = InMemoryRunStore()
         manager = EvalJobManager(storage)
         release = asyncio.Event()

@@ -154,7 +154,7 @@ class TestDispatch:
         driver = create_driver(config)
         assert isinstance(driver, stub_driver_modules["AsyncpgDriver"])
         # the external_pool kwarg is NOT supplied for external configs
-        assert driver.external_pool is None  # type: ignore[attr-defined]
+        assert driver.external_pool is None
 
     def test_yugabyte_dispatches_to_asyncpg_driver(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = YugabyteConnectionConfig(
@@ -173,10 +173,10 @@ class TestDispatch:
             schema_name="agent_abc123",
         )
         sentinel_pool = object()
-        driver = create_driver(config, hub_l3_pool=sentinel_pool)  # type: ignore[arg-type]
+        driver = create_driver(config, hub_l3_pool=sentinel_pool)
         assert isinstance(driver, stub_driver_modules["AsyncpgDriver"])
         # the borrowed pool must reach the driver constructor
-        assert driver.external_pool is sentinel_pool  # type: ignore[attr-defined]
+        assert driver.external_pool is sentinel_pool
 
     def test_agent_internal_without_pool_raises(self, stub_driver_modules: dict[str, type[_StubDriver]]) -> None:
         config = BorrowedPoolConnectionConfig(
@@ -253,7 +253,7 @@ class TestDatasourceNamePlumbing:
         sentinel_pool = object()
         driver = create_driver(
             config,
-            hub_l3_pool=sentinel_pool,  # type: ignore[arg-type]
+            hub_l3_pool=sentinel_pool,
             datasource_name="agent-tables",
         )
         assert driver.datasource_name == "agent-tables"  # type: ignore[attr-defined]

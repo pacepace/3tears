@@ -18,11 +18,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from langgraph.checkpoint.base import WRITES_IDX_MAP
-
 from prometheus_client import REGISTRY
-
 from threetears.langgraph.checkpoint import (
     CheckpointCacheError,
     ThreeTierCheckpointSaver,
@@ -76,14 +73,14 @@ def _answer_latest(executor: Any, answer: Any) -> None:
 class TestUUIDSafeSerializer:
     """UUIDSafeSerializer sanitizes uuid_utils.UUID objects."""
 
-    def test_roundtrip_simple(self):
+    def test_roundtrip_simple(self) -> None:
         serde = UUIDSafeSerializer()
         data = {"key": "value", "num": 42, "nested": {"list": [1, 2, 3]}}
         typed = serde.dumps_typed(data)
         result = serde.loads_typed(typed)
         assert result == data
 
-    def testsanitizes_uuid_utils(self):
+    def testsanitizes_uuid_utils(self) -> None:
         import uuid_utils
 
         serde = UUIDSafeSerializer()
@@ -94,7 +91,7 @@ class TestUUIDSafeSerializer:
         assert result["id"] == str(uid)
         assert result["nested"]["ids"][0] == str(uid)
 
-    def testsanitizes_tuple(self):
+    def testsanitizes_tuple(self) -> None:
         import uuid_utils
 
         uid = uuid_utils.uuid7()
@@ -108,7 +105,7 @@ class TestCacheSerializationHelpers:
     def _make_saver(self) -> ThreeTierCheckpointSaver:
         return ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
-    def test_roundtrip(self):
+    def test_roundtrip(self) -> None:
         saver = self._make_saver()
         checkpoint = {"id": "cp-123", "ts": "2026-01-01", "channel_values": {}}
         metadata = {"source": "loop", "step": 1}
@@ -123,7 +120,7 @@ class TestCacheSerializationHelpers:
         assert result["parent_checkpoint_id"] == "cp-122"
         assert len(result["pending_writes"]) == 1
 
-    def test_roundtrip_no_parent(self):
+    def test_roundtrip_no_parent(self) -> None:
         saver = self._make_saver()
         checkpoint = {"id": "cp-1", "ts": "2026-01-01", "channel_values": {}}
         metadata = {}
@@ -138,7 +135,7 @@ class TestCacheSerializationHelpers:
 class TestL1Degradation:
     """L1 cache failures degrade gracefully."""
 
-    async def test_a_failed_l1_read_is_raised_not_answered_as_a_miss(self):
+    async def test_a_failed_l1_read_is_raised_not_answered_as_a_miss(self) -> None:
         l1 = AsyncMock()
         l1.get.side_effect = RuntimeError("L1 down")
 
@@ -147,7 +144,7 @@ class TestL1Degradation:
         with pytest.raises(CheckpointCacheError, match="L1 checkpoint read failed: RuntimeError: L1 down"):
             await saver.l1_get("thread-1", "")
 
-    async def testl1_put_swallows_error(self):
+    async def testl1_put_swallows_error(self) -> None:
         l1 = AsyncMock()
         l1.put.side_effect = RuntimeError("L1 down")
 
@@ -156,7 +153,7 @@ class TestL1Degradation:
         # Should not raise
         await saver.l1_put("thread-1", "", b"data")
 
-    async def test_a_failed_l1_delete_is_raised_not_reported_as_deleted(self):
+    async def test_a_failed_l1_delete_is_raised_not_reported_as_deleted(self) -> None:
         l1 = AsyncMock()
         l1.delete.side_effect = RuntimeError("L1 down")
 
@@ -194,7 +191,7 @@ class TestCrashRecoveryWritesDegrade:
     _LOGGER = "threetears.langgraph.checkpoint"
     _CONFIG = {"configurable": {"thread_id": "t-1", "checkpoint_ns": "", "checkpoint_id": "c-1"}}
 
-    async def testaput_writes_degrades_and_reports_the_loss(self, caplog):
+    async def testaput_writes_degrades_and_reports_the_loss(self, caplog: pytest.LogCaptureFixture) -> None:
         """the warning is the ENTIRE detection surface for a lost write, so pin it.
 
         Asserting only "did not raise" passes against ``except Exception: pass``,
@@ -221,7 +218,7 @@ class TestCrashRecoveryWritesDegrade:
         assert record.exc_info is not None
 
     @pytest.mark.parametrize("channel", sorted(WRITES_IDX_MAP))
-    async def testaput_writes_reraises_for_a_control_channel(self, channel, caplog):
+    async def testaput_writes_reraises_for_a_control_channel(self, channel, caplog: pytest.LogCaptureFixture) -> None:
         """losing a control write silently changes what the run DOES."""
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
@@ -237,7 +234,7 @@ class TestCrashRecoveryWritesDegrade:
         assert len(records) == 1
         assert records[0].control_channels == [channel]
 
-    async def testaput_writes_reraises_when_a_control_write_shares_the_set(self):
+    async def testaput_writes_reraises_when_a_control_write_shares_the_set(self) -> None:
         """a set cannot be half-degraded, so one control write makes it must-persist."""
         executor = _make_executor()
         executor.execute.side_effect = RuntimeError("NATS request failed: nats: timeout")
@@ -252,7 +249,7 @@ class TestCrashRecoveryWritesDegrade:
             )
 
     @pytest.mark.parametrize("config", [{}, {"configurable": None}, {"configurable": {}}])
-    async def testaput_writes_does_not_raise_on_a_malformed_config(self, config):
+    async def testaput_writes_does_not_raise_on_a_malformed_config(self, config) -> None:
         """the ids are read defensively, so the guard covers the likeliest bad shapes.
 
         Subscripting them ahead of the ``try`` made "degrades, never raises"
@@ -264,7 +261,9 @@ class TestCrashRecoveryWritesDegrade:
 
         await saver.aput_writes(config, [("channel-a", "value-a")], "task-1")
 
-    async def testaput_writes_degrades_when_a_malformed_config_reaches_the_write(self, caplog):
+    async def testaput_writes_degrades_when_a_malformed_config_reaches_the_write(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """a malformed config must take the DEGRADE path, not just avoid raising.
 
         The no-raise test above runs against a succeeding executor, so it never
@@ -280,7 +279,7 @@ class TestCrashRecoveryWritesDegrade:
 
         assert any("re-execute" in r.getMessage() for r in caplog.records)
 
-    async def testa_malformed_config_still_raises_for_a_control_channel(self):
+    async def testa_malformed_config_still_raises_for_a_control_channel(self) -> None:
         """the degrade carve-out is scoped by CHANNEL, never by config shape.
 
         Every other re-raise test uses a well-formed config, which would let a
@@ -294,7 +293,7 @@ class TestCrashRecoveryWritesDegrade:
         with pytest.raises(RuntimeError, match="timeout"):
             await saver.aput_writes({"configurable": {}}, [("__interrupt__", "approve?")], "task-1")
 
-    async def testcontrol_channel_writes_are_last_wins(self):
+    async def testcontrol_channel_writes_are_last_wins(self) -> None:
         """a second Command(resume=...) must REPLACE the first, not be dropped.
 
         The reference saver skips a duplicate only when ``idx >= 0``; a control
@@ -322,7 +321,7 @@ class TestCrashRecoveryWritesDegrade:
         assert "DO UPDATE" in query
         assert "WHERE checkpoint_writes.idx < 0" in query
 
-    async def testordinary_channel_writes_are_first_wins(self):
+    async def testordinary_channel_writes_are_first_wins(self) -> None:
         """an ordinary channel keeps the row already stored, per the reference saver."""
         executor = _make_executor()
 
@@ -334,7 +333,7 @@ class TestCrashRecoveryWritesDegrade:
         # the predicate is what makes the upsert asymmetric: false for idx >= 0
         assert "WHERE checkpoint_writes.idx < 0" in query
 
-    async def testcontrol_channels_map_to_their_reserved_index(self):
+    async def testcontrol_channels_map_to_their_reserved_index(self) -> None:
         """the reserved negative index is what makes a control row upsertable."""
         executor = _make_executor()
 
@@ -345,7 +344,7 @@ class TestCrashRecoveryWritesDegrade:
         _, *params = executor.execute.await_args.args
         assert WRITES_IDX_MAP["__interrupt__"] in params
 
-    async def testcontrol_channel_write_invalidates_the_caches(self):
+    async def testcontrol_channel_write_invalidates_the_caches(self) -> None:
         """a cached bundle carries pending_writes=[] and would hide the interrupt.
 
         ``aput`` warms L1/L2 with an empty pending-writes list and
@@ -365,7 +364,7 @@ class TestCrashRecoveryWritesDegrade:
         # invalidating "" would leave a namespaced bundle stale
         assert l2.delete.await_args.args[1] == "t-1"
 
-    async def testinvalidation_clears_the_namespaced_key_not_the_root(self):
+    async def testinvalidation_clears_the_namespaced_key_not_the_root(self) -> None:
         """L2 is exact-key, so invalidating "" leaves a namespaced bundle stale.
 
         ``l2_delete`` used to hardcode the root namespace, which made this exact
@@ -386,7 +385,7 @@ class TestCrashRecoveryWritesDegrade:
         # l2_key("t-1", "inner") -- the key aput actually wrote
         assert l2.delete.await_args.args[1] == "t-1.inner"
 
-    async def testa_failed_invalidation_after_a_control_write_raises(self):
+    async def testa_failed_invalidation_after_a_control_write_raises(self) -> None:
         """a silently-failed invalidation is the original bug wearing a hat.
 
         The row reaches L3, the cache keeps serving the pre-interrupt bundle,
@@ -402,7 +401,7 @@ class TestCrashRecoveryWritesDegrade:
         with pytest.raises(RuntimeError, match="timeout"):
             await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
 
-    async def testa_failed_l1_invalidation_after_a_control_write_also_raises(self):
+    async def testa_failed_l1_invalidation_after_a_control_write_also_raises(self) -> None:
         """both tiers can hide the interrupt, so neither may fail quietly."""
         l1, l2 = AsyncMock(), AsyncMock()
         l1.delete.side_effect = RuntimeError("L1 down")
@@ -412,7 +411,7 @@ class TestCrashRecoveryWritesDegrade:
         with pytest.raises(RuntimeError, match="L1 down"):
             await saver.aput_writes(self._CONFIG, [("__interrupt__", "approve?")], "task-1")
 
-    async def testordinary_write_does_not_invalidate_the_caches(self):
+    async def testordinary_write_does_not_invalidate_the_caches(self) -> None:
         """invalidation is scoped to control channels, not every write."""
         l1, l2 = AsyncMock(), AsyncMock()
 
@@ -423,7 +422,7 @@ class TestCrashRecoveryWritesDegrade:
         assert l1.delete.await_count == 0
         assert l2.delete.await_count == 0
 
-    async def testan_unserializable_value_surfaces_rather_than_degrading(self):
+    async def testan_unserializable_value_surfaces_rather_than_degrading(self) -> None:
         """a programming error must not hide behind the transport guard.
 
         Serialization is deterministic: degrading it would log one warning per
@@ -434,7 +433,7 @@ class TestCrashRecoveryWritesDegrade:
         saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
 
         class _Unserializable:
-            def __reduce__(self):
+            def __reduce__(self) -> None:
                 raise TypeError("cannot serialize this")
 
         with pytest.raises(TypeError, match="not msgpack serializable"):
@@ -442,7 +441,7 @@ class TestCrashRecoveryWritesDegrade:
 
         assert executor.execute.await_count == 0
 
-    async def testaput_writes_persists_the_set_in_one_statement(self):
+    async def testaput_writes_persists_the_set_in_one_statement(self) -> None:
         """all-or-nothing, because a truncated set is worse than a lost one.
 
         Pregel applies a task's pending writes to channels and skips any task
@@ -467,7 +466,7 @@ class TestCrashRecoveryWritesDegrade:
         # a desynchronised parameter list, which SQL alone would not reveal
         assert [int(n) for n in re.findall(r"\$(\d+)", query)] == list(range(1, len(params) + 1))
 
-    async def testaput_writes_issues_no_statement_for_an_empty_set(self):
+    async def testaput_writes_issues_no_statement_for_an_empty_set(self) -> None:
         """no rows to persist is not a failure to persist rows."""
         executor = _make_executor()
 
@@ -481,7 +480,7 @@ class TestCrashRecoveryWritesDegrade:
 class TestL2Degradation:
     """L2 cache failures degrade gracefully."""
 
-    async def test_a_failed_l2_read_is_raised_not_answered_as_a_miss(self):
+    async def test_a_failed_l2_read_is_raised_not_answered_as_a_miss(self) -> None:
         l2 = AsyncMock()
         l2.get.side_effect = RuntimeError("L2 down")
 
@@ -521,7 +520,9 @@ class TestCacheReadFailureFallsThrough:
         l2.get.side_effect = RuntimeError("L2 down")
         return l1, l2
 
-    async def test_failed_cache_reads_fall_through_to_l3_as_recorded_misses(self, caplog):
+    async def test_failed_cache_reads_fall_through_to_l3_as_recorded_misses(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         executor = _make_executor()
         l1, l2 = self._failing_caches()
         saver = ThreeTierCheckpointSaver(executor=executor, l1_cache=l1, l2_cache=l2, scope=_UNSCOPED)
@@ -541,7 +542,7 @@ class TestCacheReadFailureFallsThrough:
         )
         assert [r.extra_data["miss"] for r in caplog.records if hasattr(r, "extra_data")] == ["error", "error"]
 
-    async def test_a_plain_miss_records_nothing(self, caplog):
+    async def test_a_plain_miss_records_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
         executor = _make_executor()
         l1 = AsyncMock()
         l1.get.return_value = None
@@ -553,7 +554,7 @@ class TestCacheReadFailureFallsThrough:
 
         assert not [r for r in caplog.records if getattr(r, "extra_data", {}).get("miss") == "error"]
 
-    async def test_a_failed_l3_read_after_failed_cache_reads_raises(self):
+    async def test_a_failed_l3_read_after_failed_cache_reads_raises(self) -> None:
         executor = _make_executor()
         executor.fetch.side_effect = ConnectionError("postgres down")
         l1, l2 = self._failing_caches()
@@ -562,7 +563,7 @@ class TestCacheReadFailureFallsThrough:
         with pytest.raises(ConnectionError, match="postgres down"):
             await saver.aget_tuple(self._CONFIG)
 
-    async def testl2_key_with_ns(self):
+    async def testl2_key_with_ns(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert saver.l2_key("thread-1", "") == "thread-1"
@@ -572,14 +573,14 @@ class TestCacheReadFailureFallsThrough:
 class TestNoCacheProvided:
     """When no L1/L2 provided, all cache ops are no-ops."""
 
-    async def test_l1_ops_are_noop(self):
+    async def test_l1_ops_are_noop(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert await saver.l1_get("t", "") is None
         await saver.l1_put("t", "", b"data")  # no-op
         await saver.l1_delete("t")  # no-op
 
-    async def test_l2_ops_are_noop(self):
+    async def test_l2_ops_are_noop(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         assert await saver.l2_get("t", "") is None
@@ -590,31 +591,31 @@ class TestNoCacheProvided:
 class TestSyncMethodsRaise:
     """Sync methods raise NotImplementedError."""
 
-    def test_get_tuple_raises(self):
+    def test_get_tuple_raises(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             saver.get_tuple({"configurable": {"thread_id": "t1"}})
 
-    def test_list_raises(self):
+    def test_list_raises(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             list(saver.list(None))
 
-    def test_put_raises(self):
+    def test_put_raises(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             saver.put({"configurable": {"thread_id": "t1"}}, {}, {}, {})
 
-    def test_put_writes_raises(self):
+    def test_put_writes_raises(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
             saver.put_writes({"configurable": {"thread_id": "t1"}}, [], "task-1")
 
-    def test_delete_thread_raises(self):
+    def test_delete_thread_raises(self) -> None:
         saver = ThreeTierCheckpointSaver(executor=_make_executor(), scope=_UNSCOPED)
 
         with pytest.raises(NotImplementedError):
@@ -624,7 +625,7 @@ class TestSyncMethodsRaise:
 class TestProtocolFlow:
     """verify executor protocol methods are invoked with expected sql."""
 
-    async def test_aput_invokes_executor_execute(self):
+    async def test_aput_invokes_executor_execute(self) -> None:
         """aput() writes the checkpoint INSERT via executor.execute."""
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
@@ -647,7 +648,7 @@ class TestProtocolFlow:
         sql_stmt = executor.execute.call_args.args[0]
         assert "INSERT INTO checkpoints" in sql_stmt
 
-    async def test_aget_tuple_returns_none_when_executor_empty(self):
+    async def test_aget_tuple_returns_none_when_executor_empty(self) -> None:
         """aget_tuple() returns None when the thread's newest-checkpoint page is empty."""
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
@@ -659,7 +660,7 @@ class TestProtocolFlow:
         assert result is None
         executor.fetch.assert_called_once()
 
-    async def test_adelete_thread_issues_two_delete_statements(self):
+    async def test_adelete_thread_issues_two_delete_statements(self) -> None:
         """adelete_thread() runs DELETE on writes and checkpoints tables."""
         executor = _make_executor()
         saver = ThreeTierCheckpointSaver(executor=executor, scope=_UNSCOPED)
@@ -672,7 +673,7 @@ class TestProtocolFlow:
         assert 'DELETE FROM "checkpoint_writes"' in first_sql
         assert 'DELETE FROM "checkpoints"' in second_sql
 
-    async def test_flush_callback_runs_after_aput(self):
+    async def test_flush_callback_runs_after_aput(self) -> None:
         """flush_callback is invoked after aput() writes succeed."""
         executor = _make_executor()
         flush = AsyncMock(return_value=3)
@@ -702,7 +703,7 @@ class TestAsyncpgPoolAdapter:
     adapter or a NatsProxyL3Backend.
     """
 
-    async def test_fetch_returns_list_of_dicts(self):
+    async def test_fetch_returns_list_of_dicts(self) -> None:
         record_one = {"checkpoint_id": "cp-1", "type": "msgpack"}
         record_two = {"checkpoint_id": "cp-2", "type": "msgpack"}
         conn = MagicMock()
@@ -715,7 +716,7 @@ class TestAsyncpgPoolAdapter:
         assert rows == [record_one, record_two]
         conn.fetch.assert_awaited_once_with("SELECT ...")
 
-    async def test_fetchrow_returns_dict_or_none(self):
+    async def test_fetchrow_returns_dict_or_none(self) -> None:
         conn = MagicMock()
         conn.fetchrow = AsyncMock(return_value={"col": "v"})
         pool = _build_pool_with_conn(conn)
@@ -729,7 +730,7 @@ class TestAsyncpgPoolAdapter:
         adapter_empty = AsyncpgPoolAdapter(pool_empty)
         assert await adapter_empty.fetchrow("SELECT none") is None
 
-    async def test_execute_returns_status_tag(self):
+    async def test_execute_returns_status_tag(self) -> None:
         conn = MagicMock()
         conn.execute = AsyncMock(return_value="UPDATE 2")
         pool = _build_pool_with_conn(conn)
@@ -740,7 +741,7 @@ class TestAsyncpgPoolAdapter:
         assert result == "UPDATE 2"
         conn.execute.assert_awaited_once_with("UPDATE foo SET x=1")
 
-    async def test_checkpoint_saver_accepts_adapter(self):
+    async def test_checkpoint_saver_accepts_adapter(self) -> None:
         """end-to-end: saver driven via an adapter performs the same
         executor calls as when driven via a protocol-native backend.
         """

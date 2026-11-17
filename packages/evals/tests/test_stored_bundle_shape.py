@@ -59,7 +59,9 @@ def _frozen_at(shape: int, campaign_id: str) -> dict:
     return {**bundle, "schema_version": shape, "measurement_window_disclosure": None}
 
 
-def test_a_stored_analysis_frozen_at_the_shipped_shape_is_listed_as_needing_regeneration_beside_one_that_reads():
+def test_a_stored_analysis_frozen_at_the_shipped_shape_is_listed_as_needing_regeneration_beside_one_that_reads() -> (
+    None
+):
     fixture = off_loop(ops_fixture)
     host = fixture.host.eval_host
     campaign_id = fixture.campaign.id
@@ -97,7 +99,9 @@ def test_a_stored_analysis_frozen_at_the_shipped_shape_is_listed_as_needing_rege
 
 
 @pytest.mark.parametrize("format", ["markdown", "html", "json"])
-def test_the_report_of_a_campaign_whose_newest_analysis_is_frozen_at_the_shipped_shape_reads_code_only(format: str):
+def test_the_report_of_a_campaign_whose_newest_analysis_is_frozen_at_the_shipped_shape_reads_code_only(
+    format: str,
+) -> None:
     fixture = off_loop(ops_fixture)
     host = fixture.host.eval_host
     campaign_id = fixture.campaign.id
@@ -185,7 +189,7 @@ async def _written(store: InMemoryDocumentStore) -> tuple[OpsFixture, EvalAnalys
 
 
 @pytest.mark.parametrize("shape", [LAST_READ_AS_STORED, NAMED_SHAPE])
-def test_no_earlier_shape_is_read_as_stored_and_one_frozen_before_names_left_the_evidence_says_so(shape: int):
+def test_no_earlier_shape_is_read_as_stored_and_one_frozen_before_names_left_the_evidence_says_so(shape: int) -> None:
     # A deliberate change (owner ruling, 2026-11-11): 64 was read as stored; every shape before 66 is now refused.
     assert CURRENT_SHAPE == 66
     refuse_a_bundle_of_another_shape({"schema_version": CURRENT_SHAPE}, what="this analysis", remedy="regenerate")
@@ -212,7 +216,7 @@ def test_a_campaign_bundle_frozen_before_names_left_the_readings_is_refused_sayi
         assert f"shape {shape}" in refused.value.fault and f"({CAMPAIGN_BUNDLE_SHAPE})" in refused.value.fault
 
 
-def test_the_kairo_bundle_at_shape_65_is_refused_as_frozen_before_names_left_the_evidence():
+def test_the_kairo_bundle_at_shape_65_is_refused_as_frozen_before_names_left_the_evidence() -> None:
     # The real two-arm campaign, taken back to 65 with the sentence 66 dropped: it no longer reads, where the same
     # bundle at 66 reads and lays out.
     with gzip.open(KAIRO_BUNDLE, "rt", encoding="utf-8") as stream:

@@ -22,11 +22,11 @@ import json
 
 import httpx
 import pytest
-from packages.scrape.tests.driver_log_helpers import driver_warnings
-from packages.scrape.tests.egress_fakes import FakeEgress
-
 from threetears.scrape.driver import NavStep, RenderedPage
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError
+
+from packages.scrape.tests.driver_log_helpers import driver_warnings
+from packages.scrape.tests.egress_fakes import FakeEgress
 
 # ===========================================================================
 # results_path resolution, through render()
@@ -54,28 +54,28 @@ def _records(*values: str) -> list[dict[str, str]]:
 
 
 class TestResultsPath:
-    async def test_single_segment_path(self):
+    async def test_single_segment_path(self) -> None:
         assert await _render_records({"Results": _records("1", "2", "3")}, "Results") == "1\n2\n3"
 
-    async def test_dotted_multi_segment_path(self):
+    async def test_dotted_multi_segment_path(self) -> None:
         assert await _render_records({"data": {"records": _records("a", "b")}}, "data.records") == "a\nb"
 
-    async def test_missing_key_raises(self):
+    async def test_missing_key_raises(self) -> None:
         with pytest.raises(ApiDriverError) as exc_info:
             await _render_records({"Other": []}, "Results")
         assert exc_info.value.code == "bad_results_path"
 
-    async def test_missing_nested_key_raises(self):
+    async def test_missing_nested_key_raises(self) -> None:
         with pytest.raises(ApiDriverError) as exc_info:
             await _render_records({"data": {}}, "data.records")
         assert exc_info.value.code == "bad_results_path"
 
-    async def test_non_list_terminal_value_raises(self):
+    async def test_non_list_terminal_value_raises(self) -> None:
         with pytest.raises(ApiDriverError) as exc_info:
             await _render_records({"Results": "not a list"}, "Results")
         assert exc_info.value.code == "bad_results_path"
 
-    async def test_non_dict_intermediate_value_raises(self):
+    async def test_non_dict_intermediate_value_raises(self) -> None:
         with pytest.raises(ApiDriverError) as exc_info:
             await _render_records({"data": ["not", "a", "dict"]}, "data.records")
         assert exc_info.value.code == "bad_results_path"
@@ -94,11 +94,11 @@ def _json_response_handler(body: dict | list, *, status: int = 200):
 
 
 class TestApiDriver:
-    def test_name(self):
+    def test_name(self) -> None:
         driver = ApiDriver()
         assert driver.name == "api"
 
-    async def test_render_concatenates_fragments_into_synthetic_html(self):
+    async def test_render_concatenates_fragments_into_synthetic_html(self) -> None:
         body = {"Results": [{"Html": "<p>Record One</p>"}, {"Html": "<p>Record Two</p>"}]}
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
         driver = ApiDriver(client=client)
@@ -113,7 +113,7 @@ class TestApiDriver:
         assert page.html.endswith("</body></html>")
         await client.aclose()
 
-    async def test_render_resolves_a_nested_dotted_results_path(self):
+    async def test_render_resolves_a_nested_dotted_results_path(self) -> None:
         body = {"data": {"records": [{"Html": "<p>Nested Record</p>"}]}}
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
         driver = ApiDriver(client=client)
@@ -123,7 +123,7 @@ class TestApiDriver:
         assert "<p>Nested Record</p>" in page.html
         await client.aclose()
 
-    async def test_render_skips_records_missing_the_fragment_field(self):
+    async def test_render_skips_records_missing_the_fragment_field(self) -> None:
         body = {"Results": [{"Html": "<p>Has It</p>"}, {"Other": "no fragment field here"}]}
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
         driver = ApiDriver(client=client)
@@ -134,7 +134,7 @@ class TestApiDriver:
         assert "no fragment field here" not in page.html
         await client.aclose()
 
-    async def test_render_raises_when_results_path_is_missing(self):
+    async def test_render_raises_when_results_path_is_missing(self) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
         driver = ApiDriver(client=client)
 
@@ -144,7 +144,7 @@ class TestApiDriver:
         assert exc_info.value.code == "missing_config"
         await client.aclose()
 
-    async def test_render_with_no_fragment_field_uses_structured_mode(self):
+    async def test_render_with_no_fragment_field_uses_structured_mode(self) -> None:
         # fragment_field=None is a deliberate mode switch, not a missing-config error --
         # each record's own keys become a synthetic <table> row instead (Texas's real
         # Socrata WARN endpoint, 2026-07-15).
@@ -162,7 +162,7 @@ class TestApiDriver:
         assert "<td>Beta Inc</td>" in page.html
         await client.aclose()
 
-    async def test_empty_string_fragment_field_also_uses_structured_mode(self):
+    async def test_empty_string_fragment_field_also_uses_structured_mode(self) -> None:
         # Critic-caught (chunk review): fragment_field="" (distinct from None -- e.g. a
         # nullable column holding "" rather than NULL) must trigger the same structured
         # mode None does, not silently look up a literal "" key and return an empty body.
@@ -176,7 +176,7 @@ class TestApiDriver:
         assert "<td>Acme Corp</td>" in page.html
         await client.aclose()
 
-    async def test_structured_mode_uses_the_union_of_every_records_keys(self):
+    async def test_structured_mode_uses_the_union_of_every_records_keys(self) -> None:
         # Critic-caught (chunk review): taking columns from the first record alone would
         # silently drop a key that only appears on a later record -- a real API can return
         # heterogeneous records (e.g. an optional field only present when non-null).
@@ -191,7 +191,7 @@ class TestApiDriver:
         assert "<td>Dallas</td>" in page.html
         await client.aclose()
 
-    async def test_structured_mode_escapes_html_in_values(self):
+    async def test_structured_mode_escapes_html_in_values(self) -> None:
         body = {"Results": [{"employer": "<script>alert(1)</script>"}]}
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
         driver = ApiDriver(client=client)
@@ -202,7 +202,7 @@ class TestApiDriver:
         assert "&lt;script&gt;" in page.html
         await client.aclose()
 
-    async def test_structured_mode_fills_missing_keys_with_empty_cell(self):
+    async def test_structured_mode_fills_missing_keys_with_empty_cell(self) -> None:
         body = {"Results": [{"employer": "Acme Corp", "county": "Travis"}, {"employer": "Beta Inc"}]}
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler(body)))
         driver = ApiDriver(client=client)
@@ -212,7 +212,7 @@ class TestApiDriver:
         assert page.html.count("<tr>") == 3  # header + 2 records, no column shift
         await client.aclose()
 
-    async def test_empty_results_path_uses_the_response_root_as_the_list(self):
+    async def test_empty_results_path_uses_the_response_root_as_the_list(self) -> None:
         # Socrata (Texas's real WARN endpoint) returns a bare JSON array, not wrapped
         # under a named key.
         body = [{"employer": "Acme Corp"}, {"employer": "Beta Inc"}]
@@ -225,7 +225,7 @@ class TestApiDriver:
         assert "<td>Beta Inc</td>" in page.html
         await client.aclose()
 
-    async def test_empty_results_path_raises_when_root_is_not_a_list(self):
+    async def test_empty_results_path_raises_when_root_is_not_a_list(self) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"not": "a list"})))
         driver = ApiDriver(client=client)
 
@@ -235,7 +235,7 @@ class TestApiDriver:
         assert exc_info.value.code == "bad_results_path"
         await client.aclose()
 
-    async def test_render_raises_on_transport_failure(self):
+    async def test_render_raises_on_transport_failure(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
@@ -248,7 +248,7 @@ class TestApiDriver:
         assert exc_info.value.code == "transport"
         await client.aclose()
 
-    async def test_render_raises_on_http_error_status(self):
+    async def test_render_raises_on_http_error_status(self) -> None:
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda request: httpx.Response(403, content=b"forbidden"))
         )
@@ -260,7 +260,7 @@ class TestApiDriver:
         assert exc_info.value.code == "fetch_failed"
         await client.aclose()
 
-    async def test_render_raises_on_invalid_json(self):
+    async def test_render_raises_on_invalid_json(self) -> None:
         client = httpx.AsyncClient(
             transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"not json at all"))
         )
@@ -272,7 +272,7 @@ class TestApiDriver:
         assert exc_info.value.code == "invalid_json"
         await client.aclose()
 
-    async def test_render_raises_on_bad_results_path(self):
+    async def test_render_raises_on_bad_results_path(self) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Other": []})))
         driver = ApiDriver(client=client)
 
@@ -282,7 +282,7 @@ class TestApiDriver:
         assert exc_info.value.code == "bad_results_path"
         await client.aclose()
 
-    async def test_render_accepts_and_ignores_wait_for_capture_network_and_nav_steps(self):
+    async def test_render_accepts_and_ignores_wait_for_capture_network_and_nav_steps(self) -> None:
         """Interface conformance only -- a plain API GET has no browser to
         wait on or drive, but must still accept the full ScrapeDriver
         signature like every other backend."""
@@ -302,7 +302,7 @@ class TestApiDriver:
         assert isinstance(page, RenderedPage)
         await client.aclose()
 
-    async def test_an_injected_client_is_used_as_given_no_default_user_agent_override(self):
+    async def test_an_injected_client_is_used_as_given_no_default_user_agent_override(self) -> None:
         """The default browser User-Agent (a live-found WAF workaround) only
         applies to a client this driver constructs itself -- an injected
         client's own header policy (or lack of one) must be left alone."""
@@ -383,7 +383,7 @@ class TestApiDriverAnnouncesADroppedSolve:
     block deletable with the suite green. The call site is the thing that was untested.
     """
 
-    async def test_render_warns_when_it_drops_a_solve(self, caplog):
+    async def test_render_warns_when_it_drops_a_solve(self, caplog: pytest.LogCaptureFixture) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
         driver = ApiDriver(client=client)
 
@@ -400,7 +400,7 @@ class TestApiDriverAnnouncesADroppedSolve:
         mine = [r for r in driver_warnings(caplog, "api") if "cannot apply it" in r.getMessage()]
         assert mine, f"render() dropped a solve silently; records: {[(r.name, r.getMessage()) for r in caplog.records]}"
 
-    async def test_an_ordinary_render_stays_quiet(self, caplog):
+    async def test_an_ordinary_render_stays_quiet(self, caplog: pytest.LogCaptureFixture) -> None:
         """A warning on every render is noise that teaches the reader to skip it."""
         client = httpx.AsyncClient(transport=httpx.MockTransport(_json_response_handler({"Results": []})))
         driver = ApiDriver(client=client)

@@ -35,7 +35,7 @@ async def collection(pg_schema: tuple[str, str]) -> AsyncIterator[ConversationsC
         await conn.execute(f'SET search_path TO "{schema}", public')
         runner = MigrationRunner()
         register_conversations(runner)
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
     finally:
         await conn.close()
     pool = await asyncpg.create_pool(

@@ -172,7 +172,7 @@ async def test_a_run_executes_at_the_narrower_of_the_hosts_ceiling_and_its_kinds
 
 
 def test_a_launcher_that_states_no_width_declares_its_kind_serial() -> None:
-    wiring = KindWiring(kind_factory=lambda _cell: None, subject=TOYHOST_SUBJECT, test_cases=[])  # type: ignore[arg-type,return-value]
+    wiring = KindWiring(kind_factory=lambda _cell: None, subject=TOYHOST_SUBJECT, test_cases=[])  # type: ignore[arg-type]
 
     assert wiring.max_concurrent_cells == 1
 
@@ -181,7 +181,7 @@ def test_a_launcher_that_states_no_width_declares_its_kind_serial() -> None:
 def test_a_launcher_stating_a_width_no_run_can_execute_at_is_refused(width: Any) -> None:
     with pytest.raises(ValueError, match="an int of at least 1, or None"):
         KindWiring(
-            kind_factory=lambda _cell: None,  # type: ignore[arg-type,return-value]
+            kind_factory=lambda _cell: None,  # type: ignore[arg-type]
             subject=TOYHOST_SUBJECT,
             test_cases=[],
             max_concurrent_cells=width,

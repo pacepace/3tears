@@ -52,7 +52,7 @@ class _Exact(SchemaBackedCollection[_Row]):
     """every tier hands back what was written."""
 
     schema: ClassVar[TableSchema] = _schema("tier_exact", 12)
-    entity_class = _Row  # type: ignore[assignment]
+    entity_class = _Row
 
     @property
     def table_name(self) -> str:

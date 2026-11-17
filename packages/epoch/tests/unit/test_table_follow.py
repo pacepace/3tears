@@ -133,7 +133,7 @@ class _Silent:
 
 
 async def test_a_watch_on_a_key_never_written_is_watching_but_not_yet_healthy() -> None:
-    follower = TableFollower(await _listening_registry(), _Silent(), _TABLES)  # type: ignore[arg-type]
+    follower = TableFollower(await _listening_registry(), _Silent(), _TABLES)
     assert not follower.watching
     follower.start()
     try:
@@ -190,7 +190,7 @@ async def test_a_watch_whose_connection_closed_stops_instead_of_retrying() -> No
     reader = _ClosedConnection()
     follower = TableFollower(
         await _listening_registry(),
-        reader,  # type: ignore[arg-type]
+        reader,
         ("groups",),
         restart_delay=timedelta(milliseconds=1),
     )
@@ -285,8 +285,8 @@ async def test_the_registry_trusts_a_followed_table_only_while_its_watch_runs(
 async def test_a_second_follower_of_a_table_neither_hides_nor_withdraws_the_first() -> None:
     watches = _Silent()
     registry = await _listening_registry()
-    first = follow_tables(registry, watches, ("concepts",))  # type: ignore[arg-type]
-    second = follow_tables(registry, watches, ("concepts",))  # type: ignore[arg-type]
+    first = follow_tables(registry, watches, ("concepts",))
+    second = follow_tables(registry, watches, ("concepts",))
     try:
         assert registry.tables_trusted(("concepts",))
         await second.stop()

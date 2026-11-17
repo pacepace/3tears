@@ -164,7 +164,7 @@ async def runner_apply(conn: asyncpg.Connection, store: AsyncpgStore) -> int:
     """
     _ = conn
     runner = build_runner()
-    count: int = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+    count: int = await runner.apply_for_agent_schema(store)
     return count
 
 

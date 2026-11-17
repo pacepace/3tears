@@ -14,11 +14,14 @@ from typing import Any, get_args
 
 import pytest
 from pydantic import ValidationError
-
-from threetears.evals.analysis.reporting import project_score_records
 from threetears.evals.analysis.lenses.pivot import PivotError, compute_pivot
+from threetears.evals.analysis.reporting import project_score_records
 from threetears.evals.kernel.declaration import resolve_bar_name
 from threetears.evals.kernel.host import MeasureRegistry
+from threetears.evals.kernel.provider import withhold_failure_detail
+from threetears.evals.kernel.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
+from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
+from threetears.evals.run.judge_service import JudgeContext, JudgeService
 from threetears.evals.schema.models import (
     MODEL_DEFAULT_TEMPERATURE,
     SCALES,
@@ -29,10 +32,7 @@ from threetears.evals.schema.models import (
     RubricScore,
     label_key_of,
 )
-from threetears.evals.kernel.provider import withhold_failure_detail
-from threetears.evals.kernel.scoring import compute_dimension_summary, compute_pass_hat_k, result_composite
-from threetears.evals.run.judge import SCALE_READERS, run_judge_llm
-from threetears.evals.run.judge_service import JudgeContext, JudgeService
+
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -49,17 +49,17 @@ def _answer(value: Any) -> str:
 
 
 class TestTheAuthoredCriterion:
-    def test_a_pass_fail_guide_describes_pass_and_fail(self):
+    def test_a_pass_fail_guide_describes_pass_and_fail(self) -> None:
         dim = RubricDim(name="x.arc", description="d", scale="pass_fail", scoring_guide={"pass": "p", "fail": "f"})
         assert dim.scale == "pass_fail"
 
-    def test_a_guide_with_levels_its_scale_lacks_is_refused(self):
+    def test_a_guide_with_levels_its_scale_lacks_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="scoring guide has levels"):
             RubricDim(name="x.arc", description="d", scale="pass_fail", scoring_guide={"3": "middling"})
         with pytest.raises(ValidationError, match="scoring guide has levels"):
             RubricDim(name="x.arc", description="d", scoring_guide={"pass": "p"}, scale="ordinal")
 
-    def test_a_criterion_with_no_scale_is_refused_rather_than_read_as_ordinal(self):
+    def test_a_criterion_with_no_scale_is_refused_rather_than_read_as_ordinal(self) -> None:
         """A criterion states its scale: none is assumed, for a criterion or for the score it was judged on."""
         with pytest.raises(ValidationError, match="scale"):
             RubricDim.model_validate({"name": "x.arc", "description": "d", "scoring_guide": {"1": "a"}})
@@ -69,11 +69,11 @@ class TestTheAuthoredCriterion:
 
 class TestTheStoredScore:
     @pytest.mark.parametrize(("scale", "score"), [("ordinal", 0), ("ordinal", 6), ("pass_fail", 2), ("pass_fail", -1)])
-    def test_a_score_off_its_scale_is_refused(self, scale, score):
+    def test_a_score_off_its_scale_is_refused(self, scale, score) -> None:
         with pytest.raises(ValidationError, match="not on the"):
             RubricScore(dim="x.arc", scale=scale, score=score, axis="capability", judge_temperature=0.0)
 
-    def test_the_label_names_a_pass_or_fail_and_leaves_a_level_as_its_number(self):
+    def test_the_label_names_a_pass_or_fail_and_leaves_a_level_as_its_number(self) -> None:
         """`arc=0` reads as the lowest score, not as a judged fail."""
         assert (
             RubricScore(dim="x.a", scale="pass_fail", score=0, axis="capability", judge_temperature=0.0).label == "fail"
@@ -83,7 +83,7 @@ class TestTheStoredScore:
         )
         assert RubricScore(dim="x.a", score=4, scale="ordinal", axis="capability", judge_temperature=0.0).label == "4"
 
-    def test_normalized_and_the_bar_follow_the_scale(self):
+    def test_normalized_and_the_bar_follow_the_scale(self) -> None:
         assert (
             RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0).normalized
             == 1.0
@@ -131,28 +131,28 @@ async def _judged(value: Any, criteria: list[dict[str, Any]], **kwargs: Any) -> 
 
 
 class TestTheJudgesAnswer:
-    async def test_pass_and_fail_become_one_and_zero(self):
+    async def test_pass_and_fail_become_one_and_zero(self) -> None:
         assert (await _judged("pass", _PF))["criteria_ordinal_scores"] == {"arc": 1}
         assert (await _judged("fail", _PF))["criteria_ordinal_scores"] == {"arc": 0}
 
     @pytest.mark.parametrize("value", [4, 1, 0, True, "PASS", "yes", None, ["pass"]])
-    async def test_anything_else_on_a_pass_fail_criterion_is_refused(self, value):
+    async def test_anything_else_on_a_pass_fail_criterion_is_refused(self, value) -> None:
         with pytest.raises(ValueError, match="pass/fail"):
             SCALE_READERS["pass_fail"]("arc", value)
         parsed = await _judged(value, _PF)
         assert "criteria_scores" not in parsed and parsed["error"].startswith("Failed to parse")
 
-    async def test_a_word_on_an_ordinal_criterion_is_refused(self):
+    async def test_a_word_on_an_ordinal_criterion_is_refused(self) -> None:
         with pytest.raises(ValueError, match="not one of the 1-5 scale's answers"):
             SCALE_READERS["ordinal"]("arc", "pass")
         parsed = await _judged("pass", _ORD)
         assert "criteria_scores" not in parsed and parsed["error"].startswith("Failed to parse")
 
-    async def test_cannot_tell_is_still_offered_on_pass_fail(self):
+    async def test_cannot_tell_is_still_offered_on_pass_fail(self) -> None:
         parsed = await _judged("cannot_tell", _PF, cannot_tell_offered=True)
         assert parsed["criteria_cannot_tell"] == ["arc"] and parsed["criteria_scores"] == {}
 
-    async def test_the_normalised_score_is_the_answer_itself(self):
+    async def test_the_normalised_score_is_the_answer_itself(self) -> None:
         parsed = await _judged("pass", _PF)
         assert parsed["criteria_scores"] == {"arc": 1.0}
         assert parsed["criteria_ordinal_scores"] == {"arc": 1}
@@ -183,7 +183,7 @@ def _context() -> JudgeContext:
 
 
 class TestTheJudgeService:
-    async def test_a_pass_fail_dimension_is_asked_for_pass_or_fail_and_stored_with_its_scale(self):
+    async def test_a_pass_fail_dimension_is_asked_for_pass_or_fail_and_stored_with_its_scale(self) -> None:
         judge = _Judge("pass")
         dim = RubricDim(name="x.arc", description="d", scale="pass_fail", scoring_guide={"pass": "P", "fail": "F"})
 
@@ -201,7 +201,7 @@ class TestTheJudgeService:
         assert "Answer pass or fail." in system and "1 (worst) to 5 (best)" not in system
         assert "  pass: P" in system and "  fail: F" in system
 
-    async def test_an_ordinal_dimension_is_still_asked_for_one_to_five(self):
+    async def test_an_ordinal_dimension_is_still_asked_for_one_to_five(self) -> None:
         judge = _Judge(4)
         dim = RubricDim(name="x.arc", description="d", scale="ordinal")
         outcome = await JudgeService(
@@ -216,7 +216,7 @@ class TestTheJudgeService:
         )  # fmt: skip
         assert "1 (worst) to 5 (best)" in judge.systems[0]
 
-    async def test_a_number_given_to_a_pass_fail_dimension_scores_nothing(self):
+    async def test_a_number_given_to_a_pass_fail_dimension_scores_nothing(self) -> None:
         judge = _Judge(4)
         dim = RubricDim(name="x.arc", description="d", scale="pass_fail")
 
@@ -232,7 +232,7 @@ def _result(**overrides: Any):
 
 
 class TestAggregation:
-    def test_the_composite_reads_a_pass_as_one_and_a_fail_as_zero(self):
+    def test_the_composite_reads_a_pass_as_one_and_a_fail_as_zero(self) -> None:
         mixed = _result(
             rubric_scores=[
                 RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0),
@@ -241,7 +241,7 @@ class TestAggregation:
         )
         assert result_composite(mixed) == 0.5
 
-    def test_pass_k_passes_a_pass_whatever_the_threshold_and_fails_a_fail(self):
+    def test_pass_k_passes_a_pass_whatever_the_threshold_and_fails_a_fail(self) -> None:
         passed = _result(
             rubric_scores=[RubricScore(dim="x.a", scale="pass_fail", score=1, axis="capability", judge_temperature=0.0)]
         )
@@ -256,7 +256,7 @@ class TestAggregation:
 
         assert row["n_test_cases"] == 2 and row["pass_hat_k"] == 0.5
 
-    def test_a_dimension_summary_names_its_scale_and_its_mean_is_the_pass_rate(self):
+    def test_a_dimension_summary_names_its_scale_and_its_mean_is_the_pass_rate(self) -> None:
         results = [
             _result(
                 test_case_id=f"tc-{i}",
@@ -269,7 +269,7 @@ class TestAggregation:
         summary = compute_dimension_summary(results)[("sonnet", "run-1", "x.a")]
         assert summary["scale"] == "pass_fail" and summary["mean_score"] == 0.75
 
-    def test_one_dimension_judged_on_two_scales_is_refused(self):
+    def test_one_dimension_judged_on_two_scales_is_refused(self) -> None:
         results = [
             _result(
                 rubric_scores=[
@@ -294,7 +294,7 @@ class TestTheProjection:
         profile = toyhost_profile()
         return project_score_records([run], results, profile=profile, archived_run_ids=None).records
 
-    def test_a_score_row_carries_its_scale(self):
+    def test_a_score_row_carries_its_scale(self) -> None:
         records = self._project(
             [
                 _result(
@@ -307,14 +307,14 @@ class TestTheProjection:
         [row] = [r for r in records if r.metric == "score"]
         assert (row.rubric_dim, row.rubric_scale, row.value) == ("x.a", "pass_fail", 0.0)
 
-    def test_a_cannot_tell_row_takes_its_scale_from_what_the_run_recorded(self):
+    def test_a_cannot_tell_row_takes_its_scale_from_what_the_run_recorded(self) -> None:
         records = self._project(
             [_result(rubric_scores=[], judge_cannot_tell={"x.a": "no evidence"})], rubric_scales={"x.a": "pass_fail"}
         )
         [row] = [r for r in records if r.metric == "score"]
         assert (row.rubric_dim, row.rubric_scale, row.value) == ("x.a", "pass_fail", None)
 
-    def test_a_run_states_its_scales_and_one_missing_a_dim_is_refused(self):
+    def test_a_run_states_its_scales_and_one_missing_a_dim_is_refused(self) -> None:
         """No scale is assumed: a run records every dim's, and one it did not record is refused by name."""
         with pytest.raises(ValidationError, match="rubric_scales"):
             make_eval_run(rubric_scales=None)
@@ -322,7 +322,7 @@ class TestTheProjection:
         with pytest.raises(ValueError, match="recorded no scale"):
             make_eval_run(rubric_scales={"x.b": "ordinal"}).rubric_scale("x.a")
 
-    def test_a_pivot_cell_pooling_both_scales_is_refused_and_one_per_dimension_is_not(self):
+    def test_a_pivot_cell_pooling_both_scales_is_refused_and_one_per_dimension_is_not(self) -> None:
         results = [
             _result(
                 rubric_scores=[
@@ -337,7 +337,7 @@ class TestTheProjection:
         table = compute_pivot(records, row_factor="rubric_dim", column_factor="model", metric="score", profile=_HOST)
         assert table is not None
 
-    def test_a_pivot_takes_its_measure_range_from_the_one_scale_its_rows_share(self):
+    def test_a_pivot_takes_its_measure_range_from_the_one_scale_its_rows_share(self) -> None:
         """The catalogue range spans every scale; a table holding one reads on that scale's own."""
         records = self._project(
             [
@@ -374,7 +374,7 @@ class TestTheProjection:
 
 
 class TestDescriptors:
-    def test_a_bar_on_a_pass_fail_dimension_is_described_on_zero_to_one(self):
+    def test_a_bar_on_a_pass_fail_dimension_is_described_on_zero_to_one(self) -> None:
         resolved = resolve_bar_name(
             "x.arc", rubric_dimensions={"x.arc": "pass_fail"}, goal_state_checks=(), measures=MeasureRegistry([])
         )
@@ -386,13 +386,13 @@ class TestDescriptors:
 
 
 class TestEveryScaleIsKnownEverywhere:
-    def test_each_per_scale_table_covers_exactly_the_scales(self):
+    def test_each_per_scale_table_covers_exactly_the_scales(self) -> None:
         """A scale added to the type and forgotten in one table must fail here, not fall into another's arithmetic."""
         scales = set(get_args(RubricScale))
         assert set(SCALES) == scales
         assert set(SCALE_READERS) == scales
 
-    def test_the_public_scale_table_cannot_be_written(self):
+    def test_the_public_scale_table_cannot_be_written(self) -> None:
         """SCALES is exported, so a host writing into it would rewrite every other host's arithmetic in the process."""
         with pytest.raises(TypeError):
             SCALES["ordinal"] = SCALES["pass_fail"]  # type: ignore[index]
@@ -400,7 +400,7 @@ class TestEveryScaleIsKnownEverywhere:
             SCALES["pass_fail"].labels[0] = "zero"  # type: ignore[index]
 
     @pytest.mark.parametrize("scale", sorted(get_args(RubricScale)))
-    async def test_every_scale_is_asked_for_in_its_own_words(self, scale):
+    async def test_every_scale_is_asked_for_in_its_own_words(self, scale) -> None:
         """The judge service words each scale's question; a scale it has no wording for never reaches the judge."""
         judge = _Judge("pass" if scale == "pass_fail" else 4)
 

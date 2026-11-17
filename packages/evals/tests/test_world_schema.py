@@ -5,10 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from threetears.evals.kernel.host import schema_violations
 from threetears.evals.kernel.host.world_schema import UnsupportedSchemaError
-
 
 _JOB = {
     "type": "object",
@@ -22,11 +20,11 @@ _JOB = {
 _JOBS = {"type": "array", "items": _JOB, "maxItems": 3}
 
 
-def test_a_conforming_value_passes():
+def test_a_conforming_value_passes() -> None:
     assert schema_violations(_JOBS, [{"title": "Invoice 7", "duration_ms": 1, "render_state": "ready"}], at="q") == []
 
 
-def test_an_implausible_value_of_the_right_type_passes():
+def test_an_implausible_value_of_the_right_type_passes() -> None:
     # A timestamp in 1970 or a zero-length job is the author's to answer for, not the check's.
     assert schema_violations(_JOB, {"title": "", "duration_ms": 0}, at="t") == []
 
@@ -53,18 +51,18 @@ def test_an_implausible_value_of_the_right_type_passes():
         ),
     ],
 )
-def test_each_violation_is_named_at_its_path(schema, value, says):
+def test_each_violation_is_named_at_its_path(schema, value, says) -> None:
     found = schema_violations(schema, value, at="q")
     assert any(says in sentence for sentence in found), found
 
 
-def test_a_closed_object_refuses_an_undeclared_key():
+def test_a_closed_object_refuses_an_undeclared_key() -> None:
     closed = {"type": "object", "properties": {"a": {"type": "string"}}, "additionalProperties": False}
 
     assert schema_violations(closed, {"a": "x", "b": 1}, at="o") == ["o carries 'b', which the schema does not declare"]
 
 
-def test_a_keyword_no_reader_honours_is_refused_rather_than_passed():
+def test_a_keyword_no_reader_honours_is_refused_rather_than_passed() -> None:
     with pytest.raises(UnsupportedSchemaError, match="exclusiveMinimum"):
         schema_violations({"type": "integer", "exclusiveMinimum": 0}, 0, at="n")
 

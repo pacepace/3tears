@@ -80,7 +80,7 @@ def _campaign_writers() -> list[tuple[str, str, bool]]:
     return found
 
 
-def test_the_population_is_the_one_the_lock_was_written_for():
+def test_the_population_is_the_one_the_lock_was_written_for() -> None:
     """Positive control: the walk finds the writers known today, so a green below is not an empty set."""
     writers = {(rel, name) for rel, name, _ in _campaign_writers()}
 
@@ -97,7 +97,7 @@ def test_the_population_is_the_one_the_lock_was_written_for():
         )
 
 
-def test_every_writer_of_an_existing_campaign_holds_the_lock():
+def test_every_writer_of_an_existing_campaign_holds_the_lock() -> None:
     unserialized = [
         f"{rel}::{name}"
         for rel, name, decorated in _campaign_writers()
@@ -110,7 +110,7 @@ def test_every_writer_of_an_existing_campaign_holds_the_lock():
     )
 
 
-def test_the_create_exemption_still_names_a_create():
+def test_the_create_exemption_still_names_a_create() -> None:
     """An exemption whose function started editing an existing campaign would excuse exactly the race."""
     for rel, name in _CREATES:
         assert name.rsplit(".", 1)[-1].startswith("create_"), f"{rel}::{name} is exempted as a create path"

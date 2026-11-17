@@ -64,7 +64,7 @@ def _diagnostic(**overrides: object) -> MetricDescriptor:
     return MetricDescriptor.model_validate(fields | overrides)
 
 
-async def test_a_host_declared_diagnostic_reaches_the_bundles_measure_surfaces():
+async def test_a_host_declared_diagnostic_reaches_the_bundles_measure_surfaces() -> None:
     path = await execute_toyhost_run(host=toyhost_host())
     bundle = off_loop(toyhost_run_bundle, path)
 
@@ -76,7 +76,7 @@ async def test_a_host_declared_diagnostic_reaches_the_bundles_measure_surfaces()
     assert all(FIELD_COUNT_ERROR in {m.name for m in summary.measures.measures} for summary in bundle.run_summaries)
 
 
-async def test_a_declared_raw_count_stays_out_while_the_diagnostic_beside_it_is_carried():
+async def test_a_declared_raw_count_stays_out_while_the_diagnostic_beside_it_is_carried() -> None:
     """The stated rule holds: a directionless measure that does not declare itself a diagnostic is a count."""
     profile = toyhost_profile()
     profile = replace(
@@ -96,7 +96,7 @@ async def test_a_declared_raw_count_stays_out_while_the_diagnostic_beside_it_is_
     assert FIELD_COUNT_ERROR in bundle.measure_catalog
 
 
-def test_the_engines_own_diagnostic_is_declared_on_its_descriptor_like_a_hosts():
+def test_the_engines_own_diagnostic_is_declared_on_its_descriptor_like_a_hosts() -> None:
     """One predicate for both: the engine's diagnostic carries the same field a host sets."""
     measures = toyhost_profile().measures
     assert describe_measure("candidate_output_tokens_per_s", measures).diagnostic is True
@@ -104,18 +104,18 @@ def test_the_engines_own_diagnostic_is_declared_on_its_descriptor_like_a_hosts()
 
 
 @pytest.mark.parametrize("higher_is_better", [True, False])
-def test_a_diagnostic_declaring_a_better_end_is_refused(higher_is_better: bool):
+def test_a_diagnostic_declaring_a_better_end_is_refused(higher_is_better: bool) -> None:
     with pytest.raises(ValidationError, match="declared a diagnostic and higher_is_better"):
         _diagnostic(higher_is_better=higher_is_better)
 
 
-def test_a_directionless_diagnostic_and_a_directional_non_diagnostic_are_both_accepted():
+def test_a_directionless_diagnostic_and_a_directional_non_diagnostic_are_both_accepted() -> None:
     """The refusal's two neighbours, so it is the conjunction that fires and not either half."""
     assert _diagnostic().diagnostic is True
     assert _diagnostic(diagnostic=False, higher_is_better=True).higher_is_better is True
 
 
-def test_a_bar_on_a_diagnostic_is_refused_naming_it_a_diagnostic_and_a_count_naming_it_a_count():
+def test_a_bar_on_a_diagnostic_is_refused_naming_it_a_diagnostic_and_a_count_naming_it_a_count() -> None:
     profile = replace(
         toyhost_profile(),
         measures=MeasureRegistry(
@@ -146,7 +146,7 @@ def _bar_on(measure: str) -> Bar:
 @pytest.mark.parametrize(("measure", "what"), [(FIELD_COUNT_ERROR, "a diagnostic"), (FIELDS_CORRECT, "a raw count")])
 def test_registering_a_bar_on_a_measure_with_no_better_end_is_refused_naming_which_and_a_directional_one_is_not(
     measure: str, what: str
-):
+) -> None:
     """Registration refuses what the ratchet and the campaign gate already refuse, through their predicate.
 
     Before this ``validate_against`` checked only that the measure was declared and that the bar's
@@ -170,7 +170,7 @@ def test_registering_a_bar_on_a_measure_with_no_better_end_is_refused_naming_whi
         replace(profile, bars=BarRegistry([*TOYHOST_BARS, _bar_on(measure)]))
 
 
-def test_the_ratchet_names_which_directionless_shape_it_refuses_the_way_registration_does():
+def test_the_ratchet_names_which_directionless_shape_it_refuses_the_way_registration_does() -> None:
     profile = replace(
         toyhost_profile(),
         measures=MeasureRegistry(

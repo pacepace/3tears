@@ -117,9 +117,7 @@ class TestDeclare:
 class TestRetire:
     async def test_the_ask_names_the_objects(self) -> None:
         nc = _ScriptedRequests({"success": True, "retired": 2, "absent": 1, "orphan_chunks": 0})
-        retired = await retire_pod_objects(  # type: ignore[arg-type]
-            nc, identity_token=_TOKEN, names=["a/TX/1", "a/TX/2", "a/CA/1"]
-        )
+        retired = await retire_pod_objects(nc, identity_token=_TOKEN, names=["a/TX/1", "a/TX/2", "a/CA/1"])
         assert retired == RetiredObjects(retired=2, absent=1, orphan_chunks=0)
         subject, body = nc.sent[0]
         assert subject == "3tears.hub.object_store.retire"

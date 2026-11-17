@@ -144,7 +144,7 @@ async def _build(url: str, schema: str) -> bool:
         register_wake(agent, held_contract=True)
         register_intention(agent, held_contract=True)
         register_identity(agent)
-        await agent.apply_for_agent_schema(_Store(conn))  # type: ignore[arg-type]
+        await agent.apply_for_agent_schema(_Store(conn))
         platform = MigrationRunner()
         register_acl(platform)
         register_audit(platform, held_contract=True)
@@ -154,7 +154,7 @@ async def _build(url: str, schema: str) -> bool:
         register_mcp(platform, held_contract=True)
         register_scheduled_jobs(platform, held_contract=True)
         register_scrape(platform, held_contract=True)
-        await platform.apply_for_platform_schema(_Store(conn))  # type: ignore[arg-type]
+        await platform.apply_for_platform_schema(_Store(conn))
         metadata = MetaData()
         for declared in _DECLARED:
             table = declared.to_sqlalchemy_table(metadata)

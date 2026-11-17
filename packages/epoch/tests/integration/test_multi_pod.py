@@ -93,7 +93,7 @@ async def pg_schema(db_container: str) -> AsyncIterator[tuple[str, str]]:
         runner = MigrationRunner()
         registered = register_epoch(runner)
         store = _AsyncpgStore(conn)
-        count = await runner.apply_for_platform_schema(store)  # type: ignore[arg-type]
+        count = await runner.apply_for_platform_schema(store)
         # a fresh schema takes every epoch migration
         assert count == len(registered.versions), (
             f"expected {len(registered.versions)} epoch migrations, applied {count}"

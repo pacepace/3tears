@@ -28,7 +28,7 @@ from threetears.evals.kernel.usage_capture import RoleUsageLedger
 class TestPricingComesFromASuppliedTable:
     """Eval multiplies a reported volume by a declared rate, and does nothing else."""
 
-    def test_reported_units_price_at_the_declared_rate(self):
+    def test_reported_units_price_at_the_declared_rate(self) -> None:
         ledger = RoleUsageLedger.for_external(ExternalRateTable(rates={("search_api", "credits"): 0.008}))
         ledger.add_external(ExternalSpend(provider="search_api", calls=3, provider_units=6, provider_unit="credits"))
 
@@ -40,7 +40,7 @@ class TestPricingComesFromASuppliedTable:
         assert row.cost_usd == pytest.approx(0.048)
         assert row.price_source == "search_api:configured_rate"
 
-    def test_eval_never_re_derives_the_volume(self):
+    def test_eval_never_re_derives_the_volume(self) -> None:
         """Doubling the reported units doubles the cost; the CALL count does not drive it.
 
         The defect this closes: eval used to compute a call's cost from a provider parameter
@@ -57,7 +57,7 @@ class TestPricingComesFromASuppliedTable:
         assert cheap.rows()[0].cost_usd == pytest.approx(0.02)
         assert dear.rows()[0].cost_usd == pytest.approx(0.04)
 
-    def test_the_kernel_modules_import_no_tool_module(self):
+    def test_the_kernel_modules_import_no_tool_module(self) -> None:
         """The structural half of the property, checked at the source.
 
         ``test_extraction_import_boundary.py`` polices the whole package; this names the specific
@@ -97,7 +97,7 @@ class TestPricingComesFromASuppliedTable:
 class TestTwoProvidersAreNeverBlended:
     """Different providers, different units: priced apart and summed never."""
 
-    def test_each_provider_prices_at_its_own_rate_and_units_do_not_sum(self):
+    def test_each_provider_prices_at_its_own_rate_and_units_do_not_sum(self) -> None:
         ledger = RoleUsageLedger.for_external(
             ExternalRateTable(rates={("search_api", "credits"): 0.01, ("video_api", "quota_units"): 0.0001})
         )
@@ -117,7 +117,7 @@ class TestTwoProvidersAreNeverBlended:
         # of nothing. No row carries it, because the two never share one.
         assert not any(r.provider_units == 104 for r in ledger.rows())
 
-    def test_one_providers_units_are_not_priced_at_anothers_rate(self):
+    def test_one_providers_units_are_not_priced_at_anothers_rate(self) -> None:
         """A provider absent from the table is unpriced — not priced at a neighbour's rate."""
         ledger = RoleUsageLedger.for_external(ExternalRateTable(rates={("search_api", "credits"): 0.01}))
         ledger.add_external(ExternalSpend(provider="calc_api", calls=1, provider_units=1, provider_unit="queries"))
@@ -128,7 +128,7 @@ class TestTwoProvidersAreNeverBlended:
         assert row.cost_usd is None, "an undeclared provider must not inherit another's rate"
         assert row.price_source is None
 
-    def test_same_provider_different_units_stay_apart(self):
+    def test_same_provider_different_units_stay_apart(self) -> None:
         """Qualification is by (provider, unit), not provider alone."""
         ledger = RoleUsageLedger.for_external(ExternalRateTable(rates={}))
         ledger.add_external(ExternalSpend(provider="p", calls=1, provider_units=2, provider_unit="credits"))
@@ -137,7 +137,7 @@ class TestTwoProvidersAreNeverBlended:
         by_unit = {r.provider_unit: r.provider_units for r in ledger.rows()}
         assert by_unit == {"credits": 2, "requests": 3}
 
-    def test_a_caller_that_cannot_name_its_provider_stays_visibly_unattributed(self):
+    def test_a_caller_that_cannot_name_its_provider_stays_visibly_unattributed(self) -> None:
         """The absent-provider arm, which is a state and not a spelling.
 
         A delivering tool that has not been taught to report WHO it called still made the
@@ -166,13 +166,13 @@ class TestTheQualifiedFormHasOnePlaceItIsComposed:
     renders the form goes through here.
     """
 
-    def test_a_named_provider_and_unit_compose_one_way(self):
+    def test_a_named_provider_and_unit_compose_one_way(self) -> None:
         assert (
             ExternalSpend(provider="search_api", provider_units=2, provider_unit="credits").qualified_unit
             == "search_api:credits"
         )
 
-    def test_an_unnamed_provider_has_no_qualified_form_rather_than_a_stand_in(self):
+    def test_an_unnamed_provider_has_no_qualified_form_rather_than_a_stand_in(self) -> None:
         """A unit nobody can attribute is comparable to nothing.
 
         Composing ``"unattributed:credits"`` would sort it beside real providers and let it
@@ -180,14 +180,14 @@ class TestTheQualifiedFormHasOnePlaceItIsComposed:
         """
         assert ExternalSpend(provider=None, provider_units=2, provider_unit="credits").qualified_unit is None
 
-    def test_a_spend_that_meters_no_unit_has_no_qualified_form(self):
+    def test_a_spend_that_meters_no_unit_has_no_qualified_form(self) -> None:
         assert ExternalSpend(provider="search_api", calls=3).qualified_unit is None
 
 
 class TestFreeIsNotTheSameAsUnpriced:
     """A self-hosted zero and an undeclared rate must not read alike."""
 
-    def test_a_zero_money_provider_and_an_unpriced_one_are_distinguishable(self):
+    def test_a_zero_money_provider_and_an_unpriced_one_are_distinguishable(self) -> None:
         """The case the single-bucket design could not express.
 
         A self-hosted backend costs an observed zero. A paid provider nobody declared a rate
@@ -210,7 +210,7 @@ class TestFreeIsNotTheSameAsUnpriced:
         # The distinction, stated the way a cost surface would have to read it.
         assert (free.cost_usd is None) != (unpriced.cost_usd is None)
 
-    def test_a_reported_charge_beats_a_declared_rate(self):
+    def test_a_reported_charge_beats_a_declared_rate(self) -> None:
         """An observation is not replaced by an estimate.
 
         If the provider says what it charged, that figure stands even when the operator also

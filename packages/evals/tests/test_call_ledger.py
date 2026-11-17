@@ -6,12 +6,12 @@ import json
 
 import pytest
 from pydantic import ValidationError
-
 from threetears.evals.schema import CallLedger, RecordedCall
+
 from packages.evals.tests.factories import make_eval_result, make_eval_trace, memory_storage
 
 
-def test_calls_are_recorded_in_order_across_tools():
+def test_calls_are_recorded_in_order_across_tools() -> None:
     ledger = CallLedger()
     ledger.record("shop", "search", {"query": "kitchen"})
     ledger.record("chat", "send_message", {"content": "found it"})
@@ -24,14 +24,14 @@ def test_calls_are_recorded_in_order_across_tools():
     ]
 
 
-def test_a_call_with_no_parameters_records_an_empty_mapping():
+def test_a_call_with_no_parameters_records_an_empty_mapping() -> None:
     ledger = CallLedger()
     ledger.record("shop", "checkout")
 
     assert ledger.calls == [RecordedCall(tool="shop", action="checkout", params={})]
 
 
-def test_recorded_parameters_are_insulated_from_the_caller():
+def test_recorded_parameters_are_insulated_from_the_caller() -> None:
     """A caller mutating what it passed after the call cannot rewrite what the candidate asked for."""
     params = {"query": "kitchen", "filters": ["new"]}
     ledger = CallLedger()
@@ -42,7 +42,7 @@ def test_recorded_parameters_are_insulated_from_the_caller():
     assert ledger.calls[0].params == {"query": "kitchen", "filters": ["new"]}
 
 
-def test_a_ledger_round_trips_through_json():
+def test_a_ledger_round_trips_through_json() -> None:
     ledger = CallLedger()
     ledger.record("shop", "add_item", {"item_ref": "r1", "tags": ["kitchen"]})
 
@@ -58,12 +58,12 @@ def test_a_ledger_round_trips_through_json():
     ],
     ids=["unknown ledger key", "unknown call key", "empty tool"],
 )
-def test_a_stored_ledger_is_read_as_strictly_as_every_stored_eval_shape(stored):
+def test_a_stored_ledger_is_read_as_strictly_as_every_stored_eval_shape(stored) -> None:
     with pytest.raises(ValidationError):
         CallLedger.model_validate(stored)
 
 
-def test_a_trace_carrying_only_a_ledger_is_stored():
+def test_a_trace_carrying_only_a_ledger_is_stored() -> None:
     """A kind whose candidate produced no output still made calls, and a re-check reads them back."""
     storage, _ = memory_storage()
     ledger = CallLedger()

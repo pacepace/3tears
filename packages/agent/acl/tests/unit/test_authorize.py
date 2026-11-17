@@ -130,7 +130,7 @@ class _CountingFakeStore(FakeStore):
     async def load_assignments_for_groups(
         self,
         group_ids: tuple[UUID, ...],
-        namespace,  # type: ignore[no-untyped-def]
+        namespace,
     ) -> tuple[RoleAssignment, ...]:
         """count + delegate.
 

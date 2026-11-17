@@ -6,14 +6,13 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
-from threetears.interfaces.media import MediaInfo, MediaSizeLimitExceeded, MediaStorage, ObjectHandle
-
 from threetears.agent.tools import object_media_storage as oms
 from threetears.agent.tools.consume import ConsumeObjectError
 from threetears.agent.tools.object_media_storage import (
     ObjectCatalogMediaStorage,
     media_category_for_mime,
 )
+from threetears.interfaces.media import MediaInfo, MediaSizeLimitExceeded, MediaStorage, ObjectHandle
 
 
 def _handle(object_id, mime_type: str = "image/png") -> ObjectHandle:
@@ -41,7 +40,7 @@ class TestCategoryMapping:
 class TestGetMedia:
     """get_media resolves the object and infers its category."""
 
-    async def test_returns_media_info_for_an_owned_image(self, monkeypatch) -> None:
+    async def test_returns_media_info_for_an_owned_image(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a resolvable image object yields MediaInfo with category image."""
         mid = uuid4()
 
@@ -59,10 +58,10 @@ class TestGetMedia:
             size_bytes=3,
         )
 
-    async def test_unresolvable_object_is_none(self, monkeypatch) -> None:
+    async def test_unresolvable_object_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """an object the caller cannot resolve returns None, not an error."""
 
-        async def _resolve(object_id):
+        async def _resolve(object_id) -> None:
             raise ConsumeObjectError("no verified customer")
 
         monkeypatch.setattr(oms, "resolve_object", _resolve)
@@ -72,7 +71,7 @@ class TestGetMedia:
 class TestDownloadMedia:
     """download_media streams the bytes for the byte-taking fallback."""
 
-    async def test_streams_bytes_and_mime(self, monkeypatch) -> None:
+    async def test_streams_bytes_and_mime(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a resolvable object streams its bytes joined, with its mime."""
         mid = uuid4()
 
@@ -88,10 +87,10 @@ class TestDownloadMedia:
         result = await ObjectCatalogMediaStorage().download_media(mid)
         assert result == (b"ABC", "image/jpeg")
 
-    async def test_unresolvable_is_none(self, monkeypatch) -> None:
+    async def test_unresolvable_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """an unresolvable object downloads to None."""
 
-        async def _resolve(object_id):
+        async def _resolve(object_id) -> None:
             raise ConsumeObjectError("cross-tenant")
 
         monkeypatch.setattr(oms, "resolve_object", _resolve)
@@ -101,7 +100,9 @@ class TestDownloadMedia:
 class TestBoundedDownload:
     """download_media(max_bytes=) never holds more than the limit plus one chunk."""
 
-    async def test_a_catalogued_size_over_the_limit_refuses_before_opening(self, monkeypatch) -> None:
+    async def test_a_catalogued_size_over_the_limit_refuses_before_opening(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """the recorded size answers first; the store is never opened."""
         mid = uuid4()
         opened: list[str] = []
@@ -120,7 +121,7 @@ class TestBoundedDownload:
         assert opened == []
         assert (caught.value.media_id, caught.value.limit_bytes, caught.value.size_bytes) == (mid, 10, 11)
 
-    async def test_the_read_stops_past_the_limit_and_releases_the_stream(self, monkeypatch) -> None:
+    async def test_the_read_stops_past_the_limit_and_releases_the_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """a size the catalog understates is caught on the read, which stops and closes the stream."""
         mid = uuid4()
         pulled: list[int] = []
@@ -145,7 +146,7 @@ class TestBoundedDownload:
         assert closed == [True]
         assert caught.value.size_bytes is None
 
-    async def test_an_object_at_the_limit_is_read_whole(self, monkeypatch) -> None:
+    async def test_an_object_at_the_limit_is_read_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """the limit is inclusive: exactly max_bytes is not over it."""
 
         async def _resolve(object_id):

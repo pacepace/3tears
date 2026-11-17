@@ -381,7 +381,7 @@ class TestAnthropicWrapperToolNameValidation:
             # agenerate is the model's own surface, so the bound tools ride in as the kwargs the
             # binding would send
             bound = model.bind_tools([DottedTool()])
-            result = await model.agenerate([[HumanMessage(content="hi")]], stream=True, **bound.kwargs)  # type: ignore[attr-defined]
+            result = await model.agenerate([[HumanMessage(content="hi")]], stream=True, **bound.kwargs)
 
         kept = result.generations[0][0].message.invalid_tool_calls
         assert len(kept) == 1

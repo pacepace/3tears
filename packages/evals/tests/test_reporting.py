@@ -12,26 +12,14 @@ import io
 import json
 import logging
 import re
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
-
 from threetears.evals.analysis import reporting
-from threetears.evals.analysis.lenses import aggregation, history
-from threetears.evals.analysis.reporting import (
-    METRIC_COMPOSITE,
-    METRIC_COST_USD,
-    METRIC_GOAL_STATE,
-    METRIC_OUTCOME,
-    METRIC_SCORE,
-    METRIC_TOTAL_MS,
-    METRIC_TRANSCRIPT,
-    ScoreProjection,
-    ScoreRecord,
-    dim_judge_model,
-    place_results,
-    project_score_records,
-)
+from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, cassette_mode_disclosure
+from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
 from threetears.evals.analysis.latency_partition import (
     PARTITION_TOLERANCE_MS,
     WITHHELD_PARTS_EXCEED_WHOLE,
@@ -39,7 +27,7 @@ from threetears.evals.analysis.latency_partition import (
     LatencyPartition,
     decompose_total_ms,
 )
-from threetears.evals.analysis.cassette_mode import CASSETTE_SPAN_CLAUSE, cassette_mode_disclosure
+from threetears.evals.analysis.lenses import aggregation, history
 from threetears.evals.analysis.lenses.aggregation import WEIGHTING_EQUAL_PER_SCENARIO, WEIGHTING_SAMPLE_WEIGHTED
 from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_CASE_SET_DIFFERS,
@@ -54,6 +42,10 @@ from threetears.evals.analysis.lenses.comparison_sets import (
     difference_was_declared_at_launch,
 )
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
+from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
+from threetears.evals.analysis.lenses.frontier import FrontierError, FrontierPoint, SubjectFrontier, compute_frontier
+from threetears.evals.analysis.lenses.history import HistoryError, compute_history
+from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
 from threetears.evals.analysis.lenses.pivot import (
     CELL_MEASURED,
     CELL_UNMEASURED,
@@ -61,22 +53,31 @@ from threetears.evals.analysis.lenses.pivot import (
     PivotError,
     compute_pivot,
 )
-from threetears.evals.analysis.lenses.frontier import FrontierError, compute_frontier
-from threetears.evals.analysis.lenses.history import HistoryError, compute_history
 from threetears.evals.analysis.lenses.program_budget import compute_program_budget
-from threetears.evals.analysis.lenses.orphaned_runs import compute_orphaned_runs
-from threetears.evals.analysis.lenses.export import ExportError, export_projection, export_records_csv, serialize_export
-from threetears.evals.analysis.completeness import DEGRADED_RUN_CLAUSE, completeness_disclosure
+from threetears.evals.analysis.reporting import (
+    METRIC_COMPOSITE,
+    METRIC_COST_USD,
+    METRIC_GOAL_STATE,
+    METRIC_OUTCOME,
+    METRIC_SCORE,
+    METRIC_TOTAL_MS,
+    METRIC_TRANSCRIPT,
+    ScoreProjection,
+    ScoreRecord,
+    dim_judge_model,
+    place_results,
+    project_score_records,
+)
 from threetears.evals.analysis.stats import UNIFORM_MOVE_NEEDS_RANGE, bounded_separation_p
 from threetears.evals.kernel.host import freeze
-from threetears.evals.ops import pivot_text
-from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import IDENTITY_VERSION, compute_variant_key, derive_context_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, describe_measure
+from threetears.evals.ops import pivot_text
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
     AsyncDelivery,
+    EvalResult,
     EvalRun,
     GoalStateOutcome,
     LatencyMetrics,
@@ -84,16 +85,18 @@ from threetears.evals.schema.models import (
     RubricScore,
     RunCompleteness,
 )
+from threetears.evals.schema.values import SweepableValue
+
 from packages.evals.tests.factories import make_eval_result, make_eval_run, make_subject
+from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
+from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 
 # The canary's own noun set, so the two "names no host" assertions below cover the whole
 # class rather than the one noun that happened to be wrong. `reporting.py` is DECLARED
 # shared contract, but its operator strings are built in function bodies, which that canary
 # deliberately does not scan — these assertions are the only thing standing there.
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
-from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.corpus import toyhost_batch, toyhost_measurements
 from packages.evals.tests.host_vocabulary import HOST_NOUNS
 
 #: Whole-word host nouns in PROSE. The list is imported, never retyped; only the matching
@@ -132,7 +135,9 @@ def _catalog_name_of(row_name):
     return names[0]
 
 
-def _run_with_results(*, subject_id="ent-maple", subject_label="Maple", **run_overrides):
+def _run_with_results(
+    *, subject_id: str = "ent-maple", subject_label: str = "Maple", **run_overrides: Any
+) -> tuple[EvalRun, EvalResult]:
     """Build one run plus a matching result, wired by run id.
 
     :param subject_id: Subject id for the run's subject snapshot.
@@ -178,7 +183,7 @@ def _stamped_run(**run_overrides):
 class TestProjectionCoordinates:
     """Every row carries the coordinates a surface needs to place it."""
 
-    def test_row_carries_subject_and_cell_coordinates(self):
+    def test_row_carries_subject_and_cell_coordinates(self) -> None:
         run, result = _run_with_results()
 
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
@@ -193,7 +198,7 @@ class TestProjectionCoordinates:
         assert row.model == result.model
         assert row.k_iteration == result.k_iteration
 
-    def test_cost_row_emitted_for_every_projected_result(self):
+    def test_cost_row_emitted_for_every_projected_result(self) -> None:
         run, result = _run_with_results()
 
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
@@ -202,7 +207,7 @@ class TestProjectionCoordinates:
         assert len(cost_rows) == 1
         assert cost_rows[0].value == result.cost_usd
 
-    def test_outcome_is_carried_from_the_scoring_taxonomy(self):
+    def test_outcome_is_carried_from_the_scoring_taxonomy(self) -> None:
         run, _ = _run_with_results()
         failed = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, candidate_error="402")
 
@@ -210,7 +215,7 @@ class TestProjectionCoordinates:
 
         assert {r.outcome for r in records} == {"candidate_fail"}
 
-    def test_a_judge_that_could_not_tell_marks_the_composite_and_its_own_rows(self):
+    def test_a_judge_that_could_not_tell_marks_the_composite_and_its_own_rows(self) -> None:
         """The rows a counter reads to count the exclusion — composite, rubric dim and reserved axis."""
         run, _ = _run_with_results(rubric_scales={"reply.tone": "ordinal", "reply.refusal": "ordinal"})
         untold = make_eval_result(
@@ -234,7 +239,7 @@ class TestProjectionCoordinates:
         (tone,) = [r for r in records if r.metric == METRIC_SCORE and r.rubric_dim == "reply.tone"]
         assert (tone.value, tone.outcome) == (4.0, "ok")
 
-    def test_cost_is_projected_even_for_a_failed_result(self):
+    def test_cost_is_projected_even_for_a_failed_result(self) -> None:
         """Spend is real regardless of outcome — budget views must still see it."""
         run, _ = _run_with_results()
         failed = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, infra_error="timeout", cost_usd=0.42)
@@ -244,12 +249,12 @@ class TestProjectionCoordinates:
         cost_rows = [r for r in records if r.metric == METRIC_COST_USD]
         assert [r.value for r in cost_rows] == [0.42]
 
-    def test_result_without_its_run_is_skipped_not_invented(self):
+    def test_result_without_its_run_is_skipped_not_invented(self) -> None:
         _, orphan = _run_with_results()
 
         assert project_score_records([], [orphan], profile=_JUDGED_HOST, archived_run_ids=None).records == []
 
-    def test_a_kinds_overlays_reach_the_row_as_dotted_coordinates(self):
+    def test_a_kinds_overlays_reach_the_row_as_dotted_coordinates(self) -> None:
         """Without this the factor set is closed, and a bake-off's varied knob is unpivotable.
 
         Read through the host's registry: every field of the kind's model at the level the run froze
@@ -271,7 +276,7 @@ class TestProjectionCoordinates:
             "extractor.field_aliases.vendor_name": "supplier",
         }
 
-    def test_a_run_with_no_overlays_carries_no_invented_coordinates(self):
+    def test_a_run_with_no_overlays_carries_no_invented_coordinates(self) -> None:
         """No overlay map is "ran unmodified" — a default value here would be a fabricated cohort.
 
         The kind it ran as is a coordinate every run carries, not an invented one.
@@ -282,7 +287,7 @@ class TestProjectionCoordinates:
             0
         ].factors == {"candidate_kind": run.candidate_kind}
 
-    def test_row_carries_the_pinned_judge_and_simulator_roles(self):
+    def test_row_carries_the_pinned_judge_and_simulator_roles(self) -> None:
         """The run-pinned roles are first-class coordinates, not only hashed into `context_key`.
 
         Sourced run-level — the roles are pinned once per run, exactly as the
@@ -295,7 +300,7 @@ class TestProjectionCoordinates:
 
         assert (row.judge_model, row.simulator_model) == ("judge-a", "sim-b")
 
-    def test_absent_pinned_roles_are_carried_as_none_not_invented(self):
+    def test_absent_pinned_roles_are_carried_as_none_not_invented(self) -> None:
         """A run that pinned no judge (it was not judged) or no simulated user carries None, groupable as "—"."""
         run, result = _run_with_results(judge_model=None, simulator_model=None)
 
@@ -303,7 +308,7 @@ class TestProjectionCoordinates:
 
         assert (row.judge_model, row.simulator_model) == (None, None)
 
-    def test_each_identity_key_carries_its_own_predicate_version(self):
+    def test_each_identity_key_carries_its_own_predicate_version(self) -> None:
         """Pins which source feeds each coordinate, and that the two never cross.
 
         ``variant_key`` and ``context_key`` are produced by separately numbered
@@ -345,7 +350,7 @@ class TestCompositeIsPerObservation:
             ],
         )
 
-    def test_iterations_of_one_case_keep_their_own_values(self):
+    def test_iterations_of_one_case_keep_their_own_values(self) -> None:
         """With k>1 the rows must differ, or dispersion across k reads as zero."""
         run, _ = _run_with_results()
         results = [self._scored(run, k_iteration=1, score=5), self._scored(run, k_iteration=3, score=1)]
@@ -358,7 +363,7 @@ class TestCompositeIsPerObservation:
 
         assert composites == {1: 1.0, 3: 0.0}
 
-    def test_infra_excluded_result_scores_null_rather_than_zero(self):
+    def test_infra_excluded_result_scores_null_rather_than_zero(self) -> None:
         """Excluded is unmeasured, not zero — a null cannot enter a quality mean."""
         run, _ = _run_with_results()
         excluded = make_eval_result(
@@ -378,7 +383,7 @@ class TestCompositeIsPerObservation:
 
         assert composites == [None], "a scored-then-infra-failed result must not contribute a number"
 
-    def test_a_result_with_no_rubric_dims_scores_null_rather_than_vanishing(self):
+    def test_a_result_with_no_rubric_dims_scores_null_rather_than_vanishing(self) -> None:
         """Nothing measured it, but it was attempted — the row is what records the attempt."""
         run, _ = _run_with_results()
         unscored = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, rubric_scores=[])
@@ -391,7 +396,7 @@ class TestCompositeIsPerObservation:
 
         assert composites == [None]
 
-    def test_infra_excluded_result_still_reports_its_cost(self):
+    def test_infra_excluded_result_still_reports_its_cost(self) -> None:
         """The harness failed; the spend was still real.
 
         Exhaustive over the emitted rows deliberately: the assertion is that
@@ -413,7 +418,7 @@ class TestCompositeIsPerObservation:
             (METRIC_GOAL_STATE, None),
         ]
 
-    def test_candidate_failure_scores_zero_rather_than_vanishing(self):
+    def test_candidate_failure_scores_zero_rather_than_vanishing(self) -> None:
         run, _ = _run_with_results()
         failed = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, candidate_error="402")
 
@@ -429,7 +434,7 @@ class TestCompositeIsPerObservation:
 class TestGoalStateRows:
     """Each goal-state check a result evaluated is one row, keyed by the check, 1.0 passed and 0.0 not."""
 
-    def test_one_row_per_check_with_the_check_as_its_coordinate(self):
+    def test_one_row_per_check_with_the_check_as_its_coordinate(self) -> None:
         from threetears.evals.schema.models import GoalStateOutcome
 
         run, _ = _run_with_results()
@@ -454,7 +459,7 @@ class TestGoalStateRows:
         ]
         assert all(r.rubric_dim is None for r in rows), "a code-graded check never lands on the judged-dim coordinate"
 
-    def test_a_result_that_evaluated_no_check_has_no_goal_rows(self):
+    def test_a_result_that_evaluated_no_check_has_no_goal_rows(self) -> None:
         run, _ = _run_with_results()
         result = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, goal_state_outcomes=[])
 
@@ -484,7 +489,7 @@ class TestPerDimensionRows:
         """
         return make_eval_result(eval_run_id=run.id, scope_id=run.scope_id, **overrides)
 
-    def test_one_row_per_judged_dimension_carrying_the_raw_score(self):
+    def test_one_row_per_judged_dimension_carrying_the_raw_score(self) -> None:
         """The registry declares `mean_score` on the 1-5 scale — a 0-1 value here would be the composite's."""
         run, _ = _run_with_results()
         result = self._scored(
@@ -503,7 +508,7 @@ class TestPerDimensionRows:
 
         assert {(r.rubric_dim, r.value) for r in rows} == {("reply.grounding", 5.0), ("reply.coverage", 2.0)}
 
-    def test_a_namespaced_dim_is_carried_whole_with_no_branching_on_its_context(self):
+    def test_a_namespaced_dim_is_carried_whole_with_no_branching_on_its_context(self) -> None:
         """Dim names carry their scoring context as `<context>.<dim>`.
 
         The projection and the pivot must treat that name as one opaque
@@ -540,7 +545,7 @@ class TestPerDimensionRows:
         )
         assert {cell.row: cell.value for cell in table.cells} == {"planner.character": 5.0, "speaker.character": 1.0}
 
-    def test_a_dimension_row_carries_the_same_cell_coordinates_as_its_composite(self):
+    def test_a_dimension_row_carries_the_same_cell_coordinates_as_its_composite(self) -> None:
         """A dim row must be placeable at exactly the cell its composite is, or the two pivots disagree about where a result sat.
 
         The dimension-scoped coordinates are excluded, not compared: `rubric_dim`
@@ -573,7 +578,7 @@ class TestPerDimensionRows:
         }
         assert dim_row.model_dump(exclude=not_a_cell_coordinate) == composite.model_dump(exclude=not_a_cell_coordinate)
 
-    def test_composite_and_cost_rows_carry_no_dimension(self):
+    def test_composite_and_cost_rows_carry_no_dimension(self) -> None:
         """A whole-result measure has no dimension; inventing one would make a `rubric_dim` pivot of composites look per-dim."""
         run, result = _run_with_results()
 
@@ -581,7 +586,7 @@ class TestPerDimensionRows:
 
         assert all(r.rubric_dim is None for r in records if r.metric != METRIC_SCORE)
 
-    def test_a_result_with_no_dims_still_emits_one_dimensionless_null_row(self):
+    def test_a_result_with_no_dims_still_emits_one_dimensionless_null_row(self) -> None:
         """Dropping the row would make "the judge scored nothing here" read as "nobody ran this"."""
         run, _ = _run_with_results()
         unscored = self._scored(run, rubric_scores=[])
@@ -594,7 +599,7 @@ class TestPerDimensionRows:
 
         assert [(r.rubric_dim, r.value) for r in rows] == [(None, None)]
 
-    def test_a_candidate_failure_counts_each_judged_dim_at_its_scales_floor(self):
+    def test_a_candidate_failure_counts_each_judged_dim_at_its_scales_floor(self) -> None:
         """What the end user got, not what the judge made of it.
 
         A configuration that delivered no turn scores the bottom of every dimension's own scale —
@@ -622,7 +627,7 @@ class TestPerDimensionRows:
         assert dim_rows == [("reply.grounding", 1.0), ("reply.treats_as_present", 0.0)]
         assert [s.score for s in failed.rubric_scores] == [4, 1], "the raw reading is kept on the result"
 
-    def test_a_candidate_failure_the_judge_never_scored_emits_an_unmeasured_row(self):
+    def test_a_candidate_failure_the_judge_never_scored_emits_an_unmeasured_row(self) -> None:
         """The common shape of the case above: no dims, so the cell reads attempted-and-unmeasured, not zero."""
         run, _ = _run_with_results()
         failed = self._scored(run, candidate_error="402", rubric_scores=[])
@@ -635,7 +640,7 @@ class TestPerDimensionRows:
 
         assert [(r.rubric_dim, r.value, r.outcome) for r in rows] == [(None, None, "candidate_fail")]
 
-    def test_the_dimension_is_a_coordinate_not_a_metric_name(self):
+    def test_the_dimension_is_a_coordinate_not_a_metric_name(self) -> None:
         """`PROJECTED_METRICS` stays CLOSED; a template dim never enters the metric namespace.
 
         The closure is what lets `pivot` refuse an unknown metric as a typo. A
@@ -668,7 +673,7 @@ class TestPerDimensionRows:
         composites = [r for r in records if r.metric == METRIC_COMPOSITE]
         assert [(r.rubric_dim, r.value) for r in composites] == [(None, 1.0)]
 
-    def test_the_dimension_is_pivotable_as_an_axis(self):
+    def test_the_dimension_is_pivotable_as_an_axis(self) -> None:
         """`row_factor='rubric_dim'` is the whole point — every dim against every model in one table."""
         run, _ = _run_with_results()
         results = [
@@ -741,7 +746,7 @@ class TestPerDimensionRows:
             self._scored(run, test_case_id="tc-3", k_iteration=1, rubric_scores=[]),
         ]
 
-    def test_the_dimension_pivot_reports_the_means_run_summary_reports(self):
+    def test_the_dimension_pivot_reports_the_means_run_summary_reports(self) -> None:
         """The Done-when equality — and the weighting it holds under, which is not the pivot's default.
 
         `compute_dimension_summary` divides by observations, so the pivot matches
@@ -772,7 +777,7 @@ class TestPerDimensionRows:
         expected = {dim: stats["mean_score"] for (_model, _run_id, dim), stats in summary.items()}
         assert pivoted == expected == {"reply.grounding": 4.0}
 
-    def test_a_result_with_no_dims_forms_its_own_level_rather_than_joining_a_dimension(self):
+    def test_a_result_with_no_dims_forms_its_own_level_rather_than_joining_a_dimension(self) -> None:
         """The null row must not land inside a dimension's denominator.
 
         `_axis_value` places a `None` coordinate on the visible "—" level, which
@@ -797,7 +802,7 @@ class TestPerDimensionRows:
         # And the dimension's own cell never saw it.
         assert (by_row["reply.grounding"].n, by_row["reply.grounding"].n_unmeasured) == (3, 0)
 
-    def test_the_pooling_caveat_also_qualifies_the_evidence_counts_not_just_the_value(self):
+    def test_the_pooling_caveat_also_qualifies_the_evidence_counts_not_just_the_value(self) -> None:
         """`n` counts (result x dimension) rows when pooled, and saying so is the same obligation.
 
         A judged result contributes one row per dimension; an unjudged result
@@ -844,7 +849,9 @@ class TestPerDimensionRows:
             ),
         ],
     )
-    def test_the_pooled_caveat_names_the_dispersion_basis_the_weighting_actually_uses(self, weighting, expected):
+    def test_the_pooled_caveat_names_the_dispersion_basis_the_weighting_actually_uses(
+        self, weighting, expected
+    ) -> None:
         """`_aggregate` branches on weighting, so one sentence cannot cover both.
 
         Under `equal_per_scenario` — the DEFAULT — the SEM is over test-case
@@ -876,7 +883,7 @@ class TestPerDimensionRows:
 
         assert expected in pooled.formula
 
-    def test_a_dimension_pooled_score_says_so_in_the_formula(self):
+    def test_a_dimension_pooled_score_says_so_in_the_formula(self) -> None:
         """The registry calls `mean_score` the mean "for one rubric dimension" — true only when the dim is pinned.
 
         A caller reading the response never sees a tool tip that warns about pooling, so the
@@ -920,7 +927,7 @@ class TestPerDimensionRows:
         )
         assert "POOLED" not in composite.formula
 
-    def test_the_default_weighting_gives_each_case_one_vote_not_run_summarys_number(self):
+    def test_the_default_weighting_gives_each_case_one_vote_not_run_summarys_number(self) -> None:
         """The sibling of the equality above: the default is a DIFFERENT number, and correctly so.
 
         `run_summary` weights by observation; the pivot's default weights by test
@@ -942,7 +949,7 @@ class TestPerDimensionRows:
         # Same rows underneath: three valued observations across two cases.
         assert (measured[0].n, measured[0].n_cases) == (3, 2)
 
-    def test_a_dimension_pivot_is_refused_across_subjects(self):
+    def test_a_dimension_pivot_is_refused_across_subjects(self) -> None:
         """The no-pooling rule binds dims exactly as it binds composites — `mean_score` is judge_mediated."""
         run_a, _ = _run_with_results(subject_id="ent-maple", subject_label="Maple")
         run_b, _ = _run_with_results(subject_id="ent-bea", subject_label="Bea")
@@ -958,7 +965,7 @@ class TestPerDimensionRows:
                 records, row_factor="rubric_dim", column_factor="model", metric=METRIC_SCORE, profile=_JUDGED_HOST
             )
 
-    def test_the_dimension_pivots_scale_comes_from_the_registry_not_the_composite(self):
+    def test_the_dimension_pivots_scale_comes_from_the_registry_not_the_composite(self) -> None:
         """A cell claiming 0-1 beside a 1-5 number is how a reader mis-reads a 2 as excellent."""
         run, result = _run_with_results()
 
@@ -971,7 +978,7 @@ class TestPerDimensionRows:
         assert table.measure.value_range == (1.0, 5.0)
         assert table.measure.transferability_class == "judge_mediated"
 
-    def test_an_unknown_metric_is_still_refused_naming_what_is_available(self):
+    def test_an_unknown_metric_is_still_refused_naming_what_is_available(self) -> None:
         """Adding a metric must not blunt the typo refusal — the closed set is what makes it safe."""
         run, result = _run_with_results()
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
@@ -982,7 +989,7 @@ class TestPerDimensionRows:
         assert METRIC_SCORE in str(excinfo.value)
         assert "rubric dimension" not in str(excinfo.value), "a plain typo must not be explained as a dimension"
 
-    def test_a_dimension_asked_for_as_a_metric_is_pointed_at_the_route_that_exists(self):
+    def test_a_dimension_asked_for_as_a_metric_is_pointed_at_the_route_that_exists(self) -> None:
         """The reader wanted a real capability under the wrong noun; a bare list reads as "unavailable".
 
         The advice is FOLLOWED here rather than merely matched. An assertion that
@@ -1023,7 +1030,7 @@ class TestPerDimensionRows:
         )
         assert {cell.row: cell.value for cell in table.cells} == {"reply.character": 3.0}
 
-    def test_the_dimension_exports_as_its_own_column(self):
+    def test_the_dimension_exports_as_its_own_column(self) -> None:
         """The export derives its columns from the model, so the dim must arrive as a pandas column, not a blob."""
         run, result = _run_with_results()
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
@@ -1088,7 +1095,7 @@ class TestPerDimensionJudgeAttribution:
             if r.metric == METRIC_SCORE
         ]
 
-    def test_a_dim_with_its_own_judge_names_that_model_while_the_pin_stays_the_pin(self):
+    def test_a_dim_with_its_own_judge_names_that_model_while_the_pin_stays_the_pin(self) -> None:
         """The reported defect: a gemini-scored dim exported as the run's gpt pin.
 
         Both coordinates are asserted together on purpose. Fixing the
@@ -1110,7 +1117,7 @@ class TestPerDimensionJudgeAttribution:
         }
         assert {r.judge_model for r in rows} == {"judge-pin"}, "the run pin must stay run-level"
 
-    def test_a_run_whose_dims_all_took_the_pin_attributes_them_all_to_it(self):
+    def test_a_run_whose_dims_all_took_the_pin_attributes_them_all_to_it(self) -> None:
         """The uniform case is unchanged — the coordinate agrees with the pin when nothing overrode it."""
         run = self._run(
             effective_judges={"reply.grounding": "judge-pin", "reply.coverage": "judge-pin"},
@@ -1121,7 +1128,7 @@ class TestPerDimensionJudgeAttribution:
 
         assert {r.rubric_dim_judge_model for r in rows} == {"judge-pin"}
 
-    def test_whole_result_rows_carry_no_dim_judge(self):
+    def test_whole_result_rows_carry_no_dim_judge(self) -> None:
         """A composite or cost row spans every dim, so no single model scored it — mirroring `rubric_dim`."""
         run = self._run(effective_judges={"reply.grounding": "gemini-lite"}, effective_judges_source="recorded")
         records = project_score_records(
@@ -1133,7 +1140,7 @@ class TestPerDimensionJudgeAttribution:
         assert whole_result and all(r.rubric_dim_judge_model is None for r in whole_result)
         assert all(r.rubric_dim is None for r in whole_result), "the two must be absent together"
 
-    def test_a_dimensionless_score_row_carries_no_dim_judge(self):
+    def test_a_dimensionless_score_row_carries_no_dim_judge(self) -> None:
         """No dimension, nothing to attribute — naming the pin would invent an attribution nobody made."""
         run = self._run(effective_judges={"reply.grounding": "gemini-lite"}, effective_judges_source="recorded")
 
@@ -1141,7 +1148,7 @@ class TestPerDimensionJudgeAttribution:
 
         assert [(r.rubric_dim, r.rubric_dim_judge_model) for r in rows] == [(None, None)]
 
-    def test_a_run_with_no_recorded_attribution_says_nobody_can_say(self):
+    def test_a_run_with_no_recorded_attribution_says_nobody_can_say(self) -> None:
         """A run whose attribution was not recorded has dims that fall back to nothing, never to the pin.
 
         Falling back to `judge_model` here is precisely the misattribution the
@@ -1155,7 +1162,7 @@ class TestPerDimensionJudgeAttribution:
         assert [r.rubric_dim_judge_model for r in rows] == [None]
         assert [r.judge_model for r in rows] == ["judge-pin"], "the pin is still recorded and still carried"
 
-    def test_a_reconstruction_is_not_published_as_a_record(self):
+    def test_a_reconstruction_is_not_published_as_a_record(self) -> None:
         """A `derived` attribution is an inference, and a pivot level carries no caveat.
 
         The same eligibility rule keeps a reconstruction out of the context key
@@ -1170,7 +1177,7 @@ class TestPerDimensionJudgeAttribution:
 
         assert [r.rubric_dim_judge_model for r in rows] == [None]
 
-    def test_a_dim_the_run_never_attributed_is_not_backfilled_from_the_pin(self):
+    def test_a_dim_the_run_never_attributed_is_not_backfilled_from_the_pin(self) -> None:
         """A dim missing from the recorded map is one nobody committed to a judge for."""
         run = self._run(effective_judges={"reply.grounding": "gemini-lite"}, effective_judges_source="recorded")
 
@@ -1178,7 +1185,7 @@ class TestPerDimensionJudgeAttribution:
 
         assert [(r.rubric_dim, r.rubric_dim_judge_model) for r in rows] == [("reply.coverage", None)]
 
-    def test_the_value_is_read_from_the_runs_own_map_not_re_derived(self):
+    def test_the_value_is_read_from_the_runs_own_map_not_re_derived(self) -> None:
         """One definition, shared with the `Judged by:` block and `judge_dim_divergence`.
 
         The cascade is applied once, at launch. Re-running it here against
@@ -1192,7 +1199,7 @@ class TestPerDimensionJudgeAttribution:
         run.effective_judges = {"reply.grounding": "something-else"}
         assert dim_judge_model(run, "reply.grounding") == "something-else"
 
-    def test_the_reserved_dual_score_axes_never_become_score_rows(self):
+    def test_the_reserved_dual_score_axes_never_become_score_rows(self) -> None:
         """`rubric_scores` holds the template dims alone, so no reserved id reaches this coordinate.
 
         The reserved axes ARE exported — as metrics of their own (`__transcript__` /
@@ -1226,7 +1233,7 @@ class TestPerDimensionJudgeAttribution:
 
         assert [r.rubric_dim for r in rows] == ["reply.grounding"]
 
-    def test_an_axis_stamped_with_an_unreserved_dim_is_dropped_loudly(self, caplog):
+    def test_an_axis_stamped_with_an_unreserved_dim_is_dropped_loudly(self, caplog: pytest.LogCaptureFixture) -> None:
         """The `metric` column is the one that comes off stored data, so it is guarded — and said.
 
         `RubricScore.dim` accepts any namespaced dim name as well as the reserved ids, so
@@ -1255,7 +1262,7 @@ class TestPerDimensionJudgeAttribution:
             "the drop must be said — a silent one is indistinguishable from a result nobody judged"
         )
 
-    def test_a_dual_score_axis_row_names_the_judge_that_scored_that_axis(self):
+    def test_a_dual_score_axis_row_names_the_judge_that_scored_that_axis(self) -> None:
         """The attribution is real on these rows, and `rubric_dim` being null does not withhold it.
 
         The rule the coordinate follows is "no attribution where no SINGLE model scored
@@ -1289,7 +1296,7 @@ class TestPerDimensionJudgeAttribution:
             "the metric IS the axis; there is no dimension coordinate"
         )
 
-    def test_the_dim_judge_is_pivotable_as_an_axis(self):
+    def test_the_dim_judge_is_pivotable_as_an_axis(self) -> None:
         """The pivot the run pin answered wrongly: two judges, two rows, not one collapsed row.
 
         `results_pivot(row_factor='judge_model', ...)` put every observation of
@@ -1327,7 +1334,7 @@ class TestPerDimensionJudgeAttribution:
         )
         assert pinned.rows == ["judge-pin"]
 
-    def test_the_dim_judge_exports_as_its_own_column(self):
+    def test_the_dim_judge_exports_as_its_own_column(self) -> None:
         """The export derives its columns from the model, so the coordinate arrives as a pandas column."""
         run = self._run(
             effective_judges={"reply.house_style": "gemini-lite", "reply.selection_fit": "judge-pin"},
@@ -1353,7 +1360,7 @@ class TestPerDimensionJudgeAttribution:
 class TestSubjectPartition:
     """Composites are comparable within a subject, never across one."""
 
-    def test_rows_from_two_subjects_carry_distinct_partition_keys(self):
+    def test_rows_from_two_subjects_carry_distinct_partition_keys(self) -> None:
         run_a, result_a = _run_with_results(subject_id="ent-maple", subject_label="Maple")
         run_b, result_b = _run_with_results(subject_id="ent-bea", subject_label="Bea")
 
@@ -1363,7 +1370,7 @@ class TestSubjectPartition:
 
         assert {r.subject_id for r in records} == {"ent-maple", "ent-bea"}
 
-    def test_subject_key_is_the_subject_id_not_the_display_name(self):
+    def test_subject_key_is_the_subject_id_not_the_display_name(self) -> None:
         """A rename must not split one subject; two same-named subjects must not merge."""
         renamed, result = _run_with_results(subject_id="ent-maple", subject_label="Maple Prime")
 
@@ -1372,7 +1379,7 @@ class TestSubjectPartition:
         assert {r.subject_id for r in records} == {"ent-maple"}
         assert {r.subject_label for r in records} == {"Maple Prime"}
 
-    def test_per_result_attribution_wins_over_the_run_snapshot(self):
+    def test_per_result_attribution_wins_over_the_run_snapshot(self) -> None:
         """The preferred branch of the resolver, which no other test reaches.
 
         Two generations of the runner record the same fact in different places.
@@ -1387,7 +1394,7 @@ class TestSubjectPartition:
 
         assert {r.subject_id for r in records} == {"ent-per-result"}
 
-    def test_blank_per_result_attribution_falls_back_rather_than_excluding(self):
+    def test_blank_per_result_attribution_falls_back_rather_than_excluding(self) -> None:
         """An unset result-level field is absence, not a blank identity."""
         run, result = _run_with_results(subject_id="ent-snapshot")
         result.subject_id = "   "
@@ -1397,7 +1404,7 @@ class TestSubjectPartition:
         assert records, "a whitespace attribution swallowed the run's real identity"
         assert {r.subject_id for r in records} == {"ent-snapshot"}
 
-    def test_a_blank_subject_cannot_reach_the_projection_because_it_cannot_be_built(self):
+    def test_a_blank_subject_cannot_reach_the_projection_because_it_cannot_be_built(self) -> None:
         """The exclusion class this tier used to carry is gone, and so is the state it counted.
 
         A scope whose runs carried no subject once projected to zero rows and
@@ -1410,7 +1417,7 @@ class TestSubjectPartition:
         with pytest.raises(ValueError, match="subject_id"):
             _run_with_results(subject_id="", subject_label="")
 
-    def test_an_orphan_result_is_counted_under_its_own_reason(self):
+    def test_an_orphan_result_is_counted_under_its_own_reason(self) -> None:
         """Two exclusion classes, kept apart — they mean different things to a reader."""
         _, orphan = _run_with_results()
 
@@ -1419,13 +1426,13 @@ class TestSubjectPartition:
         assert projection.exclusions.results_without_run == 1
         assert projection.exclusions.total == 1
 
-    def test_a_clean_corpus_reports_no_exclusions(self):
+    def test_a_clean_corpus_reports_no_exclusions(self) -> None:
         """Zero must be reachable, or a non-zero count carries no information."""
         run, result = _run_with_results()
 
         assert project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).exclusions.total == 0
 
-    def test_a_run_the_caller_filtered_out_is_not_reported_as_unplaceable(self):
+    def test_a_run_the_caller_filtered_out_is_not_reported_as_unplaceable(self) -> None:
         """A filtered subset and an unplaceable row are different facts.
 
         `pivot` narrows runs by status but reads every result in the scope, so
@@ -1444,7 +1451,7 @@ class TestSubjectPartition:
         assert projection.exclusions.results_without_run == 0
         assert projection.exclusions.total == 1, "still disclosed — the scope is not empty"
 
-    def test_a_run_absent_from_the_corpus_entirely_is_still_unplaceable(self):
+    def test_a_run_absent_from_the_corpus_entirely_is_still_unplaceable(self) -> None:
         """The benign class must not swallow the real one — that would be the same bug inverted."""
         _, orphan = _run_with_results()
 
@@ -1455,7 +1462,7 @@ class TestSubjectPartition:
         assert projection.exclusions.results_without_run == 1
         assert projection.exclusions.results_outside_queried_runs == 0
 
-    def test_an_unfiltered_caller_attributes_every_absence_to_a_missing_run(self):
+    def test_an_unfiltered_caller_attributes_every_absence_to_a_missing_run(self) -> None:
         """`known_run_ids=None` asserts `runs` is the whole corpus, so nothing was filtered."""
         _, orphan = _run_with_results()
 
@@ -1464,7 +1471,7 @@ class TestSubjectPartition:
         assert projection.exclusions.results_without_run == 1
         assert projection.exclusions.results_outside_queried_runs == 0
 
-    def test_a_run_with_no_subject_id_is_refused_at_capture_not_excluded_at_projection(self):
+    def test_a_run_with_no_subject_id_is_refused_at_capture_not_excluded_at_projection(self) -> None:
         """Pooling blanks was the forbidden resolution, and the exclusion existed to prevent it.
 
         A subject without an id is not constructible (``SubjectSnapshot.subject_id`` is required and
@@ -1474,7 +1481,7 @@ class TestSubjectPartition:
         with pytest.raises(ValueError, match="subject_id"):
             _run_with_results(subject_id="", subject_label="Maple")
 
-    def test_whitespace_only_identity_is_refused_rather_than_treated_as_absent(self):
+    def test_whitespace_only_identity_is_refused_rather_than_treated_as_absent(self) -> None:
         """A key of spaces used to project to zero rows; it is now not constructible.
 
         The distinction matters to a reader: "excluded" says the data exists and cannot be
@@ -1493,7 +1500,7 @@ class TestPlacementHelper:
     exactly what routing all callers through this seam makes impossible.
     """
 
-    def test_a_placed_result_carries_its_run_and_resolved_subject(self):
+    def test_a_placed_result_carries_its_run_and_resolved_subject(self) -> None:
         run, result = _run_with_results()
 
         placed, exclusions = place_results([run], [result], None, source="test", archived_run_ids=None)
@@ -1504,7 +1511,7 @@ class TestPlacementHelper:
         assert placed[0].result is result
         assert placed[0].subject_id == "ent-maple"
 
-    def test_input_order_is_preserved(self):
+    def test_input_order_is_preserved(self) -> None:
         """Callers depend on time/append order downstream; the seam must not reshuffle."""
         run, first = _run_with_results()
         second = make_eval_result(eval_run_id=run.id, scope_id=run.scope_id)
@@ -1513,7 +1520,7 @@ class TestPlacementHelper:
 
         assert [p.result.id for p in placed] == [first.id, second.id]
 
-    def test_each_drop_class_is_counted_under_its_own_reason(self):
+    def test_each_drop_class_is_counted_under_its_own_reason(self) -> None:
         """Three classes, kept apart. The fourth — a blank subject — is no longer a state."""
         run, ok = _run_with_results()
         _, orphan = _run_with_results()
@@ -1532,7 +1539,7 @@ class TestPlacementHelper:
         assert exclusions.results_without_run == 1
         assert exclusions.total == 2
 
-    def test_an_archived_run_is_counted_apart_from_the_callers_own_filter(self):
+    def test_an_archived_run_is_counted_apart_from_the_callers_own_filter(self) -> None:
         """Two narrowings, two counters — the remedies differ and only one is a filter."""
         run, ok = _run_with_results()
         _, archived = _run_with_results()
@@ -1550,7 +1557,7 @@ class TestPlacementHelper:
         assert exclusions.results_outside_queried_runs == 1
         assert exclusions.total == 2, "both classes count toward 'the scope is not empty'"
 
-    def test_no_archive_narrowing_leaves_every_deliberate_drop_on_the_filter_class(self):
+    def test_no_archive_narrowing_leaves_every_deliberate_drop_on_the_filter_class(self) -> None:
         """``archived_run_ids=None`` means the archive removed nothing, not "unknown".
 
         A caller whose selection already includes archived runs passes ``None``,
@@ -1581,7 +1588,7 @@ class TestPlacementHelper:
             ),
         ],
     )
-    def test_a_caller_that_never_states_archival_is_refused(self, call):
+    def test_a_caller_that_never_states_archival_is_refused(self, call) -> None:
         """No default, so forgetting archival is a ``TypeError``, not a ``status`` filter blamed.
 
         With a ``None`` default, a caller that narrowed its cohort and omitted the
@@ -1593,7 +1600,7 @@ class TestPlacementHelper:
         with pytest.raises(TypeError, match="archived_run_ids"):
             call(run, result)
 
-    def test_both_callers_report_identical_exclusion_accounting(self):
+    def test_both_callers_report_identical_exclusion_accounting(self) -> None:
         """project_score_records and frontier must drop the same rows for the same reasons.
 
         The extraction's contract: one placement seam, so a corpus that excludes
@@ -1620,7 +1627,7 @@ class TestPlacementHelper:
 class TestComparisonSets:
     """Grouping refuses to compare across subjects, and badges every weaker caveat."""
 
-    def test_two_subjects_never_share_a_comparison_set(self):
+    def test_two_subjects_never_share_a_comparison_set(self) -> None:
         run_a, _ = _run_with_results(subject_id="ent-maple")
         run_b, _ = _run_with_results(subject_id="ent-bea")
 
@@ -1629,7 +1636,7 @@ class TestComparisonSets:
         assert len(sets) == 2
         assert {s.subject_id for s in sets} == {"ent-maple", "ent-bea"}
 
-    def test_identical_runs_group_with_no_badges(self):
+    def test_identical_runs_group_with_no_badges(self) -> None:
         run_a = _stamped_run(test_case_ids=["tc-1", "tc-2"])
         run_b = _stamped_run(test_case_ids=["tc-1", "tc-2"])
 
@@ -1639,7 +1646,7 @@ class TestComparisonSets:
         assert sets[0].badges == []
         assert sets[0].shared_test_case_ids == ["tc-1", "tc-2"]
 
-    def test_case_set_drift_is_badged_and_intersection_reported(self):
+    def test_case_set_drift_is_badged_and_intersection_reported(self) -> None:
         """A 3-4-5 case-set drift must surface, not silently shrink."""
         run_a, _ = _run_with_results(test_case_ids=["tc-1", "tc-2", "tc-3"])
         run_b, _ = _run_with_results(test_case_ids=["tc-1", "tc-2", "tc-3", "tc-4"])
@@ -1649,7 +1656,7 @@ class TestComparisonSets:
         assert BADGE_CASE_SET_DIFFERS in sets[0].badges
         assert sets[0].shared_test_case_ids == ["tc-1", "tc-2", "tc-3"]
 
-    def test_each_distinct_case_set_is_fingerprinted_and_attributed(self):
+    def test_each_distinct_case_set_is_fingerprinted_and_attributed(self) -> None:
         """The intersection alone cannot say how a group splits, which is the misread.
 
         The symptom: a group of runs reported as "sharing 3 cases" while one of its
@@ -1670,7 +1677,7 @@ class TestComparisonSets:
         # A count of 3 shared cases would have read as "these ran the same 3 cases".
         assert group.shared_test_case_ids == ["tc-1", "tc-2", "tc-3"]
 
-    def test_a_case_set_difference_is_badged_as_the_case_set_never_as_the_context(self):
+    def test_a_case_set_difference_is_badged_as_the_case_set_never_as_the_context(self) -> None:
         """More cases are more samples of one condition: the context key does not hold them, the fingerprint does."""
         run_a = _stamped_run(test_case_ids=["tc-1", "tc-2"])
         run_b = _stamped_run(test_case_ids=["tc-1", "tc-2", "tc-3"])
@@ -1682,7 +1689,7 @@ class TestComparisonSets:
         assert BADGE_CONTEXT_DIFFERS not in group.badges
         assert len({entry.fingerprint for entry in group.case_sets}) == 2
 
-    def test_runs_sharing_a_case_set_share_a_fingerprint(self):
+    def test_runs_sharing_a_case_set_share_a_fingerprint(self) -> None:
         """Order of resolution must not split an otherwise identical basis."""
         run_a, _ = _run_with_results(test_case_ids=["tc-1", "tc-2"])
         run_b, _ = _run_with_results(test_case_ids=["tc-2", "tc-1"])
@@ -1692,7 +1699,7 @@ class TestComparisonSets:
         assert len(group.case_sets) == 1
         assert BADGE_CASE_SET_DIFFERS not in group.badges
 
-    def test_context_drift_is_badged(self):
+    def test_context_drift_is_badged(self) -> None:
         """Driven through a real pinned condition, not two hand-written key strings.
 
         ``cassette_mode`` is a context component, so stamping both runs produces genuinely
@@ -1707,7 +1714,7 @@ class TestComparisonSets:
 
         assert BADGE_CONTEXT_DIFFERS in sets[0].badges
 
-    def test_repetition_count_is_not_context_drift(self):
+    def test_repetition_count_is_not_context_drift(self) -> None:
         """v7: two runs differing only in ``k`` are the same CONDITION, so no badge.
 
         ``k`` is how many repetitions were taken, not a circumstance they were taken
@@ -1722,7 +1729,7 @@ class TestComparisonSets:
 
         assert BADGE_CONTEXT_DIFFERS not in sets[0].badges
 
-    def test_every_run_groups_because_a_subject_key_cannot_be_blank(self):
+    def test_every_run_groups_because_a_subject_key_cannot_be_blank(self) -> None:
         """ "Grouping nothing" and "having nothing" used to be different answers here.
 
         They were told apart by a count of runs whose subject identity was never captured. The
@@ -1740,17 +1747,17 @@ class TestComparisonSets:
 
 def _record(
     *,
-    model="m1",
-    template="tpl-1",
-    case="tc-1",
-    value=1.0,
-    metric=METRIC_COMPOSITE,
-    subject_id="ent-maple",
-    outcome="ok",
-    k=1,
-    factors=None,
-    judge_model=None,
-):
+    model: str = "m1",
+    template: str | None = "tpl-1",
+    case: str = "tc-1",
+    value: float | None = 1.0,
+    metric: str = METRIC_COMPOSITE,
+    subject_id: str = "ent-maple",
+    outcome: str = "ok",
+    k: int = 1,
+    factors: dict[str, str] | None = None,
+    judge_model: str | None = None,
+) -> ScoreRecord:
     """Build one score record, addressing the two axes the pivot tests use.
 
     :param model: Value for the ``model`` coordinate.
@@ -1799,7 +1806,7 @@ def _grid(records):
 class TestPivotDisclosure:
     """No cell is a bare point estimate, and no absence renders as a number."""
 
-    def test_every_measured_cell_carries_n_and_dispersion(self):
+    def test_every_measured_cell_carries_n_and_dispersion(self) -> None:
         records = [_record(case="tc-1", value=1.0), _record(case="tc-2", value=0.0)]
 
         table = compute_pivot(
@@ -1812,7 +1819,7 @@ class TestPivotDisclosure:
         assert cell.n_cases == 2
         assert cell.sem is not None
 
-    def test_a_single_observation_reports_unknown_dispersion_not_zero(self):
+    def test_a_single_observation_reports_unknown_dispersion_not_zero(self) -> None:
         """One measurement has unknown precision; 0.0 would rank it as the most certain cell."""
         table = compute_pivot(
             [_record(value=1.0)],
@@ -1824,7 +1831,7 @@ class TestPivotDisclosure:
 
         assert _grid(table)[("m1", "tpl-1")].sem is None
 
-    def test_an_unrun_combination_is_not_run_and_never_zero(self):
+    def test_an_unrun_combination_is_not_run_and_never_zero(self) -> None:
         """The grid is the cross-product, so a gap is a stated absence rather than a missing row."""
         records = [_record(model="m1", template="tpl-1"), _record(model="m2", template="tpl-2")]
 
@@ -1837,7 +1844,7 @@ class TestPivotDisclosure:
         assert gap.value is None
         assert gap.n == 0
 
-    def test_a_measured_zero_stays_distinct_from_not_run(self):
+    def test_a_measured_zero_stays_distinct_from_not_run(self) -> None:
         """The pairing that makes the distinction load-bearing rather than cosmetic."""
         records = [_record(model="m1", value=0.0), _record(model="m2", template="tpl-2", value=1.0)]
 
@@ -1849,7 +1856,7 @@ class TestPivotDisclosure:
         assert (grid[("m1", "tpl-1")].status, grid[("m1", "tpl-1")].value) == ("measured", 0.0)
         assert (grid[("m1", "tpl-2")].status, grid[("m1", "tpl-2")].value) == ("not_run", None)
 
-    def test_observations_with_no_value_are_counted_not_averaged_as_zero(self):
+    def test_observations_with_no_value_are_counted_not_averaged_as_zero(self) -> None:
         """A cost nothing observed is unmeasured; folding it in as 0 understates real spend."""
         records = [
             _record(metric=METRIC_COST_USD, case="tc-1", value=0.10),
@@ -1864,7 +1871,7 @@ class TestPivotDisclosure:
         assert cell.value == 0.10, "an unmeasured observation was averaged in as zero"
         assert (cell.n, cell.n_unmeasured) == (1, 1)
 
-    def test_a_cell_whose_observations_all_lack_values_is_unmeasured_not_not_run(self):
+    def test_a_cell_whose_observations_all_lack_values_is_unmeasured_not_not_run(self) -> None:
         """We tried and got nothing back — a different fact from never having tried."""
         table = compute_pivot(
             [_record(metric=METRIC_COST_USD, value=None)],
@@ -1877,7 +1884,7 @@ class TestPivotDisclosure:
         cell = _grid(table)[("m1", "tpl-1")]
         assert (cell.status, cell.value, cell.n_unmeasured) == ("unmeasured", None, 1)
 
-    def test_a_cell_of_real_harness_failures_reads_unmeasured_not_not_run(self):
+    def test_a_cell_of_real_harness_failures_reads_unmeasured_not_not_run(self) -> None:
         """The hand-built cases above prove the branch works; this proves real data reaches it.
 
         A projection that emitted no row for a valueless observation made this
@@ -1902,7 +1909,7 @@ class TestPivotDisclosure:
         assert (cell.status, cell.value, cell.n_unmeasured) == ("unmeasured", None, 2)
         assert cell.outcomes == {"infra_exclude": 2}, "the breakdown must name what went wrong, not omit it"
 
-    def test_a_partly_measured_cell_of_real_data_counts_what_it_dropped(self):
+    def test_a_partly_measured_cell_of_real_data_counts_what_it_dropped(self) -> None:
         """``n_unmeasured`` read 0 on every real cell while valueless rows went unemitted."""
         run, _ = _run_with_results()
         results = [
@@ -1929,7 +1936,7 @@ class TestPivotDisclosure:
         assert (cell.status, cell.value) == ("measured", 1.0), "the harness failure must not depress the mean"
         assert (cell.n, cell.n_unmeasured) == (1, 1)
 
-    def test_outcome_counts_ride_along_so_a_mean_of_failures_is_visible(self):
+    def test_outcome_counts_ride_along_so_a_mean_of_failures_is_visible(self) -> None:
         records = [_record(case="tc-1", outcome="ok"), _record(case="tc-2", outcome="candidate_fail")]
 
         table = compute_pivot(
@@ -1956,7 +1963,7 @@ class TestPivotWeighting:
             _record(case="tc-2", value=1.0, k=1),
         ]
 
-    def test_equal_per_scenario_gives_each_case_one_vote(self):
+    def test_equal_per_scenario_gives_each_case_one_vote(self) -> None:
         table = compute_pivot(
             self._unbalanced(),
             row_factor="model",
@@ -1968,7 +1975,7 @@ class TestPivotWeighting:
 
         assert _grid(table)[("m1", "tpl-1")].value == 0.5
 
-    def test_sample_weighted_lets_the_repeat_count_drive_the_number(self):
+    def test_sample_weighted_lets_the_repeat_count_drive_the_number(self) -> None:
         table = compute_pivot(
             self._unbalanced(),
             row_factor="model",
@@ -1980,7 +1987,7 @@ class TestPivotWeighting:
 
         assert _grid(table)[("m1", "tpl-1")].value == 0.25
 
-    def test_equal_per_scenario_is_the_default(self):
+    def test_equal_per_scenario_is_the_default(self) -> None:
         """Case counts reflect budget history, not importance."""
         table = compute_pivot(
             self._unbalanced(),
@@ -1993,7 +2000,7 @@ class TestPivotWeighting:
         assert table.weighting == WEIGHTING_EQUAL_PER_SCENARIO
         assert _grid(table)[("m1", "tpl-1")].value == 0.5
 
-    def test_the_disclosed_formula_describes_the_weighting_actually_used(self):
+    def test_the_disclosed_formula_describes_the_weighting_actually_used(self) -> None:
         """A formula that names the other weighting is worse than none — it reads as verified."""
         per_scenario = compute_pivot(
             self._unbalanced(),
@@ -2015,7 +2022,7 @@ class TestPivotWeighting:
         assert "every contributing observation" in weighted.formula
         assert per_scenario.formula != weighted.formula
 
-    def test_dispersion_describes_the_estimate_the_cell_reports(self):
+    def test_dispersion_describes_the_estimate_the_cell_reports(self) -> None:
         """Under equal-per-scenario the SEM is over case means, so n_cases is its denominator."""
         table = compute_pivot(
             self._unbalanced(),
@@ -2030,7 +2037,7 @@ class TestPivotWeighting:
         # SEM over the two case means (0.0, 1.0): sd=0.7071, /sqrt(2) = 0.5.
         assert cell.sem == pytest.approx(0.5)
 
-    def test_an_unknown_weighting_is_refused_rather_than_defaulted(self):
+    def test_an_unknown_weighting_is_refused_rather_than_defaulted(self) -> None:
         with pytest.raises(PivotError, match="unknown weighting"):
             compute_pivot(
                 [_record()],
@@ -2077,7 +2084,7 @@ class TestSimpsonsGuard:
             profile=_JUDGED_HOST,
         )
 
-    def test_the_reversal_is_flagged(self):
+    def test_the_reversal_is_flagged(self) -> None:
         table = self._table()
 
         assert len(table.simpsons_flags) == 1
@@ -2087,7 +2094,7 @@ class TestSimpsonsGuard:
         assert flag.rows_agreeing == 0
         assert sorted(flag.disagreeing_rows) == ["tpl-easy", "tpl-hard"]
 
-    def test_the_flag_names_the_pooled_leader_the_rows_contradict(self):
+    def test_the_flag_names_the_pooled_leader_the_rows_contradict(self) -> None:
         """Naming the pooled leader is what makes the flag actionable rather than a warning light.
 
         Collapsing the row axis, m1's cases are 0.90 / 0.90 / 0.10 → 0.633 and
@@ -2099,7 +2106,7 @@ class TestSimpsonsGuard:
 
         assert flag.pooled_leader == "m1"
 
-    def test_a_consistent_ranking_is_not_flagged(self):
+    def test_a_consistent_ranking_is_not_flagged(self) -> None:
         """The guard must stay quiet when pooling agrees, or it becomes noise to dismiss."""
         records = [
             _record(model="m1", template="tpl-a", case="tc-1", value=0.20),
@@ -2114,7 +2121,7 @@ class TestSimpsonsGuard:
 
         assert table.simpsons_flags == []
 
-    def test_a_single_shared_row_is_not_enough_to_claim_a_reversal(self):
+    def test_a_single_shared_row_is_not_enough_to_claim_a_reversal(self) -> None:
         """With one comparable row there is no majority to disagree with."""
         records = [
             _record(model="m1", template="tpl-a", case="tc-1", value=0.20),
@@ -2131,7 +2138,7 @@ class TestSimpsonsGuard:
 class TestPivotRefusesDishonestPooling:
     """The no-pooling rule at the aggregation layer: the class of the measure decides what may pool."""
 
-    def test_composites_are_not_pooled_across_subjects(self):
+    def test_composites_are_not_pooled_across_subjects(self) -> None:
         records = [_record(subject_id="ent-maple"), _record(subject_id="ent-bea", model="m2")]
 
         with pytest.raises(PivotError, match="subjects") as excinfo:
@@ -2145,7 +2152,7 @@ class TestPivotRefusesDishonestPooling:
         # the canary's whole `HOST_NOUNS` set, not against one hand-picked noun.
         assert not _HOST_NOUN_IN_PROSE.findall(str(excinfo.value))
 
-    def test_a_mechanical_measure_pools_across_subjects_freely(self):
+    def test_a_mechanical_measure_pools_across_subjects_freely(self) -> None:
         """A dollar is a dollar whoever spent it — refusing this hides the budget view."""
         records = [
             _record(subject_id="ent-maple", metric=METRIC_COST_USD, value=0.10),
@@ -2158,7 +2165,7 @@ class TestPivotRefusesDishonestPooling:
 
         assert _grid(table)[("m1", "tpl-1")].value == pytest.approx(0.20)
 
-    def test_subject_on_an_axis_makes_the_pivot_legal_again(self):
+    def test_subject_on_an_axis_makes_the_pivot_legal_again(self) -> None:
         records = [_record(subject_id="ent-maple"), _record(subject_id="ent-bea")]
 
         table = compute_pivot(
@@ -2167,7 +2174,7 @@ class TestPivotRefusesDishonestPooling:
 
         assert table.rows == ["ent-bea", "ent-maple"]
 
-    def test_filtering_to_one_subject_makes_the_pivot_legal_again(self):
+    def test_filtering_to_one_subject_makes_the_pivot_legal_again(self) -> None:
         records = [_record(subject_id="ent-maple", value=1.0), _record(subject_id="ent-bea", value=0.0)]
 
         table = compute_pivot(
@@ -2182,7 +2189,7 @@ class TestPivotRefusesDishonestPooling:
         assert _grid(table)[("m1", "tpl-1")].value == 1.0
         assert table.n_filtered_out == 1
 
-    def test_the_matrix_axes_are_legal_and_are_the_per_subject_row_too(self):
+    def test_the_matrix_axes_are_legal_and_are_the_per_subject_row_too(self) -> None:
         """`subject_id` x `model` is a dashboard's matrix AND its per-subject card set.
 
         A dashboard needs no separate matrix or by-model endpoint, because those are this
@@ -2221,7 +2228,7 @@ class TestPivotRefusesDishonestPooling:
         assert _grid(one_row)[("ent-maple", "m1")].value == pytest.approx(0.8)
         assert one_row.n_filtered_out == 1
 
-    def test_a_single_subject_corpus_needs_no_ceremony(self):
+    def test_a_single_subject_corpus_needs_no_ceremony(self) -> None:
         records = [_record(subject_id="ent-maple"), _record(subject_id="ent-maple", model="m2")]
 
         table = compute_pivot(
@@ -2234,7 +2241,7 @@ class TestPivotRefusesDishonestPooling:
 class TestPivotAxisResolution:
     """Axes resolve generically, so a new coordinate is pivotable with no edit here."""
 
-    def test_any_declared_coordinate_may_be_an_axis(self):
+    def test_any_declared_coordinate_may_be_an_axis(self) -> None:
         records = [_record(case="tc-1", value=1.0), _record(case="tc-2", value=0.0)]
 
         table = compute_pivot(
@@ -2243,7 +2250,7 @@ class TestPivotAxisResolution:
 
         assert table.rows == ["tc-1", "tc-2"]
 
-    def test_an_unknown_factor_is_refused_rather_than_bucketed(self):
+    def test_an_unknown_factor_is_refused_rather_than_bucketed(self) -> None:
         # Clean-snapshot provenance is a genuine cell condition that still lives
         # ONLY inside the `context_key` digest — the role widening lifted the
         # judge/simulator roles out to first-class fields and the cost pivot lifted
@@ -2259,7 +2266,7 @@ class TestPivotAxisResolution:
                 profile=_JUDGED_HOST,
             )
 
-    def test_a_model_method_is_not_mistaken_for_a_coordinate(self):
+    def test_a_model_method_is_not_mistaken_for_a_coordinate(self) -> None:
         """`hasattr` would accept `model_dump` and bucket the corpus under one bound method."""
         with pytest.raises(PivotError, match="unknown factor"):
             compute_pivot(
@@ -2270,7 +2277,7 @@ class TestPivotAxisResolution:
                 profile=_JUDGED_HOST,
             )
 
-    def test_judge_model_pivots_to_per_judge_cells(self):
+    def test_judge_model_pivots_to_per_judge_cells(self) -> None:
         """The role coordinate is no longer hidden in `context_key` — it groups.
 
         This is the query the widen unlocks: "which judge scored this
@@ -2290,7 +2297,7 @@ class TestPivotAxisResolution:
         assert table.rows == ["judge-a", "judge-b"]
         assert {(c.row, c.value) for c in table.cells} == {("judge-a", 1.0), ("judge-b", 0.0)}
 
-    def test_an_absent_coordinate_becomes_a_visible_level(self):
+    def test_an_absent_coordinate_becomes_a_visible_level(self) -> None:
         """Runs that lack a coordinate (an ad-hoc run has no template) must show as a row, not shrink the table."""
         records = [_record(template="tpl-1"), _record(template=None, case="tc-2")]
 
@@ -2300,7 +2307,7 @@ class TestPivotAxisResolution:
 
         assert "—" in table.rows
 
-    def test_a_config_override_is_pivotable_by_its_dotted_key(self):
+    def test_a_config_override_is_pivotable_by_its_dotted_key(self) -> None:
         """The acceptance case: model x config key, with no per-key code anywhere.
 
         This is the whole content of the open-factor rule — a bake-off varies a
@@ -2326,7 +2333,7 @@ class TestPivotAxisResolution:
         assert table.rows == ["haiku", "sonnet"]
         assert {(c.row, c.value) for c in table.cells} == {("haiku", 0.0), ("sonnet", 1.0)}
 
-    def test_a_prompt_override_is_pivotable_under_its_own_prefix(self):
+    def test_a_prompt_override_is_pivotable_under_its_own_prefix(self) -> None:
         """`prompt.` marks the slot's provenance, so an axis name says which overlay it came from.
 
         It is a namespace, not a guarantee: a tool literally named `prompt` with
@@ -2347,7 +2354,7 @@ class TestPivotAxisResolution:
 
         assert table.rows == ["verbose2"]
 
-    def test_runs_without_the_override_form_their_own_visible_cohort(self):
+    def test_runs_without_the_override_form_their_own_visible_cohort(self) -> None:
         """Running without an override is a comparable cohort, not missing data."""
         records = [
             _record(value=1.0, factors={"planner.planner_model": "sonnet"}),
@@ -2364,7 +2371,7 @@ class TestPivotAxisResolution:
 
         assert table.rows == ["sonnet", "—"]
 
-    def test_a_lever_no_run_set_is_a_table_of_dashes_not_a_refusal(self):
+    def test_a_lever_no_run_set_is_a_table_of_dashes_not_a_refusal(self) -> None:
         """Refusing would make "nobody set this" indistinguishable from a typo.
 
         A member the host's open family claims is a lever before any run carries it.
@@ -2379,7 +2386,7 @@ class TestPivotAxisResolution:
 
         assert table.rows == ["—"]
 
-    def test_a_dot_does_not_make_an_unregistered_name_a_lever(self):
+    def test_a_dot_does_not_make_an_unregistered_name_a_lever(self) -> None:
         """The name's shape decides nothing (#664): a dotted name no registry admits and no run carries is a typo."""
         with pytest.raises(PivotError, match="unknown factor 'planner.never_set'"):
             compute_pivot(
@@ -2390,7 +2397,7 @@ class TestPivotAxisResolution:
                 profile=_JUDGED_HOST,
             )
 
-    def test_an_undotted_lever_is_pivotable_with_one_row_per_level(self):
+    def test_an_undotted_lever_is_pivotable_with_one_row_per_level(self) -> None:
         """#664: a lever with a plain name is pivoted through the registry, end to end through the projection.
 
         The toy host registers ``chunk_tokens`` undotted; two batches at two widths project through
@@ -2413,7 +2420,7 @@ class TestPivotAxisResolution:
         assert table.rows == ["1024", "256"]
         assert {cell.row for cell in table.cells if cell.status == "measured"} == {"1024", "256"}
 
-    def test_a_mistyped_lever_is_refused_naming_the_hosts_levers(self):
+    def test_a_mistyped_lever_is_refused_naming_the_hosts_levers(self) -> None:
         """The hint lists the levers this host registers, not a claim that levers are dotted."""
         with pytest.raises(PivotError, match="unknown factor 'chunk_token'") as refused:
             compute_pivot(
@@ -2427,7 +2434,7 @@ class TestPivotAxisResolution:
         assert "chunk_tokens" in str(refused.value) and "retriever_top_k" in str(refused.value)
         assert "dotted" not in str(refused.value)
 
-    def test_a_lever_named_like_a_declared_coordinate_is_refused_not_resolved_by_branch_order(self):
+    def test_a_lever_named_like_a_declared_coordinate_is_refused_not_resolved_by_branch_order(self) -> None:
         """One name, two meanings: a run carrying ``template_id`` as a lever cannot be read off either silently."""
         with pytest.raises(PivotError, match="both a declared score-record coordinate and a lever"):
             compute_pivot(
@@ -2438,7 +2445,7 @@ class TestPivotAxisResolution:
                 profile=_JUDGED_HOST,
             )
 
-    def test_the_candidate_model_lever_reads_the_model_coordinate(self):
+    def test_the_candidate_model_lever_reads_the_model_coordinate(self) -> None:
         """The engine's own model lever is projected into ``model``, so the shared name is one quantity."""
         table = compute_pivot(
             [_record(model="m1"), _record(model="m2", case="tc-2")],
@@ -2450,13 +2457,13 @@ class TestPivotAxisResolution:
 
         assert table.rows == ["m1", "m2"]
 
-    def test_the_open_coordinate_map_is_not_itself_an_axis(self):
+    def test_the_open_coordinate_map_is_not_itself_an_axis(self) -> None:
         with pytest.raises(PivotError, match="open-coordinate map"):
             compute_pivot(
                 [_record()], row_factor="factors", column_factor="model", metric=METRIC_COMPOSITE, profile=_JUDGED_HOST
             )
 
-    def test_an_unknown_axis_is_refused_even_when_there_is_nothing_to_group(self):
+    def test_an_unknown_axis_is_refused_even_when_there_is_nothing_to_group(self) -> None:
         """The refusal must not depend on the corpus happening to be non-empty.
 
         Axis names were originally checked inside the grouping loop, which only
@@ -2470,7 +2477,7 @@ class TestPivotAxisResolution:
                 [], row_factor="clean_snapshot", column_factor="model", metric=METRIC_COMPOSITE, profile=_JUDGED_HOST
             )
 
-    def test_an_unknown_filter_key_is_refused_rather_than_matching_nothing(self):
+    def test_an_unknown_filter_key_is_refused_rather_than_matching_nothing(self) -> None:
         """A filter nobody can satisfy empties the table as convincingly as a real result."""
         with pytest.raises(PivotError, match="unknown factor"):
             compute_pivot(
@@ -2482,7 +2489,7 @@ class TestPivotAxisResolution:
                 profile=_JUDGED_HOST,
             )
 
-    def test_rows_carrying_another_measure_are_ignored(self):
+    def test_rows_carrying_another_measure_are_ignored(self) -> None:
         records = [_record(metric=METRIC_COMPOSITE, value=1.0), _record(metric=METRIC_COST_USD, value=99.0)]
 
         table = compute_pivot(
@@ -2516,7 +2523,7 @@ class TestPivotPoolingDisclosures:
             profile=_JUDGED_HOST,
         )
 
-    def test_a_cost_cell_names_both_compositions_and_the_table_flags_them(self):
+    def test_a_cost_cell_names_both_compositions_and_the_table_flags_them(self) -> None:
         """#625: two runs priced different roles; one cell pools both, and says so."""
         run_a, _ = _run_with_results(id="run-a")
         run_b, _ = _run_with_results(id="run-b")
@@ -2533,21 +2540,21 @@ class TestPivotPoolingDisclosures:
         assert table.cost_compositions_differ is True
         assert "cost compositions differ" in pivot_text(table)
 
-    def test_one_composition_is_named_and_not_flagged(self):
+    def test_one_composition_is_named_and_not_flagged(self) -> None:
         run, _ = _run_with_results()
         table = self._cost_pivot([run], [self._result(run, cost_roles=self.PRICED)])
 
         assert table.cells[0].cost_compositions == [self.PRICED]
         assert table.cost_compositions_differ is False
 
-    def test_a_non_cost_pivot_carries_no_composition(self):
+    def test_a_non_cost_pivot_carries_no_composition(self) -> None:
         run, _ = _run_with_results()
         table = self._cost_pivot([run], [self._result(run, cost_roles=self.PRICED)], metric=METRIC_COMPOSITE)
 
         assert table.cells[0].cost_compositions == []
         assert table.cost_compositions_differ is False
 
-    def test_a_cost_cell_pooling_replayed_with_live_is_withheld(self):
+    def test_a_cost_cell_pooling_replayed_with_live_is_withheld(self) -> None:
         """#658: one live and one replayed run of the same arm — the cell's mean is neither one's spend."""
         live, _ = _run_with_results(id="run-live", cassette_mode="off")
         replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
@@ -2565,7 +2572,7 @@ class TestPivotPoolingDisclosures:
         assert CASSETTE_SPAN_CLAUSE in table.cassette_mode_disclosure
         assert "withheld: it pools" in pivot_text(table)
 
-    def test_cassette_mode_on_an_axis_reads_each_alone(self):
+    def test_cassette_mode_on_an_axis_reads_each_alone(self) -> None:
         live, _ = _run_with_results(id="run-live", cassette_mode="off")
         replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
         results = [self._result(live, case="tc-1", cost=0.30), self._result(replayed, case="tc-2", cost=0.05)]
@@ -2578,7 +2585,7 @@ class TestPivotPoolingDisclosures:
         # The cells differ in mode, so the table still carries the comparison surfaces' sentence.
         assert table.cassette_mode_disclosure is not None
 
-    def test_a_quality_cell_over_mixed_modes_is_reported_and_the_table_discloses(self):
+    def test_a_quality_cell_over_mixed_modes_is_reported_and_the_table_discloses(self) -> None:
         live, _ = _run_with_results(id="run-live", cassette_mode="off")
         replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
         results = [self._result(live, case="tc-1"), self._result(replayed, case="tc-2")]
@@ -2588,7 +2595,7 @@ class TestPivotPoolingDisclosures:
         assert table.cells[0].status == CELL_MEASURED
         assert table.cassette_mode_disclosure is not None
 
-    def test_off_and_capture_pool_without_withholding(self):
+    def test_off_and_capture_pool_without_withholding(self) -> None:
         """Both run the third party live: a difference in what was recorded, not in what was spent."""
         live, _ = _run_with_results(id="run-live", cassette_mode="off")
         captured, _ = _run_with_results(id="run-capture", cassette_mode="capture")
@@ -2599,7 +2606,7 @@ class TestPivotPoolingDisclosures:
         assert cell.status == CELL_MEASURED
         assert cell.cassette_modes == ["capture", "off"]
 
-    def test_a_seeded_delivery_within_one_mode_is_reported_and_exported(self):
+    def test_a_seeded_delivery_within_one_mode_is_reported_and_exported(self) -> None:
         """A seeded finding substitutes on the template's own cases, so arms over them carry it alike."""
         run, _ = _run_with_results()
         seeded = self._result(
@@ -2617,7 +2624,7 @@ class TestPivotPoolingDisclosures:
         rows = csv.DictReader(io.StringIO(export_projection(projection, fmt="csv").body))
         assert {(row["test_case_id"], row["substituted_deliveries"]) for row in rows} == {("tc-1", "0"), ("tc-2", "1")}
 
-    def test_a_cost_cell_built_only_from_substituted_deliveries_says_it_is_no_live_spend(self):
+    def test_a_cost_cell_built_only_from_substituted_deliveries_says_it_is_no_live_spend(self) -> None:
         """The export column was the only place this showed; the cell is what is read, so the cell says it."""
         run, _ = _run_with_results()
         seeded = [
@@ -2637,13 +2644,13 @@ class TestPivotPoolingDisclosures:
         assert quality.cells[0].n_substituted == 2, "counted on every metric"
         assert quality.cells[0].substitution_disclosure is None, "the dollars sentence is the cost pivot's"
 
-    def test_a_cost_cell_with_nothing_substituted_carries_no_flag(self):
+    def test_a_cost_cell_with_nothing_substituted_carries_no_flag(self) -> None:
         run, _ = _run_with_results()
         (cell,) = self._cost_pivot([run], [self._result(run, case="tc-1")]).cells
 
         assert (cell.n_substituted, cell.substitution_disclosure) == (0, None)
 
-    def test_the_export_names_which_result_replayed(self):
+    def test_the_export_names_which_result_replayed(self) -> None:
         """#658: each row carries its run's cassette mode and its substituted-delivery count as columns."""
         live, _ = _run_with_results(id="run-live", cassette_mode="off")
         replayed, _ = _run_with_results(id="run-replay", cassette_mode="replay")
@@ -2658,7 +2665,7 @@ class TestPivotPoolingDisclosures:
         assert {row["substituted_deliveries"] for row in rows} == {"0"}
         assert "judge" in next(row["cost_roles"] for row in rows if row["run_id"] == "run-replay")
 
-    def test_a_variant_key_cell_spanning_an_identity_bump_names_the_versions(self):
+    def test_a_variant_key_cell_spanning_an_identity_bump_names_the_versions(self) -> None:
         """#672: one digest stamped at two predicate versions pools into one cell, and the table says so."""
         run, _ = _run_with_results()
         results = [
@@ -2673,7 +2680,7 @@ class TestPivotPoolingDisclosures:
         assert table.identity_pooling_disclosure is not None
         assert f"v{IDENTITY_VERSION - 1}" in table.identity_pooling_disclosure
 
-    def test_a_variant_key_pivot_over_one_version_discloses_nothing(self):
+    def test_a_variant_key_pivot_over_one_version_discloses_nothing(self) -> None:
         run, _ = _run_with_results()
         results = [self._result(run, case=case, variant_key="vk-1") for case in ("tc-1", "tc-2")]
 
@@ -2682,7 +2689,7 @@ class TestPivotPoolingDisclosures:
         assert table.cells[0].identity_versions == {}
         assert table.identity_pooling_disclosure is None
 
-    def test_pivoting_the_key_against_its_version_separates_them(self):
+    def test_pivoting_the_key_against_its_version_separates_them(self) -> None:
         run, _ = _run_with_results()
         results = [
             self._result(run, case="tc-1", variant_key="vk-1", identity_version=IDENTITY_VERSION - 1),
@@ -2700,7 +2707,7 @@ class TestPivotPoolingDisclosures:
 class TestPivotDescribesWhatACellHolds:
     """A cell holds an aggregate, so it is described by the aggregate's descriptor."""
 
-    def test_composite_resolves_to_the_registered_aggregate_not_the_unclassified_arm(self):
+    def test_composite_resolves_to_the_registered_aggregate_not_the_unclassified_arm(self) -> None:
         """`composite` is not a seeded name; without the mapping every cell claims family=None."""
         table = compute_pivot(
             [_record()], row_factor="model", column_factor="template_id", metric=METRIC_COMPOSITE, profile=_JUDGED_HOST
@@ -2710,7 +2717,7 @@ class TestPivotDescribesWhatACellHolds:
         assert table.measure.family == "composite"
         assert table.measure.higher_is_better is True
 
-    def test_cost_resolves_to_its_aggregate_and_keeps_its_unit_and_direction(self):
+    def test_cost_resolves_to_its_aggregate_and_keeps_its_unit_and_direction(self) -> None:
         table = compute_pivot(
             [_record(metric=METRIC_COST_USD, value=0.1)],
             row_factor="model",
@@ -2723,7 +2730,7 @@ class TestPivotDescribesWhatACellHolds:
         assert table.measure.unit == "usd"
         assert table.measure.higher_is_better is False
 
-    def test_a_projected_measure_with_no_registered_aggregate_falls_back_honestly(self):
+    def test_a_projected_measure_with_no_registered_aggregate_falls_back_honestly(self) -> None:
         """The forgetting case: a projected metric whose aggregate the registry does not describe.
 
         The unclassified arm holds the strictest transferability class, so a
@@ -2760,7 +2767,7 @@ class TestPivotDescribesWhatACellHolds:
         assert table.measure.family is None
         assert table.measure.transferability_class == "scenario_bound"
 
-    def test_a_metric_the_projection_never_emits_is_refused_not_answered_empty(self):
+    def test_a_metric_the_projection_never_emits_is_refused_not_answered_empty(self) -> None:
         """A typo must not return a correct-looking empty grid.
 
         Unlike an axis, the metric set is genuinely closed — the projection is
@@ -2801,7 +2808,7 @@ class TestNormalizeStatusFilter:
             ("budget_stopped", "budget_stopped"),
         ],
     )
-    def test_resolves_every_caller_spelling(self, raw, expected):
+    def test_resolves_every_caller_spelling(self, raw, expected) -> None:
         """Blank means unsupplied (not "all"); `all` lifts the filter at any casing.
 
         The two load-bearing defaults live here: an absent or blank filter means
@@ -2814,7 +2821,7 @@ class TestNormalizeStatusFilter:
         assert normalize_status_filter(raw) == expected
 
     @pytest.mark.parametrize("raw", ["banana", "Completed", "COMPLETED", "complete", "done", "everything", "any"])
-    def test_refuses_a_status_no_run_can_carry(self, raw):
+    def test_refuses_a_status_no_run_can_carry(self, raw) -> None:
         """A filter that can match nothing is refused, never answered with an empty result.
 
         This row set replaces the earlier `("Completed", "Completed")` pin, which
@@ -2840,7 +2847,7 @@ class TestNormalizeStatusFilter:
         with pytest.raises(StatusFilterError, match="unknown run status"):
             normalize_status_filter(raw)
 
-    def test_the_refusal_enumerates_every_status_a_run_can_carry(self):
+    def test_the_refusal_enumerates_every_status_a_run_can_carry(self) -> None:
         """The message names the alternatives, and names them from the Literal.
 
         The whole value of refusing is that the caller learns the vocabulary
@@ -2849,8 +2856,8 @@ class TestNormalizeStatusFilter:
         written here: a second copy of the vocabulary in the test is the same
         drift the seam avoids by not writing one in the source.
         """
-        from threetears.evals.schema.models import RUN_STATUSES
         from threetears.evals.kernel.status_filter import StatusFilterError, normalize_status_filter
+        from threetears.evals.schema.models import RUN_STATUSES
 
         with pytest.raises(StatusFilterError) as excinfo:
             normalize_status_filter("banana")
@@ -2863,7 +2870,7 @@ class TestNormalizeStatusFilter:
         # the one an operator reaches for by hand most often.
         assert "'all'" in message
 
-    def test_every_status_a_run_can_carry_is_accepted(self):
+    def test_every_status_a_run_can_carry_is_accepted(self) -> None:
         """The accepted set IS the Literal — no status is refused that a run can hold.
 
         The failure this catches is the expensive direction of the same drift:
@@ -2871,8 +2878,8 @@ class TestNormalizeStatusFilter:
         behind refuses a real cohort, and refuses it loudly enough to look like a
         bug in the caller.
         """
-        from threetears.evals.schema.models import RUN_STATUSES
         from threetears.evals.kernel.status_filter import normalize_status_filter
+        from threetears.evals.schema.models import RUN_STATUSES
 
         assert {status: normalize_status_filter(status) for status in RUN_STATUSES} == {
             status: status for status in RUN_STATUSES
@@ -2907,7 +2914,7 @@ class TestValidateStatusFilter:
             ("cancelled", "cancelled"),
         ],
     )
-    def test_an_unspecified_filter_is_no_filter(self, raw, expected):
+    def test_an_unspecified_filter_is_no_filter(self, raw, expected) -> None:
         """Absent, blank and `all` all mean every run — the distinction from the sibling.
 
         The defect this pins: a scope of 9 runs
@@ -2922,7 +2929,7 @@ class TestValidateStatusFilter:
         assert validate_status_filter(raw) == expected
 
     @pytest.mark.parametrize("raw", ["banana", "Completed", "COMPLETED", "complete", "done", "everything", "any"])
-    def test_refuses_a_status_no_run_can_carry(self, raw):
+    def test_refuses_a_status_no_run_can_carry(self, raw) -> None:
         """The same refusal as the comparison surfaces, on the same rows.
 
         A filter that can match nothing must not be answered with an empty list,
@@ -2937,7 +2944,7 @@ class TestValidateStatusFilter:
         with pytest.raises(StatusFilterError, match="unknown run status"):
             validate_status_filter(raw)
 
-    def test_the_two_filters_differ_in_the_default_and_in_nothing_else(self):
+    def test_the_two_filters_differ_in_the_default_and_in_nothing_else(self) -> None:
         """One vocabulary, one refusal, two defaults — asserted rather than assumed.
 
         This is the property the split exists to hold, and the failure it guards
@@ -2946,12 +2953,12 @@ class TestValidateStatusFilter:
         reads. Compared over every input EXCEPT the unspecified ones, where the two
         are supposed to disagree — those are pinned per-function above.
         """
-        from threetears.evals.schema.models import RUN_STATUSES
         from threetears.evals.kernel.status_filter import (
             StatusFilterError,
             normalize_status_filter,
             validate_status_filter,
         )
+        from threetears.evals.schema.models import RUN_STATUSES
 
         agreeing_inputs = [*sorted(RUN_STATUSES), "all", "ALL", "  all  "]
         assert [validate_status_filter(raw) for raw in agreeing_inputs] == [
@@ -2978,7 +2985,7 @@ class TestClosedSetsAreClosed:
     something — so the claim itself is pinned here rather than left to prose.
     """
 
-    def test_every_projected_metric_maps_to_an_aggregate(self):
+    def test_every_projected_metric_maps_to_an_aggregate(self) -> None:
         """Adding a metric to the projection without its aggregate is the forgetting case."""
         from threetears.evals.analysis import reporting
 
@@ -2989,7 +2996,7 @@ class TestClosedSetsAreClosed:
             "cell of that metric would silently claim family=None at the strictest class"
         )
 
-    def test_the_projection_emits_nothing_outside_the_declared_set(self):
+    def test_the_projection_emits_nothing_outside_the_declared_set(self) -> None:
         """The other direction: `PROJECTED_METRICS` must not fall behind what is emitted.
 
         The two tests above quantify over the declared set, so a metric added to
@@ -3014,7 +3021,7 @@ class TestClosedSetsAreClosed:
             "declared in PROJECTED_METRICS, so pivot would refuse it as an unknown metric"
         )
 
-    def test_every_projected_metric_resolves_to_a_described_aggregate(self):
+    def test_every_projected_metric_resolves_to_a_described_aggregate(self) -> None:
         """The mapping must land on a *registered* name, not merely on some string."""
         from threetears.evals.analysis import reporting
 
@@ -3035,7 +3042,7 @@ class TestClosedSetsAreClosed:
 class TestModelShapes:
     """The projection models round-trip, since export and responses both re-parse them."""
 
-    def test_score_record_rejects_an_unknown_field(self):
+    def test_score_record_rejects_an_unknown_field(self) -> None:
         """`extra='forbid'` is what makes a typo a failure instead of a silent drop.
 
         Built from a VALID payload plus one extra key. An earlier version passed a
@@ -3051,20 +3058,20 @@ class TestModelShapes:
         with pytest.raises(ValidationError):
             ScoreRecord.model_validate({**valid, "definitely_not_a_field": 1})
 
-    def test_comparison_set_rejects_an_unknown_field(self):
+    def test_comparison_set_rejects_an_unknown_field(self) -> None:
         run, _ = _run_with_results()
         valid = compute_comparison_sets([run], profile=_JUDGED_HOST).comparison_sets[0].model_dump()
 
         with pytest.raises(ValidationError):
             ComparisonSet.model_validate({**valid, "definitely_not_a_field": 1})
 
-    def test_score_record_round_trips_through_its_own_dump(self):
+    def test_score_record_round_trips_through_its_own_dump(self) -> None:
         run, result = _run_with_results()
         row = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records[0]
 
         assert ScoreRecord.model_validate(row.model_dump()) == row
 
-    def test_composite_metric_name_is_stable(self):
+    def test_composite_metric_name_is_stable(self) -> None:
         """Surfaces look descriptors up by these names; renaming one breaks the registry join."""
         assert METRIC_COMPOSITE == "composite"
         assert METRIC_COST_USD == "cost_usd"
@@ -3073,7 +3080,7 @@ class TestModelShapes:
 class TestPredictionReservation:
     """The predicted-value slot is reserved now, computed by no engine yet."""
 
-    def test_every_pivoted_cell_carries_a_null_prediction(self):
+    def test_every_pivoted_cell_carries_a_null_prediction(self) -> None:
         """Nothing in this plan populates a prediction — the slot exists, empty, for the engine to fill later."""
         records = [_record(case="tc-1", value=1.0), _record(case="tc-2", value=0.0)]
 
@@ -3084,7 +3091,7 @@ class TestPredictionReservation:
         assert table.cells, "expected cells to assert over"
         assert all(cell.predicted is None for cell in table.cells)
 
-    def test_predicted_value_carries_the_reserved_field_set(self):
+    def test_predicted_value_carries_the_reserved_field_set(self) -> None:
         """The six-field contract is the lock-in the engine lands against without a surface migration."""
         predicted = PredictedValue(
             value=0.8,
@@ -3105,7 +3112,7 @@ class TestPredictionReservation:
         }
         assert PredictedValue.model_validate(predicted.model_dump()) == predicted
 
-    def test_a_prediction_may_be_point_only(self):
+    def test_a_prediction_may_be_point_only(self) -> None:
         """A point estimate with no interval is representable — interval bounds are optional refinements."""
         predicted = PredictedValue(value=0.8, method_id="m", computed_at="2026-07-23T00:00:00Z")
 
@@ -3115,7 +3122,7 @@ class TestPredictionReservation:
 class TestProgramBudget:
     """Budget counts every run's real spend — the one lens that never excludes."""
 
-    def test_sums_per_run_cost_with_a_cumulative_series_in_time_order(self):
+    def test_sums_per_run_cost_with_a_cumulative_series_in_time_order(self) -> None:
         run_a = make_eval_run(status="completed", created_at="2026-07-01T00:00:00Z")
         run_b = make_eval_run(status="completed", created_at="2026-07-02T00:00:00Z")
         results = [
@@ -3135,7 +3142,7 @@ class TestProgramBudget:
         assert [r.run_id for r in budget.runs] == [run_a.id, run_b.id]
         assert [r.cumulative_cost_usd for r in budget.runs] == pytest.approx([0.15, 0.35])
 
-    def test_budget_includes_a_failed_run_the_quality_path_excludes(self):
+    def test_budget_includes_a_failed_run_the_quality_path_excludes(self) -> None:
         """The asymmetry, in one test: budget counts a failed run's spend; the completed-only quality path drops it.
 
         This one assertion is the whole load-bearing contract of the budget lens.
@@ -3165,7 +3172,7 @@ class TestProgramBudget:
         cost_rows = [r for r in quality.records if r.metric == METRIC_COST_USD]
         assert [r.value for r in cost_rows] == [0.10]
 
-    def test_an_exhausted_run_carries_its_accumulated_cost_not_zero(self):
+    def test_an_exhausted_run_carries_its_accumulated_cost_not_zero(self) -> None:
         """A budget-stopped run spent real dollars up to the ceiling — never $0."""
         exhausted = make_eval_run(status="budget_stopped", created_at="2026-07-01T00:00:00Z")
         results = [make_eval_result(eval_run_id=exhausted.id, cost_usd=0.99)]
@@ -3175,7 +3182,7 @@ class TestProgramBudget:
         assert budget.runs[0].cost_usd == pytest.approx(0.99)
         assert budget.n_incomplete_runs == 1
 
-    def test_the_dropped_spend_splits_in_flight_from_ended_without_completing(self):
+    def test_the_dropped_spend_splits_in_flight_from_ended_without_completing(self) -> None:
         """Two halves, because they point opposite ways for a budget decision.
 
         A run still going will normally deliver the results its dollars are
@@ -3205,7 +3212,7 @@ class TestProgramBudget:
             budget.incomplete_cost_usd
         )
 
-    def test_a_pending_run_is_in_flight_and_not_reported_as_a_failure(self):
+    def test_a_pending_run_is_in_flight_and_not_reported_as_a_failure(self) -> None:
         """A queued run has spent nothing yet and has failed at nothing — both halves must say so."""
         pending = make_eval_run(status="pending", created_at="2026-07-01T00:00:00Z")
 
@@ -3214,7 +3221,7 @@ class TestProgramBudget:
         assert (budget.n_in_flight_runs, budget.in_flight_statuses) == (1, ["pending"])
         assert (budget.n_terminal_incomplete_runs, budget.terminal_incomplete_statuses) == (0, [])
 
-    def test_every_terminal_non_completed_status_lands_in_the_terminal_half(self):
+    def test_every_terminal_non_completed_status_lands_in_the_terminal_half(self) -> None:
         """The classification is by terminality, not by a hand-kept list of failure statuses.
 
         ``budget_stopped`` is the one that has actually gone missing from such a
@@ -3232,7 +3239,7 @@ class TestProgramBudget:
         assert budget.terminal_incomplete_statuses == ["budget_stopped", "cancelled", "failed"]
         assert budget.n_in_flight_runs == 0
 
-    def test_a_run_the_quality_surfaces_would_drop_is_still_billed(self):
+    def test_a_run_the_quality_surfaces_would_drop_is_still_billed(self) -> None:
         """Budget counts spend the quality views leave out — that money was real either way.
 
         The identity-less run this used to model cannot be built now, so the surviving case is a
@@ -3246,7 +3253,7 @@ class TestProgramBudget:
         assert budget.total_cost_usd == pytest.approx(0.33)
         assert budget.runs[0].n_results == 1
 
-    def test_a_run_with_no_results_is_a_zero_row_not_absent(self):
+    def test_a_run_with_no_results_is_a_zero_row_not_absent(self) -> None:
         run = make_eval_run(status="running", created_at="2026-07-01T00:00:00Z")
 
         budget = compute_program_budget([run], [])
@@ -3254,7 +3261,7 @@ class TestProgramBudget:
         assert budget.runs[0].cost_usd == 0.0
         assert budget.runs[0].n_results == 0
 
-    def test_spend_on_an_unlisted_run_is_counted_not_dropped(self):
+    def test_spend_on_an_unlisted_run_is_counted_not_dropped(self) -> None:
         """Real spend whose run is absent from the set lands in the total as unattributed, never silently gone."""
         listed = make_eval_run(status="completed", created_at="2026-07-01T00:00:00Z")
         results = [
@@ -3271,7 +3278,7 @@ class TestProgramBudget:
 class TestOrphanedRuns:
     """Runs no campaign holds — paid data every analysis surface silently skips."""
 
-    def test_a_run_in_no_campaign_is_reported_with_its_spend(self):
+    def test_a_run_in_no_campaign_is_reported_with_its_spend(self) -> None:
         claimed, orphan = make_eval_run(), make_eval_run()
         results = [
             make_eval_result(eval_run_id=claimed.id, cost_usd=1.0),
@@ -3286,7 +3293,7 @@ class TestOrphanedRuns:
         assert report.n_orphaned == 1
         assert report.n_runs_in_scope == 2
 
-    def test_a_run_held_by_any_campaign_is_not_an_orphan(self):
+    def test_a_run_held_by_any_campaign_is_not_an_orphan(self) -> None:
         """Membership is a union across campaigns, not per-campaign."""
         run = make_eval_run()
 
@@ -3295,7 +3302,7 @@ class TestOrphanedRuns:
         assert report.orphaned_runs == []
         assert report.n_campaigns_scanned == 2
 
-    def test_no_campaigns_makes_every_run_an_orphan_and_says_why(self):
+    def test_no_campaigns_makes_every_run_an_orphan_and_says_why(self) -> None:
         """True, and alarming without the denominator that explains it."""
         run = make_eval_run()
 
@@ -3304,7 +3311,7 @@ class TestOrphanedRuns:
         assert report.n_orphaned == 1
         assert report.n_campaigns_scanned == 0
 
-    def test_archived_orphans_are_counted_separately_not_dropped(self):
+    def test_archived_orphans_are_counted_separately_not_dropped(self) -> None:
         """A retired run still spent its dollars; a curated exclusion is not a leak."""
         live, retired = make_eval_run(), make_eval_run(archived=True)
         results = [
@@ -3319,7 +3326,7 @@ class TestOrphanedRuns:
         assert report.n_archived_orphans == 1
         assert report.archived_orphan_cost_usd == 7.0
 
-    def test_an_orphan_with_no_results_is_reported_at_zero_not_omitted(self):
+    def test_an_orphan_with_no_results_is_reported_at_zero_not_omitted(self) -> None:
         """A run that produced nothing is still unclaimed, and still a finding."""
         run = make_eval_run()
 
@@ -3328,7 +3335,7 @@ class TestOrphanedRuns:
         assert [row.cost_usd for row in report.orphaned_runs] == [0.0]
         assert [row.n_results for row in report.orphaned_runs] == [0]
 
-    def test_rows_are_in_creation_order(self):
+    def test_rows_are_in_creation_order(self) -> None:
         late = make_eval_run(created_at="2026-07-09T00:00:00Z")
         early = make_eval_run(created_at="2026-07-01T00:00:00Z")
 
@@ -3348,7 +3355,7 @@ class TestProgramBudgetComposition:
     UNPRICED = ["candidate", "inner_agent", "judge", "simulator"]
     PRICED = ["candidate", "inner_agent", "judge", "simulator", "external"]
 
-    def test_a_total_spanning_two_conventions_names_both(self):
+    def test_a_total_spanning_two_conventions_names_both(self) -> None:
         early = make_eval_run(status="completed", created_at="2026-07-01T00:00:00Z")
         late = make_eval_run(status="completed", created_at="2026-08-01T00:00:00Z")
         results = [
@@ -3363,7 +3370,7 @@ class TestProgramBudgetComposition:
         assert by_run[early.id].cost_compositions == [self.UNPRICED]
         assert by_run[late.id].cost_compositions == [self.PRICED]
 
-    def test_a_uniform_corpus_reports_one_composition(self):
+    def test_a_uniform_corpus_reports_one_composition(self) -> None:
         """One entry is the honest answer for a total whose parts all mean the same thing."""
         run = make_eval_run(status="completed", created_at="2026-07-01T00:00:00Z")
         results = [
@@ -3379,7 +3386,7 @@ class TestProgramBudgetComposition:
 class TestExport:
     """The projection's flat rows serialize to CSV/JSON without losing a coordinate."""
 
-    def test_csv_carries_every_declared_coordinate_as_a_column(self):
+    def test_csv_carries_every_declared_coordinate_as_a_column(self) -> None:
         run, result = _run_with_results(judge_model="judge-a", simulator_model="sim-b")
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
@@ -3411,7 +3418,7 @@ class TestExport:
         assert all(row["judge_model"] == "judge-a" for row in rows)
         assert all(row["simulator_model"] == "sim-b" for row in rows)
 
-    def test_open_factor_keys_flatten_to_their_own_columns(self):
+    def test_open_factor_keys_flatten_to_their_own_columns(self) -> None:
         """A bake-off's varied knob is a first-class pandas column, not a nested blob."""
         run, result = _run_with_results(**_overlaid(prompt_style="verbose", field_aliases={"vendor_name": "supplier"}))
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
@@ -3425,7 +3432,7 @@ class TestExport:
         rows = list(reader)
         assert rows[0]["extractor.prompt_style"] == "verbose"
 
-    def test_a_null_value_is_a_blank_cell_not_a_zero(self):
+    def test_a_null_value_is_a_blank_cell_not_a_zero(self) -> None:
         """An unmeasured observation must export as empty, ingesting to NaN — never a fabricated 0."""
         # An infra-excluded result composites to None, so its composite row carries no value.
         run, _ = _run_with_results()
@@ -3437,7 +3444,7 @@ class TestExport:
 
         assert rows["composite"]["value"] == "", "an unmeasured composite must be blank, not 0"
 
-    def test_a_run_without_a_factor_leaves_that_column_blank(self):
+    def test_a_run_without_a_factor_leaves_that_column_blank(self) -> None:
         """Columns stay aligned across rows even when only some runs carried an override — the pandas ingest contract."""
         with_factor, r1 = _run_with_results(**_overlaid(prompt_style="terse"))
         without_factor, r2 = _run_with_results(subject_id="ent-maple")
@@ -3454,7 +3461,7 @@ class TestExport:
         blanks = [row for row in rows if row["run_id"] == without_factor.id]
         assert blanks and all(row["extractor.prompt_style"] == "" for row in blanks)
 
-    def test_csv_neutralizes_a_formula_injection_in_a_user_authored_field(self):
+    def test_csv_neutralizes_a_formula_injection_in_a_user_authored_field(self) -> None:
         """A leading =/+/-/@ in an operator-authored override can't smuggle a spreadsheet formula."""
         run, result = _run_with_results(**_overlaid(instructions="=cmd|'/C calc'!A1"))
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
@@ -3465,7 +3472,7 @@ class TestExport:
         # A formula-triggering overlay value must be quoted to text, not written raw.
         assert rows[0]["extractor.instructions"] == "'=cmd|'/C calc'!A1"
 
-    def test_csv_safe_quotes_formula_triggers_but_preserves_numbers(self):
+    def test_csv_safe_quotes_formula_triggers_but_preserves_numbers(self) -> None:
         """The guard forces formulas to text yet leaves legitimate numbers verbatim for pandas."""
 
         run, result = _run_with_results()
@@ -3502,7 +3509,7 @@ class TestExport:
         assert exported_factor("-0.5") == "-0.5"
         assert exported_factor("") == ""
 
-    def test_json_export_round_trips_the_whole_projection(self):
+    def test_json_export_round_trips_the_whole_projection(self) -> None:
         run, result = _run_with_results(judge_model="judge-a")
         projection = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None)
 
@@ -3513,13 +3520,13 @@ class TestExport:
         # Exclusions travel with the rows, so an all-excluded corpus never reads as empty.
         assert "exclusions" in json.loads(body)
 
-    def test_csv_serialization_matches_the_shared_helper(self):
+    def test_csv_serialization_matches_the_shared_helper(self) -> None:
         run, result = _run_with_results()
         projection = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None)
 
         assert serialize_export(projection, fmt="csv") == export_records_csv(projection.records)
 
-    def test_an_unknown_format_is_refused_not_defaulted(self):
+    def test_an_unknown_format_is_refused_not_defaulted(self) -> None:
         run, result = _run_with_results()
         projection = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None)
 
@@ -3576,7 +3583,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
         return list(csv.DictReader(io.StringIO(serialize_export(projection, fmt="csv"))))
 
-    def test_a_reader_can_name_the_case_this_arm_missed(self):
+    def test_a_reader_can_name_the_case_this_arm_missed(self) -> None:
         """The whole defect, stated as the question that could not be answered."""
         run, results = self._code_graded()
 
@@ -3589,7 +3596,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         ]
         assert missed == [self.WRONG]
 
-    def test_the_grade_is_one_row_per_observation_so_its_mean_is_the_arms_rate(self):
+    def test_the_grade_is_one_row_per_observation_so_its_mean_is_the_arms_rate(self) -> None:
         """Repeating it on every row of a result would multiply every spreadsheet mean by the row count."""
         run, results = self._code_graded()
 
@@ -3600,7 +3607,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         assert all(row["metric"] == "composite" for row in graded), "and it is the result's quality row"
         assert sum(float(row["host_measure:field_accuracy"]) for row in graded) / len(graded) == 0.5
 
-    def test_a_second_graded_axis_is_another_column_and_not_another_shape(self):
+    def test_a_second_graded_axis_is_another_column_and_not_another_shape(self) -> None:
         """The host catalogue is open, so a kind that grades on two axes must cost no export work."""
         run, results = self._code_graded()
 
@@ -3609,7 +3616,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         assert "host_measure:parse_failure_rate" in rows[0]
         assert "host_measures" not in rows[0], "the open map must flatten, never appear as a blob column"
 
-    def test_a_code_graded_row_is_distinguishable_from_a_judged_one_rather_than_silently_emptier(self):
+    def test_a_code_graded_row_is_distinguishable_from_a_judged_one_rather_than_silently_emptier(self) -> None:
         """Both composites are null for an unscored judge run; only one of them carries a grade."""
         code_run, code_results = self._code_graded()
         judged_run, judged_result = _run_with_results(subject_id="ent-other")
@@ -3625,7 +3632,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         assert judged["value"] != "" and judged["host_measure:field_accuracy"] == ""
         assert code["value"] == "" and code["host_measure:field_accuracy"] == "0.0"
 
-    def test_a_judge_graded_export_is_unchanged(self):
+    def test_a_judge_graded_export_is_unchanged(self) -> None:
         """No grade column exists at all when nothing carries one, so saved pipelines keep their header."""
         run, result = _run_with_results()
 
@@ -3639,7 +3646,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
 
         assert not [column for column in (header or []) if column.startswith("host_measure:")]
 
-    def test_the_grade_rides_the_json_export_too(self):
+    def test_the_grade_rides_the_json_export_too(self) -> None:
         """CSV and JSON are one seam, so the grade cannot reach only the flat form."""
         run, results = self._code_graded()
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -3650,7 +3657,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
         graded = [r for r in reparsed.records if r.host_measures]
         assert {r.test_case_id for r in graded} == {self.RIGHT, self.WRONG}
 
-    def test_no_other_row_may_carry_the_grade(self):
+    def test_no_other_row_may_carry_the_grade(self) -> None:
         """Structural, because a duplicate would be silently wrong rather than visibly so."""
         with pytest.raises(ValidationError, match="the composite row is the one row per result"):
             ScoreRecord(
@@ -3667,7 +3674,7 @@ class TestExportCarriesACodeGradedRunsOwnGrade:
                 outcome="ok",
             )
 
-    def test_the_grade_map_is_refused_as_a_pivot_axis(self):
+    def test_the_grade_map_is_refused_as_a_pivot_axis(self) -> None:
         """Grouping by a cell's own measurement partitions the corpus by its answer."""
         run, results = self._code_graded()
 
@@ -3698,7 +3705,7 @@ class TestCostEstimate:
         ]
         return run, results
 
-    def test_cost_is_matched_to_the_proposed_template_when_one_is_given(self):
+    def test_cost_is_matched_to_the_proposed_template_when_one_is_given(self) -> None:
         """A template fixes the test cases, so it drives cost harder than any other lever.
 
         Pooling across templates misprices a specific proposal in whichever direction the
@@ -3726,7 +3733,7 @@ class TestCostEstimate:
         )
         assert dear.cells[0].predicted.value == pytest.approx(1.00)
 
-    def test_an_ad_hoc_run_is_no_basis_for_any_proposed_template(self):
+    def test_an_ad_hoc_run_is_no_basis_for_any_proposed_template(self) -> None:
         """A run built from explicit test cases carries ``template_id=None``, so it matches none.
 
         Excluded rather than pooled: its cost is evidence about work the proposed sweep
@@ -3755,7 +3762,7 @@ class TestCostEstimate:
         assert estimate.cells[0].basis == "no_history"
         assert estimate.n_uncovered_models == 1
 
-    def test_a_proposed_sweep_returns_an_interval_not_a_point(self):
+    def test_a_proposed_sweep_returns_an_interval_not_a_point(self) -> None:
         """The acceptance criterion: a real cost distribution yields a band, not a single number."""
         run, results = self._history("sonnet", [0.10, 0.20, 0.30])
 
@@ -3770,7 +3777,7 @@ class TestCostEstimate:
         assert cell.predicted.interval_low < cell.predicted.value < cell.predicted.interval_high
         assert estimate.total_interval_low < estimate.total_estimated_cost < estimate.total_interval_high
 
-    def test_cost_is_matched_to_the_proposed_cassette_mode(self):
+    def test_cost_is_matched_to_the_proposed_cassette_mode(self) -> None:
         """A replay estimate rests on replay history or admits none — it never borrows a live run's cost."""
         live_run, live_results = self._history("sonnet", [1.00, 1.00], cassette_mode="off")
 
@@ -3790,7 +3797,7 @@ class TestCostEstimate:
         assert estimate.total_estimated_cost is None
         assert estimate.n_uncovered_models == 1
 
-    def test_a_model_with_no_history_is_uncovered_not_zero(self):
+    def test_a_model_with_no_history_is_uncovered_not_zero(self) -> None:
         run, results = self._history("sonnet", [0.10, 0.10])
 
         estimate = compute_estimate_cost(
@@ -3804,7 +3811,7 @@ class TestCostEstimate:
         # The covered model still contributes; the total prices only what it could.
         assert estimate.total_estimated_cost == pytest.approx(by_model["sonnet"].predicted.value)
 
-    def test_a_single_historical_observation_has_unknown_spread_not_zero(self):
+    def test_a_single_historical_observation_has_unknown_spread_not_zero(self) -> None:
         run, results = self._history("sonnet", [0.10])
 
         estimate = compute_estimate_cost(
@@ -3817,7 +3824,7 @@ class TestCostEstimate:
         # One sample: the point stands, the spread is unknown — never a false ± 0.
         assert (cell.predicted.interval_low, cell.predicted.interval_high) == (None, None)
 
-    def test_the_subject_filter_narrows_the_historical_basis(self):
+    def test_the_subject_filter_narrows_the_historical_basis(self) -> None:
         maple_run, maple_results = self._history("sonnet", [0.10, 0.10], subject="ent-maple")
         bea_run, bea_results = self._history("sonnet", [5.00, 5.00], subject="ent-bea")
 
@@ -3834,7 +3841,7 @@ class TestCostEstimate:
         # Only Maple's cheap history counts — Bea's expensive runs are excluded.
         assert estimate.cells[0].mean_cost_per_observation == pytest.approx(0.10)
 
-    def test_the_basis_discloses_the_compositions_its_mean_was_drawn_across(self):
+    def test_the_basis_discloses_the_compositions_its_mean_was_drawn_across(self) -> None:
         """A mean pooled over two cost conventions is not one distribution, and looks like one.
 
         The estimate deliberately does NOT match history to composition the way it matches
@@ -3857,7 +3864,7 @@ class TestCostEstimate:
             ["candidate", "inner_agent", "judge", "simulator", "external"],
         ]
 
-    def test_a_two_observation_basis_publishes_no_band_at_all(self):
+    def test_a_two_observation_basis_publishes_no_band_at_all(self) -> None:
         """The failure, at illustrative numbers.
 
         Two costs from one k=1 run, 2.5% apart, price the identical k=3 sweep of those
@@ -3880,7 +3887,7 @@ class TestCostEstimate:
         assert (cell.predicted.interval_low, cell.predicted.interval_high) == (None, None)
         assert (estimate.total_interval_low, estimate.total_interval_high) == (None, None)
 
-    def test_a_near_identical_pair_never_bounds_out_a_cost_twelve_percent_away(self):
+    def test_a_near_identical_pair_never_bounds_out_a_cost_twelve_percent_away(self) -> None:
         """Whatever an n=2 basis publishes must not exclude a plausible outcome.
 
         Stated as the property rather than as "no band", so it keeps holding under any
@@ -3901,7 +3908,7 @@ class TestCostEstimate:
             f"excluding a cost only 12% below its own point estimate"
         )
 
-    def test_three_observations_is_the_boundary_at_which_a_band_appears(self):
+    def test_three_observations_is_the_boundary_at_which_a_band_appears(self) -> None:
         """The rule is the basis SIZE, not the spread — both bases below span the same range.
 
         Two observations yield one difference and no way to tell signal from accident;
@@ -3929,7 +3936,7 @@ class TestCostEstimate:
             < three.cells[0].predicted.interval_high
         )
 
-    def test_the_band_predicts_the_sweep_rather_than_locating_the_historical_mean(self):
+    def test_the_band_predicts_the_sweep_rather_than_locating_the_historical_mean(self) -> None:
         """A confidence interval on the mean is a narrower claim than the caller is making.
 
         ``1.96 * n_obs * SEM`` — the construction this replaces — says how precisely the
@@ -3957,7 +3964,7 @@ class TestCostEstimate:
         assert (cell.predicted.interval_low, cell.predicted.interval_high) == pytest.approx(expected)
         assert cell.band_basis is not None and "lognormal" in cell.band_basis
 
-    def test_a_priced_cell_without_a_band_leaves_the_whole_total_unbracketed(self):
+    def test_a_priced_cell_without_a_band_leaves_the_whole_total_unbracketed(self) -> None:
         """Summing a banded cell with an unbanded one narrows the envelope on the thinnest cell.
 
         The previous code contributed an unbanded cell's bare point to both total bounds,
@@ -3982,11 +3989,11 @@ class TestCostEstimate:
         assert estimate.total_estimated_cost == pytest.approx(0.30)
         assert (estimate.total_interval_low, estimate.total_interval_high) == (None, None)
 
-    def test_an_empty_model_list_is_refused(self):
+    def test_an_empty_model_list_is_refused(self) -> None:
         with pytest.raises(CostEstimateError, match="no models proposed"):
             compute_estimate_cost([], [], models=[], k_runs=1, n_test_cases=1, profile=_JUDGED_HOST)
 
-    def test_a_non_positive_grid_is_refused(self):
+    def test_a_non_positive_grid_is_refused(self) -> None:
         run, results = self._history("sonnet", [0.10, 0.10])
 
         with pytest.raises(CostEstimateError, match=">= 1"):
@@ -3996,7 +4003,7 @@ class TestCostEstimate:
 class TestPinnedRoleBadge:
     """A judge or simulator change confounds a candidate comparison."""
 
-    def test_differing_judge_model_is_badged(self):
+    def test_differing_judge_model_is_badged(self) -> None:
         run_a, _ = _run_with_results(judge_model="judge-1")
         run_b, _ = _run_with_results(judge_model="judge-2")
 
@@ -4005,7 +4012,7 @@ class TestPinnedRoleBadge:
             in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_differing_simulator_model_is_badged(self):
+    def test_differing_simulator_model_is_badged(self) -> None:
         run_a, _ = _run_with_results(simulator_model="sim-1")
         run_b, _ = _run_with_results(simulator_model="sim-2")
 
@@ -4014,7 +4021,7 @@ class TestPinnedRoleBadge:
             in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_matching_roles_are_not_badged(self):
+    def test_matching_roles_are_not_badged(self) -> None:
         run_a, _ = _run_with_results(judge_model="j", simulator_model="s")
         run_b, _ = _run_with_results(judge_model="j", simulator_model="s")
 
@@ -4023,7 +4030,7 @@ class TestPinnedRoleBadge:
             not in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_dims_scored_by_different_models_are_badged_despite_matching_pins(self):
+    def test_dims_scored_by_different_models_are_badged_despite_matching_pins(self) -> None:
         """The confound the pins cannot see: same judge_model, different actual scorers.
 
         Under the cascade a dim whose ``JudgeConfig`` names a model is scored by
@@ -4050,7 +4057,7 @@ class TestPinnedRoleBadge:
             in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_a_judge_ab_is_badged_despite_matching_pins_and_matching_models(self):
+    def test_a_judge_ab_is_badged_despite_matching_pins_and_matching_models(self) -> None:
         """The same argument one step further, and the pair this surface most has to catch.
 
         These two runs agree on every pin AND on which model scored every dim — only
@@ -4077,7 +4084,7 @@ class TestPinnedRoleBadge:
             in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_an_unrecorded_config_set_is_not_badged_as_an_observed_difference(self):
+    def test_an_unrecorded_config_set_is_not_badged_as_an_observed_difference(self) -> None:
         """Same rule the attribution arm follows: absence is not evidence.
 
         A run that recorded no set says nothing about its configuration, so grouping it
@@ -4093,7 +4100,7 @@ class TestPinnedRoleBadge:
             not in compute_comparison_sets([recorded, unrecorded], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_two_runs_that_both_recorded_an_empty_config_set_agree(self):
+    def test_two_runs_that_both_recorded_an_empty_config_set_agree(self) -> None:
         """``{}`` is a recording, so it participates in the comparison rather than opting out.
 
         Treating it as absent would drop both runs from the arm — harmless on its
@@ -4108,7 +4115,7 @@ class TestPinnedRoleBadge:
         assert BADGE_ROLES_DIFFER not in compute_comparison_sets([a, b], profile=_JUDGED_HOST).comparison_sets[0].badges
         assert BADGE_ROLES_DIFFER in compute_comparison_sets([a, b, c], profile=_JUDGED_HOST).comparison_sets[0].badges
 
-    def test_config_ordering_does_not_fake_a_role_difference(self):
+    def test_config_ordering_does_not_fake_a_role_difference(self) -> None:
         """The pinned set is a mapping; iteration order is not evidence of anything."""
         shared = {"judge_model": "j", "simulator_model": "s"}
         a, _ = _run_with_results(judge_config_ids={"reply.warmth": "cfg-1", "reply.tone": "cfg-2"}, **shared)
@@ -4116,7 +4123,7 @@ class TestPinnedRoleBadge:
 
         assert BADGE_ROLES_DIFFER not in compute_comparison_sets([a, b], profile=_JUDGED_HOST).comparison_sets[0].badges
 
-    def test_dim_ordering_does_not_fake_a_role_difference(self):
+    def test_dim_ordering_does_not_fake_a_role_difference(self) -> None:
         """Attribution is a mapping; iteration order is not evidence of anything."""
         run_a, _ = _run_with_results(
             judge_model="j",
@@ -4136,7 +4143,7 @@ class TestPinnedRoleBadge:
             not in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_an_absent_map_is_not_badged_as_an_observed_difference(self):
+    def test_an_absent_map_is_not_badged_as_an_observed_difference(self) -> None:
         """Not knowing what scored a run is not evidence that it scored differently.
 
         A run with no recorded attribution grouped with one whose judges were in fact
@@ -4164,7 +4171,7 @@ class TestPinnedRoleBadge:
             "the undecidable case still has to be reported, just not as a difference"
         )
 
-    def test_a_reconstruction_cannot_evidence_a_role_difference(self):
+    def test_a_reconstruction_cannot_evidence_a_role_difference(self) -> None:
         """A derived map may be displayed, never used to assert comparability.
 
         ``derive_context_identity`` refuses to hash a reconstruction because it is
@@ -4198,7 +4205,7 @@ class TestPinnedRoleBadge:
 class TestIncompleteContextBadge:
     """An unrecorded role pin makes every other badge come out clean."""
 
-    def test_a_pair_that_never_recorded_its_judge_is_badged_incomplete(self):
+    def test_a_pair_that_never_recorded_its_judge_is_badged_incomplete(self) -> None:
         """The regression: two blanks compare EQUAL, so silence read as "nothing to caveat".
 
         Both runs inherited a judge before the pin was resolved, so both store None.
@@ -4214,7 +4221,7 @@ class TestIncompleteContextBadge:
 
         assert badges == [BADGE_CONTEXT_INCOMPLETE]
 
-    def test_fully_recorded_runs_are_not_badged_incomplete(self):
+    def test_fully_recorded_runs_are_not_badged_incomplete(self) -> None:
         run_a, run_b = _stamped_run(), _stamped_run()
 
         assert (
@@ -4222,7 +4229,7 @@ class TestIncompleteContextBadge:
             not in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_one_incomplete_run_badges_the_whole_group(self):
+    def test_one_incomplete_run_badges_the_whole_group(self) -> None:
         """A group is only as reconstructable as its least-recorded member."""
         complete = _stamped_run()
         incomplete, _ = _run_with_results(judge_model=None, simulator_model=None)
@@ -4232,7 +4239,7 @@ class TestIncompleteContextBadge:
             in compute_comparison_sets([complete, incomplete], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_the_grouping_compares_resolved_identity_not_the_stored_field(self):
+    def test_the_grouping_compares_resolved_identity_not_the_stored_field(self) -> None:
         """One decision point for stamped-vs-derived, or the surfaces disagree.
 
         A run stamped under an older predicate keeps a stored key that predicate no
@@ -4264,7 +4271,7 @@ class TestToolConfigBadge:
         subject = make_subject("ent-maple", "Maple", components={"resolved_tool_configs": resolved})
         return make_eval_run(subject_snapshot=subject, judge_model="j", simulator_model="s")
 
-    def test_a_swept_lever_is_badged(self):
+    def test_a_swept_lever_is_badged(self) -> None:
         run_a = self._run(planner={"max_search_calls": 6, "token_budget": 12288})
         run_b = self._run(planner={"max_search_calls": 10, "token_budget": 20000})
 
@@ -4273,7 +4280,7 @@ class TestToolConfigBadge:
             in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_replicates_are_not_badged(self):
+    def test_replicates_are_not_badged(self) -> None:
         run_a = self._run(planner={"max_search_calls": 6})
         run_b = self._run(planner={"max_search_calls": 6})
 
@@ -4282,7 +4289,7 @@ class TestToolConfigBadge:
             not in compute_comparison_sets([run_a, run_b], profile=_JUDGED_HOST).comparison_sets[0].badges
         )
 
-    def test_a_swept_set_is_otherwise_badge_silent(self):
+    def test_a_swept_set_is_otherwise_badge_silent(self) -> None:
         """The regression this badge exists for, stated as the absence it filled.
 
         Tool config composes the VARIANT key, not the context key — correctly, since
@@ -4298,7 +4305,7 @@ class TestToolConfigBadge:
 
         assert badges == [BADGE_TOOL_CONFIG_DIFFERS]
 
-    def test_an_override_restating_the_subject_value_is_not_a_difference(self):
+    def test_an_override_restating_the_subject_value_is_not_a_difference(self) -> None:
         """Resolved configs are compared, not the overlays that produced them.
 
         A run whose override sets a lever to the value the subject already carried
@@ -4319,10 +4326,10 @@ class TestToolConfigBadge:
 class TestCassetteModeDisclosure:
     """The sentence itself — what it says, and the two spans it distinguishes."""
 
-    def test_a_uniform_set_discloses_nothing(self):
+    def test_a_uniform_set_discloses_nothing(self) -> None:
         assert cassette_mode_disclosure({"a": "capture", "b": "capture"}) is None
 
-    def test_two_replayed_arms_are_uniform_and_disclose_nothing(self):
+    def test_two_replayed_arms_are_uniform_and_disclose_nothing(self) -> None:
         """The substitution is on both sides, so the delta between them is honest.
 
         Worth its own test because the instinct is that any `replay` deserves a
@@ -4333,11 +4340,11 @@ class TestCassetteModeDisclosure:
         """
         assert cassette_mode_disclosure({"a": "replay", "b": "replay"}) is None
 
-    def test_one_run_cannot_disagree_with_itself(self):
+    def test_one_run_cannot_disagree_with_itself(self) -> None:
         assert cassette_mode_disclosure({"a": "replay"}) is None
         assert cassette_mode_disclosure({}) is None
 
-    def test_a_replayed_span_names_the_substitution_and_the_quality_confound(self):
+    def test_a_replayed_span_names_the_substitution_and_the_quality_confound(self) -> None:
         """Cost is the half everyone expects; quality is the half that gets missed.
 
         A replayed delivery is bound by ORDINAL rather than by query, so a replayed
@@ -4354,7 +4361,7 @@ class TestCassetteModeDisclosure:
         assert "QUALITY is confounded" in sentence
         assert "re-served a recording" in sentence
 
-    def test_an_off_versus_capture_span_does_not_claim_a_substitution(self):
+    def test_an_off_versus_capture_span_does_not_claim_a_substitution(self) -> None:
         """Both ran the third party live. Only `replay` substitutes.
 
         The badge fires on any span, because a span IS a difference in a condition
@@ -4382,19 +4389,19 @@ class TestCassetteBadge:
         snapshot = make_subject("ent-maple", "Maple")
         return make_eval_run(subject_snapshot=snapshot, judge_model="j", simulator_model="s", cassette_mode=mode)
 
-    def test_a_capture_replay_pair_is_badged(self):
+    def test_a_capture_replay_pair_is_badged(self) -> None:
         group = compute_comparison_sets(
             [self._run("capture"), self._run("replay")], profile=_JUDGED_HOST
         ).comparison_sets[0]
 
         assert BADGE_CASSETTE_MODE_DIFFERS in group.badges
 
-    def test_replicates_are_not_badged(self):
+    def test_replicates_are_not_badged(self) -> None:
         group = compute_comparison_sets([self._run("off"), self._run("off")], profile=_JUDGED_HOST).comparison_sets[0]
 
         assert BADGE_CASSETTE_MODE_DIFFERS not in group.badges
 
-    def test_off_is_not_capture(self):
+    def test_off_is_not_capture(self) -> None:
         """The third state. `off` and `capture` are both live, and both are recorded values."""
         group = compute_comparison_sets([self._run("off"), self._run("capture")], profile=_JUDGED_HOST).comparison_sets[
             0
@@ -4402,7 +4409,7 @@ class TestCassetteBadge:
 
         assert BADGE_CASSETTE_MODE_DIFFERS in group.badges
 
-    def test_the_badge_and_its_sentence_cannot_come_apart(self):
+    def test_the_badge_and_its_sentence_cannot_come_apart(self) -> None:
         """One predicate, two outputs — the discipline the window badge already follows.
 
         A flag with no sentence behind it is the less useful half of the pair here,
@@ -4421,7 +4428,7 @@ class TestCassetteBadge:
         assert badged.cassette_mode_disclosure is not None
         assert clean.cassette_mode_disclosure is None
 
-    def test_the_comparison_is_disclosed_and_never_suppressed(self):
+    def test_the_comparison_is_disclosed_and_never_suppressed(self) -> None:
         """Capture-versus-replay is sometimes exactly what an operator meant to run.
 
         The requirement is disclosure, not refusal — so the group still forms, still
@@ -4438,11 +4445,11 @@ class TestCassetteBadge:
 class TestDifferenceWasDeclaredAtLaunch:
     """The generic half — the rule that extracts, tested apart from its vocabulary."""
 
-    def test_every_arm_declaring_is_a_declared_difference(self):
+    def test_every_arm_declaring_is_a_declared_difference(self) -> None:
         assert difference_was_declared_at_launch(["chosen", "chosen"]) is True
 
     @pytest.mark.parametrize("origins", [["chosen", "inherited"], ["subject", "subject"], ["chosen", None]])
-    def test_one_arm_that_inherited_makes_the_whole_difference_undeclared(self, origins):
+    def test_one_arm_that_inherited_makes_the_whole_difference_undeclared(self, origins) -> None:
         """Conservative by construction.
 
         A comparison cannot claim to be sweeping an axis one of its arms was never
@@ -4450,7 +4457,7 @@ class TestDifferenceWasDeclaredAtLaunch:
         """
         assert difference_was_declared_at_launch(origins) is False
 
-    def test_nothing_declared_is_never_read_as_a_declaration(self):
+    def test_nothing_declared_is_never_read_as_a_declaration(self) -> None:
         """An empty set is silence, and silence is not consent to call it a sweep."""
         assert difference_was_declared_at_launch([]) is False
 
@@ -4495,7 +4502,7 @@ class TestComparisonSetsScope:
         ]
         return members, outsiders
 
-    def test_a_badge_earned_only_by_non_members_does_not_fire_for_the_scoped_set(self):
+    def test_a_badge_earned_only_by_non_members_does_not_fire_for_the_scoped_set(self) -> None:
         """Acceptance: scoped to the campaign, `cassette_mode_differs` does not fire."""
         members, outsiders = self._campaign_shaped_group()
         runs = [*members, *outsiders]
@@ -4510,7 +4517,7 @@ class TestComparisonSetsScope:
         assert scoped.cassette_mode_disclosure is None
         assert scoped.run_ids == sorted(run.id for run in members)
 
-    def test_a_badge_the_subset_earns_still_fires(self):
+    def test_a_badge_the_subset_earns_still_fires(self) -> None:
         """Acceptance: scoping narrows the population, it does not soften the badging.
 
         A scope that suppressed every caveat would be worse than the defect it
@@ -4539,7 +4546,7 @@ class TestComparisonSetsScope:
         for outsider in outsiders:
             assert outsider.id not in scoped.measurement_window_disclosure
 
-    def test_unscoped_behaviour_is_unchanged(self):
+    def test_unscoped_behaviour_is_unchanged(self) -> None:
         """Acceptance: `scope_run_ids=None` is today's answer, field for field."""
         members, outsiders = self._campaign_shaped_group()
         runs = [*members, *outsiders]
@@ -4548,7 +4555,7 @@ class TestComparisonSetsScope:
             runs, scope_run_ids=None, profile=_JUDGED_HOST
         )
 
-    def test_a_scope_narrows_the_case_basis_the_group_reports(self):
+    def test_a_scope_narrows_the_case_basis_the_group_reports(self) -> None:
         """Every derived quantity narrows with the population, not just the badges.
 
         The intersection and the case-set fingerprints are computed from the same
@@ -4567,7 +4574,7 @@ class TestComparisonSetsScope:
         assert scoped.case_sets[0].run_ids == ["member-0", "member-1"]
         assert scoped.shared_test_case_ids == ["tc-1"]
 
-    def test_a_group_with_no_in_scope_member_is_not_emitted(self):
+    def test_a_group_with_no_in_scope_member_is_not_emitted(self) -> None:
         """A group holding nothing the caller asked about has nothing to tell them."""
         maple = self._run("maple-run", subject="ent-maple")
         bea = self._run("bea-run", subject="ent-bea")
@@ -4577,7 +4584,7 @@ class TestComparisonSetsScope:
         assert [group.subject_id for group in scoped.comparison_sets] == ["ent-maple"]
         assert scoped.comparison_sets[0].run_ids == ["maple-run"]
 
-    def test_an_empty_scope_is_a_scope_and_not_an_absent_one(self):
+    def test_an_empty_scope_is_a_scope_and_not_an_absent_one(self) -> None:
         """`[]` asks about nothing; `None` asks about everything. They must not merge.
 
         The falsy-empty trap this module refuses everywhere else — an empty
@@ -4590,7 +4597,9 @@ class TestComparisonSetsScope:
         assert compute_comparison_sets(runs, scope_run_ids=[], profile=_JUDGED_HOST).comparison_sets == []
         assert compute_comparison_sets(runs, scope_run_ids=None, profile=_JUDGED_HOST).comparison_sets != []
 
-    def test_a_scope_naming_runs_that_are_not_here_says_so_rather_than_answering_empty(self, caplog):
+    def test_a_scope_naming_runs_that_are_not_here_says_so_rather_than_answering_empty(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """A campaign whose members left the scope must not read as "not comparable".
 
         `campaign_get` reports exactly this state — "attached but absent from that
@@ -4607,7 +4616,7 @@ class TestComparisonSetsScope:
         assert result.comparison_sets[0].run_ids == ["present"]
         assert "scope named 2 run(s) not among the supplied runs: gone-a, gone-b" in caplog.text
 
-    def test_a_scoped_call_names_only_the_runs_the_caller_asked_about(self):
+    def test_a_scoped_call_names_only_the_runs_the_caller_asked_about(self) -> None:
         """A scope answers the question that was asked, and says what it left out.
 
         This used to assert the same property over a retired exclusion field — a count of
@@ -4630,7 +4639,7 @@ class TestComparisonSetsScope:
 # =============================================================================
 
 
-def _fr_run(*, subject_id="ent-maple", subject_label="Maple", **overrides):
+def _fr_run(*, subject_id: str = "ent-maple", subject_label: str = "Maple", **overrides: Any) -> EvalRun:
     """Build a run for a named subject, for frontier tests.
 
     :param subject_id: Subject id for the run's subject snapshot.
@@ -4643,20 +4652,20 @@ def _fr_run(*, subject_id="ent-maple", subject_label="Maple", **overrides):
 
 
 def _fr_result(
-    run,
+    run: EvalRun,
     *,
-    model,
-    variant_key,
-    test_case_id,
-    passes=True,
-    roles=None,
-    total_ms=None,
-    candidate_error=None,
-    infra_error=None,
-    k_iteration=1,
-    substituted_delivery=False,
-    identity_version=None,
-):
+    model: str,
+    variant_key: str | None,
+    test_case_id: str,
+    passes: bool = True,
+    roles: dict[str, float] | None = None,
+    total_ms: float | None = None,
+    candidate_error: str | None = None,
+    infra_error: str | None = None,
+    k_iteration: int = 1,
+    substituted_delivery: bool = False,
+    identity_version: int | None = None,
+) -> EvalResult:
     """One result wired to ``run`` with pass, cost, and latency controlled.
 
     :param run: The run this result belongs to.
@@ -4726,7 +4735,7 @@ def _fr_result(
     return make_eval_result(**overrides)
 
 
-def _point_by_model(subject_frontier, model):
+def _point_by_model(subject_frontier: SubjectFrontier, model: str) -> FrontierPoint:
     """The single point for ``model`` in a subject frontier."""
     matches = [p for p in subject_frontier.points if p.model == model]
     assert len(matches) == 1, f"expected one {model!r} point, got {len(matches)}"
@@ -4768,7 +4777,7 @@ class TestHistoryLatencyExcludesTheHarnesssOwnCells:
     wall-clock it had reached, so pooling it posts an improvement that describes the harness.
     """
 
-    def test_an_infra_excluded_cell_is_not_a_latency_observation(self):
+    def test_an_infra_excluded_cell_is_not_a_latency_observation(self) -> None:
         run = _fr_run()
         healthy = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1", total_ms=1000.0)
         broken = _fr_result(
@@ -4790,7 +4799,7 @@ class TestHistoryLatencyExcludesTheHarnesssOwnCells:
             f"the harness's truncated wall-clock entered a regression series (got {points[0].value})"
         )
 
-    def test_a_candidate_failure_that_took_a_turn_is_still_a_latency_observation(self):
+    def test_a_candidate_failure_that_took_a_turn_is_still_a_latency_observation(self) -> None:
         """The guard must not widen into 'any error' — a slow candidate failure is real data.
 
         A failure that took a turn — here a model call the cell's deadline struck while it was pending — ran
@@ -4827,7 +4836,7 @@ class TestHistoryLatencyExcludesTheHarnesssOwnCells:
 class TestHistoryCostKeepsEveryDollarSpent:
     """``cost_usd`` is measuring spend: a billed refusal and a faulted cell were both paid for, and both stay."""
 
-    def test_a_billed_refusal_and_a_faulted_cell_are_both_kept(self):
+    def test_a_billed_refusal_and_a_faulted_cell_are_both_kept(self) -> None:
         run = _fr_run()
         answered = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1").model_copy(
             update={"cost_usd": 0.004}
@@ -4846,7 +4855,7 @@ class TestHistoryCostKeepsEveryDollarSpent:
         points = [point for series in result.series for point in series.points]
         assert points[0].value == pytest.approx((0.004 + 0.0001 + 0.002) / 3)
 
-    def test_the_cost_pivot_and_the_run_summary_read_the_same_spend_as_the_history(self):
+    def test_the_cost_pivot_and_the_run_summary_read_the_same_spend_as_the_history(self) -> None:
         """All three measure spend, so one corpus gives one figure."""
         run = _fr_run()
         answered = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1").model_copy(
@@ -4897,7 +4906,7 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
     `EvalService.run_summary` — so pinning it there left this seam untested.
     """
 
-    def test_an_infra_excluded_cell_does_not_move_a_points_latency(self):
+    def test_an_infra_excluded_cell_does_not_move_a_points_latency(self) -> None:
         """The mean must be the healthy cell's alone, not the average of the two."""
         run = _fr_run()
         healthy = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1", total_ms=1000.0)
@@ -4918,7 +4927,7 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
             f"made this contestant look faster than it is (got {point.mean_total_ms})"
         )
 
-    def test_a_candidate_failure_that_took_a_turn_still_counts_toward_latency(self):
+    def test_a_candidate_failure_that_took_a_turn_still_counts_toward_latency(self) -> None:
         """The guard must not widen into 'any error', which would delete real measurements.
 
         A failure that took a turn — here a model call the cell's deadline struck while it was
@@ -4954,7 +4963,7 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
         )
         assert point.n_latency == 2
 
-    def test_a_point_whose_every_cell_was_excluded_reports_no_latency(self):
+    def test_a_point_whose_every_cell_was_excluded_reports_no_latency(self) -> None:
         """Not zero — zero is the fastest possible contestant, and would win on that axis."""
         run = _fr_run()
         broken = _fr_result(
@@ -4975,7 +4984,7 @@ class TestFrontierLatencyExcludesTheHarnesssOwnCells:
 class TestFrontierCostLeavesOutAFaultedCell:
     """#619: the frontier ranks on cost, so a cell an apparatus fault cut short must not make an arm cheaper."""
 
-    def test_a_faulted_cell_does_not_lower_a_points_cost(self):
+    def test_a_faulted_cell_does_not_lower_a_points_cost(self) -> None:
         run = _fr_run()
         whole = [
             _fr_result(run, model="m1", variant_key="vk-a", test_case_id=f"tc{i}", roles={"candidate": 0.10})
@@ -5001,7 +5010,7 @@ class TestFrontierCostComposition:
 
     UNPRICED = ["candidate", "inner_agent", "judge", "simulator"]
 
-    def test_a_point_carries_the_composition_its_cost_mean_covers(self):
+    def test_a_point_carries_the_composition_its_cost_mean_covers(self) -> None:
         run = _fr_run()
         results = [_fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1", roles={"candidate": 0.1})]
         results[0].cost_roles = self.UNPRICED
@@ -5010,7 +5019,7 @@ class TestFrontierCostComposition:
 
         assert out.subjects[0].points[0].cost_compositions == [self.UNPRICED]
 
-    def test_two_contestants_pricing_different_things_are_each_labelled(self):
+    def test_two_contestants_pricing_different_things_are_each_labelled(self) -> None:
         """Neither number is wrong; the comparison between them is, and only this shows it."""
         run = _fr_run()
         cheap = _fr_result(run, model="m1", variant_key="vk-a", test_case_id="tc1", roles={"candidate": 0.10})
@@ -5028,7 +5037,7 @@ class TestFrontierCostComposition:
 class TestFrontierSubjectPartition:
     """Two subjects are two frontiers, never one."""
 
-    def test_a_two_subject_corpus_yields_two_frontiers(self):
+    def test_a_two_subject_corpus_yields_two_frontiers(self) -> None:
         run_a = _fr_run(subject_id="ent-a", subject_label="A")
         run_b = _fr_run(subject_id="ent-b", subject_label="B")
         results = [
@@ -5041,7 +5050,7 @@ class TestFrontierSubjectPartition:
         assert [pf.subject_id for pf in result.subjects] == ["ent-a", "ent-b"]
         assert all(len(pf.points) == 1 for pf in result.subjects)
 
-    def test_same_variant_key_across_subjects_is_not_pooled(self):
+    def test_same_variant_key_across_subjects_is_not_pooled(self) -> None:
         # Two subjects that happen to share a variant_key must not merge: the
         # subject is the top partition, so each keeps its own point.
         run_a = _fr_run(subject_id="ent-a", subject_label="A")
@@ -5060,7 +5069,7 @@ class TestFrontierSubjectPartition:
 class TestFrontierGroupsByVariant:
     """A point is one variant, not one model."""
 
-    def test_two_variants_of_one_model_are_two_points(self):
+    def test_two_variants_of_one_model_are_two_points(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(run, model="sonnet", variant_key="vk-1", test_case_id="tc1", roles={"candidate": 0.1}),
@@ -5092,7 +5101,7 @@ class TestBothLensesGateOnTheIdentityVersion:
     means. So the split is the answer, and the disclosures are what make it honest.
     """
 
-    def test_one_key_under_two_predicates_is_two_frontier_points(self):
+    def test_one_key_under_two_predicates_is_two_frontier_points(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(
@@ -5118,7 +5127,7 @@ class TestBothLensesGateOnTheIdentityVersion:
         assert len(points) == 2, "two predicate versions of one key pooled as a single contestant"
         assert {p.variant_identity_version for p in points} == {9, 10}
 
-    def test_one_key_under_one_predicate_stays_one_frontier_point(self):
+    def test_one_key_under_one_predicate_stays_one_frontier_point(self) -> None:
         """The inverse direction, on one fixture: a gate that always splits also passes the test above."""
         run = _fr_run()
         results = [
@@ -5145,7 +5154,7 @@ class TestBothLensesGateOnTheIdentityVersion:
         assert len(points) == 1, "one contestant was split on a version both its observations share"
         assert points[0].variant_identity_version == 10
 
-    def test_one_key_under_two_predicates_is_two_history_series(self):
+    def test_one_key_under_two_predicates_is_two_history_series(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(run, model="sonnet", variant_key="vk-1", test_case_id="tc1", total_ms=100.0, identity_version=9),
@@ -5159,7 +5168,7 @@ class TestBothLensesGateOnTheIdentityVersion:
         assert len(result.series) == 2, "one series trended two predicate versions as one contestant"
         assert {series.variant_identity_version for series in result.series} == {9, 10}
 
-    def test_a_series_whose_older_run_recorded_its_lever_map_runs_through_the_bump(self):
+    def test_a_series_whose_older_run_recorded_its_lever_map_runs_through_the_bump(self) -> None:
         """Today's predicate over the run's recorded map reproduces the key, so the older stamp splits nothing."""
         levers: dict = {}
         key = compute_variant_key(levers)
@@ -5194,7 +5203,7 @@ class TestBothLensesGateOnTheIdentityVersion:
         assert result.identity_version_span == [IDENTITY_VERSION]
         assert result.identity_span_disclosure is None
 
-    def test_a_series_whose_older_run_recorded_no_lever_map_is_split_at_the_bump(self):
+    def test_a_series_whose_older_run_recorded_no_lever_map_is_split_at_the_bump(self) -> None:
         """Nothing verifies the older stamp, so the two stay two contestants, and the span says why."""
         before = _fr_run(identity_version=IDENTITY_VERSION - 1)
         after = _fr_run(identity_version=IDENTITY_VERSION)
@@ -5224,7 +5233,7 @@ class TestBothLensesGateOnTheIdentityVersion:
         assert len(result.series) == 2
         assert result.identity_version_span == [IDENTITY_VERSION - 1, IDENTITY_VERSION]
 
-    def test_one_key_under_one_predicate_stays_one_history_series(self):
+    def test_one_key_under_one_predicate_stays_one_history_series(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(
@@ -5239,7 +5248,7 @@ class TestBothLensesGateOnTheIdentityVersion:
 
         assert len(result.series) == 1
 
-    def test_a_dominator_is_identified_by_its_predicate_too(self):
+    def test_a_dominator_is_identified_by_its_predicate_too(self) -> None:
         """Two points sharing a model AND a key are now reachable, so the label must separate them.
 
         `FrontierDominator` exists because a dominator list of bare model names let two
@@ -5283,7 +5292,7 @@ class TestBothLensesGateOnTheIdentityVersion:
             "the dominator is indistinguishable from the row it dominates without its predicate"
         )
 
-    def test_two_points_sharing_a_model_and_key_have_a_meaningful_order(self):
+    def test_two_points_sharing_a_model_and_key_have_a_meaningful_order(self) -> None:
         """The partition made a tie on (model, variant_key) reachable; stability is not an order."""
         run = _fr_run()
         results = [
@@ -5309,7 +5318,7 @@ class TestBothLensesGateOnTheIdentityVersion:
 
         assert [p.variant_identity_version for p in points] == [2, 10], "adjacent twin rows must order by predicate"
 
-    def test_two_series_sharing_a_model_and_key_have_a_meaningful_order(self):
+    def test_two_series_sharing_a_model_and_key_have_a_meaningful_order(self) -> None:
         """The frontier's twin, on the lens where the tie is equally reachable."""
         run = _fr_run()
         results = [
@@ -5333,7 +5342,7 @@ class TestASupersededPredicateSaysSo:
     confident, distinct contestant.
     """
 
-    def test_a_superseded_key_is_disclosed_on_the_point(self):
+    def test_a_superseded_key_is_disclosed_on_the_point(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(
@@ -5352,7 +5361,7 @@ class TestASupersededPredicateSaysSo:
         assert "v1" in point.identity_version_disclosure
         assert f"v{IDENTITY_VERSION}" in point.identity_version_disclosure
 
-    def test_a_current_key_is_disclosed_as_nothing(self):
+    def test_a_current_key_is_disclosed_as_nothing(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(
@@ -5369,7 +5378,7 @@ class TestASupersededPredicateSaysSo:
 
         assert point.identity_version_disclosure is None
 
-    def test_the_verdict_carries_the_picks_disclosure(self):
+    def test_the_verdict_carries_the_picks_disclosure(self) -> None:
         """A verdict is a recommendation, so the caveat travels with it, not only with the row."""
         run = _fr_run()
         # Eight cases, every one passed: enough for the pass^k interval to clear 0.5.
@@ -5385,7 +5394,7 @@ class TestASupersededPredicateSaysSo:
         # and the verdict line reading two different fields is one question answered twice.
         assert subject.verdict.variant_identity_version == subject.points[0].variant_identity_version == 1
 
-    def test_a_superseded_series_is_disclosed_too(self):
+    def test_a_superseded_series_is_disclosed_too(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(
@@ -5408,7 +5417,7 @@ class TestAMixedPredicateCorpusExplainsItself:
     under two digests, with nothing saying why — which is the same defect from the other end.
     """
 
-    def test_a_mixed_corpus_names_the_predicates_it_spans(self):
+    def test_a_mixed_corpus_names_the_predicates_it_spans(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(
@@ -5435,7 +5444,7 @@ class TestAMixedPredicateCorpusExplainsItself:
         assert result.identity_span_disclosure is not None
         assert "v9" in result.identity_span_disclosure and "v10" in result.identity_span_disclosure
 
-    def test_a_single_predicate_corpus_says_nothing(self):
+    def test_a_single_predicate_corpus_says_nothing(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(
@@ -5453,7 +5462,7 @@ class TestAMixedPredicateCorpusExplainsItself:
         assert result.identity_version_span == [10]
         assert result.identity_span_disclosure is None, "there is no split to explain"
 
-    def test_history_reports_the_same_span_over_one_corpus(self):
+    def test_history_reports_the_same_span_over_one_corpus(self) -> None:
         """Two lenses, one key, one span — derived from the same population so they cannot disagree."""
         run = _fr_run()
         results = [
@@ -5471,7 +5480,7 @@ class TestAMixedPredicateCorpusExplainsItself:
         ]
         assert compute_frontier([run], results, archived_run_ids=None).identity_version_span == [9, 10]
 
-    def test_the_span_names_only_predicates_this_answer_rests_on(self):
+    def test_the_span_names_only_predicates_this_answer_rests_on(self) -> None:
         """A subject filter narrows the span with it, or the caveat points at rows the answer never used."""
         maple = _fr_run(subject_id="ent-maple", subject_label="Maple")
         other = _fr_run(subject_id="ent-other", subject_label="Other")
@@ -5522,7 +5531,7 @@ class TestFrontierCassetteSpan:
         ]
         return [capture, replay], results
 
-    def test_a_pooled_point_carries_the_disclosure(self):
+    def test_a_pooled_point_carries_the_disclosure(self) -> None:
         runs, results = self._corpus()
 
         point = compute_frontier(runs, results, archived_run_ids=None).subjects[0].points[0]
@@ -5531,7 +5540,7 @@ class TestFrontierCassetteSpan:
         assert point.cassette_mode_disclosure is not None
         assert "re-served a recording" in point.cassette_mode_disclosure
 
-    def test_a_uniform_contestant_is_not_marked(self):
+    def test_a_uniform_contestant_is_not_marked(self) -> None:
         run_a, run_b = _fr_run(cassette_mode="off"), _fr_run(cassette_mode="off")
         results = [
             _fr_result(run_a, model="flash", variant_key="vk-1", test_case_id="c1", roles={"candidate": 0.02}),
@@ -5542,7 +5551,7 @@ class TestFrontierCassetteSpan:
 
         assert point.cassette_mode_disclosure is None
 
-    def test_a_point_is_only_qualified_by_modes_its_own_results_recorded(self):
+    def test_a_point_is_only_qualified_by_modes_its_own_results_recorded(self) -> None:
         """A replay run elsewhere in the corpus must not taint an unrelated contestant.
 
         The map is collected corpus-wide and narrowed per point, so this pins the
@@ -5563,7 +5572,7 @@ class TestFrontierCassetteSpan:
         assert points["vk-clean"].cassette_mode_disclosure is None
         assert points["vk-mixed"].cassette_mode_disclosure is None
 
-    def test_the_verdict_carries_it_too(self):
+    def test_the_verdict_carries_it_too(self) -> None:
         """A verdict is a RECOMMENDATION, so it may not rest on the row's caveat.
 
         `cost_is_partial` already rides along for the weaker version of this reason;
@@ -5581,7 +5590,7 @@ class TestFrontierCassetteSpan:
         assert verdict is not None
         assert verdict.cassette_mode_disclosure is not None
 
-    def test_a_clean_verdict_says_nothing(self):
+    def test_a_clean_verdict_says_nothing(self) -> None:
         run = _fr_run(cassette_mode="off")
         # Two cases: a pass^k interval, which a bar is read by, needs two.
         results = _fr_cases(run, 2, model="flash", variant_key="vk-1", roles={"candidate": 0.02})
@@ -5617,7 +5626,7 @@ class TestFrontierTemplateSpan:
         ]
         return [easy, hard], results
 
-    def test_a_pooled_point_carries_the_disclosure(self):
+    def test_a_pooled_point_carries_the_disclosure(self) -> None:
         runs, results = self._corpus()
 
         point = compute_frontier(runs, results, archived_run_ids=None).subjects[0].points[0]
@@ -5627,7 +5636,7 @@ class TestFrontierTemplateSpan:
         assert "single_turn_plain_v1" in point.template_span_disclosure
         assert "multi_turn_tools_v1" in point.template_span_disclosure
 
-    def test_the_suites_are_carried_structurally_beside_the_sentence(self):
+    def test_the_suites_are_carried_structurally_beside_the_sentence(self) -> None:
         """The half that varies between contestants, so a surface can say the rule once.
 
         The sentence is identical on every marked point but its parenthetical, which is
@@ -5643,7 +5652,7 @@ class TestFrontierTemplateSpan:
         for entry in point.template_span:
             assert entry in point.template_span_disclosure, "the sentence is composed from the entries"
 
-    def test_a_point_that_does_not_span_carries_neither(self):
+    def test_a_point_that_does_not_span_carries_neither(self) -> None:
         """One predicate: a surface keying on the list and one keying on the sentence agree."""
         run_a, run_b = _fr_run(template_id="tpl-1"), _fr_run(template_id="tpl-1")
         results = [
@@ -5656,7 +5665,7 @@ class TestFrontierTemplateSpan:
         assert point.template_span == []
         assert point.template_span_disclosure is None
 
-    def test_the_disclosure_qualifies_the_quality_axes_not_only_the_cost(self):
+    def test_the_disclosure_qualifies_the_quality_axes_not_only_the_cost(self) -> None:
         """pass^k is what the bar is applied to, so naming only cost would miss the verdict."""
         runs, results = self._corpus()
 
@@ -5669,7 +5678,7 @@ class TestFrontierTemplateSpan:
         assert "composite" in disclosure
         assert "latency" in disclosure
 
-    def test_a_single_template_corpus_gains_no_noise_line(self):
+    def test_a_single_template_corpus_gains_no_noise_line(self) -> None:
         """Two runs of one suite are two repetitions of a condition, not a span."""
         run_a, run_b = _fr_run(template_id="tpl-1"), _fr_run(template_id="tpl-1")
         results = [
@@ -5681,7 +5690,7 @@ class TestFrontierTemplateSpan:
 
         assert point.template_span_disclosure is None
 
-    def test_an_ad_hoc_run_is_its_own_suite_rather_than_a_blank(self):
+    def test_an_ad_hoc_run_is_its_own_suite_rather_than_a_blank(self) -> None:
         """`template_id=None` is a real recorded state — an ad-hoc run from explicit case ids.
 
         Reading it as absence would let a templated run and an ad-hoc one pool
@@ -5704,7 +5713,7 @@ class TestFrontierTemplateSpan:
         assert disclosure is not None
         assert "ad-hoc (no template)" in disclosure
 
-    def test_a_point_is_only_qualified_by_templates_its_own_results_ran(self):
+    def test_a_point_is_only_qualified_by_templates_its_own_results_ran(self) -> None:
         """A second template elsewhere in the corpus must not taint an unrelated contestant.
 
         The map is collected corpus-wide and narrowed per point, so this pins the
@@ -5724,7 +5733,7 @@ class TestFrontierTemplateSpan:
         assert points["vk-clean"].template_span_disclosure is None
         assert points["vk-other"].template_span_disclosure is None
 
-    def test_the_verdict_carries_it_too(self):
+    def test_the_verdict_carries_it_too(self) -> None:
         """The pick was costed over both suites, so the recommendation owes the caveat.
 
         An operator who reads only the verdict line must not be handed a pick whose
@@ -5748,7 +5757,7 @@ class TestFrontierTemplateSpan:
         assert verdict.template_span_disclosure is not None
         assert "multi_turn_tools_v1" in verdict.template_span_disclosure
 
-    def test_the_verdict_still_names_the_cheapest_above_bar_variant(self):
+    def test_the_verdict_still_names_the_cheapest_above_bar_variant(self) -> None:
         """Disclosure only — the ranking itself is unchanged by this fix."""
         easy = _fr_run(template_id="single_turn_plain_v1")
         hard = _fr_run(template_id="multi_turn_tools_v1")
@@ -5768,7 +5777,7 @@ class TestFrontierTemplateSpan:
         assert verdict.model == "cheap"
         assert verdict.pass_hat_k == 1.0
 
-    def test_a_clean_verdict_says_nothing(self):
+    def test_a_clean_verdict_says_nothing(self) -> None:
         run = _fr_run(template_id="tpl-1")
         results = _fr_cases(run, 2, model="flash", variant_key="vk-1", roles={"candidate": 0.01})
 
@@ -5820,7 +5829,7 @@ class TestFrontierDomination:
         ]
         return run, results
 
-    def test_dominated_point_is_flagged_with_its_dominator(self):
+    def test_dominated_point_is_flagged_with_its_dominator(self) -> None:
         run, results = self._corpus()
 
         pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
@@ -5836,7 +5845,7 @@ class TestFrontierDomination:
         assert pass_p is not None
         assert pricey.dominated_by[0].p_value == pytest.approx(3 * pass_p)
 
-    def test_non_dominated_points_are_not_flagged(self):
+    def test_non_dominated_points_are_not_flagged(self) -> None:
         run, results = self._corpus()
 
         pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
@@ -5847,7 +5856,7 @@ class TestFrontierDomination:
         assert _point_by_model(pf, "cheap").dominance == "not_separated"
         assert _point_by_model(pf, "fast").dominance == "not_separated"
 
-    def test_a_cost_gap_with_a_quality_tie_is_not_a_domination(self):
+    def test_a_cost_gap_with_a_quality_tie_is_not_a_domination(self) -> None:
         """Dearer on every case and equal on pass^k is not shown worse on pass^k, so it is not dominated.
 
         "No worse" on an axis would need a margin to be shown, and pass^k declares none: two contestants
@@ -5865,7 +5874,7 @@ class TestFrontierDomination:
         assert _point_by_model(pf, "pricey").dominated is False
         assert _point_by_model(pf, "pricey").dominance == "not_separated"
 
-    def test_a_gap_of_one_amount_on_cost_and_latency_is_never_a_domination(self):
+    def test_a_gap_of_one_amount_on_cost_and_latency_is_never_a_domination(self) -> None:
         """Three cases, every axis moved by one amount. Cost and latency declare no range, so no test of the mean
         can show either gap (the sign-flip p this read tests symmetry, not the mean — #597), and pass^k's bounded
         test cannot show three cases. Not separated, as the rule reads a move it refuses to call."""
@@ -5882,7 +5891,7 @@ class TestFrontierDomination:
         assert _point_by_model(pf, "pricey").dominance == "not_separated"
         assert _point_by_model(pf, "cheap").dominance == "not_separated"
 
-    def test_a_point_with_one_case_is_untested(self):
+    def test_a_point_with_one_case_is_untested(self) -> None:
         """One case gives no test, so the point is neither dominated nor shown clear of it."""
         run = _fr_run()
         results = [
@@ -5897,14 +5906,14 @@ class TestFrontierDomination:
         assert _point_by_model(pf, "pricey").dominance == "untested"
         assert _point_by_model(pf, "pricey").dominated is False
 
-    def test_dominated_point_is_retained_not_dropped(self):
+    def test_dominated_point_is_retained_not_dropped(self) -> None:
         run, results = self._corpus()
 
         pf = compute_frontier([run], results, archived_run_ids=None).subjects[0]
 
         assert {p.model for p in pf.points} == {"cheap", "pricey", "fast"}
 
-    def test_two_variants_of_one_model_are_both_named_and_neither_is_the_row_itself(self):
+    def test_two_variants_of_one_model_are_both_named_and_neither_is_the_row_itself(self) -> None:
         """A row could read as dominating itself.
 
         `vendor/flash-x · <variant>` rendered as "dominated by
@@ -5949,7 +5958,7 @@ class TestFrontierDomination:
             (d.model, d.variant_key) != (dominated.model, dominated.variant_key) for d in dominated.dominated_by
         ), "no row may name itself as its own dominator"
 
-    def test_a_point_missing_latency_does_not_dominate_on_speed(self):
+    def test_a_point_missing_latency_does_not_dominate_on_speed(self) -> None:
         # A variant with no harvested latency cannot claim to be the fastest — its
         # unknown latency must never read as zero and win the speed axis.
         run = _fr_run()
@@ -5972,7 +5981,7 @@ class TestFrontierDomination:
 class TestFrontierCostIsProductionReplicating:
     """Cost sums the production-replicating roles only, never judge/simulator."""
 
-    def test_judge_and_simulator_cost_are_excluded(self):
+    def test_judge_and_simulator_cost_are_excluded(self) -> None:
         run = _fr_run()
         result = _fr_result(
             run,
@@ -5987,7 +5996,7 @@ class TestFrontierCostIsProductionReplicating:
         # 0.30 (candidate) + 0.10 (inner_agent); judge 5.0 and simulator 2.0 excluded.
         assert point.production_replicating_cost == pytest.approx(0.40)
 
-    def test_cost_per_acceptable_outcome_divides_cost_by_pass_rate(self):
+    def test_cost_per_acceptable_outcome_divides_cost_by_pass_rate(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.5}, passes=True),
@@ -6000,7 +6009,7 @@ class TestFrontierCostIsProductionReplicating:
         assert point.pass_hat_k == pytest.approx(0.5)
         assert point.cost_per_acceptable_outcome == pytest.approx(1.0)
 
-    def test_cost_per_acceptable_outcome_is_none_when_nothing_passes(self):
+    def test_cost_per_acceptable_outcome_is_none_when_nothing_passes(self) -> None:
         run = _fr_run()
         result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.5}, passes=False)
 
@@ -6013,7 +6022,7 @@ class TestFrontierCostIsProductionReplicating:
 class TestFrontierPartialCost:
     """A result that observed no production cost reports none; the point's cost is meaned over those that did."""
 
-    def test_partial_cost_is_flagged(self):
+    def test_partial_cost_is_flagged(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.20}),
@@ -6028,7 +6037,7 @@ class TestFrontierPartialCost:
         assert point.n_results == 2
         assert point.cost_is_partial is True
 
-    def test_no_observed_cost_is_none_not_zero(self):
+    def test_no_observed_cost_is_none_not_zero(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles=None),
@@ -6046,7 +6055,7 @@ class TestFrontierPartialCost:
 class TestFrontierAllFailedVariantRanksAtZero:
     """A variant whose every result failed scores 0.0, not null, and is dominated."""
 
-    def test_a_contestant_with_no_scored_case_has_no_pass_hat_k_and_clears_no_bar(self):
+    def test_a_contestant_with_no_scored_case_has_no_pass_hat_k_and_clears_no_bar(self) -> None:
         """Every iteration excluded is nothing measured: pass^k is absent, not 0.0.
 
         Beside it a candidate failure that WAS scored keeps its real 0.0, so the two states a
@@ -6076,7 +6085,7 @@ class TestFrontierAllFailedVariantRanksAtZero:
         assert _point_by_model(pf, "rig").bar_decision == "no_data"
         assert pf.verdict is not None and pf.verdict.model == "fails"
 
-    def test_candidate_failure_scores_zero_quality_and_ranks(self):
+    def test_candidate_failure_scores_zero_quality_and_ranks(self) -> None:
         run = _fr_run()
         results = [
             # a working variant, over six cases — shown better on every axis the failure measured
@@ -6110,7 +6119,7 @@ class TestFrontierBar:
         ]
         return run, results
 
-    def test_no_bar_yields_no_verdict_and_no_invented_default(self):
+    def test_no_bar_yields_no_verdict_and_no_invented_default(self) -> None:
         run, results = self._corpus()
 
         result = compute_frontier([run], results, bar=None, archived_run_ids=None)
@@ -6118,12 +6127,12 @@ class TestFrontierBar:
         assert result.bar is None
         assert all(pf.verdict is None for pf in result.subjects)
 
-    def test_bar_is_echoed_back(self):
+    def test_bar_is_echoed_back(self) -> None:
         run, results = self._corpus()
 
         assert compute_frontier([run], results, bar=0.8, archived_run_ids=None).bar == pytest.approx(0.8)
 
-    def test_verdict_is_the_cheapest_variant_above_bar(self):
+    def test_verdict_is_the_cheapest_variant_above_bar(self) -> None:
         run, results = self._corpus()
 
         pf = compute_frontier([run], results, bar=0.8, archived_run_ids=None).subjects[0]
@@ -6139,7 +6148,7 @@ class TestFrontierBar:
         # b is cheaper on every one of the twenty cases, by an amount that varies: shown cheaper, so named.
         assert (pf.verdict.cost_decision, pf.verdict.tied_with) == ("shown_cheapest", [])
 
-    def test_a_pick_not_shown_cheaper_names_the_set_it_is_among(self):
+    def test_a_pick_not_shown_cheaper_names_the_set_it_is_among(self) -> None:
         """A lower point cost is not a cheaper contestant: b costs $0.001 more on average, untestably."""
         run = _fr_run()
         results = [
@@ -6162,7 +6171,7 @@ class TestFrontierBar:
         assert tie.p_value is not None and tie.p_value >= 0.05
         assert tie.production_replicating_cost == pytest.approx(0.4005)
 
-    def test_a_constant_cost_shift_is_never_shown_cheaper(self):
+    def test_a_constant_cost_shift_is_never_shown_cheaper(self) -> None:
         """Five cases, each $0.50 dearer for b: cost declares no range, so no test of the mean can show it (#597).
 
         The costs are written ``i/10`` and ``i/10 + 0.5``, so their float differences carry residue. Read over
@@ -6192,7 +6201,7 @@ class TestFrontierBar:
         (tie,) = verdict.tied_with
         assert tie.p_value == 1.0
 
-    def test_the_only_cleared_contestant_is_named_alone(self):
+    def test_the_only_cleared_contestant_is_named_alone(self) -> None:
         run, results = self._corpus()
         results = [r for r in results if r.model != "a"]
 
@@ -6201,7 +6210,7 @@ class TestFrontierBar:
         assert verdict is not None and verdict.model == "b"
         assert (verdict.cost_decision, verdict.tied_with) == ("only_cleared", [])
 
-    def test_an_interval_across_the_bar_is_undecided_and_never_the_pick(self):
+    def test_an_interval_across_the_bar_is_undecided_and_never_the_pick(self) -> None:
         """The rule every campaign bar is read by: a straddle is neither a pass nor a failure.
 
         A perfect pass^k over four cases is 1.0 — above 0.8 as a number — but its interval reaches far below
@@ -6220,7 +6229,7 @@ class TestFrontierBar:
         assert (pf.n_cleared_bar, pf.n_undecided_bar) == (1, 1)
         assert pf.verdict is not None and pf.verdict.model == "deep"
 
-    def test_a_bar_no_one_reaches_yields_zero_cleared(self):
+    def test_a_bar_no_one_reaches_yields_zero_cleared(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(run, model="a", variant_key="vk-a", test_case_id="c1", roles={"candidate": 0.5}, passes=False),
@@ -6236,7 +6245,7 @@ class TestFrontierBarValidation:
     """A bar outside [0, 1] is refused, not clamped."""
 
     @pytest.mark.parametrize("bad_bar", [-0.1, 1.5, 2.0])
-    def test_out_of_range_bar_raises(self, bad_bar):
+    def test_out_of_range_bar_raises(self, bad_bar) -> None:
         run = _fr_run()
         result = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
 
@@ -6265,7 +6274,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
         usage = RoleUsage(role="candidate", model=result.model, cost_usd=0.01, call_count=1, served_model="m-served")
         return result.model_copy(update={"usage": [usage]})
 
-    def test_two_runs_of_one_cell_add_depth_not_cases(self):
+    def test_two_runs_of_one_cell_add_depth_not_cases(self) -> None:
         first, second = self._run("ctx-1"), self._run("ctx-1")
         results = [
             self._served(_fr_result(first, model="m", variant_key="vk", test_case_id="c1", passes=True)),
@@ -6277,7 +6286,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
         assert (point.k, point.pass_hat_k, point.n_pass_cases) == (1, 0.5, 1)
         assert [(p["k"], p["pass_hat_k"], p["n_cases"]) for p in point.pass_hat_k_curve] == [(1, 0.5, 1), (2, 0.0, 1)]
 
-    def test_runs_under_different_contexts_are_two_cells_and_the_headline_reads_one(self):
+    def test_runs_under_different_contexts_are_two_cells_and_the_headline_reads_one(self) -> None:
         """A run of another context stays out of the point's pass^k: beside it, with its own reading and reason."""
         first, second = self._run("ctx-1"), self._run("ctx-2")
         results = [
@@ -6295,7 +6304,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
         assert (point.pass_hat_k, point.n_pass_cases) == (passed[headline.run_ids[0]], 1)
         assert (beside.pass_hat_k, beside.n_cases_at_k) == (passed[beside.run_ids[0]], 1)
 
-    def test_every_contestant_is_ranked_at_the_subject_depth(self):
+    def test_every_contestant_is_ranked_at_the_subject_depth(self) -> None:
         """A k=1 run beside a k=3 run ranks the subject at pass^1 — one depth, never two."""
         deep, pilot = self._run("ctx-1", k_runs=3), self._run("ctx-2")
         # Sixteen cases: enough for each contestant's pass^1 interval to clear 0.5.
@@ -6334,7 +6343,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
         # Both clear 0.5 at pass^1; the cheaper is named, and the verdict says which depth it was read at.
         assert pf.verdict is not None and (pf.verdict.model, pf.verdict.k) == ("deep", 1)
 
-    def test_cost_per_acceptable_outcome_divides_by_one_attempts_pass_rate(self):
+    def test_cost_per_acceptable_outcome_divides_by_one_attempts_pass_rate(self) -> None:
         """One attempt's cost over one attempt's pass probability, whatever depth is ranked."""
         run = self._run("ctx-1", k_runs=2)
         results = [
@@ -6353,7 +6362,7 @@ class TestFrontierPassHatKPoolsRepeatRuns:
 class TestFrontierHonestSampleSize:
     """Every point carries n and dispersion; an n=1 point is distinguishable."""
 
-    def test_n_one_point_is_distinguishable_from_a_well_sampled_one(self):
+    def test_n_one_point_is_distinguishable_from_a_well_sampled_one(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(run, model="thin", variant_key="vk-thin", test_case_id="c1", roles={"candidate": 0.1}),
@@ -6369,7 +6378,7 @@ class TestFrontierHonestSampleSize:
         assert _point_by_model(pf, "thick").n_results == 3
         assert _point_by_model(pf, "thick").n_cases == 3
 
-    def test_composite_carries_a_dispersion(self):
+    def test_composite_carries_a_dispersion(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(run, model="m", variant_key="vk", test_case_id="c1", passes=True, roles={"candidate": 0.1}),
@@ -6407,7 +6416,7 @@ class TestFrontierBoundaryPillar:
         mid = _with_boundary(_fr_cases(run, 20, model="m-mid", variant_key="vk-mid", roles={"candidate": 0.3}), 1)
         return run, control + cheap + mid
 
-    def test_a_contestant_failing_only_the_boundary_dim_is_disqualified_and_named(self):
+    def test_a_contestant_failing_only_the_boundary_dim_is_disqualified_and_named(self) -> None:
         run, results = self._corpus()
 
         subject = compute_frontier(
@@ -6429,7 +6438,7 @@ class TestFrontierBoundaryPillar:
         assert (subject.boundary_dimensions, subject.n_disqualified) == ([_BOUNDARY_DIM], 1)
         assert subject.boundary_pillar is not None and subject.boundary_pillar.startswith("checked")
 
-    def test_with_no_control_the_pillar_is_unchecked_and_the_verdict_says_so(self):
+    def test_with_no_control_the_pillar_is_unchecked_and_the_verdict_says_so(self) -> None:
         run, results = self._corpus()
 
         frontier = compute_frontier([run], results, bar=0.5, archived_run_ids=None)
@@ -6440,7 +6449,7 @@ class TestFrontierBoundaryPillar:
         assert subject.boundary_pillar is not None and subject.boundary_pillar.startswith("not checked")
         assert subject.verdict is not None and subject.verdict.boundary_unchecked == [_BOUNDARY_DIM]
 
-    def test_a_subject_with_no_boundary_dim_states_nothing(self):
+    def test_a_subject_with_no_boundary_dim_states_nothing(self) -> None:
         run = _fr_run()
         results = _fr_cases(run, 3, model="m", variant_key="vk", roles={"candidate": 0.1})
 
@@ -6452,7 +6461,7 @@ class TestFrontierBoundaryPillar:
 class TestFrontierExclusions:
     """An all-excluded corpus discloses its data cannot be placed, not that it is empty."""
 
-    def test_a_result_without_its_run_is_counted_not_dropped(self):
+    def test_a_result_without_its_run_is_counted_not_dropped(self) -> None:
         run = _fr_run()
         orphan = _fr_result(run, model="m", variant_key="vk", test_case_id="c1", roles={"candidate": 0.1})
         orphan.eval_run_id = "run-that-does-not-exist"
@@ -6463,7 +6472,7 @@ class TestFrontierExclusions:
         assert result.exclusions.results_without_run == 1
         assert result.exclusions.total == 1
 
-    def test_a_run_with_no_subject_cannot_be_built_so_the_frontier_never_drops_one(self):
+    def test_a_run_with_no_subject_cannot_be_built_so_the_frontier_never_drops_one(self) -> None:
         """A frontier is per subject, so a run that could not supply one had nowhere to go.
 
         The refusal moved to capture. What reaches here always has a key, and the exclusion class
@@ -6472,7 +6481,7 @@ class TestFrontierExclusions:
         with pytest.raises(ValueError, match="subject_id"):
             _fr_run(subject_id="", subject_label="")
 
-    def test_subject_filter_counts_others_as_filtered_out(self):
+    def test_subject_filter_counts_others_as_filtered_out(self) -> None:
         run_a = _fr_run(subject_id="ent-a")
         run_b = _fr_run(subject_id="ent-b")
         results = [
@@ -6489,19 +6498,19 @@ class TestFrontierExclusions:
 
 def _hist_run(
     *,
-    cases,
-    score=None,
-    cost=0.01,
-    latency_ms=None,
-    created_at,
-    subject_id="ent-maple",
-    subject_label="Maple",
-    model="sonnet",
-    template_id="tpl-1",
-    variant_key=None,
-    transcript=None,
-    outcome=None,
-):
+    cases: Sequence[str],
+    score: int | None = None,
+    cost: float = 0.01,
+    latency_ms: float | None = None,
+    created_at: str,
+    subject_id: str = "ent-maple",
+    subject_label: str = "Maple",
+    model: str = "sonnet",
+    template_id: str = "tpl-1",
+    variant_key: str | None = None,
+    transcript: int | None = None,
+    outcome: int | None = None,
+) -> tuple[EvalRun, list[EvalResult]]:
     """Build one run and a result per case, for the history series tests.
 
     :param cases: The run's frozen ``test_case_ids`` — a change between two runs is a
@@ -6557,7 +6566,7 @@ def _hist_run(
 class TestTheReservedAxesCountLikeEveryJudgedScore:
     """The transcript and outcome axes follow `counted_score`, as the rubric dims do."""
 
-    def test_a_candidate_failure_counts_each_axis_at_the_floor_in_the_projection_and_the_series(self):
+    def test_a_candidate_failure_counts_each_axis_at_the_floor_in_the_projection_and_the_series(self) -> None:
         run, results = _hist_run(cases=["c1"], transcript=5, outcome=5, created_at="2026-07-01T00:00:00Z")
         results[0].covariates = {"truncated_rounds": 1.0}
 
@@ -6575,7 +6584,7 @@ class TestTheReservedAxesCountLikeEveryJudgedScore:
             == 1.0
         )
 
-    def test_a_harness_fault_leaves_each_axis_unmeasured(self):
+    def test_a_harness_fault_leaves_each_axis_unmeasured(self) -> None:
         run, results = _hist_run(cases=["c1"], transcript=5, outcome=5, created_at="2026-07-01T00:00:00Z")
         results[0].infra_error = "delivery never landed"
 
@@ -6595,7 +6604,7 @@ class TestAMisStampedDualScoreAxisIsNotAnObservation:
     surfaces disagreeing about what an axis is.
     """
 
-    def test_a_dim_that_names_no_reserved_axis_is_excluded(self, caplog):
+    def test_a_dim_that_names_no_reserved_axis_is_excluded(self, caplog: pytest.LogCaptureFixture) -> None:
         run, results = _hist_run(cases=["c1", "c2"], transcript=5, created_at="2026-07-01T00:00:00Z")
         results[1].transcript_score = RubricScore(
             dim="conversation.tone", score=1, scale="ordinal", axis="capability", judge_temperature=0.0
@@ -6609,7 +6618,7 @@ class TestAMisStampedDualScoreAxisIsNotAnObservation:
         assert point.n == 1
         assert "not that axis" in caplog.text, "a dropped defect must not read like an unjudged run"
 
-    def test_the_other_axis_id_is_refused_too_not_only_a_template_dim(self):
+    def test_the_other_axis_id_is_refused_too_not_only_a_template_dim(self) -> None:
         """Tighter than the projection's guard, which only asks 'is this a reserved id'."""
         run, results = _hist_run(cases=["c1", "c2"], outcome=5, created_at="2026-07-01T00:00:00Z")
         results[1].outcome_score = RubricScore(
@@ -6635,7 +6644,7 @@ class TestHistoryDualScoreAxes:
     one value per result.
     """
 
-    def test_the_transcript_axis_series_on_its_own_raw_scale(self):
+    def test_the_transcript_axis_series_on_its_own_raw_scale(self) -> None:
         run_a, res_a = _hist_run(cases=["c1", "c2"], transcript=4, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], transcript=2, created_at="2026-07-02T00:00:00Z")
 
@@ -6647,7 +6656,7 @@ class TestHistoryDualScoreAxes:
         assert [point.value for point in points] == [4.0, 2.0], "the 1-5 axis, not the 0-1 composite scale"
         assert points[1].delta_from_baseline == -2.0
 
-    def test_the_outcome_axis_series_on_its_own_raw_scale(self):
+    def test_the_outcome_axis_series_on_its_own_raw_scale(self) -> None:
         run_a, res_a = _hist_run(cases=["c1", "c2"], outcome=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], outcome=3, created_at="2026-07-02T00:00:00Z")
 
@@ -6657,7 +6666,7 @@ class TestHistoryDualScoreAxes:
 
         assert [point.value for point in out.series[0].points] == [5.0, 3.0]
 
-    def test_the_two_axes_move_independently_over_one_corpus(self):
+    def test_the_two_axes_move_independently_over_one_corpus(self) -> None:
         """The divergence IS the read: outcome falling while transcript holds is the world."""
         run_a, res_a = _hist_run(cases=["c1", "c2"], transcript=4, outcome=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], transcript=4, outcome=2, created_at="2026-07-02T00:00:00Z")
@@ -6672,7 +6681,7 @@ class TestHistoryDualScoreAxes:
         assert [point.value for point in transcript.series[0].points] == [4.0, 4.0]
         assert [point.value for point in outcome.series[0].points] == [5.0, 2.0]
 
-    def test_a_point_is_described_by_the_aggregate_not_the_per_observation_axis(self):
+    def test_a_point_is_described_by_the_aggregate_not_the_per_observation_axis(self) -> None:
         """A point holds the MEAN of the axis, which is a different quantity from one score."""
         run, results = _hist_run(cases=["c1"], transcript=4, outcome=3, created_at="2026-07-01T00:00:00Z")
 
@@ -6687,7 +6696,7 @@ class TestHistoryDualScoreAxes:
         # never the registry's per-observation sentence.
         assert "mean over test cases" in transcript.formula
 
-    def test_an_unjudged_axis_contributes_nothing_rather_than_a_zero(self):
+    def test_an_unjudged_axis_contributes_nothing_rather_than_a_zero(self) -> None:
         """An unjudged result is unmeasured on the axis, and 1-5 has no zero."""
         judged_run, judged = _hist_run(cases=["c1"], transcript=4, created_at="2026-07-01T00:00:00Z")
         unjudged_run, unjudged = _hist_run(cases=["c1"], created_at="2026-07-02T00:00:00Z")
@@ -6705,7 +6714,7 @@ class TestHistoryDualScoreAxes:
         assert points[1].value is None, "an unjudged axis is unmeasured, not a 0"
         assert points[1].n == 0
 
-    def test_an_infra_excluded_cell_is_not_a_dual_score_observation(self):
+    def test_an_infra_excluded_cell_is_not_a_dual_score_observation(self) -> None:
         """A judge reading a truncated transcript is not measuring the candidate.
 
         The same policy `total_ms` and the composite already apply on this surface, which
@@ -6724,7 +6733,7 @@ class TestHistoryDualScoreAxes:
         assert point.value == 5.0, f"the harness's own cell entered a regression series (got {point.value})"
         assert point.n == 1
 
-    def test_a_candidate_failure_the_judge_scored_is_still_an_observation(self):
+    def test_a_candidate_failure_the_judge_scored_is_still_an_observation(self) -> None:
         """The guard must not widen into 'any error' — a scored failure is real data."""
         run, results = _hist_run(cases=["c1", "c2"], transcript=5, created_at="2026-07-01T00:00:00Z")
         results[1].transcript_score = RubricScore(
@@ -6760,7 +6769,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
             archived_run_ids=None,
         )
 
-    def test_a_declining_outcome_series_flags_and_withholds_attribution(self):
+    def test_a_declining_outcome_series_flags_and_withholds_attribution(self) -> None:
         out = self._declining(METRIC_OUTCOME, outcome=(5, 2))
 
         flag = out.series[0].points[1].regression
@@ -6769,14 +6778,14 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
         assert flag.attribution_withheld is True
         assert flag.delta == -3.0, "the delta is stated, not suppressed"
 
-    def test_the_answer_says_why_once_beside_the_measure(self):
+    def test_the_answer_says_why_once_beside_the_measure(self) -> None:
         out = self._declining(METRIC_OUTCOME, outcome=(5, 2))
 
         assert out.attribution_disclosure is not None
         assert "mean_outcome_score" in out.attribution_disclosure
         assert "scenario-bound" in out.attribution_disclosure
 
-    def test_an_improvement_is_withheld_on_the_same_axis(self):
+    def test_an_improvement_is_withheld_on_the_same_axis(self) -> None:
         """Attribution is a property of the measure, not of the direction it moved."""
         out = self._declining(METRIC_OUTCOME, outcome=(2, 5))
 
@@ -6785,7 +6794,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
         assert flag.label == "improved"
         assert flag.attribution_withheld is True
 
-    def test_the_transcript_axis_attributes(self):
+    def test_the_transcript_axis_attributes(self) -> None:
         """The contrast that makes the flag informative: this axis holds when the world moves."""
         out = self._declining(METRIC_TRANSCRIPT, transcript=(5, 2))
 
@@ -6795,7 +6804,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
         assert flag.attribution_withheld is False
         assert out.attribution_disclosure is None
 
-    def test_no_measure_outside_the_scenario_bound_class_withholds(self):
+    def test_no_measure_outside_the_scenario_bound_class_withholds(self) -> None:
         """Quantified over the set, so a measure added later cannot arrive miscategorised."""
         run, results = _hist_run(
             cases=["c1"],
@@ -6815,7 +6824,7 @@ class TestHistoryWithholdsAttributionOnAScenarioBoundAxis:
                 f"{out.measure.transferability_class!r}; the disclosure must follow the class"
             )
 
-    def test_the_disclosure_survives_an_answer_with_no_series(self):
+    def test_the_disclosure_survives_an_answer_with_no_series(self) -> None:
         """A property of the MEASURE, so an empty corpus still carries it."""
         out = compute_history([], [], metric=METRIC_OUTCOME, profile=_JUDGED_HOST, archived_run_ids=None)
 
@@ -6857,31 +6866,31 @@ class TestHistoryCassetteStep:
             .points
         )
 
-    def test_a_step_across_a_mode_change_is_flagged(self):
+    def test_a_step_across_a_mode_change_is_flagged(self) -> None:
         points = self._series("capture", "replay")
 
         assert points[1].regression is not None
         assert points[1].regression.crosses_cassette_mode is True
 
-    def test_a_step_within_one_mode_is_not(self):
+    def test_a_step_within_one_mode_is_not(self) -> None:
         points = self._series("off", "off")
 
         assert points[1].regression is not None
         assert points[1].regression.crosses_cassette_mode is False
 
-    def test_the_baseline_point_carries_no_flag_to_cross(self):
+    def test_the_baseline_point_carries_no_flag_to_cross(self) -> None:
         """The first point has no predecessor, so there is no step to qualify."""
         points = self._series("capture", "replay")
 
         assert points[0].regression is None
 
-    def test_every_point_names_its_own_recorded_mode(self):
+    def test_every_point_names_its_own_recorded_mode(self) -> None:
         """On every measure, not only cost: a replayed run's latency and quality are substituted too."""
         points = self._series("capture", "replay")
 
         assert [p.cassette_mode for p in points] == ["capture", "replay"]
 
-    def test_the_verdict_is_disclosed_and_never_suppressed(self):
+    def test_the_verdict_is_disclosed_and_never_suppressed(self) -> None:
         """Descriptive, exactly as `crosses_epoch` is — no label is withheld, no delta adjusted."""
         points = self._series("capture", "replay")
 
@@ -6892,7 +6901,7 @@ class TestHistoryCassetteStep:
 class TestHistory:
     """Per-measure longitudinal series with suite-version epochs and honest regression flags."""
 
-    def test_every_point_carries_its_denominators(self):
+    def test_every_point_carries_its_denominators(self) -> None:
         """A point resting on 3 cases must not read like one resting on 30."""
         run, results = _hist_run(cases=["c1", "c2", "c3"], score=5, created_at="2026-07-01T00:00:00Z")
 
@@ -6904,7 +6913,7 @@ class TestHistory:
         assert point.n_cases == 3
         assert point.sem == 0.0  # constant sample of three — measured, not absent
 
-    def test_baseline_pointer_and_delta_from_it(self):
+    def test_baseline_pointer_and_delta_from_it(self) -> None:
         base_run, base_results = _hist_run(cases=["c1", "c2", "c3"], score=5, created_at="2026-07-01T00:00:00Z")
         next_run, next_results = _hist_run(cases=["c1", "c2", "c3"], score=1, created_at="2026-07-02T00:00:00Z")
 
@@ -6922,7 +6931,7 @@ class TestHistory:
         assert points[1].is_baseline is False
         assert points[1].delta_from_baseline == -1.0  # 0.0 - 1.0
 
-    def test_an_epoch_boundary_splits_the_series(self):
+    def test_an_epoch_boundary_splits_the_series(self) -> None:
         """A suite edit reads as an epoch line, not a mysterious step."""
         run_a, res_a = _hist_run(cases=["c1", "c2", "c3"], score=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2", "c3", "c4"], score=5, created_at="2026-07-02T00:00:00Z")
@@ -6937,7 +6946,7 @@ class TestHistory:
         assert points[1].epoch == 2
         assert points[1].epoch_boundary is True
 
-    def test_a_cost_point_carries_the_composition_its_dollars_summed(self):
+    def test_a_cost_point_carries_the_composition_its_dollars_summed(self) -> None:
         """A cost step caused by search spend joining the total is not a cost regression.
 
         The value moves exactly as a real regression would, and nothing else on the point
@@ -6960,7 +6969,7 @@ class TestHistory:
         assert points[0].cost_compositions == [unpriced]
         assert points[1].cost_compositions == [[*unpriced, "external"]]
 
-    def test_a_non_cost_series_carries_no_composition(self):
+    def test_a_non_cost_series_carries_no_composition(self) -> None:
         """Asking a quality point what roles its dollars covered answers a question it is not."""
         run, results = _hist_run(cases=["c1", "c2"], score=5, cost=0.10, created_at="2026-07-01T00:00:00Z")
         for r in results:
@@ -6970,7 +6979,7 @@ class TestHistory:
 
         assert out.series[0].points[0].cost_compositions == []
 
-    def test_a_stable_suite_stays_in_one_epoch(self):
+    def test_a_stable_suite_stays_in_one_epoch(self) -> None:
         """Re-running the same case set is not an epoch boundary."""
         run_a, res_a = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], score=4, created_at="2026-07-02T00:00:00Z")
@@ -6983,7 +6992,7 @@ class TestHistory:
         assert [p.epoch for p in points] == [1, 1]
         assert points[1].epoch_boundary is False
 
-    def test_a_significant_decline_within_an_epoch_is_flagged_regressed(self):
+    def test_a_significant_decline_within_an_epoch_is_flagged_regressed(self) -> None:
         # Every case moves by one amount, read by the bounded test on the composite's range (#597): ten cases show it.
         cases = [f"c{index}" for index in range(1, 11)]
         run_a, res_a = _hist_run(cases=cases, score=5, created_at="2026-07-01T00:00:00Z")
@@ -7004,7 +7013,7 @@ class TestHistory:
         assert flag.crosses_epoch is False
         assert flag.n_pairs == len(cases)
 
-    def test_a_change_below_threshold_is_not_flagged(self):
+    def test_a_change_below_threshold_is_not_flagged(self) -> None:
         """The joint gate at the surface: significant but tiny reads below_threshold, never "no change" (#592).
 
         ``cost_usd`` is an engine-core measure, which declares no margin and which a host cannot give
@@ -7038,7 +7047,7 @@ class TestHistory:
 
         assert flag.test == PAIRED_TEST_NAME
 
-    def test_a_uniform_move_on_a_measure_with_no_range_is_not_separated_and_says_why(self):
+    def test_a_uniform_move_on_a_measure_with_no_range_is_not_separated_and_says_why(self) -> None:
         """Every case $0.05 dearer: cost declares no range, so no test of the mean can call it, at any n (#597).
 
         The sign-flip reading called this ``regressed`` from six cases; it tests symmetry, not the mean. The flag
@@ -7062,7 +7071,7 @@ class TestHistory:
         assert (flag.label, flag.significant, flag.p) == ("not_separated", False, None)
         assert flag.not_separated_reason == UNIFORM_MOVE_NEEDS_RANGE
 
-    def test_flags_carry_their_test_and_thresholds(self):
+    def test_flags_carry_their_test_and_thresholds(self) -> None:
         run_a, res_a = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2"], score=2, created_at="2026-07-02T00:00:00Z")
 
@@ -7082,7 +7091,7 @@ class TestHistory:
         assert flag.min_absolute_change == 0.1
         assert flag.min_relative_change == 0.2
 
-    def test_crossing_an_epoch_is_disclosed_on_the_flag(self):
+    def test_crossing_an_epoch_is_disclosed_on_the_flag(self) -> None:
         """Across a suite change the paired test rests only on shared cases — say so."""
         run_a, res_a = _hist_run(cases=["c1", "c2", "c3"], score=5, created_at="2026-07-01T00:00:00Z")
         run_b, res_b = _hist_run(cases=["c1", "c2", "c3", "c4"], score=2, created_at="2026-07-02T00:00:00Z")
@@ -7101,7 +7110,7 @@ class TestHistory:
         assert flag.crosses_epoch is True
         assert flag.n_pairs == 3  # only the shared cases, not the new c4
 
-    def test_a_single_point_series_has_no_regression_flag(self):
+    def test_a_single_point_series_has_no_regression_flag(self) -> None:
         run, results = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
 
         out = compute_history([run], results, metric=METRIC_COMPOSITE, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7110,7 +7119,7 @@ class TestHistory:
         assert len(points) == 1
         assert points[0].regression is None
 
-    def test_subjects_are_never_pooled(self):
+    def test_subjects_are_never_pooled(self) -> None:
         """Composite is not comparable across subjects — two subjects, two sets of series."""
         run_a, res_a = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", subject_id="ent-a")
         run_b, res_b = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", subject_id="ent-b")
@@ -7121,7 +7130,7 @@ class TestHistory:
 
         assert sorted({s.subject_id for s in out.series}) == ["ent-a", "ent-b"]
 
-    def test_series_are_grouped_by_variant(self):
+    def test_series_are_grouped_by_variant(self) -> None:
         """Two variants of one model are two series, not one pooled trend."""
         run_a, res_a = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", variant_key="vk-1")
         run_b, res_b = _hist_run(cases=["c1"], score=3, created_at="2026-07-02T00:00:00Z", variant_key="vk-2")
@@ -7132,7 +7141,7 @@ class TestHistory:
 
         assert sorted({s.variant_key for s in out.series}) == ["vk-1", "vk-2"]
 
-    def test_cost_series_uses_the_lower_is_better_direction(self):
+    def test_cost_series_uses_the_lower_is_better_direction(self) -> None:
         run, results = _hist_run(cases=["c1", "c2"], cost=0.05, created_at="2026-07-01T00:00:00Z")
 
         out = compute_history([run], results, metric=METRIC_COST_USD, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7141,7 +7150,7 @@ class TestHistory:
         assert out.measure.unit == "usd"
         assert out.series[0].points[0].value == 0.05
 
-    def test_total_ms_series_counts_only_measured_latencies(self):
+    def test_total_ms_series_counts_only_measured_latencies(self) -> None:
         """total_ms is an advertised metric; an unmeasured latency drops, never reads as zero.
 
         The exact invariant established here (an unmeasured span persists as
@@ -7173,7 +7182,7 @@ class TestHistory:
         assert point.n_cases == 1
         assert out.higher_is_better is False
 
-    def test_total_ms_point_is_unmeasured_not_instant_when_no_latency_harvested(self):
+    def test_total_ms_point_is_unmeasured_not_instant_when_no_latency_harvested(self) -> None:
         """A point that harvested no latency reads as unknown, never as the fastest."""
         snapshot = make_subject("ent-maple", "Maple")
         run = make_eval_run(
@@ -7187,13 +7196,13 @@ class TestHistory:
         assert point.value is None
         assert point.n == 0
 
-    def test_an_unknown_metric_is_refused_not_answered_empty(self):
+    def test_an_unknown_metric_is_refused_not_answered_empty(self) -> None:
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
         with pytest.raises(HistoryError, match="unknown history metric"):
             compute_history([run], results, metric="compsite", profile=_JUDGED_HOST, archived_run_ids=None)
 
-    def test_score_is_still_refused_and_the_refusal_names_where_it_does_aggregate(self):
+    def test_score_is_still_refused_and_the_refusal_names_where_it_does_aggregate(self) -> None:
         """`score` is not a typo — it is a real measure this surface cannot series.
 
         A series carries one value per contestant per run and a raw judge score is per
@@ -7213,7 +7222,7 @@ class TestHistory:
         assert "mean_score" in message, "must name the aggregate the pivot reports it as"
         assert "pivot" in message, "must name the surface that aggregates it"
 
-    def test_a_goal_state_series_is_refused_naming_the_check_coordinate(self):
+    def test_a_goal_state_series_is_refused_naming_the_check_coordinate(self) -> None:
         """Derived from SCOPED_METRICS, so a scoped metric added later is refused the same way."""
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
@@ -7224,7 +7233,7 @@ class TestHistory:
         assert "ONE goal-state check" in message
         assert "'goal_check' on an axis" in message and "goal_state_pass_rate" in message
 
-    def test_a_corpus_that_once_would_have_been_all_excluded_cannot_be_built(self):
+    def test_a_corpus_that_once_would_have_been_all_excluded_cannot_be_built(self) -> None:
         """History used to disclose a corpus it could not group; there is no such corpus now.
 
         Every run it can be handed carries a subject key, so an empty series can no longer mean
@@ -7233,7 +7242,7 @@ class TestHistory:
         with pytest.raises(ValueError, match="subject_id"):
             _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", subject_id="", subject_label="")
 
-    def test_subject_filter_counts_others_as_filtered_out(self):
+    def test_subject_filter_counts_others_as_filtered_out(self) -> None:
         run_a, res_a = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", subject_id="ent-a")
         run_b, res_b = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z", subject_id="ent-b")
 
@@ -7265,7 +7274,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
     column.
     """
 
-    def test_history_accepts_the_catalog_name_for_the_composite_series(self):
+    def test_history_accepts_the_catalog_name_for_the_composite_series(self) -> None:
         run, results = _hist_run(cases=["c1", "c2"], score=5, created_at="2026-07-01T00:00:00Z")
 
         catalog = compute_history([run], results, metric="mean_composite", profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7273,7 +7282,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
 
         assert catalog.model_dump() == short.model_dump()
 
-    def test_every_history_measure_is_reachable_by_the_name_the_catalog_publishes(self):
+    def test_every_history_measure_is_reachable_by_the_name_the_catalog_publishes(self) -> None:
         """Quantified over the set, so a measure added later cannot be half-aliased."""
         run, results = _hist_run(
             cases=["c1"],
@@ -7297,7 +7306,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             assert out.metric == row_name
             assert out.measure.name == catalog_name
 
-    def test_pivot_accepts_the_catalog_name_for_what_a_cell_holds(self):
+    def test_pivot_accepts_the_catalog_name_for_what_a_cell_holds(self) -> None:
         run, result = _run_with_results()
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
@@ -7310,7 +7319,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
 
         assert catalog.model_dump() == short.model_dump()
 
-    def test_every_projected_measure_is_reachable_by_the_name_the_catalog_publishes(self):
+    def test_every_projected_measure_is_reachable_by_the_name_the_catalog_publishes(self) -> None:
         run, result = _run_with_results()
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
@@ -7324,7 +7333,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             assert table.metric == row_name
             assert table.measure.name == catalog_name
 
-    def test_the_alias_table_is_one_table_read_both_ways(self):
+    def test_the_alias_table_is_one_table_read_both_ways(self) -> None:
         """Derived, not written twice — a pair added to one direction only cannot exist."""
         accepted = sorted(reporting.PROJECTED_METRICS | history.HISTORY_METRICS)
         catalog = {observation: _catalog_name_of(observation) for observation in accepted}
@@ -7335,12 +7344,12 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
         for observation, aggregate in catalog.items():
             assert aggregation.resolve_measure_name(aggregate) == observation
 
-    def test_a_name_outside_the_alias_table_is_passed_through_to_be_refused(self):
+    def test_a_name_outside_the_alias_table_is_passed_through_to_be_refused(self) -> None:
         """The alias must not become a guesser: an unknown name reaches its own refusal."""
         assert aggregation.resolve_measure_name("compsite") == "compsite"
         assert aggregation.resolve_measure_name(METRIC_COMPOSITE) == METRIC_COMPOSITE
 
-    def test_a_catalogued_measure_this_surface_cannot_series_is_still_refused(self):
+    def test_a_catalogued_measure_this_surface_cannot_series_is_still_refused(self) -> None:
         """Accepting catalog names does not mean accepting the whole catalog.
 
         `pass_hat_k` is a real registry measure and a real quantity — it is simply
@@ -7352,7 +7361,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
         with pytest.raises(HistoryError, match="unknown history metric"):
             compute_history([run], results, metric="pass_hat_k", profile=_JUDGED_HOST, archived_run_ids=None)
 
-    def test_the_refusal_names_both_vocabularies(self):
+    def test_the_refusal_names_both_vocabularies(self) -> None:
         """The refusal an operator reads must name the catalog name, or it sends them in a circle."""
         run, results = _hist_run(cases=["c1"], score=5, created_at="2026-07-01T00:00:00Z")
 
@@ -7364,7 +7373,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             assert row_name in message
             assert _catalog_name_of(row_name) in message
 
-    def test_the_pivot_refusal_names_both_vocabularies(self):
+    def test_the_pivot_refusal_names_both_vocabularies(self) -> None:
         run, result = _run_with_results()
         records = project_score_records([run], [result], profile=_JUDGED_HOST, archived_run_ids=None).records
 
@@ -7378,7 +7387,7 @@ class TestTheCatalogNameIsTheNameTheSurfacesAccept:
             assert row_name in message
             assert _catalog_name_of(row_name) in message
 
-    def test_a_latency_series_describes_the_mean_it_holds_not_one_results_wall_clock(self):
+    def test_a_latency_series_describes_the_mean_it_holds_not_one_results_wall_clock(self) -> None:
         """A point is a mean over cases; `total_ms` describes one result and its partition.
 
         The descriptor drives the rendered "Measure: ..." line on both surfaces, so
@@ -7404,14 +7413,14 @@ class TestLatencyPartition:
     unexplained gap, which reads in an analysis exactly like a measurement fault.
     """
 
-    def test_the_remainder_closes_the_partition(self):
+    def test_the_remainder_closes_the_partition(self) -> None:
         partition = decompose_total_ms(LatencyMetrics(total_ms=1000.0, llm_ms=600.0, tool_ms=250.0))
 
         assert partition.orchestration_ms == 150.0
         assert partition.withheld is None
         assert partition.llm_ms + partition.tool_ms + partition.orchestration_ms == pytest.approx(partition.total_ms)
 
-    def test_the_disjoint_measures_are_not_folded_into_the_remainder(self):
+    def test_the_disjoint_measures_are_not_folded_into_the_remainder(self) -> None:
         """The drain wait and the judge phase fall OUTSIDE the turn roots the total sums.
 
         Subtracting either would describe no stretch of wall-clock — the arithmetic that
@@ -7424,7 +7433,7 @@ class TestLatencyPartition:
 
         assert partition.orchestration_ms == 150.0
 
-    def test_an_unmeasured_component_withholds_the_split_rather_than_zero_filling_it(self):
+    def test_an_unmeasured_component_withholds_the_split_rather_than_zero_filling_it(self) -> None:
         """A cell can measure an `llm.call` while producing no turn root at all.
 
         Treating the missing total as zero would publish a remainder computed from a
@@ -7437,13 +7446,13 @@ class TestLatencyPartition:
         assert "total_ms" in partition.withheld
         assert "tool_ms" in partition.withheld
 
-    def test_a_cell_that_timed_nothing_gets_a_sentence_not_a_null(self):
+    def test_a_cell_that_timed_nothing_gets_a_sentence_not_a_null(self) -> None:
         partition = decompose_total_ms(None)
 
         assert partition.orchestration_ms is None
         assert partition.withheld
 
-    def test_parts_overrunning_the_whole_are_reported_as_a_capture_fault(self):
+    def test_parts_overrunning_the_whole_are_reported_as_a_capture_fault(self) -> None:
         """The parts nest inside the whole structurally, so an overrun is not a small remainder.
 
         It means a span reached a component bucket from outside the turn roots, and a
@@ -7455,7 +7464,7 @@ class TestLatencyPartition:
         assert WITHHELD_PARTS_EXCEED_WHOLE in partition.withheld
         assert "750ms" in partition.withheld
 
-    def test_a_tiny_overrun_is_reported_at_its_real_size_not_rounded_to_nothing(self):
+    def test_a_tiny_overrun_is_reported_at_its_real_size_not_rounded_to_nothing(self) -> None:
         """The threshold is a nanosecond, so a fixed-decimal format prints "by 0.0ms".
 
         A refusal whose own sentence says nothing happened is worse than no sentence.
@@ -7464,7 +7473,7 @@ class TestLatencyPartition:
 
         assert "0.002ms" in partition.withheld
 
-    def test_the_tolerance_is_pinned_at_a_nanosecond(self):
+    def test_the_tolerance_is_pinned_at_a_nanosecond(self) -> None:
         """Pinned absolutely, because the boundary tests are expressed relative to it.
 
         Those stay green through a change of value, so nothing else would notice a
@@ -7473,7 +7482,7 @@ class TestLatencyPartition:
         """
         assert PARTITION_TOLERANCE_MS == 1e-6
 
-    def test_float_noise_below_the_tolerance_clamps_to_zero_rather_than_withholding(self):
+    def test_float_noise_below_the_tolerance_clamps_to_zero_rather_than_withholding(self) -> None:
         """Summing the same milliseconds in two groupings can land a hair below zero.
 
         That is an exact partition seen through binary floating point, not an overrun,
@@ -7486,16 +7495,16 @@ class TestLatencyPartition:
         assert partition.orchestration_ms == 0.0
         assert partition.withheld is None
 
-    def test_a_record_cannot_publish_both_a_split_and_a_refusal(self):
+    def test_a_record_cannot_publish_both_a_split_and_a_refusal(self) -> None:
         with pytest.raises(ValidationError, match="exactly one"):
             LatencyPartition(total_ms=10.0, llm_ms=1.0, tool_ms=1.0, orchestration_ms=8.0, withheld="because")
 
-    def test_a_record_cannot_half_publish_a_split(self):
+    def test_a_record_cannot_half_publish_a_split(self) -> None:
         """A total beside a refusal leaves a reader no way to tell which half to believe."""
         with pytest.raises(ValidationError, match="exactly one"):
             LatencyPartition(total_ms=10.0, withheld="because")
 
-    def test_the_remainder_is_declared_a_component_of_the_total(self):
+    def test_the_remainder_is_declared_a_component_of_the_total(self) -> None:
         """`contained_by` is what earns the subtraction the analysis lens otherwise refuses.
 
         Without the declaration the remainder is just another measure sharing a unit with
@@ -7513,7 +7522,7 @@ class TestTheFrontierWithholdsASubstitutedContestantsCost:
     configuration — the exact defect the code comment at the call site cites.
     """
 
-    def test_a_substituted_result_contributes_no_production_cost(self):
+    def test_a_substituted_result_contributes_no_production_cost(self) -> None:
         run = _fr_run()
         results = [
             _fr_result(
@@ -7532,7 +7541,7 @@ class TestTheFrontierWithholdsASubstitutedContestantsCost:
         # mean rather than entering it as a zero, so the figure is unmeasured, not cheap.
         assert point.production_replicating_cost is None
 
-    def test_an_unsubstituted_result_still_contributes(self):
+    def test_an_unsubstituted_result_still_contributes(self) -> None:
         """The discriminator: withholding everything would be as wrong as withholding nothing."""
         run = _fr_run()
         results = [
@@ -7559,7 +7568,7 @@ class TestCompletenessDisclosure:
     measurement.
     """
 
-    def test_a_complete_run_discloses_nothing(self):
+    def test_a_complete_run_discloses_nothing(self) -> None:
         """The disclosure is a warning, so a whole matrix must not acquire one."""
         record = RunCompleteness(
             expected_cells=15, produced_cells=15, persisted_cells=15, infra_excluded_cells=0, counted_from="run_loop"
@@ -7567,7 +7576,7 @@ class TestCompletenessDisclosure:
 
         assert completeness_disclosure(record) is None
 
-    def test_a_run_with_no_record_discloses_nothing(self):
+    def test_a_run_with_no_record_discloses_nothing(self) -> None:
         """Absence is not evidence of a shortfall.
 
         A run that has not gone terminal carries None, and so does one whose
@@ -7576,7 +7585,7 @@ class TestCompletenessDisclosure:
         """
         assert completeness_disclosure(None) is None
 
-    def test_a_short_run_names_both_sides_of_the_denominator(self):
+    def test_a_short_run_names_both_sides_of_the_denominator(self) -> None:
         record = RunCompleteness(
             expected_cells=15, produced_cells=15, persisted_cells=13, infra_excluded_cells=0, counted_from="run_loop"
         )
@@ -7587,7 +7596,7 @@ class TestCompletenessDisclosure:
         assert DEGRADED_RUN_CLAUSE in disclosure
         assert "13 of 15" in disclosure, "a shortfall stated without its denominator is not a shortfall"
 
-    def test_each_cause_of_a_shortfall_is_named_apart(self):
+    def test_each_cause_of_a_shortfall_is_named_apart(self) -> None:
         """Three different faults, three different fixes — collapsing them loses the fix."""
         record = RunCompleteness(
             expected_cells=10, produced_cells=9, persisted_cells=8, infra_excluded_cells=2, counted_from="run_loop"
@@ -7601,7 +7610,7 @@ class TestCompletenessDisclosure:
         assert "1 ran but the write was lost" in disclosure
         assert "2 excluded as a harness failure" in disclosure
 
-    def test_a_run_of_failing_candidates_is_not_degraded(self):
+    def test_a_run_of_failing_candidates_is_not_degraded(self) -> None:
         """A candidate that failed is a measurement, and the run is comparable.
 
         Disclosing here would train a reader to ignore the line on exactly the
@@ -7705,7 +7714,7 @@ class TestAggregatorsDiscloseShortRuns:
     """
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_projection_carries_the_sentence_for_a_short_run(self, status, completeness):
+    def test_the_projection_carries_the_sentence_for_a_short_run(self, status, completeness) -> None:
         run, results = _short_run(status, completeness)
 
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7714,7 +7723,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert DEGRADED_RUN_CLAUSE in projection.completeness_disclosures[run.id]
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_pivot_discloses_the_short_runs_behind_its_cells(self, status, completeness):
+    def test_the_pivot_discloses_the_short_runs_behind_its_cells(self, status, completeness) -> None:
         """Every cell pools the shorter denominator, so the table states it once."""
         short, short_results = _short_run(status, completeness)
         whole, whole_results = _short_run("completed", COMPLETE, model="opus")
@@ -7739,7 +7748,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert table.n_degraded_observations == 2, "the weight of the caveat is how many rows came from the short run"
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_frontier_marks_the_contestant_it_ranked_on_a_short_run(self, status, completeness):
+    def test_the_frontier_marks_the_contestant_it_ranked_on_a_short_run(self, status, completeness) -> None:
         """The verdict surface: the pass^k and the cost a pick is named on pooled it."""
         short, short_results = _short_run(status, completeness)
         whole, whole_results = _short_run("completed", COMPLETE, model="opus")
@@ -7754,7 +7763,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert points["opus"].completeness_disclosures == {}, "a caveat must not spread to a contestant it is not about"
 
     @pytest.mark.parametrize(("status", "completeness"), SHORT_RUN_SHAPES, ids=SHORT_RUN_IDS)
-    def test_the_history_point_carries_the_sentence_beside_its_regression_verdict(self, status, completeness):
+    def test_the_history_point_carries_the_sentence_beside_its_regression_verdict(self, status, completeness) -> None:
         """A point IS one run, and it is handed a verdict against a complete neighbour."""
         whole, whole_results = _short_run("completed", COMPLETE, created_at="2026-08-01T00:00:00Z")
         short, short_results = _short_run(status, completeness, created_at="2026-08-02T00:00:00Z")
@@ -7774,7 +7783,7 @@ class TestAggregatorsDiscloseShortRuns:
         )
 
     @pytest.mark.parametrize("surface", ["pivot", "frontier", "history"])
-    def test_a_corpus_of_whole_runs_discloses_nothing_on_any_surface(self, surface):
+    def test_a_corpus_of_whole_runs_discloses_nothing_on_any_surface(self, surface) -> None:
         """The note is a warning; a surface that always shows one has trained the reader to skip it."""
         run, results = _short_run("completed", COMPLETE)
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7797,7 +7806,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert answer.n_degraded_observations == 0
 
     @pytest.mark.parametrize("surface", ["pivot", "frontier", "history"])
-    def test_a_run_with_no_completeness_record_is_not_warned_about(self, surface):
+    def test_a_run_with_no_completeness_record_is_not_warned_about(self, surface) -> None:
         """Absence of a record is not evidence of a shortfall — the rule `completeness_disclosure` sets."""
         run, results = _short_run("completed", None)
         projection = project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None)
@@ -7818,7 +7827,7 @@ class TestAggregatorsDiscloseShortRuns:
 
         assert answer.completeness_disclosures == {}
 
-    def test_the_frontier_verdict_carries_the_shortfall_of_the_run_it_was_picked_on(self):
+    def test_the_frontier_verdict_carries_the_shortfall_of_the_run_it_was_picked_on(self) -> None:
         """A recommendation drawn from a short pool has to say so where the recommendation is."""
         short, short_results = _short_run("budget_stopped", SHORT_RUN_SHAPES[0][1])
 
@@ -7828,7 +7837,7 @@ class TestAggregatorsDiscloseShortRuns:
         assert verdict is not None
         assert short.id in verdict.completeness_disclosures
 
-    def test_a_short_run_whose_rows_the_filters_removed_is_not_warned_about(self):
+    def test_a_short_run_whose_rows_the_filters_removed_is_not_warned_about(self) -> None:
         """A caveat about a run the table never averaged is one the reader cannot check."""
         short, short_results = _short_run("cancelled", SHORT_RUN_SHAPES[1][1], subject_id="ent-other")
         whole, whole_results = _short_run("completed", COMPLETE)
@@ -7858,7 +7867,7 @@ class TestSignificanceRead:
     diverges the first time only one of them is edited.
     """
 
-    def test_a_flag_with_no_statistic_is_not_tested(self):
+    def test_a_flag_with_no_statistic_is_not_tested(self) -> None:
         """A verdict nobody backed with a number is not a measured result.
 
         This is the dangerous half: `significant=False` with nothing behind it
@@ -7870,7 +7879,7 @@ class TestSignificanceRead:
         assert significance_read(significant=False) == NOT_TESTED_LABEL
         assert significance_read(significant=True) == NOT_TESTED_LABEL
 
-    def test_not_significant_and_not_tested_are_different_answers(self):
+    def test_not_significant_and_not_tested_are_different_answers(self) -> None:
         """The whole point of the three-way read: the two must never collapse."""
         from threetears.evals.analysis.significance import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, significance_read
 
@@ -7881,7 +7890,7 @@ class TestSignificanceRead:
         assert unbacked == NOT_TESTED_LABEL
         assert backed != unbacked
 
-    def test_a_sample_size_alone_is_not_a_test(self):
+    def test_a_sample_size_alone_is_not_a_test(self) -> None:
         """`n` says how much data there was, never whether anything cleared a bar.
 
         Pinned through the formatter, because `n` is the one statistic the cell
@@ -7895,20 +7904,20 @@ class TestSignificanceRead:
         assert cell.startswith(NOT_TESTED_LABEL)
         assert "n=12" in cell
 
-    def test_either_statistic_alone_counts_as_tested(self):
+    def test_either_statistic_alone_counts_as_tested(self) -> None:
         """The predicate is `p or effect size`, matching the kit — not both."""
         from threetears.evals.analysis.significance import SIGNIFICANT_LABEL, significance_read
 
         assert significance_read(significant=True, p=0.01) == SIGNIFICANT_LABEL
         assert significance_read(significant=True, effect=1.4) == SIGNIFICANT_LABEL
 
-    def test_a_null_verdict_with_statistics_is_still_not_tested(self):
+    def test_a_null_verdict_with_statistics_is_still_not_tested(self) -> None:
         """No verdict is no verdict, whatever else the row happens to carry."""
         from threetears.evals.analysis.significance import NOT_TESTED_LABEL, significance_read
 
         assert significance_read(significant=None, p=0.01, effect=1.4) == NOT_TESTED_LABEL
 
-    def test_the_labels_are_spelled_out_never_abbreviated(self):
+    def test_the_labels_are_spelled_out_never_abbreviated(self) -> None:
         """ "n.s." was read as nanoseconds by an operator in a report full of `*_ms`."""
         from threetears.evals.analysis.significance import NOT_SIGNIFICANT_LABEL, NOT_TESTED_LABEL, SIGNIFICANT_LABEL
 
@@ -7922,7 +7931,7 @@ class TestSignificanceRead:
 class TestSignificanceFormatting:
     """A verdict never travels without the statistics behind it, or its test."""
 
-    def test_a_verdict_carries_the_statistics_it_rests_on(self):
+    def test_a_verdict_carries_the_statistics_it_rests_on(self) -> None:
         from threetears.evals.analysis.significance import format_significance
 
         cell = format_significance(significant=True, paired=True, p=0.0123, effect=1.42, n=8)
@@ -7932,7 +7941,7 @@ class TestSignificanceFormatting:
         assert "d_z=1.42" in cell
         assert "n=8" in cell
 
-    def test_the_effect_size_is_named_for_the_test_that_produced_it(self):
+    def test_the_effect_size_is_named_for_the_test_that_produced_it(self) -> None:
         """An unpaired Cohen's d printed as `d_z` claims a within-case comparison that never ran.
 
         The two labels come from the module's own constants rather than being
@@ -7954,7 +7963,7 @@ class TestSignificanceFormatting:
         assert f"{UNPAIRED_EFFECT_LABEL}=4.02" in unpaired
         assert f"{PAIRED_EFFECT_LABEL}=" not in unpaired
 
-    def test_the_disclosure_names_the_paired_test_and_its_threshold(self):
+    def test_the_disclosure_names_the_paired_test_and_its_threshold(self) -> None:
         from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME
 
@@ -7963,7 +7972,7 @@ class TestSignificanceFormatting:
         assert PAIRED_TEST_NAME in sentence
         assert "Descriptive only" in sentence
 
-    def test_the_disclosure_names_the_unpaired_test_when_samples_were_not_paired(self):
+    def test_the_disclosure_names_the_unpaired_test_when_samples_were_not_paired(self) -> None:
         """Which test ran is most of what a small arm's verdict rests on."""
         from threetears.evals.analysis.significance import significance_disclosure
         from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
@@ -7973,7 +7982,7 @@ class TestSignificanceFormatting:
         assert UNPAIRED_TEST_NAME in sentence
         assert PAIRED_TEST_NAME not in sentence
 
-    def test_the_disclosure_promises_no_alerting(self):
+    def test_the_disclosure_promises_no_alerting(self) -> None:
         """Reporting presents and compares; it never routes a verdict anywhere."""
         from threetears.evals.analysis.significance import significance_disclosure
 
@@ -7983,12 +7992,12 @@ class TestSignificanceFormatting:
 class TestCrossSubjectDisclosure:
     """Composites are comparable within a subject and never across one."""
 
-    def test_the_same_subject_needs_no_disclosure(self):
+    def test_the_same_subject_needs_no_disclosure(self) -> None:
         from threetears.evals.analysis.significance import cross_subject_disclosure
 
         assert cross_subject_disclosure("ent-maple", "ent-maple") is None
 
-    def test_two_subjects_are_named_and_the_delta_is_withheld(self):
+    def test_two_subjects_are_named_and_the_delta_is_withheld(self) -> None:
         from threetears.evals.analysis.significance import cross_subject_disclosure
 
         note = cross_subject_disclosure("ent-maple", "ent-bea")
@@ -7997,7 +8006,7 @@ class TestCrossSubjectDisclosure:
         assert "ent-maple" in note and "ent-bea" in note
         assert "withheld" in note
 
-    def test_the_disclosure_names_no_host(self):
+    def test_the_disclosure_names_no_host(self) -> None:
         """The whole sentence, not the clause the test above happens to quote.
 
         This module is declared shared contract, and this is the operator string that made
@@ -8018,7 +8027,7 @@ class TestCrossSubjectDisclosure:
         assert note is not None
         assert not _HOST_NOUN_IN_PROSE.findall(note)
 
-    def test_there_is_no_undecidable_case_because_a_blank_subject_is_not_one(self):
+    def test_there_is_no_undecidable_case_because_a_blank_subject_is_not_one(self) -> None:
         """Comparing two absences for equality manufactures the sameness claim this refuses.
 
         That was the argument for an undecidable branch, and it was right while a run could carry
@@ -8044,7 +8053,7 @@ class TestARefusalNamesTheMeasureTheCallerTyped:
     being rewritten into something else.
     """
 
-    def test_pivot_quotes_the_catalog_name_the_caller_sent(self):
+    def test_pivot_quotes_the_catalog_name_the_caller_sent(self) -> None:
         records = [_record(model="m1", case="tc-1", value=0.8)]
 
         with pytest.raises(PivotError) as excinfo:
@@ -8057,7 +8066,7 @@ class TestARefusalNamesTheMeasureTheCallerTyped:
             "the refusal quoted the resolved name, which the caller never typed"
         )
 
-    def test_the_pivot_refusal_still_names_what_is_accepted(self):
+    def test_the_pivot_refusal_still_names_what_is_accepted(self) -> None:
         """Naming the caller's input must not cost them the vocabulary."""
         records = [_record(model="m1", case="tc-1", value=0.8)]
 
@@ -8068,7 +8077,7 @@ class TestARefusalNamesTheMeasureTheCallerTyped:
 
         assert "mean_composite" in str(excinfo.value)
 
-    def test_an_aliased_score_takes_the_same_history_arm_as_the_row_name(self):
+    def test_an_aliased_score_takes_the_same_history_arm_as_the_row_name(self) -> None:
         """`mean_score` and `score` are one refusal; only the quoted spelling differs.
 
         The `score` arm exists because a series carries one value per run and a raw
@@ -8110,7 +8119,7 @@ class TestGoalStatePivots:
         ]
         return project_score_records([run], results, profile=_JUDGED_HOST, archived_run_ids=None).records
 
-    def test_with_goal_check_on_an_axis_each_cell_is_one_checks_rate(self):
+    def test_with_goal_check_on_an_axis_each_cell_is_one_checks_rate(self) -> None:
         table = compute_pivot(
             self.goal_state_records(),
             row_factor="goal_check",
@@ -8122,7 +8131,7 @@ class TestGoalStatePivots:
         assert {(cell.row, cell.value) for cell in table.cells} == {("check_a", 1.0), ("check_b", 0.0)}
         assert "POOLED" not in table.formula
 
-    def test_a_check_expression_passed_as_the_metric_is_pointed_at_goal_check(self):
+    def test_a_check_expression_passed_as_the_metric_is_pointed_at_goal_check(self) -> None:
         with pytest.raises(PivotError, match="'check_a' is a goal-state check, not a measure; aggregate 'goal_state'"):
             compute_pivot(
                 self.goal_state_records(),
@@ -8132,7 +8141,7 @@ class TestGoalStatePivots:
                 profile=_JUDGED_HOST,
             )
 
-    def test_without_it_the_cell_pools_every_check_and_says_so(self):
+    def test_without_it_the_cell_pools_every_check_and_says_so(self) -> None:
         table = compute_pivot(
             self.goal_state_records(),
             row_factor="template_id",
@@ -8147,7 +8156,7 @@ class TestGoalStatePivots:
         assert "(result x check) rows" in table.formula
 
 
-def test_the_catalog_name_of_a_goal_state_cell_pivots_as_its_rows():
+def test_the_catalog_name_of_a_goal_state_cell_pivots_as_its_rows() -> None:
     """list_metrics publishes 'goal_state_pass_rate'; the pivot accepts it verbatim and reads the goal_state rows."""
     records = TestGoalStatePivots.goal_state_records()
 

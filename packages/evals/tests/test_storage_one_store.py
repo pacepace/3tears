@@ -177,7 +177,7 @@ def test_a_host_cannot_declare_an_engine_doc_type_as_its_own(claimed: str) -> No
 class _StoreWithoutFieldIn(InMemoryDocumentStore):
     """A store written before ``field_in``: ``by_doc_type`` takes it into ``**field_eq`` as an equality."""
 
-    def by_doc_type(self, doc_type: str, scope_id: str, **field_eq: Any) -> list[dict[str, Any]]:  # type: ignore[override]
+    def by_doc_type(self, doc_type: str, scope_id: str, **field_eq: Any) -> list[dict[str, Any]]:
         return super().by_doc_type(doc_type, scope_id, **field_eq)
 
 

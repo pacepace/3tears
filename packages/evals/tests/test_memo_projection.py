@@ -15,9 +15,9 @@ from typing import Any, Final
 
 import pytest
 from pydantic import ValidationError
+from threetears.evals.kernel.campaign import EvalAnalysis
 
 from packages.evals.tests.factories import make_analysis
-from threetears.evals.kernel.campaign import EvalAnalysis
 
 #: The analysis the memo writer stored over the toy corpus campaign, as its record holds it.
 _STORED_MEMO: Final = Path(__file__).parent / "fixtures" / "retired_writers" / "memo_analysis.json"
@@ -39,7 +39,7 @@ class TestTheStoredMemoIsHeldAsStored:
 class TestTheDocumentIsTheOnlyCarrier:
     """One home for what the memo writer authored, so nothing can hold a second copy."""
 
-    def test_an_analysis_without_a_document_does_not_construct(self):
+    def test_an_analysis_without_a_document_does_not_construct(self) -> None:
         """An analysis with nothing to read is unrepresentable."""
         fields = make_analysis().model_dump()
         del fields["document"]
@@ -49,11 +49,11 @@ class TestTheDocumentIsTheOnlyCarrier:
     @pytest.mark.parametrize(
         "field", ["memo", "findings", "methodology", "methods_appendix", "bluf", "decisions", "questions", "bundle"]
     )
-    def test_the_pre_document_fields_are_gone_from_the_model(self, field):
+    def test_the_pre_document_fields_are_gone_from_the_model(self, field) -> None:
         """A ratchet, not a restatement — the removal is total only while nothing re-adds them."""
         assert field not in EvalAnalysis.model_fields
 
-    def test_a_stored_top_level_copy_is_refused_rather_than_carried(self):
+    def test_a_stored_top_level_copy_is_refused_rather_than_carried(self) -> None:
         """A document written with an old top-level field does not load at all.
 
         An old copy cannot return through storage and sit beside the document's own — the two-homes

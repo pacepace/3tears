@@ -57,7 +57,7 @@ def _produced_names() -> set[str]:
     return produced
 
 
-def test_every_declared_core_measure_has_an_engine_producer_or_is_host_produced():
+def test_every_declared_core_measure_has_an_engine_producer_or_is_host_produced() -> None:
     produced = _produced_names()
 
     unproduced = sorted(
@@ -71,12 +71,12 @@ def test_every_declared_core_measure_has_an_engine_producer_or_is_host_produced(
     )
 
 
-def test_every_host_produced_mark_names_a_declared_measure():
+def test_every_host_produced_mark_names_a_declared_measure() -> None:
     """A stale exemption would hide nothing today and silently cover a future name of the same spelling."""
     assert HOST_PRODUCED_MEASURES <= set(METRIC_DESCRIPTORS)
 
 
-def test_the_scan_does_not_count_prose_as_a_producer():
+def test_the_scan_does_not_count_prose_as_a_producer() -> None:
     """The guard's own premise: a name only in a docstring or comment is produced by nothing."""
     tree = ast.parse('"""async_delivery_p95_elapsed_ms"""\n# async_deliveries_substituted\nx = {"n_results": 1}\n')
 

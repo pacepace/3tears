@@ -22,10 +22,11 @@ import pytest
 from threetears.core.coordination.token_bucket import TokenBucketConflict
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.nats.errors import KvError
-from packages.scrape.tests.scrape_tool_support import derived_target_id
+from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
+
 from packages.scrape.tests.egress_fakes import FakeEgress
 from packages.scrape.tests.pacer_fakes import FakeDelayPacer
-from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
+from packages.scrape.tests.scrape_tool_support import derived_target_id
 
 _ROBOTS_DISALLOW = "User-agent: *\nDisallow: /private\n"
 _ROBOTS_DELAY = "User-agent: *\nCrawl-delay: 10\n"
@@ -294,7 +295,7 @@ async def test_robots_is_read_once_per_origin_not_once_per_target() -> None:
     for path in ("/a", "/b", "/c"):
         await gate.check(f"https://example.gov{path}", now=1000.0)
 
-    assert fetch.calls == ["https://example.gov/robots.txt"]  # type: ignore[attr-defined]
+    assert fetch.calls == ["https://example.gov/robots.txt"]
 
 
 async def test_both_behaviours_can_be_turned_off_independently() -> None:
@@ -709,11 +710,11 @@ async def test_a_suppressed_fetch_does_not_pay_the_crawl_delay() -> None:
     """
     from unittest.mock import AsyncMock, patch
 
-    from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
-    from threetears.scrape.health import ScrapeTargetHealthCollection
     from threetears.core.collections.registry import CollectionRegistry
     from threetears.core.config import DefaultCoreConfig
+    from threetears.scrape.circuit import BackoffPolicy, TargetCircuit
     from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+    from threetears.scrape.health import ScrapeTargetHealthCollection
     from threetears.scrape.tool import ScrapeTool
 
     url = "https://example.gov/list"
@@ -1349,7 +1350,9 @@ async def test_a_fleet_wait_is_capped_like_a_declared_delay() -> None:
     assert gate.max_wait_seconds == pytest.approx(30.0), "the declared ceiling still bounds it"
 
 
-async def test_a_malformed_delay_is_reported_once_per_poll_not_twice(caplog, monkeypatch) -> None:
+async def test_a_malformed_delay_is_reported_once_per_poll_not_twice(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The other `announce` branch, reached the only way it can be.
 
     `urllib.robotparser` validates `Crawl-delay` itself and returns None for anything
@@ -1379,7 +1382,7 @@ async def test_a_malformed_delay_is_reported_once_per_poll_not_twice(caplog, mon
     assert (await gate.check("https://example.gov/a", now=1000.5)).wait_seconds == 0.0
 
 
-async def test_a_capped_delay_is_reported_once_per_poll_not_twice(caplog) -> None:
+async def test_a_capped_delay_is_reported_once_per_poll_not_twice(caplog: pytest.LogCaptureFixture) -> None:
     """`_capped_delay` runs twice per fetch now -- once for the local wait, once to decide
     whether the origin is paced at all -- and both of its branches log.
 

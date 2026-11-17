@@ -12,10 +12,9 @@ import ast
 import logging
 from pathlib import Path
 
-
-from threetears.evals.schema.completion import ProviderFailure
+import pytest
 from threetears.evals.kernel.provider import describe_and_log_failure, log_provider_failure
-
+from threetears.evals.schema.completion import ProviderFailure
 
 _REPO = Path(__file__).resolve().parents[1] / "src"
 _ENVELOPE = '{"error": {"message": "Insufficient credits", "metadata": {"account_id": "acct-SECRET"}}}'
@@ -35,7 +34,7 @@ def _raised() -> _ProviderDown:
 
 
 class TestTheHelperDecidesTheTraceback:
-    def test_a_withheld_description_is_logged_with_no_traceback(self, caplog):
+    def test_a_withheld_description_is_logged_with_no_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
         exc = _raised()
         failure = ProviderFailure("HTTP 402: Insufficient credits", payload_withheld=True, owner="account")
         with caplog.at_level(logging.ERROR):
@@ -46,7 +45,7 @@ class TestTheHelperDecidesTheTraceback:
         assert record.exc_info is None
         assert "acct-SECRET" not in caplog.text
 
-    def test_an_honest_description_keeps_its_traceback(self, caplog):
+    def test_an_honest_description_keeps_its_traceback(self, caplog: pytest.LogCaptureFixture) -> None:
         exc = _raised()
         failure = ProviderFailure("TimeoutError: read timed out", payload_withheld=False, owner="candidate")
         with caplog.at_level(logging.WARNING):
@@ -56,7 +55,9 @@ class TestTheHelperDecidesTheTraceback:
         assert record.levelno == logging.WARNING
         assert record.exc_info is not None and record.exc_info[1] is exc
 
-    def test_describe_and_log_describes_through_the_describer_then_logs_its_answer(self, caplog):
+    def test_describe_and_log_describes_through_the_describer_then_logs_its_answer(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         exc = _raised()
         seen: list[BaseException] = []
 
@@ -80,7 +81,7 @@ class TestTheHelperDecidesTheTraceback:
 
 
 class TestNoCallerDecidesTheTracebackItself:
-    def test_only_the_helper_module_reads_payload_withheld(self):
+    def test_only_the_helper_module_reads_payload_withheld(self) -> None:
         """A caller branching on the flag is a copy of the helper's rule, free to drift from it."""
         readers: list[str] = []
         assert _READER.is_file(), "the helper module moved; the walk below excuses a file that is not there"
@@ -99,7 +100,7 @@ class TestNoCallerDecidesTheTracebackItself:
             )
         assert readers == [], f"read ProviderFailure.payload_withheld through log_provider_failure instead: {readers}"
 
-    def test_the_canary_sees_a_read_when_there_is_one(self):
+    def test_the_canary_sees_a_read_when_there_is_one(self) -> None:
         """Positive control: the walk above finds the shape it is looking for."""
         tree = ast.parse("if failure.payload_withheld:\n    pass\n")
         assert any(isinstance(n, ast.Attribute) and n.attr == "payload_withheld" for n in ast.walk(tree))

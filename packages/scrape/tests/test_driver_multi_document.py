@@ -81,7 +81,7 @@ def _json_listing_handler(records: list[dict]):
 
 
 class TestMultiDocumentDriver:
-    async def test_neither_discovery_mode_configured_raises(self):
+    async def test_neither_discovery_mode_configured_raises(self) -> None:
         client = _listing_client(lambda r: httpx.Response(200, content=b"<html></html>"))
         driver = MultiDocumentDriver(document_driver=_FakeDocumentDriver(), client=client)
         with pytest.raises(MultiDocumentDriverError) as exc_info:
@@ -89,7 +89,7 @@ class TestMultiDocumentDriver:
         assert exc_info.value.code == "missing_config"
         await client.aclose()
 
-    async def test_both_discovery_modes_configured_raises(self):
+    async def test_both_discovery_modes_configured_raises(self) -> None:
         driver = MultiDocumentDriver(
             document_driver=_FakeDocumentDriver(), client=_listing_client(lambda r: httpx.Response(200, content=b"[]"))
         )
@@ -97,7 +97,7 @@ class TestMultiDocumentDriver:
             await driver.render("https://example.gov/listing", link_selector="a", results_path="", fragment_field="url")
         assert exc_info.value.code == "missing_config"
 
-    async def test_html_mode_discovers_and_fetches_each_document(self):
+    async def test_html_mode_discovers_and_fetches_each_document(self) -> None:
         links = ["https://example.gov/notice1.pdf", "https://example.gov/notice2.pdf"]
         client = _listing_client(_html_listing_handler(links))
         fake_docs = _FakeDocumentDriver(
@@ -116,7 +116,7 @@ class TestMultiDocumentDriver:
         assert page.html.count('class="notice"') == 2
         assert fake_docs.fetched_urls == links
 
-    async def test_was_ocr_is_propagated_onto_each_documents_own_wrapping_div(self):
+    async def test_was_ocr_is_propagated_onto_each_documents_own_wrapping_div(self) -> None:
         """eval_loop's vision-vs-text routing reads this
         attribute back out per document -- a document driver's own
         RenderedPage.was_ocr must actually reach the combined page, not just
@@ -143,7 +143,7 @@ class TestMultiDocumentDriver:
         assert by_content["Scanned notice"] == "true"
         assert by_content["Digital notice"] == "false"
 
-    async def test_what_each_document_could_not_read_is_carried_and_named_by_document(self):
+    async def test_what_each_document_could_not_read_is_carried_and_named_by_document(self) -> None:
         links = ["https://example.gov/a.pdf", "https://example.gov/b.pdf"]
         client = _listing_client(_html_listing_handler(links))
         fake_docs = _FakeDocumentDriver(
@@ -155,7 +155,7 @@ class TestMultiDocumentDriver:
 
         assert page.page_faults == ["https://example.gov/b.pdf: page 2: tables could not be extracted (RuntimeError)"]
 
-    async def test_html_mode_resolves_relative_hrefs_to_absolute(self):
+    async def test_html_mode_resolves_relative_hrefs_to_absolute(self) -> None:
         client = _listing_client(_html_listing_handler(["/wp-content/notice1.pdf"]))
         fake_docs = _FakeDocumentDriver()
         driver = MultiDocumentDriver(document_driver=fake_docs, client=client)
@@ -164,7 +164,7 @@ class TestMultiDocumentDriver:
 
         assert fake_docs.fetched_urls == ["https://example.gov/wp-content/notice1.pdf"]
 
-    async def test_json_mode_discovers_and_fetches_each_document(self):
+    async def test_json_mode_discovers_and_fetches_each_document(self) -> None:
         records = [
             {"title": "Notice A", "source_url": "https://example.gov/a.pdf"},
             {"title": "Notice B", "source_url": "https://example.gov/b.pdf"},
@@ -178,7 +178,7 @@ class TestMultiDocumentDriver:
         assert page.status == 200
         assert fake_docs.fetched_urls == ["https://example.gov/a.pdf", "https://example.gov/b.pdf"]
 
-    async def test_json_mode_with_nested_results_path(self):
+    async def test_json_mode_with_nested_results_path(self) -> None:
         body = {"Results": [{"source_url": "https://example.gov/a.pdf"}]}
         client = _listing_client(_json_listing_handler(body))
         fake_docs = _FakeDocumentDriver()
@@ -188,7 +188,7 @@ class TestMultiDocumentDriver:
 
         assert fake_docs.fetched_urls == ["https://example.gov/a.pdf"]
 
-    async def test_json_mode_bad_results_path_raises_multi_document_error(self):
+    async def test_json_mode_bad_results_path_raises_multi_document_error(self) -> None:
         client = _listing_client(_json_listing_handler({"NotResults": []}))
         driver = MultiDocumentDriver(document_driver=_FakeDocumentDriver(), client=client)
 
@@ -196,7 +196,7 @@ class TestMultiDocumentDriver:
             await driver.render("https://example.gov/api", results_path="Results", fragment_field="source_url")
         assert exc_info.value.code == "bad_results_path"
 
-    async def test_json_mode_invalid_json_raises(self):
+    async def test_json_mode_invalid_json_raises(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=b"not json at all")
 
@@ -207,7 +207,7 @@ class TestMultiDocumentDriver:
             await driver.render("https://example.gov/api", results_path="", fragment_field="source_url")
         assert exc_info.value.code == "invalid_json"
 
-    async def test_one_document_fetch_failure_does_not_sink_the_others(self):
+    async def test_one_document_fetch_failure_does_not_sink_the_others(self) -> None:
         links = ["https://example.gov/good1.pdf", "https://example.gov/bad.pdf", "https://example.gov/good2.pdf"]
         client = _listing_client(_html_listing_handler(links))
         fake_docs = _FakeDocumentDriver(
@@ -225,7 +225,7 @@ class TestMultiDocumentDriver:
         assert "Second good notice" in page.html
         assert page.html.count('class="notice"') == 2  # the failed one is skipped, not a crash
 
-    async def test_max_documents_bounds_the_fetch_count(self):
+    async def test_max_documents_bounds_the_fetch_count(self) -> None:
         links = [f"https://example.gov/notice{i}.pdf" for i in range(5)]
         client = _listing_client(_html_listing_handler(links))
         fake_docs = _FakeDocumentDriver()
@@ -235,7 +235,7 @@ class TestMultiDocumentDriver:
 
         assert fake_docs.fetched_urls == links[:2]
 
-    async def test_seen_urls_none_fetches_every_document_unchanged(self):
+    async def test_seen_urls_none_fetches_every_document_unchanged(self) -> None:
         """The default (seen_urls omitted) must match this driver's
         pre-2026-07-16 behavior byte-for-byte -- every discovered document
         (re-)fetched, no dedup."""
@@ -248,7 +248,7 @@ class TestMultiDocumentDriver:
 
         assert fake_docs.fetched_urls == links
 
-    async def test_seen_urls_skips_already_seen_documents(self):
+    async def test_seen_urls_skips_already_seen_documents(self) -> None:
         links = ["https://example.gov/a.pdf", "https://example.gov/b.pdf"]
         client = _listing_client(_html_listing_handler(links))
         fake_docs = _FakeDocumentDriver()
@@ -260,7 +260,7 @@ class TestMultiDocumentDriver:
         assert fake_docs.fetched_urls == ["https://example.gov/b.pdf"]
         assert page.html.count('class="notice"') == 1
 
-    async def test_seen_urls_marks_successfully_fetched_documents(self):
+    async def test_seen_urls_marks_successfully_fetched_documents(self) -> None:
         links = ["https://example.gov/a.pdf", "https://example.gov/b.pdf"]
         client = _listing_client(_html_listing_handler(links))
         fake_docs = _FakeDocumentDriver()
@@ -271,7 +271,7 @@ class TestMultiDocumentDriver:
 
         assert seen == set(links)
 
-    async def test_seen_urls_does_not_mark_a_failed_fetch(self):
+    async def test_seen_urls_does_not_mark_a_failed_fetch(self) -> None:
         """A document that fails to fetch must stay eligible for retry on
         the next poll -- never silently skipped forever, same invariant
         every checkpoint cursor in this codebase already holds."""
@@ -285,7 +285,7 @@ class TestMultiDocumentDriver:
 
         assert seen == {"https://example.gov/good.pdf"}
 
-    async def test_seen_urls_filtered_before_max_documents_cap(self):
+    async def test_seen_urls_filtered_before_max_documents_cap(self) -> None:
         """A real bug shape this test guards against: if already-seen
         documents were capped BEFORE filtering, a raw listing with more
         already-seen entries than max_documents would starve genuinely new
@@ -303,7 +303,7 @@ class TestMultiDocumentDriver:
 
         assert fake_docs.fetched_urls == ["https://example.gov/notice2.pdf"]
 
-    async def test_listing_fetch_transport_failure_raises(self):
+    async def test_listing_fetch_transport_failure_raises(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
@@ -314,7 +314,7 @@ class TestMultiDocumentDriver:
             await driver.render("https://example.gov/listing", link_selector="a")
         assert exc_info.value.code == "transport"
 
-    async def test_listing_fetch_http_error_status_raises(self):
+    async def test_listing_fetch_http_error_status_raises(self) -> None:
         client = _listing_client(lambda r: httpx.Response(404, content=b"not found"))
         driver = MultiDocumentDriver(document_driver=_FakeDocumentDriver(), client=client)
 
@@ -322,10 +322,10 @@ class TestMultiDocumentDriver:
             await driver.render("https://example.gov/listing", link_selector="a")
         assert exc_info.value.code == "fetch_failed"
 
-    async def test_name(self):
+    async def test_name(self) -> None:
         assert MultiDocumentDriver(document_driver=_FakeDocumentDriver()).name == "multi_document"
 
-    async def test_no_documents_found_returns_an_empty_but_well_formed_page(self):
+    async def test_no_documents_found_returns_an_empty_but_well_formed_page(self) -> None:
         client = _listing_client(_html_listing_handler([]))
         driver = MultiDocumentDriver(document_driver=_FakeDocumentDriver(), client=client)
 
@@ -334,7 +334,7 @@ class TestMultiDocumentDriver:
         assert page.status == 200
         assert page.html == "<html><body></body></html>"
 
-    async def test_an_injected_client_is_used_as_given_no_default_user_agent_override(self):
+    async def test_an_injected_client_is_used_as_given_no_default_user_agent_override(self) -> None:
         captured: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -471,7 +471,7 @@ class TestMultiDocumentSessionStateForwarding:
     looked identical from here, and the defect and its fix were equally invisible.
     """
 
-    async def test_a_solve_reaches_the_inner_document_driver(self):
+    async def test_a_solve_reaches_the_inner_document_driver(self) -> None:
         inner = _FakeDocumentDriver()
         client = _listing_client(_html_listing_handler(["https://example.gov/doc1.pdf"]))
         driver = MultiDocumentDriver(document_driver=inner, client=client)
@@ -484,7 +484,7 @@ class TestMultiDocumentSessionStateForwarding:
             "the wrapper swallowed the solve on the way to the driver that could use it"
         )
 
-    async def test_no_solve_means_the_keyword_is_not_passed_at_all(self):
+    async def test_no_solve_means_the_keyword_is_not_passed_at_all(self) -> None:
         """Not passed, rather than passed as None. The inner driver is INJECTED, so it may be
         an out-of-tree implementation written before this parameter existed, and an
         unconditional keyword makes every ordinary render through such a driver raise

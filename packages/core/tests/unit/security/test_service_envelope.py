@@ -315,7 +315,7 @@ class TestServiceEnvelopeDoor:
 
     async def test_no_key_set_available_refuses(self) -> None:
         class _Unavailable:
-            async def get_jwks(self, *, refresh: bool = False):
+            async def get_jwks(self, *, refresh: bool = False) -> None:
                 raise ServiceEnvelopeError("no trusted key set")
 
         priv, _ = _keys()
@@ -560,7 +560,7 @@ class TestServiceEnvelopeDoorCauses:
         from threetears.core.security import PinnedEnvelopeJwks  # noqa: PLC0415
 
         class _Fails:
-            async def get_jwks(self, *, refresh: bool = False):
+            async def get_jwks(self, *, refresh: bool = False) -> None:
                 raise ServiceEnvelopeError("the sender's JWKS could not be fetched")
 
         priv, _ = _keys()

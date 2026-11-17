@@ -124,7 +124,7 @@ class TestTheCutoffMatchesItsColumn:
         async def connect(dsn: str) -> _OneTable:
             return database
 
-        report = await DriftComparator(connect, restored_dsn="restored", live_dsn="live").compare(as_of=as_of)  # type: ignore[arg-type]
+        report = await DriftComparator(connect, restored_dsn="restored", live_dsn="live").compare(as_of=as_of)
         return database.bound, report.tables[0].cutoff
 
     @pytest.mark.asyncio

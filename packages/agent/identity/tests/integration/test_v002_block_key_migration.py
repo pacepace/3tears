@@ -69,7 +69,7 @@ async def _apply_v001_only(url: str, schema: str) -> None:
         pkg = PackageMigrations(name="agent_identity", scope=MigrationScope.AGENT)
         pkg.version(1)(create_identity_versions_table)
         runner.register(pkg)
-        await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(AsyncpgStore(conn))
     finally:
         await conn.close()
 

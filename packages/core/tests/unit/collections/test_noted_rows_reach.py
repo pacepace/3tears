@@ -47,7 +47,7 @@ _FIELDS = (
 class _Record(tuple[Any, ...]):
     """an asyncpg record: read by position or by name."""
 
-    def __getitem__(self, item: Any) -> Any:  # type: ignore[override]
+    def __getitem__(self, item: Any) -> Any:
         return super().__getitem__(_FIELDS.index(item) if isinstance(item, str) else item)
 
 
@@ -167,7 +167,7 @@ async def test_the_reconciler_records_a_load_s_mark_with_its_prefixes_and_a_rese
         pool, source = _Notes(notes), _Recorder()
         reconciler = WriteMarkReconciler(
             pool,  # type: ignore[arg-type]
-            generation_source=source,  # type: ignore[arg-type]
+            generation_source=source,
             marks_schema="platform",
             tables=lambda: (_TABLE,),
         )

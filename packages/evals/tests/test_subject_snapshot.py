@@ -102,17 +102,17 @@ class TestSweepableValueRendering:
 class TestSweepableValueStrictRead:
     """A stored type reads as strictly as it is built: a field this build does not declare is refused."""
 
-    def test_a_field_this_build_does_not_declare_is_refused(self):
+    def test_a_field_this_build_does_not_declare_is_refused(self) -> None:
         stored = {**SweepableValue.of({"a": 1}, display="v3").model_dump(mode="json"), "a_field_from_next_year": 1}
 
         with pytest.raises(ValidationError, match="a_field_from_next_year"):
             SweepableValue.model_validate(stored)
 
-    def test_an_unknown_scale_kind_is_refused(self):
+    def test_an_unknown_scale_kind_is_refused(self) -> None:
         with pytest.raises(ValidationError):
             SweepableValue.model_validate({"content_hash": "0" * 64, "display": "x", "scale": {"kind": "logarithmic"}})
 
-    def test_a_subject_snapshot_with_an_undeclared_field_is_refused(self):
+    def test_a_subject_snapshot_with_an_undeclared_field_is_refused(self) -> None:
         stored = {
             **SubjectSnapshot(subject_id="s-1", subject_label="S", state={}).model_dump(mode="json"),
             "notes": "x",

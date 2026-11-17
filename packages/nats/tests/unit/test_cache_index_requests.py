@@ -130,7 +130,7 @@ class TestThePodsReport:
         with pytest.raises(raised):
             await report_cache_index_moved(
                 hub, identity_token="tok", customer_id=_CUSTOMER, conversion="c", version="v"
-            )  # type: ignore[arg-type]
+            )
 
     async def test_no_token_asks_nothing(self) -> None:
         hub = _Hub(CacheIndexMovedReply(success=True))
@@ -153,7 +153,7 @@ class TestTheCodes:
         with pytest.raises(CacheIndexRequestRefusedError) as refused:
             await report_cache_index_moved(
                 hub, identity_token="tok", customer_id=_CUSTOMER, conversion="c", version="v"
-            )  # type: ignore[arg-type]
+            )
         assert refused.value.error_code == "INDEX_NOT_OWNED"
 
     def test_a_customer_that_is_no_uuid_is_refused_before_it_is_sent(self) -> None:

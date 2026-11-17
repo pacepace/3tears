@@ -117,7 +117,7 @@ async def _migrate_skills(conn: asyncpg.Connection, _schema: str) -> None:
     # the held contract step included: the tests read the tables as they are once v007 drops v002's index
     register_conversations(runner, held_contract=True)
     register_skills(runner, held_contract=True)
-    await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+    await runner.apply_for_agent_schema(AsyncpgStore(conn))
 
 
 @pytest.fixture

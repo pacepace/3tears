@@ -1101,7 +1101,7 @@ class _Network:
             raise ConnectionRefusedError(f"no route to {remote_host}")
         if port == _BLACKHOLE:
             await asyncio.sleep(3600)
-        return await self._connect("127.0.0.1", port, **kwargs)  # type: ignore[arg-type]
+        return await self._connect("127.0.0.1", port, **kwargs)
 
 
 def _resolver(

@@ -90,14 +90,14 @@ async def _assert_no_record_list(body: object) -> None:
 
 
 class TestFindsTheRecordList:
-    async def test_top_level_list_of_dicts(self):
+    async def test_top_level_list_of_dicts(self) -> None:
         assert _table_records(await _render_body({"Results": [{"a": 1}, {"a": 2}]})) == [{"a": "1"}, {"a": "2"}]
 
-    async def test_deeply_nested_list_is_found(self):
+    async def test_deeply_nested_list_is_found(self) -> None:
         data = {"actions": [{"returnValue": {"returnValue": [{"a": 1}, {"a": 2}, {"a": 3}]}}]}
         assert _table_records(await _render_body(data)) == [{"a": "1"}, {"a": "2"}, {"a": "3"}]
 
-    async def test_picks_the_largest_among_multiple_candidate_lists(self):
+    async def test_picks_the_largest_among_multiple_candidate_lists(self) -> None:
         # A small nav-menu-shaped dict-list alongside the real, much larger data table --
         # exactly Oklahoma's own Aura response shape (several small decoy lists, one real one).
         data = {
@@ -107,16 +107,16 @@ class TestFindsTheRecordList:
         records = _table_records(await _render_body(data))
         assert records == [{"employer": f"Co{i}"} for i in range(50)]
 
-    async def test_list_of_scalars_is_not_a_record_list(self):
+    async def test_list_of_scalars_is_not_a_record_list(self) -> None:
         await _assert_no_record_list({"names": ["Employ Oklahoma", "Policies", "Partner Agencies", "Contact Us"]})
 
-    async def test_list_below_minimum_size_is_ignored(self):
+    async def test_list_below_minimum_size_is_ignored(self) -> None:
         await _assert_no_record_list({"tiny": [{"a": 1}]})
 
-    async def test_no_list_anywhere_returns_none(self):
+    async def test_no_list_anywhere_returns_none(self) -> None:
         await _assert_no_record_list({"a": {"b": {"c": 1}}})
 
-    async def test_mixed_list_with_a_non_dict_item_is_not_a_record_list(self):
+    async def test_mixed_list_with_a_non_dict_item_is_not_a_record_list(self) -> None:
         await _assert_no_record_list({"mixed": [{"a": 1}, "not a dict", {"a": 2}]})
 
 
@@ -126,18 +126,18 @@ class TestFindsTheRecordList:
 
 
 class TestSyntheticTable:
-    async def test_builds_a_real_table_with_union_of_keys_as_columns(self):
+    async def test_builds_a_real_table_with_union_of_keys_as_columns(self) -> None:
         html = await _render_body({"data": [{"employer": "Acme", "county": "Oakland"}, {"employer": "Widgets"}]})
         assert "<th>employer</th><th>county</th>" in html
         assert "<td>Acme</td><td>Oakland</td>" in html
         # missing key on the second record renders an empty cell, not a dropped column
         assert "<td>Widgets</td><td></td>" in html
 
-    async def test_values_are_html_escaped(self):
+    async def test_values_are_html_escaped(self) -> None:
         html = await _render_body({"data": [{"employer": "Macy's & <Co>"}, {"employer": "Widgets"}]})
         assert "Macy&#x27;s &amp; &lt;Co&gt;" in html
 
-    async def test_records_with_no_keys_produce_a_table_with_an_empty_header(self):
+    async def test_records_with_no_keys_produce_a_table_with_an_empty_header(self) -> None:
         html = await _render_body({"data": [{}, {}]})
         assert html == "<html><body><table><tr></tr><tr></tr><tr></tr></table></body></html>"
 
@@ -148,11 +148,11 @@ class TestSyntheticTable:
 
 
 class TestNetworkCaptureDriver:
-    def test_name(self):
+    def test_name(self) -> None:
         driver = NetworkCaptureDriver(_FakeInnerDriver([]))
         assert driver.name == "network_capture"
 
-    async def test_render_builds_synthetic_html_from_the_largest_captured_record_list(self):
+    async def test_render_builds_synthetic_html_from_the_largest_captured_record_list(self) -> None:
         calls = [
             _call({"menu": [{"LinkName": "About"}, {"LinkName": "Contact"}]}),
             _call({"actions": [{"returnValue": {"returnValue": [{"employer": f"Co{i}"} for i in range(10)]}}]}),
@@ -167,7 +167,7 @@ class TestNetworkCaptureDriver:
         assert "<td>Co0</td>" in page.html
         assert "LinkName" not in page.html  # the smaller decoy list must not win
 
-    async def test_render_forces_capture_network_on_the_inner_driver(self):
+    async def test_render_forces_capture_network_on_the_inner_driver(self) -> None:
         inner = _FakeInnerDriver([_call({"data": [{"a": 1}, {"a": 2}]})])
         driver = NetworkCaptureDriver(inner)
 
@@ -175,7 +175,7 @@ class TestNetworkCaptureDriver:
 
         assert inner.capture_network_calls == [True]
 
-    async def test_render_forwards_wait_for_and_nav_steps_to_the_inner_driver(self):
+    async def test_render_forwards_wait_for_and_nav_steps_to_the_inner_driver(self) -> None:
         inner = _FakeInnerDriver([_call({"data": [{"a": 1}, {"a": 2}]})])
         driver = NetworkCaptureDriver(inner)
         steps = [NavStep(action="wait_ms", ms=5000)]
@@ -184,7 +184,7 @@ class TestNetworkCaptureDriver:
 
         assert inner.render_calls == ["https://example.gov/warn"]
 
-    async def test_render_raises_when_no_call_has_a_usable_record_list(self):
+    async def test_render_raises_when_no_call_has_a_usable_record_list(self) -> None:
         # a single-item list falls below _MIN_RECORDS -- not a usable table
         inner = _FakeInnerDriver([_call({"menu": [{"LinkName": "About"}]})])
         driver = NetworkCaptureDriver(inner)
@@ -194,14 +194,14 @@ class TestNetworkCaptureDriver:
 
         assert exc_info.value.code == "no_record_list_found"
 
-    async def test_render_raises_when_no_network_calls_were_captured_at_all(self):
+    async def test_render_raises_when_no_network_calls_were_captured_at_all(self) -> None:
         inner = _FakeInnerDriver([])
         driver = NetworkCaptureDriver(inner)
 
         with pytest.raises(NetworkCaptureDriverError):
             await driver.render("https://example.gov/warn")
 
-    async def test_render_skips_non_json_call_bodies_without_crashing(self):
+    async def test_render_skips_non_json_call_bodies_without_crashing(self) -> None:
         calls = [
             NetworkCall(
                 url="https://example.gov/x",
@@ -221,7 +221,7 @@ class TestNetworkCaptureDriver:
 
 
 class TestNetworkCaptureForwardsTheSolve:
-    async def test_a_session_state_reaches_the_inner_driver(self):
+    async def test_a_session_state_reaches_the_inner_driver(self) -> None:
         """A wrapper that swallows this drops the solve where it would have worked.
 
         The inner driver is typically `NodriverSidecarDriver`, the one backend that can apply
@@ -239,7 +239,7 @@ class TestNetworkCaptureForwardsTheSolve:
             "the wrapper dropped the human's solve on the way to the driver that could use it"
         )
 
-    async def test_no_session_state_is_not_passed_at_all(self):
+    async def test_no_session_state_is_not_passed_at_all(self) -> None:
         """Not passed, rather than passed as None -- the distinction is the whole point.
 
         The inner driver is INJECTED, so it can be an out-of-tree implementation written before

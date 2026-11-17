@@ -106,7 +106,7 @@ def _cells(point: FrontierPoint) -> list[PassHatKCellReading]:
     return point.pass_hat_k_cells
 
 
-def test_two_runs_over_different_case_sets_pool_into_one_cell_covering_the_union_of_cases():
+def test_two_runs_over_different_case_sets_pool_into_one_cell_covering_the_union_of_cases() -> None:
     first = _launched("run-a", test_case_ids=["tc1", "tc2"])
     top_up = _launched("run-b", test_case_ids=["tc2", "tc3"])
     results = {
@@ -122,7 +122,7 @@ def test_two_runs_over_different_case_sets_pool_into_one_cell_covering_the_union
     assert point.pass_hat_k_curve[0] == {"k": 1, "pass_hat_k": 5 / 6, "n_cases": 3}
 
 
-def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it():
+def test_a_run_stamped_before_the_bump_pools_with_one_stamped_after_it() -> None:
     before = _launched("run-before", test_case_ids=["tc1"])
     before = before.model_copy(
         update={"context_key": "an-older-predicates-key", "identity_version": IDENTITY_VERSION - 1}
@@ -172,7 +172,7 @@ def _mixed_campaign():
     return runs, results
 
 
-def test_a_campaign_names_every_cell_kept_out_of_a_pool_with_its_reason_and_loses_no_run():
+def test_a_campaign_names_every_cell_kept_out_of_a_pool_with_its_reason_and_loses_no_run() -> None:
     runs, results = _mixed_campaign()
 
     bundle = _bundle(runs, results)
@@ -193,7 +193,7 @@ def test_a_campaign_names_every_cell_kept_out_of_a_pool_with_its_reason_and_lose
     assert sorted(run_id for cell in _cells(point) for run_id in cell.run_ids) == sorted(run.id for run in runs)
 
 
-def test_the_headline_pass_hat_k_reads_the_pooled_runs_alone():
+def test_the_headline_pass_hat_k_reads_the_pooled_runs_alone() -> None:
     """A run kept out of the pool counts in neither the headline, its interval nor its verdict."""
     runs, results = _mixed_campaign()
 
@@ -206,7 +206,7 @@ def test_the_headline_pass_hat_k_reads_the_pooled_runs_alone():
         assert cell.pass_hat_k == 0.0, "each cell kept out keeps its own reading, beside the headline"
 
 
-def test_the_frontier_text_names_each_cell_kept_out_and_why():
+def test_the_frontier_text_names_each_cell_kept_out_and_why() -> None:
     runs, results = _mixed_campaign()
 
     text = frontier_text(_bundle(runs, results).frontier)
@@ -216,7 +216,7 @@ def test_the_frontier_text_names_each_cell_kept_out_and_why():
     assert "run(s) run-bare kept out of this pass^k, as a cell of their own (no recorded measurement context)" in text
 
 
-def test_a_template_edited_in_what_it_measures_splits_the_cell_and_a_run_that_froze_no_digest_stands_apart():
+def test_a_template_edited_in_what_it_measures_splits_the_cell_and_a_run_that_froze_no_digest_stands_apart() -> None:
     """An edit in place keeps the template's id; the digest each run froze says what it measured, and none says
     nothing."""
     first = _launched("run-a", test_case_ids=["tc1"], template_digest="digest-before")
@@ -241,7 +241,7 @@ def test_a_template_edited_in_what_it_measures_splits_the_cell_and_a_run_that_fr
     assert point.n_pass_cases == 2
 
 
-def test_two_runs_of_one_context_answered_by_different_served_models_are_two_cells_and_the_reason_is_named():
+def test_two_runs_of_one_context_answered_by_different_served_models_are_two_cells_and_the_reason_is_named() -> None:
     """The model that answered is what was measured, whatever id was asked for: a re-pointed alias splits the cell."""
     first = _launched("run-a", test_case_ids=["tc1"])
     second = _launched("run-b", test_case_ids=["tc1"])
@@ -265,7 +265,7 @@ def test_two_runs_of_one_context_answered_by_different_served_models_are_two_cel
     ]
 
 
-def test_a_run_whose_responses_named_no_model_stands_apart_and_is_named_with_its_reason():
+def test_a_run_whose_responses_named_no_model_stands_apart_and_is_named_with_its_reason() -> None:
     """Not evidence of the same model either, so it pools with nothing; the silence is also said where model identity
     always is."""
     named = _launched("run-a", test_case_ids=["tc1"])
@@ -288,7 +288,7 @@ def test_a_run_whose_responses_named_no_model_stands_apart_and_is_named_with_its
     assert bundle.model_identity_disclosure.startswith("Model identity unconfirmed")
 
 
-def test_a_run_whose_context_cannot_be_rederived_is_a_cell_of_its_own_and_the_rest_still_read():
+def test_a_run_whose_context_cannot_be_rederived_is_a_cell_of_its_own_and_the_rest_still_read() -> None:
     """A stored run naming subject state its host no longer declares stands apart, named; it fails nothing else."""
     kept = _launched("run-a", test_case_ids=["tc1", "tc2"])
     undeclared = SweepableValue(content_hash="0" * 64, display="retired", scale=NominalScale())
@@ -328,7 +328,7 @@ def _silences_corpus(*others: EvalRun, served: dict[str, str | None]):
     return runs, results
 
 
-def test_two_runs_that_record_both_their_digest_and_their_served_model_equally_pool():
+def test_two_runs_that_record_both_their_digest_and_their_served_model_equally_pool() -> None:
     runs, results = _silences_corpus(served={})
 
     [point] = _bundle(runs, results).frontier.subjects[0].points
@@ -339,7 +339,7 @@ def test_two_runs_that_record_both_their_digest_and_their_served_model_equally_p
     assert point.pass_hat_k_curve[-1] == {"k": 2, "pass_hat_k": 1.0, "n_cases": 1}
 
 
-def test_a_run_that_froze_no_digest_pools_with_nothing_and_is_named_with_its_reason():
+def test_a_run_that_froze_no_digest_pools_with_nothing_and_is_named_with_its_reason() -> None:
     """A silent digest is never evidence of a match: which revision of the template it ran is unknown."""
     silent = _launched("run-x", test_case_ids=["tc1"], template_digest=None)
     runs, results = _silences_corpus(silent, served={})
@@ -354,7 +354,7 @@ def test_a_run_that_froze_no_digest_pools_with_nothing_and_is_named_with_its_rea
     assert point.pass_hat_k == 1.0
 
 
-def test_a_silent_run_reads_its_silence_whatever_else_differs():
+def test_a_silent_run_reads_its_silence_whatever_else_differs() -> None:
     """It stands apart for what it did not record, on another rig as on the same one."""
     rig = _launched(
         "run-rig", test_case_ids=["tc1"], template_digest=None, apparatus_settings={"reviewer_pool": "pool-b"}
@@ -367,7 +367,7 @@ def test_a_silent_run_reads_its_silence_whatever_else_differs():
     assert (beside.run_ids, beside.reason) == (["run-rig"], "no_recorded_template")
 
 
-def test_a_run_silent_on_both_its_digest_and_its_served_model_stands_apart_and_both_are_said():
+def test_a_run_silent_on_both_its_digest_and_its_served_model_stands_apart_and_both_are_said() -> None:
     silent = _launched("run-silent", test_case_ids=["tc1"], template_digest=None)
     runs, results = _silences_corpus(silent, served={"run-silent": None})
 
@@ -379,7 +379,7 @@ def test_a_run_silent_on_both_its_digest_and_its_served_model_stands_apart_and_b
     assert "froze no digest" in (beside.detail or "") and "named no served model" in (beside.detail or "")
 
 
-def test_two_silent_runs_each_stand_apart():
+def test_two_silent_runs_each_stand_apart() -> None:
     """Two runs silent alike are no more one cell than a silent run and a recorded one."""
     no_digest = [_launched(run_id, test_case_ids=["tc1"], template_digest=None) for run_id in ("run-x1", "run-x2")]
     no_model = [_launched(run_id, test_case_ids=["tc1"]) for run_id in ("run-y1", "run-y2")]
@@ -397,7 +397,7 @@ def test_two_silent_runs_each_stand_apart():
     ]
 
 
-def test_two_runs_whose_candidate_made_no_model_call_pool():
+def test_two_runs_whose_candidate_made_no_model_call_pool() -> None:
     """A plain-return candidate calls no model: that is recorded, not a silence, so its runs pool."""
     runs = [_launched(run_id, test_case_ids=["tc1"]) for run_id in ("run-a", "run-b")]
     results = {
@@ -411,7 +411,7 @@ def test_two_runs_whose_candidate_made_no_model_call_pool():
     assert point.pass_hat_k_curve[-1] == {"k": 2, "pass_hat_k": 1.0, "n_cases": 1}
 
 
-def test_a_run_that_made_no_model_call_does_not_pool_with_one_that_called_a_model():
+def test_a_run_that_made_no_model_call_does_not_pool_with_one_that_called_a_model() -> None:
     called = [_launched(run_id, test_case_ids=["tc1"]) for run_id in ("run-a", "run-b")]
     plain = _launched("run-plain", test_case_ids=["tc1"])
     results = {
@@ -430,7 +430,7 @@ def test_a_run_that_made_no_model_call_does_not_pool_with_one_that_called_a_mode
     )
 
 
-def test_a_run_some_of_whose_responses_named_no_model_stands_apart():
+def test_a_run_some_of_whose_responses_named_no_model_stands_apart() -> None:
     """One unnamed response is a silence, whatever the run's other responses named."""
     partial = _launched("run-p", test_case_ids=["tc1", "tc2"])
     runs, results = _silences_corpus(partial, served={})
@@ -447,7 +447,7 @@ def test_a_run_some_of_whose_responses_named_no_model_stands_apart():
     assert "(the others named model-1)" in (beside.detail or "")
 
 
-def test_a_headline_that_is_one_silent_run_says_so():
+def test_a_headline_that_is_one_silent_run_says_so() -> None:
     """When every run is silent the pass^k rests on one of them, and its line says what that run did not record."""
     runs = [_launched(run_id, test_case_ids=["tc1"], template_digest=None) for run_id in ("run-x1", "run-x2")]
     results = {run.id: _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION) for run in runs}
@@ -462,7 +462,7 @@ def test_a_headline_that_is_one_silent_run_says_so():
     assert "this pass^k rests on run(s) run-x1 alone, a cell of their own (no recorded template revision)" in text
 
 
-def test_a_point_of_one_silent_run_says_nothing_of_its_cells():
+def test_a_point_of_one_silent_run_says_nothing_of_its_cells() -> None:
     """With one cell nothing is kept out, so no cell line and no preamble, on any surface."""
     run = _launched("run-x1", test_case_ids=["tc1"], template_digest=None)
     results = {run.id: _results(run, {"tc1": (True,)}, identity_version=IDENTITY_VERSION, served=None)}
@@ -477,7 +477,7 @@ def test_a_point_of_one_silent_run_says_nothing_of_its_cells():
     assert not any("pass^k" in line for line in _page_run_lines([run], results))
 
 
-def test_the_page_names_each_of_many_silent_runs():
+def test_the_page_names_each_of_many_silent_runs() -> None:
     """Forty runs that froze no digest: the page names each, one line per run kept out."""
     silent = [_launched(f"run-s{i:02d}", test_case_ids=["tc1"], template_digest=None) for i in range(40)]
     runs, results = _silences_corpus(*silent, served={})
@@ -486,7 +486,7 @@ def test_the_page_names_each_of_many_silent_runs():
     assert len(page) == 40
 
 
-def test_the_cost_per_acceptable_outcome_reads_the_headline_cells_runs_on_both_sides():
+def test_the_cost_per_acceptable_outcome_reads_the_headline_cells_runs_on_both_sides() -> None:
     """pass^1 is the headline cell's, so the cost it divides is too; the point's cost still pools every run."""
     pooled = [_launched(run_id, test_case_ids=["tc1", "tc2"]) for run_id in ("run-a", "run-b")]
     rig = _launched("run-rig", test_case_ids=["tc1", "tc2"], apparatus_settings={"reviewer_pool": "pool-b"})
@@ -519,7 +519,7 @@ def _page_run_lines(runs: list[EvalRun], results: dict[str, list[EvalResult]]) -
     return [block.text for block in report.blocks if isinstance(block, DisclosureBlock) and block.source == "runs"]
 
 
-def test_the_page_names_each_cell_kept_out_of_a_pass_hat_k_led_by_its_arm():
+def test_the_page_names_each_cell_kept_out_of_a_pass_hat_k_led_by_its_arm() -> None:
     runs, results = _mixed_campaign()
 
     lines = _page_run_lines(runs, results)
@@ -536,7 +536,7 @@ def test_the_page_names_each_cell_kept_out_of_a_pass_hat_k_led_by_its_arm():
     assert lines.index(PASS_HAT_K_CELL_READING) < lines.index(kept_out[0])
 
 
-def test_a_page_whose_points_have_only_a_headline_cell_says_nothing_of_pass_hat_k_cells():
+def test_a_page_whose_points_have_only_a_headline_cell_says_nothing_of_pass_hat_k_cells() -> None:
     first = _launched("run-a", test_case_ids=["tc1", "tc2"])
     top_up = _launched("run-b", test_case_ids=["tc2", "tc3"])
     results = {
@@ -549,7 +549,7 @@ def test_a_page_whose_points_have_only_a_headline_cell_says_nothing_of_pass_hat_
     assert not any("pass^k" in line for line in lines)
 
 
-def test_the_page_names_a_run_whose_responses_named_no_model_under_its_arm():
+def test_the_page_names_a_run_whose_responses_named_no_model_under_its_arm() -> None:
     named = _launched("run-a", test_case_ids=["tc1"])
     silent = _launched("run-b", test_case_ids=["tc1"])
     results = {
@@ -566,7 +566,7 @@ def test_the_page_names_a_run_whose_responses_named_no_model_under_its_arm():
     assert lines.count(PASS_HAT_K_CELL_READING) == 1
 
 
-def test_each_arms_cells_are_its_own_so_two_arms_on_one_model_stay_apart():
+def test_each_arms_cells_are_its_own_so_two_arms_on_one_model_stay_apart() -> None:
     """Two arms run one model: each one's kept-out cell stands under its own arm's point, never merged under the
     model."""
     runs: list[EvalRun] = []

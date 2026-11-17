@@ -775,7 +775,7 @@ async def test_stream_retries_connect_error_then_succeeds() -> None:
         calls[0] += 1
         if calls[0] == 1:
             raise httpx.ConnectError("boom")
-        return real.handler(request)  # type: ignore[attr-defined]
+        return real.handler(request)
 
     async with _client(httpx.MockTransport(handler)) as client, client.stream("GET", "/x") as response:
         body = await response.aread()

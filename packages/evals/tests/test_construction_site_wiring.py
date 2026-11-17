@@ -124,7 +124,7 @@ _HOST_WIRING_WITHOUT_DEFAULTS: tuple[str, ...] = (
 
 
 @pytest.mark.parametrize("name", _HOST_WIRING_WITHOUT_DEFAULTS)
-def test_every_host_names_the_wiring_whose_default_would_be_silent(name):
+def test_every_host_names_the_wiring_whose_default_would_be_silent(name) -> None:
     """A default that means "nobody was watching" is indistinguishable from a forgotten keyword.
 
     The four used to be ``RunnerOptions`` fields, defaulted, and held by an AST walk over every
@@ -154,7 +154,7 @@ def test_every_host_names_the_wiring_whose_default_would_be_silent(name):
     )
 
 
-def test_every_non_test_eval_job_manager_site_wires_a_timeout_factory():
+def test_every_non_test_eval_job_manager_site_wires_a_timeout_factory() -> None:
     """The engine's default timeout is correct for a bare host and is not what a host with its own timeouts should run under.
 
     ``EvalJobManager``'s ``job_timeout_factory`` defaults to ``default_job_timeout`` —
@@ -187,7 +187,7 @@ def test_every_non_test_eval_job_manager_site_wires_a_timeout_factory():
     )
 
 
-def test_every_non_test_eval_job_manager_site_holds_its_jobs_under_leases():
+def test_every_non_test_eval_job_manager_site_holds_its_jobs_under_leases() -> None:
     """A manager built with no leases saves runs every reader of the job contract reads as lost.
 
     ``EvalJobManager``'s ``leases`` defaults to ``None``, which is right for a harness that reads its runs
@@ -206,7 +206,7 @@ def test_every_non_test_eval_job_manager_site_holds_its_jobs_under_leases():
 
 
 @pytest.mark.parametrize("symbol", ["EvalJobManager", "EvalService"])
-def test_every_non_test_site_names_where_its_blocking_storage_calls_run(symbol):
+def test_every_non_test_site_names_where_its_blocking_storage_calls_run(symbol) -> None:
     """The engine's executor default is the loop's default executor — correct for a bare host, wrong in web.
 
     Both take ``blocking_executor`` and default it to ``None`` — ``EvalService`` as well, because a
@@ -234,7 +234,7 @@ def test_every_non_test_site_names_where_its_blocking_storage_calls_run(symbol):
 
 
 @pytest.mark.parametrize("symbol", ["EvalService", "JudgeService"])
-def test_every_non_test_site_names_how_a_failed_call_reads(symbol):
+def test_every_non_test_site_names_how_a_failed_call_reads(symbol) -> None:
     """A describer that cannot tell an account refusal means an unwired site never stops.
 
     ``withhold_failure_detail`` is right for a host with no error types and wrong for this one: it
@@ -259,7 +259,7 @@ def test_every_non_test_site_names_how_a_failed_call_reads(symbol):
     )
 
 
-def test_an_unwired_site_reddens_the_gate_and_a_wired_one_does_not(tmp_path):
+def test_an_unwired_site_reddens_the_gate_and_a_wired_one_does_not(tmp_path: Path) -> None:
     """The gates above, fabricated red — the only evidence they catch what they claim.
 
     Both gates are green today, and a green structural gate is evidence about the rule it
@@ -291,7 +291,7 @@ def test_an_unwired_site_reddens_the_gate_and_a_wired_one_does_not(tmp_path):
     ]
 
 
-def test_an_exempted_file_is_the_only_way_past_the_gate(tmp_path):
+def test_an_exempted_file_is_the_only_way_past_the_gate(tmp_path: Path) -> None:
     """The exemption is a per-file argument, not a switch, and it is checked as one.
 
     An entry says "the cells this site drives need no trace", which is a measurement decision
@@ -311,7 +311,7 @@ def test_an_exempted_file_is_the_only_way_past_the_gate(tmp_path):
     )
 
 
-def test_the_walk_reaches_the_engines_own_construction_sites():
+def test_the_walk_reaches_the_engines_own_construction_sites() -> None:
     """Non-vacuity: the default root is the package's source, and the launch's sites are in it.
 
     Asking for a keyword no site passes turns every construction the walk reaches into a finding,

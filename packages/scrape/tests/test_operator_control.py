@@ -363,9 +363,7 @@ class TestNoCookieJarTravelsInTheClearInEitherDirection:
         sealed = seal_session_state(_RAW_STATE, _KEY).sealed
 
         async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
-            await open_tab(  # type: ignore[arg-type]
-                bus, _SESSION, target_id="t-1", url="https://example.com", session_state_sealed=sealed
-            )
+            await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com", session_state_sealed=sealed)
 
         assert display.opened[0].session_state == _RAW_STATE, (
             "the owning pod did not open the solve, so the tab opens unauthenticated"
@@ -386,9 +384,7 @@ class TestNoCookieJarTravelsInTheClearInEitherDirection:
         sealed = seal_session_state(_RAW_STATE, wrong_key).sealed
 
         async with serve_session(bus, _claim(), display, session_state_key=_KEY):  # type: ignore[arg-type]
-            await open_tab(  # type: ignore[arg-type]
-                bus, _SESSION, target_id="t-1", url="https://example.com", session_state_sealed=sealed
-            )
+            await open_tab(bus, _SESSION, target_id="t-1", url="https://example.com", session_state_sealed=sealed)
 
         assert display.opened[0].session_state is None, "an untrusted solve was handed to the browser anyway"
         assert display.opened[0].url == "https://example.com", "the tab was not opened at all"

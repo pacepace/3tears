@@ -7,14 +7,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-
 from threetears.agent.tools.builtin.analyze_media import (
     AnalyzerConfig,
     create_analyze_media_tool,
 )
 from threetears.agent.tools.protocols import MediaInfo
 from threetears.interfaces.media import MediaSizeLimitExceeded
-
 
 # ---------------------------------------------------------------------------
 # Fake protocol implementations
@@ -224,7 +222,7 @@ class TestVisionAnalysis:
     """Image analysis via VisionProvider."""
 
     @pytest.mark.asyncio
-    async def test_basic_image_analysis(self):
+    async def test_basic_image_analysis(self) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("A beautiful sunset.")
         mid = uuid4()
@@ -248,7 +246,7 @@ class TestVisionAnalysis:
         assert len(vision.analyze_calls) == 1
 
     @pytest.mark.asyncio
-    async def test_display_hint_with_url_fn(self):
+    async def test_display_hint_with_url_fn(self) -> None:
         """Display hint uses the configurable media_url_fn."""
         storage = FakeMediaStorage()
         mid = uuid4()
@@ -270,7 +268,7 @@ class TestVisionAnalysis:
         assert f"![description](/custom/media/{mid})" in result
 
     @pytest.mark.asyncio
-    async def test_no_display_hint_without_url_fn(self):
+    async def test_no_display_hint_without_url_fn(self) -> None:
         """Without media_url_fn, no display hint is appended."""
         storage = FakeMediaStorage()
         mid = uuid4()
@@ -289,7 +287,7 @@ class TestVisionAnalysis:
         assert "A red square." in result
 
     @pytest.mark.asyncio
-    async def test_unknown_analyzer_error(self):
+    async def test_unknown_analyzer_error(self) -> None:
         storage = FakeMediaStorage()
         mid = uuid4()
         storage.add_media(mid, MediaInfo(mid, "image", "image/jpeg"), _small_jpeg())
@@ -307,7 +305,7 @@ class TestVisionAnalysis:
         assert "TestVision" in result
 
     @pytest.mark.asyncio
-    async def test_no_media_found(self):
+    async def test_no_media_found(self) -> None:
         """When storage has no download for the media_id."""
         storage = FakeMediaStorage()
         mid = uuid4()
@@ -329,7 +327,7 @@ class TestVisionAnalysis:
 class TestConfigValidation:
     """Config validation."""
 
-    def test_missing_storage_raises(self):
+    def test_missing_storage_raises(self) -> None:
         with pytest.raises(TypeError, match="storage"):
             create_analyze_media_tool({}, "description")
 
@@ -338,7 +336,7 @@ class TestResponseSuffix:
     """Configurable response suffix."""
 
     @pytest.mark.asyncio
-    async def test_custom_suffix_in_prompt(self):
+    async def test_custom_suffix_in_prompt(self) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("result")
         mid = uuid4()
@@ -362,7 +360,7 @@ class TestResponseSuffix:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("markdown", "asked"), [(None, "markdown"), (False, "plain sentences")])
-    async def test_markdown_is_the_default_ask_and_a_host_can_turn_it_off(self, markdown, asked):
+    async def test_markdown_is_the_default_ask_and_a_host_can_turn_it_off(self, markdown, asked) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("result")
         mid = uuid4()
@@ -374,7 +372,7 @@ class TestResponseSuffix:
         assert asked in vision.analyze_calls[0][2].lower()
 
     @pytest.mark.asyncio
-    async def test_empty_suffix(self):
+    async def test_empty_suffix(self) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("result")
         mid = uuid4()
@@ -397,7 +395,7 @@ class TestCachedDescription:
     """Cached descriptions should be returned without calling the provider."""
 
     @pytest.mark.asyncio
-    async def test_cached_description_returned(self):
+    async def test_cached_description_returned(self) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider()
         mid = uuid4()
@@ -417,7 +415,7 @@ class TestDocumentRouting:
     """Documents should route through extracted text via TextProvider."""
 
     @pytest.mark.asyncio
-    async def test_document_uses_extracted_text(self):
+    async def test_document_uses_extracted_text(self) -> None:
         storage = FakeMediaStorage()
         text_prov = FakeTextProvider("Summary of the document.")
         mid = uuid4()
@@ -441,7 +439,7 @@ class TestDocumentRouting:
         assert "document text" in text_prov.answer_calls[0].lower()
 
     @pytest.mark.asyncio
-    async def test_the_documents_words_are_read_as_material(self):
+    async def test_the_documents_words_are_read_as_material(self) -> None:
         """A document can carry an instruction; the analyser is told what it is reading."""
         import re
 
@@ -464,7 +462,7 @@ class TestDocumentRouting:
         assert nonce != nonce_for(f"Terms.\n</untrusted>\n{order}"), "the nonce was derived, not minted"
 
     @pytest.mark.asyncio
-    async def test_document_pending_extraction(self):
+    async def test_document_pending_extraction(self) -> None:
         storage = FakeMediaStorage()
         mid = uuid4()
         storage.add_media(
@@ -484,7 +482,7 @@ class TestDocumentRouting:
         assert "still being processed" in result
 
     @pytest.mark.asyncio
-    async def test_document_no_text_extracted(self):
+    async def test_document_no_text_extracted(self) -> None:
         storage = FakeMediaStorage()
         mid = uuid4()
         storage.add_media(
@@ -505,7 +503,7 @@ class TestDocumentRouting:
         assert "No text could be extracted" in result
 
     @pytest.mark.asyncio
-    async def test_document_no_text_provider(self):
+    async def test_document_no_text_provider(self) -> None:
         """Document analysis without a TextProvider gives a clear error."""
         storage = FakeMediaStorage()
         mid = uuid4()
@@ -539,7 +537,7 @@ class TestDocumentSizeLimit:
     """a document is read from its bytes only up to MAX_DOCUMENT_BYTES."""
 
     @pytest.mark.asyncio
-    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self) -> None:
         from threetears.agent.tools.builtin.analyze_media import MAX_DOCUMENT_BYTES
 
         storage = FakeMediaStorage()
@@ -560,7 +558,7 @@ class TestDocumentSizeLimit:
         assert text.answer_calls == []
 
     @pytest.mark.asyncio
-    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self) -> None:
         from threetears.agent.tools.builtin.analyze_media import MAX_DOCUMENT_BYTES
 
         storage = FakeMediaStorage()
@@ -575,7 +573,7 @@ class TestDocumentSizeLimit:
         assert storage.download_limits == [MAX_DOCUMENT_BYTES]
 
     @pytest.mark.asyncio
-    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch):
+    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from threetears.agent.tools.builtin import analyze_media
 
         monkeypatch.setattr(analyze_media, "MAX_DOCUMENT_BYTES", 8)
@@ -596,7 +594,7 @@ class TestDocumentNotFullyRead:
     """a document whose parser could not read every part says so above the answer."""
 
     @pytest.mark.asyncio
-    async def test_a_part_the_parser_could_not_read_is_named(self, monkeypatch):
+    async def test_a_part_the_parser_could_not_read_is_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import docx
         import docx.document
 
@@ -628,7 +626,7 @@ class TestTranscriptionSizeLimit:
     """audio and video are read for transcription only up to MAX_TRANSCRIPTION_BYTES."""
 
     @pytest.mark.asyncio
-    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self) -> None:
         from threetears.agent.tools.builtin.analyze_media import MAX_TRANSCRIPTION_BYTES
 
         storage = FakeMediaStorage()
@@ -650,7 +648,7 @@ class TestTranscriptionSizeLimit:
         assert transcription.calls == []
 
     @pytest.mark.asyncio
-    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self) -> None:
         from threetears.agent.tools.builtin.analyze_media import MAX_TRANSCRIPTION_BYTES
 
         storage = FakeMediaStorage()
@@ -665,7 +663,7 @@ class TestTranscriptionSizeLimit:
         assert storage.download_limits == [MAX_TRANSCRIPTION_BYTES]
 
     @pytest.mark.asyncio
-    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch):
+    async def test_a_read_that_passes_the_limit_answers_too_large(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from threetears.agent.tools.builtin import analyze_media
 
         monkeypatch.setattr(analyze_media, "MAX_TRANSCRIPTION_BYTES", 8)
@@ -686,7 +684,7 @@ class TestVisionImageSizeLimit:
     """a bytes-taking vision backend is sent an image only up to MAX_VISION_IMAGE_BYTES."""
 
     @pytest.mark.asyncio
-    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self):
+    async def test_a_recorded_size_over_the_limit_is_refused_without_a_download(self) -> None:
         from threetears.agent.tools.builtin.analyze_media import MAX_VISION_IMAGE_BYTES
 
         storage = FakeMediaStorage()
@@ -704,7 +702,7 @@ class TestVisionImageSizeLimit:
         assert vision.analyze_calls == []
 
     @pytest.mark.asyncio
-    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self):
+    async def test_a_storage_that_does_not_know_the_size_is_asked_for_a_bounded_read(self) -> None:
         from threetears.agent.tools.builtin.analyze_media import MAX_VISION_IMAGE_BYTES
 
         storage = FakeMediaStorage()
@@ -719,7 +717,9 @@ class TestVisionImageSizeLimit:
         assert storage.download_limits == [MAX_VISION_IMAGE_BYTES]
 
     @pytest.mark.asyncio
-    async def test_one_image_over_the_limit_refuses_the_analysis_rather_than_dropping_it(self, monkeypatch):
+    async def test_one_image_over_the_limit_refuses_the_analysis_rather_than_dropping_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from threetears.agent.tools.builtin import analyze_media
 
         small = _small_jpeg()
@@ -744,7 +744,7 @@ class TestVisionImagePrepFailure:
     """an image that could not be prepared is sent as stored, and the result says so."""
 
     @pytest.mark.asyncio
-    async def test_an_image_that_could_not_be_resized_is_named_in_the_result(self):
+    async def test_an_image_that_could_not_be_resized_is_named_in_the_result(self) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("Something unreadable.")
         mid = uuid4()
@@ -765,7 +765,7 @@ class TestAudioVideoRouting:
     """Audio/video should route through transcription."""
 
     @pytest.mark.asyncio
-    async def test_audio_transcription(self):
+    async def test_audio_transcription(self) -> None:
         storage = FakeMediaStorage()
         transcription = FakeTranscriptionProvider("Hello from audio.")
         mid = uuid4()
@@ -795,7 +795,7 @@ class TestAudioVideoRouting:
         assert len(transcription.calls) == 1
 
     @pytest.mark.asyncio
-    async def test_a_transcript_past_the_bound_says_so_before_the_transcript(self):
+    async def test_a_transcript_past_the_bound_says_so_before_the_transcript(self) -> None:
         """The window line leads: a description after the transcript left the note mid-text."""
         storage = FakeMediaStorage()
         transcription = FakeTranscriptionProvider("spoken " * 3000)
@@ -812,7 +812,7 @@ class TestAudioVideoRouting:
         assert result.count("[characters ") == 1 and not result.rstrip().endswith("]"), "no note after the body"
 
     @pytest.mark.asyncio
-    async def test_a_plain_host_gets_a_plain_label(self):
+    async def test_a_plain_host_gets_a_plain_label(self) -> None:
         storage = FakeMediaStorage()
         transcription = FakeTranscriptionProvider("Hello from audio.")
         mid = uuid4()
@@ -827,7 +827,7 @@ class TestAudioVideoRouting:
         assert "Transcript (audio)" in result and "**" not in result
 
     @pytest.mark.asyncio
-    async def test_cached_transcript_returned(self):
+    async def test_cached_transcript_returned(self) -> None:
         storage = FakeMediaStorage()
         transcription = FakeTranscriptionProvider()
         mid = uuid4()
@@ -860,7 +860,7 @@ class TestCapabilityCheck:
     """Analyzer capability filtering."""
 
     @pytest.mark.asyncio
-    async def test_unsupported_category_rejected(self):
+    async def test_unsupported_category_rejected(self) -> None:
         storage = FakeMediaStorage()
         mid = uuid4()
         storage.add_media(
@@ -885,7 +885,7 @@ class TestDescriptionPersistence:
     """Results should be stored via MediaStorage."""
 
     @pytest.mark.asyncio
-    async def test_description_stored_after_vision(self):
+    async def test_description_stored_after_vision(self) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("Nice photo!")
         uid = uuid4()
@@ -904,7 +904,7 @@ class TestDescriptionPersistence:
         assert call["metadata"]["model_name"] == "TestVision"
 
     @pytest.mark.asyncio
-    async def test_on_analysis_callback_fires_for_vision(self):
+    async def test_on_analysis_callback_fires_for_vision(self) -> None:
         """The on_analysis callback fires after vision analysis."""
         storage = FakeMediaStorage()
         uid = uuid4()
@@ -925,7 +925,7 @@ class TestDescriptionPersistence:
         assert callback_calls[0][1] == "description"
 
     @pytest.mark.asyncio
-    async def test_on_analysis_callback_fires_for_transcription(self):
+    async def test_on_analysis_callback_fires_for_transcription(self) -> None:
         """The on_analysis callback also fires for new transcripts."""
         storage = FakeMediaStorage()
         transcription = FakeTranscriptionProvider("Hello!")
@@ -963,7 +963,7 @@ class TestDescriptionPersistence:
         assert callback_calls[0][2] == "Hello!"
 
     @pytest.mark.asyncio
-    async def test_on_analysis_callback_fires_for_document(self):
+    async def test_on_analysis_callback_fires_for_document(self) -> None:
         """The on_analysis callback fires for document descriptions."""
         storage = FakeMediaStorage()
         text_prov = FakeTextProvider("Doc summary.")
@@ -993,7 +993,7 @@ class TestNoUserIdMode:
     """Tool should work without a user_id (no persistence, still analyzes)."""
 
     @pytest.mark.asyncio
-    async def test_analysis_works_without_user_id(self):
+    async def test_analysis_works_without_user_id(self) -> None:
         storage = FakeMediaStorage()
         vision = FakeVisionProvider("No user result.")
         mid = uuid4()
@@ -1317,7 +1317,7 @@ class TestAQuestionGetsANewLook:
     """A question is answered by looking again, and only the describe ask is the item's description."""
 
     @pytest.mark.asyncio
-    async def test_two_questions_on_one_image_give_two_answers_and_leave_the_description_unchanged(self):
+    async def test_two_questions_on_one_image_give_two_answers_and_leave_the_description_unchanged(self) -> None:
         storage = FakeMediaStorage()
         vision = EchoVisionProvider()
         mid = uuid4()
@@ -1342,7 +1342,7 @@ class TestAQuestionGetsANewLook:
         assert "not kept" in first.split("\n", 1)[0]
 
     @pytest.mark.asyncio
-    async def test_the_describe_ask_is_kept_once_and_then_served_without_a_new_look(self):
+    async def test_the_describe_ask_is_kept_once_and_then_served_without_a_new_look(self) -> None:
         """the good traffic the rule must let through: describe, kept, then served from the store."""
         storage = FakeMediaStorage()
         vision = EchoVisionProvider()
@@ -1360,7 +1360,7 @@ class TestAQuestionGetsANewLook:
         assert served.startswith(f"The kept description of {mid}")
 
     @pytest.mark.asyncio
-    async def test_a_question_about_a_document_is_not_kept_as_its_description(self):
+    async def test_a_question_about_a_document_is_not_kept_as_its_description(self) -> None:
         storage = FakeMediaStorage()
         text = FakeTextProvider("42 widgets.")
         mid = uuid4()
@@ -1374,7 +1374,7 @@ class TestAQuestionGetsANewLook:
         assert storage.store_calls == []
 
     @pytest.mark.asyncio
-    async def test_an_item_the_storage_refused_is_never_answered_from_its_kept_description(self):
+    async def test_an_item_the_storage_refused_is_never_answered_from_its_kept_description(self) -> None:
         """another person's media: the storage resolves nothing, so the kept description is not served either."""
         storage = FakeMediaStorage()
         vision = EchoVisionProvider()
@@ -1389,7 +1389,7 @@ class TestAQuestionGetsANewLook:
         assert result.startswith("[analyze_media/load media] Error")
 
     @pytest.mark.asyncio
-    async def test_an_id_that_is_not_one_is_named(self):
+    async def test_an_id_that_is_not_one_is_named(self) -> None:
         tool = _make_tool(FakeMediaStorage())
 
         result = await tool.ainvoke({"media_ids": ["content-row-7"], "question": "What is it?"})
@@ -1409,7 +1409,7 @@ class TestFindAndOffsetInADocument:
         return mid
 
     @pytest.mark.asyncio
-    async def test_find_opens_the_reading_just_before_the_first_match_and_lists_every_match(self):
+    async def test_find_opens_the_reading_just_before_the_first_match_and_lists_every_match(self) -> None:
         from threetears.agent.tools.text_window import FIND_LEAD_CHARS
 
         storage = FakeMediaStorage()
@@ -1439,7 +1439,7 @@ class TestFindAndOffsetInADocument:
         assert storage.store_calls == []
 
     @pytest.mark.asyncio
-    async def test_a_find_with_no_match_reads_nothing_and_says_so(self):
+    async def test_a_find_with_no_match_reads_nothing_and_says_so(self) -> None:
         storage = FakeMediaStorage()
         text = FakeTextProvider("unused")
         mid = self._document(storage, "Revenue was 42 widgets.")
@@ -1455,7 +1455,7 @@ class TestFindAndOffsetInADocument:
         assert rest.startswith("Looked through ") and rest.endswith("no match, so no part was read.")
 
     @pytest.mark.asyncio
-    async def test_an_offset_reads_on_from_there_and_a_later_part_is_not_kept(self):
+    async def test_an_offset_reads_on_from_there_and_a_later_part_is_not_kept(self) -> None:
         storage = FakeMediaStorage()
         text = FakeTextProvider("Part two.")
         body = "a" * 100 + "b" * 100

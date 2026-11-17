@@ -24,7 +24,6 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-
 from threetears.evals.kernel.candidate_kind import (
     CandidateKindDefect,
     CandidateOutput,
@@ -38,18 +37,7 @@ from threetears.evals.kernel.candidate_kind import (
 )
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.host.apparatus import ApparatusError
-from threetears.evals.schema.subject import SubjectSnapshot
-from threetears.evals.schema.traces import CellTrace, TraceSink
-from threetears.evals.schema.models import (
-    AsyncDelivery,
-    ConversationStopCause,
-    EvalRun,
-    EvalTemplate,
-    EvalTestCase,
-    GoalStateOutcome,
-    PreconditionOutcome,
-    RoleUsage,
-)
+from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.kernel.world_session import WorldSession
 from threetears.evals.run.metering import MeteredCallLedger
@@ -60,11 +48,22 @@ from threetears.evals.run.runner import (
     execute_run,
     run_one_result,
 )
-from threetears.evals.kernel.identity import IDENTITY_VERSION, DerivedVariantIdentity, compute_variant_key
+from threetears.evals.schema.models import (
+    AsyncDelivery,
+    ConversationStopCause,
+    EvalRun,
+    EvalTemplate,
+    EvalTestCase,
+    GoalStateOutcome,
+    PreconditionOutcome,
+    RoleUsage,
+)
+from threetears.evals.schema.subject import SubjectSnapshot
+from threetears.evals.schema.traces import CellTrace, TraceSink
 from threetears.evals.schema.values import SweepableValue
-from packages.evals.tests.factories import make_eval_run
+
+from packages.evals.tests.factories import make_eval_run, memory_storage
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
-from packages.evals.tests.factories import memory_storage
 from packages.evals.tests.off_loop import off_loop
 
 #: The level map a cell stamped without a run in hand is keyed by: its model, and nothing else.
@@ -264,7 +263,7 @@ async def _run(kind: Any, template: EvalTemplate, *, sink: TraceSink | None = No
 # =============================================================================
 
 
-async def test_a_single_shot_kind_produces_a_result_with_no_subject_and_no_judge():
+async def test_a_single_shot_kind_produces_a_result_with_no_subject_and_no_judge() -> None:
     """The shape every non-conversational kind builds on, end to end through the real runner."""
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -296,7 +295,7 @@ async def test_a_single_shot_kind_produces_a_result_with_no_subject_and_no_judge
     assert result.candidate_instance_id == "sandbox-42"
 
 
-async def test_the_kind_receives_the_engines_half_of_the_subject_and_nothing_of_the_hosts():
+async def test_the_kind_receives_the_engines_half_of_the_subject_and_nothing_of_the_hosts() -> None:
     """The subject split, asserted at the call: ``prepare`` is handed the engine's snapshot alone.
 
     The host's rich half never passes through the engine — a kind that needs it has it bound into
@@ -321,7 +320,7 @@ async def test_the_kind_receives_the_engines_half_of_the_subject_and_nothing_of_
     assert kind.invoked_case is not None and kind.invoked_case.template_id == template.id
 
 
-async def test_every_result_of_a_run_names_the_model_the_run_was_launched_for():
+async def test_every_result_of_a_run_names_the_model_the_run_was_launched_for() -> None:
     """``EvalResult.model`` is the run's ``candidate_model``, as the runner writes it.
 
     Driven through :func:`execute_run`, the entrypoint that reads the model off the run —
@@ -397,7 +396,7 @@ class _ApparatusFaultOnInvokeKind(_FakeSingleShotKind):
 )
 async def test_a_cell_that_did_not_complete_still_names_the_model_the_run_was_launched_for(
     make_kind: Any, raised: AbstractContextManager[Any]
-):
+) -> None:
     """Every arm that writes a result writes the run's ``candidate_model`` — not only the one that completes.
 
     The runner builds an :class:`EvalResult` on each exit separately, so the completed arm above says
@@ -431,7 +430,7 @@ async def test_a_cell_that_did_not_complete_still_names_the_model_the_run_was_la
     assert result.model == run.candidate_model
 
 
-async def test_the_candidates_errors_reach_the_result_split_the_way_scoring_reads_them():
+async def test_the_candidates_errors_reach_the_result_split_the_way_scoring_reads_them() -> None:
     """A candidate error FAILS a cell and an infra error EXCLUDES it, so they stay apart."""
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -448,7 +447,7 @@ async def test_the_candidates_errors_reach_the_result_split_the_way_scoring_read
     assert result.runner_error == "candidate turn LLM error: boom; harness: nope"
 
 
-async def test_telemetry_the_kind_reports_lands_on_the_result():
+async def test_telemetry_the_kind_reports_lands_on_the_result() -> None:
     """Everything below the dispatch reads telemetry, and never the kind that made it."""
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -474,7 +473,7 @@ async def test_telemetry_the_kind_reports_lands_on_the_result():
     assert result.latency.total_ms is None
 
 
-async def test_a_kinds_own_refusals_are_added_to_the_runs_and_neither_is_dropped():
+async def test_a_kinds_own_refusals_are_added_to_the_runs_and_neither_is_dropped() -> None:
     """The case ``CandidateTelemetry.metered_calls_refused`` now exists for, driven end to end.
 
     The count on the result is the RUNNER's, taken against the run's ledger around the whole
@@ -532,7 +531,7 @@ async def test_a_kinds_own_refusals_are_added_to_the_runs_and_neither_is_dropped
     )
 
 
-async def test_a_kind_that_reports_no_async_deliveries_observed_nothing():
+async def test_a_kind_that_reports_no_async_deliveries_observed_nothing() -> None:
     """The record's absence is unobserved — not a crash, and not an empty that claims a watch.
 
     ``[]`` would say the kind watched for background work and none was started; a kind that
@@ -548,7 +547,7 @@ async def test_a_kind_that_reports_no_async_deliveries_observed_nothing():
     assert result.stop_cause is None
 
 
-async def test_a_kinds_async_deliveries_land_on_the_result_verbatim():
+async def test_a_kinds_async_deliveries_land_on_the_result_verbatim() -> None:
     """A scout acknowledged on one turn and delivered two turns later is stored as the kind reported it."""
     scouted = AsyncDelivery(
         tool="scout_ahead",
@@ -608,7 +607,9 @@ def _live_scout(**overrides: Any) -> AsyncDelivery:
 _SILENT_CARRIER = "report no spend at all"
 
 
-async def test_live_background_work_with_no_spend_row_is_logged_as_a_broken_carrier(caplog):
+async def test_live_background_work_with_no_spend_row_is_logged_as_a_broken_carrier(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A delivery that ran on a model spent tokens there; one reporting none lost its spend on the way."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}], async_deliveries=[_live_scout()]))
 
@@ -631,7 +632,9 @@ async def test_live_background_work_with_no_spend_row_is_logged_as_a_broken_carr
         pytest.param(_live_scout(status="undelivered", delivered_turn=None), id="it-was-still-in-flight"),
     ],
 )
-async def test_background_work_that_honestly_spent_nothing_measurable_is_not_logged(caplog, delivery):
+async def test_background_work_that_honestly_spent_nothing_measurable_is_not_logged(
+    caplog: pytest.LogCaptureFixture, delivery
+) -> None:
     """The detector's condition is narrow on purpose: one that cries wolf trains its reader to ignore it."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}], async_deliveries=[delivery]))
 
@@ -641,7 +644,7 @@ async def test_background_work_that_honestly_spent_nothing_measurable_is_not_log
     assert not any(_SILENT_CARRIER in r.getMessage() for r in caplog.records), caplog.text
 
 
-async def test_a_conversing_kind_reports_its_stop_cause_onto_the_result():
+async def test_a_conversing_kind_reports_its_stop_cause_onto_the_result() -> None:
     """The stop cause a kind reports is the one the stored result carries."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}], stop_cause=ConversationStopCause.USER_DONE))
 
@@ -680,7 +683,9 @@ class _WatchingButUnreachedSink:
         yield CellTrace()
 
 
-async def test_a_kind_that_opens_no_span_window_says_so_while_a_sink_is_watching(caplog):
+async def test_a_kind_that_opens_no_span_window_says_so_while_a_sink_is_watching(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """The disclosure exercised, so the warning is held by a test rather than by prose.
 
     The harvest warns rather than letting a cell leave the cost-vs-latency comparison silently.
@@ -708,7 +713,9 @@ async def test_a_kind_that_opens_no_span_window_says_so_while_a_sink_is_watching
     assert any(_FAKE_KIND in message and "no span collection window" in message for message in warnings), warnings
 
 
-async def test_a_kind_that_says_it_did_no_timed_work_is_not_blamed_for_the_missing_window(caplog):
+async def test_a_kind_that_says_it_did_no_timed_work_is_not_blamed_for_the_missing_window(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A replay has no latency; the cell leaves the axis, and the kind is not accused of an omission.
 
     Same fake kind, same watching sink as the test above — the only difference is the kind's own
@@ -737,7 +744,7 @@ async def test_a_kind_that_says_it_did_no_timed_work_is_not_blamed_for_the_missi
     assert any("did no timed work" in m and "a replay of a stored artifact" in m for m in infos), infos
 
 
-async def test_a_cell_with_no_sink_wired_stays_quiet_about_its_missing_window(caplog):
+async def test_a_cell_with_no_sink_wired_stays_quiet_about_its_missing_window(caplog: pytest.LogCaptureFixture) -> None:
     """Nobody was watching, so there is nothing to disclose — the third state, kept distinct.
 
     `trace_sink=None` is a decision at the call site, not a mechanism that stopped working.
@@ -808,7 +815,7 @@ class _WindowOpeningKind(_FakeSingleShotKind):
             return await super().invoke(instance, test_case, sink)
 
 
-async def test_a_kind_built_outside_this_module_times_its_own_cell_through_the_window():
+async def test_a_kind_built_outside_this_module_times_its_own_cell_through_the_window() -> None:
     """The port: a kind the runner could not have built opens the cell's window and is timed.
 
     This is the case that could not be written before the window was an argument, and it is
@@ -834,7 +841,7 @@ async def test_a_kind_built_outside_this_module_times_its_own_cell_through_the_w
     assert trace.otel_trace == [{"name": "candidate.work"}], "the harvested spans ride out on the trace document"
 
 
-async def test_a_window_that_closed_on_no_turn_root_span_is_disclosed_as_that(caplog):
+async def test_a_window_that_closed_on_no_turn_root_span_is_disclosed_as_that(caplog: pytest.LogCaptureFixture) -> None:
     """The second disclosure, kept apart from the first because the repair is the opposite.
 
     A kind can open the window and still be untimed — nothing it called emitted the
@@ -860,7 +867,7 @@ async def test_a_window_that_closed_on_no_turn_root_span_is_disclosed_as_that(ca
     assert not any("opened no span collection window" in message for message in warnings), warnings
 
 
-async def test_a_kind_payload_is_stored_verbatim_and_never_unpacked_by_the_runner():
+async def test_a_kind_payload_is_stored_verbatim_and_never_unpacked_by_the_runner() -> None:
     """``kind_payload`` is opaque: the engine stores it as the kind wrote it and reads nothing off it.
 
     The record the runner does read arrives on its own declared field, ``async_deliveries``. A
@@ -881,7 +888,7 @@ async def test_a_kind_payload_is_stored_verbatim_and_never_unpacked_by_the_runne
     assert result.async_deliveries is None
 
 
-async def test_a_kind_payload_round_trips_through_storage():
+async def test_a_kind_payload_round_trips_through_storage() -> None:
     """What a kind reported is what a later reader gets back from the store, field for field."""
     payload = {"router": {"label": "attack", "confidence": 0.82, "runner_up": None}, "turns": [1, 2]}
     delivery = AsyncDelivery(
@@ -918,7 +925,7 @@ _WHITESPACE_PAYLOAD = {
 }
 
 
-async def test_a_kind_payload_keeps_its_whitespace_from_the_kind_to_the_store():
+async def test_a_kind_payload_keeps_its_whitespace_from_the_kind_to_the_store() -> None:
     """Verbatim means the kind's own bytes: no key trimmed, no two keys collapsed, no value trimmed."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}], kind_payload=_WHITESPACE_PAYLOAD))
     result, trace = await _run(kind, _template())
@@ -931,7 +938,7 @@ async def test_a_kind_payload_keeps_its_whitespace_from_the_kind_to_the_store():
     assert loaded is not None and loaded.kind_payload == _WHITESPACE_PAYLOAD
 
 
-def test_a_host_payload_keeps_its_keys_verbatim_on_a_run_and_a_case():
+def test_a_host_payload_keeps_its_keys_verbatim_on_a_run_and_a_case() -> None:
     """The host's own opaque payloads are stored as the host wrote them, top-level keys included."""
     payload = {" ns ": {" key ": " value "}, "ns": {"key": "value"}}
     run = make_eval_run(host_payload=payload)
@@ -946,7 +953,7 @@ def test_a_host_payload_keeps_its_keys_verbatim_on_a_run_and_a_case():
     [object(), "a lone \ud800 surrogate"],
     ids=["not-a-json-value", "a-lone-surrogate"],
 )
-def test_a_kind_payload_that_storage_cannot_encode_is_refused_at_construction(carrier):
+def test_a_kind_payload_that_storage_cannot_encode_is_refused_at_construction(carrier) -> None:
     """Refused where the kind builds its output, not at the write after the judging was paid for.
 
     A lone surrogate is refused for the same reason: no UTF-8 store can hold it as written, and the
@@ -968,7 +975,7 @@ def test_a_kind_payload_that_storage_cannot_encode_is_refused_at_construction(ca
         ("seed_failed", "apparatus: malformed seed"),
     ],
 )
-async def test_a_refused_preparation_records_one_cleanly_excluded_cell(termination: str, error: str):
+async def test_a_refused_preparation_records_one_cleanly_excluded_cell(termination: str, error: str) -> None:
     """The termination the kind names is the arm the record carries — it is how an operator navigates."""
     kind = _FailingPrepareKind(CandidatePreparationFailed(error, termination=termination))
 
@@ -986,7 +993,7 @@ async def test_a_refused_preparation_records_one_cleanly_excluded_cell(terminati
     assert result.kind_payload is None
 
 
-async def test_a_refused_precondition_carries_its_outcomes_onto_the_record():
+async def test_a_refused_precondition_carries_its_outcomes_onto_the_record() -> None:
     """The arm that HAS outcomes keeps them: an exclusion is read by asking what was presumed."""
     outcome = PreconditionOutcome(expression="call_count('x') == 0", presumes="a clean world", held=False, detail="1")
     kind = _FailingPrepareKind(
@@ -999,7 +1006,7 @@ async def test_a_refused_precondition_carries_its_outcomes_onto_the_record():
     assert [o.expression for o in result.precondition_outcomes] == ["call_count('x') == 0"]
 
 
-async def test_an_unwired_kind_fails_the_run_rather_than_the_cell():
+async def test_an_unwired_kind_fails_the_run_rather_than_the_cell() -> None:
     """Every cell would fail identically, so this is a misconfigured run, not a partial one."""
     with pytest.raises(UnknownCandidateKind) as caught:
         await _run(_FakeSingleShotKind(CandidateOutput()), _template(candidate_kind="artifact-generator"))
@@ -1015,7 +1022,7 @@ async def test_an_unwired_kind_fails_the_run_rather_than_the_cell():
 # =============================================================================
 
 
-def test_a_template_that_names_no_kind_is_refused():
+def test_a_template_that_names_no_kind_is_refused() -> None:
     """A template states its kind: no host's kind name is assumed for one that does not.
 
     The default was one host's word, which every other host would have inherited without choosing
@@ -1026,7 +1033,7 @@ def test_a_template_that_names_no_kind_is_refused():
     assert EvalTemplate(scope_id="uni-1", name="t", intent="i", candidate_kind="any-kind").candidate_kind == "any-kind"
 
 
-async def test_every_kind_can_open_its_windows_without_asking_whether_anyone_is_watching():
+async def test_every_kind_can_open_its_windows_without_asking_whether_anyone_is_watching() -> None:
     """The engine side of the port, and the one promise it makes to a kind.
 
     The object every kind is handed as ``prepare``'s ``span_window`` must, per
@@ -1059,7 +1066,7 @@ def _eval_modules() -> list[Path]:
     return sorted(_EVAL_ROOT.rglob("*.py"))
 
 
-def test_the_runner_tier_reads_a_templates_candidate_kind_exactly_once():
+def test_the_runner_tier_reads_a_templates_candidate_kind_exactly_once() -> None:
     """The RUN tier dispatches once, at the top of a cell, and nowhere else.
 
     A second reader within a tier is how a kind acquires a second meaning — one branch
@@ -1091,7 +1098,7 @@ def test_the_runner_tier_reads_a_templates_candidate_kind_exactly_once():
     )
 
 
-def test_no_engine_module_names_the_conversational_kinds_implementation():
+def test_no_engine_module_names_the_conversational_kinds_implementation() -> None:
     """The conversational kind is a host's adapter; no module of the engine may name it.
 
     The protocol module is the opposite and is imported freely — that is what a declaration is
@@ -1123,7 +1130,7 @@ def test_no_engine_module_names_the_conversational_kinds_implementation():
     )
 
 
-def test_the_protocol_module_reaches_no_host_package():
+def test_the_protocol_module_reaches_no_host_package() -> None:
     """The seam's declaration travels with the engine, so it imports nothing host-side.
 
     The repo-wide form of this is ``test_extraction_import_boundary.py``; the point of
@@ -1147,7 +1154,7 @@ def test_the_protocol_module_reaches_no_host_package():
     assert not host, f"threetears/evals/kernel/candidate_kind.py reaches host packages: {host}"
 
 
-def test_the_seam_declares_no_trace_field():
+def test_the_seam_declares_no_trace_field() -> None:
     """The no-trace disposition, as a test rather than a paragraph.
 
     The objection to this boundary is that ``CandidateOutput.trace`` would leak a host's
@@ -1165,7 +1172,7 @@ def test_the_seam_declares_no_trace_field():
 # =============================================================================
 
 
-def test_the_candidate_kind_is_a_coordinate_of_every_variant():
+def test_the_candidate_kind_is_a_coordinate_of_every_variant() -> None:
     """A kind is what the candidate IS, so two kinds at one model are two variants.
 
     This used to assert the opposite — that the kind was a property of the template and never
@@ -1196,7 +1203,7 @@ def test_the_candidate_kind_is_a_coordinate_of_every_variant():
 # =============================================================================
 
 
-async def test_a_kind_that_samples_no_conditions_does_not_erase_the_runners_own_reading():
+async def test_a_kind_that_samples_no_conditions_does_not_erase_the_runners_own_reading() -> None:
     """The measurement-condition covariate is a high-water mark across the cell, and the seam must not be a hole.
 
     The runner samples around the kind and a conversational turn keeps sampling through its
@@ -1218,7 +1225,7 @@ async def test_a_kind_that_samples_no_conditions_does_not_erase_the_runners_own_
     assert result.covariates.get("execution_mode") == "concurrent"
 
 
-async def test_a_kind_that_samples_busier_conditions_wins_over_the_runners_reading():
+async def test_a_kind_that_samples_busier_conditions_wins_over_the_runners_reading() -> None:
     """The other direction of the same rule: a busier observation replaces a quieter one."""
     kind = _FakeSingleShotKind(
         CandidateOutput(output=[{"content": "x"}], telemetry=CandidateTelemetry(concurrent_eval_jobs=3))
@@ -1277,7 +1284,7 @@ class _RecordingJudgeLLM:
         )
 
 
-async def test_a_document_candidate_is_judged_on_its_rubric_against_the_material_it_was_given():
+async def test_a_document_candidate_is_judged_on_its_rubric_against_the_material_it_was_given() -> None:
     """The seam a report, an extraction or a summary needs, end to end through the real runner.
 
     Such a candidate's output is one document, which the transcript renderer cannot show, and
@@ -1286,9 +1293,8 @@ async def test_a_document_candidate_is_judged_on_its_rubric_against_the_material
     conversation turn, (b) put the case material and the rendered output in every prompt, and
     (c) skip the transcript and outcome axes, which have no turns or goals to read here.
     """
-    from threetears.evals.schema.models import JudgeEvidence
-    from threetears.evals.schema.models import RubricDim
     from threetears.evals.run.judge_service import JudgeService
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
 
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -1323,14 +1329,14 @@ async def test_a_document_candidate_is_judged_on_its_rubric_against_the_material
     assert "passages of the output and of the case material" in system and "transcript" not in system
 
 
-async def test_a_conversational_candidate_gets_both_axes_and_the_transcript_its_kind_rendered():
+async def test_a_conversational_candidate_gets_both_axes_and_the_transcript_its_kind_rendered() -> None:
     """The other side of the switch, on the same fixture: a transcript declaration, all three axes.
 
     The transcript is the KIND's rendering — the engine never reads the turns in ``output`` — so
     what every call carries is the artifact string, under the transcript heading.
     """
-    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run.judge_service import JudgeService
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
 
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -1385,15 +1391,15 @@ def _judge_evidence() -> Any:
     ],
     ids=["a-document-with-no-evidence", "a-transcript-with-no-evidence", "an-unjudged-kind-with-evidence"],
 )
-async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_judge_call(declared, evidence):
+async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_judge_call(declared, evidence) -> None:
     """The axes follow the kind's declaration, and the evidence is the kind's to render.
 
     The engine renders nothing a judge reads, so a judged kind — transcript or document — that
     handed back output without evidence has left its judge nothing to read; an unjudged kind that
     rendered some is contradicting its own declaration. Either is the kind's defect and names it.
     """
-    from threetears.evals.schema.models import RubricDim
     from threetears.evals.run.judge_service import JudgeService
+    from threetears.evals.schema.models import RubricDim
 
     kind = _FakeSingleShotKind(
         CandidateOutput(output=[{"document": "extraction"}], judge_evidence=_judge_evidence() if evidence else None),
@@ -1420,10 +1426,10 @@ async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_
 
 
 @pytest.mark.parametrize("declared", [JudgedArtifact.DOCUMENT, JudgedArtifact.TRANSCRIPT])
-async def test_a_judged_kind_that_produced_nothing_owes_no_evidence(declared):
+async def test_a_judged_kind_that_produced_nothing_owes_no_evidence(declared) -> None:
     """An empty output is a cell that produced nothing to judge — a failed generation — not a defect."""
-    from threetears.evals.schema.models import RubricDim
     from threetears.evals.run.judge_service import JudgeService
+    from threetears.evals.schema.models import RubricDim
 
     kind = _FakeSingleShotKind(CandidateOutput(candidate_errors=["generation refused"]), judged_artifact=declared)
     template = _template(
@@ -1443,7 +1449,7 @@ async def test_a_judged_kind_that_produced_nothing_owes_no_evidence(declared):
     assert judge.calls == []
 
 
-async def test_a_judge_wired_to_an_unjudged_kind_is_refused_before_the_candidate_is_built():
+async def test_a_judge_wired_to_an_unjudged_kind_is_refused_before_the_candidate_is_built() -> None:
     """Nothing a judge could read, so nothing is spent finding that out: ``prepare`` is never reached."""
     from threetears.evals.run.judge_service import JudgeService
 
@@ -1464,7 +1470,7 @@ async def test_a_judge_wired_to_an_unjudged_kind_is_refused_before_the_candidate
 
 
 @pytest.mark.parametrize("declared", [None, "document"], ids=["undeclared", "a-bare-string"])
-async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_built(declared):
+async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_built(declared) -> None:
     """A host kind written to the two-operation seam gets a refusal naming the contract, not an AttributeError."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}]))
     if declared is None:
@@ -1478,7 +1484,7 @@ async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_buil
     assert kind.prepared is None
 
 
-def test_every_shipped_kind_declares_what_a_judge_reads_of_it():
+def test_every_shipped_kind_declares_what_a_judge_reads_of_it() -> None:
     """The declaration is what picks the axes, so each kind this package ships is pinned.
 
     The engine ships the judge kind and the report writer's; a host's own kinds (a conversational turn, a
@@ -1491,7 +1497,7 @@ def test_every_shipped_kind_declares_what_a_judge_reads_of_it():
     assert JudgeKind.judged_artifact is JudgedArtifact.UNJUDGED
 
 
-def test_an_account_refusal_must_record_the_apparatus_fault_it_is():
+def test_an_account_refusal_must_record_the_apparatus_fault_it_is() -> None:
     """``account_refused`` without an ``infra_errors`` entry is refused at construction.
 
     Without the entry nothing excludes the refused cell — it would be scored — and the run would
@@ -1507,8 +1513,8 @@ def test_an_account_refusal_must_record_the_apparatus_fault_it_is():
 
 async def test_the_runner_refuses_a_kind_landing_the_derived_accuracy_before_paying_its_judge() -> None:
     """``accuracy`` is derived from ``match``; a kind landing it is its own code, so every cell would, and the judge waits."""
-    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run import JudgeService
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
 
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -1531,8 +1537,8 @@ async def test_the_runner_refuses_a_kind_landing_the_derived_accuracy_before_pay
 @pytest.mark.parametrize("name", ["cost_usd", "score", "goal_state:state.done", "classifier:recall:a"])
 async def test_the_runner_refuses_a_kind_landing_any_engine_owned_measure_before_paying_its_judge(name: str) -> None:
     """No host can declare a core-named measure, so a kind landing one would pool into the engine's own reading."""
-    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run import JudgeService
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
 
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -1563,8 +1569,8 @@ async def test_the_runner_refuses_a_host_measure_its_declared_type_does_not_fit_
     measured: dict[str, float | str], named: str
 ) -> None:
     """A float under a boolean measure, or text under a numeric one, is refused at write and never coerced."""
-    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run import JudgeService
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
 
     kind = _FakeSingleShotKind(
         CandidateOutput(
@@ -1718,8 +1724,8 @@ def test_the_classifier_track_s_own_keys_are_the_only_core_named_host_measures()
 
 async def test_the_runner_refuses_double_reported_background_spend_before_paying_its_judge() -> None:
     """Assembly folds the rows after judging, so the runner's refusal must come first or the judge is paid for nothing."""
-    from threetears.evals.schema.models import JudgeEvidence, RubricDim
     from threetears.evals.run import JudgeService
+    from threetears.evals.schema.models import JudgeEvidence, RubricDim
 
     usage = [RoleUsage(role="inner_agent", model="scout/model", call_count=1, cost_usd=0.1, price_source="script")]
     kind = _FakeSingleShotKind(

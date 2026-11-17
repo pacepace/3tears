@@ -11,11 +11,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-
 import pytest
-
-from threetears.evals.kernel.result_reading import ReadingsRead, ResultReading
 from threetears.evals.analysis import measurement_windows
+from threetears.evals.analysis.lenses.comparison_sets import BADGE_MEASUREMENT_WINDOWS_DISJOINT, compute_comparison_sets
 from threetears.evals.analysis.measurement_windows import (
     DISJOINT_WINDOWS_CLAUSE,
     MAX_INLINE_MEASUREMENT_WINDOWS,
@@ -24,16 +22,16 @@ from threetears.evals.analysis.measurement_windows import (
     measurement_window,
     measurement_window_disclosure,
 )
-from threetears.evals.analysis.lenses.comparison_sets import BADGE_MEASUREMENT_WINDOWS_DISJOINT, compute_comparison_sets
 from threetears.evals.analysis.reads import comparison_sets
+from threetears.evals.kernel.identity import IDENTITY_VERSION
+from threetears.evals.kernel.result_reading import ReadingsRead, ResultReading
+from threetears.evals.run.reads import list_runs
 from threetears.evals.schema import SubjectSnapshot
 from threetears.evals.schema.models import EvalResult, EvalRun
-from threetears.evals.run.reads import list_runs
-from threetears.evals.kernel.identity import IDENTITY_VERSION
+
 from packages.evals.tests.factories import as_listed
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-
 
 #: The host whose vocabulary every grouping here reads: the toy host. Nothing in this module is
 #: about any particular host's levers -- every run carries the same subject and an empty payload --
@@ -188,7 +186,7 @@ class _WindowStorage:
 # =============================================================================
 
 
-def test_measurement_window_is_the_span_of_its_results_scored_at():
+def test_measurement_window_is_the_span_of_its_results_scored_at() -> None:
     results = [
         _result("r1", "2026-08-04T23:04:32.100000+00:00"),
         _result("r1", "2026-08-04T22:22:09.000000+00:00"),
@@ -200,7 +198,7 @@ def test_measurement_window_is_the_span_of_its_results_scored_at():
     assert window == _window("r1", "2026-08-04T22:22:09.000000+00:00", "2026-08-04T23:04:32.100000+00:00")
 
 
-def test_measurement_window_is_derived_from_result_timestamps_and_not_the_runs_own_span():
+def test_measurement_window_is_derived_from_result_timestamps_and_not_the_runs_own_span() -> None:
     """The corrected premise, pinned as an assertion rather than left as prose.
 
     A run document is saved — stamping ``created_at`` — before its execution task
@@ -254,7 +252,7 @@ def test_measurement_window_is_derived_from_result_timestamps_and_not_the_runs_o
     assert bool_disjoint([w for w in windows if w is not None])
 
 
-def test_a_run_with_no_results_has_no_measurement_window():
+def test_a_run_with_no_results_has_no_measurement_window() -> None:
     """``None``, never a zero-length span.
 
     A run that measured nothing did not measure it "at" some instant, and a
@@ -264,7 +262,7 @@ def test_a_run_with_no_results_has_no_measurement_window():
     assert measurement_window("r1", []) is None
 
 
-def test_a_result_carrying_no_timestamp_does_not_anchor_a_window_at_the_epoch():
+def test_a_result_carrying_no_timestamp_does_not_anchor_a_window_at_the_epoch() -> None:
     """A blank stamp is unknown, not "the beginning of time"."""
     results = [_result("r1", ""), _result("r1", "2026-08-04T22:22:09.000000+00:00")]
 
@@ -279,7 +277,7 @@ def test_a_result_carrying_no_timestamp_does_not_anchor_a_window_at_the_epoch():
 # =============================================================================
 
 
-def test_disjoint_measurement_windows_are_reported_as_disjoint():
+def test_disjoint_measurement_windows_are_reported_as_disjoint() -> None:
     windows = [
         _window("morning", "2026-08-04T09:00:00+00:00", "2026-08-04T10:30:00+00:00"),
         _window("evening", "2026-08-04T21:00:00+00:00", "2026-08-04T22:15:00+00:00"),
@@ -288,7 +286,7 @@ def test_disjoint_measurement_windows_are_reported_as_disjoint():
     assert bool_disjoint(windows) is True
 
 
-def test_overlapping_measurement_windows_are_not():
+def test_overlapping_measurement_windows_are_not() -> None:
     windows = [
         _window("a", "2026-08-04T09:00:00+00:00", "2026-08-04T11:00:00+00:00"),
         _window("b", "2026-08-04T10:00:00+00:00", "2026-08-04T12:00:00+00:00"),
@@ -298,7 +296,7 @@ def test_overlapping_measurement_windows_are_not():
     assert measurement_window_disclosure(windows) is None
 
 
-def test_windows_that_merely_touch_still_overlap():
+def test_windows_that_merely_touch_still_overlap() -> None:
     """Two runs sharing an instant were running against the same conditions."""
     windows = [
         _window("a", "2026-08-04T09:00:00+00:00", "2026-08-04T11:00:00+00:00"),
@@ -308,7 +306,7 @@ def test_windows_that_merely_touch_still_overlap():
     assert bool_disjoint(windows) is False
 
 
-def test_any_disjoint_pair_is_enough_even_when_two_of_three_overlap():
+def test_any_disjoint_pair_is_enough_even_when_two_of_three_overlap() -> None:
     """Three arms, two concurrent and one the next morning, is the common sweep shape.
 
     Requiring *every* pair to be disjoint would report nothing there, which is the
@@ -323,7 +321,7 @@ def test_any_disjoint_pair_is_enough_even_when_two_of_three_overlap():
     assert bool_disjoint(windows) is True
 
 
-def test_a_run_with_no_resolvable_window_does_not_evidence_a_difference():
+def test_a_run_with_no_resolvable_window_does_not_evidence_a_difference() -> None:
     """Mixing a windowed run with a window-less one must report nothing.
 
     The absence-as-difference failure, which the attribution comparison had to be
@@ -338,7 +336,7 @@ def test_a_run_with_no_resolvable_window_does_not_evidence_a_difference():
     assert measurement_window_disclosure(resolved) is None
 
 
-def test_a_single_window_and_no_window_at_all_are_both_silent():
+def test_a_single_window_and_no_window_at_all_are_both_silent() -> None:
     assert bool_disjoint([]) is False
     assert bool_disjoint([_window("a", "2026-08-04T09:00:00+00:00", "2026-08-04T11:00:00+00:00")]) is False
 
@@ -348,7 +346,7 @@ def test_a_single_window_and_no_window_at_all_are_both_silent():
 # =============================================================================
 
 
-def test_the_disclosure_names_every_window_it_was_derived_from():
+def test_the_disclosure_names_every_window_it_was_derived_from() -> None:
     """ "The operator can judge severity" is only true if the spans are on the page.
 
     A bare caveat word says a gap exists; the reader still cannot tell four minutes
@@ -372,7 +370,7 @@ def test_the_disclosure_names_every_window_it_was_derived_from():
     assert disclosure.index("morning") < disclosure.index("evening")
 
 
-def test_a_large_group_summarises_to_its_outer_bounds_instead_of_every_span():
+def test_a_large_group_summarises_to_its_outer_bounds_instead_of_every_span() -> None:
     """Past a handful of runs the listing form stops being a disclosure.
 
     A 27-run group rendered every span inline as one unbroken paragraph, while the
@@ -402,7 +400,7 @@ def test_a_large_group_summarises_to_its_outer_bounds_instead_of_every_span():
     assert "full=true" in disclosure
 
 
-def test_the_summary_takes_the_latest_end_not_the_last_runs_end():
+def test_the_summary_takes_the_latest_end_not_the_last_runs_end() -> None:
     """Sorting by START does not put the latest END last.
 
     One long-running arm that began early can finish after every later arm. Reading
@@ -427,7 +425,7 @@ def test_the_summary_takes_the_latest_end_not_the_last_runs_end():
     assert "measured between 2026-08-04T09:00:00+00:00 and 2026-08-09T23:00:00+00:00" in disclosure
 
 
-def test_full_lists_every_span_however_many_there_are():
+def test_full_lists_every_span_however_many_there_are() -> None:
     """The detail stays reachable — summarising is a default, not a ceiling."""
     windows = [
         _window(f"run{i:02d}", f"2026-08-{4 + i:02d}T09:00:00+00:00", f"2026-08-{4 + i:02d}T10:00:00+00:00")
@@ -443,7 +441,7 @@ def test_full_lists_every_span_however_many_there_are():
     assert "not shown" not in disclosure
 
 
-def test_the_disclosure_states_the_magnitude_and_still_carries_no_verdict():
+def test_the_disclosure_states_the_magnitude_and_still_carries_no_verdict() -> None:
     """The gap's SIZE is reported; what the size MEANS is not.
 
     Reporting presents and compares but never editorializes: the surface's job is
@@ -487,7 +485,7 @@ def test_the_disclosure_states_the_magnitude_and_still_carries_no_verdict():
 # =============================================================================
 
 
-def test_a_partly_overlapping_group_does_not_claim_every_run_was_measured_apart():
+def test_a_partly_overlapping_group_does_not_claim_every_run_was_measured_apart() -> None:
     """The bug, reproduced from a real campaign's shape: three of six pairs disjoint, all four claimed.
 
     These four spans have a real campaign's shape. `run-a` contains
@@ -512,7 +510,7 @@ def test_a_partly_overlapping_group_does_not_claim_every_run_was_measured_apart(
     assert "attributable" not in disclosure
 
 
-def test_a_wholly_disjoint_group_still_states_the_universal_because_it_is_true():
+def test_a_wholly_disjoint_group_still_states_the_universal_because_it_is_true() -> None:
     """The fix must not over-hedge: when every pair is disjoint, say so plainly.
 
     A quantifier fix that downgraded the true universal to a count would trade one
@@ -535,7 +533,7 @@ def test_a_wholly_disjoint_group_still_states_the_universal_because_it_is_true()
     assert "attributable" not in disclosure
 
 
-def test_every_non_overlapping_pair_is_named_with_its_gap_widest_first():
+def test_every_non_overlapping_pair_is_named_with_its_gap_widest_first() -> None:
     """Which pairs, and how far — the two things the badge alone cannot carry.
 
     Widest first so the pair the reader most needs leads, and so a truncated tail
@@ -557,7 +555,7 @@ def test_every_non_overlapping_pair_is_named_with_its_gap_widest_first():
     assert disclosure.index("a and c, 2h30m") < disclosure.index("b and c, 2h00m") < disclosure.index("a and b, 1m00s")
 
 
-def test_a_gap_that_cannot_be_computed_is_admitted_rather_than_omitted():
+def test_a_gap_that_cannot_be_computed_is_admitted_rather_than_omitted() -> None:
     """A malformed stamp must not raise, and must not read as "no gap".
 
     The lexicographic discipline is what keeps this surface from raising on a
@@ -577,7 +575,7 @@ def test_a_gap_that_cannot_be_computed_is_admitted_rather_than_omitted():
     assert "malformed and iso, gap not computable from the recorded stamps" in disclosure
 
 
-def test_a_naive_stamp_beside_an_aware_one_yields_no_duration_rather_than_a_wrong_one():
+def test_a_naive_stamp_beside_an_aware_one_yields_no_duration_rather_than_a_wrong_one() -> None:
     """Subtracting a naive instant from an aware one is not a duration anybody measured."""
     windows = [
         _window("naive", "2026-08-04T09:00:00", "2026-08-04T10:00:00"),
@@ -602,7 +600,7 @@ def test_a_naive_stamp_beside_an_aware_one_yields_no_duration_rather_than_a_wron
         ),
     ],
 )
-def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, why):
+def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, why) -> None:
     """The three failures read alike: the reason each stamp pair yielded no duration was swallowed."""
     windows = [
         _window("earlier", *first),
@@ -617,7 +615,7 @@ def test_an_uncomputable_gap_says_why_it_could_not_be_computed(first, second, wh
     assert why in disclosure
 
 
-def test_the_summary_form_names_the_widest_gap_and_counts_the_rest():
+def test_the_summary_form_names_the_widest_gap_and_counts_the_rest() -> None:
     """Above the inline cap the pair list collapses the way the span list does.
 
     The earlier form refused to name a widest gap at all, on the ground that no
@@ -638,7 +636,7 @@ def test_the_summary_form_names_the_widest_gap_and_counts_the_rest():
     assert "20 further non-overlapping pair(s) not named" in disclosure
 
 
-def test_the_pair_list_caps_even_when_every_span_is_listed():
+def test_the_pair_list_caps_even_when_every_span_is_listed() -> None:
     """Spans grow linearly and pairs grow quadratically, so `full` cannot uncap both.
 
     A `full=true` read of a 22-run campaign holds 231 pairs; a paragraph of them
@@ -661,7 +659,7 @@ def test_the_pair_list_caps_even_when_every_span_is_listed():
     )
 
 
-def test_the_predicate_and_the_pair_list_are_one_derivation():
+def test_the_predicate_and_the_pair_list_are_one_derivation() -> None:
     """The badge and the prose read the same list, so they cannot disagree.
 
     `measurement_windows_are_disjoint` used to walk its own pairwise loop. Two
@@ -680,7 +678,7 @@ def test_the_predicate_and_the_pair_list_are_one_derivation():
     assert bool_disjoint(partly) is True
 
 
-def test_the_split_covers_every_pair_and_names_the_overlapping_half():
+def test_the_split_covers_every_pair_and_names_the_overlapping_half() -> None:
     """Both halves come off one enumeration, so neither can be the other's complement.
 
     The disclosure counts disjoint pairs against the total, and the model is handed the
@@ -703,7 +701,7 @@ def test_the_split_covers_every_pair_and_names_the_overlapping_half():
     assert [(both.first.run_id, both.second.run_id) for both in pairs.overlapping] == [("a", "b")]
 
 
-def test_a_run_set_too_small_to_pair_classifies_as_neither():
+def test_a_run_set_too_small_to_pair_classifies_as_neither() -> None:
     """One run cannot be measured apart from itself, and it cannot overlap itself either.
 
     The empty case matters because a partial-disclosure rule keyed on ``0 < D < P``
@@ -728,7 +726,7 @@ def test_a_run_set_too_small_to_pair_classifies_as_neither():
         (None, measurement_windows.UNCOMPUTABLE_GAP_CLAUSE),
     ],
 )
-def test_a_gap_renders_as_two_significant_units(seconds, rendered):
+def test_a_gap_renders_as_two_significant_units(seconds, rendered) -> None:
     """Compact and unit-word-free, so a list of pairs reads as numbers to weigh."""
     assert measurement_windows.format_window_gap(seconds) == rendered
 
@@ -743,7 +741,7 @@ def test_a_gap_renders_as_two_significant_units(seconds, rendered):
 # =============================================================================
 
 
-def test_a_group_whose_runs_were_measured_hours_apart_is_badged_and_names_the_spans():
+def test_a_group_whose_runs_were_measured_hours_apart_is_badged_and_names_the_spans() -> None:
     """The badge fires and the sentence carries the spans, on one predicate.
 
     Both halves are asserted together on purpose: the flag alone cannot tell four
@@ -768,7 +766,7 @@ def test_a_group_whose_runs_were_measured_hours_apart_is_badged_and_names_the_sp
     assert "2026-08-05T02:18:42.000000+00:00" in group.measurement_window_disclosure
 
 
-def test_runs_measured_over_the_same_stretch_are_not_badged():
+def test_runs_measured_over_the_same_stretch_are_not_badged() -> None:
     """The caveat must fire on the condition, not on every group that has results."""
     a, b = _grouped_run("arm-a"), _grouped_run("arm-b")
     results = [
@@ -784,7 +782,7 @@ def test_runs_measured_over_the_same_stretch_are_not_badged():
     assert group.measurement_window_disclosure is None
 
 
-def test_the_badge_and_its_sentence_are_never_reported_apart():
+def test_the_badge_and_its_sentence_are_never_reported_apart() -> None:
     """One predicate decides both, so no group can carry a flag with nothing behind it.
 
     Checked across a group that fires and one that does not, in a single call, so
@@ -816,7 +814,7 @@ def test_the_badge_and_its_sentence_are_never_reported_apart():
     assert {BADGE_MEASUREMENT_WINDOWS_DISJOINT in g.badges for g in groups} == {True, False}
 
 
-def test_a_run_that_produced_no_results_cannot_pull_the_badge():
+def test_a_run_that_produced_no_results_cannot_pull_the_badge() -> None:
     """An absence is not evidence that the run was measured somewhere else.
 
     The same rule the case-basis and attribution arms follow, asserted through the
@@ -835,7 +833,7 @@ def test_a_run_that_produced_no_results_cannot_pull_the_badge():
     assert group.measurement_window_disclosure is None
 
 
-def test_a_caller_that_supplies_no_results_asks_a_narrower_question_and_gets_no_badge():
+def test_a_caller_that_supplies_no_results_asks_a_narrower_question_and_gets_no_badge() -> None:
     """Undecidable, and silent rather than clean-looking on some invented basis.
 
     A caller with only the run documents cannot answer this — a run is stamped
@@ -862,7 +860,7 @@ def test_a_caller_that_supplies_no_results_asks_a_narrower_question_and_gets_no_
 # =============================================================================
 
 
-def test_the_service_reads_the_scopes_results_so_the_badge_can_reach_an_operator():
+def test_the_service_reads_the_scopes_results_so_the_badge_can_reach_an_operator() -> None:
     """End to end from stored documents: two arms measured hours apart, badged.
 
     The grouping cannot answer this from the run documents — a run is stamped
@@ -890,7 +888,7 @@ def test_the_service_reads_the_scopes_results_so_the_badge_can_reach_an_operator
     assert "2026-08-05T02:18:42.000000+00:00" in disclosure
 
 
-def test_the_service_leaves_runs_that_shared_a_stretch_unbadged():
+def test_the_service_leaves_runs_that_shared_a_stretch_unbadged() -> None:
     """The other half of the seam: reading the results must not badge everything.
 
     A test that only asserts the badge fires passes just as well against a

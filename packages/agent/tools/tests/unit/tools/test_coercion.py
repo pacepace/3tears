@@ -17,37 +17,35 @@ broadly) gave the appearance of coverage. behavioral coverage of
 from __future__ import annotations
 
 import pytest
-
 from threetears.agent.tools.coercion import coerce_value, normalize_kwargs
-
 
 # ---------------------------------------------------------------------------
 # coerce_value: array
 # ---------------------------------------------------------------------------
 
 
-def test_coerce_value_array_passthrough_when_already_list():
+def test_coerce_value_array_passthrough_when_already_list() -> None:
     """already-list values pass through untouched."""
     assert coerce_value([1, 2, 3], "array") == [1, 2, 3]
 
 
-def test_coerce_value_array_empty_string_becomes_empty_list():
+def test_coerce_value_array_empty_string_becomes_empty_list() -> None:
     """empty string for an array field is treated as 'give me []'."""
     assert coerce_value("", "array") == []
 
 
-def test_coerce_value_array_json_encoded_string_is_decoded():
+def test_coerce_value_array_json_encoded_string_is_decoded() -> None:
     """JSON-encoded array string is parsed back into a list."""
     assert coerce_value("[1, 2, 3]", "array") == [1, 2, 3]
 
 
-def test_coerce_value_array_json_encoded_uuid_strings():
+def test_coerce_value_array_json_encoded_uuid_strings() -> None:
     """common LLM pattern: stringified list of UUIDs decodes correctly."""
     uuids = ["06a0ccd8-9199-75d6-8000-329082f7144d", "06a0ce89-6e83-7317-8000-3be8cf86198e"]
     assert coerce_value(str(uuids).replace("'", '"'), "array") == uuids
 
 
-def test_coerce_value_array_malformed_json_passes_through():
+def test_coerce_value_array_malformed_json_passes_through() -> None:
     """malformed JSON raises ValueError inside json.loads; coerce_value
     must swallow it and return the original value so the subclass
     ``execute`` can decide how to handle it. without the except clause
@@ -60,7 +58,7 @@ def test_coerce_value_array_malformed_json_passes_through():
     assert coerce_value("garbage", "array") == "garbage"
 
 
-def test_coerce_value_array_json_object_string_does_not_become_array():
+def test_coerce_value_array_json_object_string_does_not_become_array() -> None:
     """a JSON object string supplied for an array field is NOT coerced.
 
     coercion only succeeds when the decoded type matches the declared
@@ -75,35 +73,35 @@ def test_coerce_value_array_json_object_string_does_not_become_array():
 # ---------------------------------------------------------------------------
 
 
-def test_coerce_value_object_passthrough_when_already_dict():
+def test_coerce_value_object_passthrough_when_already_dict() -> None:
     """already-dict values pass through untouched."""
     assert coerce_value({"a": 1}, "object") == {"a": 1}
 
 
-def test_coerce_value_object_empty_string_becomes_empty_dict():
+def test_coerce_value_object_empty_string_becomes_empty_dict() -> None:
     """empty string for an object field is treated as 'give me {}'."""
     assert coerce_value("", "object") == {}
 
 
-def test_coerce_value_object_json_encoded_string_is_decoded():
+def test_coerce_value_object_json_encoded_string_is_decoded() -> None:
     """JSON-encoded dict string is parsed back into a dict."""
     assert coerce_value('{"a": 1, "b": "two"}', "object") == {"a": 1, "b": "two"}
 
 
-def test_coerce_value_object_nested_json_encoded():
+def test_coerce_value_object_nested_json_encoded() -> None:
     """nested JSON (object containing array) decodes correctly."""
     payload = '{"name": "demo", "items": [1, 2, 3]}'
     assert coerce_value(payload, "object") == {"name": "demo", "items": [1, 2, 3]}
 
 
-def test_coerce_value_object_malformed_json_passes_through():
+def test_coerce_value_object_malformed_json_passes_through() -> None:
     """malformed JSON for an object field must be swallowed and the
     original string returned unchanged. mirrors the array branch.
     """
     assert coerce_value("{this is not json", "object") == "{this is not json"
 
 
-def test_coerce_value_object_json_array_string_does_not_become_object():
+def test_coerce_value_object_json_array_string_does_not_become_object() -> None:
     """a JSON array string supplied for an object field is NOT coerced."""
     assert coerce_value("[1, 2, 3]", "object") == "[1, 2, 3]"
 
@@ -114,14 +112,14 @@ def test_coerce_value_object_json_array_string_does_not_become_object():
 
 
 @pytest.mark.parametrize("declared_type", ["string", "integer", "number", "boolean", None])
-def test_coerce_value_non_complex_types_pass_through(declared_type):
+def test_coerce_value_non_complex_types_pass_through(declared_type) -> None:
     """only object and array engage coercion; everything else is untouched."""
     assert coerce_value("[1,2,3]", declared_type) == "[1,2,3]"
     assert coerce_value("", declared_type) == ""
     assert coerce_value(42, declared_type) == 42
 
 
-def test_coerce_value_preserves_falsy_scalars_for_array():
+def test_coerce_value_preserves_falsy_scalars_for_array() -> None:
     """literal 0, False, empty tuple must not be coerced to empty container.
 
     only the empty STRING triggers the empty-container shortcut. other
@@ -142,7 +140,7 @@ def _schema(properties: dict) -> dict:
     return {"type": "object", "properties": properties}
 
 
-def test_normalize_kwargs_coerces_only_declared_array_and_object_fields():
+def test_normalize_kwargs_coerces_only_declared_array_and_object_fields() -> None:
     """kwargs not in the schema and non-complex declared types pass through."""
     schema = _schema(
         {
@@ -166,7 +164,7 @@ def test_normalize_kwargs_coerces_only_declared_array_and_object_fields():
     }
 
 
-def test_normalize_kwargs_preserves_explicit_none():
+def test_normalize_kwargs_preserves_explicit_none() -> None:
     """explicit None survives so required-field checks in subclasses fire."""
     schema = _schema(
         {
@@ -178,14 +176,14 @@ def test_normalize_kwargs_preserves_explicit_none():
     assert result == {"tags": None, "metadata": None}
 
 
-def test_normalize_kwargs_empty_schema_returns_kwargs_unchanged():
+def test_normalize_kwargs_empty_schema_returns_kwargs_unchanged() -> None:
     """schema with no properties block is a no-op."""
     raw = {"any": "thing"}
     assert normalize_kwargs(raw, {}) == raw
     assert normalize_kwargs(raw, {"type": "object"}) == raw
 
 
-def test_normalize_kwargs_malformed_json_does_not_crash():
+def test_normalize_kwargs_malformed_json_does_not_crash() -> None:
     """if ``coerce_value`` ever started raising on malformed JSON, the
     outer ``TearsTool.run`` would catch it and silently fall back to
     the raw kwargs -- every tool would then see the malformed string
@@ -224,34 +222,34 @@ def _pydantic_shaped(properties: dict) -> dict:
     return {"type": "object", "properties": properties, "$defs": {"Scene": _SCENE}}
 
 
-def test_normalize_kwargs_coerces_an_optional_array():
+def test_normalize_kwargs_coerces_an_optional_array() -> None:
     schema = _pydantic_shaped({"ids": {"anyOf": [{"type": "array"}, {"type": "null"}], "default": None}})
     assert normalize_kwargs({"ids": "[]"}, schema) == {"ids": []}
     assert normalize_kwargs({"ids": '["a"]'}, schema) == {"ids": ["a"]}
     assert normalize_kwargs({"ids": ""}, schema) == {"ids": []}
 
 
-def test_normalize_kwargs_coerces_a_nullable_type_list():
+def test_normalize_kwargs_coerces_a_nullable_type_list() -> None:
     schema = _schema({"ids": {"type": ["array", "null"]}})
     assert normalize_kwargs({"ids": '["a"]'}, schema) == {"ids": ["a"]}
 
 
-def test_normalize_kwargs_coerces_a_nested_model():
+def test_normalize_kwargs_coerces_a_nested_model() -> None:
     schema = _pydantic_shaped({"scene": {"$ref": "#/$defs/Scene", "description": "the scene"}})
     assert normalize_kwargs({"scene": '{"location": "dock"}'}, schema) == {"scene": {"location": "dock"}}
 
 
-def test_normalize_kwargs_coerces_an_optional_nested_model():
+def test_normalize_kwargs_coerces_an_optional_nested_model() -> None:
     schema = _pydantic_shaped({"scene": {"anyOf": [{"$ref": "#/$defs/Scene"}, {"type": "null"}], "default": None}})
     assert normalize_kwargs({"scene": '{"location": "dock"}'}, schema) == {"scene": {"location": "dock"}}
 
 
-def test_normalize_kwargs_leaves_a_union_of_real_types_alone():
+def test_normalize_kwargs_leaves_a_union_of_real_types_alone() -> None:
     """``str | list[str]`` accepts the string as it stands; decoding it would pick a member."""
     schema = _schema({"target": {"anyOf": [{"type": "string"}, {"type": "array"}]}})
     assert normalize_kwargs({"target": '["a"]'}, schema) == {"target": '["a"]'}
 
 
-def test_normalize_kwargs_leaves_a_reference_it_cannot_resolve_alone():
+def test_normalize_kwargs_leaves_a_reference_it_cannot_resolve_alone() -> None:
     schema = _schema({"scene": {"$ref": "#/$defs/Missing"}})
     assert normalize_kwargs({"scene": '{"location": "dock"}'}, schema) == {"scene": '{"location": "dock"}'}

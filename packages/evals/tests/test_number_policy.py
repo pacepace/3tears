@@ -51,7 +51,7 @@ RATE_BOUNDS = (0.0, 100.0)
 
 
 class TestRuleOneOnePrecisionPerMeasure:
-    def test_the_narrowest_interval_of_any_role_sets_every_figure_s_decimals(self):
+    def test_the_narrowest_interval_of_any_role_sets_every_figure_s_decimals(self) -> None:
         """A measure's levels and changes share one precision, so its narrowest headline interval, whichever role it
         belongs to, decides for all of them: a change's wide interval does not coarsen a level read tightly."""
         assert policy_places([5.55, 3.7, 0.6]) == 1
@@ -93,16 +93,16 @@ class TestRuleTwoTheDigitsComeFromTheUncertainty:
         assert policy_interval_places(73.2, 91.5, capped=True) == 0
         assert policy_interval_places(0.4444, 3.556) == 1
 
-    def test_an_absent_zero_or_non_finite_half_width_says_nothing(self):
+    def test_an_absent_zero_or_non_finite_half_width_says_nothing(self) -> None:
         assert policy_places([None, 0.0, math.nan, math.inf, 0.6]) == 1
 
-    def test_a_rate_or_a_change_in_points_reads_to_at_most_one_decimal(self):
+    def test_a_rate_or_a_change_in_points_reads_to_at_most_one_decimal(self) -> None:
         assert policy_places([0.05], capped=True) == 1
         assert policy_places([0.6], capped=True) == 1
         assert policy_places([3.7], capped=True) == 1
         assert policy_places([5.7], capped=True) == 0
 
-    def test_a_measure_with_no_interval_reads_at_two_significant_figures_of_its_least_figure(self):
+    def test_a_measure_with_no_interval_reads_at_two_significant_figures_of_its_least_figure(self) -> None:
         figures = [0.0022, 1.3, 0.0]
         assert policy_places([], figures) == set_places(figures) == 4
         assert policy_places([None], figures, capped=True) == 1
@@ -111,7 +111,7 @@ class TestRuleTwoTheDigitsComeFromTheUncertainty:
     def test_the_figures_are_not_read_where_an_interval_is(self):
         assert policy_places([5.7], [0.0022]) == 0
 
-    def test_the_decimals_stop_at_six(self):
+    def test_the_decimals_stop_at_six(self) -> None:
         """A half-width finer than a millionth would ask for an eighth decimal; a figure that fine reads as the bound it
         is under (``< 0.000001``), so the decimals stop at six."""
         assert policy_places([3e-8]) == 6
@@ -123,98 +123,98 @@ class TestTheBoundaryException:
     """A capped figure or an interval's end that would round onto a boundary takes just enough digits to stay off it
     (owner ruling): zero for a change in points and every end, and a rate's floor and ceiling."""
 
-    def test_a_change_in_points_near_zero_keeps_its_digits_past_the_cap(self):
+    def test_a_change_in_points_near_zero_keeps_its_digits_past_the_cap(self) -> None:
         assert policy_figure(-0.03, 0, signed=True, bounds=(0.0,)) == "-0.03"
         assert policy_figure(-0.03, 1, signed=True, bounds=(0.0,)) == "-0.03"
         assert policy_figure(0.004, 1, signed=True, bounds=(0.0,)) == "+0.004"
 
-    def test_an_uncapped_figure_reads_at_its_measure_s_decimals(self):
+    def test_an_uncapped_figure_reads_at_its_measure_s_decimals(self) -> None:
         """``+0.4 ms`` on a whole-millisecond measure reads as rule 2 sets it: the exception is not its."""
         assert policy_figure(0.4, 0, signed=True, bounds=()) == "0"
         assert policy_figure(0.0022, 2, bounds=()) == "0.00"
 
-    def test_a_rate_under_its_ceiling_never_reads_100(self):
+    def test_a_rate_under_its_ceiling_never_reads_100(self) -> None:
         assert policy_rate(99.7, 0) == "99.7%"
         assert policy_rate(99.96, 0) == "99.96%"
         assert policy_rate(100.0, 0) == "100%"
 
-    def test_a_rate_over_its_floor_never_reads_0(self):
+    def test_a_rate_over_its_floor_never_reads_0(self) -> None:
         assert policy_rate(0.3, 0) == "0.3%"
         assert policy_rate(0.04, 0) == "0.04%"
         assert policy_rate(0.0, 0) == "0%"
 
-    def test_a_figure_on_a_boundary_reads_at_its_measure_s_decimals(self):
+    def test_a_figure_on_a_boundary_reads_at_its_measure_s_decimals(self) -> None:
         assert policy_rate(100.0, 1) == "100.0%"
         assert policy_bounded_places(100.0, 1, bounds=RATE_BOUNDS) == 1
 
-    def test_a_figure_off_every_boundary_takes_no_more(self):
+    def test_a_figure_off_every_boundary_takes_no_more(self) -> None:
         assert policy_bounded_places(85.3, 0, bounds=RATE_BOUNDS) == 0
         assert policy_rate(85.3, 0) == "85%"
 
-    def test_only_a_rate_has_a_ceiling(self):
+    def test_only_a_rate_has_a_ceiling(self) -> None:
         """A measured figure (a time, a count per trial) has no 100 to stay off."""
         assert policy_figure(99.7, 0, bounds=()) == "100"
 
-    def test_float_residue_of_a_boundary_reads_as_the_boundary(self):
+    def test_float_residue_of_a_boundary_reads_as_the_boundary(self) -> None:
         """A figure within a millionth of a boundary is that boundary as computed, so no digits chase it."""
         assert policy_rate(99.99999999999999, 0) == "100%"
         assert policy_rate(1e-15, 0) == "0%"
         assert policy_bounded_places(1e-15, 0, bounds=(0.0,)) == 0
         assert policy_figure(1e-15, 1, signed=True, bounds=(0.0,)) == "0"
 
-    def test_a_rate_under_its_floor_reads_as_given(self):
+    def test_a_rate_under_its_floor_reads_as_given(self) -> None:
         assert policy_rate(-0.3, 0) == "-0.3%"
 
 
 class TestRuleThreeOneIntervalForm:
-    def test_a_change_s_ends_carry_their_signs_and_its_unit_is_written_once(self):
+    def test_a_change_s_ends_carry_their_signs_and_its_unit_is_written_once(self) -> None:
         assert policy_interval(-12.9, -1.8, 0, change=True, unit="pts", bounds=()) == ("-13", "-2", "-13 to -2 pts")
         assert policy_interval(-3.46, 7.9, 0, change=True, unit="pts", bounds=())[2] == "-3 to +8 pts"
 
-    def test_a_level_s_ends_carry_no_plus(self):
+    def test_a_level_s_ends_carry_no_plus(self) -> None:
         assert policy_interval(2.37, 2.47, 2, change=False, bounds=()) == ("2.37", "2.47", "2.37 to 2.47")
 
-    def test_a_unit_that_sits_on_the_number_is_written_on_the_high_end_alone(self):
+    def test_a_unit_that_sits_on_the_number_is_written_on_the_high_end_alone(self) -> None:
         assert policy_interval(73.2, 91.5, 0, change=False, unit="%", bounds=RATE_BOUNDS)[2] == "73 to 92%"
 
-    def test_under_a_head_that_names_the_unit_none_is_written(self):
+    def test_under_a_head_that_names_the_unit_none_is_written(self) -> None:
         assert policy_interval(-12.9, -1.8, 0, change=True, bounds=())[2] == "-13 to -2"
 
-    def test_an_end_is_kept_off_zero_alone(self):
+    def test_an_end_is_kept_off_zero_alone(self) -> None:
         """Only the end that would print as zero takes more digits; the other reads at its measure's."""
         assert policy_interval(-15.09, -0.03, 1, change=True, unit="pts", bounds=())[2] == "-15.1 to -0.03 pts"
         assert policy_interval(-15.09, -0.03, 0, change=True, unit="pts", bounds=())[2] == "-15 to -0.03 pts"
 
-    def test_ends_that_would_print_alike_take_more_decimals_together(self):
+    def test_ends_that_would_print_alike_take_more_decimals_together(self) -> None:
         assert policy_interval(2.41, 2.44, 1, change=False, bounds=())[2] == "2.41 to 2.44"
         assert policy_interval(2.401, 2.404, 1, change=False, bounds=())[2] == "2.401 to 2.404"
 
-    def test_an_exact_zero_end_reads_whole(self):
+    def test_an_exact_zero_end_reads_whole(self) -> None:
         assert policy_interval(0.0, 0.92, 2, change=False, bounds=())[2] == "0 to 0.92"
         assert policy_interval(0.0, 2.5, 1, change=True, bounds=())[2] == "0 to +2.5"
         assert policy_interval(-0.0, 2.5, 1, change=True, bounds=())[2] == "0 to +2.5"
 
-    def test_an_end_near_zero_is_kept_off_it_where_the_interval_spans_zero(self):
+    def test_an_end_near_zero_is_kept_off_it_where_the_interval_spans_zero(self) -> None:
         """Every end is kept off zero, whatever its measure: ``0 to +2`` would claim the interval stops at none."""
         assert policy_interval(-0.04, 2.0, 0, change=True, bounds=())[2] == "-0.04 to +2"
 
-    def test_a_rate_s_interval_is_kept_off_its_floor_and_ceiling(self):
+    def test_a_rate_s_interval_is_kept_off_its_floor_and_ceiling(self) -> None:
         assert policy_interval(95.2, 99.8, 0, change=False, unit="%", bounds=RATE_BOUNDS)[2] == "95 to 99.8%"
         assert policy_interval(0.2, 3.1, 0, change=False, unit="%", bounds=RATE_BOUNDS)[2] == "0.2 to 3%"
         assert policy_interval(97.0, 100.0, 0, change=False, unit="%", bounds=RATE_BOUNDS)[2] == "97 to 100%"
 
-    def test_without_a_rate_s_bounds_only_zero_is_kept(self):
+    def test_without_a_rate_s_bounds_only_zero_is_kept(self) -> None:
         """Why ``bounds`` is required: a rate's interval passed none would read its ceiling."""
         assert policy_interval(95.2, 99.8, 0, change=False, unit="%", bounds=())[2] == "95 to 100%"
 
-    def test_equal_ends_read_alike(self):
+    def test_equal_ends_read_alike(self) -> None:
         assert policy_interval(2.0, 2.0, 1, change=False, bounds=())[2] == "2.0 to 2.0"
 
-    def test_ends_apart_by_float_residue_alone_read_alike(self):
+    def test_ends_apart_by_float_residue_alone_read_alike(self) -> None:
         """Ends within a millionth of each other are one figure as computed, so no digits chase their difference."""
         assert policy_interval(2.0, 2.0 + 1e-12, 1, change=False, bounds=())[2] == "2.0 to 2.0"
 
-    def test_an_interval_with_an_absent_end_reads_as_one_absent_figure(self):
+    def test_an_interval_with_an_absent_end_reads_as_one_absent_figure(self) -> None:
         """An em dash with no unit, never ``— pts``: there are no ends to state."""
         assert policy_interval(math.nan, 1.6, 1, change=True, unit="pts", bounds=()) == (ABSENT, ABSENT, ABSENT)
         assert policy_interval(-3.6, math.inf, 1, change=True, bounds=())[2] == ABSENT
@@ -225,26 +225,26 @@ class TestRuleFourFixedForms:
         ("p", "text"),
         [(1e-7, "< 0.001"), (0.00008342, "< 0.001"), (0.0034, "0.003"), (0.4996, "0.50"), (1.0, "1.00")],
     )
-    def test_a_p_value_reads_as_apa_writes_it(self, p, text):
+    def test_a_p_value_reads_as_apa_writes_it(self, p, text) -> None:
         assert policy_p(p) == text
 
     @pytest.mark.parametrize(("effect", "text"), [(0.08475, "0.08"), (0.1228, "0.12"), (-0.19, "-0.19")])
-    def test_an_effect_reads_at_two_decimals(self, effect, text):
+    def test_an_effect_reads_at_two_decimals(self, effect, text) -> None:
         assert policy_effect(effect) == text
 
-    def test_a_declared_value_reads_as_declared(self):
+    def test_a_declared_value_reads_as_declared(self) -> None:
         assert policy_declared(-15.0, "pts") == "-15 pts"
         assert policy_declared(0.5) == "0.5"
         assert policy_declared(None, "pts") == ABSENT
 
     @pytest.mark.parametrize(("value", "text"), [(1234.5, "1234.5"), (0.1, "0.1"), (1e-05, "0.00001"), (-0.0, "0")])
-    def test_a_declared_value_is_never_rounded_nor_written_in_an_exponent(self, value, text):
+    def test_a_declared_value_is_never_rounded_nor_written_in_an_exponent(self, value, text) -> None:
         assert policy_declared(value) == text
 
-    def test_an_exact_zero_reads_whole(self):
+    def test_an_exact_zero_reads_whole(self) -> None:
         assert policy_figure(0.0, 2, signed=True, bounds=(0.0,)) == "0"
 
-    def test_a_rate_always_carries_its_percent(self):
+    def test_a_rate_always_carries_its_percent(self) -> None:
         assert policy_rate(0.0, 1) == "0%"
         assert policy_rate(14.29, 0) == "14%"
         assert policy_rate(None, 0) == ABSENT
@@ -254,12 +254,12 @@ class TestAnAbsentOrNegativeZeroFigure:
     """An absent or non-finite figure reads as the em dash, never a zero; ``-0.0`` is a zero, with no sign."""
 
     @pytest.mark.parametrize("value", [None, math.nan, math.inf])
-    def test_an_absent_figure_reads_as_an_em_dash(self, value):
+    def test_an_absent_figure_reads_as_an_em_dash(self, value) -> None:
         assert policy_figure(value, 1, signed=True, bounds=(0.0,)) == ABSENT
         assert policy_rate(value, 0) == ABSENT
         assert policy_percent(value, 0) == ABSENT
 
-    def test_negative_zero_reads_as_zero(self):
+    def test_negative_zero_reads_as_zero(self) -> None:
         assert policy_figure(-0.0, 1, signed=True, bounds=(0.0,)) == "0"
         assert policy_rate(-0.0, 1) == "0%"
         assert policy_percent(-0.0, 1) == "0%"
@@ -269,19 +269,19 @@ class TestHalfToEven:
     @pytest.mark.parametrize(
         ("value", "places", "text"), [(62.5, 0, "62%"), (63.5, 0, "64%"), (0.125, 2, "0.12%"), (-2.5, 0, "-2%")]
     )
-    def test_a_percent_rounds_half_to_even(self, value, places, text):
+    def test_a_percent_rounds_half_to_even(self, value, places, text) -> None:
         assert policy_percent(value, places) == text
 
-    def test_an_exact_zero_percent_states_no_precision(self):
+    def test_an_exact_zero_percent_states_no_precision(self) -> None:
         assert policy_percent(0.0, 2) == "0%"
 
-    def test_a_figure_rounds_half_to_even(self):
+    def test_a_figure_rounds_half_to_even(self) -> None:
         assert policy_figure(2.5, 0, signed=True, bounds=(0.0,)) == "+2"
         assert policy_figure(-3.5, 0, signed=True, bounds=(0.0,)) == "-4"
 
 
 class TestKairoBeforeAndAfter:
-    def test_the_options_table_s_pass_rate(self):
+    def test_the_options_table_s_pass_rate(self) -> None:
         assert policy_rate(765 / 897 * 100, 0) == "85%"
 
     def test_the_change_chart_s_head_and_qwen3_8_flash_s_change(self):
@@ -293,26 +293,26 @@ class TestKairoBeforeAndAfter:
         assert policy_figure(-7.6, places, signed=True, bounds=(0.0,)) == "-7.6"
         assert policy_interval(-12.9, -1.8, places, change=True, bounds=())[2] == "-12.9 to -1.8"
 
-    def test_the_prose_change_reads_as_its_chart_does(self):
+    def test_the_prose_change_reads_as_its_chart_does(self) -> None:
         assert policy_figure(-3.0, 0, signed=True, bounds=(0.0,)) == "-3"
         assert policy_interval(-7.2, 2.8, 0, change=True, bounds=())[2] == "-7 to +3"
 
-    def test_the_margin_line(self):
+    def test_the_margin_line(self) -> None:
         assert policy_declared(-15.0, "pts") == "-15 pts"
 
-    def test_holds_character_by_arm_and_by_stratum(self):
+    def test_holds_character_by_arm_and_by_stratum(self) -> None:
         places = policy_places([4.05], capped=True)
         assert [policy_rate(rate, places) for rate in (91.47, 85.4, 86.6)] == ["91.5%", "85.4%", "86.6%"]
         assert [policy_rate(rate, places) for rate in (65.8, 42.9, 45.6)] == ["65.8%", "42.9%", "45.6%"]
 
-    def test_the_send_message_check_is_unchanged(self):
+    def test_the_send_message_check_is_unchanged(self) -> None:
         places = policy_places([0.6], capped=True)
         assert places == 1
         assert [policy_rate(rate, places) for rate in (99.7, 98.7, 100.0)] == ["99.7%", "98.7%", "100.0%"]
         assert policy_figure(-1.0, places, signed=True, bounds=(0.0,)) == "-1.0"
         assert policy_interval(-3.6, 1.6, places, change=True, unit="pts", bounds=())[2] == "-3.6 to +1.6 pts"
 
-    def test_failed_reply_notices(self):
+    def test_failed_reply_notices(self) -> None:
         low, high = -0.0069, 0.00248
         places = policy_places([(high - low) / 2])
         assert places == 4
@@ -320,15 +320,15 @@ class TestKairoBeforeAndAfter:
         assert policy_figure(-0.0022, places, signed=True, bounds=()) == "-0.0022"
         assert policy_interval(low, high, places, change=True, bounds=())[2] == "-0.0069 to +0.0025"
 
-    def test_adjusted_p_values(self):
+    def test_adjusted_p_values(self) -> None:
         assert [policy_p(p) for p in (1e-7, 0.00008342, 0.4996, 1.0)] == ["< 0.001", "< 0.001", "0.50", "1.00"]
 
-    def test_the_corrected_comparison_interval_writes_its_unit_once(self):
+    def test_the_corrected_comparison_interval_writes_its_unit_once(self) -> None:
         assert policy_interval(-12.9, -1.8, 0, change=True, unit="pts", bounds=())[2] == "-13 to -2 pts"
 
 
 class TestScaledCampaignBeforeAndAfter:
-    def test_p95_extraction_time(self):
+    def test_p95_extraction_time(self) -> None:
         places = policy_places([0.05, 0.159])
         assert places == 2
         assert policy_figure(2.42, places, bounds=()) == "2.42"
@@ -336,7 +336,7 @@ class TestScaledCampaignBeforeAndAfter:
         assert policy_figure(0.028, places, signed=True, bounds=()) == "+0.03"
         assert policy_interval(-0.131, 0.187, places, change=True, bounds=())[2] == "-0.13 to +0.19"
 
-    def test_fields_stripped(self):
+    def test_fields_stripped(self) -> None:
         places = policy_places([0.07, 0.187])
         assert places == 2
         assert policy_figure(1.52, places, bounds=()) == "1.52"
@@ -344,7 +344,7 @@ class TestScaledCampaignBeforeAndAfter:
         assert policy_figure(0.095, places, signed=True, bounds=()) == "+0.10"
         assert policy_interval(-0.092, 0.282, places, change=True, bounds=())[2] == "-0.09 to +0.28"
 
-    def test_the_scorecard_s_pass_rate(self):
+    def test_the_scorecard_s_pass_rate(self) -> None:
         """Its level and change round apart, so 21% and 23% sit beside +2 pts: the closure the policy accepts."""
         places = policy_places([5.7], capped=True)
         assert places == 0
@@ -352,13 +352,13 @@ class TestScaledCampaignBeforeAndAfter:
         assert policy_figure(2.5, places, signed=True, bounds=(0.0,)) == "+2"
         assert policy_interval(-3.46, 7.9, places, change=True, unit="pts", bounds=())[2] == "-3 to +8 pts"
 
-    def test_the_pass_rate_s_contrasts(self):
+    def test_the_pass_rate_s_contrasts(self) -> None:
         """The end that excludes zero takes its digits alone (owner ruling on the boundary exception), where the
         plan's earlier row gave both ends two decimals."""
         assert policy_figure(-7.4, 0, signed=True, bounds=(0.0,)) == "-7"
         assert policy_interval(-15.09, -0.03, 0, change=True, unit="pts", bounds=())[2] == "-15 to -0.03 pts"
 
-    def test_the_statistics(self):
+    def test_the_statistics(self) -> None:
         assert [policy_effect(value) for value in (0.08475, 0.1228)] == ["0.08", "0.12"]
 
 
@@ -369,10 +369,10 @@ class TestCodeOnlyAndRungFiveBeforeAndAfter:
         assert policy_rate(84.4, places) == "84%"
         assert policy_interval(73.2, 91.5, places, change=False, unit="%", bounds=RATE_BOUNDS)[2] == "73 to 92%"
 
-    def test_a_lost_call_rate_of_none_carries_its_percent(self):
+    def test_a_lost_call_rate_of_none_carries_its_percent(self) -> None:
         assert policy_rate(0.0, 0) == "0%"
 
-    def test_rung_five_s_report_finished_rate_reads_in_percent(self):
+    def test_rung_five_s_report_finished_rate_reads_in_percent(self) -> None:
         assert [policy_rate(100 * passed / 7, 0) for passed in (1, 3)] == ["14%", "43%"]
 
 
@@ -415,7 +415,7 @@ class TestALevelPrintedAsText:
 
 
 class TestMeasureFormPolicyFields:
-    def test_a_form_built_as_today_holds_no_policy_decision(self):
+    def test_a_form_built_as_today_holds_no_policy_decision(self) -> None:
         """The policy's fields default to none, so every form built today decides as it did."""
         form = MeasureForm(
             key="pass_rate",

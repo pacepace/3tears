@@ -251,7 +251,7 @@ def test_a_known_kind_given_as_an_enum_member_serializes_to_its_wire_string() ->
 def test_a_descriptor_cannot_be_mutated_after_construction() -> None:
     descriptor = _descriptor(scopes=(ConnectionScope.CUSTOMER,), routes_by_domain=False)
     with pytest.raises(ValidationError):
-        descriptor.routes_by_domain = True  # type: ignore[misc]
+        descriptor.routes_by_domain = True
 
 
 def test_a_field_cannot_be_mutated_after_construction() -> None:
@@ -259,7 +259,7 @@ def test_a_field_cannot_be_mutated_after_construction() -> None:
     # flag. Frozen models close that path as well as making descriptors shareable.
     field = _field(name="client_secret", kind=ConnectionFieldKind.SECRET, write_only=True)
     with pytest.raises(ValidationError):
-        field.write_only = False  # type: ignore[misc]
+        field.write_only = False
 
 
 def test_a_descriptor_round_trips_through_json_unchanged() -> None:

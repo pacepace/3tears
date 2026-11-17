@@ -63,10 +63,10 @@ def _standing(data: dict[str, Any]) -> tuple[str, tuple[str, ...]]:
 
 
 class TestABrokenFloorCaps:
-    def test_an_improved_candidate_with_its_floor_held_is_shown_better(self):
+    def test_an_improved_candidate_with_its_floor_held_is_shown_better(self) -> None:
         assert _standing(_improved(_data(), ARRIVAL)) == ("shown_better", ())
 
-    def test_an_improved_candidate_whose_floor_reads_broken_is_not_shown_better_and_why_names_the_floor(self):
+    def test_an_improved_candidate_whose_floor_reads_broken_is_not_shown_better_and_why_names_the_floor(self) -> None:
         standing, why = _standing(_floor(_improved(_data(), ARRIVAL), "broken", [-30.0, -20.0]))
 
         assert standing == "not_shown_no_worse"
@@ -75,11 +75,11 @@ class TestABrokenFloorCaps:
             "it is shown better"
         ]
 
-    def test_a_floor_read_unclear_caps_nothing(self):
+    def test_a_floor_read_unclear_caps_nothing(self) -> None:
         """An interval straddling the floor's line reads unclear: it warns, and the candidate stays shown better."""
         assert _standing(_floor(_improved(_data(), ARRIVAL), "unclear", [-20.0, -5.0])) == ("shown_better", ())
 
-    def test_a_floor_margin_the_sweep_reads_broken_caps_the_candidate_there(self):
+    def test_a_floor_margin_the_sweep_reads_broken_caps_the_candidate_there(self) -> None:
         """The decision at a hypothetical floor margin reads the floor on its interval, and the cap with it: at a
         margin the candidate's interval clears, the cap lifts and no option dominates alone."""
         report_input = ReportInput.model_validate(_floor(_improved(_data(), ARRIVAL), "broken", [-30.0, -20.0]))
@@ -94,10 +94,10 @@ class TestABrokenFloorCaps:
 class TestACappedCandidateThatCostsMore:
     """The candidate costs more than September on every reading of cost; capped below it, it is dominated."""
 
-    def test_uncapped_it_is_a_tradeoff_against_the_control(self):
+    def test_uncapped_it_is_a_tradeoff_against_the_control(self) -> None:
         assert decision_at(ReportInput.model_validate(_improved(_data(), ARRIVAL))).modes == frozenset({"tradeoff"})
 
-    def test_capped_the_control_dominates_it_and_the_call_is_a_decision(self):
+    def test_capped_the_control_dominates_it_and_the_call_is_a_decision(self) -> None:
         report_input = ReportInput.model_validate(_floor(_improved(_data(), ARRIVAL), "broken", [-30.0, -20.0]))
         read = dominance(report_input)
 
@@ -109,7 +109,7 @@ class TestACappedCandidateThatCostsMore:
 
 
 class TestAnUncalibratedJudgeIsSetAside:
-    def test_an_improvement_only_on_an_uncalibrated_judged_dimension_is_not_shown_better(self):
+    def test_an_improvement_only_on_an_uncalibrated_judged_dimension_is_not_shown_better(self) -> None:
         data = _improved(_data(), "__outcome__")
         report_input = ReportInput.model_validate(data)
         standing, why = _standing(data)
@@ -122,10 +122,10 @@ class TestAnUncalibratedJudgeIsSetAside:
         )
         assert asked_standing(report_input)[CANDIDATE].set_aside == ("__outcome__",)
 
-    def test_a_calibrated_judges_improvement_raises_the_standing(self):
+    def test_a_calibrated_judges_improvement_raises_the_standing(self) -> None:
         assert _standing(_calibrated(_improved(_data(), "__outcome__"), "__outcome__")) == ("shown_better", ())
 
-    def test_another_improvement_beside_it_counts_as_usual(self):
+    def test_another_improvement_beside_it_counts_as_usual(self) -> None:
         standing, why = _standing(_improved(_improved(_data(), "__outcome__"), ARRIVAL))
 
         assert standing == "shown_better"
@@ -143,12 +143,12 @@ def _adoption(change: Callable[[dict[str, Any]], dict[str, Any]]) -> list[str]:
 
 
 class TestTheAdoptionFact:
-    def test_a_recommended_candidate_a_broken_floor_caps_is_an_adoption_fact(self):
+    def test_a_recommended_candidate_a_broken_floor_caps_is_an_adoption_fact(self) -> None:
         facts = _adoption(lambda data: _floor(_improved(data, ARRIVAL), "broken", [-30.0, -20.0]))
 
         assert ["a floor read broken on an asked aspect caps its standing" in fact for fact in facts] == [True]
 
-    def test_a_recommended_candidate_improved_only_on_an_uncalibrated_judge_names_it_set_aside(self):
+    def test_a_recommended_candidate_improved_only_on_an_uncalibrated_judge_names_it_set_aside(self) -> None:
         facts = _adoption(lambda data: _floor(_improved(data, "__outcome__"), "unclear", [-20.0, -5.0]))
 
         assert ["save on '__outcome__', whose judge is not calibrated" in fact for fact in facts] == [True]

@@ -245,7 +245,7 @@ _TEST_SCOPE = "test-principal"
 def l1_backend() -> SQLiteBackend:
     b = SQLiteBackend(db_name=f"test_integ_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_metadata())
-    yield b  # type: ignore[misc]
+    yield b
     b.reset()
 
 

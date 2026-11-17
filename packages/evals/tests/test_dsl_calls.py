@@ -12,8 +12,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-
-from threetears.evals.schema.goal_grammar import DSLError, extract_text_matches, parse
 from threetears.evals.kernel.dsl import (
     call_parameter_matches,
     evaluate,
@@ -23,9 +21,10 @@ from threetears.evals.kernel.dsl import (
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.run.authoring import create_template
 from threetears.evals.schema.call_ledger import CallLedger
+from threetears.evals.schema.goal_grammar import DSLError, extract_text_matches, parse
+
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND
-
 
 _SAY = {
     "type": "object",
@@ -59,7 +58,7 @@ def _refusals(expression: str, reader=_reader) -> list[str]:
 
 
 class TestEvaluation:
-    def test_returns_each_matching_calls_parameters_in_ledger_order(self):
+    def test_returns_each_matching_calls_parameters_in_ledger_order(self) -> None:
         state = _state(
             ("speech", "say", {"text": "one", "position": "head"}),
             ("shop", "add_item", {"item_ref": "r1"}),
@@ -71,19 +70,19 @@ class TestEvaluation:
         assert evaluate('any(it.position == "head" for it in calls("speech.say"))', **state)
         assert not evaluate('all(it.position == "head" for it in calls("speech.say"))', **state)
 
-    def test_a_length_test_reads_presence_across_every_call(self):
+    def test_a_length_test_reads_presence_across_every_call(self) -> None:
         state = _state(("shop", "add_item", {"note_text": "here"}), ("shop", "add_item", {"note_text": ""}))
 
         assert not evaluate('all(it.note_text.length > 0 for it in calls("shop.add_item"))', **state)
         assert evaluate('any(it.note_text.length > 0 for it in calls("shop.add_item"))', **state)
 
-    def test_no_matching_call_is_an_empty_list(self):
+    def test_no_matching_call_is_an_empty_list(self) -> None:
         state = _state(("shop", "search", {}))
 
         assert evaluate('calls("speech.say").length == 0', **state)
         assert not evaluate('any(it.position == "head" for it in calls("speech.say"))', **state)
 
-    def test_the_expression_cannot_reach_the_ledger(self):
+    def test_the_expression_cannot_reach_the_ledger(self) -> None:
         state = _state(("speech", "say", {"text": "one"}))
         evaluate('calls("speech.say")[0].text == "one"', **state)
 
@@ -98,63 +97,63 @@ class TestEvaluation:
             'calls("speechsay").length > 0',
         ],
     )
-    def test_a_spec_the_gate_could_not_name_is_refused_at_parse(self, expression):
+    def test_a_spec_the_gate_could_not_name_is_refused_at_parse(self, expression) -> None:
         """A computed or dotless spec would leave the gate unable to find the action's schema."""
         with pytest.raises(DSLError):
             parse(expression)
 
 
 class TestTheExtractor:
-    def test_it_bound_to_calls_reports_the_parameter_and_the_action(self):
+    def test_it_bound_to_calls_reports_the_parameter_and_the_action(self) -> None:
         (match,) = extract_text_matches('any(it.position == "head" for it in calls("speech.say"))')
 
         assert (match.call, match.operand) == ("speech.say", ("position",))
 
-    def test_a_subscripted_call_reports_the_parameter(self):
+    def test_a_subscripted_call_reports_the_parameter(self) -> None:
         (match,) = extract_text_matches('calls("speech.say")[-1].text == "hi"')
 
         assert (match.call, match.operand) == ("speech.say", ("text",))
 
-    def test_a_count_or_length_is_not_a_text_match(self):
+    def test_a_count_or_length_is_not_a_text_match(self) -> None:
         assert extract_text_matches('calls("speech.say").length >= 1') == ()
         assert extract_text_matches('all(it.text.length > 0 for it in calls("speech.say"))') == ()
         assert extract_text_matches('all(it.text != "" for it in calls("speech.say"))') == ()
 
-    def test_the_world_gate_leaves_call_matches_to_the_call_gate(self):
+    def test_the_world_gate_leaves_call_matches_to_the_call_gate(self) -> None:
         """A call parameter is not a world path, so the world vocabulary has no say over it."""
         assert world_prose_matches('any(it.text == "hi" for it in calls("speech.say"))', None) == ()
 
 
 class TestTheCallParameterGate:
     @pytest.mark.parametrize("parameter", ["position", "mood", "kind", "speed", "labels"])
-    def test_a_value_the_schema_closes_may_be_compared(self, parameter):
+    def test_a_value_the_schema_closes_may_be_compared(self, parameter) -> None:
         assert _refusals(f'any(it.{parameter} == "x" for it in calls("speech.say"))') == []
 
     @pytest.mark.parametrize("parameter", ["text", "tags", "note"])
-    def test_free_text_may_not_be_compared(self, parameter):
+    def test_free_text_may_not_be_compared(self, parameter) -> None:
         assert _refusals(f'any(it.{parameter} == "x" for it in calls("speech.say"))') == [
             f"speech.say's {parameter} is free text"
         ]
 
-    def test_contains_over_free_text_is_refused_and_over_a_closed_list_is_not(self):
+    def test_contains_over_free_text_is_refused_and_over_a_closed_list_is_not(self) -> None:
         assert len(_refusals('any(contains(it.text, "hi") for it in calls("speech.say"))')) == 1
         assert _refusals('any(contains(it.labels, "a") for it in calls("speech.say"))') == []
 
-    def test_free_text_may_be_tested_for_presence_and_length(self):
+    def test_free_text_may_be_tested_for_presence_and_length(self) -> None:
         assert _refusals('all(it.text.length > 0 for it in calls("speech.say"))') == []
         assert _refusals('all(it.text != "" for it in calls("speech.say"))') == []
 
-    def test_an_undeclared_parameter_is_refused(self):
+    def test_an_undeclared_parameter_is_refused(self) -> None:
         assert _refusals('any(it.volume == "x" for it in calls("speech.say"))') == [
             "speech.say declares no parameter volume"
         ]
 
-    def test_an_undescribed_action_is_refused(self):
+    def test_an_undescribed_action_is_refused(self) -> None:
         assert _refusals('any(it.position == "head" for it in calls("speech.shout"))') == [
             "this host describes no parameters for speech.shout"
         ]
 
-    def test_a_host_with_no_reader_refuses_every_comparison_and_no_length_test(self):
+    def test_a_host_with_no_reader_refuses_every_comparison_and_no_length_test(self) -> None:
         assert len(_refusals('any(it.position == "head" for it in calls("speech.say"))', reader=None)) == 1
         assert _refusals('calls("speech.say").length >= 1', reader=None) == []
 
@@ -176,7 +175,7 @@ def _create_template(definition: dict) -> object:
 
 
 class TestTheAuthoringGate:
-    def test_a_host_describing_no_actions_refuses_the_comparison(self):
+    def test_a_host_describing_no_actions_refuses_the_comparison(self) -> None:
         """The engine's rule, not a host's: the toy host has no reader, so it fails closed."""
         with pytest.raises(ValidationFailedError) as refused:
             _create_template(
@@ -212,7 +211,7 @@ class TestUndefinedCallReferences:
             'last_call_was("speech.sya")',
         ],
     )
-    def test_every_call_builtin_refuses_an_action_the_tool_does_not_have(self, expression):
+    def test_every_call_builtin_refuses_an_action_the_tool_does_not_have(self, expression) -> None:
         assert _undefined(expression) == ("speech has no action 'sya' (its actions: hush, say)",)
 
     @pytest.mark.parametrize(
@@ -223,7 +222,7 @@ class TestUndefinedCallReferences:
             'any(it.txet == "" for it in calls("speech.say"))',
         ],
     )
-    def test_a_parameter_the_schema_does_not_declare_is_refused_whether_compared_or_not(self, expression):
+    def test_a_parameter_the_schema_does_not_declare_is_refused_whether_compared_or_not(self, expression) -> None:
         assert _undefined(expression) == ("speech.say declares no parameter txet",)
 
     @pytest.mark.parametrize(
@@ -236,15 +235,15 @@ class TestUndefinedCallReferences:
             'any(it.position == "head" for it in calls("speech.say"))',
         ],
     )
-    def test_names_the_host_defines_pass(self, expression):
+    def test_names_the_host_defines_pass(self, expression) -> None:
         assert _undefined(expression) == ()
 
-    def test_a_tool_or_action_the_host_cannot_describe_passes_unverified(self):
+    def test_a_tool_or_action_the_host_cannot_describe_passes_unverified(self) -> None:
         """No answer is not the answer "absent": refusing here would refuse every valid check on such a tool."""
         assert _undefined('call_count("chat.send") >= 1 and all(it.x.length > 0 for it in calls("chat.send"))') == ()
         assert undefined_call_references('call_count("speech.sya") >= 1', None, None) == ()
 
-    def test_a_tool_the_host_does_not_have_offers_no_action(self):
+    def test_a_tool_the_host_does_not_have_offers_no_action(self) -> None:
         """An empty answer is "no such action", which a check sharing its typo with its control cannot pass."""
         reasons = undefined_call_references('call_count("musik.delete") == 0', lambda tool: frozenset(), None)
 

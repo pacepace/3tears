@@ -56,7 +56,7 @@ class _Narrow(SchemaBackedCollection[_Row]):
         ],
         l1_eviction=TEST_L1_TABLE,
     )
-    entity_class = _Row  # type: ignore[assignment]
+    entity_class = _Row
 
     @property
     def table_name(self) -> str:

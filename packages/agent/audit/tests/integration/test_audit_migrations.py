@@ -37,8 +37,8 @@ async def test_the_package_builds_the_table_the_consumer_ensures_and_a_rerun_doe
         runner = MigrationRunner()
         register(runner)
 
-        assert await runner.apply_for_platform_schema(_Store(conn)) == 2  # type: ignore[arg-type]
-        assert await runner.apply_for_platform_schema(_Store(conn)) == 0  # type: ignore[arg-type]
+        assert await runner.apply_for_platform_schema(_Store(conn)) == 2
+        assert await runner.apply_for_platform_schema(_Store(conn)) == 0
         indexes = {
             r["indexname"] for r in await conn.fetch("SELECT indexname FROM pg_indexes WHERE schemaname = $1", schema)
         }

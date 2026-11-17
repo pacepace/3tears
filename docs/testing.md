@@ -470,10 +470,10 @@ A test fake is any class named `Fake<Name>` or `_Fake<Name>` under a `tests/` di
 declares what production protocol it stands in for. Three routes, in order of preference:
 
 1. **Subclass it.** `class _FakeKv(KvBucketLike):`. The walker accepts any non-`object` base and
-   checks nothing further, on the theory that a type checker covers it. **In this repo it does
-   not:** mypy runs over `packages/*/src` only, so a subclassed fake's surface is unverified by
-   anything. Prefer it anyway for a real Protocol, because the base documents intent and an IDE
-   follows it. Reach for route 2 when you want the surface actually compared.
+   checks nothing further, on the theory that a type checker covers it. `./scripts/typecheck.sh`
+   checks the test trees too, so mypy holds a subclassed fake to its base's signatures. Reach
+   for route 2 when you want the surface actually compared against a protocol you do not
+   subclass.
 2. **`# parity-with: <fully.qualified.name>`** on the line above the class. The walker imports
    the target and compares method surfaces. This is the only route that verifies anything.
 3. **`# parity-exempt: <rationale>`** on the line above the class, for a hand-rolled subset stub

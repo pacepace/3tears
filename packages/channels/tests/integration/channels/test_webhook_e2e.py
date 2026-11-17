@@ -147,7 +147,7 @@ async def _apply_schema(url: str, schema: str) -> asyncpg.Pool:
         register_skills(runner)
         register_wake(runner)
         store = AsyncpgStore(setup_conn)
-        await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+        await runner.apply_for_agent_schema(store)
     finally:
         await setup_conn.close()
     pool = await asyncpg.create_pool(

@@ -27,11 +27,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-
+from threetears.evals.actions import Caller, eval_catalogue, standard_tools
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, CellSpanWindow, VariantConfig
 from threetears.evals.kernel.cassettes import CellCassettes
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.identity import resolve_variant_identity
+from threetears.evals.kernel.provider import withhold_failure_detail
+from threetears.evals.ops import OpsHost
+from threetears.evals.run import regrade
+from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
+from threetears.evals.run.judge_service import JudgeService, builtin_judge_config_ids
+from threetears.evals.run.launch import build_judge_service
+from threetears.evals.run.lifecycle import rejudge_result
+from threetears.evals.run.runner import RunnerOptions, run_one_result
 from threetears.evals.schema.models import (
     OUTCOME_DIM_ID,
     TRANSCRIPT_DIM_ID,
@@ -39,9 +48,9 @@ from threetears.evals.schema.models import (
     EvalTemplate,
     EvalTestCase,
     EvalTrace,
+    JudgeConfig,
     JudgedArtifact,
     JudgeEvidence,
-    JudgeConfig,
     RubricDim,
     builtin_judge_config_id,
     eval_trace_doc_id,
@@ -49,16 +58,7 @@ from threetears.evals.schema.models import (
     judge_config_of,
     scored_dim_ids,
 )
-from threetears.evals.kernel.provider import withhold_failure_detail
-from threetears.evals.run.judge import CANNOT_TELL, JUDGE_REQUEST_SETTINGS
-from threetears.evals.run.judge_service import JudgeService, builtin_judge_config_ids
-from threetears.evals.actions import Caller, eval_catalogue, standard_tools
-from threetears.evals.ops import OpsHost
-from threetears.evals.run import regrade
-from threetears.evals.run.lifecycle import rejudge_result
-from threetears.evals.run.launch import build_judge_service
-from threetears.evals.run.runner import RunnerOptions, run_one_result
-from threetears.evals.kernel.identity import resolve_variant_identity
+
 from packages.evals.tests.factories import declared, make_eval_run
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.off_loop import off_loop
@@ -266,7 +266,7 @@ def _users_by_dim(calls: list[tuple[str, str, str]]) -> dict[str, set[str]]:
     return users
 
 
-async def test_a_rejudged_document_is_scored_as_the_document_it_was():
+async def test_a_rejudged_document_is_scored_as_the_document_it_was() -> None:
     """The document wording, the rubric alone, and the evidence its first judge read.
 
     Fails without the stored evidence being read back: a re-judge with no evidence has nothing to
@@ -296,7 +296,7 @@ async def test_a_rejudged_document_is_scored_as_the_document_it_was():
     assert {user} == _users_by_dim(first)[_DIM]
 
 
-async def test_a_rejudged_conversation_resends_every_failed_axis_exactly_as_first_sent():
+async def test_a_rejudged_conversation_resends_every_failed_axis_exactly_as_first_sent() -> None:
     """The transcript a re-judge sends is the kind's stored rendering — the engine renders none."""
     judge = _ScriptedJudge(failing={TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID, _DIM})
     host, result = await _judged_and_stored(JudgedArtifact.TRANSCRIPT, judge)
@@ -317,7 +317,7 @@ async def test_a_rejudged_conversation_resends_every_failed_axis_exactly_as_firs
     assert transcript_user.endswith(f"# Transcript\n{_EVIDENCE.artifact}")
 
 
-async def test_a_rejudge_asks_only_the_dims_that_errored_and_keeps_a_recorded_cannot_tell():
+async def test_a_rejudge_asks_only_the_dims_that_errored_and_keeps_a_recorded_cannot_tell() -> None:
     """A "can't tell" is the judge's answer, so a re-judge triggered by another dim leaves it standing.
 
     Re-asking it would pay for a call nothing failed, and storing a fresh sample over it would file
@@ -350,7 +350,7 @@ _WITH_A_GUARDRAIL = [
 ]
 
 
-async def test_a_cannot_tell_on_a_guardrail_leaves_the_trial_in_the_capability_measures():
+async def test_a_cannot_tell_on_a_guardrail_leaves_the_trial_in_the_capability_measures() -> None:
     """The guardrail is in neither pass^k nor the composite, so a can't-tell on it must not drop the trial."""
     from threetears.evals.kernel.result_condition import trial_exclusion
     from threetears.evals.kernel.scoring import result_composite
@@ -364,7 +364,7 @@ async def test_a_cannot_tell_on_a_guardrail_leaves_the_trial_in_the_capability_m
     assert result_composite(result) == 0.75
 
 
-async def test_a_cannot_tell_on_a_capability_dim_still_drops_the_trial():
+async def test_a_cannot_tell_on_a_capability_dim_still_drops_the_trial() -> None:
     from threetears.evals.kernel.result_condition import trial_exclusion
 
     judge = _ScriptedJudge(cannot_tell={_DIM})
@@ -374,7 +374,7 @@ async def test_a_cannot_tell_on_a_capability_dim_still_drops_the_trial():
     assert trial_exclusion(result) == "judge_cannot_tell"
 
 
-async def test_a_rejudge_stamps_a_guardrail_s_cannot_tell_too():
+async def test_a_rejudge_stamps_a_guardrail_s_cannot_tell_too() -> None:
     from threetears.evals.kernel.result_condition import trial_exclusion
 
     judge = _ScriptedJudge(failing={_GUARDRAIL})
@@ -388,7 +388,7 @@ async def test_a_rejudge_stamps_a_guardrail_s_cannot_tell_too():
     assert trial_exclusion(rejudged) is None
 
 
-async def test_a_launch_attributes_a_judge_only_to_the_dims_the_kinds_judge_is_asked():
+async def test_a_launch_attributes_a_judge_only_to_the_dims_the_kinds_judge_is_asked() -> None:
     """A document's attribution names its rubric alone; a conversation's names every axis.
 
     Built through the launch's own judge build, so this is the record a launched run carries — and
@@ -411,7 +411,7 @@ async def test_a_launch_attributes_a_judge_only_to_the_dims_the_kinds_judge_is_a
         build_judge_service(host, template, _JUDGE, judged_artifact=JudgedArtifact.UNJUDGED)
 
 
-async def test_a_document_rejudge_refuses_a_run_attributing_an_axis_its_cell_was_never_asked():
+async def test_a_document_rejudge_refuses_a_run_attributing_an_axis_its_cell_was_never_asked() -> None:
     """A run recording a judge for a conversation axis on a document cell is refused, naming the axis.
 
     The launch attributes only the dims a kind's judge is asked, so such a record is not one a
@@ -429,14 +429,14 @@ async def test_a_document_rejudge_refuses_a_run_attributing_an_axis_its_cell_was
     assert judge.calls == []
 
 
-def test_a_document_is_judged_on_its_rubric_and_a_conversation_on_every_axis():
+def test_a_document_is_judged_on_its_rubric_and_a_conversation_on_every_axis() -> None:
     """Both directions of the one rule, on one rubric."""
     assert scored_dim_ids([_DIM], JudgedArtifact.DOCUMENT) == [_DIM]
     assert scored_dim_ids([_DIM], JudgedArtifact.TRANSCRIPT) == [TRANSCRIPT_DIM_ID, OUTCOME_DIM_ID, _DIM]
     assert scored_dim_ids([_DIM], JudgedArtifact.UNJUDGED) == []
 
 
-async def test_the_runner_stores_the_evidence_with_the_declaration_that_picked_its_axes():
+async def test_the_runner_stores_the_evidence_with_the_declaration_that_picked_its_axes() -> None:
     judge = _ScriptedJudge()
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
 
@@ -447,7 +447,7 @@ async def test_the_runner_stores_the_evidence_with_the_declaration_that_picked_i
     assert trace.judged_artifact is JudgedArtifact.DOCUMENT
 
 
-async def test_a_result_whose_trace_stores_no_evidence_is_refused_before_any_judge_call():
+async def test_a_result_whose_trace_stores_no_evidence_is_refused_before_any_judge_call() -> None:
     """Nothing to resend is a refusal, never a re-render and never a guess at a transcript."""
     judge = _ScriptedJudge(failing={_DIM})
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
@@ -484,12 +484,12 @@ def _trace(**fields: Any) -> EvalTrace:
     ],
     ids=["evidence-without-its-declaration", "a-declaration-without-evidence", "evidence-for-an-unjudged-kind"],
 )
-def test_a_trace_refuses_evidence_a_rejudge_could_not_resend(fields):
+def test_a_trace_refuses_evidence_a_rejudge_could_not_resend(fields) -> None:
     with pytest.raises(ValueError, match="judge_evidence and judged_artifact|unjudged kind"):
         _trace(**fields)
 
 
-def test_a_trace_carries_evidence_with_its_declaration_or_neither():
+def test_a_trace_carries_evidence_with_its_declaration_or_neither() -> None:
     """The accepting side of the refusals above, on the same fixture."""
     assert _trace().judge_evidence is None
     assert _trace(judge_evidence=_EVIDENCE, judged_artifact=JudgedArtifact.TRANSCRIPT).judge_evidence == _EVIDENCE
@@ -586,7 +586,7 @@ async def test_a_rejudged_configured_dim_was_asked_by_its_config_with_the_reply_
 # =============================================================================
 
 
-async def test_a_regrade_report_names_the_failed_judged_dims_and_asks_and_writes_nothing():
+async def test_a_regrade_report_names_the_failed_judged_dims_and_asks_and_writes_nothing() -> None:
     judge = _ScriptedJudge(failing={_DIM})
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
     judge.failing.clear()
@@ -601,7 +601,7 @@ async def test_a_regrade_report_names_the_failed_judged_dims_and_asks_and_writes
     assert off_loop(host.storage.load_eval_result, result.id, _SCOPE) == before
 
 
-async def test_an_applied_regrade_asks_the_failed_dims_as_a_rejudge_does_and_reports_the_new_score():
+async def test_an_applied_regrade_asks_the_failed_dims_as_a_rejudge_does_and_reports_the_new_score() -> None:
     judge = _ScriptedJudge(failing={_DIM})
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)
     first = _users_by_dim(judge.calls)
@@ -619,7 +619,7 @@ async def test_an_applied_regrade_asks_the_failed_dims_as_a_rejudge_does_and_rep
     assert again.changes == [] and again.judge_dims == [] and len(judge.calls) == 1, "nothing failed: nothing asked"
 
 
-async def test_a_regrade_with_judges_false_names_no_judged_dim():
+async def test_a_regrade_with_judges_false_names_no_judged_dim() -> None:
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, _ScriptedJudge(failing={_DIM}))
     before = off_loop(host.storage.load_eval_result, result.id, _SCOPE)
 
@@ -629,7 +629,7 @@ async def test_a_regrade_with_judges_false_names_no_judged_dim():
     assert off_loop(host.storage.load_eval_result, result.id, _SCOPE) == before
 
 
-async def test_the_regrade_action_reports_judged_dims_and_refuses_to_ask_them():
+async def test_the_regrade_action_reports_judged_dims_and_refuses_to_ask_them() -> None:
     """The action makes no model call: applying while a judged dim would be asked is refused, nothing written."""
     judge = _ScriptedJudge(failing={_DIM})
     host, result = await _judged_and_stored(JudgedArtifact.DOCUMENT, judge)

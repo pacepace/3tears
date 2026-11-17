@@ -44,18 +44,18 @@ def get_config() -> DefaultCoreConfig:
 
 
 class TestRenderedPage:
-    def test_construction(self):
+    def test_construction(self) -> None:
         page = RenderedPage(html="<html></html>", status=200, final_url="https://example.gov", timing_ms=123.4)
         assert page.html == "<html></html>"
         assert page.status == 200
         assert page.final_url == "https://example.gov"
         assert page.timing_ms == 123.4
 
-    def test_network_calls_defaults_to_empty_list(self):
+    def test_network_calls_defaults_to_empty_list(self) -> None:
         page = RenderedPage(html="", status=200, final_url="https://example.gov", timing_ms=1.0)
         assert page.network_calls == []
 
-    def test_network_calls_default_is_not_a_shared_mutable(self):
+    def test_network_calls_default_is_not_a_shared_mutable(self) -> None:
         """A dataclass field default must be a fresh list per instance, not
         one list object shared (and silently accumulated into) across every
         RenderedPage ever constructed."""
@@ -66,7 +66,7 @@ class TestRenderedPage:
 
 
 class TestScrapeDriverIsAbstract:
-    def test_cannot_instantiate_directly(self):
+    def test_cannot_instantiate_directly(self) -> None:
         with pytest.raises(TypeError):
             ScrapeDriver()  # type: ignore[abstract]
 
@@ -77,11 +77,11 @@ class TestScrapeDriverIsAbstract:
 
 
 class TestNodriverSidecarDriver:
-    def test_name(self):
+    def test_name(self) -> None:
         driver = NodriverSidecarDriver("http://localhost:8088")
         assert driver.name == "nodriver"
 
-    async def test_render_success_parses_response(self):
+    async def test_render_success_parses_response(self) -> None:
         captured: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -108,7 +108,7 @@ class TestNodriverSidecarDriver:
         )
         await client.aclose()
 
-    async def test_render_sends_request_payload_shape(self):
+    async def test_render_sends_request_payload_shape(self) -> None:
         captured: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -133,7 +133,7 @@ class TestNodriverSidecarDriver:
         }
         await client.aclose()
 
-    async def test_render_forwards_capture_network_flag(self):
+    async def test_render_forwards_capture_network_flag(self) -> None:
         captured: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -152,7 +152,7 @@ class TestNodriverSidecarDriver:
         assert captured["payload"]["capture_network"] is True
         await client.aclose()
 
-    async def test_render_forwards_nav_steps_as_plain_dicts(self):
+    async def test_render_forwards_nav_steps_as_plain_dicts(self) -> None:
         captured: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -175,7 +175,7 @@ class TestNodriverSidecarDriver:
         ]
         await client.aclose()
 
-    async def test_render_omits_nav_steps_key_when_none(self):
+    async def test_render_omits_nav_steps_key_when_none(self) -> None:
         captured: dict = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -194,7 +194,7 @@ class TestNodriverSidecarDriver:
         assert captured["payload"]["nav_steps"] is None
         await client.aclose()
 
-    async def test_render_parses_network_calls_from_response(self):
+    async def test_render_parses_network_calls_from_response(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
@@ -231,7 +231,7 @@ class TestNodriverSidecarDriver:
         ]
         await client.aclose()
 
-    async def test_render_omits_network_calls_key_defaults_to_empty(self):
+    async def test_render_omits_network_calls_key_defaults_to_empty(self) -> None:
         """A sidecar response with no network_calls key at all (older sidecar,
         or capture_network=False) must not crash the parse."""
 
@@ -248,7 +248,7 @@ class TestNodriverSidecarDriver:
         assert page.network_calls == []
         await client.aclose()
 
-    async def test_render_raises_on_sidecar_error_body(self):
+    async def test_render_raises_on_sidecar_error_body(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(504, json={"error": {"code": "navigation_timeout", "message": "page did not load"}})
 
@@ -262,7 +262,7 @@ class TestNodriverSidecarDriver:
         assert exc_info.value.message == "page did not load"
         await client.aclose()
 
-    async def test_render_raises_on_transport_failure(self):
+    async def test_render_raises_on_transport_failure(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
@@ -275,7 +275,7 @@ class TestNodriverSidecarDriver:
         assert exc_info.value.code == "transport"
         await client.aclose()
 
-    async def test_a_non_json_error_body_still_raises_the_driver_error(self):
+    async def test_a_non_json_error_body_still_raises_the_driver_error(self) -> None:
         """A 5xx the sidecar did not write -- an ingress or proxy page -- has no JSON body.
 
         It must still surface as this driver's documented error, not as a bare decode error
@@ -302,7 +302,7 @@ class TestNodriverSidecarDriver:
 
 
 class TestScrapeExtractionDefaults:
-    def test_pre_eval_loop_fields_default_none(self):
+    def test_pre_eval_loop_fields_default_none(self) -> None:
         entity = ScrapeExtraction(
             {
                 "target_id": "warn_act_ca",
@@ -314,17 +314,17 @@ class TestScrapeExtractionDefaults:
         assert entity.field_confidences is None
         assert entity.enrichment_notes is None
 
-    def test_validation_status_defaults_needs_review(self):
+    def test_validation_status_defaults_needs_review(self) -> None:
         entity = ScrapeExtraction({"target_id": "warn_act_ca", "source_url": "https://edd.ca.gov/warn"})
         assert entity.validation_status == "needs_review"
 
-    def test_id_auto_generated_as_uuid7(self):
+    def test_id_auto_generated_as_uuid7(self) -> None:
         entity = ScrapeExtraction({"target_id": "warn_act_ca", "source_url": "https://edd.ca.gov/warn"})
         assert entity.id
         # uuid7's version nibble is 7 (positions per RFC 9562)
         assert entity.id[14] == "7"
 
-    def test_explicit_fields_are_not_overridden_by_defaults(self):
+    def test_explicit_fields_are_not_overridden_by_defaults(self) -> None:
         entity = ScrapeExtraction(
             {
                 "target_id": "warn_act_ca",
@@ -336,7 +336,7 @@ class TestScrapeExtractionDefaults:
         assert entity.extraction_recipe_id == "recipe-1"
         assert entity.validation_status == "validated"
 
-    def test_structured_fields_round_trips_dict(self):
+    def test_structured_fields_round_trips_dict(self) -> None:
         entity = ScrapeExtraction(
             {
                 "target_id": "warn_act_ca",
@@ -348,7 +348,7 @@ class TestScrapeExtractionDefaults:
 
 
 class TestScrapeTargetAndRecipe:
-    def test_scrape_target_reads_fields(self):
+    def test_scrape_target_reads_fields(self) -> None:
         target = ScrapeTarget(
             {
                 "target_id": "warn_act_ca",
@@ -362,7 +362,7 @@ class TestScrapeTargetAndRecipe:
         assert target.driver_backend == "nodriver"
         assert target.rate_limit_key == "warn_act_state_sites"
 
-    def test_scrape_recipe_failure_count_defaults_zero(self):
+    def test_scrape_recipe_failure_count_defaults_zero(self) -> None:
         recipe = ScrapeRecipe({"target_id": "warn_act_ca", "extraction_strategy": {}})
         assert recipe.consecutive_validation_failures == 0
 
@@ -373,7 +373,7 @@ class TestScrapeTargetAndRecipe:
 
 
 class TestScrapeExtractionCollection:
-    async def test_save_and_get_round_trips(self):
+    async def test_save_and_get_round_trips(self) -> None:
         collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         entity = collection.create(
             {
@@ -391,13 +391,13 @@ class TestScrapeExtractionCollection:
         assert fetched.extraction_recipe_id is None
         assert fetched.validation_status == "needs_review"
 
-    async def test_table_name(self):
+    async def test_table_name(self) -> None:
         collection = ScrapeExtractionCollection(get_registry(), get_config(), nats_client=None)
         assert collection.table_name == "scrape_extractions"
 
 
 class TestScrapeTargetCollection:
-    async def test_save_and_get_round_trips(self):
+    async def test_save_and_get_round_trips(self) -> None:
         collection = ScrapeTargetCollection(get_registry(), get_config(), nats_client=None)
         entity = collection.create(
             {

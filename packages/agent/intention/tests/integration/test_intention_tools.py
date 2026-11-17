@@ -94,7 +94,7 @@ class TestIntentionLog:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
             )
             out = await log_tool.ainvoke({"content": "learn what the user is building"})
             assert "[intention:" in out
@@ -114,7 +114,7 @@ class TestIntentionLog:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
                 salience_seed=0.5,
                 near_dup_bump=0.05,
             )
@@ -154,7 +154,7 @@ class TestIntentionLog:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
                 on_logged=_record,
             )
             first = await log_tool.ainvoke({"content": "remember to ask about the trip"})
@@ -180,7 +180,7 @@ class TestIntentionLog:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
                 on_logged=_broken,
             )
             out = await log_tool.ainvoke({"content": "learn what the user is building"})
@@ -202,7 +202,7 @@ class TestIntentionLog:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
             )
             await log_tool.ainvoke({"content": "want A"})
             await log_tool.ainvoke({"content": "a totally unrelated want B"})
@@ -223,7 +223,7 @@ class TestIntentionLog:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
             )
             await log_tool.ainvoke({"content": "same want, will re-log"})
 
@@ -231,7 +231,7 @@ class TestIntentionLog:
             async def _boom(entity: Any) -> None:
                 raise ConcurrentModificationError("intentions", "simulated CAS conflict", None)
 
-            coll.save_entity = _boom  # type: ignore[method-assign]
+            coll.save_entity = _boom
             out = await log_tool.ainvoke({"content": "same want, will re-log"})
             assert out == "[TOOL ERROR] intention_log: refresh failed — ConcurrentModificationError"
             assert "simulated CAS conflict" not in out, "the store's own message goes to contain(), not the reply"
@@ -256,7 +256,7 @@ class TestIntentionLog:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
                 context_resolver=lambda: _Ctx(),
             )
             out = await log_tool.ainvoke({"content": "a want tied to this chat"})
@@ -356,7 +356,7 @@ class TestIntentionMarkSurfaced:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
             )
             out = await log_tool.ainvoke({"content": "surface this one"})
             intention_id = out.split("[intention:")[1].split("]")[0]
@@ -400,7 +400,7 @@ class TestIntentionMarkSurfaced:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
             )
             out = await log_tool.ainvoke({"content": "resolve this one"})
             intention_id = out.split("[intention:")[1].split("]")[0]
@@ -433,7 +433,7 @@ class TestIntentionMarkSurfaced:
                 agent_id,
                 customer_id,
                 owner_only_authorizer(),
-                coll,  # type: ignore[arg-type]
+                coll,
             )
             out = await owner_log.ainvoke({"content": "owner's private want"})
             intention_id = out.split("[intention:")[1].split("]")[0]
@@ -602,8 +602,8 @@ class TestIntentionCacheCoherence:
                 calls.extend(entity_ids)
                 await original_many(entity_ids)
 
-            coll.invalidate_cache = _spy  # type: ignore[method-assign]
-            coll.invalidate_cache_many = _spy_many  # type: ignore[method-assign]
+            coll.invalidate_cache = _spy
+            coll.invalidate_cache_many = _spy_many
 
             await coll.bump_salience([wid], agent_id=agent_id, access_bump=0.05)
             assert (agent_id, wid) in calls

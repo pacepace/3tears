@@ -419,6 +419,12 @@ table's mark there, so a row written between a cold read and its follow is read 
 **Added:** `StandingRows(..., on_change=...)`: told `(key, before, after)` for each followed change to what is held, as
 a task once the set holds it (the hub's rbac readers re-enroll a principal whose membership was deleted, at once).
 
+### tooling: `typecheck.sh` checks every package's tests as well as its sources
+
+**Changed:** `./scripts/typecheck.sh` (what CI runs) now runs strict mypy over every git-tracked test file too, each
+named by its path from the repository root (the name pytest imports it by), so two packages' `tests/unit/conftest.py`
+no longer clash. `--src` / `--tests` run one half; a package argument checks that package's sources and tests.
+
 ### core: `SchemaBackedCollection.truncate()` removed -- an operator's `reset()` is the one whole-table empty
 
 **Removed:** `truncate()` (no caller in any consumer; reports resets with `reset()`). A load clears by key prefix

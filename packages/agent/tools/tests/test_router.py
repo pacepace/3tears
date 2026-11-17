@@ -17,23 +17,23 @@ from threetears.agent.tools.router import (
 # ---------------------------------------------------------------------------
 
 
-def test_is_recall_intent_true():
+def test_is_recall_intent_true() -> None:
     assert is_recall_intent("show me the results") is True
 
 
-def test_is_recall_intent_with_verbs():
+def test_is_recall_intent_with_verbs() -> None:
     assert is_recall_intent("recall the output from opus") is True
 
 
-def test_is_recall_intent_false_for_new_task():
+def test_is_recall_intent_false_for_new_task() -> None:
     assert is_recall_intent("search for python tutorials") is False
 
 
-def test_is_recall_intent_false_for_general():
+def test_is_recall_intent_false_for_general() -> None:
     assert is_recall_intent("hello how are you") is False
 
 
-def test_is_recall_intent_new_task_overrides():
+def test_is_recall_intent_new_task_overrides() -> None:
     assert is_recall_intent("create a new search query and show results") is False
 
 
@@ -64,7 +64,7 @@ _SEARCH_TOOL = [{"name": "web_search", "description": "Search the web", "tool_ll
 _CALCULATOR_TOOL = [{"name": "calculator", "description": "Do math", "tool_llm_id": "t2"}]
 
 
-async def test_a_plain_json_answer_is_read():
+async def test_a_plain_json_answer_is_read() -> None:
     router = ToolRouter(
         chat_model_factory=MockChatModelFactory('{"tool_name": "web_search", "reasoning": "needs search"}')
     )
@@ -73,7 +73,7 @@ async def test_a_plain_json_answer_is_read():
     assert decision.reasoning == "needs search"
 
 
-async def test_a_markdown_wrapped_answer_is_read():
+async def test_a_markdown_wrapped_answer_is_read() -> None:
     text = '```json\n{"tool_name": "calculator", "reasoning": "math"}\n```'
     router = ToolRouter(chat_model_factory=MockChatModelFactory(text))
     decision = await router.route("what is 2 plus 2", available_tool_llms=_CALCULATOR_TOOL)
@@ -81,7 +81,7 @@ async def test_a_markdown_wrapped_answer_is_read():
     assert decision.reasoning == "math"
 
 
-async def test_an_unreadable_answer_routes_to_no_tool():
+async def test_an_unreadable_answer_routes_to_no_tool() -> None:
     router = ToolRouter(chat_model_factory=MockChatModelFactory("this is not json at all"))
     decision = await router.route("what is the weather in tokyo", available_tool_llms=_SEARCH_TOOL)
     assert decision.tool_name is None
@@ -94,7 +94,7 @@ async def test_an_unreadable_answer_routes_to_no_tool():
 # ---------------------------------------------------------------------------
 
 
-async def test_route_no_tools():
+async def test_route_no_tools() -> None:
     factory = MockChatModelFactory('{"tool_name": null, "reasoning": "none"}')
     router = ToolRouter(chat_model_factory=factory)
     decision = await router.route("hello")
@@ -102,7 +102,7 @@ async def test_route_no_tools():
     assert decision.reasoning == "no tools available"
 
 
-async def test_route_recall_intent():
+async def test_route_recall_intent() -> None:
     factory = MockChatModelFactory('{"tool_name": "search", "reasoning": "search"}')
     router = ToolRouter(chat_model_factory=factory)
     decision = await router.route(
@@ -113,7 +113,7 @@ async def test_route_recall_intent():
     assert "recall" in decision.reasoning
 
 
-async def test_route_selects_tool_llm():
+async def test_route_selects_tool_llm() -> None:
     factory = MockChatModelFactory('{"tool_name": "web_search", "reasoning": "user wants to search"}')
     router = ToolRouter(chat_model_factory=factory)
     decision = await router.route(
@@ -127,7 +127,7 @@ async def test_route_selects_tool_llm():
     assert decision.tool_id == "t1"
 
 
-async def test_route_selects_mcp_tool():
+async def test_route_selects_mcp_tool() -> None:
     factory = MockChatModelFactory('{"tool_name": "mcp:code_exec", "reasoning": "run code"}')
     router = ToolRouter(chat_model_factory=factory)
     decision = await router.route(
@@ -141,7 +141,7 @@ async def test_route_selects_mcp_tool():
     assert decision.tool_id == "m1"
 
 
-async def test_route_no_match():
+async def test_route_no_match() -> None:
     factory = MockChatModelFactory('{"tool_name": null, "reasoning": "general conversation"}')
     router = ToolRouter(chat_model_factory=factory)
     decision = await router.route(

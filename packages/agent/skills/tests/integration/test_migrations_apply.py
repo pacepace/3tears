@@ -125,7 +125,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            count = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            count = await runner.apply_for_agent_schema(store)
             assert count > 0
 
             skill_cols = await _columns(conn, schema, "agent_skills")
@@ -183,7 +183,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             for index_name in (
                 "uq_skills_agent_user_name",
@@ -211,11 +211,11 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store, target=2)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store, target=2)
             for index_name in _DROPPED_GIN_INDEXES:
                 assert await _index_exists(conn, schema, index_name), f"{index_name} missing at v002"
 
-            applied = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            applied = await runner.apply_for_agent_schema(store)
             assert applied >= 1
 
             for index_name in _DROPPED_GIN_INDEXES:
@@ -236,7 +236,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             assert await _trigger_exists(
                 conn,
                 schema,
@@ -253,7 +253,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             assert await _constraint_exists(
                 conn,
                 schema,
@@ -285,7 +285,7 @@ class TestSchemaShape:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             row = await conn.fetchrow(
                 """
                 SELECT 1 FROM pg_constraint c
@@ -314,9 +314,9 @@ class TestIdempotency:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            first = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            first = await runner.apply_for_agent_schema(store)
             assert first > 0
-            second = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            second = await runner.apply_for_agent_schema(store)
             assert second == 0
         finally:
             await conn.close()
@@ -357,7 +357,7 @@ class TestV004ToolCallColumns:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store, target=3)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store, target=3)
             assert "tool" not in await _columns(conn, schema, "agent_skills")
             await conn.execute(
                 "INSERT INTO agent_skills (agent_id, skill_id, user_id, name, summary, body, tool_additions) "
@@ -366,7 +366,7 @@ class TestV004ToolCallColumns:
             )
             before = [dict(r) for r in await conn.fetch("SELECT * FROM agent_skills ORDER BY name")]
 
-            assert await runner.apply_for_agent_schema(store) >= 1  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store) >= 1
 
             after = [dict(r) for r in await conn.fetch("SELECT * FROM agent_skills ORDER BY name")]
             assert [{k: v for k, v in r.items() if k not in {"tool", "arguments"}} for r in after] == before
@@ -385,7 +385,7 @@ class TestV004ToolCallColumns:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             first = await _check_oids(conn, schema)
             assert set(first) == set(_V004_CHECKS)
             assert "tool IS NOT NULL" in first["agent_skills_payload_check"][1]
@@ -402,7 +402,7 @@ class TestV004ToolCallColumns:
         conn = await asyncpg.connect(url)
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
-            await runner.apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(AsyncpgStore(conn))
             stored = (await _check_oids(conn, schema))["agent_skills_payload_check"][1]
             assert stored == PAYLOAD_CHECK_ENGINE_DEF
         finally:
@@ -420,7 +420,7 @@ class TestV004ToolCallColumns:
             for schema in schemas:
                 await conn.execute(f'CREATE SCHEMA "{schema}"')
                 await conn.execute(f'SET search_path TO "{schema}", public')
-                await _build_runner().apply_for_agent_schema(AsyncpgStore(conn))  # type: ignore[arg-type]
+                await _build_runner().apply_for_agent_schema(AsyncpgStore(conn))
             for schema in schemas:
                 checks = await _check_oids(conn, schema)
                 assert set(checks) == set(_V004_CHECKS), schema
@@ -442,7 +442,7 @@ class TestV005OutcomeNotes:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store, target=4)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store, target=4)
             assert "outcome_notes" not in await _columns(conn, schema, "agent_skill_invocations")
             agent_id, skill_id = await conn.fetchrow("SELECT gen_random_uuid() AS a, gen_random_uuid() AS s")
             await conn.execute(
@@ -460,7 +460,7 @@ class TestV005OutcomeNotes:
             )
             before = [dict(r) for r in await conn.fetch("SELECT * FROM agent_skill_invocations")]
 
-            assert await runner.apply_for_agent_schema(store) >= 1  # type: ignore[arg-type]
+            assert await runner.apply_for_agent_schema(store) >= 1
 
             after = [dict(r) for r in await conn.fetch("SELECT * FROM agent_skill_invocations")]
             assert [{k: v for k, v in r.items() if k != "outcome_notes"} for r in after] == before
@@ -476,7 +476,7 @@ class TestV005OutcomeNotes:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = AsyncpgStore(conn)
-            await _build_runner().apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await _build_runner().apply_for_agent_schema(store)
             first = await _columns(conn, schema, "agent_skill_invocations")
             await add_outcome_notes(store)  # type: ignore[arg-type]
             assert await _columns(conn, schema, "agent_skill_invocations") == first

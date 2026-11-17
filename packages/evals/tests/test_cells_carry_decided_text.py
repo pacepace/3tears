@@ -61,7 +61,7 @@ def test_a_copy_that_changes_the_number_carries_its_new_text_or_is_refused() -> 
 def test_a_cell_is_frozen_so_its_text_never_outlives_its_value() -> None:
     cell = TableCell(value=85.0, unit=PERCENT, value_text="85%")
     with pytest.raises(ValueError, match="frozen"):
-        cell.value = 86.0  # type: ignore[misc]
+        cell.value = 86.0
 
 
 def test_a_copy_that_moves_one_end_carries_both_ends_texts() -> None:

@@ -411,7 +411,7 @@ def test_the_line_under_a_matrix_names_the_columns_each_range_is_drawn_for() -> 
         columns=[
             {"key": "aspect", "header": "Aspect"},
             *({"key": key, "header": header} for key, header, _ in columns),
-        ],  # type: ignore[list-item]
+        ],
         order="aspect by aspect",
         rows=[{"aspect": TableCell(value="research"), **{key: cell for key, _, cell in columns}}],
         total_rows=1,
@@ -441,7 +441,7 @@ def _quality_scorecard(*cells: tuple[str, str, TableCell]) -> TableBlock:
         columns=[
             {"key": "aspect", "header": "Aspect"},
             *({"key": key, "header": header} for key, header, _ in cells),
-        ],  # type: ignore[list-item]
+        ],
         order="aspect by aspect",
         rows=[{"aspect": TableCell(value="Research quality"), **{key: cell for key, _, cell in cells}}],
         total_rows=1,

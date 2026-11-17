@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import pytest
-
-from packages.evals.tests.scripted_table import DONE, FakeCellSink, Raw, ScriptedTable, actor
-from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
 from threetears.evals.kernel.usage_capture import RoleUsageLedger
 from threetears.evals.run import drive_conversation
 from threetears.evals.run.simulator import CandidateTurn, SimulatorTurn, TurnDriver
+from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
+
+from packages.evals.tests.scripted_table import DONE, FakeCellSink, Raw, ScriptedTable, actor
 
 
 class _Kind:
@@ -35,7 +35,7 @@ def _driver(**fields) -> TurnDriver:
     return TurnDriver(conversation=ConversationSpec(**fields), variation={})
 
 
-async def test_a_three_actor_table_runs_in_the_schedulers_order_across_three_sessions():
+async def test_a_three_actor_table_runs_in_the_schedulers_order_across_three_sessions() -> None:
     """The Done-when table: three scripted actors, an ``llm_decided`` order no rotation produces, two breaks.
 
     Round-robin would give [a], [b], [c], ... one actor per round; the scheduler here fills rounds
@@ -94,7 +94,7 @@ async def test_a_three_actor_table_runs_in_the_schedulers_order_across_three_ses
     assert sum(row.call_count or 0 for row in ledger.rows()) == 25
 
 
-async def test_round_robin_keeps_one_utterance_and_one_answer_per_round():
+async def test_round_robin_keeps_one_utterance_and_one_answer_per_round() -> None:
     driver = _driver(actors=[actor("a"), actor("b")], max_turns=3)
     table = ScriptedTable(lines={"a": ["a1", "a2"], "b": ["b1"]})
     kind = _Kind()
@@ -106,7 +106,7 @@ async def test_round_robin_keeps_one_utterance_and_one_answer_per_round():
     assert kind.rounds == [["a"], ["b"], ["a"]]
 
 
-async def test_a_departure_is_not_delivered_and_an_emptied_round_starts_over():
+async def test_a_departure_is_not_delivered_and_an_emptied_round_starts_over() -> None:
     """a leaves on round 2's only slot, so that round holds nothing to answer; b fills it instead."""
     driver = _driver(actors=[actor("a"), actor("b")], max_turns=3)
     table = ScriptedTable(lines={"a": ["a1", DONE], "b": ["b1", "b2"]})
@@ -119,7 +119,7 @@ async def test_a_departure_is_not_delivered_and_an_emptied_round_starts_over():
     assert driver.departed == {"a"}
 
 
-async def test_everyone_leaving_in_a_round_that_delivered_nothing_leaves_nothing_to_answer():
+async def test_everyone_leaving_in_a_round_that_delivered_nothing_leaves_nothing_to_answer() -> None:
     """Round 1: b and then a leave before anyone speaks, so the conversation ends with round 0 answered and no more."""
     driver = _driver(actors=[actor("a"), actor("b")], turn_scheduler="llm_decided", max_speakers_per_round=2)
     table = ScriptedTable(picks=["a", ROUND_DONE, "b"], lines={"a": ["a1", DONE], "b": [DONE]})
@@ -131,7 +131,7 @@ async def test_everyone_leaving_in_a_round_that_delivered_nothing_leaves_nothing
     assert [turn.content for turn in kind.posted] == ["a1"]
 
 
-async def test_the_last_actor_leaving_mid_round_is_answered_before_the_conversation_ends():
+async def test_the_last_actor_leaving_mid_round_is_answered_before_the_conversation_ends() -> None:
     """One actor, two slots a round: it says a1 and then leaves in the same round, so a1 is answered first.
 
     Without the answer the transcript a judge reads would end on a1, a line the candidate was handed and
@@ -149,7 +149,7 @@ async def test_the_last_actor_leaving_mid_round_is_answered_before_the_conversat
     assert driver.transcript[-1] == ("__candidate__", "answer 1")
 
 
-async def test_the_opener_is_answered_when_its_actor_leaves_at_once():
+async def test_the_opener_is_answered_when_its_actor_leaves_at_once() -> None:
     driver = _driver(actors=[actor("a", initial_utterance_template="We enter the hall.")], max_speakers_per_round=2)
     table = ScriptedTable(lines={"a": [DONE]})
     kind = _Kind()
@@ -161,7 +161,7 @@ async def test_the_opener_is_answered_when_its_actor_leaves_at_once():
     assert [turn.content for turn in kind.posted] == ["We enter the hall."]
 
 
-async def test_a_last_departure_after_others_spoke_under_the_scheduler_is_answered():
+async def test_a_last_departure_after_others_spoke_under_the_scheduler_is_answered() -> None:
     """b speaks, a (the only other actor) left earlier, then b leaves in the same round: b1 is answered."""
     driver = _driver(actors=[actor("a"), actor("b")], turn_scheduler="llm_decided", max_speakers_per_round=3)
     # a leaves on the first pick; b is then the only legal speaker, so the second line needs no pick,
@@ -179,7 +179,7 @@ async def test_a_last_departure_after_others_spoke_under_the_scheduler_is_answer
 # --- spend: counted on the sink, never a reason to stop the conversation --------------------------------------
 
 
-async def test_every_simulator_call_lands_its_spend_on_the_simulator_total():
+async def test_every_simulator_call_lands_its_spend_on_the_simulator_total() -> None:
     driver = _driver(actors=[actor("a")], max_turns=2)
     table = ScriptedTable(lines={"a": ["a1", "a2"]})
     sink = FakeCellSink()
@@ -190,7 +190,7 @@ async def test_every_simulator_call_lands_its_spend_on_the_simulator_total():
     assert sink.spent == {"simulator": pytest.approx(0.002)}
 
 
-async def test_a_conversation_runs_to_its_own_end_however_much_it_has_spent():
+async def test_a_conversation_runs_to_its_own_end_however_much_it_has_spent() -> None:
     """No cap is asked inside the loop: the run's ceilings are read between cells, so a long conversation finishes."""
     driver = _driver(actors=[actor("a")], max_turns=5)
     table = ScriptedTable(lines={"a": ["a1", "a2", "a3", "a4", "a5"]}, ceiling_usd=0.001)
@@ -205,7 +205,7 @@ async def test_a_conversation_runs_to_its_own_end_however_much_it_has_spent():
     assert driver.cost_usd == pytest.approx(0.005)
 
 
-async def test_the_schedulers_picks_and_repairs_are_made_whatever_they_cost():
+async def test_the_schedulers_picks_and_repairs_are_made_whatever_they_cost() -> None:
     driver = _driver(
         actors=[actor("a"), actor("b")], turn_scheduler="llm_decided", max_speakers_per_round=2, max_turns=1
     )
@@ -218,7 +218,7 @@ async def test_the_schedulers_picks_and_repairs_are_made_whatever_they_cost():
     assert kind.rounds, "the round was answered"
 
 
-async def test_an_unpriced_simulator_call_leaves_its_source_unpriced_and_the_conversation_goes_on():
+async def test_an_unpriced_simulator_call_leaves_its_source_unpriced_and_the_conversation_goes_on() -> None:
     driver = _driver(actors=[actor("a")], max_turns=3)
     table = ScriptedTable(lines={"a": ["a1", "a2", "a3"]}, cost_usd=None)
     sink = FakeCellSink()
@@ -244,7 +244,7 @@ async def _raising(*_args) -> None:
         ("candidate", ConversationStopCause.CANDIDATE_ERROR),
     ],
 )
-async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(side, cause):
+async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(side, cause) -> None:
     driver = _driver(actors=[actor("a")], max_turns=2)
     table = ScriptedTable(lines={"a": [Raw("not json") if side == "simulator" else "a1"]})
     kind = _Kind()
@@ -260,7 +260,7 @@ async def test_the_side_that_failed_is_recorded_and_its_exception_propagates(sid
     assert [(call.purpose, call.actor_id) for call in driver.calls] == [("utterance", "a")]
 
 
-async def test_a_driver_that_has_run_is_refused():
+async def test_a_driver_that_has_run_is_refused() -> None:
     driver = _driver(actors=[actor("a")])
     driver.record_candidate_turn(CandidateTurn(content="already"))
     kind = _Kind()

@@ -26,7 +26,6 @@ from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
-
 from threetears.evals.kernel.host.bars import Bar, BarRegistrationError, BarRegistry
 from threetears.evals.kernel.host.measures import MeasureRegistrationError, MeasureRegistry
 from threetears.evals.kernel.host.profile import HostProfile, ProfileRegistrationError
@@ -37,14 +36,15 @@ from threetears.evals.kernel.host.sweepables import (
     Sweepable,
     SweepableRegistry,
 )
-from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.identity import LeverCoordinateError, derive_variant_identity
 from threetears.evals.kernel.metrics import METRIC_DESCRIPTORS, MetricDescriptor
+from threetears.evals.schema.values import SweepableValue
+
 from packages.evals.tests.fixtures.toyhost.corpus import (
     clean_sweep,
     confounded_sweep,
-    unrecorded_apparatus,
     toyhost_observation,
+    unrecorded_apparatus,
 )
 from packages.evals.tests.fixtures.toyhost.profile import (
     TOYHOST_EXTRACTION_FAMILY,
@@ -52,7 +52,6 @@ from packages.evals.tests.fixtures.toyhost.profile import (
     TOYHOST_MEASURES,
     toyhost_profile,
 )
-
 
 #: One arbitrary lever level, for the tests that care which NAMES a map carries rather than what
 #: they resolved to.
@@ -75,7 +74,7 @@ _TOYHOST_OWN_LEVERS = tuple(
 _EVAL_ROOT = Path(__file__).resolve().parents[1] / "src" / "threetears" / "evals"
 
 
-def test_the_engine_reads_a_second_hosts_vocabulary_off_the_same_carrier():
+def test_the_engine_reads_a_second_hosts_vocabulary_off_the_same_carrier() -> None:
     """One carrier, two vocabularies. The engine calls the host's readers and inspects none.
 
     The toy host's values arrive through the same ``read_all`` the bisection uses for any
@@ -90,7 +89,7 @@ def test_the_engine_reads_a_second_hosts_vocabulary_off_the_same_carrier():
     assert values["model"] == "extractor-v2"
 
 
-def test_a_clean_sweep_over_a_second_hosts_vocabulary_reports_no_confound():
+def test_a_clean_sweep_over_a_second_hosts_vocabulary_reports_no_confound() -> None:
     """The engine must not invent a rival explanation where the host held everything still.
 
     An engine that reported a confound here would be unusable by any consumer, and a host whose
@@ -107,7 +106,7 @@ def test_a_clean_sweep_over_a_second_hosts_vocabulary_reports_no_confound():
     assert sweepables.comparability("chunk_tokens", [row["chunk_tokens"] for row in observed]) == "differs"
 
 
-def test_a_moved_apparatus_surfaces_with_the_hosts_own_reason_attached():
+def test_a_moved_apparatus_surfaces_with_the_hosts_own_reason_attached() -> None:
     """A bare dimension name is a label; the reason is the value.
 
     ``reviewer_pool`` is a confound no generic engine could guess — pools disagree on borderline
@@ -124,7 +123,7 @@ def test_a_moved_apparatus_surfaces_with_the_hosts_own_reason_attached():
     assert "pools disagree" in reason
 
 
-def test_an_unrecorded_apparatus_dimension_is_neither_agreement_nor_difference():
+def test_an_unrecorded_apparatus_dimension_is_neither_agreement_nor_difference() -> None:
     """``unknown`` as a designed state rather than a legacy accident.
 
     A host can read ``unknown`` on a dimension because the record predates a stamp. A real
@@ -142,7 +141,7 @@ def test_an_unrecorded_apparatus_dimension_is_neither_agreement_nor_difference()
     assert verdict == "unknown"
 
 
-def test_coverage_is_derived_from_the_profile_and_cannot_drift_from_it():
+def test_coverage_is_derived_from_the_profile_and_cannot_drift_from_it() -> None:
     """The registry *is* the map. Nothing is declared beside it, so nothing can disagree.
 
     A hand-written coverage document fails in the reassuring direction — it goes on saying
@@ -164,7 +163,7 @@ def test_coverage_is_derived_from_the_profile_and_cannot_drift_from_it():
     assert "subject_id" in uncontrollable.reason
 
 
-def test_controllable_refuses_an_apparatus_input_as_a_declared_sweep_axis():
+def test_controllable_refuses_an_apparatus_input_as_a_declared_sweep_axis() -> None:
     """Registration is not enough — only a ``lever`` is a knob a campaign may declare it swept.
 
     The failure this refuses: a campaign declares ``simulator_model``, which IS registered, so an
@@ -187,7 +186,7 @@ def test_controllable_refuses_an_apparatus_input_as_a_declared_sweep_axis():
         assert role in coverage.reason
 
 
-def test_controllable_distinguishes_unregistered_from_registered_but_not_a_lever():
+def test_controllable_distinguishes_unregistered_from_registered_but_not_a_lever() -> None:
     """The two ``uncovered`` reasons differ because the remedies do.
 
     Exactly the distinction :meth:`HostProfile.representable` already draws on the world registry:
@@ -206,7 +205,7 @@ def test_controllable_distinguishes_unregistered_from_registered_but_not_a_lever
     assert "not registered as sweepable" not in not_a_lever.reason
 
 
-def test_lever_names_is_the_sweepable_subset_and_excludes_every_other_role():
+def test_lever_names_is_the_sweepable_subset_and_excludes_every_other_role() -> None:
     """The registry answers "which axes may be declared" once, so the gate and its message agree.
 
     Derived from the declarations rather than listed, so a role change moves both surfaces at once.
@@ -225,7 +224,7 @@ def test_lever_names_is_the_sweepable_subset_and_excludes_every_other_role():
     assert all(by_role[name] == "lever" for name in levers)
 
 
-def test_every_coverage_predicate_on_the_profile_has_a_production_caller():
+def test_every_coverage_predicate_on_the_profile_has_a_production_caller() -> None:
     """A predicate with no caller is a declaration nothing reads, and this catches one.
 
     The failure this refuses is specific and has happened on this class: a predicate lands ahead
@@ -290,7 +289,7 @@ def test_every_coverage_predicate_on_the_profile_has_a_production_caller():
     )
 
 
-def test_a_second_products_measures_land_on_all_four_engine_owned_merit_axes():
+def test_a_second_products_measures_land_on_all_four_engine_owned_merit_axes() -> None:
     """The claim behind the axis enum being closed, tested against a host that never saw it.
 
     "Best" is never unqualified — a memo states position along quality, cost, latency and
@@ -311,7 +310,7 @@ def test_a_second_products_measures_land_on_all_four_engine_owned_merit_axes():
     assert axisless == {name for name in toy.measures.names if toy.measures.get(name).diagnostic}  # type: ignore[union-attr]
 
 
-def test_a_bar_reads_its_measures_better_direction_rather_than_assuming_higher_is_better():
+def test_a_bar_reads_its_measures_better_direction_rather_than_assuming_higher_is_better() -> None:
     """A ceiling and a floor are both standards, and a bar that assumes one silently inverts.
 
     ``field_accuracy`` clears upward; a cost or latency bar clears downward. The toy host has
@@ -334,7 +333,7 @@ def test_a_bar_reads_its_measures_better_direction_rather_than_assuming_higher_i
     assert not latency_bar.clears(2500.0)
 
 
-def test_a_host_with_no_world_reports_inapplicable_rather_than_uncovered():
+def test_a_host_with_no_world_reports_inapplicable_rather_than_uncovered() -> None:
     """Three states, not two — the distinction a second consumer actually needs.
 
     metallm instantiates no simulated world; its preconditions are whatever a real conversation
@@ -350,7 +349,7 @@ def test_a_host_with_no_world_reports_inapplicable_rather_than_uncovered():
     assert answer.state != "uncovered"
 
 
-def test_the_default_profile_is_built_without_a_warning_and_holds_no_style_field():
+def test_the_default_profile_is_built_without_a_warning_and_holds_no_style_field() -> None:
     """The toy host's profile is built without a warning, and a profile has no field a retired writer read."""
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
@@ -366,7 +365,7 @@ def test_passing_a_retired_style_field_is_refused_naming_it(retired: str) -> Non
         replace(toyhost_profile(), **{retired: frozenset({"adjudication_scope"})})
 
 
-def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_incumbent():
+def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_incumbent() -> None:
     """The ratchet only tightens, and the refusal names what it is protecting.
 
     A standard the run being measured against it can lower is not a standard. A host may register
@@ -407,7 +406,7 @@ def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_in
     toy.bars.check_override(tighter)
 
 
-def test_a_lower_is_better_bar_ratchets_downward_not_upward():
+def test_a_lower_is_better_bar_ratchets_downward_not_upward() -> None:
     """The branch whose inversion was the finding, executed rather than assumed.
 
     Every earlier bar in this fixture clears upward, so ``is_tighter_than``'s lower-is-better
@@ -430,7 +429,7 @@ def test_a_lower_is_better_bar_ratchets_downward_not_upward():
     bars.check_override(faster)
 
 
-def test_a_bar_naming_a_measure_the_host_never_declared_is_refused_at_profile_construction():
+def test_a_bar_naming_a_measure_the_host_never_declared_is_refused_at_profile_construction() -> None:
     """The cross-check runs where both registries are in hand, so this is the wiring under test.
 
     ``Bar.measure``'s docstring says it must be a measure the host declares. Before this it was a
@@ -449,7 +448,7 @@ def test_a_bar_naming_a_measure_the_host_never_declared_is_refused_at_profile_co
         replace(toy, bars=BarRegistry([*toy.bars.bars, orphan]))
 
 
-def test_a_bar_contradicting_its_measures_direction_is_refused_at_profile_construction():
+def test_a_bar_contradicting_its_measures_direction_is_refused_at_profile_construction() -> None:
     """Two copies of one discrete fact stay agreed only while something forces them to.
 
     ``field_accuracy`` declares ``higher_is_better=True``; a bar claiming otherwise is one of the
@@ -473,7 +472,7 @@ def test_a_bar_contradicting_its_measures_direction_is_refused_at_profile_constr
 # ---------------------------------------------------------------------------
 
 
-def test_the_ratchet_proposes_the_measured_baseline_and_registers_nothing():
+def test_the_ratchet_proposes_the_measured_baseline_and_registers_nothing() -> None:
     """A proposal is a thing to look at, not a thing that happened.
 
     The engine can compute what the incumbent configuration measures; what it cannot know is
@@ -498,7 +497,7 @@ def test_the_ratchet_proposes_the_measured_baseline_and_registers_nothing():
     assert toy.bars.get("reconcile_statements", "field_accuracy") is None, "a proposal must not register itself"
 
 
-def test_a_baseline_nothing_could_fail_is_flagged_as_a_vacuous_seed():
+def test_a_baseline_nothing_could_fail_is_flagged_as_a_vacuous_seed() -> None:
     """Never ship worse than something already broken, stated in checkable terms.
 
     An incumbent bottomed out at its measure's permissive extreme proposes a bar every value
@@ -555,7 +554,7 @@ def test_a_baseline_nothing_could_fail_is_flagged_as_a_vacuous_seed():
     assert not unbounded.vacuous
 
 
-def test_a_seed_that_would_loosen_a_registered_bar_is_flagged_rather_than_adopted():
+def test_a_seed_that_would_loosen_a_registered_bar_is_flagged_rather_than_adopted() -> None:
     """A ratchet that can turn the other way is not a ratchet.
 
     ``check_override`` refuses a looser CAMPAIGN bar; this is the other door — a seed arriving
@@ -586,7 +585,7 @@ def test_a_seed_that_would_loosen_a_registered_bar_is_flagged_rather_than_adopte
     assert not tightened.vacuous
 
 
-def test_a_proposal_on_a_measure_the_host_cannot_see_or_cannot_rank_is_refused():
+def test_a_proposal_on_a_measure_the_host_cannot_see_or_cannot_rank_is_refused() -> None:
     """A bar nobody can check is worse than no bar: it reads as a standard and enforces nothing."""
     toy = toyhost_profile()
 
@@ -627,7 +626,7 @@ def test_a_proposal_on_a_measure_the_host_cannot_see_or_cannot_rank_is_refused()
         )
 
 
-def test_a_registry_declaration_that_cannot_answer_a_lookup_is_refused_at_construction():
+def test_a_registry_declaration_that_cannot_answer_a_lookup_is_refused_at_construction() -> None:
     """The two defects `BarRegistry.__init__` reports, neither of which any test reached.
 
     A duplicated ``(behavior, measure)`` means one bar shadows the other and a lookup silently
@@ -650,7 +649,7 @@ def test_a_registry_declaration_that_cannot_answer_a_lookup_is_refused_at_constr
     assert BarRegistry().bars == ()
 
 
-def test_a_proposal_with_no_rationale_is_refused_like_a_registered_bar_with_none():
+def test_a_proposal_with_no_rationale_is_refused_like_a_registered_bar_with_none() -> None:
     """The ratchet does not get to skip the rule registration enforces.
 
     A proposal is a bar a person is being asked to adopt, and one arriving with no reason is the
@@ -783,7 +782,7 @@ def _self_keyed_violations(source: str, keys: tuple[tuple[str, str], ...]) -> li
     return problems
 
 
-def test_a_self_keyed_payload_reader_reads_only_the_key_it_writes():
+def test_a_self_keyed_payload_reader_reads_only_the_key_it_writes() -> None:
     """Admission to ``_SELF_KEYED_PAYLOAD_READERS`` is a property of the module, checked here.
 
     Both directions on one module: the registered file qualifies, and the same file with one
@@ -801,7 +800,7 @@ def test_a_self_keyed_payload_reader_reads_only_the_key_it_writes():
             )
 
 
-def test_no_engine_module_reaches_into_the_hosts_opaque_payload():
+def test_no_engine_module_reaches_into_the_hosts_opaque_payload() -> None:
     """``EvalRun.host_payload`` is opaque, and opacity is a gate rather than a promise.
 
     The field exists because ``subject_snapshot`` holds content hashes and structurally cannot
@@ -845,7 +844,7 @@ def test_no_engine_module_reaches_into_the_hosts_opaque_payload():
     )
 
 
-def test_a_host_that_declares_levers_and_wires_no_reader_is_refused_rather_than_keyed_without_them():
+def test_a_host_that_declares_levers_and_wires_no_reader_is_refused_rather_than_keyed_without_them() -> None:
     """No reader for levers the host declares is the forgotten-reader merge, so it is refused.
 
     The engine resolves the candidate model, the candidate kind and every kind contract's levers
@@ -859,7 +858,7 @@ def test_a_host_that_declares_levers_and_wires_no_reader_is_refused_rather_than_
         derive_variant_identity(run=toyhost_observation(chunk_tokens=256), profile=unwired)
 
 
-def test_a_host_with_no_levers_of_its_own_needs_no_reader():
+def test_a_host_with_no_levers_of_its_own_needs_no_reader() -> None:
     """The engine's half of the map is the whole map when the host declares nothing beyond it."""
     bare = HostProfile(host_id="bare", host_sweepables=SHARED_CORE, measures=MeasureRegistry(()))
     observed = toyhost_observation(chunk_tokens=256)
@@ -873,7 +872,7 @@ def test_a_host_with_no_levers_of_its_own_needs_no_reader():
     assert identity.variant_key
 
 
-def test_a_subject_component_no_lever_carries_is_refused():
+def test_a_subject_component_no_lever_carries_is_refused() -> None:
     """A component is what the subject IS; one the key does not carry pools two subjects that differ in it.
 
     The probe the refusal answers: two subjects differing only in a component (a prompt, by content) took one
@@ -912,7 +911,7 @@ def test_a_subject_component_no_lever_carries_is_refused():
 
 
 @pytest.mark.parametrize("engine_lever", [CANDIDATE_MODEL_LEVER, CANDIDATE_KIND_LEVER, "extractor.page_limit"])
-def test_a_reader_that_resolves_a_lever_the_engine_resolves_is_refused(engine_lever):
+def test_a_reader_that_resolves_a_lever_the_engine_resolves_is_refused(engine_lever) -> None:
     """Two writers of one coordinate are two places to disagree; the engine's is the only one."""
     toy = toyhost_profile()
     assert toy.variant_levers is not None
@@ -924,7 +923,7 @@ def test_a_reader_that_resolves_a_lever_the_engine_resolves_is_refused(engine_le
     assert derive_variant_identity(run=toyhost_observation(chunk_tokens=256), profile=toy).variant_key
 
 
-def test_a_lever_map_naming_an_axis_the_registry_never_declared_is_refused():
+def test_a_lever_map_naming_an_axis_the_registry_never_declared_is_refused() -> None:
     """The check that makes the registry the single authority for what a lever is.
 
     Without it a host could put an axis into the variant key that it never registered, and no
@@ -938,7 +937,7 @@ def test_a_lever_map_naming_an_axis_the_registry_never_declared_is_refused():
         derive_variant_identity(run=toyhost_observation(chunk_tokens=256), profile=rogue)
 
 
-def test_the_refusal_names_what_the_host_did_declare_so_a_typo_is_visible():
+def test_the_refusal_names_what_the_host_did_declare_so_a_typo_is_visible() -> None:
     """A refusal that only says "not registered" makes a misspelling look like a missing feature."""
     rogue = replace(toyhost_profile(), variant_levers=lambda _run: {"chunk_token": _A_LEVEL})
 
@@ -948,7 +947,7 @@ def test_the_refusal_names_what_the_host_did_declare_so_a_typo_is_visible():
     assert "chunk_tokens" in str(caught.value), "the registered name it was nearly spelled as must be in reach"
 
 
-def test_a_declared_lever_the_host_forgets_to_resolve_is_refused():
+def test_a_declared_lever_the_host_forgets_to_resolve_is_refused() -> None:
     """The direction that produces a wrong MERGE, which is the one nothing downstream can undo.
 
     A lever missing from the map contributes no coordinate and moves no `IDENTITY_VERSION`, so two
@@ -962,7 +961,7 @@ def test_a_declared_lever_the_host_forgets_to_resolve_is_refused():
         derive_variant_identity(run=toyhost_observation(chunk_tokens=256), profile=one_of_several)
 
 
-def test_a_lever_that_declares_why_it_carries_no_coordinate_may_be_omitted():
+def test_a_lever_that_declares_why_it_carries_no_coordinate_may_be_omitted() -> None:
     """The intended omission is DATA, so it is distinguishable from the forgotten one.
 
     A tool-config overlay is the motivating case: it determines identity entirely through the
@@ -993,7 +992,7 @@ def test_a_lever_that_declares_why_it_carries_no_coordinate_may_be_omitted():
     assert "retriever_top_k" not in identity.levers, "the waived lever was omitted, not resolved"
 
 
-def test_registering_a_lever_is_what_admits_it_to_the_variant_key():
+def test_registering_a_lever_is_what_admits_it_to_the_variant_key() -> None:
     """The registry is the gate, and this is the other side of the refusal above.
 
     An axis the host resolves but never declared is refused; declaring it is the whole of what
@@ -1055,7 +1054,7 @@ def _with_an_open_family() -> HostProfile:
     )
 
 
-def test_controllable_refuses_a_family_container_and_admits_the_member_it_sends_you_to():
+def test_controllable_refuses_a_family_container_and_admits_the_member_it_sends_you_to() -> None:
     """The authoring gate's two halves, which disagreed with each other and with its own message.
 
     The container was ACCEPTED — ``sweepables.get`` sees a family as an ordinary
@@ -1074,7 +1073,7 @@ def test_controllable_refuses_a_family_container_and_admits_the_member_it_sends_
     assert member.state == "covered", "an ad-hoc member the host recognises is refused again"
 
 
-def test_controllables_reason_carries_the_same_vocabulary_the_registry_would_offer():
+def test_controllables_reason_carries_the_same_vocabulary_the_registry_would_offer() -> None:
     """Decision and advice from one source — the property that was false in both directions.
 
     The gate decided with ``controllable`` and advised with ``lever_names``, which omitted the
@@ -1090,7 +1089,7 @@ def test_controllables_reason_carries_the_same_vocabulary_the_registry_would_off
         assert profile.controllable(offered).state == "covered", f"the remedy offers {offered}, which the gate refuses"
 
 
-def test_a_registry_refusal_names_the_host_that_offered_it():
+def test_a_registry_refusal_names_the_host_that_offered_it() -> None:
     """A refusal with no host attached is one you cannot act on once a second host runs.
 
     Free while one process serves one product — a stack trace says as much — and the reason the
@@ -1103,7 +1102,7 @@ def test_a_registry_refusal_names_the_host_that_offered_it():
         toy.measures.merit_axis("a_measure_no_host_declares")
 
 
-def test_a_registry_two_profiles_carry_names_neither():
+def test_a_registry_two_profiles_carry_names_neither() -> None:
     """A refusal attributed to the wrong host is worse to act on than one attributed to none.
 
     Two profiles over one registry object is a legitimate construction — a bare profile borrowing
@@ -1147,7 +1146,7 @@ def _refusal_prefix(registry: MeasureRegistry) -> str:
     return message[: message.index("never_declared")]
 
 
-def test_rebinding_the_same_host_keeps_the_attribution(caplog) -> None:
+def test_rebinding_the_same_host_keeps_the_attribution(caplog: pytest.LogCaptureFixture) -> None:
     """One profile rebuilt over one module-level registry is the ordinary case, not a conflict.
 
     Regression: the first draft captured `self._host_ids and ...`, which evaluates to the SET
@@ -1172,7 +1171,7 @@ def test_rebinding_the_same_host_keeps_the_attribution(caplog) -> None:
     )
 
 
-def test_a_second_host_drops_the_attribution_and_says_so_once(caplog) -> None:
+def test_a_second_host_drops_the_attribution_and_says_so_once(caplog: pytest.LogCaptureFixture) -> None:
     """The drop is announced, because silence makes it indistinguishable from never-bound.
 
     Those two states want different responses — one is a construction that gave up attribution,

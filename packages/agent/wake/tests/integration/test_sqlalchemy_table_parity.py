@@ -404,7 +404,7 @@ async def _apply_both_schemas(
         await conn.execute(f'SET search_path TO "{migration_schema}", public')
         store = AsyncpgStore(conn)
         runner = _build_runner()
-        applied = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+        applied = await runner.apply_for_agent_schema(store)
         assert applied > 0
 
         await conn.execute(f'SET search_path TO "{factory_schema}", public')

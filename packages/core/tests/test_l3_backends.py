@@ -635,7 +635,7 @@ async def test_a_scan_of_a_registered_table_reads_every_row_in_pages_under_the_r
     )
     rows = [(f"w{i:02d}", "gadget" if i % 2 else "gizmo") for i in range(10)]
     backend = SqlL3Backend(_CuttingSqlitePool(rows))
-    backend.register_schema("widgets", schema)  # type: ignore[arg-type]
+    backend.register_schema("widgets", schema)
 
     every = await backend.scan("widgets")
     gadgets = await backend.scan("widgets", {"kind": "gadget"})

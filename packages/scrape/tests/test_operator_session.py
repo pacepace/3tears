@@ -35,7 +35,7 @@ _REFRESH = timedelta(seconds=0.05)
 
 def _lease(client: FakeNatsClient, pod: str) -> KVLease:
     """A lease factory standing for one pod."""
-    return KVLease(client, bucket_name="hitl-claims", pod_id=pod)  # type: ignore[arg-type]
+    return KVLease(client, bucket_name="hitl-claims", pod_id=pod)
 
 
 async def _claims(client: FakeNatsClient) -> FakeKvBucket:

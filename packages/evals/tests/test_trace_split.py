@@ -16,7 +16,10 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 import pytest
-
+from threetears.evals.kernel.errors import StorageError
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.ops import result_get
+from threetears.evals.run.reads import get_result_trace
 from threetears.evals.schema.models import (
     EvalResult,
     EvalTrace,
@@ -24,15 +27,12 @@ from threetears.evals.schema.models import (
     JudgeEvidence,
     eval_trace_doc_id,
 )
-from threetears.evals.run.reads import get_result_trace
-from threetears.evals.kernel.errors import StorageError
-from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import omit_paths
-from threetears.evals.ops import result_get
 from threetears.evals.storage import InMemoryDocumentStore
+
+from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.factories import make_eval_result, make_eval_trace
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
-from packages.evals.tests.clock_support import frozen_clock
 
 
 @pytest.fixture(autouse=True)
@@ -94,7 +94,7 @@ def _result_and_trace() -> tuple[EvalResult, EvalTrace]:
 
 
 class TestTheWriteSplitsAndTheMarkerRecordsWhatHappened:
-    def test_a_cell_with_a_trace_writes_two_documents_payload_first(self):
+    def test_a_cell_with_a_trace_writes_two_documents_payload_first(self) -> None:
         """Payload before result, so no reader can meet a marker whose document is not there yet."""
         repo = _RecordingRepo()
         result, trace = _result_and_trace()
@@ -105,7 +105,7 @@ class TestTheWriteSplitsAndTheMarkerRecordsWhatHappened:
         assert repo.written[0]["id"] == eval_trace_doc_id("res-1")
         assert repo.written[1]["has_trace"] is True
 
-    def test_the_result_document_carries_neither_payload(self):
+    def test_the_result_document_carries_neither_payload(self) -> None:
         """The whole point: what makes a query over thousands of these affordable."""
         repo = _RecordingRepo()
         result, trace = _result_and_trace()
@@ -116,7 +116,7 @@ class TestTheWriteSplitsAndTheMarkerRecordsWhatHappened:
         assert "trace" not in stored_result
         assert "otel_trace" not in stored_result
 
-    def test_an_empty_payload_writes_no_second_document(self):
+    def test_an_empty_payload_writes_no_second_document(self) -> None:
         """A row per empty payload is the row count this split exists to keep down."""
         repo = _RecordingRepo()
         result = make_eval_result(id="res-1")
@@ -126,7 +126,7 @@ class TestTheWriteSplitsAndTheMarkerRecordsWhatHappened:
         assert [d["doc_type"] for d in repo.written] == ["eval_result"]
         assert repo.written[0]["has_trace"] is False
 
-    def test_a_failed_payload_write_still_persists_the_measurement_and_reads_missing(self):
+    def test_a_failed_payload_write_still_persists_the_measurement_and_reads_missing(self) -> None:
         """Failing the whole write because a debug payload did not persist would trade the
         measurement for the thing that exists to explain it.
 
@@ -142,7 +142,7 @@ class TestTheWriteSplitsAndTheMarkerRecordsWhatHappened:
         assert [d["doc_type"] for d in repo.written] == ["eval_result"]
         assert repo.written[0]["has_trace"] is True, "the marker records that the cell produced a trace"
 
-    def test_the_caller_s_result_is_not_mutated(self):
+    def test_the_caller_s_result_is_not_mutated(self) -> None:
         """The marker is applied to a copy, so a caller holding this object is not surprised."""
         repo = _RecordingRepo()
         result, trace = _result_and_trace()
@@ -153,7 +153,7 @@ class TestTheWriteSplitsAndTheMarkerRecordsWhatHappened:
 
 
 class TestReadsPayForWhatTheyAsked:
-    def test_a_list_query_never_reads_a_trace_document(self):
+    def test_a_list_query_never_reads_a_trace_document(self) -> None:
         """Asserted on the repository, not inferred from the returned rows.
 
         A query that returned trace-free results would look identical whether or not it
@@ -170,7 +170,7 @@ class TestReadsPayForWhatTheyAsked:
         assert repo.queried_doc_types == ["eval_result"], "a list read touched the payload container"
         assert repo.reads == [], "a list read issued a point read it did not need"
 
-    def test_the_detail_read_composes_the_payload_back(self):
+    def test_the_detail_read_composes_the_payload_back(self) -> None:
         """Round-trips both fields — the drill-down is the one path that pays for them."""
         repo = _RecordingRepo()
         result, trace = _result_and_trace()
@@ -193,7 +193,7 @@ class TestReadsPayForWhatTheyAsked:
         assert payload.otel_trace == [{"name": "gen_ai.agent.invoke"}]
         assert payload.result_id == "res-1"
 
-    def test_a_result_with_no_payload_reads_as_none_not_empty(self):
+    def test_a_result_with_no_payload_reads_as_none_not_empty(self) -> None:
         """``None`` says no document was written; an empty ``EvalTrace`` would say one was."""
         repo = _RecordingRepo()
         store = _storage(repo)
@@ -279,7 +279,7 @@ class TestTheJudgeEvidenceIsReadInOneBatch:
 
 
 class TestDeletesTakeThePayloadWithThem:
-    def test_deleting_a_result_deletes_its_trace(self):
+    def test_deleting_a_result_deletes_its_trace(self) -> None:
         """An orphan payload is unreachable — nothing queries these by anything but a result id."""
         repo = _RecordingRepo()
         result, trace = _result_and_trace()
@@ -291,7 +291,7 @@ class TestDeletesTakeThePayloadWithThem:
         assert repo.deletes == [eval_trace_doc_id("res-1"), "res-1"]
         assert repo.written == []
 
-    def test_deleting_a_result_that_stored_no_trace_still_reports_the_result(self):
+    def test_deleting_a_result_that_stored_no_trace_still_reports_the_result(self) -> None:
         """The absent payload must not make a successful delete look like a failed one."""
         repo = _RecordingRepo()
         store = _storage(repo)
@@ -299,7 +299,7 @@ class TestDeletesTakeThePayloadWithThem:
 
         assert store.delete_eval_result("res-1", "uni-1") is True
 
-    def test_a_trace_that_survives_its_delete_keeps_the_result_and_raises(self):
+    def test_a_trace_that_survives_its_delete_keeps_the_result_and_raises(self) -> None:
         """#650: the trace is ~95% of a result's bytes and only its result's id finds it.
 
         Deleting the result after a trace delete that did not take would orphan it for good, and
@@ -318,7 +318,7 @@ class TestDeletesTakeThePayloadWithThem:
         assert store.load_eval_result("res-1", "uni-1") is not None
         assert store.load_eval_trace("res-1", "uni-1") is not None
 
-    def test_a_result_stamped_without_a_trace_ignores_an_empty_trace_delete(self):
+    def test_a_result_stamped_without_a_trace_ignores_an_empty_trace_delete(self) -> None:
         """``has_trace=False``: a trace delete that removes nothing is the expected case."""
         repo = _RecordingRepo(fail_delete_ids=frozenset({eval_trace_doc_id("res-1")}))
         store = _storage(repo)
@@ -327,7 +327,9 @@ class TestDeletesTakeThePayloadWithThem:
         assert store.delete_eval_result("res-1", "uni-1") is True
         assert repo.written == []
 
-    def test_a_marker_whose_trace_is_already_gone_does_not_make_the_result_undeletable(self, caplog):
+    def test_a_marker_whose_trace_is_already_gone_does_not_make_the_result_undeletable(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """``has_trace=True`` with no document: nothing to orphan, so refusing would strand the result."""
         import logging
 
@@ -341,7 +343,7 @@ class TestDeletesTakeThePayloadWithThem:
         assert repo.written == []
         assert any("has no trace document" in r.getMessage() for r in caplog.records)
 
-    def test_an_id_naming_another_document_type_deletes_nothing(self):
+    def test_an_id_naming_another_document_type_deletes_nothing(self) -> None:
         """A run's id is not a result's: the delete must not remove the run document."""
         repo = _RecordingRepo()
         repo.written.append({"id": "run-1", "doc_type": "eval_run", "scope_id": "uni-1"})
@@ -352,7 +354,7 @@ class TestDeletesTakeThePayloadWithThem:
 
 
 class TestTheMarkerAndTheDocumentAreCheckedAgainstEachOther:
-    def test_a_marker_with_no_document_is_logged_not_silently_dropped(self, caplog):
+    def test_a_marker_with_no_document_is_logged_not_silently_dropped(self, caplog: pytest.LogCaptureFixture) -> None:
         """`has_trace=True` with no document means a payload was lost, not that there is none.
 
         The marker is written from the payload write's own OUTCOME, so the two disagreeing
@@ -371,7 +373,7 @@ class TestTheMarkerAndTheDocumentAreCheckedAgainstEachOther:
 
         assert any("claims a stored trace" in r.getMessage() for r in caplog.records)
 
-    def test_an_honest_absence_is_not_logged(self, caplog):
+    def test_an_honest_absence_is_not_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         """`has_trace=False` and no document agree — nothing happened worth a warning."""
         import logging
 

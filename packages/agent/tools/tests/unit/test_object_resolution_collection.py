@@ -134,7 +134,7 @@ def _replica(store: dict[str, bytes], nats: _RecordingNats) -> ObjectResolutionC
         kv_key_scope=_SCOPE,
         l2_create_if_missing=False,
     )
-    return ObjectResolutionCollection(registry, DefaultCoreConfig(), nats)  # type: ignore[arg-type]
+    return ObjectResolutionCollection(registry, DefaultCoreConfig(), nats)
 
 
 def _handle(s3_key: str = _KEY, mime: str = "text/markdown", size: int = 42) -> ObjectHandle:
@@ -176,7 +176,7 @@ class TestTheL3MethodsRefuse:
             kv_key_scope=_SCOPE,
             l2_create_if_missing=False,
         )
-        collection = ObjectResolutionCollection(registry, DefaultCoreConfig(), _RecordingNats({}))  # type: ignore[arg-type]
+        collection = ObjectResolutionCollection(registry, DefaultCoreConfig(), _RecordingNats({}))
         assert collection.l3_pool is None
 
 

@@ -77,7 +77,7 @@ def _with_guardrail(bundle: AnalysisContextBundle, decision: GuardrailDecision) 
 
 
 class TestAGuardrailOnACandidate:
-    def test_an_undecided_guardrail_is_frozen_with_the_analysis_and_the_report_states_it(self):
+    def test_an_undecided_guardrail_is_frozen_with_the_analysis_and_the_report_states_it(self) -> None:
         bundle = _with_guardrail(_toy_bundle(control=True), "undecided")
         held = aspect_analysis(bundle, campaign_bundle(bundle).surfaces()[bundle.aspect])
 
@@ -88,7 +88,7 @@ class TestAGuardrailOnACandidate:
         assert any(isinstance(b, DisclosureBlock) and b.text == stated for b in report.blocks)
         assert any(isinstance(b, TableBlock) and b.name == "guardrails" for b in report.blocks)
 
-    def test_a_held_guardrail_adds_nothing_to_the_decision(self):
+    def test_a_held_guardrail_adds_nothing_to_the_decision(self) -> None:
         bundle = _with_guardrail(_toy_bundle(control=True), "held").model_copy()
         held = bundle.guardrails.checks[0].model_copy(update={"interval": (-0.1, 0.4), "decision": "held"})
         bundle = bundle.model_copy(update={"guardrails": bundle.guardrails.model_copy(update={"checks": [held]})})

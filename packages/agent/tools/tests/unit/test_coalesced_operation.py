@@ -62,7 +62,7 @@ class _Unit:
 
 
 def _lease(nats: FakeNatsClient, replica: str) -> KVLease:
-    return KVLease(nats, pod_id=replica, key_scope=SCOPE)  # type: ignore[arg-type]
+    return KVLease(nats, pod_id=replica, key_scope=SCOPE)
 
 
 def _operation(nats: FakeNatsClient, replica: str, unit: Any, **options: Any) -> CoalescedOperation[dict[str, int]]:

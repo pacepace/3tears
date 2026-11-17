@@ -131,7 +131,7 @@ async def test_the_pre_image_is_what_a_scheduled_round_sends_with_the_cells_part
     llm = _Scripted(["not json", json.dumps({"next": "nobody"})])
     driver = TurnDriver(conversation=decided, variation={})
     with pytest.raises(SimulatorReplyInvalid) as refused:
-        await driver.next_speaker(llm)  # type: ignore[arg-type]
+        await driver.next_speaker(llm)
 
     (system, first, form), (_, repair, repair_form) = llm.sent
     choices = [_GUILD.id, _NEWCOMER.id]

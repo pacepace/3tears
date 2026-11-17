@@ -247,8 +247,8 @@ class _PodHandler:
             room_state=self.state,
             room_fanout=self.fanout,
             acl_cache=acl_cache,
-            ns_resolver=_resolver,  # type: ignore[arg-type]
-            op_handler=op,  # type: ignore[arg-type]
+            ns_resolver=_resolver,
+            op_handler=op,
             replay_source=replay_source,  # type: ignore[arg-type]
             room_policy=room_policy,
         )

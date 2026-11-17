@@ -93,7 +93,7 @@ async def _migrate(conn: asyncpg.Connection, schema: str, target: int | None = N
     :ptype target: int | None
     """
     await conn.execute(f'SET search_path TO "{schema}", public')
-    await _runner().apply_for_agent_schema(AsyncpgStore(conn), target=target)  # type: ignore[arg-type]
+    await _runner().apply_for_agent_schema(AsyncpgStore(conn), target=target)
 
 
 async def _index_names(conn: asyncpg.Connection, schema: str, table: str) -> set[str]:

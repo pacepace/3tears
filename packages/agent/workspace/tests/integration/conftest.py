@@ -540,7 +540,7 @@ class _StoreBackedVersionCollection:
 # ---------------------------------------------------------------------------
 
 
-class RecordingFakeNatsClient(_FakeNatsKVClient):  # type: ignore[misc]
+class RecordingFakeNatsClient(_FakeNatsKVClient):
     """
     fake NATS wrapper with publish recording on top of the core fake KV.
 

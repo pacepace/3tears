@@ -11,8 +11,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from threetears.evals.run.jobs import EvalJobManager
+
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.job_support import InMemoryRunStore, blocked_work, start_tracked
 
@@ -21,14 +21,14 @@ def _released_work():
     """A work fn that parks until released, plus its started event and its release."""
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def work(progress):
+    async def work(progress) -> None:
         started.set()
         await release.wait()
 
     return work, started, release
 
 
-async def test_every_member_starts_even_under_a_limit_below_the_group_size():
+async def test_every_member_starts_even_under_a_limit_below_the_group_size() -> None:
     manager = EvalJobManager(InMemoryRunStore(), max_concurrent=1)
     members = [_released_work() for _ in range(3)]
 
@@ -40,7 +40,7 @@ async def test_every_member_starts_even_under_a_limit_below_the_group_size():
     await manager.shutdown()
 
 
-async def test_the_group_holds_one_slot_until_its_last_member_ends():
+async def test_the_group_holds_one_slot_until_its_last_member_ends() -> None:
     storage = InMemoryRunStore()
     manager = EvalJobManager(storage, max_concurrent=1)
     first, second = _released_work(), _released_work()
@@ -58,7 +58,7 @@ async def test_the_group_holds_one_slot_until_its_last_member_ends():
     await manager.shutdown()
 
 
-async def test_a_group_queued_behind_a_job_starts_together_when_the_slot_frees():
+async def test_a_group_queued_behind_a_job_starts_together_when_the_slot_frees() -> None:
     manager = EvalJobManager(InMemoryRunStore(), max_concurrent=1)
     blocker, blocker_started, release_blocker = _released_work()
     await manager.start_group([(make_eval_run(), blocker, None)])
@@ -75,7 +75,7 @@ async def test_a_group_queued_behind_a_job_starts_together_when_the_slot_frees()
     await manager.shutdown()
 
 
-async def test_a_group_cancelled_while_queued_takes_no_slot():
+async def test_a_group_cancelled_while_queued_takes_no_slot() -> None:
     """Nothing was acquired for a group that never started, so the next job is not held behind it."""
     storage = InMemoryRunStore()
     manager = EvalJobManager(storage, max_concurrent=1)
@@ -102,13 +102,13 @@ async def test_a_group_cancelled_while_queued_takes_no_slot():
     await manager.shutdown()
 
 
-async def test_every_member_is_saved_before_any_starts():
+async def test_every_member_is_saved_before_any_starts() -> None:
     storage = InMemoryRunStore()
     manager = EvalJobManager(storage)
     runs = [make_eval_run(), make_eval_run()]
     seen: list[set[str]] = []
 
-    async def work(progress):
+    async def work(progress) -> None:
         seen.append(set(storage.runs))
 
     tasks = await start_tracked(manager, [(run, work, None) for run in runs])
@@ -118,12 +118,12 @@ async def test_every_member_is_saved_before_any_starts():
     await manager.shutdown()
 
 
-async def test_an_empty_group_is_refused():
+async def test_an_empty_group_is_refused() -> None:
     with pytest.raises(ValueError, match="at least one run"):
         await EvalJobManager(InMemoryRunStore()).start_group([])
 
 
-async def test_a_member_cancelled_before_its_first_step_still_gives_its_share_back():
+async def test_a_member_cancelled_before_its_first_step_still_gives_its_share_back() -> None:
     """A task cancelled before it runs never executes its body, so release cannot live in the body."""
     manager = EvalJobManager(InMemoryRunStore(), max_concurrent=1)
     runs = [make_eval_run(), make_eval_run()]
@@ -141,7 +141,7 @@ async def test_a_member_cancelled_before_its_first_step_still_gives_its_share_ba
     await manager.shutdown()
 
 
-async def test_a_sibling_that_cannot_be_saved_cancels_the_runs_already_saved():
+async def test_a_sibling_that_cannot_be_saved_cancels_the_runs_already_saved() -> None:
     """A run left ``pending`` with no task would wait for a slot forever."""
 
     class _FailingSecondSave(InMemoryRunStore):
@@ -168,7 +168,7 @@ async def test_a_sibling_that_cannot_be_saved_cancels_the_runs_already_saved():
     assert manager.get_active_job_ids() == []
 
 
-async def test_a_cancellation_that_cannot_be_saved_neither_stops_the_rest_nor_masks_the_cause():
+async def test_a_cancellation_that_cannot_be_saved_neither_stops_the_rest_nor_masks_the_cause() -> None:
     from threetears.evals.kernel.errors import StorageError
 
     runs = [make_eval_run(), make_eval_run(), make_eval_run()]

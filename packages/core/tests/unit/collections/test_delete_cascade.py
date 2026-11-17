@@ -151,7 +151,7 @@ def _library() -> tuple[CollectionRegistry, _Pool, _Source]:
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l3_pool=pool, kv_key_scope="test")  # type: ignore[arg-type]
     source = _Source()
-    registry.set_generation_source(source)  # type: ignore[arg-type]
+    registry.set_generation_source(source)
     return registry, pool, source
 
 

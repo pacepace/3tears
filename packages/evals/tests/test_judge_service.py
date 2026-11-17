@@ -14,7 +14,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
+from threetears.evals.kernel.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
+from threetears.evals.run.judge import CANNOT_TELL, judge_reply_format, run_judge_llm
+from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeService, fold_judge_outcomes
 from threetears.evals.schema.models import (
     DEFAULT_JUDGE_TEMPERATURE,
     OUTCOME_DIM_ID,
@@ -27,9 +29,7 @@ from threetears.evals.schema.models import (
     is_builtin_judge_config_id,
     judge_config_of,
 )
-from threetears.evals.kernel.provider import INCOMPLETE_STOP_REASONS, withhold_failure_detail
-from threetears.evals.run.judge import CANNOT_TELL, judge_reply_format, run_judge_llm
-from threetears.evals.run.judge_service import JudgeContext, JudgeOutcome, JudgeService, fold_judge_outcomes
+
 from packages.evals.tests.llm_client_fakes import ReleasableClientMixin
 
 # =============================================================================
@@ -136,7 +136,7 @@ def _context(
 # =============================================================================
 
 
-async def test_score_dimension_returns_single_rubric_score():
+async def test_score_dimension_returns_single_rubric_score() -> None:
     client = _CapturingClient(score=4, reasoning="decent tone")
     factory, _calls = _recording_factory(client)
     service = JudgeService(client_factory=factory, failure_describer=withhold_failure_detail)
@@ -162,7 +162,7 @@ async def test_score_dimension_returns_single_rubric_score():
 
 
 @pytest.mark.parametrize("off_scale", [9, 0, -1, 3.5, "9", "0", "4.0", " 4", "four", None, True])
-async def test_an_off_scale_score_is_refused_not_clamped(off_scale):
+async def test_an_off_scale_score_is_refused_not_clamped(off_scale) -> None:
     """A score that is not one of "1" to "5", nor an integer on 1-5, fails the dim through the parse-failure path.
 
     Clamping 9 to 5, or rounding 3.5 up to 4, would store a score the judge never gave.
@@ -180,7 +180,7 @@ async def test_an_off_scale_score_is_refused_not_clamped(off_scale):
 
 
 @pytest.mark.parametrize("on_scale", ["1", "3", "5", 1, 3, 5, 4.0])
-async def test_an_on_scale_score_is_stored_as_given(on_scale):
+async def test_an_on_scale_score_is_stored_as_given(on_scale) -> None:
     """Every score on the scale lands unchanged, as the string the schema asks for or a bare integer — the positive
     case beside the refusal."""
     service = JudgeService(
@@ -200,7 +200,7 @@ async def test_an_on_scale_score_is_stored_as_given(on_scale):
 
 
 @pytest.mark.parametrize(("answer", "scored"), [(CANNOT_TELL, False), (4, True)])
-async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(answer, scored):
+async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(answer, scored) -> None:
     """One fixture, both answers: the judge's reply decides, not the harness."""
     client = _CapturingClient(score=answer, reasoning="the transcript never reaches the moment this dim is about")
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
@@ -220,7 +220,7 @@ async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(a
     assert len(client.systems) == 1
 
 
-async def test_the_judge_prompt_offers_the_answer():
+async def test_the_judge_prompt_offers_the_answer() -> None:
     client = _CapturingClient()
     await JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail).score_dimension(
         RubricDim(name="conversation.d", description="x", scale="ordinal"), _context()
@@ -228,7 +228,7 @@ async def test_the_judge_prompt_offers_the_answer():
     assert f'"{CANNOT_TELL}"' in client.systems[0]
 
 
-async def test_a_caller_that_did_not_offer_the_answer_refuses_it():
+async def test_a_caller_that_did_not_offer_the_answer_refuses_it() -> None:
     """A composite scorer and a quality scorer never offer it, so for them it is a reply that broke the protocol."""
     client = _CapturingClient(score=CANNOT_TELL)
     result = await run_judge_llm(
@@ -242,7 +242,7 @@ async def test_a_caller_that_did_not_offer_the_answer_refuses_it():
     assert result is not None and "Failed to parse" in result["error"]
 
 
-def test_a_cannot_tell_is_folded_apart_from_the_errors():
+def test_a_cannot_tell_is_folded_apart_from_the_errors() -> None:
     folded = fold_judge_outcomes(
         [
             ("told", JudgeOutcome(score=None, cannot_tell="no evidence")),
@@ -258,7 +258,7 @@ def test_a_cannot_tell_is_folded_apart_from_the_errors():
 # =============================================================================
 
 
-async def test_transcript_axis_excludes_goal_outcomes_outcome_includes_them():
+async def test_transcript_axis_excludes_goal_outcomes_outcome_includes_them() -> None:
     """The transcript judge must not see the objective goal-state checks; the outcome judge must."""
     client = _CapturingClient()
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
@@ -286,7 +286,7 @@ async def test_transcript_axis_excludes_goal_outcomes_outcome_includes_them():
 # =============================================================================
 
 
-async def test_the_kinds_subject_reaches_the_prompt_whole_under_its_own_heading():
+async def test_the_kinds_subject_reaches_the_prompt_whole_under_its_own_heading() -> None:
     """What the judge is told about the candidate is the kind's rendering, untrimmed and unparsed.
 
     The engine used to render one host's subject record itself — excerpting its prose, capping its
@@ -304,7 +304,7 @@ async def test_the_kinds_subject_reaches_the_prompt_whole_under_its_own_heading(
     assert f"# Candidate under test\n{subject}\n" in user
 
 
-async def test_a_kind_that_renders_no_subject_gets_no_subject_heading():
+async def test_a_kind_that_renders_no_subject_gets_no_subject_heading() -> None:
     client = _CapturingClient()
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
     ctx = _context(evidence=JudgeEvidence(case_material="one table left", artifact="hi"))
@@ -315,7 +315,7 @@ async def test_a_kind_that_renders_no_subject_gets_no_subject_heading():
     assert "# Candidate under test" not in user
 
 
-async def test_facts_the_candidates_interlocutors_never_saw_reach_every_axis():
+async def test_facts_the_candidates_interlocutors_never_saw_reach_every_axis() -> None:
     """A game master's hidden trap is case material: the judge needs it, the players never had it.
 
     Which facts a judge sees is the kind's visibility rule, so the case material reaches every
@@ -338,7 +338,7 @@ async def test_facts_the_candidates_interlocutors_never_saw_reach_every_axis():
         assert user.endswith(f"# Transcript\n{transcript}")
 
 
-async def test_a_document_is_placed_under_its_own_heading_and_a_transcript_under_its_own():
+async def test_a_document_is_placed_under_its_own_heading_and_a_transcript_under_its_own() -> None:
     """The declaration picks the heading; the evidence is the same three strings either way."""
     evidence = JudgeEvidence(case_material="SOURCE", artifact="ARTIFACT")
     for declared, heading, absent in (
@@ -357,7 +357,7 @@ async def test_a_document_is_placed_under_its_own_heading_and_a_transcript_under
         assert "# Case material (the evidence the output must be judged against)\nSOURCE\n" in user, declared
 
 
-def test_no_judge_context_is_built_for_an_unjudged_kind():
+def test_no_judge_context_is_built_for_an_unjudged_kind() -> None:
     with pytest.raises(ValueError, match="unjudged"):
         _context(judged_artifact=JudgedArtifact.UNJUDGED)
 
@@ -373,13 +373,13 @@ def test_no_judge_context_is_built_for_an_unjudged_kind():
     ],
     ids=["empty-case-material", "empty-artifact", "no-artifact", "no-case-material", "an-undeclared-field"],
 )
-def test_judge_evidence_refuses_a_judge_nothing_to_read(fields):
+def test_judge_evidence_refuses_a_judge_nothing_to_read(fields) -> None:
     """Both texts a judge reads are required and non-empty; nothing else rides along."""
     with pytest.raises(ValueError):
         JudgeEvidence(**fields)
 
 
-async def test_default_axes_use_builtin_instructions_and_default_client():
+async def test_default_axes_use_builtin_instructions_and_default_client() -> None:
     client = _CapturingClient()
     factory, calls = _recording_factory(client)
     service = JudgeService(client_factory=factory, failure_describer=withhold_failure_detail)
@@ -400,7 +400,7 @@ async def test_default_axes_use_builtin_instructions_and_default_client():
 # =============================================================================
 
 
-async def test_config_prompt_template_and_model_and_temperature_honored():
+async def test_config_prompt_template_and_model_and_temperature_honored() -> None:
     client = _CapturingClient()
     factory, calls = _recording_factory(client)
     config = JudgeConfig(
@@ -426,7 +426,7 @@ async def test_config_prompt_template_and_model_and_temperature_honored():
     assert calls == [("cfg-model", 0.3)]
 
 
-async def test_two_configs_for_same_dim_produce_different_scores():
+async def test_two_configs_for_same_dim_produce_different_scores() -> None:
     """JudgeConfig versioning: different prompt_template ⇒ different score."""
     strict = JudgeConfig(
         scope_id="uni-1",
@@ -456,7 +456,7 @@ async def test_two_configs_for_same_dim_produce_different_scores():
     assert strict_out.score.score != lenient_out.score.score
 
 
-async def test_axis_config_overrides_only_the_matching_axis():
+async def test_axis_config_overrides_only_the_matching_axis() -> None:
     """A transcript-axis config doesn't bleed into the outcome axis."""
     client = _CapturingClient()
     config = JudgeConfig(
@@ -483,7 +483,7 @@ async def test_axis_config_overrides_only_the_matching_axis():
 # =============================================================================
 
 
-async def test_judge_failure_returns_error_and_no_score():
+async def test_judge_failure_returns_error_and_no_score() -> None:
     service = JudgeService(
         client_factory=lambda m, t: _CapturingClient(fail=True), failure_describer=withhold_failure_detail
     )
@@ -494,7 +494,9 @@ async def test_judge_failure_returns_error_and_no_score():
 
 @pytest.mark.parametrize("reasoning", [None, {"why": "it hedges"}, ["it", "hedges"], 3])
 @pytest.mark.parametrize("answer", [4, CANNOT_TELL], ids=["scored", "cannot-tell"])
-async def test_a_reply_whose_reasoning_is_not_a_string_is_a_parse_failure_that_keeps_its_spend(reasoning, answer):
+async def test_a_reply_whose_reasoning_is_not_a_string_is_a_parse_failure_that_keeps_its_spend(
+    reasoning, answer
+) -> None:
     """A malformed ``reasoning`` is the judge breaking its protocol, refused where every other break is.
 
     Refused later it did worse: a scored reply raised building the score, after the service had
@@ -516,7 +518,7 @@ async def test_a_reply_whose_reasoning_is_not_a_string_is_a_parse_failure_that_k
     assert outcome.usage.cost_usd == pytest.approx(0.004)
 
 
-async def test_a_reply_with_no_reasoning_at_all_is_a_parse_failure():
+async def test_a_reply_with_no_reasoning_at_all_is_a_parse_failure() -> None:
     class _NoReasoningClient:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             return SimpleNamespace(
@@ -539,7 +541,7 @@ async def test_a_reply_with_no_reasoning_at_all_is_a_parse_failure():
     assert outcome.usage is not None and outcome.usage.calls == 2
 
 
-async def test_score_omitted_by_judge_is_an_error():
+async def test_score_omitted_by_judge_is_an_error() -> None:
     class _WrongKeyClient:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             # Returns a score under the wrong key — the asked dim is missing.
@@ -563,7 +565,7 @@ async def test_score_omitted_by_judge_is_an_error():
     assert outcome.error is not None
 
 
-async def test_score_dimension_parses_real_code_fenced_judge_output():
+async def test_score_dimension_parses_real_code_fenced_judge_output() -> None:
     """A real judge model wraps its JSON in a markdown code fence.
 
     Every other parse test here feeds the fake client a bare ``json.dumps(...)``,
@@ -609,7 +611,7 @@ async def test_score_dimension_parses_real_code_fenced_judge_output():
         assert "Calibrated" in outcome.score.reasoning
 
 
-async def test_judge_retries_on_parse_failure_then_succeeds():
+async def test_judge_retries_on_parse_failure_then_succeeds() -> None:
     """A single unparseable judge response is retried, not silently dropped."""
 
     class _FailOnceClient:
@@ -644,7 +646,7 @@ async def test_judge_retries_on_parse_failure_then_succeeds():
     assert client.calls == 2  # one retry
 
 
-async def test_judge_parse_failure_gives_up_after_bounded_retries():
+async def test_judge_parse_failure_gives_up_after_bounded_retries() -> None:
     """A persistently-unparseable judge fails after the bounded retries (no infinite loop)."""
 
     class _AlwaysFailClient:
@@ -675,7 +677,7 @@ async def test_judge_parse_failure_gives_up_after_bounded_retries():
     assert client.calls == 2  # original + _JUDGE_PARSE_RETRIES(1) = 2 attempts, then gives up
 
 
-async def test_judge_llm_exception_is_hard_error_not_retried():
+async def test_judge_llm_exception_is_hard_error_not_retried() -> None:
     """A raising generate() (network/SDK) is a hard error — returned immediately, not retried."""
 
     class _RaisingClient:
@@ -742,7 +744,7 @@ class _StopReasonClient:
         ("max_tokens", 1, "cut short by the provider"),
     ],
 )
-async def test_a_finished_reply_is_retried_and_a_truncated_one_is_not(stop_reason, calls, names):
+async def test_a_finished_reply_is_retried_and_a_truncated_one_is_not(stop_reason, calls, names) -> None:
     client = _StopReasonClient(stop_reason=stop_reason)
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
     outcome = await service.score_dimension(
@@ -758,7 +760,7 @@ async def test_a_finished_reply_is_retried_and_a_truncated_one_is_not(stop_reaso
     assert outcome.usage.output_tokens == 4096 * calls
 
 
-async def test_a_truncated_reply_names_the_cap_and_the_reasoning_share_not_a_parse_failure():
+async def test_a_truncated_reply_names_the_cap_and_the_reasoning_share_not_a_parse_failure() -> None:
     """The error names the cause and the tokens behind it, where it used to say "Failed to parse"."""
     client = _StopReasonClient(stop_reason="max_tokens", content="", output_tokens=4096, reasoning=3900)
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
@@ -773,7 +775,7 @@ async def test_a_truncated_reply_names_the_cap_and_the_reasoning_share_not_a_par
     assert outcome.usage.reasoning_tokens == 3900
 
 
-async def test_a_truncated_reply_is_refused_even_when_its_content_parses():
+async def test_a_truncated_reply_is_refused_even_when_its_content_parses() -> None:
     """Checked before parsing: salvage must not turn a reply the provider cut short into a score.
 
     ``extract_json`` recovers partial payloads, so without the ordering this reply would
@@ -792,7 +794,7 @@ async def test_a_truncated_reply_is_refused_even_when_its_content_parses():
 
 
 @pytest.mark.parametrize("stop_reason", sorted(INCOMPLETE_STOP_REASONS))
-async def test_every_cut_short_reason_the_port_names_is_refused_after_one_call(stop_reason):
+async def test_every_cut_short_reason_the_port_names_is_refused_after_one_call(stop_reason) -> None:
     """The refusal reads the port's vocabulary, not one member of it.
 
     A content filter refuses the same request the same way, and a reply with no choices
@@ -818,7 +820,7 @@ async def test_every_cut_short_reason_the_port_names_is_refused_after_one_call(s
 # =============================================================================
 
 
-async def test_scored_dim_carries_the_calls_usage():
+async def test_scored_dim_carries_the_calls_usage() -> None:
     client = _CapturingClient(cost=0.002)
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
     outcome = await service.score_dimension(
@@ -832,7 +834,7 @@ async def test_scored_dim_carries_the_calls_usage():
     assert outcome.usage.cost_usd == 0.002
 
 
-async def test_judge_usage_accumulates_across_parse_retries():
+async def test_judge_usage_accumulates_across_parse_retries() -> None:
     """A retried dim spent tokens twice — the usage row must show both attempts."""
 
     class _FailOnceClient:
@@ -868,7 +870,7 @@ async def test_judge_usage_accumulates_across_parse_retries():
     assert outcome.usage.cost_usd == 0.002
 
 
-async def test_unscorable_dim_still_reports_the_tokens_it_burned():
+async def test_unscorable_dim_still_reports_the_tokens_it_burned() -> None:
     """Giving up after retries doesn't refund the spend — it must still be accounted."""
 
     class _AlwaysFailClient:
@@ -895,7 +897,7 @@ async def test_unscorable_dim_still_reports_the_tokens_it_burned():
     assert outcome.usage.cost_usd == 0.002
 
 
-async def test_dim_omitted_by_the_judge_still_reports_usage():
+async def test_dim_omitted_by_the_judge_still_reports_usage() -> None:
     """An omitted criterion key is a parse failure, so it retries — and BOTH
     attempts' spend must be accounted, not just the last."""
 
@@ -924,7 +926,7 @@ async def test_dim_omitted_by_the_judge_still_reports_usage():
     assert outcome.usage.cost_usd == pytest.approx(0.006)
 
 
-async def test_judge_reasoning_tokens_stay_none_when_unreported():
+async def test_judge_reasoning_tokens_stay_none_when_unreported() -> None:
     """The judge client reporting no reasoning split is UNKNOWN, never a zero."""
     service = JudgeService(client_factory=lambda m, t: _CapturingClient(), failure_describer=withhold_failure_detail)
     outcome = await service.score_dimension(
@@ -935,7 +937,7 @@ async def test_judge_reasoning_tokens_stay_none_when_unreported():
     assert outcome.usage.reasoning_tokens is None
 
 
-async def test_judge_reasoning_tokens_sum_when_reported():
+async def test_judge_reasoning_tokens_sum_when_reported() -> None:
     class _ReasoningClient:
         async def generate(self, *, system: str, user: str, response_format: Any = None) -> Any:
             content = json.dumps({"reasoning": "r", "criteria_scores": {_dim_of(system): 4}})
@@ -960,7 +962,7 @@ async def test_judge_reasoning_tokens_sum_when_reported():
     assert outcome.usage.reasoning_tokens == 30
 
 
-async def test_judge_cost_unreported_stays_none_not_zero():
+async def test_judge_cost_unreported_stays_none_not_zero() -> None:
     """A judge client that reports no cost must not be recorded as having cost nothing."""
 
     class _NoCostClient:
@@ -986,7 +988,7 @@ async def test_judge_cost_unreported_stays_none_not_zero():
     assert outcome.usage.cost_usd is None
 
 
-async def test_a_dim_one_of_whose_attempts_went_unpriced_costs_unknown_not_its_priced_part():
+async def test_a_dim_one_of_whose_attempts_went_unpriced_costs_unknown_not_its_priced_part() -> None:
     """A priced retry beside an unpriced one is not a known cost: the sum would read as the whole."""
 
     class _PricedThenUnpricedClient:
@@ -1024,7 +1026,7 @@ async def test_a_dim_one_of_whose_attempts_went_unpriced_costs_unknown_not_its_p
     assert fold_judge_outcomes([("conversation.tone", outcome)]).cost_usd is None
 
 
-async def test_judge_llm_exception_reports_prior_attempt_spend():
+async def test_judge_llm_exception_reports_prior_attempt_spend() -> None:
     """A raise mid-loop must not discard what earlier attempts already spent."""
 
     class _FailThenRaiseClient:
@@ -1059,7 +1061,7 @@ async def test_judge_llm_exception_reports_prior_attempt_spend():
     assert outcome.usage.cost_usd == 0.004
 
 
-async def test_judge_whose_first_call_raises_reports_no_usage_at_all():
+async def test_judge_whose_first_call_raises_reports_no_usage_at_all() -> None:
     """Nothing was observed, so there is nothing to report — not a zero-token observation.
 
     The earlier shape returned prompt=0/completion=0/calls=0, which reads as "this judge
@@ -1080,7 +1082,7 @@ async def test_judge_whose_first_call_raises_reports_no_usage_at_all():
     assert outcome.usage is None
 
 
-async def test_judge_result_carries_no_rival_composite():
+async def test_judge_result_carries_no_rival_composite() -> None:
     """The judge returns per-dimension scores only — each caller composites itself.
 
     A second, unread ``composite_criteria`` in the result invited a reader to
@@ -1126,7 +1128,7 @@ class _ReleasableJudgeClient(ReleasableClientMixin, _CapturingClient):
     """A judge client that scores AND counts its releases."""
 
 
-async def test_aclose_releases_every_cached_client():
+async def test_aclose_releases_every_cached_client() -> None:
     """The cache is per ``(model, temperature)``; teardown must reach all of them.
 
     ``_client_for`` cannot release its own mint — the next dim asking for the same
@@ -1168,7 +1170,7 @@ async def test_aclose_releases_every_cached_client():
     assert [c.aclose_calls for c in built] == [1, 1]
 
 
-async def test_aclose_is_idempotent():
+async def test_aclose_is_idempotent() -> None:
     """A run teardown plus an explicit close must not double-close a transport."""
     client = _ReleasableJudgeClient()
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
@@ -1180,7 +1182,7 @@ async def test_aclose_is_idempotent():
     assert client.aclose_calls == 1
 
 
-async def test_one_refusing_client_does_not_strand_the_rest():
+async def test_one_refusing_client_does_not_strand_the_rest() -> None:
     """A teardown that gives up halfway leaks the remainder silently."""
 
     class _Refuses(_ReleasableJudgeClient):
@@ -1219,7 +1221,7 @@ async def test_one_refusing_client_does_not_strand_the_rest():
     assert good.aclose_calls == 1
 
 
-async def test_the_scoped_form_never_replaces_the_bodys_exception():
+async def test_the_scoped_form_never_replaces_the_bodys_exception() -> None:
     """``__aexit__`` logs a failed release; the run's own error is the one to report."""
 
     class _Refuses(_ReleasableJudgeClient):
@@ -1234,7 +1236,7 @@ async def test_the_scoped_form_never_replaces_the_bodys_exception():
             raise ValueError("the run failed")
 
 
-async def test_a_judge_reporting_no_token_counts_reads_as_unmeasured():
+async def test_a_judge_reporting_no_token_counts_reads_as_unmeasured() -> None:
     """Missing is not zero on the judge's usage either: an unreported count stays None."""
 
     class _Silent:

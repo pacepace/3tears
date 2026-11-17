@@ -15,14 +15,14 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-
-from threetears.evals.schema import EvalRun
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.run import KindWiring, LaunchHost, LaunchRequest, MeteredCallLedger, launch_run, start_run
+from threetears.evals.schema import EvalRun
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.host import with_registry
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ScriptedExtractionClient, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_MODELS, toyhost_template, toyhost_test_cases
 from packages.evals.tests.off_loop import off_loop
@@ -82,7 +82,9 @@ async def _launch(host: LaunchHost, storage: EvalStorage, **arguments: Any) -> E
     return stored
 
 
-async def test_a_host_declaring_no_metered_tools_records_it_and_refuses_a_metered_call(caplog):
+async def test_a_host_declaring_no_metered_tools_records_it_and_refuses_a_metered_call(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     host, storage, admitted = off_loop(_host, max_metered_calls=None)
 
     with caplog.at_level(logging.ERROR):
@@ -94,7 +96,7 @@ async def test_a_host_declaring_no_metered_tools_records_it_and_refuses_a_metere
     assert "declares no metered tools" in caplog.text
 
 
-async def test_a_host_with_metered_tools_records_its_ceiling_and_admits_within_it():
+async def test_a_host_with_metered_tools_records_its_ceiling_and_admits_within_it() -> None:
     host, storage, admitted = off_loop(_host, max_metered_calls=100)
 
     run = await _launch(host, storage)
@@ -104,7 +106,7 @@ async def test_a_host_with_metered_tools_records_its_ceiling_and_admits_within_i
     assert run.metered_calls_refused == 0
 
 
-async def test_the_declaration_holds_with_enforcement_off():
+async def test_the_declaration_holds_with_enforcement_off() -> None:
     """It is a fact about the host's tools, not a ceiling enforcement switches off."""
     host, storage, admitted = off_loop(_host, max_metered_calls=None, enforcement_enabled=False)
 
@@ -114,7 +116,7 @@ async def test_the_declaration_holds_with_enforcement_off():
     assert not any(admitted)
 
 
-async def test_with_metered_tools_and_enforcement_off_the_run_is_uncapped():
+async def test_with_metered_tools_and_enforcement_off_the_run_is_uncapped() -> None:
     host, storage, admitted = off_loop(_host, max_metered_calls=100, enforcement_enabled=False)
 
     run = await _launch(host, storage)
@@ -123,7 +125,7 @@ async def test_with_metered_tools_and_enforcement_off_the_run_is_uncapped():
     assert all(admitted)
 
 
-async def test_a_launch_naming_a_ceiling_on_a_host_with_no_metered_tools_is_refused_before_anything():
+async def test_a_launch_naming_a_ceiling_on_a_host_with_no_metered_tools_is_refused_before_anything() -> None:
     host, storage, admitted = off_loop(_host, max_metered_calls=None)
 
     with pytest.raises(ValidationFailedError, match="declares no metered tools, so it would bound nothing"):
@@ -133,7 +135,7 @@ async def test_a_launch_naming_a_ceiling_on_a_host_with_no_metered_tools_is_refu
     assert host.job_manager.admitted_count == 0
 
 
-def test_the_ledger_for_a_host_declaring_none_refuses_with_its_own_words():
+def test_the_ledger_for_a_host_declaring_none_refuses_with_its_own_words() -> None:
     ledger = MeteredCallLedger.for_run("run-1", None, configured_max_metered_calls=None, enforcement_enabled=True)
 
     assert ledger.ceiling == 0
@@ -143,7 +145,7 @@ def test_the_ledger_for_a_host_declaring_none_refuses_with_its_own_words():
     assert "declares no metered third-party tools" in message and "limit of" not in message
 
 
-def test_the_resolution_refuses_an_override_for_a_host_declaring_none():
+def test_the_resolution_refuses_an_override_for_a_host_declaring_none() -> None:
     with pytest.raises(ValueError, match="declares no metered tools"):
         MeteredCallLedger.resolve_effective_ceiling(5, configured_max_metered_calls=None, enforcement_enabled=True)
     assert (
@@ -152,12 +154,12 @@ def test_the_resolution_refuses_an_override_for_a_host_declaring_none():
     )
 
 
-def test_a_ledger_declaring_none_with_a_ceiling_is_refused():
+def test_a_ledger_declaring_none_with_a_ceiling_is_refused() -> None:
     with pytest.raises(ValueError, match="allows no metered call"):
         MeteredCallLedger("run-1", 5, none_declared=True)
 
 
 @pytest.mark.parametrize("ceiling", [0, -1])
-def test_a_ledger_with_a_ceiling_below_one_and_not_declaring_none_is_refused(ceiling):
+def test_a_ledger_with_a_ceiling_below_one_and_not_declaring_none_is_refused(ceiling) -> None:
     with pytest.raises(ValueError, match="at least one call"):
         MeteredCallLedger("run-1", ceiling)

@@ -230,13 +230,13 @@ class TestScenarioAFreshApply:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = _AsyncpgStore(conn)
-            count = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            count = await runner.apply_for_agent_schema(store)
             assert count > 0
             # _schema_migrations row count must match applied count
             rows = await conn.fetch(f'SELECT version, package FROM "{schema}"._schema_migrations')
             assert len(rows) == count
             # re-apply is a no-op
-            count2 = await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            count2 = await runner.apply_for_agent_schema(store)
             assert count2 == 0
         finally:
             await conn.close()
@@ -273,7 +273,7 @@ class TestScenarioBMidSequenceRollback:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = _AsyncpgStore(conn)
             with pytest.raises(MigrationFailedError) as exc_info:
-                await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+                await runner.apply_for_agent_schema(store)
             assert "conversations:99" in str(exc_info.value)
 
             # the failing version must NOT be present in bookkeeping
@@ -343,7 +343,7 @@ class TestScenarioCDowngrade:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = _AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
             # both tables exist
             rows = await conn.fetch(
                 "SELECT table_name FROM information_schema.tables "
@@ -356,7 +356,7 @@ class TestScenarioCDowngrade:
             count = await runner.downgrade_for_scope(
                 store,
                 MigrationScope.AGENT,
-                steps=1,  # type: ignore[arg-type]
+                steps=1,
             )
             assert count == 1
             rows = await conn.fetch(
@@ -398,7 +398,7 @@ class TestDriftDetection:
         try:
             await conn.execute(f'SET search_path TO "{schema}", public')
             store = _AsyncpgStore(conn)
-            await runner.apply_for_agent_schema(store)  # type: ignore[arg-type]
+            await runner.apply_for_agent_schema(store)
 
             # hand-add a column to one of the runner-created tables
             await conn.execute("ALTER TABLE conversations ADD COLUMN rogue_col TEXT")
@@ -418,7 +418,7 @@ class TestDriftDetection:
 
             preview = await runner.preview_for_scope(
                 _EmptyStore(),
-                MigrationScope.AGENT,  # type: ignore[arg-type]
+                MigrationScope.AGENT,
             )
             expected = parse_ddl_to_expected(preview.captured_ddl())
             live = await snapshot_live_schema(store)

@@ -20,19 +20,17 @@ extractor driven by a launcher that generates the way an adopter's does (once pe
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
-
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import COST_ESTIMATE_MIN_BASIS
 from threetears.evals.analysis.lenses.cost_estimate import COST_BAND_SAFETY_MARGIN
-from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.stats import lognormal_sum_prediction_band
-from threetears.evals.schema import EvalRun
+from threetears.evals.gen import generate_variations
 from threetears.evals.kernel import (
     AdmittedGeneration,
     EvalStorage,
@@ -42,15 +40,7 @@ from threetears.evals.kernel import (
 )
 from threetears.evals.kernel.host import CompletionRole
 from threetears.evals.kernel.identity import derive_context_identity
-from threetears.evals.schema.models import (
-    OUTCOME_DIM_ID,
-    TRANSCRIPT_DIM_ID,
-    EvalTemplate,
-    RubricDim,
-    VariationAxis,
-    VariationCounts,
-)
-from threetears.evals.gen import generate_variations
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.ops import LaunchArguments, OpsHost, history_launch_pricer, launch_estimate, run_launch
 from threetears.evals.run import (
     ArmPlan,
@@ -66,20 +56,30 @@ from threetears.evals.run import (
     launch_run,
     start_run,
 )
+from threetears.evals.schema import EvalRun
+from threetears.evals.schema.models import (
+    OUTCOME_DIM_ID,
+    TRANSCRIPT_DIM_ID,
+    EvalTemplate,
+    RubricDim,
+    VariationAxis,
+    VariationCounts,
+)
 from threetears.evals.storage import InMemoryDocumentStore
+
+from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE, TOYHOST_SUBJECT
+from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.kind import (
     DOCUMENT_PARAM,
     TOY_EXTRACTOR_KIND,
     ScriptedExtractionClient,
     ToyExtractorKind,
 )
-from packages.evals.tests.fixtures.toyhost.host import with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS, toyhost_launch_host
 from packages.evals.tests.fixtures.toyhost.run import RUN_DOCUMENTS, RUN_MODELS, toyhost_template
-from packages.evals.tests.factories import make_eval_result, make_eval_run
-from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import CALLER, ops_fixture
 
 #: The model the launches name to write their cases.
 WRITER = "writer-a"
@@ -295,7 +295,7 @@ async def _launch(host: LaunchHost, template: EvalTemplate, **arguments: Any) ->
 # =============================================================================
 
 
-async def test_a_launch_generates_with_the_named_writer_and_every_arm_records_it():
+async def test_a_launch_generates_with_the_named_writer_and_every_arm_records_it() -> None:
     template = _template(LLM_AXIS)
     host, storage, clients, _handed = off_loop(_generating_host, template)
 
@@ -316,7 +316,7 @@ async def test_a_launch_generates_with_the_named_writer_and_every_arm_records_it
         assert "simulator" not in (stored.model_role_provenance or {})
 
 
-async def test_a_launch_s_generation_budget_writes_its_ledger_where_the_host_s_storage_calls_run():
+async def test_a_launch_s_generation_budget_writes_its_ledger_where_the_host_s_storage_calls_run() -> None:
     """The budget a launch hands its launcher names the host's executor, so its ledger rows leave the loop there."""
     template = _template(LLM_AXIS)
     host, _storage, _clients, handed = off_loop(_generating_host, template)
@@ -330,7 +330,7 @@ async def test_a_launch_s_generation_budget_writes_its_ledger_where_the_host_s_s
     assert all(budget.blocking_executor is pool for budget in budgets.values() if budget is not None)
 
 
-async def test_a_generation_no_model_writes_records_no_writer_and_asks_for_no_client():
+async def test_a_generation_no_model_writes_records_no_writer_and_asks_for_no_client() -> None:
     template = _template(ENUM_AXIS)
     host, storage, clients, _handed = off_loop(_generating_host, template)
 
@@ -343,7 +343,7 @@ async def test_a_generation_no_model_writes_records_no_writer_and_asks_for_no_cl
     assert stored.variation_counts.variation_model is None
 
 
-async def test_the_writer_enters_no_identity():
+async def test_the_writer_enters_no_identity() -> None:
     """The cases it wrote are what the candidate faced, each a case of its own id, and no case set is a condition.
 
     A run over other written cases is more samples of the same condition, so its cases pool beside this run's
@@ -379,7 +379,7 @@ async def test_the_writer_enters_no_identity():
     ],
     ids=["generation-needs-a-writer", "a-writer-for-no-generation", "a-writer-for-no-llm-axis", "a-writer-alone"],
 )
-async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spend(axes, arguments, said):
+async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spend(axes, arguments, said) -> None:
     template = _template(*axes)
     host, storage, clients, handed = off_loop(_generating_host, template)
 
@@ -394,7 +394,7 @@ async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spe
     assert host.job_manager.admitted_count == 0
 
 
-async def test_a_generation_recording_another_writer_than_the_one_named_is_refused():
+async def test_a_generation_recording_another_writer_than_the_one_named_is_refused() -> None:
     """A host resolving the named model to another is a launch recording one writer and running another."""
     template = _template(LLM_AXIS)
     host, storage, _clients, _handed = off_loop(
@@ -422,7 +422,7 @@ async def test_a_generation_recording_another_writer_than_the_one_named_is_refus
     [({"n_variations": 2}, "cannot honour n_variations=2"), ({"variation_model": WRITER}, "generates none")],
     ids=["n_variations", "variation_model"],
 )
-async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, said):
+async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, said) -> None:
     fixture = off_loop(ops_fixture)
     launched = LaunchArguments(
         template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=[RUN_MODELS[0]], **arguments
@@ -437,7 +437,7 @@ async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, 
     [({"n_variations": 2}, "cannot honour n_variations=2"), ({"variation_model": WRITER}, "generates none")],
     ids=["n_variations", "variation_model"],
 )
-async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(arguments, said):
+async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(arguments, said) -> None:
     fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
     call = {
@@ -453,7 +453,7 @@ async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(
     assert outcome.is_error and said.split("=")[0] in outcome.text, outcome.text
 
 
-async def test_launch_estimate_prices_the_cases_a_launch_would_generate():
+async def test_launch_estimate_prices_the_cases_a_launch_would_generate() -> None:
     """The estimate quotes a generating arm as the launch's gate does: its plan's generated cases, through the pricer."""
     template = _template(LLM_AXIS)
     quotes: list[ArmQuote] = []
@@ -504,7 +504,7 @@ def _nothing_was_paid_for(host: LaunchHost, storage: EvalStorage, clients: _Fake
     assert host.job_manager.admitted_count == 0
 
 
-async def test_a_launchs_generation_is_ledgered_once_under_its_group_at_the_out_of_run_cap():
+async def test_a_launchs_generation_is_ledgered_once_under_its_group_at_the_out_of_run_cap() -> None:
     template = _template(LLM_AXIS)
     host, storage, clients, _handed = off_loop(_generating_host, template)
 
@@ -525,7 +525,7 @@ async def test_a_launchs_generation_is_ledgered_once_under_its_group_at_the_out_
     assert [writer.calls for writer in clients.writers] == [1], "priced once at admission, in the call; called once"
 
 
-async def test_a_generation_priced_above_the_out_of_run_cap_is_refused_before_its_call():
+async def test_a_generation_priced_above_the_out_of_run_cap_is_refused_before_its_call() -> None:
     template = _template(LLM_AXIS)
     host, storage, clients, _handed = off_loop(_generating_host, template, clients=_FakeClients(ceiling=1000.0))
 
@@ -536,7 +536,7 @@ async def test_a_generation_priced_above_the_out_of_run_cap_is_refused_before_it
     off_loop(_nothing_was_paid_for, host, storage, clients)
 
 
-async def test_a_launch_through_the_job_contract_refuses_a_generation_above_the_cap_in_its_call():
+async def test_a_launch_through_the_job_contract_refuses_a_generation_above_the_cap_in_its_call() -> None:
     """The call prices the generation: it used to return a job that then failed."""
     template = _template(LLM_AXIS)
     host, storage, clients, handed = off_loop(_generating_host, template, clients=_FakeClients(ceiling=1000.0))
@@ -555,7 +555,7 @@ async def test_a_launch_through_the_job_contract_refuses_a_generation_above_the_
     off_loop(_nothing_was_paid_for, host, storage, clients)
 
 
-async def test_a_generation_its_writer_cannot_price_is_refused_under_an_enforced_cap():
+async def test_a_generation_its_writer_cannot_price_is_refused_under_an_enforced_cap() -> None:
     template = _template(LLM_AXIS)
     host, storage, clients, _handed = off_loop(_generating_host, template, clients=_FakeClients(ceiling=None))
 
@@ -565,7 +565,7 @@ async def test_a_generation_its_writer_cannot_price_is_refused_under_an_enforced
     off_loop(_nothing_was_paid_for, host, storage, clients)
 
 
-async def test_with_enforcement_off_a_generation_is_admitted_unpriced_and_still_ledgered():
+async def test_with_enforcement_off_a_generation_is_admitted_unpriced_and_still_ledgered() -> None:
     template = _template(LLM_AXIS)
     host, storage, clients, _handed = off_loop(
         _generating_host, template, clients=_FakeClients(ceiling=None), pricer=None
@@ -580,7 +580,7 @@ async def test_with_enforcement_off_a_generation_is_admitted_unpriced_and_still_
     assert (spend.priced_ceiling_usd, spend.cap_usd) == (None, None)
 
 
-async def test_a_generation_ledgered_outside_the_requests_budget_is_refused_at_the_tail():
+async def test_a_generation_ledgered_outside_the_requests_budget_is_refused_at_the_tail() -> None:
     """A launcher that builds its own budget leaves the launch's cap unenforced and its ledger without the call."""
     template = _template(LLM_AXIS)
     host, storage, _clients, _handed = off_loop(_generating_host, template, budgeted=False)
@@ -592,7 +592,7 @@ async def test_a_generation_ledgered_outside_the_requests_budget_is_refused_at_t
     assert host.job_manager.admitted_count == 0
 
 
-async def test_an_arm_predicted_above_its_cap_is_refused_before_the_launcher_or_the_generation():
+async def test_an_arm_predicted_above_its_cap_is_refused_before_the_launcher_or_the_generation() -> None:
     template = _template(LLM_AXIS)
     quotes: list[ArmQuote] = []
 
@@ -616,7 +616,7 @@ async def test_an_arm_predicted_above_its_cap_is_refused_before_the_launcher_or_
     ], "priced at the arm's plan: its model, its planned cases and the launch's repeats"
 
 
-async def test_an_unpredicted_arm_is_refused_under_an_inherited_cap_and_runs_under_a_chosen_one():
+async def test_an_unpredicted_arm_is_refused_under_an_inherited_cap_and_runs_under_a_chosen_one() -> None:
     template = _template(LLM_AXIS)
 
     def unknown(_quote: ArmQuote) -> ArmPrice:
@@ -634,7 +634,7 @@ async def test_an_unpredicted_arm_is_refused_under_an_inherited_cap_and_runs_und
     assert all(run.max_cost_usd == 1.5 and run.max_cost_usd_origin == "chosen" for run in runs)
 
 
-async def test_a_generating_arm_on_a_host_that_prices_no_launch_is_unpriceable():
+async def test_a_generating_arm_on_a_host_that_prices_no_launch_is_unpriceable() -> None:
     """No pricer is one more way an arm is unknown, read by the one rule: refused under an inherited cap only."""
     template = _template(LLM_AXIS)
     host, storage, clients, handed = off_loop(_generating_host, template, pricer=None)
@@ -655,7 +655,7 @@ async def test_a_generating_arm_on_a_host_that_prices_no_launch_is_unpriceable()
     assert all(run.max_cost_usd_origin == "chosen" for run in runs)
 
 
-async def test_a_generating_arm_of_a_kind_that_plans_nothing_is_unpriceable():
+async def test_a_generating_arm_of_a_kind_that_plans_nothing_is_unpriceable() -> None:
     """Nothing says what the arm will run, so nothing prices it — refused under an inherited cap, run under a chosen one."""
     template = _template(ENUM_AXIS)
     asked: list[ArmQuote] = []
@@ -689,7 +689,7 @@ async def test_a_generating_arm_of_a_kind_that_plans_nothing_is_unpriceable():
     ],
     ids=["more-cases-than-planned", "another-model-than-named"],
 )
-async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said):
+async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said) -> None:
     template = _template(ENUM_AXIS)
     host, storage, _clients, _handed = off_loop(_generating_host, template, **plan)
 
@@ -708,7 +708,7 @@ async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said):
         ({"case_count": 1, "candidate_model": "m", "simulator_model": " "}, "simulator_model is blank"),
     ],
 )
-def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said):
+def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPlan(**{"judge": None, "simulator_model": None, **bad})
 
@@ -721,12 +721,12 @@ def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said):
         ({"predicted_usd": 1.0, "basis": "  "}, "basis is blank"),
     ],
 )
-def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad, said):
+def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad, said) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPrice(**bad)
 
 
-async def test_an_arm_its_launcher_runs_on_another_model_than_its_plan_is_refused_at_the_tail():
+async def test_an_arm_its_launcher_runs_on_another_model_than_its_plan_is_refused_at_the_tail() -> None:
     """An arm naming no model is planned on one and run on the launcher's default: priced as one, run as another."""
     template = _template(ENUM_AXIS)
     host, storage, _clients, handed = off_loop(
@@ -741,7 +741,7 @@ async def test_an_arm_its_launcher_runs_on_another_model_than_its_plan_is_refuse
     assert host.job_manager.admitted_count == 0
 
 
-async def test_a_run_records_whether_its_launch_named_the_candidate_model_or_ran_the_kinds_default():
+async def test_a_run_records_whether_its_launch_named_the_candidate_model_or_ran_the_kinds_default() -> None:
     """#571: the one record of whether a production-replicating cost was measured off the subject's own model."""
     template = _template(ENUM_AXIS)
     host, _storage, _clients, _handed = off_loop(
@@ -771,7 +771,7 @@ class _MovingSettings:
         return self.first if self.reads == 1 else self.first.model_copy(update={"max_metered_calls": None})
 
 
-async def test_a_launch_reads_the_hosts_settings_once_so_a_reload_cannot_refuse_it_after_its_generation():
+async def test_a_launch_reads_the_hosts_settings_once_so_a_reload_cannot_refuse_it_after_its_generation() -> None:
     """A launch naming a metered-call ceiling was refused at its tail, generation paid, when a reload landed mid-launch."""
     template = _template(LLM_AXIS)
     moving = _MovingSettings(TOYHOST_LAUNCH_SETTINGS)
@@ -820,7 +820,7 @@ def _quote(**overrides: Any) -> ArmQuote:
     return ArmQuote(**fields)
 
 
-def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_models_past_results():
+def test_the_history_pricer_bounds_an_arm_by_the_upper_band_of_its_template_and_models_past_results() -> None:
     """The launch holds this figure to the cap, so it is the band's upper end, not the centre."""
     host, storage = _priced_host()
     # Close together, so the band's upper end sits well under the other template's $9 an observation: three
@@ -848,7 +848,7 @@ def _dollars(value: float) -> str:
 @pytest.mark.parametrize("case_count", [1, 3, 5])
 def test_the_history_pricer_caps_an_arm_whose_every_past_result_cost_the_same_a_safety_margin_above_its_band(
     cost: float, n_history: int, case_count: int
-):
+) -> None:
     """Discodon's second launch of one arm raised building the price: both ends of the band landed below its centre.
 
     The band from a history with no spread has no width, and stays so; the cap reads the safety margin above it.
@@ -870,7 +870,9 @@ def test_the_history_pricer_caps_an_arm_whose_every_past_result_cost_the_same_a_
     assert f"No spread in {n_history} past observations" in price.basis
 
 
-def test_the_history_pricer_shows_a_narrow_band_as_computed_and_caps_the_arm_a_safety_margin_above_the_estimate():
+def test_the_history_pricer_shows_a_narrow_band_as_computed_and_caps_the_arm_a_safety_margin_above_the_estimate() -> (
+    None
+):
     """Half a percent either side is a spread the history shows: kept and stated, though the cap reads the margin."""
     host, storage = _priced_host()
     history = [1.0, 1.002, 0.998]
@@ -893,7 +895,7 @@ def test_the_history_pricer_shows_a_narrow_band_as_computed_and_caps_the_arm_a_s
     ) in price.basis
 
 
-def test_a_band_ending_just_under_the_margin_says_by_how_much_the_cap_is_wider_where_both_print_alike():
+def test_a_band_ending_just_under_the_margin_says_by_how_much_the_cap_is_wider_where_both_print_alike() -> None:
     """A 1% spread over three results ends a ten-observation band at $10.2953 and the cap at $10.30: both "$10.3"."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.99, 1.0, 1.01])
@@ -911,7 +913,7 @@ def test_a_band_ending_just_under_the_margin_says_by_how_much_the_cap_is_wider_w
     assert f"wider than the band by {gap}, method usage-history" in price.basis
 
 
-def test_the_history_pricer_caps_an_arm_at_its_bands_own_upper_end_where_that_is_above_the_margin():
+def test_the_history_pricer_caps_an_arm_at_its_bands_own_upper_end_where_that_is_above_the_margin() -> None:
     """Ten percent either side: the floor does not bind, and the basis says nothing of a margin."""
     host, storage = _priced_host()
     history = [0.9, 1.0, 1.1, 0.95, 1.05]
@@ -929,7 +931,7 @@ def test_the_history_pricer_caps_an_arm_at_its_bands_own_upper_end_where_that_is
     assert "safety margin" not in price.basis
 
 
-def test_a_sub_cent_arms_price_spells_its_band_and_centre_by_the_one_rule():
+def test_a_sub_cent_arms_price_spells_its_band_and_centre_by_the_one_rule() -> None:
     """In cents, a sub-cent arm's basis read "$0.00-$0.00 around $0.00": three figures, one spelling."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.001, 0.0015, 0.002])
@@ -943,7 +945,7 @@ def test_a_sub_cent_arms_price_spells_its_band_and_centre_by_the_one_rule():
     assert centre == "$0.0045"
 
 
-def test_the_history_pricer_never_holds_an_arm_to_its_mean_where_the_log_scale_fit_disagrees_with_it():
+def test_the_history_pricer_never_holds_an_arm_to_its_mean_where_the_log_scale_fit_disagrees_with_it() -> None:
     """One runaway result among 19 cheap ones puts the fit's upper end under the mean's prediction for a large arm."""
     host, storage = _priced_host()
     history = [0.001] * 19 + [0.1]
@@ -958,7 +960,7 @@ def test_the_history_pricer_never_holds_an_arm_to_its_mean_where_the_log_scale_f
     assert "upper end of the band" in price.basis and "spanning two fits that disagree" in price.basis
 
 
-def test_the_history_pricer_prices_an_arm_over_stored_cases_by_the_same_rule():
+def test_the_history_pricer_prices_an_arm_over_stored_cases_by_the_same_rule() -> None:
     """One rule for both sources: the same history, cases and repeats bound a stored-case arm exactly as a generating one."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30])
@@ -971,7 +973,7 @@ def test_the_history_pricer_prices_an_arm_over_stored_cases_by_the_same_rule():
     assert "upper end of the band" in stored.basis
 
 
-def test_the_history_pricer_predicts_nothing_for_an_arm_with_no_priced_history():
+def test_the_history_pricer_predicts_nothing_for_an_arm_with_no_priced_history() -> None:
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[None])
 
@@ -982,7 +984,7 @@ def test_the_history_pricer_predicts_nothing_for_an_arm_with_no_priced_history()
     assert "1 past result(s) ran unpriced" in price.basis
 
 
-def test_the_history_pricer_predicts_nothing_from_a_history_too_thin_to_bound():
+def test_the_history_pricer_predicts_nothing_from_a_history_too_thin_to_bound() -> None:
     """Two observations give a mean and no band; a mean is not a bound, so the arm is unknown."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20])
@@ -1048,7 +1050,7 @@ _SIMULATED_CHEAPLY = {"simulator_model": "sim-cheap", "model_role_provenance": {
         "another-rig",
     ],
 )
-def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(history, other, same):
+def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(history, other, same) -> None:
     """A run judged by a cheaper model on any dim, or simulated or rigged otherwise, spent differently from the arm."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30], **history)
@@ -1058,7 +1060,7 @@ def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(histo
     assert pricer(_quote(**same)).predicted_usd is not None, "the condition it was launched under prices"
 
 
-def test_the_history_pricer_reads_only_the_matching_runs_results(monkeypatch: pytest.MonkeyPatch):
+def test_the_history_pricer_reads_only_the_matching_runs_results(monkeypatch: pytest.MonkeyPatch) -> None:
     """Not every result in the scope for every arm: a scope's history grows without bound."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30])
@@ -1108,7 +1110,7 @@ def _revisions(storage: EvalStorage, *later: dict[str, Any]) -> list[EvalTemplat
     return written
 
 
-def test_a_new_revision_with_nothing_changed_is_priced_from_the_revision_before_it():
+def test_a_new_revision_with_nothing_changed_is_priced_from_the_revision_before_it() -> None:
     host, storage = _priced_host()
     first, second = _revisions(storage, {"description": "a reset's new wording and cases"})
     _history(storage, template_id=first.id, model="m-priced", costs=[0.18, 0.20, 0.22])
@@ -1123,7 +1125,7 @@ def test_a_new_revision_with_nothing_changed_is_priced_from_the_revision_before_
     assert f"of revision 1 ({first.id!r})" in price.basis and "upper end of the band" in price.basis
 
 
-def test_a_new_revision_judged_by_another_model_than_the_revision_before_it_reads_unpriced_naming_the_judge():
+def test_a_new_revision_judged_by_another_model_than_the_revision_before_it_reads_unpriced_naming_the_judge() -> None:
     host, storage = _priced_host()
     first, second = _revisions(storage, {"description": "a reset's new wording"})
     _history(storage, template_id=first.id, model="m-priced", costs=[0.10, 0.20, 0.30], **_JUDGED_CHEAPLY)
@@ -1137,7 +1139,7 @@ def test_a_new_revision_judged_by_another_model_than_the_revision_before_it_read
     assert "candidate model (" not in price.basis, "only what differs is named"
 
 
-def test_a_step_changing_a_dimension_s_judge_pin_stops_the_walk_naming_it():
+def test_a_step_changing_a_dimension_s_judge_pin_stops_the_walk_naming_it() -> None:
     host, storage = _priced_host()
     dim = RubricDim(name="toy.faithful", description="Stays with the facts.", scale="pass_fail", judge="builtin")
     first, second = _revisions(storage, {"rubric": [dim.model_copy(update={"judge": "configured"})]})
@@ -1157,7 +1159,7 @@ def test_a_step_changing_a_dimension_s_judge_pin_stops_the_walk_naming_it():
     )
 
 
-def test_a_revision_with_priced_results_of_its_own_is_priced_from_them_alone():
+def test_a_revision_with_priced_results_of_its_own_is_priced_from_them_alone() -> None:
     host, storage = _priced_host()
     first, second = _revisions(storage, {"description": "a reset's new wording"})
     _history(storage, template_id=first.id, model="m-priced", costs=[9.0, 9.0, 9.0])
@@ -1169,7 +1171,7 @@ def test_a_revision_with_priced_results_of_its_own_is_priced_from_them_alone():
     assert "revision" not in price.basis and f"template {second.id!r}" in price.basis, price.basis
 
 
-def test_a_walk_crosses_several_unchanged_steps_and_names_the_revision_it_drew_on():
+def test_a_walk_crosses_several_unchanged_steps_and_names_the_revision_it_drew_on() -> None:
     host, storage = _priced_host()
     first, _second, third = _revisions(storage, {"description": "two"}, {"description": "three"})
     _history(storage, template_id=first.id, model="m-priced", costs=[0.18, 0.20, 0.22])

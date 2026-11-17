@@ -394,7 +394,7 @@ def _payload_with_a_subtrahend_only_unit() -> dict[str, object]:
     :rtype: dict[str, object]
     """
     payload = _payload()
-    units: list[dict[str, object]] = list(payload["units"])  # type: ignore[arg-type]
+    units: list[dict[str, object]] = list(payload["units"])
     delivered = [unit["name"] for unit in units]
     units.append(
         {
@@ -484,7 +484,7 @@ class TestASubtrahendOnlySetHasToBeDeclaredAsAUnit:
         :rtype: None
         """
         payload = _payload_with_a_subtrahend_only_unit()
-        payload["qualification"] = [arm for arm in payload["qualification"] if arm["applies_to"] != [_HELPER_UNIT]]  # type: ignore[union-attr,index]
+        payload["qualification"] = [arm for arm in payload["qualification"] if arm["applies_to"] != [_HELPER_UNIT]]
         with pytest.raises((ValidationError, UnqualifiedUnits)) as excinfo:
             DatasetDefinition.model_validate(payload)
         assert _HELPER_UNIT in str(excinfo.value)
@@ -502,10 +502,10 @@ class TestASubtrahendOnlySetHasToBeDeclaredAsAUnit:
         :rtype: None
         """
         payload = _payload_with_a_subtrahend_only_unit()
-        rollups: list[dict[str, object]] = list(payload["rollups"])  # type: ignore[arg-type]
+        rollups: list[dict[str, object]] = list(payload["rollups"])
         rollups[0] = {**rollups[0], "members": [*rollups[0]["members"], _HELPER_UNIT]}  # type: ignore[misc]
         payload["rollups"] = rollups
-        artifacts: list[dict[str, object]] = list(payload["artifacts"])  # type: ignore[arg-type]
+        artifacts: list[dict[str, object]] = list(payload["artifacts"])
         payload["artifacts"] = [
             {**artifact, "columns": [*artifact["columns"], _HELPER_UNIT]}  # type: ignore[misc]
             if artifact["artifact"] == "wide"

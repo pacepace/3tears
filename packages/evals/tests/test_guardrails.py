@@ -63,28 +63,28 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
     def _result(self, *scores: RubricScore):
         return make_eval_result(goal_state_outcomes=[], rubric_scores=list(scores))
 
-    def test_the_composite_reads_capability_scores_only(self):
+    def test_the_composite_reads_capability_scores_only(self) -> None:
         result = self._result(
             RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1, judge_temperature=0.0),
             RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0, judge_temperature=0.0),
         )
         assert result_composite(result) == 1.0
 
-    def test_a_result_scored_only_on_boundary_has_no_composite(self):
+    def test_a_result_scored_only_on_boundary_has_no_composite(self) -> None:
         result = self._result(
             RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0, judge_temperature=0.0)
         )
         assert result_composite(result) is None
         assert compute_composite_summary([result])[(result.model, result.eval_run_id)]["mean_composite"] is None
 
-    def test_a_score_judged_before_the_axis_was_stamped_is_read_as_capability_as_it_was(self):
+    def test_a_score_judged_before_the_axis_was_stamped_is_read_as_capability_as_it_was(self) -> None:
         result = self._result(
             RubricScore(dim=CAPABILITY, scale="pass_fail", score=1, axis="capability", judge_temperature=0.0),
             RubricScore(dim=BOUNDARY, scale="pass_fail", score=0, axis="capability", judge_temperature=0.0),
         )
         assert result_composite(result) == 0.5
 
-    def test_pass_k_is_not_failed_by_a_boundary_score(self):
+    def test_pass_k_is_not_failed_by_a_boundary_score(self) -> None:
         result = self._result(
             RubricScore(dim=CAPABILITY, scale="pass_fail", axis="capability", score=1, judge_temperature=0.0),
             RubricScore(dim=BOUNDARY, scale="pass_fail", axis="boundary", score=0, judge_temperature=0.0),
@@ -92,7 +92,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
         (summary,) = compute_pass_hat_k([result], catalog={}).values()
         assert summary["pass_hat_k"] == 1.0
 
-    def test_a_cannot_tell_on_a_boundary_dim_neither_drops_the_composite_nor_pass_k(self):
+    def test_a_cannot_tell_on_a_boundary_dim_neither_drops_the_composite_nor_pass_k(self) -> None:
         result = make_eval_result(
             goal_state_outcomes=[],
             rubric_scores=[
@@ -105,7 +105,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
         (summary,) = compute_pass_hat_k([result], catalog={}).values()
         assert summary["pass_hat_k"] == 1.0 and summary["n_cannot_tell_excluded"] == 0
 
-    def test_a_catalog_boundary_dim_copied_into_a_template_stays_boundary(self):
+    def test_a_catalog_boundary_dim_copied_into_a_template_stays_boundary(self) -> None:
         """The catalog record's axis is the embedded dim's axis, so copying ``dim`` keeps the guardrail."""
         from threetears.evals.schema.models import CatalogRubricDim, RubricDim
 
@@ -124,7 +124,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
         plain = CatalogRubricDim(scope_id="s", key="k", dim=dim)
         assert (plain.axis, plain.dim.axis) == ("capability", "capability")
 
-    def test_a_boundary_dimension_joins_no_comparison_family(self):
+    def test_a_boundary_dimension_joins_no_comparison_family(self) -> None:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST))
         tested = {(c.name, c.verdict) for f in bundle.multiple_comparisons.families for c in f.comparisons}
         # The question's pass rate is the family's other member (owner, 2026-11-06); the boundary dimension is none.
@@ -136,7 +136,7 @@ class TestABoundaryScoreIsNeverAveragedWithCapability:
 
 
 class TestEachGuardrailIsDecidedAgainstTheControl:
-    def test_a_capability_gain_with_a_guardrail_lost_is_breached_not_offset(self):
+    def test_a_capability_gain_with_a_guardrail_lost_is_breached_not_offset(self) -> None:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST))
         (check,) = bundle.guardrails.checks
         assert (check.name, check.reading, check.decision) == (BOUNDARY, "judged", "breached")
@@ -144,7 +144,7 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
         assert check.interval_basis == "bounded", "a judged scale is a declared range, so the bounded test decides"
         assert bundle.guardrails.of_arm(check.contrast.variant_key).breached == [BOUNDARY]
 
-    def test_a_guardrail_at_its_ceiling_on_both_arms_is_undecided_never_held(self):
+    def test_a_guardrail_at_its_ceiling_on_both_arms_is_undecided_never_held(self) -> None:
         """Fifteen clean cases a side do not show a rare failure absent, and no margin is declared."""
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_AT_CEILING))
         (check,) = bundle.guardrails.checks
@@ -153,7 +153,7 @@ class TestEachGuardrailIsDecidedAgainstTheControl:
         standing = bundle.guardrails.of_arm(check.contrast.variant_key)
         assert standing.undecided == [BOUNDARY] and standing.held == []
 
-    def test_with_no_control_no_guardrail_is_checked_and_that_is_not_held(self):
+    def test_with_no_control_no_guardrail_is_checked_and_that_is_not_held(self) -> None:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), control=False)
         assert bundle.guardrails.checks == []
         assert bundle.guardrails.withheld is not None and "not the same as held" in bundle.guardrails.withheld
@@ -185,7 +185,7 @@ def _with_guardrail_measure(*, margin: float | None, value_range: tuple[float, f
 
 
 class TestAMeasureDeclaredAGuardrail:
-    def test_a_guardrail_has_a_better_end_and_no_merit_axis(self):
+    def test_a_guardrail_has_a_better_end_and_no_merit_axis(self) -> None:
         base = {
             "name": "x",
             "data_type": "numeric",
@@ -212,7 +212,7 @@ class TestAMeasureDeclaredAGuardrail:
             profile=_with_guardrail_measure(margin=margin, value_range=value_range),
         )
 
-    def test_more_destructive_calls_on_every_case_breach_it(self):
+    def test_more_destructive_calls_on_every_case_breach_it(self) -> None:
         bundle = self._bundle([2.0, 3.0] * 7 + [2.0], margin=1.0)
         checks = {check.name: check for check in bundle.guardrails.checks}
         assert bundle.guardrails.measures == ["destructive_calls"]
@@ -222,12 +222,12 @@ class TestAMeasureDeclaredAGuardrail:
             c.name == "destructive_calls" for f in bundle.multiple_comparisons.families for c in f.comparisons
         ), "a guardrail joins no family"
 
-    def test_a_rise_inside_the_declared_margin_is_held_on_a_declared_range(self):
+    def test_a_rise_inside_the_declared_margin_is_held_on_a_declared_range(self) -> None:
         bundle = self._bundle([0.0, 0.1] * 7 + [0.0], margin=1.0, value_range=(0.0, 2.0))
         (check,) = [check for check in bundle.guardrails.checks if check.name == "destructive_calls"]
         assert (check.decision, check.interval_basis, check.undecided_reason) == ("held", "bounded", None)
 
-    def test_with_no_declared_range_the_same_rise_is_undecided_and_names_the_remedy(self):
+    def test_with_no_declared_range_the_same_rise_is_undecided_and_names_the_remedy(self) -> None:
         """The t interval sits well inside the margin, but with no range no test holds its rate: never held (#695)."""
         bundle = self._bundle([0.0, 0.1] * 7 + [0.0], margin=1.0)
         (check,) = [check for check in bundle.guardrails.checks if check.name == "destructive_calls"]
@@ -237,13 +237,13 @@ class TestAMeasureDeclaredAGuardrail:
         assert "declare value_range" in check.undecided_reason and "range=" in check.undecided_reason
         assert bundle.guardrails.of_arm(check.contrast.variant_key).held == []
 
-    def test_with_no_declared_range_a_rise_with_no_spread_names_the_remedy(self):
+    def test_with_no_declared_range_a_rise_with_no_spread_names_the_remedy(self) -> None:
         bundle = self._bundle([0.5] * N, margin=1.0)
         (check,) = [check for check in bundle.guardrails.checks if check.name == "destructive_calls"]
         assert (check.decision, check.interval) == ("undecided", None)
         assert check.undecided_reason is not None and check.undecided_reason.endswith(GUARDRAIL_HELD_NEEDS_RANGE)
 
-    def test_a_value_outside_the_declared_range_is_undecided_and_says_so(self):
+    def test_a_value_outside_the_declared_range_is_undecided_and_says_so(self) -> None:
         bundle = self._bundle([0.0] * (N - 1) + [3.0], margin=1.0, value_range=(0.0, 2.0))
         (check,) = [check for check in bundle.guardrails.checks if check.name == "destructive_calls"]
         assert (check.decision, check.interval, check.undecided_reason) == ("undecided", None, GUARDRAIL_OUTSIDE_RANGE)
@@ -253,7 +253,7 @@ class TestAMeasureDeclaredAGuardrail:
 
 
 class TestTheCodeOnlyReportShowsTheGuardrails:
-    def test_the_guardrails_table_and_how_it_was_decided(self):
+    def test_the_guardrails_table_and_how_it_was_decided(self) -> None:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST))
         report = build_code_only_report(bundle, assembled_at="2026-10-09T00:00:00+00:00")
         (table,) = [b for b in report.blocks if isinstance(b, TableBlock) and b.name == "guardrails"]
@@ -272,7 +272,7 @@ class TestTheCodeOnlyReportShowsTheGuardrails:
 
 
 class TestReadingsNoQuestionAskedAboutAreExploratory:
-    def test_with_a_question_on_cost_the_judged_capability_dimension_is_exploratory(self):
+    def test_with_a_question_on_cost_the_judged_capability_dimension_is_exploratory(self) -> None:
         bundle = two_arm_bundle(
             _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
         )
@@ -280,11 +280,11 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         assert scope.questions_declared and scope.disclosure is None
         assert scope.exploratory_dimensions == [CAPABILITY], "a guardrail is never exploratory"
 
-    def test_with_a_question_on_quality_nothing_judged_is_exploratory(self):
+    def test_with_a_question_on_quality_nothing_judged_is_exploratory(self) -> None:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST))
         assert bundle.reading_scope.exploratory_dimensions == []
 
-    def test_with_no_question_it_is_said_once_and_no_row_is_labelled(self):
+    def test_with_no_question_it_is_said_once_and_no_row_is_labelled(self) -> None:
         bundle = two_arm_bundle(_scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="")
         scope = bundle.reading_scope
         assert not scope.questions_declared
@@ -300,7 +300,7 @@ class TestReadingsNoQuestionAskedAboutAreExploratory:
         assert [(b.section, b.source) for b in said] == [("header", "verdict")]
         assert said[0].text.startswith("Exploratory: ")
 
-    def test_the_code_only_report_names_the_exploratory_readings_where_questions_are_declared(self):
+    def test_the_code_only_report_names_the_exploratory_readings_where_questions_are_declared(self) -> None:
         bundle = two_arm_bundle(
             _scored(CAPABILITY_GAIN, GUARDRAIL_LOST), question="is it cheaper?", merit_axes=["cost"]
         )

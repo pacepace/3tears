@@ -247,7 +247,7 @@ async def test_a_failed_result_keeps_the_output_it_reported() -> None:
     kept: list[dict[str, Any]] = []
 
     class _KeepsOutput(_FakeFireStore):
-        async def finalize_failed(  # type: ignore[override]
+        async def finalize_failed(
             self,
             partition_key: UUID,
             fire_id: UUID,
@@ -687,7 +687,7 @@ def test_nonsense_limits_are_refused(kwargs: dict[str, Any], match: str) -> None
 
 async def test_a_background_fire_reports_its_outcome_to_the_metrics() -> None:
     emitter = _RecordingEmitter()
-    dispatch = _dispatch(_FakeFireStore(), emitter=emitter)  # type: ignore[arg-type]
+    dispatch = _dispatch(_FakeFireStore(), emitter=emitter)
 
     async def _ok(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult()
@@ -1359,7 +1359,7 @@ async def test_a_timeout_the_body_raises_itself_is_recorded_as_its_own_error() -
 
 async def test_a_timeout_is_counted_as_a_timeout_not_a_handler_exception(caplog: pytest.LogCaptureFixture) -> None:
     emitter = _RecordingEmitter()
-    dispatch = _dispatch(fire_timeout_seconds=0.05, emitter=emitter)  # type: ignore[arg-type]
+    dispatch = _dispatch(fire_timeout_seconds=0.05, emitter=emitter)
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         await asyncio.sleep(10)
@@ -1388,7 +1388,7 @@ async def test_a_returned_failure_is_logged_as_a_failed_fire(caplog: pytest.LogC
 async def test_a_cross_pod_skip_is_counted_as_a_success(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_lock(monkeypatch, _CtxRaisingOnEnter(LockHeld("held")))
     emitter = _RecordingEmitter()
-    dispatch = _dispatch(nats_client=object(), emitter=emitter)  # type: ignore[arg-type]
+    dispatch = _dispatch(nats_client=object(), emitter=emitter)
 
     async def _body(_t: JobTrigger, _f: UUID) -> JobFireResult:
         return JobFireResult()

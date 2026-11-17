@@ -126,7 +126,7 @@ class TestSeamProtocols:
 
         class _Resolver:
             async def __call__(self, room_id: str) -> NsEntity:
-                return _Ns()  # type: ignore[return-value]
+                return _Ns()
 
         assert isinstance(_Resolver(), NsResolver)
 

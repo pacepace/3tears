@@ -56,7 +56,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1] / "src"
 )
 def test_a_relative_import_resolves_to_what_it_actually_names(
     source: str, level: int, module: str | None, expected: str
-):
+) -> None:
     """The resolver's arithmetic, checked against Python's import semantics.
 
     :param source: Source-root-relative path of the file the import is written in.
@@ -72,7 +72,7 @@ def test_a_relative_import_resolves_to_what_it_actually_names(
     assert absolute_module(_REPO_ROOT / source, node, root=_REPO_ROOT) == expected
 
 
-def test_the_root_is_taken_from_the_caller_rather_than_from_this_files_own_depth():
+def test_the_root_is_taken_from_the_caller_rather_than_from_this_files_own_depth() -> None:
     """The resolver carries no assumption about where it sits in the tree.
 
     The property that lets it travel: a consumer vendoring this file places it at whatever

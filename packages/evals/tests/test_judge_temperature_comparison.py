@@ -297,7 +297,7 @@ def _party(result: EvalResult) -> int:
 
 
 class TestTheComparisonShowsWhatTemperatureDoes:
-    async def test_a_judge_deterministic_at_zero_and_noisy_at_default_reads_so_side_by_side(self):
+    async def test_a_judge_deterministic_at_zero_and_noisy_at_default_reads_so_side_by_side(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
 
@@ -325,7 +325,7 @@ class TestTheComparisonShowsWhatTemperatureDoes:
         rendered = comparison.render()
         assert "temperature 0" in rendered and "provider default" in rendered and "NOT COMPARABLE" not in rendered
 
-    async def test_each_side_is_sent_its_own_temperature(self):
+    async def test_each_side_is_sent_its_own_temperature(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
 
@@ -335,7 +335,7 @@ class TestTheComparisonShowsWhatTemperatureDoes:
         sent = [temperature for temperature, _ in judge.calls]
         assert sent.count(DEFAULT_JUDGE_TEMPERATURE) == sent.count(None) == 3 * 2
 
-    async def test_nothing_is_written_to_the_results(self):
+    async def test_nothing_is_written_to_the_results(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         before = off_loop(_results, host, run_id)
@@ -346,7 +346,7 @@ class TestTheComparisonShowsWhatTemperatureDoes:
 
 
 class TestEveryAnswerPaidForIsKept:
-    async def test_a_comparison_cancelled_part_way_keeps_every_answer_it_had(self):
+    async def test_a_comparison_cancelled_part_way_keeps_every_answer_it_had(self) -> None:
         """The answers were kept only in the final write, so a cancel or a failure lost every paid answer."""
         judge = _StallingJudge()
         host, run_id = await _judged_run(judge)
@@ -376,7 +376,7 @@ class TestEveryAnswerPaidForIsKept:
 
 
 class TestWhichCasesAreReJudged:
-    async def test_a_stored_score_at_an_end_of_the_scale_is_skipped_and_named(self):
+    async def test_a_stored_score_at_an_end_of_the_scale_is_skipped_and_named(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         (top,) = [result for result in off_loop(_results, host, run_id) if _party(result) == 3]
@@ -386,7 +386,7 @@ class TestWhichCasesAreReJudged:
         assert [skip.result_id for skip in comparison.skipped] == [top.id]
         assert "borderline" in comparison.skipped[0].reason
 
-    async def test_a_recorded_repeat_that_disagreed_makes_an_end_of_scale_score_borderline(self):
+    async def test_a_recorded_repeat_that_disagreed_makes_an_end_of_scale_score_borderline(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         (top,) = [result for result in off_loop(_results, host, run_id) if _party(result) == 3]
@@ -426,7 +426,7 @@ class TestWhichCasesAreReJudged:
 
         assert comparison.skipped == [] and comparison.cases == 4
 
-    async def test_all_takes_every_scored_dim(self):
+    async def test_all_takes_every_scored_dim(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
 
@@ -436,7 +436,7 @@ class TestWhichCasesAreReJudged:
 
         assert (comparison.cases, comparison.skipped) == (4, [])
 
-    async def test_a_run_with_no_borderline_case_is_refused_naming_the_way_out(self):
+    async def test_a_run_with_no_borderline_case_is_refused_naming_the_way_out(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         (top,) = [result for result in off_loop(_results, host, run_id) if _party(result) == 3]
@@ -445,7 +445,7 @@ class TestWhichCasesAreReJudged:
             await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, result_ids=[top.id])
         assert judge.calls == []
 
-    async def test_fewer_than_two_repeats_is_refused(self):
+    async def test_fewer_than_two_repeats_is_refused(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
 
@@ -455,7 +455,7 @@ class TestWhichCasesAreReJudged:
 
 
 class TestAClientThatIgnoresTemperature:
-    async def test_a_judge_whose_stored_scores_record_no_temperature_sent_is_refused_before_any_spend(self):
+    async def test_a_judge_whose_stored_scores_record_no_temperature_sent_is_refused_before_any_spend(self) -> None:
         judge = _Judge(sends=None)
         host, run_id = await _judged_run(judge)
         assert {result.judge_score(_DIM).judge_temperature for result in off_loop(_results, host, run_id)} == {  # type: ignore[union-attr]
@@ -467,7 +467,7 @@ class TestAClientThatIgnoresTemperature:
         assert judge.calls == []
         assert off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge") == []
 
-    async def test_a_client_that_drops_the_temperature_at_call_time_makes_the_comparison_not_comparable(self):
+    async def test_a_client_that_drops_the_temperature_at_call_time_makes_the_comparison_not_comparable(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         judge.sends = None  # from here the client sends none whatever it is asked, and says so
@@ -488,7 +488,7 @@ class TestAClientThatIgnoresTemperature:
         TypeError,
         why="the test drives a completion with no temperature into the comparison job: CompletionProtocolDefect, a TypeError, is the failure it asserts",
     )
-    async def test_a_client_that_reports_no_temperature_fails_the_comparison_naming_the_protocol(self):
+    async def test_a_client_that_reports_no_temperature_fails_the_comparison_naming_the_protocol(self) -> None:
         """Not two "unrecorded" settings read as a comparison, nor every call failed one by one: the host's completion
         type breaks the protocol, so the comparison's job fails at the first call, naming the check."""
         judge = _Judge()
@@ -519,7 +519,7 @@ class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
     run's scores. A judge REPEAT, whose answers pair with the run's, still refuses such a run.
     """
 
-    async def test_a_run_with_older_settings_is_compared_at_the_forced_temperatures(self):
+    async def test_a_run_with_older_settings_is_compared_at_the_forced_temperatures(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge, judge_asked_settings=_PRE_STRICT_SETTINGS)
         with pytest.raises(ValidationFailedError):
@@ -533,7 +533,7 @@ class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
         assert sent.count(DEFAULT_JUDGE_TEMPERATURE) == sent.count(None) == 3 * 2
         assert [read.recorded for read in comparison.settings] == [["0"], [MODEL_DEFAULT_TEMPERATURE]]
 
-    async def test_a_run_whose_template_was_edited_since_is_still_refused(self):
+    async def test_a_run_whose_template_was_edited_since_is_still_refused(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge, judge_asked_settings=_PRE_STRICT_SETTINGS)
         run = off_loop(host.storage.load_eval_run, run_id, _SCOPE)
@@ -549,7 +549,7 @@ class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
             await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
         assert judge.calls == []
 
-    async def test_a_run_that_recorded_no_request_settings_is_still_refused(self):
+    async def test_a_run_that_recorded_no_request_settings_is_still_refused(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge, judge_asked_settings=None)
 
@@ -559,7 +559,7 @@ class TestARunAskedWithOtherSettingsIsReplayedAsRecorded:
 
 
 class TestEveryCallIsMetered:
-    async def test_every_call_is_a_ledger_row_under_judge_stamped_with_the_run(self):
+    async def test_every_call_is_a_ledger_row_under_judge_stamped_with_the_run(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
 
@@ -573,7 +573,7 @@ class TestEveryCallIsMetered:
         assert comparison.cost_usd == pytest.approx(sum(row.cost_usd or 0 for row in rows))
         assert comparison.cap_usd == 1.0
 
-    async def test_the_estimate_prices_every_attempt_of_both_sides_and_calls_nothing(self):
+    async def test_the_estimate_prices_every_attempt_of_both_sides_and_calls_nothing(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
 
@@ -586,7 +586,7 @@ class TestEveryCallIsMetered:
         assert estimate.would_start and estimate.refusal is None
         assert "would start" in estimate.render()
 
-    async def test_a_cent_under_the_cap_nothing_is_called_and_nothing_is_ledgered(self):
+    async def test_a_cent_under_the_cap_nothing_is_called_and_nothing_is_ledgered(self) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         total = 2 * 3 * 2 * JUDGE_CALL_ATTEMPTS * _CEILING
@@ -605,7 +605,9 @@ class TestEveryCallIsMetered:
 
 
 class TestTheCommandLine:
-    async def test_one_command_prices_it_then_runs_it_under_the_cap_it_names(self, capsys: pytest.CaptureFixture[str]):
+    async def test_one_command_prices_it_then_runs_it_under_the_cap_it_names(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         argv = ["judge-temperature", run_id, "--scope", _SCOPE, "--max-cost-usd", "1", "--repeats", "2"]
@@ -619,7 +621,7 @@ class TestTheCommandLine:
         assert printed["comparable"] is True and printed["calls_made"] == 2 * 3 * 2
         assert len(off_loop(host.storage.query_out_of_run_spend, _SCOPE, purpose="judge")) == 2 * 3 * 2
 
-    async def test_a_cap_is_named_or_waived_out_loud(self, capsys: pytest.CaptureFixture[str]):
+    async def test_a_cap_is_named_or_waived_out_loud(self, capsys: pytest.CaptureFixture[str]) -> None:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
 

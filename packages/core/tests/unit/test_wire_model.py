@@ -56,4 +56,4 @@ def test_a_subclass_config_merges_with_tolerance() -> None:
     model = _FrozenDoor.model_validate({"sql": "x", "new": 1})
     assert model.sql == "x"
     with pytest.raises(ValidationError):
-        model.sql = "y"  # type: ignore[misc]
+        model.sql = "y"

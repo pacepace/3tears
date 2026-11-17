@@ -107,7 +107,7 @@ def without_client() -> Iterator[None]:
     saved = sys.modules.copy()
     saved_path = sys.meta_path[:]
     _purge(("threetears", *_CLIENT_DISTS))
-    sys.meta_path.insert(0, _BlockedFinder(_CLIENT_DISTS))  # type: ignore[arg-type]
+    sys.meta_path.insert(0, _BlockedFinder(_CLIENT_DISTS))
     try:
         yield
     finally:

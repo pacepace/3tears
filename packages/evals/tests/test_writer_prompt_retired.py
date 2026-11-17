@@ -27,7 +27,7 @@ GENERATION_PATH = (
 WRITER_NAMES = frozenset({"ANALYSIS_GEN_PROMPT", "EVAL_ANALYSIS_GEN_DEFAULT", "generate_analysis", "gen_prompt"})
 
 
-def test_a_generation_names_no_prompt_of_its_own():
+def test_a_generation_names_no_prompt_of_its_own() -> None:
     """``analysis_generate`` writes with the analyst skill the package ships, so its settings name no prompt at all."""
     generation = AnalysisGeneration(budget_s=1.0)
 
@@ -39,7 +39,7 @@ def test_a_generation_names_no_prompt_of_its_own():
 
 
 @pytest.mark.parametrize("relative", GENERATION_PATH)
-def test_no_module_on_the_generation_path_names_the_writers_prompt_or_entry_point(relative: str):
+def test_no_module_on_the_generation_path_names_the_writers_prompt_or_entry_point(relative: str) -> None:
     tree = ast.parse((SOURCE_ROOT / relative).read_text(encoding="utf-8"))
     named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     named |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}

@@ -70,7 +70,7 @@ class TestAddGrant:
                 permission="product.conversations.read",
             )
         finally:
-            McpToolGrantCollection.entity_class = original_property  # type: ignore[assignment]
+            McpToolGrantCollection.entity_class = original_property  # type: ignore[method-assign]
 
         coll.save_entity.assert_awaited_once()
         assert len(captured) == 1
@@ -114,7 +114,7 @@ class TestAddGrant:
                 permission="p",
             )
         finally:
-            McpToolGrantCollection.entity_class = original_property  # type: ignore[assignment]
+            McpToolGrantCollection.entity_class = original_property  # type: ignore[method-assign]
 
         assert captured[0]["grant_id"] != captured[1]["grant_id"]
 
@@ -223,6 +223,6 @@ class TestLoadAllGrants:
     async def test_load_all_grants_raises_when_l3_pool_unconfigured(self) -> None:
         """unset l3_pool fails closed with a clear RuntimeError."""
         coll = McpToolGrantCollection.__new__(McpToolGrantCollection)
-        coll.l3_pool = None  # type: ignore[assignment]
+        coll.l3_pool = None
         with pytest.raises(RuntimeError, match="L3 pool"):
             await coll.load_all_grants()

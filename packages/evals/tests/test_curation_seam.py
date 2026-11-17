@@ -23,17 +23,15 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from threetears.evals.analysis import campaigns
-from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
-from threetears.evals.run import curation
-from threetears.evals.kernel.storage import EvalStorage
-from packages.evals.tests.factories import make_aspect_campaign
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm
+from threetears.evals.kernel.errors import NotFoundError, StorageError, ValidationFailedError
+from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.run import curation
 
+from packages.evals.tests.factories import make_aspect_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-
 
 SCOPE = "uni-1"
 
@@ -75,7 +73,7 @@ def _run(run_id: str = "doomed", *, status: str = "completed") -> Any:
 
 
 @pytest.mark.parametrize("confirm", [None, "", "yes", "DOOMED", "doome"])
-def test_confirmation_refuses_anything_that_is_not_the_id(confirm):
+def test_confirmation_refuses_anything_that_is_not_the_id(confirm) -> None:
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.require_delete_confirmation("run", "doomed", confirm)
     # The refusal names the id to echo, so the caller can act on it without
@@ -83,25 +81,25 @@ def test_confirmation_refuses_anything_that_is_not_the_id(confirm):
     assert "confirm='doomed'" in excinfo.value.remedy
 
 
-def test_confirmation_accepts_the_echoed_id_ignoring_surrounding_whitespace():
+def test_confirmation_accepts_the_echoed_id_ignoring_surrounding_whitespace() -> None:
     curation.require_delete_confirmation("run", "doomed", "  doomed  ")
 
 
-def test_confirmation_defaults_to_offering_the_archive_alternative():
+def test_confirmation_defaults_to_offering_the_archive_alternative() -> None:
     """The default is what every archivable eval object should keep saying."""
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.require_delete_confirmation("run", "doomed", None)
     assert "archive it instead to exclude it from cohorts without destroying it" in excinfo.value.remedy
 
 
-def test_confirmation_names_the_cascade_when_one_is_supplied():
+def test_confirmation_names_the_cascade_when_one_is_supplied() -> None:
     """A caller told only the id is weighing the wrong object."""
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.require_delete_confirmation("case", "doomed", None, cascade="and its 4 stored eval results")
     assert "deleting case 'doomed' and its 4 stored eval results is unrecoverable" in str(excinfo.value.message)
 
 
-def test_the_archivable_set_named_by_the_default_alternative_matches_the_models():
+def test_the_archivable_set_named_by_the_default_alternative_matches_the_models() -> None:
     """The default refusal says "archive it instead"; these are the objects that can.
 
     A canary rather than a comment, because a comment naming a set goes stale the first
@@ -125,7 +123,7 @@ def test_the_archivable_set_named_by_the_default_alternative_matches_the_models(
     assert not any("archived" in model.model_fields for model in not_archivable)
 
 
-def test_a_refused_result_delete_is_pointed_at_the_run_archive_not_a_result_one():
+def test_a_refused_result_delete_is_pointed_at_the_run_archive_not_a_result_one() -> None:
     """There is no per-result archive; the reversible move exists one level up."""
     storage = _storage_double()
     result = MagicMock()
@@ -140,7 +138,7 @@ def test_a_refused_result_delete_is_pointed_at_the_run_archive_not_a_result_one(
     assert "there is no per-result archive" in message
 
 
-def test_a_refused_insight_delete_is_not_offered_an_archive_that_does_not_exist():
+def test_a_refused_insight_delete_is_not_offered_an_archive_that_does_not_exist() -> None:
     """An insight has no archive, and the refusal says why rather than implying a gap.
 
     The ANALYSIS shown false is archived, and the insights it minted are deleted. So delete
@@ -158,7 +156,7 @@ def test_a_refused_insight_delete_is_not_offered_an_archive_that_does_not_exist(
     assert "archive it instead to exclude it from cohorts" not in message
 
 
-def test_confirmation_takes_a_replacement_alternative_for_an_unarchivable_object():
+def test_confirmation_takes_a_replacement_alternative_for_an_unarchivable_object() -> None:
     """Pointing a refused caller at a surface the object does not have is worse than silence."""
     with pytest.raises(ValidationFailedError) as excinfo:
         curation.require_delete_confirmation("case", "doomed", None, alternative="edit it in place")
@@ -172,7 +170,7 @@ def test_confirmation_takes_a_replacement_alternative_for_an_unarchivable_object
 # ---------------------------------------------------------------------------
 
 
-def test_delete_run_destroys_results_before_the_run_document():
+def test_delete_run_destroys_results_before_the_run_document() -> None:
     """Order matters: a run that outlived its results is recoverable state; results
     that outlived their run are unreadable rows that still enter every aggregate.
     """
@@ -188,7 +186,7 @@ def test_delete_run_destroys_results_before_the_run_document():
     assert removed == {"run_id": "doomed", "results_deleted": 1, "campaigns_detached": []}
 
 
-def test_delete_run_refuses_a_live_run_and_destroys_nothing():
+def test_delete_run_refuses_a_live_run_and_destroys_nothing() -> None:
     storage = _storage_double()
 
     with pytest.raises(ValidationFailedError):
@@ -198,7 +196,7 @@ def test_delete_run_refuses_a_live_run_and_destroys_nothing():
     storage.delete_eval_run.assert_not_called()
 
 
-def test_a_failed_result_delete_leaves_the_run_document_alone():
+def test_a_failed_result_delete_leaves_the_run_document_alone() -> None:
     storage = _storage_double()
     storage.query_eval_result_ids_by_run.return_value = ["res-1"]
     storage.delete_eval_result.return_value = False
@@ -209,7 +207,7 @@ def test_a_failed_result_delete_leaves_the_run_document_alone():
     storage.delete_eval_run.assert_not_called()
 
 
-def test_a_refused_result_delete_names_its_cause_and_leaves_the_run_alone():
+def test_a_refused_result_delete_names_its_cause_and_leaves_the_run_alone() -> None:
     """#650: a result kept because its trace survived is a failed cascade, not a clean one."""
     storage = _storage_double()
     storage.query_eval_result_ids_by_run.return_value = ["res-kept", "res-gone"]
@@ -228,7 +226,7 @@ def test_a_refused_result_delete_names_its_cause_and_leaves_the_run_alone():
     storage.delete_eval_run.assert_not_called()
 
 
-def test_delete_insight_loads_its_own_target_and_raises_when_absent():
+def test_delete_insight_loads_its_own_target_and_raises_when_absent() -> None:
     """The one delete with no service read helper in front of it, so the
     not-found check lives here rather than at the call site.
     """
@@ -241,7 +239,7 @@ def test_delete_insight_loads_its_own_target_and_raises_when_absent():
     storage.delete_insight.assert_not_called()
 
 
-def test_detaching_an_unattached_run_is_refused_before_any_write():
+def test_detaching_an_unattached_run_is_refused_before_any_write() -> None:
     storage = _storage_double()
     storage.load_campaign.return_value = make_aspect_campaign(run_ids=["r1"])
 
@@ -251,7 +249,7 @@ def test_detaching_an_unattached_run_is_refused_before_any_write():
     storage.save_campaign.assert_not_called()
 
 
-def test_detaching_the_run_a_control_was_declared_from_is_no_longer_refused():
+def test_detaching_the_run_a_control_was_declared_from_is_no_longer_refused() -> None:
     """The guard this path used to carry is GONE, and its absence is the deliverable.
 
     While the control was a run id, detaching that run left the campaign pointing at a
@@ -274,7 +272,7 @@ def test_detaching_the_run_a_control_was_declared_from_is_no_longer_refused():
     storage.save_campaign.assert_called_once_with(detached)
 
 
-def test_detaching_a_run_leaves_the_declaration_untouched():
+def test_detaching_a_run_leaves_the_declaration_untouched() -> None:
     """Membership and the declaration are two facts, and this path writes only the first."""
     campaign = _controlled(["ctl", "cell", "stray"], "b" * 64)
     storage = _storage_double()
@@ -292,7 +290,7 @@ def test_detaching_a_run_leaves_the_declaration_untouched():
     )
 
 
-def test_deleting_a_run_detaches_membership_and_leaves_the_declared_control_alone():
+def test_deleting_a_run_detaches_membership_and_leaves_the_declared_control_alone() -> None:
     """The cascade's control-clearing branch is gone for the same reason the detach guard is.
 
     It existed so destroying a run could not leave a designation pointing at an id that no
@@ -316,7 +314,7 @@ def test_deleting_a_run_detaches_membership_and_leaves_the_declared_control_alon
     assert saved.control is not None and saved.control.variant_key == "c" * 64
 
 
-def test_archiving_a_run_already_in_the_target_state_writes_nothing():
+def test_archiving_a_run_already_in_the_target_state_writes_nothing() -> None:
     storage = _storage_double()
     current = MagicMock()
     current.archived = True

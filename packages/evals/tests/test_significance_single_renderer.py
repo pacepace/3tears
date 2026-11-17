@@ -13,7 +13,7 @@ from pathlib import Path
 from threetears.evals.analysis import significance as _significance
 
 
-def test_no_module_writes_the_reader_facing_significance_words_for_itself():
+def test_no_module_writes_the_reader_facing_significance_words_for_itself() -> None:
     """`format_significance` claims to be the only server-side renderer; keep it true.
 
     The claim went into its docstring while a fourth hand-written copy was still

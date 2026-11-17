@@ -212,7 +212,7 @@ class TestTheSpendLensesFoldTheFiguresAsTheResultsFoldThem:
         read, store = built("enriched")
         storage = _RecordsGroupedReads(EvalStorage(store))
 
-        program_budget(storage, read.scope_id, list_runs=_lister(read))  # type: ignore[arg-type]
+        program_budget(storage, read.scope_id, list_runs=_lister(read))
 
         assert storage.groupings == [
             ((), ("eval_run_id", "cost_usd", "judge_rescores", "cost_roles", "schema_version", "schema_minor"))

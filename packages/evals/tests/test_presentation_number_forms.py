@@ -189,7 +189,7 @@ def test_two_arms_that_never_varied_draw_no_interval_on_their_change() -> None:
     result = asyncio.run(
         Eval(cases, {"production": _answering(4), "zulu": _answering(2)}, [_right], k=1, name="production vs zulu").run(
             store=":memory:"
-        )  # type: ignore[dict-item]
+        )
     )
     table = _comparisons(campaign_report(result.host, result.campaign_id, result.scope_id))
     (cost,) = [row for row in table.rows if row["reading"].text.startswith("Production cost")]
@@ -626,7 +626,7 @@ def test_a_program_s_row_says_no_variation_where_the_page_does() -> None:
     result = asyncio.run(
         Eval(cases, {"production": _answering(4), "zulu": _answering(2)}, [_right], k=1, name="production vs zulu").run(
             store=":memory:"
-        )  # type: ignore[dict-item]
+        )
     )
     page = campaign_report(result.host, result.campaign_id, result.scope_id)
     (aspect,) = page.aspects

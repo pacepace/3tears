@@ -30,13 +30,10 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-
-from threetears.evals.kernel.numbers import format_number
-from threetears.evals.schema import EvalRun, JudgeDeclaration, JudgedArtifact, RubricDim
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
-from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model
-from threetears.evals.schema.models import EvalTemplate
+from threetears.evals.kernel.numbers import format_number
 from threetears.evals.run import (
+    SIMULATOR_REQUEST_SETTINGS,
     ArmPlan,
     ArmPrice,
     ArmQuote,
@@ -46,7 +43,6 @@ from threetears.evals.run import (
     LaunchPricer,
     LaunchRequest,
     LaunchSettings,
-    SIMULATOR_REQUEST_SETTINGS,
     PlannedJudge,
     build_judge_service,
     launch_as_group,
@@ -58,12 +54,16 @@ from threetears.evals.run import (
     resolve_judge_pin,
     start_run,
 )
+from threetears.evals.schema import EvalRun, JudgedArtifact, JudgeDeclaration, RubricDim
+from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model
+from threetears.evals.schema.models import EvalTemplate
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.factories import make_judge_config
 from packages.evals.tests.fixtures.toyhost.contract import TOY_EXTRACTOR_CONTRACT
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_COST_CEILING_USD, TOYHOST_SCOPE, TOYHOST_SUBJECT
-from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.host import with_registry
+from packages.evals.tests.fixtures.toyhost.kind import TOY_EXTRACTOR_KIND, ToyExtractorKind
 from packages.evals.tests.fixtures.toyhost.launch import (
     TOYHOST_LAUNCH_SETTINGS,
     plan_toyhost_arm,
@@ -139,7 +139,7 @@ def _at(usd: float | None, basis: str = "a rate card") -> LaunchPricer:
 # =============================================================================
 
 
-async def test_a_stored_case_arm_is_quoted_from_its_plan_before_its_launcher_runs():
+async def test_a_stored_case_arm_is_quoted_from_its_plan_before_its_launcher_runs() -> None:
     launched = off_loop(_Launched)
     (launchable,) = launched.host.kinds.values()
     assert "n_variations" in launchable.unhonoured_launch_arguments and launchable.plan_arm is not None, (
@@ -157,7 +157,7 @@ async def test_a_stored_case_arm_is_quoted_from_its_plan_before_its_launcher_run
     assert all(request.arm_plan is not None for request in launched.launched), "the tail holds each arm to its plan"
 
 
-async def test_every_arm_is_priced_before_the_first_launcher_runs():
+async def test_every_arm_is_priced_before_the_first_launcher_runs() -> None:
     """The second arm over its cap refuses the launch before the first arm's launcher built anything."""
 
     def second_is_dear(quote: ArmQuote) -> ArmPrice:
@@ -172,7 +172,7 @@ async def test_every_arm_is_priced_before_the_first_launcher_runs():
     off_loop(launched.assert_nothing_launched)
 
 
-async def test_a_stored_case_arm_predicted_above_its_cap_is_refused_before_any_launcher_runs():
+async def test_a_stored_case_arm_predicted_above_its_cap_is_refused_before_any_launcher_runs() -> None:
     launched = off_loop(_Launched, pricer=_at(9.5, "from 3 past results"))
 
     with pytest.raises(
@@ -189,7 +189,7 @@ async def test_a_stored_case_arm_predicted_above_its_cap_is_refused_before_any_l
     off_loop(launched.assert_nothing_launched)
 
 
-async def test_a_stored_case_arm_over_a_cap_the_launch_named_is_refused_too():
+async def test_a_stored_case_arm_over_a_cap_the_launch_named_is_refused_too() -> None:
     """A named cap licenses an UNPRICED arm; one predicted above it is refused all the same."""
     launched = off_loop(_Launched, pricer=_at(2.0))
 
@@ -199,7 +199,7 @@ async def test_a_stored_case_arm_over_a_cap_the_launch_named_is_refused_too():
     off_loop(launched.assert_nothing_launched)
 
 
-async def test_a_cap_figure_a_hair_over_its_cap_never_prints_equal_to_it():
+async def test_a_cap_figure_a_hair_over_its_cap_never_prints_equal_to_it() -> None:
     """In cents, $1.503 over a $1.50 cap read "predicted to cost $1.50 (...), above its $1.50 cap"."""
     launched = off_loop(_Launched, pricer=_at(1.503))
 
@@ -209,7 +209,7 @@ async def test_a_cap_figure_a_hair_over_its_cap_never_prints_equal_to_it():
     off_loop(launched.assert_nothing_launched)
 
 
-async def test_a_cap_over_the_hosts_tells_the_operator_only_the_host_can_raise_it():
+async def test_a_cap_over_the_hosts_tells_the_operator_only_the_host_can_raise_it() -> None:
     """An arm over the host's own ceiling is not told "a larger max_cost_usd raises the cap" — a launch cannot."""
     launched = off_loop(_Launched, pricer=_at(9.0))
 
@@ -228,7 +228,7 @@ async def test_a_cap_over_the_hosts_tells_the_operator_only_the_host_can_raise_i
 _ABOVE_THE_HOSTS_USD = TOYHOST_COST_CEILING_USD + 0.5
 
 
-async def test_a_launch_naming_a_cap_above_the_hosts_is_refused_before_anything_is_priced():
+async def test_a_launch_naming_a_cap_above_the_hosts_is_refused_before_anything_is_priced() -> None:
     launched = off_loop(_Launched)
 
     with pytest.raises(ValidationFailedError, match=f"max_cost_usd={_ABOVE_THE_HOSTS_USD} is above the host's ceiling"):
@@ -241,7 +241,7 @@ async def test_a_launch_naming_a_cap_above_the_hosts_is_refused_before_anything_
     assert {(run.max_cost_usd, run.max_cost_usd_origin) for run in runs} == {(TOYHOST_COST_CEILING_USD, "chosen")}
 
 
-async def test_a_launch_naming_a_metered_ceiling_above_the_hosts_is_refused():
+async def test_a_launch_naming_a_metered_ceiling_above_the_hosts_is_refused() -> None:
     launched = off_loop(_Launched)
     above = (TOYHOST_LAUNCH_SETTINGS.max_metered_calls or 0) + 1
 
@@ -251,7 +251,7 @@ async def test_a_launch_naming_a_metered_ceiling_above_the_hosts_is_refused():
     off_loop(launched.assert_nothing_launched)
 
 
-async def test_the_lower_only_rule_holds_with_enforcement_off():
+async def test_the_lower_only_rule_holds_with_enforcement_off() -> None:
     """The argument's contract does not change with the host's enforcement switch."""
     launched = off_loop(_Launched, settings=TOYHOST_LAUNCH_SETTINGS.model_copy(update={"enforcement_enabled": False}))
 
@@ -261,7 +261,7 @@ async def test_the_lower_only_rule_holds_with_enforcement_off():
     off_loop(launched.assert_nothing_launched)
 
 
-async def test_a_quote_naming_a_cap_above_the_hosts_is_refused():
+async def test_a_quote_naming_a_cap_above_the_hosts_is_refused() -> None:
     launched = off_loop(_Launched)
 
     with pytest.raises(ValidationFailedError, match="a launch may only lower the host's ceiling"):
@@ -288,7 +288,7 @@ async def test_a_quote_naming_a_cap_above_the_hosts_is_refused():
 )
 async def test_an_unpriceable_stored_case_arm_is_refused_under_an_inherited_cap_and_runs_under_a_chosen_one(
     unpriceable, said
-):
+) -> None:
     launched = off_loop(_Launched, **unpriceable)
 
     with pytest.raises(
@@ -302,7 +302,7 @@ async def test_an_unpriceable_stored_case_arm_is_refused_under_an_inherited_cap_
     assert [(run.max_cost_usd, run.max_cost_usd_origin) for run in runs] == [(1.5, "chosen")] * len(RUN_MODELS)
 
 
-async def test_with_enforcement_off_no_arm_is_priced_and_every_arm_is_still_planned():
+async def test_with_enforcement_off_no_arm_is_priced_and_every_arm_is_still_planned() -> None:
     def refuses(_quote: ArmQuote) -> ArmPrice:
         raise AssertionError("no cap is in force, so nothing is priced")
 
@@ -316,7 +316,7 @@ async def test_with_enforcement_off_no_arm_is_priced_and_every_arm_is_still_plan
     assert all(request.arm_plan is not None for request in launched.launched)
 
 
-async def test_a_stored_case_arm_freezing_more_cases_than_its_plan_is_refused_at_the_tail():
+async def test_a_stored_case_arm_freezing_more_cases_than_its_plan_is_refused_at_the_tail() -> None:
     """It was priced at its plan's count, so it may run fewer, never more."""
 
     def plans_one(request: LaunchRequest) -> ArmPlan:
@@ -333,7 +333,7 @@ async def test_a_stored_case_arm_freezing_more_cases_than_its_plan_is_refused_at
     assert off_loop(launched.storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
-async def test_an_arm_its_kind_cannot_plan_is_refused_before_its_launcher_runs():
+async def test_an_arm_its_kind_cannot_plan_is_refused_before_its_launcher_runs() -> None:
     launched = off_loop(_Launched)
 
     with pytest.raises(ValidationFailedError, match="has no default candidate model; name one"):
@@ -463,7 +463,7 @@ class _Judged:
         return await start_run(self.host, scope_id=TOYHOST_SCOPE, subject_id=TOYHOST_SUBJECT.subject_id, **launched)
 
 
-def test_plan_judge_resolves_the_model_each_dim_is_scored_by_as_the_judge_service_does():
+def test_plan_judge_resolves_the_model_each_dim_is_scored_by_as_the_judge_service_does() -> None:
     """A dim whose config names its own model is scored by that model, whatever the run-level pin."""
     judged = _Judged(judge="configured")
     config = make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=_DIM, model="judge-dear")
@@ -487,7 +487,7 @@ def test_plan_judge_resolves_the_model_each_dim_is_scored_by_as_the_judge_servic
         )
 
 
-async def test_an_arm_is_quoted_with_the_judges_its_plan_resolved():
+async def test_an_arm_is_quoted_with_the_judges_its_plan_resolved() -> None:
     judged = off_loop(_Judged, judge="configured")
     config = make_judge_config(scope_id=TOYHOST_SCOPE, rubric_dim_id=_DIM, model="judge-dear")
     off_loop(judged.storage.save_judge_config, config)
@@ -503,7 +503,7 @@ async def test_an_arm_is_quoted_with_the_judges_its_plan_resolved():
             await asyncio.sleep(0.01)
 
 
-async def test_an_arm_whose_launcher_wires_other_judges_than_its_plan_is_refused_at_the_tail():
+async def test_an_arm_whose_launcher_wires_other_judges_than_its_plan_is_refused_at_the_tail() -> None:
     judged = off_loop(_Judged, plan_judge_model="judge-planned")
 
     with pytest.raises(ValueError, match="planned this arm judged by .*judge-planned.* and its launcher wired"):
@@ -512,7 +512,7 @@ async def test_an_arm_whose_launcher_wires_other_judges_than_its_plan_is_refused
     assert off_loop(judged.storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
-async def test_an_arm_whose_launcher_resolves_another_simulator_than_its_plan_is_refused_at_the_tail():
+async def test_an_arm_whose_launcher_resolves_another_simulator_than_its_plan_is_refused_at_the_tail() -> None:
     judged = off_loop(_Judged, wired_simulator="sim-unplanned")
 
     with pytest.raises(
@@ -523,7 +523,7 @@ async def test_an_arm_whose_launcher_resolves_another_simulator_than_its_plan_is
     assert off_loop(judged.storage.query_eval_runs, TOYHOST_SCOPE) == []
 
 
-async def test_a_run_launched_with_a_simulated_user_records_how_it_was_asked():
+async def test_a_run_launched_with_a_simulated_user_records_how_it_was_asked() -> None:
     """The stamp is the one value the host's simulator client applies, read back from storage whole — an effort level
     included, since that is what the simulated user is asked with."""
     judged = off_loop(_Judged, wired_simulator="sim-a", planned_simulator="sim-a")
@@ -539,7 +539,7 @@ async def test_a_run_launched_with_a_simulated_user_records_how_it_was_asked():
     assert stored.simulator_asked_settings.reasoning_effort == "low"
 
 
-async def test_a_plan_contradicting_the_launchs_judge_pin_is_refused_before_any_arm_is_priced():
+async def test_a_plan_contradicting_the_launchs_judge_pin_is_refused_before_any_arm_is_priced() -> None:
     judged = off_loop(_Judged, plan_judge_model="judge-planned")
 
     with pytest.raises(ValueError, match="pinned to judge 'judge-named' under 'judge-planned'"):
@@ -553,7 +553,7 @@ async def test_a_plan_contradicting_the_launchs_judge_pin_is_refused_before_any_
 # =============================================================================
 
 
-async def test_a_kinds_plan_refusal_comes_before_cannot_be_priced_on_a_host_that_prices_nothing():
+async def test_a_kinds_plan_refusal_comes_before_cannot_be_priced_on_a_host_that_prices_nothing() -> None:
     """The operator who forgot a model hears that, not "cannot be priced — name max_cost_usd"."""
     launched = off_loop(_Launched, priced=False)
 
@@ -564,7 +564,7 @@ async def test_a_kinds_plan_refusal_comes_before_cannot_be_priced_on_a_host_that
     off_loop(launched.assert_nothing_launched)
 
 
-async def test_an_arm_of_a_kind_that_plans_nothing_is_told_its_launch_may_be_missing_more():
+async def test_an_arm_of_a_kind_that_plans_nothing_is_told_its_launch_may_be_missing_more() -> None:
     launched = off_loop(_Launched, plan=None)
 
     with pytest.raises(
@@ -575,7 +575,7 @@ async def test_an_arm_of_a_kind_that_plans_nothing_is_told_its_launch_may_be_mis
     off_loop(launched.assert_nothing_launched)
 
 
-async def test_a_quote_reports_every_outcome_the_rule_can_reach_and_launches_nothing():
+async def test_a_quote_reports_every_outcome_the_rule_can_reach_and_launches_nothing() -> None:
     unpriced = off_loop(_Launched, pricer=_at(None, "nothing to go on"))
     chosen = await quote_launch(
         unpriced.host,
@@ -621,7 +621,7 @@ async def test_a_quote_reports_every_outcome_the_rule_can_reach_and_launches_not
         ({"predicted_usd": 2.0, "central_usd": 1.0, "band_high_usd": 0.5, "basis": "b"}, "band's own upper end"),
     ],
 )
-def test_an_arm_price_refuses_a_range_out_of_order(bad, said):
+def test_an_arm_price_refuses_a_range_out_of_order(bad, said) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPrice(**bad)
     assert ArmPrice(predicted_usd=2.0, central_usd=1.0, low_usd=0.5, basis="b").central_usd == 1.0
@@ -632,7 +632,7 @@ def test_an_arm_price_refuses_a_range_out_of_order(bad, said):
 # =============================================================================
 
 
-async def test_a_launch_composed_through_launch_as_group_must_price_its_arms():
+async def test_a_launch_composed_through_launch_as_group_must_price_its_arms() -> None:
     launched = off_loop(_Launched)
     host = launched.host
     (launchable,) = host.kinds.values()
@@ -699,7 +699,7 @@ async def _judged_run(judged: _Judged, **arguments: Any) -> EvalRun:
     return runs[0]
 
 
-async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate():
+async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate() -> None:
     judged = off_loop(_Judged, role_default=RUN_MODELS[0], alternate="judge-alternate")
 
     run = await _judged_run(judged)
@@ -740,7 +740,7 @@ async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate()
     ],
     ids=["default-not-a-candidate", "named-judge-on-a-candidate", "no-alternate", "alternate-is-a-candidate"],
 )
-async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(judged, arguments, judge, origin):
+async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(judged, arguments, judge, origin) -> None:
     run = await _judged_run(off_loop(_Judged, **judged), **arguments)
 
     assert run.judge_model == judge
@@ -750,7 +750,7 @@ async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(jud
     assert (shared == {_DIM: judge}) == (judge == RUN_MODELS[0]), "an overlap left in place is disclosed"
 
 
-async def test_a_launcher_that_keeps_a_candidate_judge_where_an_alternate_stood_ready_is_refused_at_the_tail():
+async def test_a_launcher_that_keeps_a_candidate_judge_where_an_alternate_stood_ready_is_refused_at_the_tail() -> None:
     judged = off_loop(
         _Judged,
         role_default=RUN_MODELS[0],

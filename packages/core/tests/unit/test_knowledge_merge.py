@@ -362,7 +362,7 @@ class TestEntryEnforcementPassThrough:
             note="n",
         )
         with pytest.raises((TypeError, ValueError)):
-            rule.table = "other"  # type: ignore[misc]
+            rule.table = "other"
 
     def test_enforcement_round_trips_through_model_dump(self) -> None:
         rule = EntryEnforcement(

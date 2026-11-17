@@ -49,7 +49,7 @@ class _Sink(UsageAuditSink):
 
 
 def _reply(text: str = "hello", *, usage: dict[str, Any] | None = None) -> AIMessage:
-    return AIMessage(content=text, usage_metadata=usage)  # type: ignore[arg-type]
+    return AIMessage(content=text, usage_metadata=usage)
 
 
 _USAGE = {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17}
@@ -115,7 +115,7 @@ def test_scopes_nest_and_restore() -> None:
 
 def test_an_unknown_scope_field_is_refused() -> None:
     with pytest.raises(TypeError, match="customer"):
-        with usage_scope(customer=uuid4()):  # type: ignore[call-arg]
+        with usage_scope(customer=uuid4()):
             pass
 
 
