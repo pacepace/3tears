@@ -57,7 +57,9 @@ async def run_blocking[**P, T](
     return await asyncio.get_running_loop().run_in_executor(executor, call)
 
 
-async def wait_through_cancellation(work: asyncio.Future[Any]) -> bool:
+async def wait_through_cancellation(
+    work: asyncio.Future[Any], *, on_cancel: Callable[[], object] | None = None
+) -> bool:
     """Wait for ``work`` to finish even if the waiter is cancelled meanwhile.
 
     A blocking call handed to a worker cannot be interrupted, so cancelling the coroutine awaiting
@@ -68,6 +70,9 @@ async def wait_through_cancellation(work: asyncio.Future[Any]) -> bool:
 
     :param work: The future of the blocking call, typically from :func:`run_blocking`.
     :ptype work: asyncio.Future[Any]
+    :param on_cancel: Called each time a cancellation aimed at the waiter arrives, before the wait goes on: what the
+        waiter does about it meanwhile (cut the work short, say), so a cancel is acted on without abandoning the work.
+    :ptype on_cancel: Callable[[], object] | None
 
 
     Not the same contract as the job manager's terminal-status write (:mod:`threetears.evals.run.jobs`), on purpose:
@@ -90,6 +95,8 @@ async def wait_through_cancellation(work: asyncio.Future[Any]) -> bool:
             await asyncio.wait({work})
         except asyncio.CancelledError:
             cancelled = True
+            if on_cancel is not None:
+                on_cancel()
     if work.cancelled():
         raise asyncio.CancelledError
     return cancelled

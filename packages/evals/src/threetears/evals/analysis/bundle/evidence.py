@@ -365,6 +365,8 @@ _RESULT_NOT: Final[Mapping[str, str]] = {
     "scope_id": "stated once, in the declaration",
     "lease_epoch": "which job lease wrote it: the engine's bookkeeping",
     "has_trace": "whether a trace is still kept beside it, which retention decides and the trial did not record",
+    "account_refused": "whether the account paying for the call refused it, whose words the trial records as its "
+    "infra_error, which is evidence",
 }
 
 #: A level: held by its content hash alone, which digests its value. How a page shows it is presentation.

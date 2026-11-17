@@ -357,7 +357,7 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
 - **Why it holds.** Run again into the same store, the comparison continues: the invoices already run are read as they
   ran, and only the ones you added run. The print says so, last: `Continues the comparison run before under this
   name: ...`. Each pass rate, and each score on its declared range, is read by a bet whose stakes depend on no count
-  of cases declared ahead: a mixture of fixed betting fractions over the cases in the order they were completed. A
+  of cases declared ahead: a mixture of fixed betting fractions over the cases in an order fixed before any answer. A
   reading after you add cases is the same bet read later, so stopping when it first tells the arms apart keeps the
   error it states.
 - **What starts a new comparison.** Change an arm's name, model or levers, the control, a grader's name or what it
@@ -370,12 +370,16 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
   prompt or a grader's code, give the eval a new `name=` (or another scope or store) to compare it afresh. A store kept
   in memory (`store=":memory:"`) keeps nothing between runs, so each run there is a new comparison, and the line under
   the first line says so in place of the one above.
-- **A run that stopped.** A run stopped by its cost cap, a replay miss or a cancel is kept as it ran: every answer it
-  recorded counts, and running it again (with the cap raised) runs only what it never recorded, a case's missing arms
-  and repeats as well as the cases it never reached, and the comparison finishes. The bet reads a case once every arm
-  and repeat of it is recorded, in the order the cases were completed, so every reading is the one bet read later.
-  That is valid if a case's latency does not depend on its outcome: where wrong answers take longer, which cases a
-  stop finds complete depends on the answers, and the error stated is not guaranteed.
+- **A run that stopped.** A run stopped by its cost cap, a replay miss or an interrupt is kept as it ran: every answer
+  it recorded counts, and running it again (with the cap raised) runs only what it never recorded, a case's missing
+  arms and repeats as well as the cases it never reached, and the comparison finishes. Interrupt it once (Ctrl+C) and
+  it starts no further case, lets the cells in flight finish, and keeps them; interrupt it again to stop at once, and
+  the cells it cut run again next time, which the print counts.
+- **Why a stop keeps the error.** The order the cases are read in is fixed before any answer: each run's new cases are
+  shuffled once and appended. Each run plays its cases one at a time in that order, every arm and repeat of a case
+  together, and the bet reads the longest run of cases from the start of the order that are complete on every arm and
+  repeat. Every reading is that one sequence read further, so stopping whenever you like, after watching whatever you
+  like, keeps the error it states, however fast or slow each arm answers.
 - **What it costs.** Read once, it tells the arms apart a little later than a test fixed for that many cases would:
   its intervals are somewhat wider. That is the price of reading again freely.
 - **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at

@@ -61,6 +61,7 @@ from typing import Any, Literal, NamedTuple, Protocol, cast
 from pydantic import Field
 
 from threetears.evals.kernel.numbers import round_half_even
+from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.kernel.campaign import EvalSweep
 from threetears.evals.kernel.errors import ConflictError, NotFoundError, ValidationFailedError
 from threetears.evals.kernel.host.profile import HostProfile
@@ -88,7 +89,6 @@ from threetears.evals.schema.job_lease import JobLease, JobLoss
 from threetears.evals.schema.logs import get_logger
 from threetears.evals.schema.models import (
     TERMINAL_RUN_STATUSES,
-    EvalResult,
     EvalRun,
     EvalRunStatus,
     EvalTemplate,
@@ -217,12 +217,6 @@ _UNPINNED_FIELDS: frozenset[str] = frozenset(
 _PINNED_FIELDS: tuple[str, ...] = tuple(name for name in EvalRun.model_fields if name not in _UNPINNED_FIELDS)
 
 
-def _run_again(row: EvalResult) -> bool:
-    """Whether a stored row's cell runs again when its run is taken up: an attempt the run abandoned, or one whose call
-    the account or the model's provider turned away, which a funded account or a served model would have answered."""
-    return row.termination == "cancelled" or row.account_refused or row.model_unserved
-
-
 @dataclass(frozen=True)
 class _StoredRows:
     """What a take-up keeps of a run's stored rows, read a page at a time: each row as a :class:`StoredCell`, every one
@@ -262,7 +256,7 @@ def _stored_rows(storage: EvalStorage, run: EvalRun) -> _StoredRows:
     for row in iter_run_results(storage, run, page_results=RUN_RESULTS_PAGE):
         cell = StoredCell.from_result(row)
         every.append(cell)
-        (again if _run_again(row) else done).append(cell)
+        (again if runs_again(row) else done).append(cell)
     return _StoredRows(every=tuple(every), done=tuple(done), again=tuple(again))
 
 

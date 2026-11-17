@@ -206,15 +206,17 @@ platform = ["packages/**"]
 # continues the comparisons it drives, changes: `testament run --no-fallback --suite simulation`. For
 # test_rereadable_bet.py, which drives `Eval.run` end to end, that is a change to ANY file under
 # packages/evals/src/threetears/evals/analysis/, quick/ or run/, or to kernel/candidate_kind.py,
-# kernel/result_condition.py or kernel/offload.py. The files the simulations are known to drive, listed so a reader
+# kernel/result_condition.py, kernel/result_reading.py or kernel/offload.py. The files the simulations are known to drive, listed so a reader
 # can check the rule covers them (under packages/evals/src/threetears/evals/):
 #   analysis/stats.py analysis/significance.py analysis/summary.py analysis/campaigns.py analysis/run_ending.py
 #   analysis/contention.py analysis/bundle/assemble.py analysis/bundle/comparisons.py analysis/bundle/trials.py
 #   analysis/bundle/observations.py
-#   kernel/candidate_kind.py kernel/result_condition.py kernel/offload.py
+#   kernel/candidate_kind.py kernel/result_condition.py kernel/result_reading.py kernel/offload.py
 #   quick/contract.py quick/result.py quick/one_call.py quick/continuation.py quick/graders.py
 #   run/launch.py run/executor.py run/runner.py run/jobs.py run/lifecycle.py run/arm_schedule.py run/budget.py
 #   run/reads.py
+# The suite's tests together outlast one pool execute window (1,800 s), so send each long one as its own request:
+# `testament run --no-fallback --suite simulation -- 'packages/evals/tests/test_rereadable_bet.py::<test>'`.
 # A path more than one suite holds runs in the unit suite, so this suite runs only when named.
 [suites.simulation]
 adapter = "pytest"

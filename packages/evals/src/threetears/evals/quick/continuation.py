@@ -20,20 +20,27 @@ campaign holds every arm's runs of both. Whether it is the same comparison is re
 - every case already run, at its place: the case set's address (``_template_id``) over the cases first run, and each
   stored case's content, label and name at its place, so a case removed, moved or edited is seen.
 
-A launch of it that did not finish (a cost cap, a replay miss, a cancel, whoever chose it and whatever they had seen)
-is kept as it ran: every result it recorded counts, and a continuation runs only the cells no launch recorded, every
-case's missing arms and repeats as well as the cases no arm reached, then the cases appended. No recorded cell is
-ever drawn again, so whether a case counts never depends on when the launch stopped, and raising the cap and running
+A launch of it that did not finish (a cost cap, a replay miss, an interrupt, whoever chose it and whatever they had
+seen) is kept as it ran: every result it recorded counts, and a continuation runs only the cells no launch recorded,
+every case's missing arms and repeats as well as the cases no arm reached, then the cases appended. A row that
+records no answer runs again, by the one rule the engine's take-up reads
+(:func:`~threetears.evals.kernel.result_condition.runs_again`): a cell a second interrupt cut, a call the account
+refused, a model the provider did not serve. No recorded answer is ever drawn again, and raising the cap and running
 again finishes the comparison.
 
-The bet reads each case once every arm has recorded every repeat of it, at the time its last cell was recorded
-(:func:`~threetears.evals.analysis.bundle.trials.bet_places`): the order a person watching the results saw the cases
-completed in, launch by launch. Every reading is then a prefix of one sequence, and a stop is a stopping time on it,
-whoever chose it and whatever they had seen of the cases read. **Valid if a case's latency does not depend on its
-outcome**: where a wrong answer takes longer than a right one, which cases a stop finds completed depends on their
-values, and no reading order restores the bound. A stop chosen on a case's partial results (one arm's answer seen
-before the other's) is outside what the order proves; the simulations in ``tests/test_rereadable_bet.py`` measure both.
-A cell a stop cut short is recorded excluded and counts as recorded, so it is not run again.
+**The bet reads a committed order.** Before any answer is seen, each launch's new cases are shuffled once by their ids
+and appended (:func:`~threetears.evals.analysis.bundle.trials.committed_order`); a case left unfinished keeps its place.
+Each launch plays its cells case by case in that order, every arm and repeat of a case together. The bet reads the
+longest prefix of the order whose every case is recorded on every arm and repeat
+(:func:`~threetears.evals.analysis.bundle.trials.bet_places`). So every reading is a prefix of one sequence fixed in
+advance, and Ville's inequality covers the bet's running maximum at every prefix: a reading taken at any time, chosen
+by someone who watched any cells, keeps its error, however fast or slow each arm answers, and whether or not its speed
+follows its answers.
+
+**An interrupt drains.** The first interrupt of a comparison starts no further cell and lets the cells running finish
+and record, then files the comparison; a second cuts at once, and the cells it cut run again in a continuation, which
+its sentence counts (:func:`continued_sentence`): a cut cell drawn again can lean the bet where a slow answer is a
+wrong one, so the number is said.
 
 Anything else starts a NEW comparison, which runs every case and says so in one sentence naming what changed
 (:func:`new_comparison_sentence`). A comparison continued says so too (:func:`continued_sentence`), and says how to start
@@ -54,6 +61,7 @@ from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.campaigns import list_campaigns
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
 from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.run.reads import list_results
 from threetears.evals.schema import EvalRun
 
@@ -101,6 +109,11 @@ class EarlierComparison:
         each one's missing cells alone, counting the cells its arms' runs (:attr:`EarlierArm.run_ids`) recorded as
         done, then the cases appended.
     :ivar incomplete: How many of :attr:`unfinished` some arm ran: a continuation runs only their missing cells.
+    :ivar launches: Each launch's cases, in launch order, as its runs hold them: what the committed order is derived
+        from (:func:`~threetears.evals.analysis.bundle.trials.committed_order`).
+    :ivar cut: How many stored rows record no answer and run again
+        (:func:`~threetears.evals.kernel.result_condition.runs_again`): cells an interrupt cut, calls refused or
+        unserved.
     """
 
     campaign_id: str
@@ -116,6 +129,8 @@ class EarlierComparison:
     unrun: tuple[str, ...] = ()
     unfinished: tuple[str, ...] = ()
     incomplete: int = 0
+    launches: tuple[tuple[str, ...], ...] = ()
+    cut: int = 0
 
 
 def launched_as(arm: str | None, model: str, levers: Mapping[str, Any] | None) -> tuple[str | None, str, str]:
@@ -212,11 +227,16 @@ def earlier_comparison(
     # The repeats each arm recorded of each case, over all its runs: a cell that holds a result was recorded, whether
     # its launch finished or not, and is never run again.
     repeats: dict[tuple[str | None, str, str], dict[str, set[int]]] = {}
+    cut = 0
     for key, held in grouped.items():
         results = {run.id: list_results(host.storage, run.id, scope_id) for run in held}
         ran_on_arm = repeats.setdefault(key, {})
         for each in results.values():
             for result in each:
+                # A row that records no answer runs again: its cell is not recorded.
+                if runs_again(result):
+                    cut += 1
+                    continue
                 ran_on_arm.setdefault(result.test_case_id, set()).add(result.k_iteration)
         # A run its launch stopped before it ran anything holds no result to read a variant from.
         variants = {variant_key_of_run(each) for each in results.values() if each}
@@ -273,6 +293,8 @@ def earlier_comparison(
         unrun=tuple(case for case in case_lists[0] if case not in ran),
         unfinished=unfinished,
         incomplete=sum(1 for case in unfinished if case in ran),
+        launches=tuple(tuple(grouped[control][index].test_case_ids) for index in range(n_launches)),
+        cut=cut,
     )
 
 
@@ -288,11 +310,12 @@ UNKEPT_SENTENCE = (
 )
 
 
-def continued_sentence(already: int, added: int, unreached: int = 0, incomplete: int = 0) -> str:
+def continued_sentence(already: int, added: int, unreached: int = 0, incomplete: int = 0, cut: int = 0) -> str:
     """What a continued comparison's print says of how it ran: the cases read again as they ran, the cases that ran
     now (``unreached`` of them held by a launch that stopped before it reached them, and ``incomplete`` reached by one
-    on some arms or repeats only, whose missing cells alone ran), the assumption a stopped launch's reading rests on,
-    what a runner or a grader is known by, and how to start a new comparison instead. The one owner of the sentence."""
+    on some arms or repeats only, whose missing cells alone ran), how many cells recorded no answer and ran again
+    (``cut``: an interrupt cut them, or the account or the provider turned the call away), what a runner or a grader is
+    known by, and how to start a new comparison instead. The one owner of the sentence."""
     if not added:
         ran = "no case was added, so nothing ran"
     elif unreached or incomplete:
@@ -305,18 +328,18 @@ def continued_sentence(already: int, added: int, unreached: int = 0, incomplete:
         ran = f"{added} case{'s' if added != 1 else ''} ran, {' and '.join(part for part in held if part)}"
     else:
         ran = f"{added} new case{'s' if added != 1 else ''} ran"
-    stopped = (
-        " A run that stopped is read in the order its cases were completed, which keeps the error where how long a "
-        "case takes does not depend on its answer."
-        if unreached or incomplete
+    again = (
+        f" {cut} cell{'s' if cut != 1 else ''} that recorded no answer (cut by an interrupt, or the call turned away) "
+        f"ran again: a cut cell drawn again can lean the reading where a slow answer is a wrong one."
+        if cut
         else ""
     )
     return (
         f"Continues the comparison run before under this name: its {already} case{'s' if already != 1 else ''} already "
-        f"run are read as they ran, and {ran}.{stopped} An arm is known by its name, model and levers, and a grader by "
-        "its name and declaration (a judge by its model and criteria), never by its code, so a runner or a grader "
-        "edited under the same name is pooled with the cases run before: to compare an edit, or to start afresh, give "
-        "the eval a new name, or run it in another scope or store."
+        f"run {'are' if already != 1 else 'is'} read as {'they' if already != 1 else 'it'} ran, and {ran}.{again} An arm is known by its name, model "
+        "and levers, and a grader by its name and declaration (a judge by its model and criteria), never by its code, so "
+        "a runner or a grader edited under the same name is pooled with the cases run before: to compare an edit, or to "
+        "start afresh, give the eval a new name, or run it in another scope or store."
     )
 
 

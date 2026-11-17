@@ -42,6 +42,7 @@ import asyncio
 import inspect
 import json
 import math
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
@@ -153,6 +154,8 @@ from threetears.evals.quick.continuation import (
     new_comparison_sentence,
 )
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
+from threetears.evals.analysis.bundle.trials import committed_order
+from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.quick.guardrails import Guardrail
 from threetears.evals.quick.judged import Example, ExampleGrade, Judge, JudgeExamples, judge_evidence
 from threetears.evals.quick.levers import CallableLevers, levers_model
@@ -1637,8 +1640,10 @@ def _recorded_cells(
     host: EvalHost, run_ids: Sequence[tuple[str, ...]], cases: set[str], scope_id: str
 ) -> list[StoredCells | None]:
     """Each arm's cells of ``cases`` its runs ``run_ids`` recorded, as the done cells its continuation's run counts and
-    never runs again (``KindWiring.observed``); ``None`` for an arm with none. A cell a stop cut short holds a row, so it
-    is recorded and not run again.
+    never runs again (``KindWiring.observed``); ``None`` for an arm with none. A row that records no answer is not
+    recorded and its cell runs again, by the take-up's own rule
+    (:func:`~threetears.evals.kernel.result_condition.runs_again`): a cell an interrupt cut, a call the account refused,
+    a model the provider did not serve.
 
     :param host: The host whose store holds the runs.
     :ptype host: EvalHost
@@ -1657,7 +1662,7 @@ def _recorded_cells(
             StoredCell.from_result(result)
             for run_id in held
             for result in list_results(host.storage, run_id, scope_id)
-            if result.test_case_id in cases
+            if result.test_case_id in cases and not runs_again(result)
         )
         observed.append(StoredCells(done=done) if done else None)
     return observed
@@ -2652,9 +2657,23 @@ async def launch_arms(
         preparing=preparing,
     )
 
+    # The order the bet reads, committed before any answer: the earlier launches' cases where they stand, and this
+    # launch's new cases shuffled once and appended. Every arm plays this launch's cases case by case in it.
+    running = {case.id for case in to_run}
+    committed = [
+        case
+        for case in committed_order(
+            template_id, [*(earlier.launches if continuing and earlier is not None else ()), [c.id for c in to_run]]
+        )
+        if case in running
+    ]
+
     async def form() -> tuple[LaunchGroup, None]:
         # Every arm's model is a candidate of the launch, which is what its judge is chosen against.
-        return LaunchGroup(candidate_models=list(dict.fromkeys(models))), None
+        group = LaunchGroup(candidate_models=list(dict.fromkeys(models)))
+        group.play_cases_in(committed)
+        launched_in.append(group)
+        return group, None
 
     async def prepare(group: LaunchGroup, _formed: None) -> list[EvalRun]:
         prepared: list[EvalRun] = []
@@ -2679,6 +2698,7 @@ async def launch_arms(
         return prepared
 
     runs: list[EvalRun] = []
+    launched_in: list[LaunchGroup] = []
 
     async def read(*, cancelled: bool) -> Launched:
         """Each arm read over every run it reads, as :class:`Launched` says, ``cancelled`` where a cancel landed."""
@@ -2725,6 +2745,7 @@ async def launch_arms(
                     len(to_run),
                     unreached=len(earlier.unrun) if earlier is not None else 0,
                     incomplete=earlier.incomplete if earlier is not None else 0,
+                    cut=earlier.cut if earlier is not None else 0,
                 )
                 if continuing
                 else said
@@ -2741,6 +2762,25 @@ async def launch_arms(
         if found:
             await run_blocking(host.blocking_executor, _archive_run_ids, host, [run.id for run in runs], scope_id)
         return found
+
+    async def drain(group: LaunchGroup | None, run_ids: list[str]) -> None:
+        """Let the runs' running cells finish and record, starting none, then settle every run; a cancel landing
+        meanwhile (a second interrupt) cuts the cells still running at once, each recorded cut (termination
+        ``cancelled``), which a continuation runs again."""
+        manager = launch_host.job_manager
+        if group is not None:
+            running = group.stop_starting()
+            said = f"{running} cell{'s' if running != 1 else ''}" if running else "the cells"
+            sys.stderr.write(f"Interrupted: finishing {said} in flight; interrupt again to stop now.\n")
+
+        def cut_now() -> None:
+            for run_id in run_ids:
+                manager.cancel_job(run_id, reason="interrupted twice: the cells running were cut")
+
+        # A further cancel cuts, and the wait goes on until every run has settled.
+        await wait_through_cancellation(asyncio.ensure_future(manager.wait_for(run_ids)), on_cancel=cut_now)
+        # Nothing is left running or pending behind the call.
+        await wait_through_cancellation(asyncio.ensure_future(manager.shutdown()))
 
     async def file_cancelled(deliver: Callable[[Launched], Awaitable[None]]) -> None:
         """Hand what the cancelled runs recorded to ``deliver``, unless they were archived: then they are another
@@ -2768,12 +2808,15 @@ async def launch_arms(
         try:
             await launch_host.job_manager.wait_for([run.id for run in runs])
         except asyncio.CancelledError:
-            # This call owns the runs it started: cancelled, it settles them as cancelled rather than
-            # leaving pending ones behind in a store that outlives it. A comparison's caller files them before the
-            # cancel goes on, so what they recorded is kept and a run again runs only the cells they never recorded.
-            await launch_host.job_manager.shutdown()
+            # This call owns the runs it started: cancelled, it settles them as cancelled rather than leaving pending
+            # ones behind in a store that outlives it. The first interrupt drains: no further cell starts, the cells
+            # running finish and are recorded (their answers were being drawn, and cutting a slow one to draw it
+            # afresh would lean the bet toward fast answers), and each run ends cancelled. A second cuts at once.
+            # A comparison's caller then files them, so what they recorded is kept and a run again runs only the
+            # cells they never recorded; the cancel that landed first is the one re-raised.
+            await drain(launched_in[0] if launched_in else None, [run.id for run in runs])
             if on_cancel is not None:
-                # Waited for to its end even through a second cancel; the cancel that landed is the one re-raised.
+                # Waited for to its end even through a further cancel.
                 await wait_through_cancellation(asyncio.ensure_future(file_cancelled(on_cancel)))
             raise
     if await differs():
