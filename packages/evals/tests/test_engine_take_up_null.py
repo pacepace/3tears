@@ -7,19 +7,23 @@ The engine path, as a host or an agent drives it (no quick path anywhere):
   group's id, its repeat and its case (``runner.cell_execution_order`` with ``seed``: the whole matrix shuffled, one
   order shared by the arms), four at a time under one shared width (``LaunchSettings.max_concurrent_cells``, taken in
   turn by ``arm_schedule.CellInterleaver``);
-- **interrupt**: ``job_cancel`` on the launch's job cancels every run's job (``launch_job._launch_work``), and each run
-  records the cells it had in flight as cut (termination ``cancelled``, ``runner.execute_run``); nothing drains;
+- **interrupt**: ``job_cancel`` on the launch's job cancels every run's job (``launch_job._launch_work``), and the
+  job manager reads a run's first cancel as a drain (``EvalJobManager.cancel_job``): the run starts no further cell,
+  and the cells in flight finish and record. A further cancel (``kernel.offload.drain_then_cut``) cuts what is still in
+  flight, recorded cut (termination ``cancelled``, ``runner.execute_run``);
 - **take-up**: ``job_resume`` takes the launch up again (``resume.resume_launch``), and each run runs, in its own order,
   every cell with no row and every row that runs again (``kernel.result_condition.runs_again``), a cut row among them,
-  written over its row;
+  written over its row, which then records what it replaced (``EvalResult.written_over``);
 - **read**: a campaign over the runs, control ``a``, read by ``assemble_context_bundle``: the paired t test at α at a
   fixed count, or, under a plan of ``L`` looks declared before the first (``AspectDesign.planned_looks``), each look at
   α/L. A take-up of a launch is that launch's occasion, so it is no look of its own (``significance.looks_taken``).
 
-A cell in flight when the cut lands is drawn afresh by the take-up, and a cell in flight is a long one: where one arm's
-wrong answers are its slow ones, a cut takes its wrong answers away more often than its right ones, and the arm reads
-better than it is. The simulations here measure how much that moves the engine's two readings, against a control whose
-arms share one latency law (both slower when wrong), interrupted alike.
+A cell cut in flight is drawn afresh by the take-up, and a cell in flight is a long one: where one arm's wrong answers
+are its slow ones, a cut takes its wrong answers away more often than its right ones, and the arm reads better than it
+is. So the engine drains on a first interrupt, as the quick path does, and each family says how many cells ran again
+(``redrawn_sentence``). The simulations here measure the readings three ways (``_Stop``): drained (one cancel), drained
+with a second cancel 5 ms later in three of ten interrupted holdings, and cut at every interrupt (the engine before it
+drained, kept as the comparison that shows why).
 
 Setup, as the quick path's watched simulations had it (``test_rereadable_bet.py``): arms of accuracy 0.5 each, k = 1;
 arm ``a`` 0.4 ms whatever it answers, arm ``b`` 2 ms when right and four or twenty times that when wrong; the control's
@@ -27,16 +31,13 @@ arms both 2 ms right and 40 ms wrong. Each holding (the launch and each take-up)
 point drawn apart from any answer (after a uniform count of the answers left to land), at most five holdings, the last
 run to its end.
 
-Two graders, since the engine's reading of each differs: a check (``correct``) is read in a family beside the pass rate
-(``passed``) it equals, so Holm halves α in effect; a grade on the range 0 to 1 (``grade``) is alone in its family and
-read at α. **What the simulations show** (:data:`_SHOWN` has the shares): read by a check, the shares hold at most α at a
-fixed count, because the doubled family leaves the lean room, and over the plan's looks all but one do: arms of
-different laws at 20x drew 4.2% on the pool, an upper bound above α; read by a grade, the control sits at
-α, as the t test does with no cut at all (``test_simulated_looks.py``, "one look on the exact t test"), and arms of
-different laws separate past it: about 7% at a fixed count, and 7% and 13% over the plan's three looks, almost all
-toward the slow arm, whose wrong answers the cuts took (in the 20x rows, about seven of its wrong answers redrawn for
-each right one). So the engine's take-up does push false separations above α where latency tracks the answer and the
-reading spends α. Each long simulation asserts what its share shows; the reported ones are said there.
+**Against what.** The reading's own rate on such pairs, uninterrupted, is computed exactly (:func:`_exact_rate`): the
+paired t test is discrete on coin pairs, so it separates 5.28% of the time at a fixed count of 40 read at α, and 4.49%
+of the time over three looks read at α/3. An at-most-α claim on the fixed count fails before any interrupt, so each
+simulation is held to that exact rate instead: its count is or is not above it at a one-sided 0.001 (:data:`_SHOWN`).
+A check is read as a family of one (:func:`_separated`): the engine's family of an eval with one check also holds the
+pass rate, which is that check case for case. Holm then reads one hypothesis twice; the double count is being removed
+from the family where the quick path's reads drop it (``multiple_comparisons``), and the read here is the corrected one.
 
 The long simulations are ``long_simulation``, one pool request each (``.testament.toml``'s ``simulation`` suite, named
 by node id); the unit suite keeps the smoke check.
@@ -418,9 +419,9 @@ def _separated(family: ComparisonFamily, grader: _Grader) -> bool:
     family of that one reading: at the family's level (α, or α/L under the plan), uncorrected.
 
     A grade's family holds it alone. A check's holds it beside the pass rate (``passed``), which an eval of one check
-    has case for case: one hypothesis counted twice, so Holm reads each at half the level. That double count is removed
-    from the family (the same ``multiple_comparisons`` reads it for every campaign); until a family read here drops it,
-    the read here is the corrected one: the check's own p at the family's level, asserted to be the pass rate's too."""
+    has case for case: one hypothesis counted twice, so Holm reads each at half the level. Until the family drops it (the
+    same ``multiple_comparisons`` reads it for every campaign), the read here is the corrected one: the check's own p at
+    the family's level, asserted to be the pass rate's too. Once dropped, the family holds the check alone."""
     name = _GRADERS[grader][0].__name__
     names = sorted(comparison.name for comparison in family.comparisons)
     assert names in ([name], [name, "passed"]) if grader == "check" else names == [name], names
