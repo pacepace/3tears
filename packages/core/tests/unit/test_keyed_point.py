@@ -30,7 +30,12 @@ from threetears.core.keyed import (
     read_row,
     read_value,
 )
-from threetears.interfaces.keyed.keys import DeclaredIndex, register_partial_predicates, register_table_indexes
+from threetears.interfaces.keyed.keys import (
+    DeclaredIndex,
+    primary_key,
+    register_partial_predicates,
+    register_table_indexes,
+)
 from threetears.interfaces.keyed.point import read_by_statement
 
 
@@ -254,6 +259,7 @@ async def test_a_text_ranked_read_orders_by_the_rank_best_first_under_its_limit(
     re-sorted by the rank (WHY at ``read_nearest_statement``)."""
     # a table no test declares a key for: a declared key makes the read keyed, and the key registry is the process's
     # ("memories", read here once, is declared by test_schema_backed and failed this test run after it in one worker)
+    assert primary_key("recalled") is None
     conn = _Sent()
     await read_nearest(
         conn,
@@ -323,11 +329,17 @@ def test_a_text_rank_refuses_a_configuration_that_is_not_an_identifier(config: s
 async def test_a_text_ranked_read_breaks_rank_ties_by_its_then_terms() -> None:
     """Flips if a ``TextRank``'s ``then`` terms are not ordered after the rank, each in its own direction with its NULLs
     where it says (a hand-written ``ORDER BY fts_rank DESC, last_used_at DESC NULLS LAST, date_created DESC, id``):
-    rows tied on the rank must come back in that order, never the engine's."""
+    rows tied on the rank must come back in that order, never the engine's.
+
+    Pins the derived-table form, so it reads a table nothing declares a key for: a declared primary key makes the read
+    keyed (the keyed sibling above), and the key registry is the process's. ``agent_skills``, read here before, is
+    declared on import of ``threetears.agent.skills.collections``, and this test failed after an agent skills test in
+    one pool worker."""
+    assert primary_key("ranked_ties_unkeyed") is None
     conn = _Sent()
     await read_nearest(
         conn,
-        "agent_skills",
+        "ranked_ties_unkeyed",
         by={"agent_id": "a"},
         nearest=TextRank(
             "search_vector",
