@@ -27,10 +27,15 @@ arms both 2 ms right and 40 ms wrong. Each holding (the launch and each take-up)
 point drawn apart from any answer (after a uniform count of the answers left to land), at most five holdings, the last
 run to its end.
 
-Measured, not asserted against α where the reading's own rate sits at α: the t test at a fixed count errs at α itself
-on data with no difference (``test_simulated_looks.py``, "one look on the exact t test"), so its share's upper bound
-lies above α at any finite count, cut or not. Each long simulation states its share with its 95% Clopper-Pearson
-interval, and asserts what holds of it (see each test).
+Two graders, since the engine's reading of each differs: a check (``correct``) is read in a family beside the pass rate
+(``passed``) it equals, so Holm halves α in effect; a grade on the range 0 to 1 (``grade``) is alone in its family and
+read at α. **What the simulations show** (:data:`_SHOWN` has the shares): read by a check, every share holds at most α,
+at a fixed count and over the plan, because the doubled family leaves the lean room; read by a grade, the control sits at
+α, as the t test does with no cut at all (``test_simulated_looks.py``, "one look on the exact t test"), and arms of
+different laws separate past it: about 7% at a fixed count, and 7% and 13% over the plan's three looks, almost all
+toward the slow arm, whose wrong answers the cuts took (in the 20x rows, about seven of its wrong answers redrawn for
+each right one). So the engine's take-up does push false separations above α where latency tracks the answer and the
+reading spends α. Each long simulation asserts what its share shows; the reported ones are said there.
 
 The long simulations are ``long_simulation``, one pool request each (``.testament.toml``'s ``simulation`` suite, named
 by node id); the unit suite keeps the smoke check.
@@ -80,6 +85,7 @@ _SCOPE, _TEMPLATE, _SUBJECT = "engine", "coin", "coin-subject"
 #: How long each arm's answer takes, as a law of the answer: both arms 2 ms right and 40 ms wrong (the control, one law
 #: for both); or arm ``a`` 0.4 ms whatever it answers and arm ``b`` 2 ms right and four or twenty times that wrong.
 _Law = Literal["alike-20x", "b-slower-4x", "b-slower-20x"]
+_LAWS: tuple[_Law, ...] = ("alike-20x", "b-slower-4x", "b-slower-20x")
 
 #: The share of holdings interrupted, and the most holdings one launch has (the last runs to its end).
 _INTERRUPTED, _HOLDINGS = 0.8, 5
@@ -107,8 +113,24 @@ _SETTINGS = LaunchSettings(
 
 
 def correct(case: Mapping[str, Any], answer: str) -> bool:
-    """Whether the coin landed right."""
+    """Whether the coin landed right, as a check."""
     return answer == "right"
+
+
+def grade(case: Mapping[str, Any], answer: str) -> float:
+    """Whether the coin landed right, as a grade on its declared range."""
+    return 1.0 if answer == "right" else 0.0
+
+
+#: How the answer is graded: by a check (``correct``), whose family the engine reads beside the pass rate it equals, so
+#: Holm reads two equal p values and separates where p < α/2; or by a grade on the range 0 to 1 (``grade``), alone in
+#: its family, so the paired t test separates where p < α.
+_Grader = Literal["check", "grade"]
+
+_GRADERS: dict[_Grader, tuple[Callable[[Mapping[str, Any], str], Any], dict[str, tuple[float, float]]]] = {
+    "check": (correct, {}),
+    "grade": (grade, {"grade": (0.0, 1.0)}),
+}
 
 
 def _seconds(law: _Law, arm: str, right: bool) -> float:
@@ -149,10 +171,11 @@ class _Engine:
     landings: _Landings
 
 
-def _engine(rng: random.Random, law: _Law) -> _Engine:
+def _engine(rng: random.Random, law: _Law, grader: _Grader) -> _Engine:
     """A fresh engine host: the callable kind (``quick.one_call.callable_kind``) wired by a launcher of its own through
     the engine's ``launch_run``, each arm a coin that lands right half the time and takes as long as ``law`` says."""
-    host = callable_host([correct], store=InMemoryDocumentStore())
+    scorer, ranges = _GRADERS[grader]
+    host = callable_host([scorer], ranges=ranges, store=InMemoryDocumentStore())
     off_loop(
         host.storage.save_template,
         EvalTemplate(id=_TEMPLATE, scope_id=_SCOPE, name="a coin", intent="Land right.", candidate_kind=CALLABLE_KIND),
@@ -171,7 +194,7 @@ def _engine(rng: random.Random, law: _Law) -> _Engine:
         run.__name__ = arm
         return run
 
-    kinds = {arm: callable_kind(coin(arm), [correct]) for arm in "ab"}
+    kinds = {arm: callable_kind(coin(arm), [scorer], ranges=ranges) for arm in "ab"}
     batch: list[EvalTestCase] = []
     subject = SubjectSnapshot(subject_id=_SUBJECT, subject_label=_SUBJECT, state={})
 
@@ -318,7 +341,7 @@ def _run_ids(engine: _Engine, launch_id: str) -> list[str]:
 # --- the reading -----------------------------------------------------------------------------------------------------
 
 
-def _design(planned: int | None) -> dict[str, Any]:
+def _design(planned: int | None, grader: _Grader) -> dict[str, Any]:
     """The comparison's declared design, a plan of ``planned`` looks in it where one is given."""
     return AspectDesign(
         axes=[
@@ -330,7 +353,7 @@ def _design(planned: int | None) -> dict[str, Any]:
         ],
         held_fixed=ControlDeclaration(stimulus="controlled", apparatus="commissioned"),
         intended_repetitions=1,
-        measure_order=["correct"],
+        measure_order=[_GRADERS[grader][0].__name__],
         planned_looks=planned,
     ).model_dump(mode="json", exclude_none=True)
 
@@ -344,9 +367,14 @@ def _family(engine: _Engine, campaign_id: str) -> ComparisonFamily:
     return family
 
 
-def _separated(family: ComparisonFamily) -> bool:
-    """Whether the family separates the arms on ``correct``, read by the paired t test (never the bet)."""
-    (compared,) = [comparison for comparison in family.comparisons if comparison.name == "correct"]
+def _separated(family: ComparisonFamily, grader: _Grader) -> bool:
+    """Whether the family separates the arms on the grader's reading, by the paired t test (never the bet): a check's
+    family holds it and the pass rate (``passed``), a grade's it alone."""
+    name = _GRADERS[grader][0].__name__
+    assert sorted(comparison.name for comparison in family.comparisons) == (
+        ["correct", "passed"] if grader == "check" else ["grade"]
+    )
+    (compared,) = [comparison for comparison in family.comparisons if comparison.name == name]
     assert compared.basis in (None, "t", "identical"), compared.basis
     return compared.verdict in ("improved", "regressed")
 
@@ -360,11 +388,11 @@ class _Outcome:
     cuts: _Cuts
 
 
-async def _at_a_fixed_count(tag: str, law: _Law) -> _Outcome:
+async def _at_a_fixed_count(tag: str, law: _Law, grader: _Grader) -> _Outcome:
     """One comparison read once by the engine's default reading: :data:`_FIXED_CASES` cases launched, interrupted and
     taken up to their end, then filed as a campaign (control ``a``) and read at α."""
     rng = random.Random(tag)
-    engine = _engine(rng, law)
+    engine = _engine(rng, law, grader)
     cuts = _Cuts()
     a, b = await _launched(engine, rng, _cases(0, _FIXED_CASES), cuts)
     filed = await _act(
@@ -374,21 +402,21 @@ async def _at_a_fixed_count(tag: str, law: _Law) -> _Outcome:
         subject_id=_SUBJECT,
         behavior="coin",
         question="does b land right more often than a?",
-        aspects=[{"label": "coin", "run_ids": [a, b], "design": _design(None)}],
+        aspects=[{"label": "coin", "run_ids": [a, b], "design": _design(None, grader)}],
         campaign_arms=[{"label": "a", "role": "control", "from_run_ids": [a]}],
     )
     family = _family(engine, str(filed["id"]))
     assert family.look_alpha is None and family.alpha == SIGNIFICANCE_ALPHA
     cuts.lost = engine.landings.drawn - engine.landings.arrived
-    return _Outcome(_separated(family), 1, cuts)
+    return _Outcome(_separated(family, grader), 1, cuts)
 
 
-async def _watched_over_planned_looks(tag: str, law: _Law) -> _Outcome:
+async def _watched_over_planned_looks(tag: str, law: _Law, grader: _Grader) -> _Outcome:
     """One comparison under a plan of :data:`_PLANNED` looks, declared before its first: each look launches
     :data:`_LOOK_CASES` new cases on both arms, held to its end as :func:`_launched` holds it, joins the campaign and is
     read at α/L; the watcher stops at the first look that separates."""
     rng = random.Random(tag)
-    engine = _engine(rng, law)
+    engine = _engine(rng, law, grader)
     cuts = _Cuts()
     planned = await _act(
         engine,
@@ -397,7 +425,7 @@ async def _watched_over_planned_looks(tag: str, law: _Law) -> _Outcome:
         subject_id=_SUBJECT,
         behavior="coin",
         question="does b land right more often than a?",
-        aspects=[{"label": "coin", "template_id": _TEMPLATE, "run_ids": [], "design": _design(_PLANNED)}],
+        aspects=[{"label": "coin", "template_id": _TEMPLATE, "run_ids": [], "design": _design(_PLANNED, grader)}],
     )
     campaign_id = str(planned["id"])
     for look in range(1, _PLANNED + 1):
@@ -407,21 +435,21 @@ async def _watched_over_planned_looks(tag: str, law: _Law) -> _Outcome:
             await _act(engine, "campaign_update", campaign_id=campaign_id, control_from_run_id=a)
         family = _family(engine, campaign_id)
         assert family.look_alpha == pytest.approx(SIGNIFICANCE_ALPHA / _PLANNED), family.look_alpha
-        if _separated(family):
+        if _separated(family, grader):
             break
     cuts.lost = engine.landings.drawn - engine.landings.arrived
-    return _Outcome(_separated(family), look, cuts)
+    return _Outcome(_separated(family, grader), look, cuts)
 
 
 _Reading = Literal["fixed", "looks"]
 
 
-async def _simulate(reading: _Reading, law: _Law, count: int, tag: str) -> tuple[int, _Cuts]:
+async def _simulate(reading: _Reading, law: _Law, grader: _Grader, count: int, tag: str) -> tuple[int, _Cuts]:
     """How many of ``count`` comparisons separated, and their take-ups' cut rows by arm, summed."""
     simulate = _at_a_fixed_count if reading == "fixed" else _watched_over_planned_looks
     separated, total = 0, _Cuts()
     for index in range(count):
-        outcome = await simulate(f"{tag}-{reading}-{law}-{index}", law)
+        outcome = await simulate(f"{tag}-{reading}-{law}-{grader}-{index}", law, grader)
         separated += outcome.separated
         total.holdings += outcome.cuts.holdings
         for arm, again in outcome.cuts.again.items():
@@ -430,10 +458,10 @@ async def _simulate(reading: _Reading, law: _Law, count: int, tag: str) -> tuple
     return separated, total
 
 
-def _said(reading: _Reading, law: _Law, separated: int, count: int, cuts: _Cuts) -> str:
+def _said(reading: _Reading, law: _Law, grader: _Grader, separated: int, count: int, cuts: _Cuts) -> str:
     """The share, its 95% Clopper-Pearson interval, and what the take-ups ran again, for a report or a failure."""
     return (
-        f"{reading} {law}: {separated}/{count} separated, {exact_rate_interval(separated, count)}; "
+        f"{reading} {law} {grader}: {separated}/{count} separated, {exact_rate_interval(separated, count)}; "
         f"holdings {cuts.holdings}; rows run again a={cuts.again['a']} b={cuts.again['b']}; answers the cuts lost, "
         f"right/wrong: a {cuts.lost['a', True]}/{cuts.lost['a', False]}, b {cuts.lost['b', True]}/{cuts.lost['b', False]}"
     )
@@ -443,47 +471,98 @@ def _said(reading: _Reading, law: _Law, separated: int, count: int, cuts: _Cuts)
 
 
 async def test_a_few_engine_comparisons_interrupted_and_taken_up_finish_whole_and_read_by_the_t_test() -> None:
-    """The unit suite's smoke check of both simulations: a few comparisons each, every launch held through its
-    interrupts and take-ups to an end where every cell has one row and none runs again (inside :func:`_launched`), each
-    read by the paired t test, at α at a fixed count and at α/L under the plan (inside :func:`_family`'s callers); and
-    the reading separating at most one of each few, which at a rate of α happens with probability above 0.99."""
+    """The unit suite's smoke check of every simulation: a few comparisons each, by a check and by a grade, every launch
+    held through its interrupts and take-ups to an end where every cell has one row and none runs again (inside
+    :func:`_launched`), each read by the paired t test over the family its grader gives, at α at a fixed count and at
+    α/L under the plan; and the reading separating at most one of each few, which at a rate of α happens with
+    probability above 0.99."""
     for reading in ("fixed", "looks"):
-        separated, cuts = await _simulate(reading, "b-slower-20x", _SMOKE, "smoke")
-        assert separated <= 1, _said(reading, "b-slower-20x", separated, _SMOKE, cuts)
-        assert cuts.holdings >= _SMOKE
+        for grader in ("check", "grade"):
+            separated, cuts = await _simulate(reading, "b-slower-20x", grader, _SMOKE, "smoke")
+            assert separated <= 1, _said(reading, "b-slower-20x", grader, separated, _SMOKE, cuts)
+            assert cuts.holdings >= _SMOKE
 
 
-def _held(reading: _Reading, law: _Law, separated: int, count: int, cuts: _Cuts) -> None:
-    """Print what the simulation drew (``-rP`` shows it on a pass), and hold its 95% Clopper-Pearson upper bound at α."""
-    said = _said(reading, law, separated, count, cuts)
-    print(said)
+#: What each simulation shows of its share's 95% Clopper-Pearson interval:
+#:
+#: - ``held``: its upper bound is at most α, the claim the reading makes;
+#: - ``at_alpha``: its lower bound is at most α, so no lean is shown (the control of a grade, read by a t test that errs
+#:   at α itself, so its upper bound lies above α at any count);
+#: - ``unheld``: its upper bound is above α, so "at most α" is not shown; the finding, reported;
+#: - ``leans``: its lower bound is above α, so the reading is shown to separate more often than α; the finding, reported.
+#:
+#: An ``unheld`` or ``leans`` row turns red when the take-up stops redrawing what a cut found in flight (the engine
+#: drains on a first interrupt, as the quick path does) and the share falls to α: its expectation then moves to ``held``
+#: or ``at_alpha``, with the share it draws.
+_Shown = Literal["held", "at_alpha", "unheld", "leans"]
+
+#: Each simulation, as (reading, latency law, grader), and what it shows. As drawn for this change (95% Clopper-Pearson;
+#: holdings are the launches and take-ups; "lost" is the answers drawn by cells a cut found in flight, right/wrong):
+#:
+#: ================  ==============  =====================  ==========================================================
+#: reading           law             check (α/2 in effect)  grade (α)
+#: ================  ==============  =====================  ==========================================================
+#: fixed, 40 cases   alike-20x       2/300, 0.7% (0.1-2.4)  20/500, 4.0% (2.5-6.1); lost a 233/1118, b 256/1143
+#: fixed, 40 cases   b-slower-4x     9/300, 3.0% (1.4-5.6)  37/500, 7.4% (5.3-10.1); lost a 121/120, b 303/1071
+#: fixed, 40 cases   b-slower-20x    2/300, 0.7% (0.1-2.4)  35/500, 7.0% (4.9-9.6); lost a 108/120, b 282/2065
+#: 3 looks, α/3      alike-20x       4/300, 1.3% (0.4-3.4)  11/300, 3.7% (1.8-6.5); lost a 354/1696, b 402/1693
+#: 3 looks, α/3      b-slower-4x     4/300, 1.3% (0.4-3.4)  21/300, 7.0% (4.4-10.5); lost a 178/207, b 431/1640
+#: 3 looks, α/3      b-slower-20x    4/300, 1.3% (0.4-3.4)  39/300, 13.0% (9.4-17.3); lost a 174/154, b 429/2980
+#: ================  ==============  =====================  ==========================================================
+#:
+#: Over another 600 comparisons at a fixed count, the check's raw p read at α (the family of one a grade gives): arms of
+#: different laws at 20x, 62 separated (10.3%, 8.0-13.1), 56 of them toward ``b``; one law, 33 (5.5%, 3.8-7.6), 17
+#: toward ``b``.
+_SHOWN: dict[tuple[_Reading, _Law, _Grader], _Shown] = {
+    **{(reading, law, "check"): "held" for reading in ("fixed", "looks") for law in _LAWS},
+    ("fixed", "alike-20x", "grade"): "at_alpha",
+    ("looks", "alike-20x", "grade"): "at_alpha",
+    ("fixed", "b-slower-4x", "grade"): "unheld",
+    ("fixed", "b-slower-20x", "grade"): "unheld",
+    ("looks", "b-slower-4x", "grade"): "unheld",
+    ("looks", "b-slower-20x", "grade"): "leans",
+}
+
+
+def _shown(reading: _Reading, law: _Law, grader: _Grader, separated: int, count: int, cuts: _Cuts) -> None:
+    """Hold a simulation's share to what :data:`_SHOWN` says it shows."""
+    said = _said(reading, law, grader, separated, count, cuts)
     bound = exact_rate_interval(separated, count)
-    assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, said
+    assert bound is not None
+    low, high = bound
+    shown = _SHOWN[reading, law, grader]
+    assert {
+        "held": high <= SIGNIFICANCE_ALPHA,
+        "at_alpha": low <= SIGNIFICANCE_ALPHA,
+        "unheld": high > SIGNIFICANCE_ALPHA,
+        "leans": low > SIGNIFICANCE_ALPHA,
+    }[shown], f"{shown}: {said}"
+
+
+_CELLS = [(law, grader) for grader in ("check", "grade") for law in _LAWS]
 
 
 @pytest.mark.long_simulation
 @pytest.mark.timeout(1700)
-@pytest.mark.parametrize("law", ["alike-20x", "b-slower-4x", "b-slower-20x"])
-async def test_under_the_null_an_engine_comparison_interrupted_and_taken_up_read_at_a_fixed_count_separates_at_most_alpha(
-    law: _Law,
+@pytest.mark.parametrize(("law", "grader"), _CELLS)
+async def test_under_the_null_an_engine_comparison_interrupted_and_taken_up_read_at_a_fixed_count(
+    law: _Law, grader: _Grader
 ) -> None:
     """:data:`_FIXED_REPLICATES` comparisons of :data:`_FIXED_CASES` cases (:func:`_at_a_fixed_count`), each launch
-    interrupted and taken up as :func:`_launched` holds it, read once by the engine's default reading: the share that
-    separates has a 95% Clopper-Pearson upper bound at most α, for arms of one latency law and for arms of different
-    laws whose slow arm is slower again when wrong."""
-    separated, cuts = await _simulate("fixed", law, _FIXED_REPLICATES, "engine")
-    _held("fixed", law, separated, _FIXED_REPLICATES, cuts)
+    interrupted and taken up as :func:`_launched` holds it, read once by the engine's default reading; each share as
+    :data:`_SHOWN` states it."""
+    separated, cuts = await _simulate("fixed", law, grader, _FIXED_REPLICATES, "engine")
+    _shown("fixed", law, grader, separated, _FIXED_REPLICATES, cuts)
 
 
 @pytest.mark.long_simulation
 @pytest.mark.timeout(1700)
-@pytest.mark.parametrize("law", ["alike-20x", "b-slower-4x", "b-slower-20x"])
-async def test_under_the_null_an_engine_comparison_interrupted_and_taken_up_over_planned_looks_separates_at_most_alpha(
-    law: _Law,
+@pytest.mark.parametrize(("law", "grader"), _CELLS)
+async def test_under_the_null_an_engine_comparison_interrupted_and_taken_up_watched_over_planned_looks(
+    law: _Law, grader: _Grader
 ) -> None:
     """:data:`_LOOKS_REPLICATES` comparisons under a plan of :data:`_PLANNED` looks
     (:func:`_watched_over_planned_looks`), each look's launch interrupted and taken up as :func:`_launched` holds it, the
-    watcher stopping at the first look that separates: the share that separates has a 95% Clopper-Pearson upper bound
-    at most α."""
-    separated, cuts = await _simulate("looks", law, _LOOKS_REPLICATES, "engine")
-    _held("looks", law, separated, _LOOKS_REPLICATES, cuts)
+    watcher stopping at the first look that separates; each share as :data:`_SHOWN` states it."""
+    separated, cuts = await _simulate("looks", law, grader, _LOOKS_REPLICATES, "engine")
+    _shown("looks", law, grader, separated, _LOOKS_REPLICATES, cuts)
