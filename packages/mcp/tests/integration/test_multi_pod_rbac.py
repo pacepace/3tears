@@ -36,7 +36,12 @@ from threetears.core.collections.epoch_change import ChangedRow, EpochChange
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.data.migrations import MigrationRunner
-from threetears.core.testing.calibrate import best_seconds, budget_problem, plain_read_seconds
+from threetears.core.testing.calibrate import (
+    best_seconds,
+    best_seconds_interleaved,
+    budget_problem,
+    plain_read_seconds,
+)
 from threetears.epoch import EpochClient, EpochGenerationReader, EpochGenerationSource
 from threetears.epoch.migrations import register as register_epoch
 from threetears.mcp import (
@@ -419,8 +424,10 @@ async def test_a_walked_change_applies_as_fast_as_a_bare_keyed_read(pg_pool: asy
                 target,
             )
 
-        baseline = await best_seconds(_bare, runs=50)
-        took = await best_seconds(_walked_one, runs=50)
+        # in turn, run by run, so the host's noise falls on both alike; and retaken, as every speed ratio is, when
+        # the host's own idle loop was late over the runs or the process waited on the disk (best_seconds_interleaved:
+        # timed one side after the other, with no such check, it failed once at 2.1x on the exclusive runner, IT2)
+        baseline, took = await best_seconds_interleaved(_bare, _walked_one, runs=50)
         print(f"walked change {took * 1e6:.0f} us, bare keyed read {baseline * 1e6:.0f} us, {took / baseline:.2f}x")
         problem = budget_problem("one walked change's keyed apply", took, baseline)
         assert problem is None, problem

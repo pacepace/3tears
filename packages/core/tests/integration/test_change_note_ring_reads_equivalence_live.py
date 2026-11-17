@@ -42,6 +42,10 @@ _OTHER = "results_other"
 _RINGS = 120
 
 
+#: the ring row's columns both noted_rows_since's statement and the old one answer
+_RING_ANSWERED = ("switch_no", "previous_switched_at")
+
+
 def _old_noted_rows_sql(owner: str) -> str:
     """``_noted_rows_sql`` as it was (change_notes.py at 4cddfe029), the reference."""
     branches = " UNION ALL ".join(
@@ -187,7 +191,13 @@ async def test_noted_rows_since_answers_what_the_hand_written_statement_answered
                 continue
             ring_row = old[0]
             covered = int(ring_row["switch_no"]) == 0 or ring_row["reach"] >= ring_row["previous_switched_at"]
-            reach = since - timedelta(seconds=float(new[0]["wait_seconds"]) / 2)
+            # the ring's columns come back on one row alone (read_row_beside(first=)), the same values the old
+            # statement repeated on each
+            carrying = [row for row in new if row["ring_row"] is not False]
+            assert len(carrying) == 1, (case, cap, len(carrying))
+            assert all(row["switch_no"] is None for row in new if row["ring_row"] is False), case
+            assert [carrying[0][name] for name in _RING_ANSWERED] == [ring_row[name] for name in _RING_ANSWERED], case
+            reach = since - timedelta(seconds=float(carrying[0]["wait_seconds"]) / 2)
             assert reach == ring_row["reach"], (case, reach, ring_row["reach"])
             decided = _decided(old, covered, cap)
             reached.add(decided)
@@ -215,7 +225,7 @@ async def test_noted_rows_since_answers_what_the_hand_written_statement_answered
                 assert len(kept.answers) == 1, case
             if cap == 1_000:
                 # the same notes, each once
-                assert _notes(new, 5) == _notes(old, 3), (case, cap)
+                assert _notes([row[:6] + row[7:] for row in new], 5) == _notes(old, 3), (case, cap)
             else:
                 # past the cap which notes come is the database's, as it was: the same count
                 assert len([r for r in new if r["noted"]]) == len([r for r in old if r["noted"]]), (case, cap)

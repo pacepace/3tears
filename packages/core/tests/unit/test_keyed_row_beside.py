@@ -108,6 +108,39 @@ def test_the_statement_binds_the_pins_then_the_step_then_the_limit() -> None:
         read_row_beside_statement("ring", by={"id": 1}, columns=["a"], beside=_step("n1"), limit=0, present="s")
 
 
+async def test_a_row_beside_a_step_answers_the_row_once_when_asked(db: duckdb.DuckDBPyConnection) -> None:
+    """Flips if ``first`` does not answer the row's columns on one step row alone (TRUE in ``first``, NULL elsewhere)
+    while the step still reads them, or on the row alone when the step holds none; or if the limit can drop the row
+    that carries them."""
+    conn = ThreadedDuckDB(db)
+    rows = await read_row_beside(
+        conn, "ring", by={"id": 1}, columns=_RING, beside=_step("n1"), limit=10, present="seen", first="once"
+    )
+    want = {
+        row[0] for row in db.execute("SELECT DISTINCT v FROM slot_1 WHERE name = 'n1' AND seen_at >= 10").fetchall()
+    }
+    assert {row["v"] for row in rows} == want and len(rows) == len(want) and all(row["seen"] for row in rows)
+    assert [(row["current_ring"], row["floor_at"]) for row in rows if row["once"]] == [(1, 10)]
+    assert all(row["current_ring"] is None and row["floor_at"] is None for row in rows if not row["once"])
+    for limit in (1, 2):
+        cut = await read_row_beside(
+            conn, "ring", by={"id": 1}, columns=_RING, beside=_step("n1"), limit=limit, present="seen", first="once"
+        )
+        assert len(cut) == limit and [row["floor_at"] for row in cut if row["once"]] == [10]
+    alone = await read_row_beside(
+        conn, "ring", by={"id": 1}, columns=_RING, beside=_step("none"), limit=10, present="seen", first="once"
+    )
+    assert [(row["current_ring"], row["seen"], row["once"], row["v"]) for row in alone] == [(1, None, None, None)]
+    sql, params = read_row_beside_statement(
+        "ring", by={"id": 1}, columns=_RING, beside=_step("n1"), limit=5, present="seen", first="once"
+    )
+    assert sql.startswith('SELECT CASE WHEN s."once" IS NOT FALSE THEN r."current_ring" END AS "current_ring", ')
+    assert 'row_number() OVER () = 1 AS "once", k.* FROM (SELECT b.* FROM (' in sql and sql.endswith(
+        "LIMIT $6) AS k) AS s ON TRUE"
+    )
+    assert params == [1, 0, "n1", 1, "n1", 5]
+
+
 async def test_a_derived_row_beside_is_read_before_the_select_list(db: duckdb.DuckDBPyConnection) -> None:
     """Flips if read_row's ``beside=`` row is not read beside the table's (``b``), or a read with none changes."""
     beside = Derived("SELECT 41 + 1 AS was OFFSET 0")

@@ -311,21 +311,26 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
             beside=_noted_rows_step(notes_schema, table, since),
             limit=cap + 1,
             present="noted",
+            # the ring row's columns on one answered row, not repeated on each of hundreds of notes (IT3, 2026-11-16,
+            # YugabyteDB, 500 notes: 2,500 values fewer to send and decode, the statement's median 2.08 -> 1.64 ms)
+            first="ring_row",
         )
     except asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError:
         # NOSILENT: no ring installed here: the caller names the whole table instead, said and counted there
         return "notes_unavailable"
     if not found:
         return "notes_unavailable"
-    ring = found[0]
+    # the one row carrying the ring's columns (ring_row not FALSE: TRUE, or NULL on the ring row alone)
+    ring = next(row for row in found if row[6] is not False)
     # the reach as the statement's legs compute it (since less half the wait, wait_seconds a DOUBLE PRECISION), as
     # _noted_keys_read computes it from the same ring row
     reach = since - timedelta(seconds=float(ring["wait_seconds"]) / 2)
     # before a first switch nothing was ever emptied: every note since the triggers were given is there
     if int(ring["switch_no"]) != 0 and reach < ring["previous_switched_at"]:
         return "not_covered"
-    # each note's values by position (the select list: the ring's five _ROWS_RING_COLUMNS, then noted, key_text, keys,
-    # columns, tenant): at 500 notes the rows' handling, not the statement, was the larger part of the call
+    # each note's values by position (the select list: the ring's five _ROWS_RING_COLUMNS, then noted, ring_row,
+    # key_text, keys, columns, tenant): at 500 notes the rows' handling, not the statement, was the larger part of the
+    # call
     notes = [note for note in found if note[5]]
     if not notes:
         return "no_notes"
@@ -346,8 +351,8 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     # reach they name (a whole-table note keeps it as its columns), as a restore folds them
     reaches: dict[str | None, list[Any]] = {}
     for note in notes:
-        if note[6] is None:
-            reaches.setdefault(None if note[9] is None else str(note[9]), []).append(note[8])
+        if note[7] is None:
+            reaches.setdefault(None if note[10] is None else str(note[10]), []).append(note[9])
     whole = tuple(whole_noted_change(table, tenant, reached) for tenant, reached in reaches.items())
     # a plain or reset change covers its own tenant's rows (or every tenant's, when it is _all's), never another
     # schema's; a load's names only its prefixes, so a row beside them is still named
@@ -356,15 +361,15 @@ async def noted_rows_since(pool: Any, *, notes_schema: str, table: str, since: d
     if None not in covering:
         # the statement answers each (key, columns, tenant) once (its DISTINCT), so each note is one row
         for note in notes:
-            if note[6] is None:
+            if note[7] is None:
                 continue
-            token = None if note[9] is None else str(note[9])
+            token = None if note[10] is None else str(note[10])
             if token in covering:
                 continue
-            columns = note[8]
+            columns = note[9]
             rows.append(
                 ChangedRow(
-                    ids=[str(key) for key in note[7]],
+                    ids=[str(key) for key in note[8]],
                     columns=dict(_columns_of(columns)) or None if columns is not None else None,
                     tenant=token,
                 )

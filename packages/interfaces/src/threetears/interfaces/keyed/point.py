@@ -223,6 +223,7 @@ def read_row_beside_statement(
     beside: Step,
     limit: int,
     present: str,
+    first: str | None = None,
 ) -> tuple[str, list[Any]]:
     """the statement reading the first row of ``table`` the pins name (``r``, as :func:`read_row_statement` reads it)
     and, beside it, up to ``limit`` rows of a step that reads that row's columns (``r."col"``): one statement, so one
@@ -248,6 +249,13 @@ def read_row_beside_statement(
     :ptype limit: int
     :param present: the name of the column that is TRUE on a step row (NULL on the row alone), a TRUSTED identifier
     :ptype present: str
+    :param first: given, the name of a column TRUE on one step row and FALSE on the rest, a TRUSTED identifier: the
+        row's columns then come back on that row alone (and on the row alone), NULL on every other, in no particular
+        order of rows. Each answered row otherwise repeats them, and at hundreds of step rows that is hundreds of
+        values more to send and decode for one row read (the change notes' ring, 2026-11-16, YugabyteDB, 500 notes
+        with the ring's five columns: the statement's best 1.58 -> 1.33 ms, its median 2.08 -> 1.64 ms, IT3).
+        ``None`` repeats them on every row
+    :ptype first: str | None
     :return: the statement, and its binds: the pins', the step's, then ``limit``
     :rtype: tuple[str, list[Any]]
     :raises ValueError: when nothing is pinned, or for a limit under one row
@@ -258,9 +266,21 @@ def read_row_beside_statement(
     step = renumbered(Fragment(beside.sql, beside.params), len(params))
     params += list(beside.params)
     params.append(limit)
+    marked = quote_identifier(present)
+    if first is None:
+        return (
+            f"SELECT r.*, s.* FROM ({row}) AS r LEFT JOIN LATERAL (SELECT TRUE AS {marked}, b.* "
+            f"FROM ({step}) AS b LIMIT ${len(params)}) AS s ON TRUE",
+            params,
+        )
+    # numbered after the limit, so the one numbered first is among the rows kept whatever order an engine limits in
+    once = quote_identifier(first)
+    names = [quote_identifier(column.alias if isinstance(column, Selected) else column) for column in columns]
+    head = ", ".join(f"CASE WHEN s.{once} IS NOT FALSE THEN r.{name} END AS {name}" for name in names)
     return (
-        f"SELECT r.*, s.* FROM ({row}) AS r LEFT JOIN LATERAL (SELECT TRUE AS {quote_identifier(present)}, b.* "
-        f"FROM ({step}) AS b LIMIT ${len(params)}) AS s ON TRUE",
+        f"SELECT {head}, s.* FROM ({row}) AS r LEFT JOIN LATERAL (SELECT TRUE AS {marked}, "
+        f"row_number() OVER () = 1 AS {once}, k.* FROM (SELECT b.* FROM ({step}) AS b LIMIT ${len(params)}) AS k) "
+        "AS s ON TRUE",
         params,
     )
 

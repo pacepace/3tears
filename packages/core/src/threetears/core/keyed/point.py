@@ -209,6 +209,7 @@ async def read_row_beside(
     beside: Step,
     limit: int,
     present: str,
+    first: str | None = None,
 ) -> list[Any]:
     """the first row of ``table`` the pins name and, beside it, up to ``limit`` rows of a step reading that row's
     columns as ``r."col"``, in one statement: one round trip, and one snapshot for the row and the rows it decides
@@ -229,11 +230,17 @@ async def read_row_beside(
     :ptype limit: int
     :param present: the name of the column TRUE on a step row, a TRUSTED identifier
     :ptype present: str
+    :param first: given, the name of a column TRUE on one answered row alone: the table's row's columns come back on
+        that row (or on the row alone) and NULL on the rest, rather than repeated on every step row
+        (:func:`~threetears.interfaces.keyed.read_row_beside_statement`); the rows come in no particular order
+    :ptype first: str | None
     :return: the rows, empty when the pins name no row
     :rtype: list[Any]
     :raises ValueError: when nothing is pinned, or for a limit under one row
     """
-    sql, params = read_row_beside_statement(table, by=by, columns=columns, beside=beside, limit=limit, present=present)
+    sql, params = read_row_beside_statement(
+        table, by=by, columns=columns, beside=beside, limit=limit, present=present, first=first
+    )
     return list(await sent_by(conn).fetch(sql, *params))
 
 

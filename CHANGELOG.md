@@ -6,6 +6,21 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core, interfaces: `keyed.read_row_beside(..., first=)` answers the row's columns once
+
+`read_row_beside` (and `read_row_beside_statement`) take `first`, the name of a column TRUE on one answered row: the
+table's row's columns come back on that row alone (and on the row alone when the step holds none), NULL on the rest,
+rather than repeated on every step row. `noted_rows_since` reads the ring row so: at 500 notes on YugabyteDB the
+statement sends 2,500 values fewer, its best 1.58 -> 1.33 ms and its median 2.08 -> 1.64 ms. Rows answered with
+`first` come in no particular order; without it the SQL is unchanged.
+
+### nats: a request's token is one CSPRNG read
+
+`CsprngNuid.next` (the token every nats-py request, KV get and inbox is named by) drew its 22 digits with
+`secrets.choice`, one CSPRNG read each: about 17 us a token, a third of the CPU a follower spent on one walked grant
+change. It now draws 32 bytes once and keeps each byte below 248 as its digit mod 62 (`bytes.translate`): every digit
+still equally likely, about 1 us a token.
+
 ### core: `loop_turns.emptied` frees sets and dicts too
 
 `emptied` and `emptied_off_loop` (`threetears.core.loop_turns`) took lists only; they now take any mix of lists, sets

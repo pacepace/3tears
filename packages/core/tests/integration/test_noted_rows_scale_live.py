@@ -13,7 +13,6 @@ to run them there.
 
 from __future__ import annotations
 
-import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -24,7 +23,7 @@ import pytest
 
 from threetears.core.collections.change_notes import NotedRows, noted_rows_since
 from threetears.core.ddl.change_notes import RING_TABLE, note_table
-from threetears.core.testing.calibrate import budget_problem
+from threetears.core.testing.calibrate import best_seconds_interleaved, budget_problem
 from threetears.core.testing.note_ring import install_note_ring
 from threetears.core.testing.plans import PlanRecorder, on_yugabyte, plan_problems
 
@@ -142,15 +141,14 @@ class TestATablesNotesAreReadThroughAnIndex:
             await ring.conn.fetch(bare, _ASKED, reach)
             await noted_rows_since(ring.conn, notes_schema=ring.schema, table=_ASKED, since=ring.since, cap=10_000)
         # timed in turn, run by run, so a stall of the database (a compaction after the night's notes went in)
-        # falls on both alike rather than on whichever was timed second
-        baseline = took = float("inf")
-        for _ in range(_RUNS):
-            began = time.perf_counter()
-            await ring.conn.fetch(bare, _ASKED, reach)
-            baseline = min(baseline, time.perf_counter() - began)
-            began = time.perf_counter()
-            await noted_rows_since(ring.conn, notes_schema=ring.schema, table=_ASKED, since=ring.since, cap=10_000)
-            took = min(took, time.perf_counter() - began)
+        # falls on both alike rather than on whichever was timed second; and retaken, as every speed ratio is, when
+        # the host's own idle loop was late over the runs or the process waited on the disk (the shared
+        # best_seconds_interleaved: IT2 saw this ratio 1.2-2.1x alone, 3 reds in 30, with no such check)
+        baseline, took = await best_seconds_interleaved(
+            lambda: ring.conn.fetch(bare, _ASKED, reach),
+            lambda: noted_rows_since(ring.conn, notes_schema=ring.schema, table=_ASKED, since=ring.since, cap=10_000),
+            runs=_RUNS,
+        )
         problem = budget_problem("noted_rows_since", took, baseline)
         assert problem is None, problem
 

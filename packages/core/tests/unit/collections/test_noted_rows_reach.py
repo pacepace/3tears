@@ -36,6 +36,7 @@ _FIELDS = (
     "wait_seconds",
     "writes_previous_until",
     "noted",
+    "ring_row",
     "key_text",
     "keys",
     "columns",
@@ -51,8 +52,9 @@ class _Record(tuple[Any, ...]):
 
 
 def _note(key_text: str | None, keys: list[str] | None, columns: Any, tenant: str | None) -> _Record:
-    """one row of ``noted_rows_since``'s statement: the ring (no switch yet), then a note."""
-    return _Record((0, 0, _EPOCH, 60.0, _EPOCH, True, key_text, keys, columns, tenant))
+    """one row of ``noted_rows_since``'s statement: the ring (no switch yet; its columns answered on the first note
+    alone, as ``read_row_beside(first=)`` answers them), then a note."""
+    return _Record((0, 0, _EPOCH, 60.0, _EPOCH, True, True, key_text, keys, columns, tenant))
 
 
 class _Notes:

@@ -236,6 +236,20 @@ NUID_LENGTH: Final[int] = 22
 #: nats-py's NUID alphabet: base62, so a token is a valid subject token.
 _NUID_DIGITS: Final[bytes] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
+#: random bytes below this map to a digit by their remainder mod 62 (248 = 4 x 62, so each digit is equally likely);
+#: the rest are dropped, as rejection sampling does
+_NUID_ACCEPTED: Final[int] = 4 * len(_NUID_DIGITS)
+
+#: a random byte's digit (``bytes.translate``'s table): byte ``b`` below :data:`_NUID_ACCEPTED` is digit ``b % 62``
+_NUID_TABLE: Final[bytes] = bytes(_NUID_DIGITS[b % len(_NUID_DIGITS)] for b in range(256))
+
+#: the random bytes dropped (``bytes.translate``'s delete set): those at or past :data:`_NUID_ACCEPTED`
+_NUID_REJECTED: Final[bytes] = bytes(range(_NUID_ACCEPTED, 256))
+
+#: random bytes drawn a token: about 22.7 are needed (8/256 dropped), and 32 fall short of 22 kept about once in 10^10
+#: draws, which draws again
+_NUID_DRAWN: Final[int] = 32
+
 
 class CsprngNuid(NUID):
     """a drop-in for nats-py's ``NUID`` whose every token is drawn from ``secrets``.
@@ -250,10 +264,20 @@ class CsprngNuid(NUID):
     def next(self) -> bytearray:
         """a fresh token, as nats-py's ``NUID.next`` returns one.
 
+        One read of the system's CSPRNG (``secrets.token_bytes``), each byte below :data:`_NUID_ACCEPTED` kept as the
+        digit of its remainder mod 62 (in C: ``bytes.translate``), the rest dropped: every digit equally likely, as
+        ``secrets.choice`` draws them. Drawing a digit at a time took 22 CSPRNG reads, about 17 us a token, on every
+        NATS request (a KV get included: a third of the CPU a walked grant change spent on a follower, IT3 2026-11-16);
+        this takes about 1 us.
+
         :return: a new, mutable ``bytearray`` of :data:`NUID_LENGTH` base62 bytes
         :rtype: bytearray
         """
-        return bytearray(secrets.choice(_NUID_DIGITS) for _ in range(NUID_LENGTH))
+        token = bytearray()
+        while len(token) < NUID_LENGTH:
+            token += secrets.token_bytes(_NUID_DRAWN).translate(_NUID_TABLE, _NUID_REJECTED)
+        del token[NUID_LENGTH:]
+        return token
 
 
 def install_csprng_nuid(connection: Client) -> None:
