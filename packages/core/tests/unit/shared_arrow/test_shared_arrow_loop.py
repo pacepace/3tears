@@ -5,6 +5,14 @@ The contracts. DuckDB scans a mapped table with the interpreter lock released: i
 rows in 200 parts, each read's DuckDB on a serving engine's 2 threads) never hold the event loop past 20 ms beyond
 what the host's own idle loop is late at the same moments, while versions are published and mapped beside them. And the
 module DuckDB scans Arrow through is imported when shared Arrow is, never by a serving thread's first read.
+
+A window over the budget is a red only when the next trusted window is over it too. On GitHub's 4-vCPU runners
+(2026-11-17, about 370 windows, most in the order CI runs the ``loop_timing`` session) 5 windows had a tick 20-41 ms
+late, each the only tick past 15 ms in its window; the median window's worst tick was under 8 ms. Each of the 4 with a
+window after it was followed by one under the budget. One reader instead of four, or ``SELECT 1`` instead of the scans,
+gave the same single late ticks (up to 18 ms, and 15 ms with no scan at all, on 4 cores), so they are the interpreter
+lock passing between busy threads on few cores, not the reads. A read that held the lock through a scan would be over
+the budget in every window, as the planted block is.
 """
 
 from __future__ import annotations
@@ -155,26 +163,37 @@ def _window(measured: tuple[list[Tick], list[Tick], list[int], int]) -> tuple[li
     return measured[0], measured[1]
 
 
+#: how many trusted windows a red is judged over: a window over the budget counts only when the next is over it too
+#: (the module docstring has the data)
+WINDOWS_TO_CONFIRM = 2
+
+
 @pytest.mark.loop_timing
 class TestTheLoopRunsWhileThreadsQueryTheCopy:
     async def test_a_ticker_is_never_late_while_threads_query_dev_sized_versions(
         self, tmp_path: Path, parts: dict[str, pa.Table]
     ) -> None:
-        ticks, host, reads, mapped = await trusted(
-            lambda: _queried_while_published(tmp_path, parts),
-            _window,
-            host_may_be_late=LOOP_MAY_BE_LATE,
-            threads=READERS * READER_THREADS,
-        )
-        assert min(reads) > 0 and mapped > 1, (reads, mapped)
-        added = added_lateness(ticks, host, every=TICK)
-        late = latest(ticks, every=TICK)
-        print(
-            f"reads {reads}, versions mapped {mapped}, late {late * 1000:.1f} ms, past the host {added * 1000:.1f} ms"
-        )
-        assert added < LOOP_MAY_BE_LATE, (
-            f"the loop ran {added * 1000:.1f} ms late while threads queried the copy, past the host's own idle loop "
-            f"({late * 1000:.1f} ms late in all)"
+        seen: list[str] = []
+        for _ in range(WINDOWS_TO_CONFIRM):
+            ticks, host, reads, mapped = await trusted(
+                lambda: _queried_while_published(tmp_path, parts),
+                _window,
+                host_may_be_late=LOOP_MAY_BE_LATE,
+                threads=READERS * READER_THREADS,
+            )
+            assert min(reads) > 0 and mapped > 1, (reads, mapped)
+            added = added_lateness(ticks, host, every=TICK)
+            late = latest(ticks, every=TICK)
+            print(
+                f"reads {reads}, versions mapped {mapped}, late {late * 1000:.1f} ms, "
+                f"past the host {added * 1000:.1f} ms"
+            )
+            if added < LOOP_MAY_BE_LATE:
+                return
+            seen.append(f"{added * 1000:.1f} ms past the host's own idle loop ({late * 1000:.1f} ms late in all)")
+        pytest.fail(
+            f"the loop ran late while threads queried the copy in each of {WINDOWS_TO_CONFIRM} trusted windows: "
+            f"{'; '.join(seen)}"
         )
 
     async def test_a_block_planted_on_the_loop_is_caught(self, tmp_path: Path, parts: dict[str, pa.Table]) -> None:
