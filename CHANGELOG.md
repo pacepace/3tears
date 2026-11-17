@@ -41,11 +41,14 @@ disclosure on the page and in the bundle says it too, and it names what it does 
 arm's own rate, cost, latency and the exit status, still read at the cases run so far (`comparisons.REREAD_SENTENCE`,
 `comparisons.read_by_bet`). It is said of a store that outlives the run, so the page is true wherever it is read; kept
 in memory (`store=":memory:"`), where nothing is left to continue, the print's line says instead that running it again
-is a new comparison (`continuation.UNKEPT_SENTENCE`). Seeded simulations driving `Eval.run` itself, two arms passing
-50% each, k = 1: run again as cases are added (adds sized from the data, up to five runs), 32 of 1,000 newcomers
-separate (3.2%, 95% upper bound 4.5%) at α = 5%, where re-running every case on each run, read by the same bet,
-separates 36 of 400 (9.0%, lower bound 6.4%); cancelling a run as soon as the running count favours an arm, then
-continuing, separates 5 of 600 (0.8%, 95% upper bound 1.9%). A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
+is a new comparison (`continuation.UNKEPT_SENTENCE`). Simulations driving `Eval.run` itself, two arms passing 50% each (drawn, not pinned: the launch order comes from its
+id): run again as cases are added (k = 1, adds sized from the data, up to five runs), 27 of 1,000 newcomers separate
+(2.7%, 95% upper bound 3.9%) at α = 5%, where re-running every case on each run, read by the same bet, separates 37 of
+400 (9.25%, lower bound 6.6%). At k = 3, cells shuffled, a watcher who cancels a run as soon as the answers landed
+favour an arm by four, then continues: the product separates 0 of 600, with latency apart from the answer and with
+wrong answers six times slower (upper bound 0.6%). A watcher who cancels the moment the reading the rule before (file
+order) would show separates, wrong answers slower: that rule separates 38 of 300 (12.7%, lower bound 9.1%), the
+product 1 of 300 (0.3%, upper bound 1.8%). A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
 the time where the reading it replaces did 43.6%. A quick-path comparison is one the quick path filed
 (`EvalCampaign.created_by` is `kernel.candidate_kind.QUICK_PATH_FILER`) over runs of kinds only it launches
 (`QUICK_PATH_KINDS`), no arm recording a cell in two runs, with no plan of looks (`trials.bet_places`): a campaign a host

@@ -21,7 +21,9 @@ depends on a declared count, and the quick path continues one comparison by runn
   again as cases are added it separates at most α, and re-running every case on each run (as the quick path did
   before), read by the same bet, exceeds α; a watcher cancelling a run as soon as the answers landed favour an arm,
   then continuing (k = 3, shuffled cells), with latency apart from the answer and with wrong answers slower, the
-  product's share is held to at most α and the rule before it (file order) is read over the same answers;
+  product's share is held to at most α and the rule before it (file order) is read over the same answers; a watcher
+  cancelling the moment the file-order reading separates, wrong answers slower, takes that read above α and leaves
+  the product's at most α;
 - at one stated alternative, a single read's power against the reading it replaces;
 - the rung 3 comparison prints the one sentence that says so, and reads cost by its t test, once.
 
@@ -1110,8 +1112,8 @@ async def test_under_the_null_a_continued_comparison_separates_at_most_alpha() -
     each, k = 1, up to five runs with adds sized from the data, stopping at the first separation. The bet reads each
     launch's cases in the order they were completed, which the product draws from its launch's id, so no count is
     reproducible and none is pinned: the test holds the share that separates to at most α, and its 95%
-    Clopper-Pearson interval is reported. Read in the cases file's order (as pinned, before the read order changed),
-    32 of 1,000 separated (3.2%, 95% interval 2.2% to 4.5%)."""
+    Clopper-Pearson interval is reported. As drawn for this change, 27 of 1,000 separated (2.7%, 95% interval 1.8% to
+    3.9%); read in the cases file's order (pinned before the read order changed), 32 of 1,000 (3.2%, 2.2% to 4.5%)."""
     separated = await _separations("continued", _NEWCOMERS, continued=True)
     bound = exact_rate_interval(separated, _NEWCOMERS)
     assert bound is not None
@@ -1123,8 +1125,9 @@ async def test_under_the_null_a_continued_comparison_separates_at_most_alpha() -
 async def test_under_the_null_a_comparison_re_run_whole_each_time_separates_more_than_alpha() -> None:
     """The same newcomers, each run into a store of its own, so every case runs again on each run (the quick path's
     re-runs before it continued a comparison, read by the same bet): :data:`_REDRAWN` newcomers, of whom more than α
-    separate, so re-drawing every case on each run is not one bet and loses the bound. Read in the cases file's order
-    (as pinned, before the read order changed), 36 of 400 separated (9.0%, 95% interval 6.4% to 12.2%)."""
+    separate, so re-drawing every case on each run is not one bet and loses the bound. As drawn for this change, 37 of
+    400 separated (9.25%, 95% interval 6.6% to 12.5%); read in the cases file's order (pinned before the read order
+    changed), 36 of 400 (9.0%, 6.4% to 12.2%)."""
     separated = await _separations("rerun", _REDRAWN, continued=False)
     bound = exact_rate_interval(separated, _REDRAWN)
     assert bound is not None
@@ -1164,9 +1167,11 @@ async def test_under_the_null_a_comparison_cancelled_when_an_arm_leads_and_conti
     order is promised to hold then, and the share is reported as it is). The launch order is drawn from each launch's
     id, so no count is pinned; each reading is also checked against the bet recomputed in that order.
 
-    Run locally for this change (the counts are drawn, so a run differs): see the chunk report's fix round 4, which
-    gives each count with its 95% Clopper-Pearson interval, the product's and the file-order read's (the rule before,
-    read over the same answers, which this test reports in its failure message only)."""
+    As drawn for this change (95% Clopper-Pearson intervals), the product separated 0 of 600 in each (0.0%, upper
+    0.6%); the rule before, read over the same answers in file order, separated 21 of 600 with latency apart (3.5%,
+    2.2% to 5.3%) and 11 of 600 with wrong answers slower (1.8%, 0.9% to 3.3%). This watcher cancels most runs early,
+    so few cases complete and neither read exceeds α here; the watcher who cancels on the file-order reading itself
+    (the test below) is the one that tells the reads apart."""
     product, file_order = await _watched(
         "watched" if not wrong_is_slow else "slow", _WATCHERS, wrong_is_slow=wrong_is_slow
     )
@@ -1175,3 +1180,33 @@ async def test_under_the_null_a_comparison_cancelled_when_an_arm_leads_and_conti
         f"file order {file_order}/{_WATCHERS} {exact_rate_interval(file_order, _WATCHERS)}"
     )
     assert product / _WATCHERS <= SIGNIFICANCE_ALPHA, said
+
+
+#: Watchers in the simulation that cancels on the file-order reading itself.
+_READERS = 300
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(5400)
+async def test_under_the_null_a_watcher_cancelling_on_the_file_order_reading_breaks_that_read_and_not_the_product() -> (
+    None
+):
+    """The order claim's risky case: :data:`_READERS` watchers (:func:`_watcher` with ``on_reading``) who cancel a run
+    the moment the reading the rule before would show over every answer landed so far (file order, partial cases at the
+    repeats landed) separates at α, then continue, with wrong answers six times slower than right ones (latency that
+    tracks the outcome), k = 3, shuffled cells, up to five runs. Under the null the rule before then separates more than
+    α of the time: its readings over a scattered landed set are not one sequence, so a stop chosen on them is not a
+    stopping time of its bet. The product, reading the complete cases in the order they were completed, holds the share
+    to at most α. As drawn for this change (95% Clopper-Pearson intervals): the rule before 38 of 300 (12.7%, 9.1% to
+    17.0%), the product 1 of 300 (0.3%, 0.0% to 1.8%)."""
+    product = file_order = 0
+    for index in range(_READERS):
+        separated = await _watcher(f"reader-{index}", wrong_is_slow=True, on_reading=True)
+        product += separated[0]
+        file_order += separated[1]
+    said = (
+        f"product {product}/{_READERS} {exact_rate_interval(product, _READERS)}; "
+        f"file order {file_order}/{_READERS} {exact_rate_interval(file_order, _READERS)}"
+    )
+    assert product / _READERS <= SIGNIFICANCE_ALPHA, said
+    assert file_order / _READERS > SIGNIFICANCE_ALPHA, said
