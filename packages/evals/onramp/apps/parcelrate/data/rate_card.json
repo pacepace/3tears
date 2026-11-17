@@ -1,0 +1,28 @@
+{
+  "courier": "Fenwick Parcels",
+  "effective_from": "2026-01-05",
+  "notes": "Prices in pence, excluding VAT. Each band covers weights up to and including its limit.",
+  "signed_surcharge_pence": 150,
+  "zones": {
+    "domestic": [
+      {"name": "small parcel", "up_to_kg": "1", "pence": 355},
+      {"name": "medium parcel", "up_to_kg": "2", "pence": 495},
+      {"name": "large parcel", "up_to_kg": "5", "pence": 699},
+      {"name": "heavy parcel", "up_to_kg": "10", "pence": 1049},
+      {"name": "very heavy parcel", "up_to_kg": "20", "pence": 1599}
+    ],
+    "europe": [
+      {"name": "small parcel", "up_to_kg": "1", "pence": 995},
+      {"name": "medium parcel", "up_to_kg": "2", "pence": 1450},
+      {"name": "large parcel", "up_to_kg": "5", "pence": 2100},
+      {"name": "heavy parcel", "up_to_kg": "10", "pence": 3150},
+      {"name": "very heavy parcel", "up_to_kg": "20", "pence": 4800}
+    ],
+    "world": [
+      {"name": "small parcel", "up_to_kg": "1", "pence": 1395},
+      {"name": "medium parcel", "up_to_kg": "2", "pence": 2290},
+      {"name": "large parcel", "up_to_kg": "5", "pence": 3480},
+      {"name": "heavy parcel", "up_to_kg": "10", "pence": 5250}
+    ]
+  }
+}
