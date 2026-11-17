@@ -4474,6 +4474,39 @@ async def execute_run(
             if sink in in_flight:
                 in_flight.remove(sink)
 
+    def cut_short(sink: _CellSink, tc: EvalTestCase, k: int) -> CellOutcome:
+        """A cell cancelled with its run, or interrupted, while it ran: recorded excluded on the rig's side with what it
+        had spent, which lives only on its sink."""
+        _, waiting_on = _DEADLINE_CHARGE[sink.pending]
+        log.warning(
+            "Eval cell cancelled with its run while waiting on %s (test_case=%s model=%s k=%s run=%s); "
+            "recording what it had spent",
+            waiting_on,
+            tc.id,
+            model,
+            k,
+            run.id,
+        )
+        errors = sink.errors = ErrorLedger.of(sink.side())
+        msg = f"cell cancelled with its run while waiting on {waiting_on}"
+        if sink.judging is None:
+            errors.add_infra(msg)
+        return _cut_short_cell(
+            sink=sink,
+            scope_id=run.scope_id,
+            eval_run_id=run.id,
+            test_case_id=tc.id,
+            model=model,
+            k_iteration=k,
+            subject_id=run.subject_snapshot.subject_id,
+            variant=variant,
+            concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
+            termination="cancelled",
+            judge_model=run.judge_model,
+            rate_table=options.external_rates,
+            unfinished_judging=f"did not finish: {msg}",
+        )
+
     async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
         nonlocal done, unserved_in_a_row, unserved_cells, last_unserved
         cancelled_in_cell = False
@@ -4558,44 +4591,20 @@ async def execute_run(
             )
             # A set-aside here is neither a stop nor counted on the cap's record: a phase waits only while another holds
             # room it may not bill, so the cap's shortage was never established. The cell's mark is its count.
-        except (asyncio.CancelledError, KeyboardInterrupt) as stopped:
-            # NOSILENT: the cell is recorded excluded with what it spent, and the cancel (or the interrupt) is re-raised
-            # once it is saved. The run was cancelled, or the person interrupted it, while this cell ran. The cancel still ends the run — it is
+        except asyncio.CancelledError:
+            # NOSILENT: the cell is recorded excluded with what it spent, and the cancel is re-raised once it is saved.
+            # The run was cancelled while this cell ran. The cancel still ends the run — it is
             # re-raised below, once the cell is accounted for — but the cell's spend was real, and
             # it lives only on this sink, so it is recorded as an excluded cell first rather than
             # dropped with the frame. Excluded on the rig's side: nothing the candidate did ended it.
-            _, waiting_on = _DEADLINE_CHARGE[sink.pending]
-            log.warning(
-                "Eval cell cancelled with its run while waiting on %s (test_case=%s model=%s k=%s run=%s); "
-                "recording what it had spent",
-                waiting_on,
-                tc.id,
-                model,
-                k,
-                run.id,
-            )
-            errors = sink.errors = ErrorLedger.of(sink.side())
-            msg = f"cell cancelled with its run while waiting on {waiting_on}"
-            if sink.judging is None:
-                errors.add_infra(msg)
-            result, cell_trace = _cut_short_cell(
-                sink=sink,
-                scope_id=run.scope_id,
-                eval_run_id=run.id,
-                test_case_id=tc.id,
-                model=model,
-                k_iteration=k,
-                subject_id=run.subject_snapshot.subject_id,
-                variant=variant,
-                concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
-                termination="cancelled",
-                judge_model=run.judge_model,
-                rate_table=options.external_rates,
-                unfinished_judging=f"did not finish: {msg}",
-            )
+            result, cell_trace = cut_short(sink, tc, k)
             cancelled_in_cell = True
-            if isinstance(stopped, KeyboardInterrupt):
-                interrupted = stopped
+        except KeyboardInterrupt as stopped:
+            # NOSILENT: a Ctrl+C landing in this cell's own step cuts it as a cancel does: recorded excluded with what it
+            # spent, and the interrupt is raised itself once the cell is saved.
+            result, cell_trace = cut_short(sink, tc, k)
+            cancelled_in_cell = True
+            interrupted = stopped
         except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError, JudgeCallUnserved) as raised:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
