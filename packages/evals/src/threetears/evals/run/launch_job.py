@@ -9,10 +9,10 @@ as this job (:func:`launch_job_work`): the launchers, the start, and the runs to
 **The record is the launch.** :class:`EvalLaunch` is written as the job starts (``running``, carrying its lease),
 again the moment its runs start (``run_ids``, in arm order), and as it ends: ``completed`` once every run has ended,
 ``failed`` when an arm was refused at its launcher or a run ended ``failed``, ``cancelled`` when it was asked to stop
-— which stops the runs it started — and ``timed_out`` when its preparation outran :data:`LAUNCH_PREPARATION_BUDGET_S`.
+— which stops the runs it started — and ``timed_out`` when its preparation outran :data:`_LAUNCH_PREPARATION_BUDGET_S`.
 
 **Its budget is its preparation's.** The launchers' work — a generating launch's paid calls, each arm's clients —
-is bounded by :data:`LAUNCH_PREPARATION_BUDGET_S`; the wait for its runs is not bounded by the launch at all. Each
+is bounded by :data:`_LAUNCH_PREPARATION_BUDGET_S`; the wait for its runs is not bounded by the launch at all. Each
 run is bounded by its own budget from the moment it holds a concurrency slot, and every run holding one is bounded
 the same way, so the wait ends; a launch budget over the wait counted the time its runs spent queued behind other
 launches, and cancelled healthy runs that had not yet started. Its id is the launch group's, which every run it starts carries as
@@ -44,12 +44,12 @@ from threetears.evals.schema.models import ArmSchedule, CoreSchemaVersion, utc_n
 from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 
 #: The reason recorded on a run its launch's cancel stopped.
-LAUNCH_CANCEL_REASON = "its launch was cancelled"
+_LAUNCH_CANCEL_REASON = "its launch was cancelled"
 
 #: A launch's wall-clock ceiling on its preparation — its launchers, a generating launch's calls among them — in
 #: seconds: the engine's cap on one run's job, a backstop against a launcher or a provider that hangs. The runs it
 #: starts are bounded by their own budgets, never by this.
-LAUNCH_PREPARATION_BUDGET_S = JOB_TIMEOUT_CAP_S
+_LAUNCH_PREPARATION_BUDGET_S = JOB_TIMEOUT_CAP_S
 
 
 class EvalLaunch(CoreDocumentModel):
@@ -121,25 +121,15 @@ def launch_job_work(
     """An admitted launch as work: its launchers run, its runs started together and waited for to their end.
 
     :param host: The launching host, whose job manager runs the runs.
-    :ptype host: LaunchHost
     :param admitted: The launch as :func:`~threetears.evals.run.admit_launch` admitted it.
-    :ptype admitted: AdmittedLaunch
     :param template_id: The template it launches.
-    :ptype template_id: str
     :param subject_id: The subject it measures.
-    :ptype subject_id: str
     :param models: The models it named, one arm each.
-    :ptype models: list[str]
     :param k_runs: Repeats of every case.
-    :ptype k_runs: int
     :param n_variations: Cases it generates first.
-    :ptype n_variations: int
     :param scope_id: The scope its runs live in.
-    :ptype scope_id: str
     :param arm_schedule: The schedule its arms run under, as resolved, recorded on the launch.
-    :ptype arm_schedule: ArmSchedule | None
     :return: The work; its record is the launch, its id the launch group's.
-    :rtype: JobWork[EvalLaunch]
     """
     record = EvalLaunch(
         id=admitted.group.id,
@@ -164,18 +154,12 @@ def resumed_launch_work(
     ended — and ends as a launch ends.
 
     :param host: The launching host.
-    :ptype host: LaunchHost
     :param admitted: The take-up's group, admitted under the launch's id
         (:func:`~threetears.evals.run.resume.resume_launch`).
-    :ptype admitted: AdmittedLaunch
     :param record: The launch's record, reopened: ``running``, its ending cleared.
-    :ptype record: EvalLaunch
     :param epoch: The lease epoch it is taken up under.
-    :ptype epoch: int
     :param etag: The token its stored record was read with; its reopen is written conditionally on it.
-    :ptype etag: str | None
     :return: The work.
-    :rtype: JobWork[EvalLaunch]
     """
     return _launch_work(host, admitted, record, epoch=epoch, etag=etag)
 
@@ -187,7 +171,7 @@ def _launch_work(
     manager, scope_id = host.job_manager, record.scope_id
 
     async def launch(recorder: JobRecorder[EvalLaunch]) -> EvalLaunch:
-        async with host.job_timeout_factory(LAUNCH_PREPARATION_BUDGET_S):
+        async with host.job_timeout_factory(_LAUNCH_PREPARATION_BUDGET_S):
             runs = await admitted.start()
         # A launch taken up again names its runs already, in arm order; those it took up are among them.
         run_ids = list(dict.fromkeys([*recorder.record.run_ids, *(run.id for run in runs)]))
@@ -198,7 +182,7 @@ def _launch_work(
             # Cancelled, fenced off, or the progress write failed: the runs it started stop with it, each
             # recording its own ending, rather than run on under a launch that has ended.
             for run_id in run_ids:
-                manager.cancel_job(run_id, reason=LAUNCH_CANCEL_REASON)
+                manager.cancel_job(run_id, reason=_LAUNCH_CANCEL_REASON)
             await asyncio.shield(manager.wait_for(run_ids))
             raise
         eval_host = host.eval_host
@@ -221,9 +205,7 @@ def _launch_work(
 
 
 __all__ = [
-    "LAUNCH_CANCEL_REASON",
     "LAUNCH_JOB",
-    "LAUNCH_PREPARATION_BUDGET_S",
     "EvalLaunch",
     "launch_job_work",
     "resumed_launch_work",

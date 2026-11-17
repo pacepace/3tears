@@ -39,12 +39,12 @@ import threetears.evals.ops.report_writer.write as report_write_module
 from threetears.evals.actions import (
     ActionCatalogue,
     MountedTool,
-    analyst_actions,
     analyst_tools,
     eval_catalogue,
     read_only_tools,
     standard_tools,
 )
+from threetears.evals.actions.analyst import analyst_actions
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.analysis.analyst_gaps import gap_digest
 from threetears.evals.kernel import StorageError

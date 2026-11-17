@@ -167,7 +167,6 @@ class MemberActsOn:
         """Record the map's key -> measure pairs.
 
         :param members: Each map key a launch may set that has a known mechanism, mapped to the measure's name.
-        :ptype members: Mapping[str, str]
         """
         object.__setattr__(self, "members", tuple(members.items()))
 
@@ -318,7 +317,6 @@ class KindContract:
 
         :return: The frozen record of the overlay model's defaults; ``None`` when the model has a required
             field, so no launch runs at a default the engine could compare against.
-        :rtype: dict[str, Any] | None
         :raises KindContractError: The model's own defaults do not validate — a default its field refuses, or a
             validator refusing the defaults together. That is a defect in the model, not a model with no
             default: read as one, every run of the kind read its departure from production as unchecked.
@@ -347,10 +345,8 @@ class KindContract:
 
         :param overlays: What the launch asked for, by field name. ``None`` and ``{}`` both ask for the
             model's defaults.
-        :ptype overlays: Mapping[str, Any] | None
         :return: The validated model — every field resolved, defaults included — or ``None`` for a kind
             with no overlay model and a launch that turned nothing.
-        :rtype: BaseModel | None
         :raises ValidationFailedError: A name the model does not have, a value it refuses, or any overlay
             at all for a kind with no overlay model. The message names each field.
         """
@@ -361,10 +357,8 @@ class KindContract:
 
         :param kind_spec: What the template states, by field name. ``None`` and ``{}`` both ask for
             the model's defaults — and are refused by a model with a required field.
-        :ptype kind_spec: Mapping[str, Any] | None
         :return: The validated model, every field resolved, or ``None`` for a kind with no spec model
             and a template that states nothing.
-        :rtype: BaseModel | None
         :raises ValidationFailedError: A name the model does not have, a value it refuses, a required
             field left out, or any spec at all for a kind with no spec model. The message names
             each field.
@@ -377,15 +371,10 @@ class KindContract:
         """Validate ``values`` against ``model``, naming every field refused — one rule for both models.
 
         :param model: The kind's model, or ``None`` when it declares none.
-        :ptype model: type[BaseModel] | None
         :param values: What was supplied, by field name.
-        :ptype values: Mapping[str, Any] | None
         :param noun: What a field of this model is called in a refusal.
-        :ptype noun: str
         :param refused_as: How a refusal says supplying a field to a kind with no model reads.
-        :ptype refused_as: str
         :return: The validated model, or ``None`` for no model and nothing supplied.
-        :rtype: BaseModel | None
         :raises ValidationFailedError: As :meth:`validate_overlays` and :meth:`validate_spec` describe.
         """
         supplied = dict(values or {})
@@ -418,7 +407,6 @@ class KindContract:
         """One lever per overlay field, for the host's registry; an open family adds its container.
 
         :return: The declarations, in field order. Empty for a kind with no overlay model.
-        :rtype: tuple[Sweepable, ...]
         """
         declared: list[Sweepable] = []
         for knob in self._knobs:
@@ -466,12 +454,10 @@ class KindContract:
         """This run's level of every fixed overlay lever — what the engine composes into its variant key.
 
         :param run: The run, of this kind or another.
-        :ptype run: EvalRun
         :return: Lever name -> level. A run of another kind sits at a level of its own that every such
             run shares, so the lever splits nothing among them — and that level hashes apart from
             every value a field can hold, ``None`` included, so a pivot over the lever never joins
             a run of another kind with a run of this one whose field is ``None``.
-        :rtype: dict[str, SweepableValue]
         """
         overlays = self._overlays_of(run)
         if overlays is None:
@@ -550,9 +536,7 @@ def freeze(validated: BaseModel | None) -> dict[str, Any]:
     Elements sort by their canonical JSON, so a set of anything JSON can hold has one order.
 
     :param validated: The validated model, or ``None`` for a kind that declares none.
-    :ptype validated: BaseModel | None
     :return: Every field of the model at the level it validated to; ``{}`` when there is no model.
-    :rtype: dict[str, Any]
     """
     if validated is None:
         return {}
@@ -580,13 +564,9 @@ def _excluded_paths(model: type[BaseModel], prefix: str = "", seen: frozenset[ty
     record alike. Nested models are walked through every container their annotation names.
 
     :param model: The model to walk.
-    :ptype model: type[BaseModel]
     :param prefix: The dotted path of ``model`` within the kind's model.
-    :ptype prefix: str
     :param seen: Models already on the path, so a recursive model is walked once.
-    :ptype seen: frozenset[type]
     :return: The excluded fields' paths, in declaration order.
-    :rtype: list[str]
     """
     paths: list[str] = []
     for name, info in model.model_fields.items():
@@ -629,13 +609,9 @@ def _read_knob(prefix: str, name: str, info: FieldInfo) -> tuple[_Knob | None, l
     """Read one overlay field into a knob, or say why it cannot be one.
 
     :param prefix: The kind's lever prefix.
-    :ptype prefix: str
     :param name: The field's name.
-    :ptype name: str
     :param info: The field's Pydantic info.
-    :ptype info: FieldInfo
     :return: The knob (``None`` when there are problems) and the problems found.
-    :rtype: tuple[_Knob | None, list[str]]
     """
     problems: list[str] = []
     if not (info.description or "").strip():

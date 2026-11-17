@@ -66,11 +66,8 @@ def written_arm(name: str, tag: str) -> str:
     :data:`~threetears.evals.analysis.report.words.TOLD_APART`) is not tagged twice.
 
     :param name: The arm's name on the page.
-    :ptype name: str
     :param tag: Its letter tag.
-    :ptype tag: str
     :return: The arm, written.
-    :rtype: str
     """
     told = TOLD_APART.format(name="", tag=tag)
     return name if name.endswith(told) else ARM_TEMPLATE.format(name=name, tag=tag)

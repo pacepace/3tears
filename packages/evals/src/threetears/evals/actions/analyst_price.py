@@ -89,7 +89,6 @@ def analyst_price_actions() -> tuple[Action, ...]:
     """The ``Investigate: analyses`` action that prices a trade.
 
     :return: ``price_tradeoff``.
-    :rtype: tuple[Action, ...]
     """
     return (
         Action(

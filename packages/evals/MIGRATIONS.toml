@@ -77,7 +77,7 @@ notes = [
     "A bundle's trial rows carry each case's place (#1209): `TrialRow.case_place` (new, optional, `ge=1`) is where the case first stands in the member runs' frozen case lists (`EvalRun.test_case_ids`), chained in the bundle's run order (created, then id), from 1. Where every run holds one list, that is the case's line in it; where the lists differ (a case added or dropped between runs, a run reordered, runs sharded), it is the order the campaign first launched its cases in, which no one run's list need hold, and the bundle says so in `AnalysisContextBundle.case_lists_differ` (new, optional, a boolean left out of the document when false). A page numbers a case it names by no label by its place, never by a number in its id, and says under its Cases table when the runs' lists differed. Additive and optional: no `schema_version` move, and outside every fingerprint (version 3 is over the evidence manifest alone, whose run digests already cover `test_case_ids`; version 2 leaves out `case_place` through `_ADDED_SINCE_V2` and `case_lists_differ` as a field outside `_V2_FIELDS`), so no stored fingerprint, pin or analysis moves. A bundle frozen with an analysis before this change carries no place (`case_place` reads None): its page numbers the cases it holds by their place among them, in the Trials table's order, and says so under its Cases table. This build writes `case_place` on every trial row (null included), so a build from before it refuses a bundle this build assembled (`extra='forbid'`): deploy this build to every reader first.",
     "A bundle fills `rescore` on a judged arm and `rescore_share` on a paired judged contrast where the judge's results were re-scored (both added unset by the shape move); `Rescore` gains `k` (the k its pass^k ceiling is read at), `variance_interval` (the variance's range) and `ceiling_state` (`not_available`, `too_few` where the ceiling is read and cannot be), each optional, the last two left out of the document while unset. Additive: a bundle over results nobody re-scored dumps as it did, no fingerprint reads either field (computed statistics are outside it), and no bundle schema version moves. Degraded read: a bundle stored without them reads as one whose judge was not re-scored. Core minor 15.22: `JudgeRepeat.sample` (`random` or `selected`, default None and left out of the document while unset) records how a repeat's result was chosen; a repeat asked of every result of a run is asked in an order the engine draws. Re-score noise reads only repeats with `sample` `random`; a repeat stored before reads as `not_recorded` and supports no figure. Evidence in a bundle's fingerprint only where set, so no stored fingerprint moves. Port: nothing; to read re-score noise over a run repeated before this release, repeat it again with no results named.",
     "Cell model 15 and core minor 15.21, no identity version move (#1187). In a campaign's cells, the definitions of the host's measures a run's values were read under are a dimension of the test setup, read by every reader of the setup (the cells, the confound scans, the coverage rows, the divergences, the factor aliasing): runs that recorded different `EvalRun.measure_definitions` share no cell and no contrast, a run whose results hold a host measure and that recorded none is a setup of its own, pooled and compared with nothing, and a divergence between lever levels whose runs were not read under one recorded definition is not tested. Two runs whose candidate responses each named no model (`RoleUsage.served_model` unset on a candidate row) no longer share a cell. A cell names the coordinates its arm is split on (`Cell.split_on`, new, optional, left out when empty), and every arm-level reader (the campaign's rows, floors and pairs, a measurement's rates, the report input's figures and scoreboard rows, an aspect page's verdict line and scoreboard) withholds an arm split on either coordinate, and a floor or row between two arms that share no setup because their definitions differ or went unrecorded; `AnswerSplit.coordinate` (new, optional, left out when `served_model`) names which, and a report input's withheld scoreboard row says so in `ScoreboardRow.state` (new, optional, left out when unset: `withheld`, reason `split`, the coordinate), which the figure keys read; a stored input carries none and reads its counts as it did. Stored runs that stop pooling: (1) every run that holds host measures and recorded no definition, which is every such run stored before core minor 15.18; (2) within one arm, runs whose candidate responses named no model. The `runs_attest` action states either coordinate of stored runs (`coordinate` is one of `measure_definition`, `served_model`: the closed set `AttestableCoordinate`; many runs per call). A statement of the served model records `EvalRun.served_model_attestation` (new, optional, left out when unset: who, when, the model and `result_ids`, the results whose candidate rows named no model when it was made) and rewrites no row: the cells, pass^k, the served-model confound scan and a comparison set read those silent rows through it, the bundle carries that it did (`ArmServedModel.n_attested` and `attested_models`, `RunSummary.attested_coordinates`, each left out when empty), and the identity disclosure stays and adds that the model was stated. It is refused over a run with no silent candidate row and over another model already stated. A comparison set badges `served_model_differs` where runs that asked for one model were answered by two, `context_incomplete` where a run's responses named no model and nothing was stated, and says so (`ComparisonSet.served_model_disclosure`, new, optional, left out when unset). A host procedure, in order: (1) for each measure whose reading code changed what it counts behind an unchanged descriptor, raise `MetricDescriptor.definition_revision` once per change, and deploy that host build: the digest covers the descriptor's fields and its revision, never the reading code, so descriptors as they were give the same digests as today's and attesting them would pool the eras; (2) deploy this evals build to every reader, since an older build pools an attested run on the key its launch stamped; (3) map each stored run to the era of reading code it ran under (from the release its run records); (4) before any statement, re-measure each run a build carrying 15.18 recorded before step 1 that did not run under the earliest era's code (`run_remeasure`, with a `measure_rereader` that answers a measure whose code did not change since as stored), so it records today's digests: it recorded revision-0 digests, which step 5 states for the earliest era, and a statement never replaces a record, so left as it is it pools with the earliest era's runs once they are stated, whatever code it ran under (one that ran under the earliest era's code is of that era already and needs nothing); where `run_remeasure` refuses such a run (a moved measure shaped the run, or no reader can answer it from what was stored), it cannot be kept apart from runs recorded or stated at revision 0: run it again under today's code and delete it, and until then state no era at revision 0 (leave the earliest era's runs unrecorded); (5) for each era, call `runs_attest` with `coordinate: \"measure_definition\"` and `measure_definitions` set to `MeasureRegistry(descriptors at that era's revisions, measures removed since included).definition_digests()`, and omit `measure_definitions` for runs made under today's code; (6) call `runs_attest` with `coordinate: \"served_model\"` over the runs `model_identity_disclosure` names, where the host knows what answered; (7) regenerate stored reports over attested runs: until a run is attested a stored report over it reads as current (its evidence did not move) while a re-assembled bundle withholds its contrasts, and attesting moves the fingerprint. A campaign whose runs all recorded one definition and named their served models keeps every cell id. `ApparatusClass.alone_to` (new, optional, left out when unset) names the run a class is alone to. A replayed completion or writer turn whose recorded reply named no model reports `recording:<12 hex>` as its `served_model`; `Log.__call__` takes `served_model=` and a log line may carry `served_model`. No host apparatus dimension may be named `measure_definitions`. Stored bundles stamped `cell_model_version` 14 are read as stored; a bundle assembled now carries 15. `runs_attest` (`write`; `run_ids`, `coordinate`, `measure_definitions?`, `served_model?`, `attestation_note?`; result `coordinate`, `run_ids`, `already_attested`, `stated`, `attested_by`) replaces `runs_attest_definitions`, which no release shipped. `threetears.evals.run.attest_served_model` is exported beside `attest_measure_definitions`. A statement is evidence and moves the fingerprint of a bundle over the runs it stamps; the cell model's move does not. A run launched now records every coordinate or says it did not: an eval over a `Log` whose lines name no served model says so as it launches, one whose runner returns an `Answer` naming no `served_model` says so once its arm ran (`Result.disclosures`, and a WARNING), and a take-up of a run stored before runs recorded definitions stays unrecorded and says so (a WARNING). The lenses that read runs outside a campaign's cells keep the same runs apart, read through the cells (`threetears.evals.analysis.bundle.observations.split_coordinates`): a history step between runs apart on either coordinate is a boundary with no regression verdict and a fresh baseline (`SeriesPoint.split_on` and `state`, new, left out when empty), and a series point over a run that is itself split has no value; a pivot cell where one arm's observations are apart is `withheld` (`PivotCell.split_on` and `state`, new, left out when empty), and so is a cell or pooled column holding two arms read under different definitions or under none recorded, with no pooled column figure over either, and `compute_pivot` takes `runs` and `results` (optional: a caller holding only rows gets the table without the check); a frontier point's composite, cost, latency, cost per acceptable outcome, composite basis and cost compositions read its headline pass^k cell and the runs one cell with it on both coordinates, so a run apart on either counts in none of them (`FrontierPoint.served_models` still names every run's); a two-run comparison withholds its deltas, effect size, p and verdict where a side is itself split on either coordinate or the two runs share no definitions, and `composite_comparability` says why; a bisection names `measure_definitions` and `served_model:candidate` among what differs, agrees or is unknown. On an aspect's page a split arm's scoreboard row keeps what ran and was lost and withholds its passes and failures (and its cost where the answering model splits it), with no outcome bar, and the verdict line says the arm is not compared, and why; the report input's scoreboard row for a split arm carries no `passed` and no `failed` (and no `reply_cost_usd` where the answering model splits it). A stored aspect bundle's `frontier` gains `FrontierResult.definitions_apart` (new, optional, a boolean left out of the document when false, so no bundle shape moves and a bundle stored before reads and digests as it did): it is set where a subject's contestants were not all read under one definition of the host's measures, and the sentence saying dominance and the cheapest pick are still tested between them is rendered at read, never stored.",
-    "A bundle's fingerprint is over the evidence it was assembled from (#1062): `AnalysisContextBundle.fingerprint()` is `v3:` and the sha256 of the bundle's new `evidence` field (`EvidenceManifest`, in `threetears.evals.analysis.bundle.evidence`, new; optional, left out of the document while unset, so bundle shape stays 66 and a bundle stored before reads as it did): one digest per kind of input the assembly read (declaration, criteria, runs, results, cases, ratings, judge profiles, insights) and the host declarations digest. `criteria` is what a verdict is decided against that the host declares: the pass threshold, each registered bar, each catalogued measure's declaration; a host changing one moves every fingerprint over that behavior, as it moved `v2:`. No computed statistic, name, price source, reason text, `schema_version` or `package_version` is hashed, so a formula change, another platform's maths library or an additive bundle field moves no fingerprint. Stored values are rendered by `schema.hashing.input_json` / `input_digest` (new): keys sorted at every depth, a whole float as the integer it equals at any magnitude, any other float as Python's shortest round-trip repr, NaN and the infinities as fixed tokens, a null kept as a value. Nothing stored needs regenerating and nothing is rewritten on a read: a stored `v2:` fingerprint is compared the version 2 way. `AnalysisContextBundle.fingerprint` and `evidence_digest` take `like=` (a stored fingerprint whose version to answer in); a bundle with no manifest answers `v2:` whatever is asked; `CampaignBundle.from_frame` compares each aspect in the version its frame holds; `BundleInspection.fingerprint` is in the recorded one's version and `mismatch_cause` is never `package_shape` against a `v3:` record and never names a version difference as `evidence`. The version 2 pre-image is frozen to bundle shape 66's fields with the earlier Hedges small-sample factor, so the same evidence assembled by this build still matches a stored `v2:`. `FINGERPRINT_PREFIX` is `v3:`; `fingerprint_digest` still answers `v2:` for a version 2 pre-image; `known_fingerprint` is new in `analysis.bundle.schema`. What a host changes: where its own code compares a stored bundle fingerprint with `bundle.fingerprint()` of a fresh assembly (a reporter case's freeze check, a staleness check), pass the stored one as `like`; a direct comparison with a stored `v2:` string never matches and must not be read as moved evidence. `CampaignBundle.fingerprint()` is `v4:`, over what the campaign declares and each aspect's `v3:` fingerprint, with no computed reading in it, and takes `like=`: a stored `v3:` campaign fingerprint (`generation.bundle_fingerprint`) is answered the version 3 way, and a campaign bundle frozen before the manifest answers `v3:` whatever is asked. A host comparing a stored campaign fingerprint passes it as `like`. `hedges_j` is computed without cancellation in the same change (exact below 100 degrees of freedom, Stirling's series above; within 3 ULP), which moves a stored Hedges' g past its twelfth figure and no fingerprint.",
+    "A bundle's fingerprint is over the evidence it was assembled from (#1062): `AnalysisContextBundle.fingerprint()` is `v3:` and the sha256 of the bundle's new `evidence` field (`EvidenceManifest`, in `threetears.evals.analysis.bundle.evidence`, new; optional, left out of the document while unset, so bundle shape stays 66 and a bundle stored before reads as it did): one digest per kind of input the assembly read (declaration, criteria, runs, results, cases, ratings, judge profiles, insights) and the host declarations digest. `criteria` is what a verdict is decided against that the host declares: the pass threshold, each registered bar, each catalogued measure's declaration; a host changing one moves every fingerprint over that behavior, as it moved `v2:`. No computed statistic, name, price source, reason text, `schema_version` or `package_version` is hashed, so a formula change, another platform's maths library or an additive bundle field moves no fingerprint. Stored values are rendered by `schema.hashing.input_json` / `input_digest` (new): keys sorted at every depth, a whole float as the integer it equals at any magnitude, any other float as Python's shortest round-trip repr, NaN and the infinities as fixed tokens, a null kept as a value. Nothing stored needs regenerating and nothing is rewritten on a read: a stored `v2:` fingerprint is compared the version 2 way. `AnalysisContextBundle.fingerprint` and `evidence_digest` take `like=` (a stored fingerprint whose version to answer in); a bundle with no manifest answers `v2:` whatever is asked; `CampaignBundle.from_frame` compares each aspect in the version its frame holds; `BundleInspection.fingerprint` is in the recorded one's version and `mismatch_cause` is never `package_shape` against a `v3:` record and never names a version difference as `evidence`. The version 2 pre-image is frozen to bundle shape 66's fields with the earlier Hedges small-sample factor, so the same evidence assembled by this build still matches a stored `v2:`. `FINGERPRINT_PREFIX` is `v3:`; `fingerprint_digest` still answers `v2:` for a version 2 pre-image. What a host changes: where its own code compares a stored bundle fingerprint with `bundle.fingerprint()` of a fresh assembly (a reporter case's freeze check, a staleness check), pass the stored one as `like`; a direct comparison with a stored `v2:` string never matches and must not be read as moved evidence. `CampaignBundle.fingerprint()` is `v4:`, over what the campaign declares and each aspect's `v3:` fingerprint, with no computed reading in it, and takes `like=`: a stored `v3:` campaign fingerprint (`generation.bundle_fingerprint`) is answered the version 3 way, and a campaign bundle frozen before the manifest answers `v3:` whatever is asked. A host comparing a stored campaign fingerprint passes it as `like`. `hedges_j` is computed without cancellation in the same change (exact below 100 degrees of freedom, Stirling's series above; within 3 ULP), which moves a stored Hedges' g past its twelfth figure and no fingerprint.",
     "Core minor 15.18, no identity version move (#1160): a run records the definition digest of every measure its host declares (`EvalRun.measure_definitions`, stamped by the launch from `MeasureRegistry.definition_digests()`), and the map is an additive component of the context key (`ContextComponents.measure_definitions`), composed only where it is non-empty. `IDENTITY_VERSION` stays 25: a run of a host with no measure of its own, and every run stored before this release, keeps its context key, and no stored key, frame, fingerprint, result or campaign is rewritten or regrouped. The digest (read with `MeasureRegistry.definition_digests()`) is the sha256 of the canonical JSON (sorted keys) of these descriptor fields: `name`, `data_type`, `family`, `unit`, `value_range`, `categories`, `formula`, `pass_fail`, `contained_by`, `definition_revision`, `shapes_run`. A reader name, description, `nonnegative` flag, better end, margin, merit axis or population moves no digest, so a metadata-only edit cuts no run off. To mark a change in reading code behind an unchanged descriptor, raise `MetricDescriptor.definition_revision` (new, default 0). What stops pooling, in pass^k only: runs that recorded different definitions are separate cells (`other_measure_definition`; comparison badge `measure_definitions_differ`), and a run stored before this release whose results hold a host measure (any `EvalResult.host_measures` key that is not the engine's own) recorded no definitions, so it is a cell of its own (`no_recorded_measure_definitions`), pooling with no run, old or new; a comparison set holding one is badged `context_incomplete` and names it. A stored run whose results hold no host measure pools exactly as before. A campaign's own cells read them since cell model 15 (#1187, the note above), and so do history, a pivot, the frontier's composite and a two-run comparison, through the cells. On upgrade: nothing to migrate; a run interrupted before the upgrade is taken up and stays unrecorded; a take-up of a run that recorded definitions other than the host's current ones is refused, naming the measure. To backfill old runs, a host that knows which definition was live when each ran calls the `runs_attest` action with `coordinate: \"measure_definition\"` (it replaced `runs_attest_definitions`, #1187; follow the numbered procedure in the cell model 15 note above, which raises `definition_revision` first) (the caller is recorded as who stated it; `measure_definitions` omitted means the host's current ones) or `threetears.evals.run.attest_measure_definitions(host, run_ids, scope_id, definitions, attested_by=..., note=...)` with the digests of the descriptors as they were (`MeasureRegistry(descriptors_then).definition_digests()`; today's `profile.measures.definition_digests()` for runs made since the change): it reads no result or trace, takes any number of runs, leaves a run already attested with the same definitions as it was (`Attested.already_attested`, so a backfill may run twice), refuses a run that records other definitions (a launch's, a re-measure's or another attestation's), and records who stated it and when (`EvalRun.measure_attestation`), which a page names. To read an old run under the current definition, wire `HostProfile(measure_rereader=...)` (a callable given a `MeasureRereadRequest`: the stored run, result and trace, and the measure keys to read) and call the `run_remeasure` action or `threetears.evals.run.remeasure_run(host, run_id, scope_id, apply=True)`; a measure that decides what a run does declares `shapes_run=True`, and a run measured under another definition of it is refused. A host that assembles runs itself (witnessed runs) sets `measure_definitions=profile.measures.definition_digests()` on each.",
     "Launch admission refreshes each client's prices before it prices an arm's largest call, and under a cost cap refuses an arm whose largest call still cannot be priced, naming the call and why; it was admitted with only a WARNING logged. `LaunchableKind.price_largest_call` and `price_subject_call_floor` now answer `CallCeiling | UnpricedCall | None`: `UnpricedCall` (new in `threetears.evals.run`) is a call the arm is bound to make that its client cannot price, where `None` now means only that the arm makes no call the kind prices. A host whose own pricer answered `None` for a call it could not price answers an `UnpricedCall` instead (`unpriced_because`, new in `threetears.evals.kernel`, words the client's reason), awaiting `refresh_prices` on each client first; one that still answers `None` is read as having nothing to price. `ArmPlan` gains `call_unpriced` and `served_checks` (defaults `None` and empty). Admission also asks the client factory's optional `model_listing` whether each provider still serves the arm's candidate, judge and simulator models (`ModelListing` in `threetears.evals.schema`, `ServedCheck` in `threetears.evals.run`), and refuses a model the list does not name whatever the cap; `Clients.model_listing` reads OpenRouter's list, the price catalogue, for a model it builds in a role, and answers nothing for a candidate the host routes itself, whose check is then reported skipped; `LaunchableKind.candidate_role` (new, default `None`) names the factory role a kind calls its candidate through, and `launchable_report_writer_kind` takes the same (`candidate_role=`). A skipped check is said on `ArmEstimate.served_check_skipped`, `AdmittedLaunch.notices` and `JobsStarted.notices` from `run_launch`, `sweep_launch`, `sweep_resume` and `job_resume` (each left out of the JSON while empty). `start_take_up` and `resume_launch` (in `threetears.evals.run.resume`) return a `TakenUp` of the record and its notices, where they returned the record; `take_up_run` is `resume_run` answering the notices too.",
     "A quick-path eval judged by a `Judge` with `examples` now grades each example `k` times in its run, after its arms, through the judge call its answers are graded by (the run's template, intent, criterion wording, scale and request settings), where it only stored them as authored judge cases (it still does). Additive: `Result.judge_examples` (new, default None) is the reading, a `JudgeExamples` (provisional, new in `threetears.evals.quick` beside `ExampleGrade`): each example's verdict on every repeat, how many were graded as they must be on every repeat, the misses, and the calls' spend under the `judge` role, held to what the arms left of the eval's `max_cost_usd`. It is reported beside the judge's agreement with people's labels, never pooled into it. The quick print adds one `judge:` line and an indented `missed:` line per miss, and the result's page one sentence under Design & provenance; a judge with no examples makes no extra call and prints and pages as before. A host replaying a recorded judge needs the examples' calls in its recording (a miss is a repeat with no verdict, never a judge's miss).",
@@ -219,6 +219,303 @@ notes = [
     "Durable minor (#1236, the one after 17.4 this step merges at): a blind read's preference stores its counts only (owner ruling 2026-11-17). `BlindPreference` gains `shares` (each pair item's candidate share, in the order its test reads them) and `stake_items` (the anytime test's planned pair items, which its stakes were fixed for), each written only when set; a preference a close builds writes both as its test needs and no `p`, `verdict` or too-few `state` (`not_available`, `too_few`, fewer than six items preferring a side). All three are read off the counts by one computation, which the close and the door's `blind_read_get`, `blind_reads_list` and `blind_read_close` responses read through, so a response's `preferences[].p`, `verdict` and `state` are unchanged. A preference stored at 17.4 (no `shares`) reads with the `p`, `verdict` and `state` it carries and writes them back; one whose stored too-few `state` its counts contradict is refused. A recorded exception, for this step only (owner ruling 2026-11-17): a 17.4 build refuses a blind read closed at this minor by name, which the minor rule would make a major; accepted because 17.4 exists only on evals/main SHAs of 2026-11-16 and 2026-11-17, no host pinned one, and the one production host runs a build that predates 17.4. A host reads a preference's `p`, `verdict` and `state` from the door's `blind_read_get`, `blind_reads_list` and `blind_read_close` responses (each of a closed read's `preferences`), or from the quick path's `Result.blind_read`, never off a stored document's `report.preferences[]`, which on a read closed at this minor carries none of them. For hosts: a build on a 17.4 SHA cannot read a blind read closed at this minor; no released host is affected. Port: none.",
     "A quick comparison is read fairly at any size (no durable minor; the bundle shape stays 66): its mixture bet weights its ten stakes in proportion to their size, and a family whose question is asked is decided on the question's first grader alone, staked 0.9 toward the better side it asks about, every other reading secondary (its verdict `not_separated`, `p_adjusted` `None`, `not_separated_reason` saying so). `FamilyComparison` gains `evidence_better` and `evidence_worse` (each the e-value the bet holds now; new, optional, left out where no bet read the contrast) and `ComparisonFamily` gains `primary` (the reading the question is decided on; new, optional, left out where none is). No engine campaign's bundle carries any of them, so none of its fingerprints moves. A build from before this change refuses a stored analysis of a quick-path comparison frozen by this one, naming each field (`extra_forbidden`): upgrade every reader before a writer, and regenerate such an analysis after a rollback. The overall pass rate is left out of a bet family where it is one check's own values, read once.",
 ]
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["ResolvedUsage"]
+why = """
+Removed with the resolver that returned it, which no read surface called: a surface showing one result's spend reads
+its stored usage rows and its termination. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.actions"
+to = "removed"
+names = ["DEFAULT_PREFIX"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["AnalysisStore", "aspect_view", "AspectView", "assemble_campaign_bundle", "build_campaign_report",
+         "campaign_report_markdown", "campaign_verdicts", "CampaignBundle", "CellAddress", "completeness_disclosure",
+         "DEFAULT_FAIL_ON", "DEFAULT_WEIGHTING", "describe_insight_id_filters", "EQUIVALENCE_TEST_NAME", "FailCause",
+         "format_signed", "format_significance", "frontier_text", "GATE_TOKENS", "GenerationError", "GenerationTally",
+         "get_analysis", "get_campaign", "GLOSSARY", "insight_standing", "InsightStanding", "judge_profiles_of",
+         "JudgeProfileDrafts", "list_campaigns", "list_insights", "METRIC_COMPOSITE", "METRIC_OUTCOME", "METRIC_SCORE",
+         "multi_rig_variants", "NO_ANALYSIS", "out_of_run_spend_text", "PAIRED_TEST_NAME", "parse_fail_on",
+         "PROJECTED_METRICS", "record_campaign_call", "remove_runs_from_campaign", "report_markdown",
+         "running_analysis_attempt", "SECTION_TITLES", "SERVED_MODEL_UNRECORDED", "short_digest", "SoundnessRefusal",
+         "tier_for_judges", "UnresolvableReference", "WEIGHTING_EQUAL_PER_SCENARIO"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["agreement_statistic", "BarName", "BarNameKind", "BarNameRefusal", "blended_cost_roles",
+         "calibration_criterion", "candidate_failure_cause", "CandidateFailureCause", "classifier_label_of",
+         "classify_result", "confusion_of", "contract_state", "counted_goal_verdicts", "counted_score",
+         "declared_contracts", "delivered_a_turn", "describe_and_log_failure", "DesignRefused", "existing_axis_values",
+         "FIND_ANALYSIS", "FIND_CASE_SET", "FIND_INSIGHT", "FIND_JOB", "FIND_JUDGE_CONFIG", "FIND_RESULT",
+         "FIND_RUBRIC_DIM", "FIND_TEST_CASE", "format_signed", "FRONTIER_RANKING_MEASURE", "generation_slot_id",
+         "goal_check_of", "JUDGE_CASE_KEY", "judge_criterion_digest", "JUDGE_LABEL_AGREEMENT_MEASURE",
+         "JUDGE_PARSE_VALID_MEASURE", "judge_profile_id", "judge_trial_of", "judge_truncated_dims", "JUDGED_TIER_RULE",
+         "JudgeProfileStore", "JudgeTrial", "JudgeTrialOutcome", "lease_lapsed", "list_metrics", "REASONING_RATIO_KEY", "refuse_an_undeclarable_design", "REFUSED_CONTRACT_STATES",
+         "RELAUNCH_TO_REJUDGE", "request_job_cancel", "require_held", "require_output_contract", "REREAD_AND_RETRY",
+         "resolve_bar_name", "resolve_context_identity", "resolve_result_condition", "RUBRIC_FAMILY",
+         "RUN_MARGIN_MEASURES", "run_margin_refusal", "running_job", "SCHEMA_REMEDY", "separation_criterion",
+         "settle_job_record", "summarize_completeness", "TEMPERATURE_SETTINGS", "TemperatureSettingSpec",
+         "template_text", "tier_of", "timed_out_detail", "TRUNCATED_ROUNDS_KEY", "UndeclarableAxisError",
+         "UnreadableBarName", "weakest_judged_tier", "write_held_record", "WRITER_REMEDY"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel.host"
+to = "removed"
+names = ["CANDIDATE_KIND_LEVER", "pass_threshold_label", "PassCriterion", "resolve_preconditions", "schema_violations"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "removed"
+names = ["ACTION_JOB_PREFIX", "AdmittedJob", "analysis_archive", "analysis_delete", "analysis_job_id",
+         "bar_proposals_text", "campaign_archive", "estimate_text", "export_text", "generation_key", "history_text",
+         "launch_job_id", "parse_job_id", "pivot_text", "run_archive", "runs_bisect", "runs_bisected_text",
+         "runs_compared_text", "start_job", "sweep_job_id"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.quick"
+to = "removed"
+names = ["DEFAULT_PROG", "ENGINE_COMMANDS"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.run"
+to = "removed"
+names = ["action_job_work", "admit_group", "build_judge_context", "DEFAULT_ACTION_JOB_BUDGET_S", "delete_analysis",
+         "delete_insight", "delete_unreadable_run", "end_record", "estimate_second_judge", "evaluate_goal_state",
+         "get_result", "get_template", "InProcessCellExecutor", "JUDGE_REPEAT_ACTION", "leased_job_kind",
+         "list_judge_configs", "list_templates", "refuse_raised_ceiling", "require_delete_confirmation",
+         "resolve_case_set", "resolve_ceiling_origin", "resolve_effective_ceiling", "set_analysis_archived",
+         "set_campaign_archived", "set_run_archived", "start_job_work", "TEMPLATE_FIELDS", "UnreadableRunDeleteStore",
+         "validated_kind_spec"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["aspect_label_for", "attribution_state", "CANDIDATE_SPEAKER", "canonical_digest", "case_set_doc_id",
+         "eval_trace_doc_id", "is_pass", "keep_fields", "KnownCellTimeoutOrigin",
+         "KnownFailedBecause", "KnownReasoningEffort", "KnownRoleModelOrigin", "MODEL_DEFAULT_TEMPERATURE",
+         "OUTCOME_DIM_ID", "referenced_actions", "refuse_on_event_loop", "ROUND_DONE", "SCALES", "ScaleSpec",
+         "with_fault"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses: they leave the public surface. The package's own modules
+use each from the module defining it, where it stays. Port: nothing; a host that used one reads the value or behaviour
+through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.actions"
+to = "removed"
+names = ["ACTION_NAME", "engine_actions", "HELP_ACTION", "PERMISSION_CLASSES", "RESERVED_PARAMETERS", "TOOL_NAME"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["analysis_report", "ArmLevel", "aspect_views", "campaign_aggregate", "CELL_MEASURED", "CELL_NOT_RUN",
+         "CELL_WITHHELD", "component_carrier", "COST_PREDICTION_METHOD", "DECLARED_INPUT_ORIGIN", "HISTORY_METRICS",
+         "judged_criteria", "measure_movement", "StyleViolation", "tiers_with_judge_profiles", "verdict_token"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["difference_was_declared_at_launch", "metric_help", "SCOPED_METRICS_HELP", "significance_disclosure"]
+why = """
+Removed: nothing in the package, its examples or any recorded host called it. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.gen"
+to = "removed"
+names = ["price_variations"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["CLASSIFIER_FAMILY", "COMPOSITE_FAMILY", "CONTRACT_MARKER", "criterion_state", "DROPPED_TOOL_CALLS_KEY",
+         "DUAL_AXIS_FAMILY", "GOAL_STATE_FAMILY", "JUDGED_TIERS_WEAKEST_FIRST", "MECHANICAL_FAMILY",
+         "PORTABLE_STRICT_KEYWORDS", "REFUSED_TOOL_ATTACHES_KEY", "RenewalVerdict", "resolve_result_usage",
+         "save_document", "SHUTDOWN_CAUSE"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel.host"
+to = "removed"
+names = ["served_models_by_score"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "removed"
+names = ["ANALYSIS_JOB_PREFIX", "JUDGE_TEMPERATURE_JOB_PREFIX", "LAUNCH_JOB_PREFIX", "launch_progress",
+         "RUN_JOB_PREFIX", "SECOND_JUDGE_JOB_PREFIX", "SWEEP_JOB_PREFIX", "TERMINAL_JOB_STATES"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "removed"
+names = ["action_job_id", "judge_temperature_job_id", "second_judge_job_id"]
+why = """
+Removed: nothing in the package, its examples or any recorded host called it. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.quick"
+to = "removed"
+names = ["build_parser"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.run"
+to = "removed"
+names = ["borderline_dims", "definition_key", "ErrorLedger", "judge_case_labels", "JUDGE_REPEAT_BUDGET_S",
+         "LAUNCH_CANCEL_REASON", "LAUNCH_PREPARATION_BUDGET_S", "load_run_as_listed", "no_launcher_for",
+         "refuse_stale_presumptions", "resume_run", "RUBRIC_DIM_SERVER_FIELDS", "sample_concurrent_eval_jobs",
+         "settable_apparatus", "SIMULATOR_REASONING_ALLOWANCE_TOKENS", "SIMULATOR_REASONING_EFFORT",
+         "TEMPLATE_SERVER_FIELDS"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.run"
+to = "removed"
+names = ["cancel_run", "get_judge_config", "get_rubric_dim", "list_runs_disclosing"]
+why = """
+Removed: nothing in the package, its examples or any recorded host called it. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["BUILTIN_JUDGE_CONFIG_PREFIX", "DURABLE_ADDRESSING_FIELDS", "JOB_FAULT_MAX_CHARS",
+         "judges_sharing_a_candidate_model", "OUT_OF_ROOM_STOP_REASONS", "PASS_ACTION", "PASS_TOOL"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["JSON_OBJECT_RESPONSE_FORMAT"]
+why = """
+Removed: nothing in the package, its examples or any recorded host called it. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.testing"
+to = "removed"
+names = ["DEFAULT_CALL_RETURN_TIMEOUT_S", "DEFAULT_JOB_CONFORMANCE_TIMEOUT_S"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.transports.fastmcp"
+to = "removed"
+names = ["DEFAULT_CALL_TIMEOUT_S"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
 
 [[release.change]]
 from = "threetears.evals.analysis"

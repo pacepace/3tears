@@ -221,9 +221,7 @@ def _row_words(row: AspectReading) -> str:
     :func:`row_sentence`.
 
     :param row: The row.
-    :ptype row: AspectReading
     :return: The words.
-    :rtype: str
     """
     if _undecided(row):
         return _CONTRAST_WORDS["not_separated"]
@@ -238,13 +236,9 @@ def row_figures(row: AspectReading, control: str, *, forms: PageForms) -> str:
     (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`). The interval's level is the fold's.
 
     :param row: The row.
-    :ptype row: AspectReading
     :param control: The control, as the page names it.
-    :ptype control: str
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The sentences.
-    :rtype: str
     """
     unit = "trials" if row.control_trials != row.control_cases or row.arm_trials != row.arm_cases else "cases"
     if row.control_trials == row.arm_trials:
@@ -292,11 +286,8 @@ def reads_undecided(readings: CampaignReadings, aspect: str) -> bool:
     either side of it, or a pair neither of whose arms is ahead. Decided from the readings, never from the words.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param aspect: The aspect's label.
-    :ptype aspect: str
     :return: Whether some arms on it are undecided.
-    :rtype: bool
     """
     return any(_undecided(row) for row in readings.on_aspect(aspect)) or any(
         pair.ahead is None for pair in readings.pairs if pair.aspect == aspect
@@ -310,13 +301,9 @@ def row_sentence(row: AspectReading, control: str, *, against: bool = True) -> s
     the row is read beside others on one aspect (``v2 shown better``).
 
     :param row: The row.
-    :ptype row: AspectReading
     :param control: The control, as the page names it.
-    :ptype control: str
     :param against: Whether the control is named.
-    :ptype against: bool
     :return: The clause, with no closing stop.
-    :rtype: str
     """
     if _undecided(row):
         return cannot_tell_apart([row.arm_label], control)
@@ -521,17 +508,11 @@ def table_blocks(
     under them that change how a cell reads.
 
     :param campaign: The campaign, a change.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The matrix, its folded rows and its lines; one line where no control was named.
-    :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
         no matrix is laid out.
     """
@@ -692,19 +673,12 @@ def _across_levels(
     its own baselines (``stated``), as its cells above name each.
 
     :param control: The control's variant key.
-    :ptype control: str
     :param named: The control as the page names it.
-    :ptype named: str
     :param rows: The matrix's rows, one per aspect.
-    :ptype rows: Sequence[Mapping[str, TableCell]]
     :param stated: Each candidate's baseline on each aspect it was read on, by variant key.
-    :ptype stated: Mapping[str, Sequence[float]]
     :param split: Whether some aspect's candidates read different cases.
-    :ptype split: bool
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: Each arm's level and its cell's words (None for none), by variant key.
-    :rtype: dict[str, tuple[float, str | None]]
     """
 
     def mean(key: str, read: Callable[[TableCell], float | None]) -> float | None:
@@ -1240,17 +1214,11 @@ def settle_blocks(
     margin has nothing to show it within, and a settled reading nothing left to show, so neither is a row here.
 
     :param campaign: The campaign, a change.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label, whose evidence a floor's count is read from.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The table and its note; nothing where no reading is to settle.
-    :rtype: list[ReportBlock]
     """
     sizings = [sizing for row in readings.readings for sizing in _sizings(row, campaign, readings, reports, forms)]
     if not sizings:
@@ -1439,14 +1407,10 @@ def aspect_shows(readings: CampaignReadings, aspect: str, *, bundle: AnalysisCon
     ahead of beta``, ``alpha misses a bar``, ``reply passed 40 of 40 trials on 20 cases``.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param aspect: The aspect's label.
-    :ptype aspect: str
     :param bundle: The aspect's evidence, which a measurement's pass count is read off
         (:func:`measured_figure`); a measurement's words need it.
-    :ptype bundle: AnalysisContextBundle | None
     :return: The words.
-    :rtype: str
     :raises ValueError: A measurement's words asked for with no ``bundle``.
     """
     if readings.kind == "choice":
@@ -1505,15 +1469,10 @@ def campaign_verdict(
     shown better``. Never the writer's words.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param aspects: The campaign's aspects' labels, in its order.
-    :ptype aspects: Sequence[str]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param bundles: Each aspect's evidence, by its label, which a measurement's words need (:func:`aspect_shows`).
-    :ptype bundles: Mapping[str, AnalysisContextBundle] | None
     :return: The verdict line.
-    :rtype: str
     """
     held = bundles or {}
     return "; ".join(
@@ -1527,13 +1486,9 @@ def pairs_words(readings: CampaignReadings, aspect: str, *, marked: bool = True)
     whose campaign asks nothing, which says so once); None where no pair was read there.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param aspect: The aspect's label.
-    :ptype aspect: str
     :param marked: Whether a pair the question does not ask is marked a lead.
-    :ptype marked: bool
     :return: The words, or None.
-    :rtype: str | None
     """
     pairs = [pair for pair in readings.pairs if pair.aspect == aspect]
     return ", ".join(_pair_words(pair, marked=marked) for pair in pairs) or None
@@ -1576,17 +1531,11 @@ def pair_blocks(
     no separation; then the lines that change how a row reads.
 
     :param campaign: The campaign, a choice.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The matrix, the pairs and their lines.
-    :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell cannot be placed: its arm has no column, its unit is not its column's, or
         no matrix is laid out.
     """
@@ -1753,15 +1702,10 @@ def frontier_blocks(
     shown cheaper than the rest. A reading of the bundle's frontier, never a pick.
 
     :param campaign: The campaign, a choice.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :return: The lines, aspect by aspect.
-    :rtype: list[ReportBlock]
     """
     labels = readings.arm_labels()
     lines: list[ReportBlock] = []
@@ -1817,17 +1761,11 @@ def measure_blocks(
     than one test setup, each cell's apart.
 
     :param campaign: The campaign, a measurement.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The matrix, the measures and their lines.
-    :rtype: list[ReportBlock]
     :raises ValueError: An equal-weight cell is given: a measurement's matrix has no arm columns to hold it.
     """
     rigs: dict[str, set[str]] = {}
@@ -2121,11 +2059,8 @@ def measured_figure(reading: MeasureReading, bundle: AnalysisContextBundle) -> s
     carries at most three figures (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
 
     :param reading: The arm's reading.
-    :ptype reading: MeasureReading
     :param bundle: The aspect's evidence, whose census counts every trial the arm ran.
-    :ptype bundle: AnalysisContextBundle
     :return: The figure, as a clause with no closing stop, or None.
-    :rtype: str | None
     """
     if reading.value is None or reading.passed is None or reading.trials is None:
         return None
@@ -2253,17 +2188,11 @@ def bar_threshold(
     4: ``92%``, never ``92.0%``), money in its ruler's form; held as a figure of its measure.
 
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :param ruler: The measure's ruler on its aspect's page.
-    :ptype ruler: MeasureRuler
     :param threshold: The threshold, as stored.
-    :ptype threshold: float
     :param measure: The measure's key.
-    :ptype measure: str
     :param kind: Its reading (``measure``, ``judged``).
-    :ptype kind: str
     :return: The cell.
-    :rtype: TableCell
     """
     if is_money(ruler.unit):
         return forms.ruled_level_cell(ruler, threshold, measure=measure, kind=kind)
@@ -2279,15 +2208,10 @@ def bar_blocks(
     nothing where no bar is declared.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The bars table, or nothing.
-    :rtype: list[ReportBlock]
     """
     if not readings.bars:
         return []

@@ -25,9 +25,7 @@ def campaign_kind(arms: Sequence[CampaignArm]) -> CampaignKind:
     candidate a change, two or more arms with no control a choice. Arms are counted by variant key.
 
     :param arms: The campaign's arms.
-    :ptype arms: Sequence[CampaignArm]
     :return: The kind.
-    :rtype: CampaignKind
     """
     keys = {arm.variant_key for arm in arms}
     if len(keys) <= 1:

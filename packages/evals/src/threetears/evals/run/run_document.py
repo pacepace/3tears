@@ -80,29 +80,23 @@ def update_eval_run(
     line of disclosure for a false verdict about the run it describes.
 
     :param store: Where the run lives.
-    :ptype store: JobStore
     :param run_id: The run to update.
-    :ptype run_id: str
     :param scope_id: Partition key — the scope the run lives in, opaque to the
         engine, which passes it back to the store and never interprets it.
         The log lines below key it ``scope=``, as every ``eval.*`` line in
         the package does, so an operator greps one vocabulary across a
         whole run.
-    :ptype scope_id: str
     :param mutate: Given the run as currently stored, returns the document to save,
         or ``None`` to decline the write. Called once per attempt — and the
         decision to decline belongs here rather than at the call site
         precisely because this is the only place that has read the WINNER's
         document. A caller that checked the run before calling has checked a
         document another writer may already have replaced.
-    :ptype mutate: Callable[[EvalRun], dict[str, Any] | None]
     :param attempts: How many read-modify-writes before giving up.
-    :ptype attempts: int
     :param leases: The leases of the process running the run, when this is the run's own write: it is then made as
         the holder's own (:meth:`~threetears.evals.kernel.JobLeases.write_own`), which extends the run's lease, and a
         run whose lease that write finds lapsed, or passed to another holding of the run (another process, or a later
         epoch), is ``"declined"`` — it no longer holds the run, and writes nothing.
-    :ptype leases: JobLeases | None
     :return: ``"saved"`` when the write landed; ``"declined"`` when ``mutate`` returned
         ``None``, which is a decision and not a failure — the stored document is
         the one that should stand, and a caller must not report or broadcast the
@@ -115,7 +109,6 @@ def update_eval_run(
         two are distinguishable in the log, where the read fault is logged with
         its exception; a caller's own message must therefore not assert *which*
         one happened.
-    :rtype: RunUpdateOutcome
     """
     for attempt in range(1, attempts + 1):
         try:
@@ -175,11 +168,8 @@ def fault_entry(where: str, error: BaseException) -> str:
     """One ``EvalRun.error_details`` entry for an error a boundary contained: where it happened, its kind, its message.
 
     :param where: What was being done, in an operator's words: the step whose failure this is.
-    :ptype where: str
     :param error: What it raised.
-    :ptype error: BaseException
     :return: ``"<where>: <ErrorType>: <message>"``.
-    :rtype: str
     """
     return f"{where}: {type(error).__name__}: {error}"
 
@@ -194,16 +184,11 @@ def record_run_faults(store: JobStore, run_id: str, scope_id: str, entries: Sequ
     nothing more on it.
 
     :param store: Where the run lives.
-    :ptype store: JobStore
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: Its scope.
-    :ptype scope_id: str
     :param entries: The entries, each as :func:`fault_entry` words one.
-    :ptype entries: Sequence[str]
     :return: :func:`update_eval_run`'s outcome. Never raises for a failed write: the caller is a boundary protecting
         the run's own outcome, and logs both its error and this one when the entries were not written.
-    :rtype: RunUpdateOutcome
     """
     added = list(entries)
 
@@ -221,9 +206,7 @@ def normalized_run_labels(labels: Sequence[str]) -> list[str]:
     """The labels a run is stored with: each stripped, each once, sorted.
 
     :param labels: Labels as an operator gave them.
-    :ptype labels: Sequence[str]
     :return: The labels as stored.
-    :rtype: list[str]
     :raises ValidationFailedError: A label is blank or too long once stripped, or there are more than
         :data:`~threetears.evals.schema.models.RUN_LABELS_MAX` distinct ones.
     """
@@ -272,15 +255,10 @@ def set_run_labels(store: JobStore, run_id: str, scope_id: str, *, labels: Seque
     document does.
 
     :param store: Where the run lives.
-    :ptype store: JobStore
     :param run_id: The run to label.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param labels: Its labels, replacing any it has; normalised by :func:`normalized_run_labels`.
-    :ptype labels: Sequence[str]
     :return: The run as persisted, read whole.
-    :rtype: EvalRun
     :raises ValidationFailedError: A label cannot name a run (:func:`normalized_run_labels`).
     :raises NotFoundError: No run with that id in the scope, including one deleted during the write.
     :raises StorageError: No write attempt completed (every one was refused by another writer, or failed).

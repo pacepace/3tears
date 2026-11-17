@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from threetears.evals.analysis import campaign_report_html, campaign_report_markdown
+from threetears.evals.analysis import campaign_report_html
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 
 from packages.evals.tests.report_shapes_support import CHECKS, SHAPES, s1_change, s2_choice, s3_measurement, s4_change
 

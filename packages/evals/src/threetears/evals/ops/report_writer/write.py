@@ -119,11 +119,8 @@ class ReportNotStored(Exception):
         """Say why the report was not stored, and carry the run's record and the id it would have been stored under.
 
         :param message: What failed.
-        :ptype message: str
         :param written: The run's outcome and generation record.
-        :ptype written: ReportWritten
         :param report_doc_id: The id minted for the report.
-        :ptype report_doc_id: str
         """
         super().__init__(message)
         self.written = written
@@ -166,38 +163,23 @@ async def report_write(
     """Write a report over one frozen snapshot, and store what its ending stores (the module docstring).
 
     :param host: The host whose store holds the evidence, the snapshot and the report.
-    :ptype host: OpsHost
     :param scope_id: The scope the report is written in.
-    :ptype scope_id: str
     :param created_by: Who asks for the report, as the host names the caller.
-    :ptype created_by: str
     :param model: The model every session runs on (``Model(id, provider="anthropic", api_key=...)``).
-    :ptype model: TurnModel
     :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
-    :ptype budget: ReportBudget
     :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, bound to the host and caller.
-    :ptype analyst_mount: ToolMount
     :param editor_mount: The tool on the editor's cut, bound the same way.
-    :ptype editor_mount: ToolMount
     :param snapshot_id: A snapshot already frozen; exactly one of it, ``campaign_id`` and ``analysis_id``.
-    :ptype snapshot_id: str | None
     :param campaign_id: A campaign to freeze and write the report on.
-    :ptype campaign_id: str | None
     :param analysis_id: A stored analysis to freeze and write the report on.
-    :ptype analysis_id: str | None
     :param withhold: Exemplar notes, by file name, the analyst is not given (a blind run's own campaign's note).
-    :ptype withhold: Collection[str]
     :param limits: What the loop is held to; :class:`WriterLimits`' defaults when ``None``.
-    :ptype limits: WriterLimits | None
     :param tally: The tally every turn is counted in, when the caller keeps it (a job that must say what a run it
         stopped had spent); a fresh one when ``None``.
-    :ptype tally: Tally | None
     :param skill: The skill both sessions start from, when the write runs a version of it under test; the shipped
         skill (:func:`~threetears.evals.analysis.analyst.skill.load_skill`) when ``None``. Its digests are recorded on
         the generation either way.
-    :ptype skill: AnalystSkill | None
     :return: How it ended, the stored document if any, and the generation record.
-    :rtype: ReportWritten
     :raises ValueError: Not exactly one of the sources named; ``withhold`` naming a note the skill has none of; a
         skill whose ``editor.md`` states no rubric its reviews can be read on; under a dollar budget, a model whose
         turns cannot be bounded, refused with the budget's lead-in and the model's own pricing refusal; or one the

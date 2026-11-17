@@ -120,26 +120,18 @@ def reproducible_judge_inputs(
     the old one.
 
     :param storage: The eval store the result lives in.
-    :ptype storage: JudgeInputStore
     :param result: The result whose judge input is rebuilt.
-    :ptype result: EvalResult
     :param run: Its run.
-    :ptype run: EvalRun
     :param scope_id: The partition they live in.
-    :ptype scope_id: str
     :param request_settings: How the run's recorded judge request settings are treated — see
         :data:`RequestSettingsPolicy`.
-    :ptype request_settings: RequestSettingsPolicy
     :param config_dims: The dims whose recorded configs must load; ``None`` for every dim the run judged.
-    :ptype config_dims: Collection[str] | None
     :param same_judge_dims: The dims the caller asks again AS the judge that first asked them (a re-judge, a judge
         repeat), rather than as a judge of its own choosing (a second judge, a freeze). Each must have been
         asked by the prompt the judge sends it today — the built-in prompt, or its recorded config with the
         engine's reply-format suffix: the result must record that prompt's identity for it, and it must be
         today's.
-    :ptype same_judge_dims: Collection[str]
     :return: The records.
-    :rtype: ReproducibleJudgeInputs
     :raises ValidationFailedError: An input the run recorded cannot be reproduced, naming it.
     :raises NotFoundError: A record the run names (template, judge config, test case) does not load.
     """
@@ -206,14 +198,10 @@ def _refuse_another_judge_prompt(
     if it were the same one.
 
     :param result: The result whose dims are re-asked.
-    :ptype result: EvalResult
     :param run_configs: The config set its run recorded; a dim with none in it is asked with the built-in prompt.
-    :ptype run_configs: dict[str, str]
     :param dims: The dims re-asked as the judge that first asked them.
-    :ptype dims: list[str]
     :param today: What each dim would be asked by now
         (:func:`~threetears.evals.run.judge_service.judge_config_ids_for`).
-    :ptype today: dict[str, str]
     :raises ValidationFailedError: A dim's recorded prompt is not today's, or the result records none for it.
     """
     for dim in dims:
@@ -243,9 +231,7 @@ def request_settings_drift(recorded: ClientRequestSettings | None) -> str:
 
     :param recorded: The judge request settings the run recorded it asked for (``judge_asked_settings``; ``None`` when
         it recorded none).
-    :ptype recorded: ClientRequestSettings | None
     :return: A clause for a refusal: "asked its judge for request settings ... and a judge call now asks for ...".
-    :rtype: str
     """
     if recorded == JUDGE_REQUEST_SETTINGS:
         return f"asked its judge for the request settings a judge call now asks for ({JUDGE_REQUEST_SETTINGS!r})"
@@ -268,11 +254,8 @@ def recorded_judge_pins(run: EvalRun, *, request_settings: RequestSettingsPolicy
     judge, a config set or request settings the run does not name.
 
     :param run: The run.
-    :ptype run: EvalRun
     :param request_settings: How the run's recorded request settings are treated — see :data:`RequestSettingsPolicy`.
-    :ptype request_settings: RequestSettingsPolicy
     :return: The run's judge pin.
-    :rtype: str
     :raises ValidationFailedError: The run names no judge, recorded no attribution, no config set or no
         request settings, or (``"today"``) recorded settings, or a judge temperature, other than the ones
         a call sends now.
@@ -318,13 +301,9 @@ def judged_template(storage: JudgeInputStore, run: EvalRun, scope_id: str) -> Ev
     """The template whose intent and rubric a run's judge reads, as the run was judged against it.
 
     :param storage: The eval store.
-    :ptype storage: JudgeInputStore
     :param run: The run.
-    :ptype run: EvalRun
     :param scope_id: The partition it lives in.
-    :ptype scope_id: str
     :return: The template.
-    :rtype: EvalTemplate
     :raises ValidationFailedError: The run names no template; the template was edited after the run was
         created, so its intent is not the one the run was judged against; or its rubric names one
         dim twice.
@@ -362,13 +341,9 @@ def recorded_judged_dims(run: EvalRun, template: EvalTemplate, judged_artifact: 
     """Every dim a cell of this kind is judged on under the run's recorded attribution, in judge-phase order.
 
     :param run: The run, whose ``effective_judges`` a caller has checked is recorded.
-    :ptype run: EvalRun
     :param template: Its template.
-    :ptype template: EvalTemplate
     :param judged_artifact: The kind's declaration, which picks the axes.
-    :ptype judged_artifact: JudgedArtifact
     :return: The dims.
-    :rtype: list[str]
     :raises ValidationFailedError: The run recorded a judge for a dim a cell of this kind is not scored on.
     """
     # The dims a cell of this kind is scored on, in judge-phase order — the rule the launch
@@ -390,15 +365,10 @@ def recorded_judge_configs(
     """The versioned judge config the run recorded for each of ``dims`` that has one, loaded.
 
     :param storage: The eval store.
-    :ptype storage: JudgeInputStore
     :param run: The run, whose ``judge_config_ids`` a caller has checked is recorded.
-    :ptype run: EvalRun
     :param dims: The dims whose configs to load.
-    :ptype dims: Collection[str]
     :param scope_id: The partition they live in.
-    :ptype scope_id: str
     :return: ``{dim_id: config}`` over the dims the run recorded a config for.
-    :rtype: dict[str, JudgeConfig]
     :raises NotFoundError: A recorded config does not load.
     """
     configs: dict[str, JudgeConfig] = {}
@@ -425,11 +395,8 @@ def failed_judge_dims(result: EvalResult, scored_dims: list[str]) -> list[str]:
     string joined from per-dim messages, and a message may itself contain the separator.
 
     :param result: The result whose judging is being inspected.
-    :ptype result: EvalResult
     :param scored_dims: Every dim the run scores, as its launch recorded them.
-    :ptype scored_dims: list[str]
     :return: Each dim in ``scored_dims`` with no stored score and no recorded can't-tell.
-    :rtype: list[str]
     """
     answered = {score.dim for score in result.rubric_scores} | set(result.judge_cannot_tell)
     if result.transcript_score is not None:
@@ -458,15 +425,10 @@ def apply_rejudge(
     ``cost_usd`` and ``usage`` are left as they are — see ``JudgeRescore`` for why.
 
     :param result: The stored result. Not mutated.
-    :ptype result: EvalResult
     :param template: The run's template, whose rubric order the scores are kept in.
-    :ptype template: EvalTemplate
     :param outcomes: ``(dim_id, outcome)`` for every dim re-asked, in dimension order.
-    :ptype outcomes: list[tuple[str, JudgeOutcome]]
     :param judge_model: The run's judge pin, recorded on the rescore.
-    :ptype judge_model: str
     :return: The result as it now stands.
-    :rtype: EvalResult
     :raises ValueError: ``outcomes`` is empty, or ``result`` carries no ``judge_error`` to record
         as the prior one — both are states the caller refuses before paying for a call.
     """

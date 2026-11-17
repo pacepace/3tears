@@ -20,7 +20,8 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.evals.kernel import MetricDescriptor
-from threetears.evals.kernel import UnreadableBarName, resolve_bar_name
+from threetears.evals.kernel.declaration import UnreadableBarName
+from threetears.evals.kernel.declaration import resolve_bar_name
 from threetears.evals.kernel.host import Bar, BarRegistry, MeasureRegistry
 from threetears.evals.kernel.host.bars import BarRegistrationError
 from threetears.evals.kernel.metrics import describe_measure

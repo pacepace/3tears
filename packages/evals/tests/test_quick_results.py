@@ -38,7 +38,10 @@ from threetears.evals.kernel import CALIBRATION_MIN_RESULTS
 from threetears.evals.schema import StopReason
 from threetears.evals.quick.graders import UNUSABLE_ANSWER
 from threetears.evals.quick.one_call import callable_host
-from threetears.evals.analysis import campaign_report_markdown, campaign_verdicts, get_campaign, summarize_run
+from threetears.evals.analysis import summarize_run
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.service import campaign_verdicts
+from threetears.evals.analysis.campaigns import get_campaign
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.clock_support import frozen_clock
 

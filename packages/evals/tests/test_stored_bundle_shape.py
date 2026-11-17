@@ -10,7 +10,7 @@ No earlier shape is read as stored since shape 66 took names out of the evidence
 frozen before it carries sentences and arm labels worded when it was frozen, which this build words and names when a
 page is rendered. 64 was read as stored until then; now a stored analysis frozen at 64 or 65 is regenerated once, and
 every door says why: ``report_read`` stands in code-only, ``analyses_list`` and ``campaigns_list`` list it as needing
-regeneration, ``analysis_report`` by its id refuses it, and a call, a snapshot freeze and a writer case mint over it are
+regeneration, and a call, a snapshot freeze and a writer case mint over it are
 refused, each naming the bundle as frozen before names left the evidence. The shape-65 bundles are a generated
 report's own, with the words 66 dropped put back, and the Kairo round 2 campaign's.
 """
@@ -35,7 +35,7 @@ from threetears.evals.analysis.campaign_bundle import CAMPAIGN_BUNDLE_SHAPE, Cam
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, build_code_only_report
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
 from threetears.evals.analysis.report.serialize_md import report_markdown
-from threetears.evals.analysis.service import analysis_report, record_campaign_call
+from threetears.evals.analysis.service import record_campaign_call
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.kernel.errors import RefusedInput, ValidationFailedError
 from threetears.evals.ops.analysis import analyses_list, campaigns_list, report_read
@@ -257,17 +257,6 @@ async def test_the_listings_list_a_report_over_shape_65_evidence_as_needing_rege
     assert campaign.report_state == "needs_regeneration"
     assert campaign.report is not None and campaign.report.why_regenerate is not None
     assert WHY in campaign.report.why_regenerate
-
-
-async def test_the_analysis_read_by_its_id_over_shape_65_evidence_is_refused_saying_why() -> None:
-    store = InMemoryDocumentStore()
-    fixture, analysis = await _written(store)
-    _frozen_again_at(store, analysis, NAMED_SHAPE)
-
-    with pytest.raises(RefusedInput) as refused:
-        off_loop(analysis_report, fixture.host.eval_host.storage, analysis.id, TOYHOST_SCOPE)
-
-    assert WHY in refused.value.fault and "analysis_generate" in (refused.value.remedy or "")
 
 
 async def test_a_call_a_freeze_and_a_writer_case_over_a_shape_65_analysis_are_refused_saying_why() -> None:

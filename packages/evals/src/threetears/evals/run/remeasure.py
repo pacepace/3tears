@@ -126,16 +126,11 @@ async def remeasure_run(host: EvalHost, run_id: str, scope_id: str, *, apply: bo
 
     :param host: The host: the run's store, its measure registry (``profile.measures``, whose definitions are the
         current ones) and its reader of a stored result (``profile.measure_rereader``).
-    :ptype host: EvalHost
     :param run_id: The stored run to re-measure.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param apply: Store the new values and mark the run re-measured; ``False`` (the default) reads, checks and
         reports, and writes nothing.
-    :ptype apply: bool
     :return: What moved and what was read again, and whether it was written.
-    :rtype: Remeasure
     :raises NotFoundError: No such run in the scope.
     :raises ValidationFailedError: The run is still pending or running; a measure whose definition moved shaped the
         run (``MetricDescriptor.shapes_run``); a result holds a value of a moved measure and the host wires no
@@ -382,19 +377,12 @@ async def attest_measure_definitions(
     refused: a statement is never replaced, and a host that stated the wrong one corrects the run's document itself.
 
     :param host: The host whose store holds the runs.
-    :ptype host: EvalHost
     :param run_ids: The stored runs to stamp.
-    :ptype run_ids: Sequence[str]
     :param scope_id: The scope they live in.
-    :ptype scope_id: str
     :param definitions: The definitions they ran under, measure key -> definition digest. Not empty.
-    :ptype definitions: Mapping[str, str]
     :param attested_by: Who states it, as the host names them: a person or a job.
-    :ptype attested_by: str
     :param note: Why the host knows, in its own words.
-    :ptype note: str | None
     :return: What was written.
-    :rtype: Attested
     :raises NotFoundError: A run is not in the scope.
     :raises ValidationFailedError: ``definitions`` or ``attested_by`` is empty; a run is still pending or running; or
         a run already records definitions (its launch's, a re-measure's, or an earlier attestation of other
@@ -509,19 +497,12 @@ async def attest_served_model(
     of whose candidate rows is silent: a statement never stands beside a response's word.
 
     :param host: The host whose store holds the runs.
-    :ptype host: EvalHost
     :param run_ids: The stored runs to stamp.
-    :ptype run_ids: Sequence[str]
     :param scope_id: The scope they live in.
-    :ptype scope_id: str
     :param served_model: The model that answered their candidate calls, as a provider's response would name it.
-    :ptype served_model: str
     :param attested_by: Who states it, as the host names them: a person or a job.
-    :ptype attested_by: str
     :param note: Why the host knows, in its own words.
-    :ptype note: str | None
     :return: What was written.
-    :rtype: Attested
     :raises NotFoundError: A run is not in the scope.
     :raises ValidationFailedError: ``served_model`` or ``attested_by`` is blank; a run is still pending or running; a
         run was attested with another model; or none of a run's candidate rows is silent. Raised before anything is

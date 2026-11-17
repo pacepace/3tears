@@ -35,13 +35,9 @@ def measure_catalog(
     summary, and every summary's name is resolvable here.
 
     :param bundle: The assembled bundle, before its catalog is attached.
-    :ptype bundle: AnalysisContextBundle
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param judge_kind: Whether every result is a judge-kind one (``candidate_kind``), whose spend is the subject's own.
-    :ptype judge_kind: bool
     :return: Descriptors keyed by measure name, in name order for a stable fingerprint.
-    :rtype: dict[str, MetricDescriptor]
     """
     collections = [
         bundle.telemetry.measures,
@@ -71,9 +67,7 @@ def cell_measure_facts(bundle: AnalysisContextBundle) -> dict[str, MeasureFacts]
     was handed for the same name, never a second lookup that could disagree with it.
 
     :param bundle: An assembled bundle.
-    :ptype bundle: AnalysisContextBundle
     :return: One entry per measure name appearing in any cell — the time axis's included — in name order.
-    :rtype: dict[str, MeasureFacts]
     """
     cells = [*bundle.cell_measures, *_time_axis_cells(bundle)]
     names = sorted(
@@ -105,9 +99,7 @@ def cell_dimension_facts(bundle: AnalysisContextBundle) -> dict[str, JudgedDimen
     (:func:`cell_measures`).
 
     :param bundle: An assembled bundle.
-    :ptype bundle: AnalysisContextBundle
     :return: One entry per dimension appearing in any cell, in name order.
-    :rtype: dict[str, JudgedDimensionFacts]
     """
     described = {measure.name: measure for measure in bundle.judged_measures}
     names = sorted({reading.dimension for cell in bundle.cell_measures for reading in cell.judged})
@@ -132,9 +124,7 @@ def bundle_decision_surface(bundle: AnalysisContextBundle) -> DecisionSurface:
     here, so the two cannot name different arms.
 
     :param bundle: The evidence set.
-    :ptype bundle: AnalysisContextBundle
     :return: The decision surface.
-    :rtype: DecisionSurface
     """
     return DecisionSurface(
         control_variant_key=bundle.design.control_arm.variant_key if bundle.design.control_arm is not None else None,
@@ -167,9 +157,7 @@ def _frontier_dominance(frontier: FrontierResult) -> dict[str, FrontierDominance
     a chart reads it as untested.
 
     :param frontier: The bundle's frontier lens.
-    :ptype frontier: FrontierResult
     :return: ``{variant_key: dominance}``.
-    :rtype: dict[str, FrontierDominance]
     """
     placed: dict[str, list[FrontierDominance | None]] = {}
     for subject in frontier.subjects:

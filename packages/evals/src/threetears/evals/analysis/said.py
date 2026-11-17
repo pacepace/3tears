@@ -70,9 +70,7 @@ class Said:
         """A sentence of words, figures and other sentences, in order.
 
         :param parts: Each part.
-        :ptype parts: str | SaidFigure | Said
         :return: The sentence.
-        :rtype: Said
         """
         held: list[str | SaidFigure] = []
         for part in parts:
@@ -103,9 +101,7 @@ class Said:
         spelled as ``points``, and ``no change`` where that size reads as zero.
 
         :param spell: A figure's text, for every role but ``change``.
-        :ptype spell: Callable[[SaidFigure], str]
         :return: The sentence.
-        :rtype: str
         """
         said: list[str] = []
         for part in self.parts:
@@ -128,9 +124,7 @@ class Said:
         """Whether the sentence's words hold ``phrase``, within one run of words.
 
         :param phrase: The words.
-        :ptype phrase: str
         :return: Whether they are there.
-        :rtype: bool
         """
         return any(isinstance(part, str) and phrase in part for part in self.parts)
 
@@ -140,7 +134,6 @@ class Said:
         count's digits ungrouped.
 
         :return: The sentence.
-        :rtype: str
         """
         return self.words(_stored_figure)
 

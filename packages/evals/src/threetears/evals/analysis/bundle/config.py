@@ -49,7 +49,6 @@ def _observed_model_levers(profile: HostProfile) -> dict[str, str]:
     :return: The engine's rule merged with the host's. A host declaration colliding with the engine's
         reserved name cannot reach here — :class:`~threetears.evals.kernel.host.profile.HostProfile`
         refuses it at registration.
-    :rtype: dict[str, str]
     """
     return {**profile.observed_model_levers, CANDIDATE_MODEL_LEVER: "candidate"}
 
@@ -113,13 +112,9 @@ def exercised(
     The candidate model is not here: every result exercises it.
 
     :param runs: The campaign's resolved runs.
-    :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
-    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose levers these are.
-    :ptype profile: HostProfile
     :return: Every host lever with a recovery rule, each run counted (0 where none of its results observed it).
-    :rtype: dict[str, dict[str, int]]
     """
     return {
         lever: {
@@ -165,15 +160,10 @@ def unexercised_levers(
     results (fewer than :data:`_EXERCISED_ARM_FLOOR` of them) and a lever with several calls keeps its one level.
 
     :param runs: The campaign's resolved runs.
-    :ptype runs: list[EvalRun]
     :param results_by_run: Each run's results, keyed by run id.
-    :ptype results_by_run: dict[str, list[ResultView]]
     :param profile: The host whose levers these are.
-    :ptype profile: HostProfile
     :param declared_axes: The levers the campaign declared as axes, each a level whatever its calls.
-    :ptype declared_axes: Collection[str]
     :return: The recovered levers fewer than two arms observed, declared axes excepted.
-    :rtype: frozenset[str]
     """
     # Only arms that have results count: a run that delivered none is an arm of its own to `_arm_of_run` and says
     # nothing about whether the campaign compared two.
@@ -226,13 +216,9 @@ def with_unobserved_unknown(
     that contrast is the point of the sweep, so those levers (``exempt``, with the named ones) keep it.
 
     :param effective_by_run: Each run's resolved levers, keyed by run id.
-    :ptype effective_by_run: dict[str, dict[str, EffectiveLever]]
     :param profile: The host whose recovery rules these are.
-    :ptype profile: HostProfile
     :param exempt: Levers kept as they are, the declared axes.
-    :ptype exempt: Collection[str]
     :return: A copy with the unobserved recovered levers added as ``EffectiveLever(None, "unknown")``.
-    :rtype: dict[str, dict[str, EffectiveLever]]
     """
     unobserved = EffectiveLever(None, "unknown")
     recovered = set(profile.observed_model_levers) - named_levers(effective_by_run) - set(exempt)
@@ -286,13 +272,9 @@ def effective_config(run: EvalRun, results: list[ResultView], *, profile: HostPr
     departure when it may simply be what the declaration reads.
 
     :param run: The run to read overlays from.
-    :ptype run: EvalRun
     :param results: That run's results — the observation side of the resolution.
-    :ptype results: list[ResultView]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: Each applicable lever mapped to its :class:`EffectiveLever`.
-    :rtype: dict[str, EffectiveLever]
     """
     return resolve_config(run, results, profile=profile)[0]
 
@@ -313,13 +295,9 @@ def resolve_config(
     declaration's reader a second time, per run, for a lens that already had the answer.
 
     :param run: The run to read.
-    :ptype run: EvalRun
     :param results: That run's results.
-    :ptype results: list[ResultView]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: ``(each applicable lever's EffectiveLever, the levers this run ENGAGED)``.
-    :rtype: tuple[dict[str, EffectiveLever], frozenset[str]]
     """
     resolution = profile.sweepables.resolve_levers(run, results)
     recovery = _observed_model_levers(profile=profile)
@@ -387,15 +365,11 @@ def lever_value(record: ScoreRecord, lever: str, effective_by_run: dict[str, dic
     level for every run assembly admits.
 
     :param record: The score record to read.
-    :ptype record: ScoreRecord
     :param lever: A declared lever name.
-    :ptype lever: str
     :param effective_by_run: Each run's resolved levers, keyed by run id.
-    :ptype effective_by_run: dict[str, dict[str, EffectiveLever]]
     :return: The level this record sits at, or ``None`` when the lever applied to its run but
         resolved ambiguously — no level can be claimed there, so the caller drops the record
         rather than pooling it into a cohort it cannot support.
-    :rtype: str | None
     """
     if lever == CANDIDATE_MODEL_LEVER:
         return INHERITED_DEFAULT_LEVEL if not record.model else str(record.model)

@@ -812,9 +812,7 @@ def manifest_fingerprint(manifest: Mapping[str, Any]) -> str:
     """A manifest's fingerprint: :data:`EVIDENCE_FINGERPRINT_PREFIX` and the digest of its stored document.
 
     :param manifest: An :class:`EvidenceManifest` as its stored dict.
-    :ptype manifest: Mapping[str, Any]
     :return: ``v3:`` and a 64-character lowercase hex digest.
-    :rtype: str
     """
     return EVIDENCE_FINGERPRINT_PREFIX + input_digest(dict(manifest))
 
@@ -827,11 +825,8 @@ def campaign_fingerprint(declaration: Mapping[str, Any], aspects: Sequence[tuple
     campaign what a ``v3:`` fingerprint means for one aspect.
 
     :param declaration: The campaign's own evidence: its ids and what it declares, names left out.
-    :ptype declaration: Mapping[str, Any]
     :param aspects: Each aspect's label and ``v3:`` fingerprint, in the campaign's order.
-    :ptype aspects: Sequence[tuple[str, str]]
     :return: ``v4:`` and a 64-character lowercase hex digest.
-    :rtype: str
     """
     return _CAMPAIGN_EVIDENCE_PREFIX + input_digest(
         {"campaign": dict(declaration), "aspects": [list(aspect) for aspect in aspects]}
@@ -845,11 +840,8 @@ def unpresented(items: Sequence[Any], fields: frozenset[str]) -> list[Any]:
     """``items`` with each mapping's ``fields`` left out; anything else as it is.
 
     :param items: Stored dicts.
-    :ptype items: Sequence[Any]
     :param fields: The presentation fields to leave out.
-    :ptype fields: frozenset[str]
     :return: The items without them.
-    :rtype: list[Any]
     """
     return [
         {key: value for key, value in item.items() if key not in fields} if isinstance(item, Mapping) else item
@@ -863,9 +855,7 @@ def unnamed_levels(levels: Mapping[str, Any]) -> dict[str, Any]:
     renaming a level moves no bundle's or campaign bundle's fingerprint.
 
     :param levels: Lever id to the level, as its stored dict.
-    :ptype levels: Mapping[str, Any]
     :return: The map, each level unnamed.
-    :rtype: dict[str, Any]
     """
     return {
         lever: {key: value for key, value in level.items() if key not in LEVEL_PRESENTATION_FIELDS}
@@ -883,9 +873,7 @@ def unnamed_axes(design: Mapping[str, Any]) -> dict[str, Any]:
     it is.
 
     :param design: An aspect's design, as its stored dict.
-    :ptype design: Mapping[str, Any]
     :return: The design, its axes and their levels unnamed.
-    :rtype: dict[str, Any]
     """
     axes = design.get("axes")
     if not isinstance(axes, list):
@@ -912,9 +900,7 @@ def _result_evidence(result: ResultView) -> dict[str, Any]:
     dump, by the same names, so either gives the same evidence (``tests/test_evidence_fingerprint.py``).
 
     :param result: A result as the store returned it, before any lens reads it.
-    :ptype result: ResultView
     :return: The evidence, as plain JSON.
-    :rtype: dict[str, Any]
     """
     # A stored result is a model; its reading is read by attribute.
     held = cast("EvalResult", result).model_dump(mode="json") if isinstance(result, BaseModel) else result
@@ -941,7 +927,6 @@ class ResultsDigest:
         """Take one result as the store returned it.
 
         :param result: The result.
-        :ptype result: ResultView
         """
         rendered = input_json(_result_evidence(result)).encode("utf-8")
         self._digests[result.id] = hashlib.sha256(rendered).hexdigest()
@@ -953,7 +938,6 @@ class ResultsDigest:
         """The digest of every result taken: each id and its evidence's digest, in id order.
 
         :return: A 64-character lowercase hex digest.
-        :rtype: str
         """
         return input_digest(sorted(self._digests.items()))
 
@@ -967,9 +951,7 @@ def _run_evidence(run: EvalRun) -> dict[str, Any]:
     """One member run's evidence: the fields :data:`_RUN` names, as stored, each level by its content hash.
 
     :param run: The stored run.
-    :ptype run: EvalRun
     :return: The evidence, as plain JSON.
-    :rtype: dict[str, Any]
     """
     evidence: dict[str, Any] = _take(run, _RUN)
     return evidence
@@ -983,9 +965,7 @@ def declaration_evidence(view: AspectView) -> dict[str, Any]:
     the pre-image until a campaign sets it, and moves no stored fingerprint.
 
     :param view: The aspect as a per-aspect reader reads it.
-    :ptype view: AspectView
     :return: The evidence, as plain JSON.
-    :rtype: dict[str, Any]
     """
     declared: dict[str, Any] | None = None
     if view.declared is not None:
@@ -1011,13 +991,9 @@ def criteria_evidence(behavior: str, catalog: Mapping[str, MetricDescriptor], pr
     host registers for it, and each catalogued measure as it is declared.
 
     :param behavior: The campaign's behavior, which a pass threshold and a registered bar are keyed under.
-    :ptype behavior: str
     :param catalog: The bundle's measure catalog: each measure it reads, as launched.
-    :ptype catalog: Mapping[str, MetricDescriptor]
     :param profile: The host profile the bundle was assembled under.
-    :ptype profile: HostProfile
     :return: The evidence, as plain JSON.
-    :rtype: dict[str, Any]
     """
     registered = sorted(
         (bar for bar in profile.bars.bars if bar.behavior == behavior), key=lambda bar: (bar.measure, bar.judged)
@@ -1066,33 +1042,19 @@ def evidence_manifest(
     """The manifest of one assembly: what it read, each kind digested (see the module).
 
     :param view: The aspect assembled.
-    :ptype view: AspectView
     :param profile: The host profile assembled under, as the runs were launched to be read.
-    :ptype profile: HostProfile
     :param host_declarations: The bundle's ``host_declarations_digest``.
-    :ptype host_declarations: str
     :param catalog: The bundle's measure catalog.
-    :ptype catalog: Mapping[str, MetricDescriptor]
     :param runs: The member runs read: resolved and not archived.
-    :ptype runs: Sequence[EvalRun]
     :param archived_run_ids: The members left out as archived.
-    :ptype archived_run_ids: Sequence[str]
     :param unresolved_run_ids: The members the store did not return.
-    :ptype unresolved_run_ids: Sequence[str]
     :param results: Every result read, taken as the store returned it.
-    :ptype results: ResultsDigest
     :param cases: Each case the results name, as read.
-    :ptype cases: Sequence[EvalCaseStratum]
     :param ratings: Each rating read.
-    :ptype ratings: Sequence[CalibrationRating]
     :param tiers: The judges' tiers, which name each stored profile consulted.
-    :ptype tiers: Sequence[BaseModel]
     :param insights: Every prior insight read as of the cutoff, retracted ones included, before the carried cap.
-    :ptype insights: Sequence[EvalInsight]
     :param retracted_insights: Each retracted insight's id, to the archived analysis that minted it.
-    :ptype retracted_insights: Mapping[str, str]
     :return: The manifest.
-    :rtype: EvidenceManifest
     """
     profiles = _consulted_profiles([tier.model_dump(mode="json") for tier in tiers])
     return EvidenceManifest(

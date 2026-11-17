@@ -11,13 +11,9 @@ import pytest
 
 from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Eval, grader
-from threetears.evals.analysis import (
-    CampaignReadings,
-    get_campaign,
-    CampaignReport,
-    campaign_report_markdown,
-    serialize_report,
-)
+from threetears.evals.analysis import CampaignReadings, CampaignReport, serialize_report
+from threetears.evals.analysis.campaigns import get_campaign
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.report.campaign.names import AspectNames
 

@@ -92,16 +92,12 @@ async def price_subject_call_floor(
     both on, and the ``judged_artifact`` your launcher hands ``build_judge_service``.
 
     :param host: The host the launcher builds the judge and the simulator client on.
-    :ptype host: EvalHost
     :param request: The arm, as planned.
-    :ptype request: LaunchRequest
     :param judged_artifact: What the kind's judge reads — the declaration its launcher builds its judge with.
-    :ptype judged_artifact: JudgedArtifact
     :return: The larger of the judge's and the simulated user's floor, flagged a lower bound
         (:attr:`~threetears.evals.run.CallCeiling.lower_bound`); the first call whose client cannot price it even
         after its prices were refreshed, as an :class:`~threetears.evals.run.UnpricedCall`; ``None`` for an arm with
         no plan, or one whose plan names neither a judge nor a simulated user bound to speak.
-    :rtype: CallCeiling | UnpricedCall | None
     :raises ValidationFailedError: The launch's judge-config selection does not fit the template (as
         :func:`~threetears.evals.run.plan_judge` refuses it).
     :raises ValueError: The host supplies no completion clients, or a client priced a call at an amount no
@@ -240,9 +236,7 @@ def _utterance_certain(conversation: ConversationSpec) -> bool:
     has delivered nothing cannot be declared done — whose line is an utterance call.
 
     :param conversation: The template's conversation.
-    :ptype conversation: ConversationSpec
     :return: Whether some round up to the turn limit is bound to call for an utterance.
-    :rtype: bool
     """
     if not conversation.actors:
         return False

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from contextlib import AbstractAsyncContextManager
 from typing import Any
 
 import pytest
@@ -22,8 +23,9 @@ from pydantic import Field
 
 import threetears.evals.ops.sweeps as sweeps
 import threetears.evals.run.job_work as job_work
-import threetears.evals.run.launch_job as launch_job
 from threetears.evals.kernel import EvalAnalysisAttempt, EvalSweep
+from threetears.evals.kernel.job_timeout import JobTimeoutFactory, default_job_timeout
+from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.ops import (
     LaunchArguments,
     SweepArguments,
@@ -92,13 +94,25 @@ async def test_a_job_whose_budget_runs_out_reads_timed_out_and_a_cancelled_one_r
     assert stopped.detail is not None and "not needed after all" in stopped.detail
 
 
+def _preparation_cut_to(seconds: float) -> JobTimeoutFactory:
+    """The engine's job timeout, but a launch's preparation, which runs under the engine's cap on one job
+    (:data:`~threetears.evals.run.jobs.JOB_TIMEOUT_CAP_S`), gets ``seconds`` instead: the host's own timeout port."""
+
+    def factory(budget_s: float) -> AbstractAsyncContextManager[float]:
+        return default_job_timeout(seconds if budget_s == JOB_TIMEOUT_CAP_S else budget_s)
+
+    return factory
+
+
 async def test_a_launch_whose_run_waits_for_a_slot_past_its_preparation_budget_is_not_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = _held_extraction(monkeypatch)
-    monkeypatch.setattr(launch_job, "LAUNCH_PREPARATION_BUDGET_S", 0.2)
     fixture = off_loop(ops_fixture)
-    host = dataclasses.replace(fixture.host, launch=dataclasses.replace(fixture.host.launch, max_concurrent_jobs=1))
+    launch = dataclasses.replace(
+        fixture.host.launch, max_concurrent_jobs=1, job_timeout_factory=_preparation_cut_to(0.2)
+    )
+    host = dataclasses.replace(fixture.host, launch=launch)
     (first,) = (await run_launch(host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
     (second,) = (await run_launch(host, _launch(RUN_MODELS[1]), TOYHOST_SCOPE)).jobs
 
@@ -116,15 +130,17 @@ async def test_a_launch_whose_preparation_hangs_past_its_budget_ends_timed_out_w
     async def hangs(*_args: Any, **_kwargs: Any) -> Any:
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(launch_job, "LAUNCH_PREPARATION_BUDGET_S", 0.2)
     monkeypatch.setattr(toyhost_launch, "launch_run", hangs)
     fixture = off_loop(ops_fixture)
+    host = dataclasses.replace(
+        fixture.host, launch=dataclasses.replace(fixture.host.launch, job_timeout_factory=_preparation_cut_to(0.2))
+    )
 
-    (job,) = (await run_launch(fixture.host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
-    status = await settled(fixture.host, job.job_id)
+    (job,) = (await run_launch(host, _launch(RUN_MODELS[0]), TOYHOST_SCOPE)).jobs
+    status = await settled(host, job.job_id)
 
     assert (status.state, status.status, status.run_ids) == ("stopped", "timed_out", [])
-    assert fixture.host.launch.job_manager.admitted_count == 0, "the launch's reserved room was handed back"
+    assert host.launch.job_manager.admitted_count == 0, "the launch's reserved room was handed back"
 
 
 class EndingRefusingStore(InMemoryDocumentStore):

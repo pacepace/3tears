@@ -344,7 +344,6 @@ class SqliteDocumentStore:
 
     :param path: The database file, created with its table when absent. ``":memory:"`` keeps it in this
         process's memory, which is the in-memory store with SQLite's semantics.
-    :ptype path: str | os.PathLike[str]
     :raises ValueError: The file was written by a layout this store does not read.
     """
 
@@ -386,11 +385,8 @@ class SqliteDocumentStore:
         """Return one document by id within a scope, or ``None`` if absent.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :return: The stored document, or ``None``.
-        :rtype: dict[str, Any] | None
         """
         document, _etag = self.get_with_etag(doc_id, scope_id)
         return document
@@ -399,11 +395,8 @@ class SqliteDocumentStore:
         """Return one document plus the token a conditional write must present.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :return: ``(document, etag)``, or ``(None, None)`` when there is no such document.
-        :rtype: tuple[dict[str, Any] | None, str | None]
         """
         with self._lock:
             row = self._db.execute(
@@ -425,17 +418,11 @@ class SqliteDocumentStore:
         """Return the documents of one type whose ids are in ``doc_ids``, within a scope.
 
         :param doc_type: The discriminator every returned document carries.
-        :ptype doc_type: str
         :param doc_ids: The ids to fetch; an absent one is skipped, and one named twice is returned once.
-        :ptype doc_ids: Sequence[str]
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param exclude: Dotted paths left out of every returned document.
-        :ptype exclude: Sequence[str]
         :param keep: When given, the only top-level fields each returned document carries.
-        :ptype keep: Sequence[str]
         :return: The matching documents, projected as asked.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: Both ``exclude`` and ``keep`` were given.
         """
         if exclude and keep:
@@ -480,26 +467,16 @@ class SqliteDocumentStore:
         condition in the same statement, so a page past it is read as the first page is, never by skipping rows.
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param order_by: The field to sort by, or ``None`` for insertion order.
-        :ptype order_by: str | None
         :param descending: Sort direction when ``order_by`` is given.
-        :ptype descending: bool
         :param limit: Maximum documents to return; ``None`` is unbounded.
-        :ptype limit: int | None
         :param after: The last document of the page before, as ``(its order_by value, its id)``; ``None`` reads from
             the start. Only with ``order_by``.
-        :ptype after: tuple[Any, str] | None
         :param exclude: Dotted paths left out of every returned document.
-        :ptype exclude: Sequence[str]
         :param field_in: Field-membership predicates: field → the values it may equal.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
-        :ptype field_eq: Any
         :return: The matching documents.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: A field is named in both ``field_in`` and ``field_eq``, or ``after`` is given without
             ``order_by``.
         :raises TypeError: A predicate's value is not a scalar, or a ``field_in`` entry is a string rather than a
@@ -556,19 +533,12 @@ class SqliteDocumentStore:
         not be among them. See :meth:`~threetears.evals.schema.ResultReadings.iter_narrowed`.
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param exclude: Dotted paths left out of every row.
-        :ptype exclude: Sequence[str]
         :param exclude_in_items: List-field path → dotted paths left out of each object item of that list.
-        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates: field → the values it may equal.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
-        :ptype field_eq: Any
         :return: The narrowed rows, in insertion order.
-        :rtype: Iterator[dict[str, Any]]
         :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
         :raises TypeError: A predicate's value is not a scalar, or a ``field_in`` entry is a string rather than a
             sequence of values.
@@ -624,23 +594,15 @@ class SqliteDocumentStore:
         See :meth:`~threetears.evals.schema.ResultReadings.grouped`.
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param by: Dotted paths to group by.
-        :ptype by: Sequence[str]
         :param measures: Measure name → the measure.
-        :ptype measures: Mapping[str, GroupMeasure]
         :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, in every
             ``values`` value: applied in Python as each value is read back (:func:`~threetears.evals.schema.store_port.
             narrow_groups`), since the file is in this process and nothing is shipped.
-        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates: field → the values it may equal.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates.
-        :ptype field_eq: Any
         :return: One dict per group, in no promised order.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: The grouping is refused, or a field is named in both ``field_in`` and ``field_eq``.
         :raises TypeError: A measure met a value its kind refuses, a ``by`` value is an object or a list, or a
             predicate is refused.
@@ -732,12 +694,9 @@ class SqliteDocumentStore:
         """Yield the id of every document of one type within a scope.
 
         :param doc_type: The discriminator to sweep.
-        :ptype doc_type: str
         :param scope_id: The scope to sweep.
-        :ptype scope_id: str
         :yield: Document ids, from a snapshot taken when iteration starts, so deleting each as it is
             yielded is safe.
-        :rtype: Iterator[str]
         """
         with self._lock:
             ids = [
@@ -752,14 +711,11 @@ class SqliteDocumentStore:
         """Write a document under the scope and id it carries, creating or replacing it.
 
         :param document: The document to store; it supplies its own ``scope_id`` and ``id``.
-        :ptype document: dict[str, Any]
         :param if_match: A token from :meth:`get_with_etag`; when given, the write lands only if the
             stored document still carries it.
-        :ptype if_match: str | None
         :param create_only: When True, the write lands only if nothing is stored under its scope and id: a
             plain ``INSERT``, which the table's unique key refuses, so the check and the write are one
             statement between threads and between processes.
-        :ptype create_only: bool
         :raises StoreConflict: ``if_match`` was given and the stored document no longer carries it, or is gone;
             or ``create_only`` was set and a document is stored there.
         :raises ValueError: Both ``if_match`` and ``create_only`` were given.
@@ -802,13 +758,9 @@ class SqliteDocumentStore:
         """Set top-level fields on one stored document, leaving every other field as stored.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :param fields: Top-level fields and their new values.
-        :ptype fields: dict[str, Any]
         :return: ``True`` when the document was written; ``False`` when there is no such document.
-        :rtype: bool
         :raises ValueError: ``fields`` is empty or names a field that locates the document.
         """
         if not fields:
@@ -841,11 +793,8 @@ class SqliteDocumentStore:
         """Delete one document by id within a scope.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :return: ``True`` when a document was deleted, ``False`` when there was none.
-        :rtype: bool
         """
         with self._lock:
             deleted = self._db.execute("DELETE FROM documents WHERE scope_id = ? AND id = ?", (scope_id, doc_id))

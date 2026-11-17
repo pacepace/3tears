@@ -29,8 +29,10 @@ import pytest
 
 from threetears.evals.analysis import DisclosureBlock, TableBlock, inspect_campaign_bundle
 from threetears.evals import Answer, Eval, Result, grader
-from threetears.evals.analysis import report_markdown
-from threetears.evals.kernel import RUN_MARGIN_MEASURES, ValidationFailedError, run_margin_refusal
+from threetears.evals.analysis.report.serialize_md import report_markdown
+from threetears.evals.kernel import ValidationFailedError
+from threetears.evals.kernel.metrics import RUN_MARGIN_MEASURES
+from threetears.evals.kernel.metrics import run_margin_refusal
 from threetears.evals.quick.one_call import callable_host
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.clock_support import frozen_clock

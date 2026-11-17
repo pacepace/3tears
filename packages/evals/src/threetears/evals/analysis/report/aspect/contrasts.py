@@ -80,19 +80,14 @@ def aspect_verdict(
     print (:func:`~threetears.evals.analysis.report.verdict.verdict_line`).
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param measure_order: The aspect's graders' measures, in the order its design lists them.
-    :ptype measure_order: Sequence[str]
     :param arm_labels: The names a surface prints the arms by, by variant key, which replace their variants' names
         (:func:`~threetears.evals.analysis.report.words.reader_arm_labels`, as a listing reads them); None names each
         arm by its variant.
-    :ptype arm_labels: Mapping[str, str] | None
     :param forms: The aspect page's forms, over its campaign's set of each measure
         (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`), so the line reads every figure as the
         page does; None for an aspect that is its own campaign (its bundle's forms alone).
-    :ptype forms: PageForms | None
     :return: The verdict line.
-    :rtype: VerdictLine
     """
     # The line's verdicts and the figures they rest on are the aspect page's, decided once in the page's forms.
     if forms is None:
@@ -117,14 +112,11 @@ def contrast_evidence(
     sentence carries at most three figures (:data:`~threetears.evals.analysis.style.MAX_NUMERALS`).
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param forms: The aspect page's forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`), built
         once for the page; None for a verdict line read without its page (a listing's, the quick print's), which
         builds the bundle's own.
-    :ptype forms: PageForms | None
     :return: A verdict's figures, or None where it has no change or interval to state (it is untested, or no
         contrast of the bundle is its).
-    :rtype: Callable[[Verdict], str | None]
     :raises ValueError: ``forms`` were built from another bundle.
     """
     page = forms if forms is not None else PageForms.of_bundle(bundle)
@@ -910,20 +902,16 @@ def contrast_rows(
     program that wants the measure's own units reads :attr:`Report.verdicts` or the bundle, never these rows.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param forms: The aspect page's forms, over its campaign's set of each measure
         (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_aspects`), so every row reads as the page does;
         None for an aspect that is its own campaign (its bundle's forms alone).
-    :ptype forms: PageForms | None
     :param arm_labels: The names the page prints the arms by, by variant key, which replace their variants' names, as
         :func:`aspect_verdict` reads them; None names each arm by its variant.
-    :ptype arm_labels: Mapping[str, str] | None
     :return: One row per contrast, keyed ``question`` (in the words it was asked, or ``(campaign-wide)``), ``reading``,
         ``unit`` (the unit ``control_mean``, ``arm_mean`` and ``delta`` are in; a percent's delta is in points),
         ``contrast`` and ``control`` (each arm as the page names it), ``control_mean``, ``arm_mean``, ``delta`` and
         ``change`` (the delta with its interval, in words), ``interval`` (with the level it holds at), ``hedges_g``,
         ``pairing_r``, ``p_adjusted``, ``verdict`` (in words) and ``cases``.
-    :rtype: list[dict[str, CellValue]]
     """
     surface = bundle_decision_surface(bundle)
     # A program's rows read as the aspect's page does, its forms built once for every row.
@@ -1012,12 +1000,9 @@ def report_cell_labels(bundle: AnalysisContextBundle, *, arm_labels: Mapping[str
     """Each cell's arm as the page names it, by cell reference: its label, with its test setup where it ran under two.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm_labels: The names the page prints the arms by, by variant key, which replace their variants' names, as
         :func:`aspect_verdict` reads them; None names each arm by its variant.
-    :ptype arm_labels: Mapping[str, str] | None
     :return: ``cell_ref -> name`` for every cell on the bundle's surface.
-    :rtype: dict[str, str]
     """
     surface = bundle_decision_surface(bundle)
     name = _cell_namer(surface, _arm_names(bundle, labels=arm_labels))

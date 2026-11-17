@@ -95,9 +95,7 @@ def measured_template_digest(template: EvalTemplate) -> str:
     an edit that changed the measurement from one that did not.
 
     :param template: The template as a launch grades it.
-    :ptype template: EvalTemplate
     :return: A sha256 hex digest.
-    :rtype: str
     """
     declared = set(type(template).model_fields) - _UNMEASURED_TEMPLATE_FIELDS
     return canonical_digest(
@@ -119,13 +117,9 @@ def case_set_digest(*, name: str, template: str, tracked: bool, cases: Sequence[
     """The digest of a case set's content.
 
     :param name: The set's name.
-    :ptype name: str
     :param template: Its template's name: every revision of the template shares it.
-    :ptype template: str
     :param tracked: Whether it is followed over time.
-    :ptype tracked: bool
     :param cases: The content digest of each case it lists, in order (a stored case's ``content_hash``).
-    :ptype cases: Sequence[str]
     """
     return canonical_digest(
         {"case_set": {"name": name, "template": template, "tracked": tracked, "cases": list(cases)}}
@@ -156,7 +150,6 @@ def template_case_digest(case: BaseModel) -> str:
     inside it. A relabelled stratum moves it, so a case relabelled in the store reads ``customized``.
 
     :param case: A corpus case or a stored test case, each of which carries the three fields.
-    :ptype case: BaseModel
     """
     return _case_digest(case, TEMPLATE_CASE_FIELDS)
 
@@ -168,7 +161,6 @@ def template_case_content_digest(case: BaseModel) -> str:
     :func:`template_case_digest` does.
 
     :param case: A corpus case or a stored test case.
-    :ptype case: BaseModel
     """
     return _case_digest(case, TEMPLATE_CASE_CONTENT_FIELDS)
 

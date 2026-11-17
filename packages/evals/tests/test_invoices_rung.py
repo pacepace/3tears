@@ -24,12 +24,9 @@ import pytest
 
 from threetears.evals import Eval, Result
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
-from threetears.evals.analysis import (
-    AnalysisContextBundle,
-    campaign_report_html,
-    campaign_report_markdown,
-    report_markdown,
-)
+from threetears.evals.analysis import AnalysisContextBundle, campaign_report_html
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.kernel import strict_response_format
 from threetears.evals.quick.files import main
 from threetears.evals.quick.continuation import UNKEPT_SENTENCE

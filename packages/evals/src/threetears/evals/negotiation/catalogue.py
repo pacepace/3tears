@@ -32,9 +32,7 @@ def facts_from_router_catalogue(supported_parameters: Collection[str] | None) ->
 
     :param supported_parameters: The model's ``supported_parameters`` as the catalogue lists them, or ``None`` when the
         catalogue was not read, does not list the model, or lists it without them.
-    :ptype supported_parameters: Collection[str] | None
     :return: The facts: every one unknown for ``None``.
-    :rtype: SettingFacts
     """
     if supported_parameters is None:
         return SettingFacts()

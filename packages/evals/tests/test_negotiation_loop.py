@@ -24,7 +24,6 @@ from typing import Any
 import pytest
 
 from threetears.evals.negotiation import (
-    EFFORT_LADDER,
     MAX_RESENDS,
     LearnedSettings,
     SettingRefusal,
@@ -35,6 +34,7 @@ from threetears.evals.negotiation import (
     read_openai_refusal,
     read_router_refusal,
 )
+from threetears.evals.negotiation.settings import EFFORT_LADDER
 from threetears.evals.schema import ClientRequestSettings
 
 #: The logger the loop writes a learned fact to.

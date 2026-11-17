@@ -217,9 +217,7 @@ def caveats_line(labels: Sequence[str]) -> str:
     HTML writers each wrap this one line, so the three never word it apart.
 
     :param labels: The landed caveats' labels (:attr:`DocClaim.caveats`, :attr:`DocTerm.caveats`).
-    :ptype labels: Sequence[str]
     :return: The line, each label on one line; empty for no label.
-    :rtype: str
     """
     if not labels:
         return ""
@@ -230,9 +228,7 @@ def draft_line(page: DocPage) -> str:
     """A draft page's first line under its masthead, as every writer prints it: how many findings its editor left open.
 
     :param page: The page.
-    :ptype page: DocPage
     :return: The line; empty for a finished page.
-    :rtype: str
     """
     if not page.draft:
         return ""
@@ -250,9 +246,7 @@ def open_findings_line(page: DocPage) -> str:
     :data:`~threetears.evals.analysis.report.doc_page.words.FINDINGS_TITLE`.
 
     :param page: The page.
-    :ptype page: DocPage
     :return: The line; empty for a draft or a page with no finding open.
-    :rtype: str
     """
     if page.draft or not page.findings:
         return ""
@@ -266,9 +260,7 @@ def masthead_parts(masthead: PageMasthead) -> list[str]:
     stays as the editor and the judge read it (``doc_page_text``), so a recorded review keeps its key.
 
     :param masthead: The page's masthead.
-    :ptype masthead: PageMasthead
     :return: The parts, each non-empty, in order.
-    :rtype: list[str]
     """
     counts = " · ".join(part for part in masthead.counts.split(" · ") if part and part != masthead.system)
     return [

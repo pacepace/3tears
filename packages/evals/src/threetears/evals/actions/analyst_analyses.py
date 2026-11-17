@@ -264,9 +264,7 @@ def _render_sensitivity(result: Sensitivity) -> str:
     :func:`~threetears.evals.actions.render.render_cited` alone is sized as this writes it.
 
     :param result: The sweep.
-    :ptype result: Sensitivity
     :return: The text.
-    :rtype: str
     """
     text = render_cited(result)
     if result.total or not (result.holds and result.picks_hold):
@@ -312,7 +310,6 @@ def analyst_analyses_actions() -> tuple[Action, ...]:
     """The ``Investigate: analyses`` actions.
 
     :return: The actions, in the order help lists them.
-    :rtype: tuple[Action, ...]
     """
     return (
         Action(

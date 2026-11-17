@@ -72,7 +72,7 @@ from threetears.evals.analysis.report.words import judged_heading, reading_headi
 from threetears.evals.analysis.report_input import Contrast, Measure, ReportInput, Unanswered
 from threetears.evals.analysis.report_margins import aspect_board
 from threetears.evals.kernel.chart_query import PlannedChart
-from threetears.evals.harness import read_writer_cases
+from threetears.evals.harness.writer_cases import read_writer_cases
 from threetears.evals.kernel.numbers import (
     ABSENT,
     MoneyForm,

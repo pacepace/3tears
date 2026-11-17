@@ -3,7 +3,7 @@
 A judge campaign's readout (:func:`~threetears.evals.analysis.judge_kind_readings`) lives in that campaign alone.
 :func:`judge_profiles_record` stores it — one :class:`~threetears.evals.kernel.EvalJudgeProfile` per judge and
 criterion — from the runs the operator names, so every campaign the same judge scores reads its evidence tier from
-it where its own evidence decides none (:func:`~threetears.evals.analysis.tiers_with_judge_profiles`).
+it where its own evidence decides none.
 
 **An explicit step, never a write on completion.** Which runs make up one measurement is the operator's call: a
 campaign's arms are several runs, a re-run of one arm may be meant to replace it, and a run abandoned halfway should
@@ -87,14 +87,10 @@ def judge_profiles_record(host: EvalHost, record: JudgeProfilesRecord, scope_id:
     """Record the profile of every judge and criterion a judge campaign's runs measured.
 
     :param host: The host whose store holds the runs and receives the profiles.
-    :ptype host: EvalHost
     :param record: The runs.
-    :ptype record: JudgeProfilesRecord
     :param scope_id: The scope the runs live in, and the profiles are stored in.
-    :ptype scope_id: str
     :return: The receipt: each profile written (with the tier it decides and when any profile it replaced had been
         measured), every judge measured but not recorded, and every result the readout left out.
-    :rtype: JudgeProfileRecording
     :raises NotFoundError: A run is not in the scope.
     :raises ValidationFailedError: A run is not of the judge kind, or is still running; or no profile could be recorded.
     :raises StorageError: A profile could not be persisted.
@@ -148,13 +144,9 @@ def judge_profiles_list(host: EvalHost, scope_id: str, *, rubric_dim: str | None
     """The stored judge profiles of a scope, each with the tier it decides.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param rubric_dim: Only the profiles of this criterion's dim.
-    :ptype rubric_dim: str | None
     :return: The listing, oldest recording first.
-    :rtype: JudgeProfileListing
     """
     return JudgeProfileListing(
         profiles=[

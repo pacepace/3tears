@@ -34,7 +34,6 @@ import pytest
 from threetears.evals.kernel.numbers import format_number
 from threetears.evals.schema import EvalRun, JudgeDeclaration, JudgedArtifact, RubricDim
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
-from threetears.evals.schema.judge_attribution import judges_sharing_a_candidate_model
 from threetears.evals.schema.models import EvalTemplate
 from threetears.evals.run import (
     ArmPlan,
@@ -713,7 +712,7 @@ async def test_an_inherited_judge_on_a_candidates_model_steps_to_the_alternate()
     assert run.effective_judges == {_DIM: "judge-alternate"}
     (quote,) = judged.quotes
     assert quote.judge is not None and quote.judge.model == "judge-alternate", "priced by the judge that scores"
-    assert judges_sharing_a_candidate_model(run.effective_judges, [run.candidate_model]) == {}
+    assert run.candidate_model not in (run.effective_judges or {}).values()
 
 
 @pytest.mark.parametrize(
@@ -746,8 +745,8 @@ async def test_the_judge_stays_where_no_usable_alternate_or_a_choice_applies(jud
     assert run.judge_model == judge
     # The arm named its model, so its candidate origin is `chosen` beside the judge's (#571).
     assert run.model_role_provenance == {"candidate": "chosen", "judge": origin}
-    shared = judges_sharing_a_candidate_model(run.effective_judges, [run.candidate_model])
-    assert (shared == {_DIM: judge}) == (judge == RUN_MODELS[0]), "an overlap left in place is disclosed"
+    shared = {dim: model for dim, model in (run.effective_judges or {}).items() if model == run.candidate_model}
+    assert (shared == {_DIM: judge}) == (judge == RUN_MODELS[0]), "an overlap left in place is recorded"
 
 
 async def test_a_launcher_that_keeps_a_candidate_judge_where_an_alternate_stood_ready_is_refused_at_the_tail():

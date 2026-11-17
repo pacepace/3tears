@@ -181,33 +181,21 @@ def writer_ops_host(
     """A host that launches report writer arms over ``store``, beside the quick host's runs in it (the module docstring).
 
     :param store: The store the quick path keeps its runs in; the writer's cases, runs and campaigns join them.
-    :ptype store: DocumentStore
     :param judge: The scoring judge, built with its route and its recording; every arm's pages are scored on it, and a
         launch names its ``model_name`` as the judge.
-    :ptype judge: WriterJudge
     :param models: The model factory: an arm's writer, by the model id its launch names and the skill the arm runs, at
         a reasoning effort.
-    :ptype models: WriterModelFactory
     :param budget: Each report's budget; its turn cap bounds how long a cell can run.
-    :ptype budget: ReportBudget
     :param request_s: The ceiling for one request on the writer's client, by output cap, in seconds.
-    :ptype request_s: RequestCeiling
     :param max_cost_usd: The most one run may spend, judge included; a launch names its share, at most this.
-    :ptype max_cost_usd: float
     :param skills: The skill versions a launch may run, by digest; the shipped skill is always one.
-    :ptype skills: Mapping[str, AnalystSkill]
     :param writer_provider: The provider the factory builds every writer on, which tells a writer's family.
-    :ptype writer_provider: str
     :param max_arms: The most arms launched together, and the most runs unfinished at once.
-    :ptype max_arms: int
     :param identity: Who the cells' tool calls run as.
-    :ptype identity: str
     :param out_of_run_cost_usd: The most one out-of-run pass (the pairwise pass) may be priced at; ``None`` for
         ``max_cost_usd``.
-    :ptype out_of_run_cost_usd: float | None
     :return: The host: launches the writer kind, generates no analysis, and places each model's family as its launches
         do.
-    :rtype: OpsHost
     """
     judge_family = _family(judge.model_name, judge.provider, judge.base_url)
 

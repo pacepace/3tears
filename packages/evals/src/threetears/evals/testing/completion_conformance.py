@@ -62,12 +62,10 @@ def check_completion_conformance(completion: object, *, require_sent_settings: b
     is checked for its type when present, and required only when asked.
 
     :param completion: An instance of the host's completion type, as its client returns one.
-    :ptype completion: object
     :param require_sent_settings: Fail when the completion carries no ``sent_settings``, or carries ``None``: for a
         host whose client reports what each request carried, so dropping the member, or a client that stops
         filling it, is caught here. Hand it a completion of a call made with an output cap (a client built
         with none reports ``None``, since a settings value names a cap).
-    :ptype require_sent_settings: bool
     :raises CompletionConformanceFailure: An attribute is missing, ``stop_reason`` is not a
         :data:`~threetears.evals.schema.completion.StopReason`, ``sent_settings`` is present and is neither
         ``None`` nor a :class:`~threetears.evals.schema.ClientRequestSettings`, or it is absent or ``None`` and

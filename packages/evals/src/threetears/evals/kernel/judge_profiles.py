@@ -7,10 +7,10 @@ in the judge campaign alone. :class:`EvalJudgeProfile` is the record that outliv
 (judge, criterion) — the judge as :class:`~threetears.evals.analysis.JudgeKey` keys one (dim, scale, served model,
 config, temperature, sent request settings), the criterion as the cases worded it — holding the measures, the cases they were measured on
 and when, so a campaign scored by that same judge reads its evidence tier from it where its own evidence decides
-none (:func:`~threetears.evals.analysis.tiers_with_judge_profiles`).
+none.
 
 **Recorded on purpose, never on completion.** A profile is written by an explicit step over the judge campaign's
-runs (:func:`~threetears.evals.analysis.judge_profiles_of` and the ``judge_profiles_record`` operation), because
+runs (:func:`~threetears.evals.analysis.judge_profiles.judge_profiles_of` and the ``judge_profiles_record`` operation), because
 which runs make up one measurement is the operator's call: a campaign's arms are several runs, a re-run of one arm
 may be meant to replace it, and a run abandoned halfway should not overwrite a full measurement.
 
@@ -74,23 +74,15 @@ def judge_profile_id(
     """The id of the one profile of a judge on a criterion: derived from both, so recording again replaces it.
 
     :param rubric_dim: The criterion's dim.
-    :ptype rubric_dim: str
     :param scale: Its scale.
-    :ptype scale: str
     :param judge_model: The model that served the judge's replies.
-    :ptype judge_model: str
     :param judge_config_id: The versioned config that asked, or a ``builtin:`` id for the built-in prompt, by its
         wording.
-    :ptype judge_config_id: str | None
     :param judge_temperature: What the judge's calls were sent at.
-    :ptype judge_temperature: JudgeTemperature
-    :param criterion_digest: The criterion's wording (:func:`~threetears.evals.kernel.judge_criterion_digest`).
-    :ptype criterion_digest: str
+    :param criterion_digest: The criterion's wording (:func:`~threetears.evals.kernel.judge_cases.judge_criterion_digest`).
     :param judge_sent_settings: What the judge's calls were sent with, as their scores recorded them; ``None`` =
         unverified, its own judge.
-    :ptype judge_sent_settings: ClientRequestSettings | None
     :return: ``judge-profile:`` and the digest of the seven.
-    :rtype: str
     """
     sent = None if judge_sent_settings is None else judge_sent_settings.model_dump(mode="json")
     return "judge-profile:" + canonical_digest(
@@ -209,7 +201,6 @@ class EvalJudgeProfile(EvalDocumentModel):
         """The two criteria the profile's agreements read as, held to the ruled bars like a campaign's own.
 
         :return: ``(calibration, separation)``: agreement with the labels, and with the judge's own repeats.
-        :rtype: tuple[TierCriterion, TierCriterion]
         """
         people, itself = self.label_agreement, self.self_agreement
         calibration = calibration_criterion(

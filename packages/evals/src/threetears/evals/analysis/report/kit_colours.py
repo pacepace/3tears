@@ -111,11 +111,8 @@ def ink_on(fill: str, inks: Sequence[str]) -> str:
 
     :param fill: The fill, as the drawing writes it: ``var(--s1)``, or ``color-mix(in oklab, var(--div-pos) 74%,
         var(--surface))``.
-    :ptype fill: str
     :param inks: The ink tokens offered, by name (``--ink``).
-    :ptype inks: Sequence[str]
     :return: The ink's token.
-    :rtype: str
     """
 
     light, _ = _themes()

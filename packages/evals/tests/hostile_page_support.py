@@ -12,12 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from threetears.evals.analysis import (
-    CampaignReport,
-    build_campaign_report,
-    build_code_only_report,
-    campaign_readings,
-)
+from threetears.evals.analysis import CampaignReport, build_code_only_report, campaign_readings
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
 from threetears.evals.analysis.report import Report
 from threetears.evals.kernel.declaration import CampaignArm
 from packages.evals.tests.campaign_page_support import campaign_fixture

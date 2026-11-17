@@ -20,7 +20,7 @@ from threetears.evals.gen.proposers import (
     plan_draft,
     propose_draft,
 )
-from threetears.evals.gen.variation_gen import generate_variations, price_variations
+from threetears.evals.gen.variation_gen import generate_variations
 from threetears.evals.gen.variation_gen import EvalTestCaseStore, GeneratedVariations
 
 
@@ -34,6 +34,5 @@ __all__ = [
     "default_system_prompt",
     "generate_variations",
     "plan_draft",
-    "price_variations",
     "propose_draft",
 ]

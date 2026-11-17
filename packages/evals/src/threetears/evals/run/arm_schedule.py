@@ -49,11 +49,8 @@ def resolve_arm_schedule(asked: ArmSchedule | None, *, measure_latency: bool) ->
     """The schedule a launch's arms run under: the one asked, or its default.
 
     :param asked: The schedule the launch named, or ``None`` for its default.
-    :ptype asked: ArmSchedule | None
     :param measure_latency: Whether the launch declared latency under test.
-    :ptype measure_latency: bool
     :return: ``asked`` when given; otherwise ``sequential`` under latency and :data:`DEFAULT_ARM_SCHEDULE` without.
-    :rtype: ArmSchedule
     :raises ValidationFailedError: Latency is under test and the launch asked for its arms at once
         (``interleaved`` or ``concurrent``): latency is read clean only with nothing beside the cell.
     """
@@ -109,9 +106,7 @@ class _LaneExecutor:
         """Run the run's cells in turn with its siblings', never more than ``width`` of its own at once.
 
         :param cells: The run's cells, in the order they must start.
-        :ptype cells: Sequence[CellWork]
         :param width: The most of the run's own cells that may run at once; at least 1.
-        :ptype width: int
         :raises ValueError: ``width`` is below 1.
         :raises BaseException: The first exception one of the run's cells raised, once its cells in flight ended.
         """
@@ -136,7 +131,6 @@ class CellInterleaver:
         """Expect a run's cells; runs are expected in arm order, which breaks ties between them.
 
         :param run_id: The run.
-        :ptype run_id: str
         :raises RuntimeError: The interleaver is sealed, or already expects the run.
         """
         if self._sealed or run_id in self._lanes:
@@ -152,7 +146,6 @@ class CellInterleaver:
         """A run ended; if it never handed over its cells, its siblings stop waiting for it. Idempotent.
 
         :param run_id: The run.
-        :ptype run_id: str
         """
         lane = self._lanes.get(run_id)
         if lane is not None and not lane.registered:
@@ -163,12 +156,9 @@ class CellInterleaver:
         """The executor a run hands its cells to.
 
         :param run_id: The run, one this interleaver expects.
-        :ptype run_id: str
         :param executor: What runs each of the run's cells once its turn comes (a host's pool), or ``None`` to run
             it on this event loop.
-        :ptype executor: CellExecutor | None
         :return: The run's lane.
-        :rtype: CellExecutor
         """
         return _LaneExecutor(self, run_id, executor)
 
@@ -186,13 +176,9 @@ class CellInterleaver:
         would.
 
         :param run_id: The run.
-        :ptype run_id: str
         :param cells: Its cells, in the order they must start.
-        :ptype cells: Sequence[CellWork]
         :param width: The most of its own cells that may run at once; at least 1.
-        :ptype width: int
         :param executor: What runs each cell, or ``None`` for this event loop.
-        :ptype executor: CellExecutor | None
         :raises ValueError: ``width`` is below 1.
         :raises BaseException: The first exception one of its cells raised, once its cells in flight ended.
         """

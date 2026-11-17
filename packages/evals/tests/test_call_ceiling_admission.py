@@ -28,11 +28,11 @@ from threetears.evals.kernel import (
     JUDGE_KIND,
     JUDGE_KIND_CONTRACT,
     JudgeCase,
-    JUDGE_CASE_KEY,
     JudgeCaseSource,
     ValidationFailedError,
     judge_case_payload,
 )
+from threetears.evals.kernel.judge_cases import JUDGE_CASE_KEY
 from threetears.evals.ops import LaunchArguments, OpsHost, launch_estimate
 from threetears.evals.run import (
     JUDGE_CALL_ATTEMPTS,

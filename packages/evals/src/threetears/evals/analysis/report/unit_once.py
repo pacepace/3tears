@@ -23,9 +23,7 @@ def unit_written(unit: str) -> str:
     figure carries already.
 
     :param unit: The unit; empty for none.
-    :ptype unit: str
     :return: The unit to write after a figure; empty for none.
-    :rtype: str
     """
     return "" if is_money(unit) else unit
 
@@ -35,11 +33,8 @@ def unit_spaced(digits: str, unit: str) -> str:
     the digits alone with no unit. :func:`unit_after` is the guarded form, which writes no unit twice and none on money.
 
     :param digits: The figure's digits.
-    :ptype digits: str
     :param unit: The unit; empty for none.
-    :ptype unit: str
     :return: The digits with their unit.
-    :rtype: str
     """
     if not unit:
         return digits
@@ -51,11 +46,8 @@ def unit_after(text: str, unit: str) -> str:
     it; as it is with no unit, for money (:func:`unit_written`), or for a cell that holds no figure.
 
     :param text: The figure's text.
-    :ptype text: str
     :param unit: Its unit; empty for none.
-    :ptype unit: str
     :return: The text with its unit.
-    :rtype: str
     """
     unit = unit_written(unit)
     if not unit or not text or text.endswith(unit) or not any(char.isdigit() for char in text):
@@ -68,13 +60,9 @@ def interval_alone(low: str, high: str, unit: str) -> str:
     ends each with their ``$`` (``$16 to $25``).
 
     :param low: The low end's text, without the unit (money's with its ``$``).
-    :ptype low: str
     :param high: The high end's text, likewise.
-    :ptype high: str
     :param unit: The interval's unit; empty for none.
-    :ptype unit: str
     :return: The interval.
-    :rtype: str
     """
     return interval_beside(low, unit_after(high, unit))
 
@@ -84,11 +72,8 @@ def interval_beside(low: str, high: str) -> str:
     ``85% (80 to 89)``); money's ends each with their ``$``, which they carry already.
 
     :param low: The low end's text, without the unit (money's with its ``$``).
-    :ptype low: str
     :param high: The high end's text, likewise.
-    :ptype high: str
     :return: The interval.
-    :rtype: str
     """
     return f"{low} to {high}"
 
@@ -99,11 +84,8 @@ def ends_beside(ends: tuple[str, str], unit: str) -> tuple[str, str]:
     as they were.
 
     :param ends: The two ends' texts.
-    :ptype ends: tuple[str, str]
     :param unit: Their unit; empty for none.
-    :ptype unit: str
     :return: The two ends beside a figure.
-    :rtype: tuple[str, str]
     """
     unit = unit_written(unit)
     low, high = ends

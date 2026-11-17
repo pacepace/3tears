@@ -20,13 +20,8 @@ from pydantic import ValidationError
 from threetears.evals import Answer, Eval, Result
 from threetears.evals.kernel.metrics import describe_goal_check_rate, goal_check_measure
 from threetears.evals.analysis.report.campaign.provenance import COST_ROUTING_CAVEAT
-from threetears.evals.analysis import (
-    ArmServedModel,
-    Report,
-    build_code_only_report,
-    report_html,
-    report_markdown,
-)
+from threetears.evals.analysis import ArmServedModel, Report, build_code_only_report, report_html
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report import DisclosureBlock, PrintedCheck, PrintedJudgement, TableBlock, TrialBlock
 from threetears.evals.analysis.report.md_parts import paragraphs
 from threetears.evals.analysis.bundle.schema import TrialCheck, TrialJudgement

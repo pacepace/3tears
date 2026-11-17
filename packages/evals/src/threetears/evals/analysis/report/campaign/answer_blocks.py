@@ -62,9 +62,7 @@ def retired_generation(basis: str) -> str | None:
     None for one a writer this version reads.
 
     :param basis: What wrote the analysis (``EvalAnalysis.basis``).
-    :ptype basis: str
     :return: The line, or None.
-    :rtype: str | None
     """
     writer = _RETIRED_WRITERS.get(basis)
     return _RETIRED_GENERATION.format(writer=writer) if writer is not None else None
@@ -79,13 +77,9 @@ def unread_analysis_blocks(
     other page.
 
     :param analysis_id: The analysis the code-only page stands in for, or None.
-    :ptype analysis_id: str | None
     :param report_doc_id: The report document it stands in for, read by its id, or None.
-    :ptype report_doc_id: str | None
     :param line: What the analysis was: :data:`NO_LONGER_READS`, or the retired writer's line.
-    :ptype line: str
     :return: The line, or nothing.
-    :rtype: list[ReportBlock]
     """
     if analysis_id is not None:
         text = _UNREAD_ANALYSIS.format(analysis_id=analysis_id, line=line)
@@ -124,19 +118,12 @@ def call_blocks(
     it, so a control stored under an older identity predicate is still found.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param call: The person's call; None while none is recorded.
-    :ptype call: CampaignCall | None
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param reports: Each aspect's own page, by its label, whose evidence names a bar's measure.
-    :ptype reports: Mapping[str, Report]
     :param forms: The page's forms, which state each floor's margin.
-    :ptype forms: PageForms
     :return: The call's lines; none while no call is recorded.
-    :rtype: list[ReportBlock]
     """
     if call is None:
         return []

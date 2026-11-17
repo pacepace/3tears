@@ -47,33 +47,22 @@ def failed_call_output(
     excluded cell's record starts ``apparatus:`` as every harness fault's does.
 
     :param owner: Whose failure the call was, as the host's describer read it.
-    :ptype owner: FailureOwner
     :param description: The failure as described, safe to store.
-    :ptype description: str
     :param refused: What was refused for the account, e.g. ``"reporter: the generator call was refused for the
         calling account"``.
-    :ptype refused: str
     :param declined: What the provider declined.
-    :ptype declined: str
     :param failed: What failed, charged to the candidate.
-    :ptype failed: str
     :param unserved: Which call named a model the provider does not serve, e.g. ``"reporter: the generator's model is
         not served"``; ``None`` words it from ``failed``. Optional, so a caller written before ``unserved`` existed keeps
         working: its describer never returns it.
-    :ptype unserved: str | None
     :param log: Logs the chosen wording at a level: ``ERROR`` for an account's refusal, ``WARNING`` otherwise. A
         caller holding the raised exception logs through
         :func:`~threetears.evals.kernel.provider.log_provider_failure`, which appends the
         description and decides the traceback.
-    :ptype log: Callable[[str, int], None]
     :param telemetry: What the cell spent before it failed.
-    :ptype telemetry: CandidateTelemetry | None
     :param host_measures: The kind's measures of the cell.
-    :ptype host_measures: dict[str, bool | float | str] | None
     :param kind_payload: The kind's payload for the cell.
-    :ptype kind_payload: VerbatimJsonObject | None
     :return: The routed output.
-    :rtype: CandidateOutput
     """
     kept: dict[str, Any] = {  # Any: CandidateOutput's fields
         "telemetry": telemetry if telemetry is not None else CandidateTelemetry(),

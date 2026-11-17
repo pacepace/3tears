@@ -27,13 +27,10 @@ from collections.abc import Sequence
 
 import pytest
 
-from threetears.evals.analysis import (
-    assemble_context_bundle,
-    build_code_only_report,
-    campaign_report_markdown,
-    frontier_text,
-    report_markdown,
-)
+from threetears.evals.analysis import assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.lens_text import frontier_text
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis import lens_text as lens_text_module
 from threetears.evals.analysis.lenses import frontier as frontier_module

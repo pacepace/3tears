@@ -85,11 +85,8 @@ def run_result_keys(storage: RunResultsStore, run: EvalRun) -> list[ResultKey]:
     """Every result key of the run, in the page order (see the module docstring), from one read of the run.
 
     :param storage: Where the run's results are read.
-    :ptype storage: RunResultsStore
     :param run: The run; its id, scope and cases are read.
-    :ptype run: EvalRun
     :return: The keys, ordered.
-    :rtype: list[ResultKey]
     """
     place = {case_id: index for index, case_id in enumerate(dict.fromkeys(run.test_case_ids))}
     beyond = len(place)
@@ -114,13 +111,9 @@ def run_case_pages(
     case alone when it holds more.
 
     :param keys: The run's keys, in the page order (:func:`run_result_keys`).
-    :ptype keys: Sequence[ResultKey]
     :param page_results: The most results a page holds, but for a case holding more on its own.
-    :ptype page_results: int
     :param after_case_id: Start with the case after this one; ``None`` starts at the first case.
-    :ptype after_case_id: str | None
     :return: The pages, each its keys in the page order; empty when no case is left.
-    :rtype: list[list[ResultKey]]
     :raises ValueError: ``page_results`` is below 1, or ``after_case_id`` is not a case any key names.
     """
     if page_results < 1:
@@ -147,13 +140,9 @@ def read_results(storage: RunResultsStore, scope_id: str, keys: Sequence[ResultK
     """The results ``keys`` name, in one read by id, in the keys' order; one removed since its key was read is absent.
 
     :param storage: Where the results are read.
-    :ptype storage: RunResultsStore
     :param scope_id: Their scope.
-    :ptype scope_id: str
     :param keys: Their keys, in the order to return them.
-    :ptype keys: Sequence[ResultKey]
     :return: The results.
-    :rtype: list[EvalResult]
     """
     if not keys:
         return []
@@ -170,14 +159,10 @@ def iter_run_results(storage: RunResultsStore, run: EvalRun, *, page_results: in
     a reader that keeps nothing of a result past its turn holds one page and the keys at most.
 
     :param storage: Where the run's results are read.
-    :ptype storage: RunResultsStore
     :param run: The run.
-    :ptype run: EvalRun
     :param page_results: The most results a page holds (:data:`RUN_RESULTS_PAGE` unless the reader has a ceiling of
         its own).
-    :ptype page_results: int
     :return: The results.
-    :rtype: Iterator[EvalResult]
     :raises ValueError: ``page_results`` is below 1.
     """
     if page_results < 1:
@@ -196,13 +181,9 @@ def iter_stored_results(storage: RunResultsStore, run_id: str, scope_id: str) ->
     read by id when the one before it has been walked. A result removed since its key was read is absent.
 
     :param storage: Where the run's results are read.
-    :ptype storage: RunResultsStore
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The results.
-    :rtype: Iterator[EvalResult]
     """
     return iter_keyed_results(storage, scope_id, storage.query_eval_result_keys_by_run(run_id, scope_id))
 
@@ -212,14 +193,10 @@ def iter_keyed_results(storage: RunResultsStore, scope_id: str, keys: Sequence[R
     one before it has been walked. A result removed since its key was read is absent.
 
     :param storage: Where the results are read.
-    :ptype storage: RunResultsStore
     :param scope_id: Their scope.
-    :ptype scope_id: str
     :param keys: Their keys, in the order to walk them: a run's (:meth:`RunResultsStore.query_eval_result_keys_by_run`)
         in the store's order or the reader's, or some of them.
-    :ptype keys: Sequence[ResultKey]
     :return: The results.
-    :rtype: Iterator[EvalResult]
     """
     page = RUN_RESULTS_PAGE
     for start in range(0, len(keys), page):
@@ -231,9 +208,7 @@ def without_payloads(result: EvalResult) -> EvalResult:
     when it carries neither.
 
     :param result: A stored result.
-    :ptype result: EvalResult
     :return: The result as a reader of figures keeps it.
-    :rtype: EvalResult
     """
     if all(getattr(result, name) is None for name in VERBATIM_RESULT_FIELDS):
         return result
@@ -249,13 +224,9 @@ def results_without_payloads(storage: RunResultsStore, run_id: str, scope_id: st
     gave (:func:`iter_stored_results`); a result kept this way is never written back.
 
     :param storage: Where the run's results are read.
-    :ptype storage: RunResultsStore
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The results, in the store's order.
-    :rtype: list[EvalResult]
     """
     return [without_payloads(result) for result in iter_stored_results(storage, run_id, scope_id)]
 

@@ -171,9 +171,7 @@ def writer_kind_contract(host_seats: Iterable[str] = ()) -> KindContract:
     """The report writer's contract, also seating apparatus dimensions of the host's own that its runs record.
 
     :param host_seats: The host's own apparatus dimensions, or pinned roles, a writer run fills.
-    :ptype host_seats: Iterable[str]
     :return: The contract: :class:`WriterOverlays`, no spec, and the engine's seats with ``host_seats``.
-    :rtype: KindContract
     """
     return KindContract(WRITER_KIND, overlays=WriterOverlays, seats=_WRITER_SEATS | frozenset(host_seats))
 
@@ -215,9 +213,7 @@ def uncompared_readings(*, one_editor: bool) -> tuple[str, ...]:
     criterion's table both read this one answer, so a sentence never rests on a reading the table says is not compared.
 
     :param one_editor: Whether the candidate and the control ran one ``editor.md``.
-    :ptype one_editor: bool
     :return: The measure names left uncompared.
-    :rtype: tuple[str, ...]
     """
     return () if one_editor else _EDITOR_READINGS
 
@@ -362,7 +358,6 @@ def writer_scoring_rubric() -> list[RubricDim]:
     refused at launch rather than scoring in its place: the prompt is held fixed with the rubric.
 
     :return: The dimensions, in the rubric's order.
-    :rtype: list[RubricDim]
     """
     rubric = shipped_rubric()
     guide = {"5": rubric.top, "3": rubric.middle, "1": rubric.bottom}
@@ -399,7 +394,6 @@ def refuse_undeliverable_writer_template(template: EvalTemplate) -> None:
     judge it on. For a host's ``refuse_undeliverable_template`` check on a writer template, and at every writer launch.
 
     :param template: A template declaring the report writer kind.
-    :ptype template: EvalTemplate
     :raises ValidationFailedError: The template declares any of those, or no rubric; every defect is named at once.
     """
     asked = [why for name, why in _UNDELIVERABLE.items() if getattr(template, name)]
@@ -431,7 +425,6 @@ def refuse_unfixed_scoring_judge(runs: Sequence[EvalRun]) -> None:
     shows it was scored as its siblings were.
 
     :param runs: The campaign's member runs.
-    :ptype runs: Sequence[EvalRun]
     :raises ValidationFailedError: The runs name more than one template, rubric revision or judge, or a run recorded
         none; each is named with its runs.
     """

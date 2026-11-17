@@ -335,13 +335,9 @@ def case_set_mint(host: EvalHost, arguments: CaseSetMint, scope_id: str) -> Case
     """Store the next version of a named case set: append-only, so a change is a new version, never an edit.
 
     :param host: The host whose store holds the set.
-    :ptype host: EvalHost
     :param arguments: The set, its template and its cases.
-    :ptype arguments: CaseSetMint
     :param scope_id: The scope the set lives in.
-    :ptype scope_id: str
     :return: The stored version.
-    :rtype: CaseSetLine
     :raises ValidationFailedError: Any refusal :func:`~threetears.evals.run.case_sets.mint_case_set` makes.
     :raises ConflictError: Another writer stored this version first.
     """
@@ -361,13 +357,9 @@ def case_sets_list(host: EvalHost, scope_id: str, *, name: str | None = None) ->
     """The scope's case sets — every version, or every version of one name.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param name: Only this set's versions.
-    :ptype name: str | None
     :return: The listing.
-    :rtype: CaseSetListing
     """
     return CaseSetListing(case_sets=[_case_set_line(s) for s in host.storage.query_case_sets(scope_id, name=name)])
 
@@ -397,14 +389,10 @@ def templates_list(host: EvalHost, scope_id: str, *, archived: bool = False) -> 
     listing shows each name once, at the revision a launch by name runs.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param archived: List the archived templates instead of the active ones (a reset template's older revisions among
         them).
-    :ptype archived: bool
     :return: The listing.
-    :rtype: TemplateListing
     """
     return TemplateListing(
         templates=[
@@ -427,15 +415,10 @@ def judge_configs_list(
     """The scope's judge configs — what a second judge's ``config_ids`` and a launch's ``judge_config_ids`` name.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param rubric_dim_id: Only the configs asking for this dimension; None for every dimension's.
-    :ptype rubric_dim_id: str | None
     :param archived: List the archived (superseded) versions instead of the active ones.
-    :ptype archived: bool
     :return: The listing.
-    :rtype: JudgeConfigListing
     """
     return JudgeConfigListing(
         judge_configs=[
@@ -465,7 +448,7 @@ def runs_list(
     """One page of the scope's runs, newest first, how many on it this build cannot read, and the next page's cursor.
 
     An inventory, so a run this build's model cannot read is left out and counted rather than refusing the listing
-    (:func:`~threetears.evals.run.list_runs_page`): the operator opening it is looking for a run, and one row
+    (:func:`~threetears.evals.run.reads.list_runs_page`): the operator opening it is looking for a run, and one row
     nothing can read must not hide every other. ``unreadable`` says how many, and ``runs_unreadable`` names them.
 
     A page reads ``limit`` stored runs matching the status and archive filters. The label filter runs over those, so a
@@ -474,21 +457,13 @@ def runs_list(
     (:mod:`~threetears.evals.kernel.list_pages`). The cursor is bound to the filters it was read with.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param status: Only runs with this stored status.
-    :ptype status: str | None
     :param include_archived: List archived runs too.
-    :ptype include_archived: bool
     :param label: Only runs carrying this label (:func:`run_label`); None lists every run.
-    :ptype label: str | None
     :param cursor: The ``next`` of the page before; ``None`` reads the first page.
-    :ptype cursor: str | None
     :param limit: The stored runs a page reads, 1 to :data:`~threetears.evals.kernel.list_pages.LIST_PAGE_MAX`.
-    :ptype limit: int
     :return: The page.
-    :rtype: RunListing
     :raises ValidationFailedError: ``status`` is not a run status, ``cursor`` is not one ``runs_list`` returned under
         these filters, or ``limit`` is out of range.
     :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
@@ -535,11 +510,8 @@ def runs_unreadable(host: EvalHost, scope_id: str) -> UnreadableRunsListing:
 
     :param host: The host whose store is read; its listing elisions are left out of every row, which never changes
         whether a row reads.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :return: The listing.
-    :rtype: UnreadableRunsListing
     :raises StorageError: The store failed to answer.
     """
     scan = host.storage.scan_eval_runs(scope_id, elide_payload=host.profile.listing_elisions)
@@ -565,13 +537,9 @@ def run_get(host: EvalHost, run_id: str, scope_id: str) -> EvalSummary:
     """One run, summarised from its stored results.
 
     :param host: The host whose store holds the run.
-    :ptype host: EvalHost
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The summary.
-    :rtype: EvalSummary
     :raises NotFoundError: No run with that id in the scope.
     """
     return summarize_run(host, run_id, scope_id)
@@ -587,14 +555,10 @@ async def run_launch(host: OpsHost, arguments: LaunchArguments, scope_id: str) -
     launch (:class:`~threetears.evals.run.EvalLaunch`), whose poll names its runs once they start.
 
     :param host: The launching host.
-    :ptype host: OpsHost
     :param arguments: What the launch names.
-    :ptype arguments: LaunchArguments
     :param scope_id: The scope the template is read in and the runs live in.
-    :ptype scope_id: str
     :return: The launch's one job (``launch:<launch id>``); its target is the template. Its ``notices`` say what
         admission found and did not refuse it for: a served-model check that could not be made.
-    :rtype: JobsStarted
     :raises NotFoundError: The template is not in the scope.
     :raises AdmissionRefusedError: The runs would pass the host's admission ceiling.
     :raises ValidationFailedError: Any refusal :func:`~threetears.evals.run.admit_launch` makes. A refusal a kind's
@@ -639,15 +603,10 @@ def run_archive(host: EvalHost, run_id: str, scope_id: str, *, archived: bool) -
     """Archive or restore a run — reversible exclusion from every cohort.
 
     :param host: The host whose store holds the run.
-    :ptype host: EvalHost
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param archived: ``True`` retires it, ``False`` restores it.
-    :ptype archived: bool
     :return: The run as persisted.
-    :rtype: RunLine
     :raises NotFoundError: No run with that id in the scope.
     """
     return _line(set_run_archived(host.storage, run_id, scope_id, archived=archived, profile=host.profile))
@@ -661,15 +620,10 @@ def run_label(host: EvalHost, run_id: str, scope_id: str, *, labels: list[str]) 
     context key or fingerprint is computed over it, so labelling a run moves none of them.
 
     :param host: The host whose store holds the run.
-    :ptype host: EvalHost
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param labels: Its labels: each 1 to 64 characters once stripped, at most 16, stored sorted and each once.
-    :ptype labels: list[str]
     :return: The run as persisted.
-    :rtype: RunLine
     :raises ValidationFailedError: A label is blank or too long, or there are too many.
     :raises NotFoundError: No run with that id in the scope.
     :raises StorageError: The write did not land.
@@ -734,21 +688,13 @@ def result_rate(
     its own code calls :func:`~threetears.evals.run.rate_result` with ``rater_kind="person"`` itself.
 
     :param host: The host whose store holds the result.
-    :ptype host: EvalHost
     :param result_id: The result rated.
-    :ptype result_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param rubric_dim: The judged dimension, spelled as the result's score spells it.
-    :ptype rubric_dim: str
     :param score: The score, on the dimension's scale.
-    :ptype score: int
     :param reason: The agent's own words for the score.
-    :ptype reason: str
     :param rater: Who rated, as the calling surface names the agent.
-    :ptype rater: str
     :return: What was written.
-    :rtype: ResultRated
     :raises NotFoundError: No such result in the scope.
     :raises ValidationFailedError: The judge scored no such dimension, or the score is off its scale.
     :raises StorageError: The write failed.
@@ -818,28 +764,17 @@ def result_rate_person(
     A host check that raises is a defect in the host, not a refusal: it propagates, and nothing is written.
 
     :param host: The host whose store holds the result, and whose check attests the person.
-    :ptype host: EvalHost
     :param result_id: The result rated.
-    :ptype result_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param rubric_dim: The judged dimension, spelled as the result's score spells it.
-    :ptype rubric_dim: str
     :param score: The person's score, on the dimension's scale.
-    :ptype score: int
     :param reason: The person's own words for the score.
-    :ptype reason: str
     :param person: Who gave the rating, as the host names its people.
-    :ptype person: str
     :param source: Where the person gave it (a blind read's id).
-    :ptype source: str
     :param collected_by: The calling identity that relays it, as the host resolved it.
-    :ptype collected_by: str
     :param rated_at: When the person gave the rating, ISO-8601 with an offset and not in the future; ``None`` for
         now, the relay's own time.
-    :ptype rated_at: str | None
     :return: What was written, and what it replaced.
-    :rtype: ResultRated
     :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
         for this person. Nothing is written.
     :raises ConflictError: ``rated_at`` is named, and the person's stored rating of the same thing was given later;
@@ -900,24 +835,15 @@ def attested_person(
     A host check that raises is a defect in the host, not a refusal: it propagates.
 
     :param host: The host whose check attests the person.
-    :ptype host: EvalHost
     :param scope_id: The scope the write would land in, as the host resolved it for the call.
-    :ptype scope_id: str
     :param collected_by: The calling identity that relays it, as the host resolved it.
-    :ptype collected_by: str
     :param person: Who the caller says it is from, in the caller's spelling.
-    :ptype person: str
     :param operation: The operation asking, as its log event names it (``eval.<operation> refused ...``).
-    :ptype operation: str
     :param what: What is relayed, as a refusal words it after "no" and "a" (``rating``, ``judge case``,
         ``reader verdict``).
-    :ptype what: str
     :param unchecked_remedy: The refusal's remedy when the host supplies no check.
-    :ptype unchecked_remedy: str
     :param refused_remedy: The refusal's remedy when the host's check refuses.
-    :ptype refused_remedy: str
     :return: The host's own name for the person, non-blank.
-    :rtype: str
     :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or it does not attest this caller
         for this person.
     :raises TypeError: The host's check returned something other than a non-blank name or ``None``: a defect in the
@@ -1021,15 +947,10 @@ async def judge_repeat_estimate(
     ``would_start`` is its answer.
 
     :param host: The host: its store, its judge clients and its out-of-run cap.
-    :ptype host: OpsHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param result_ids: The results to repeat; ``None`` for every result of the run.
-    :ptype result_ids: list[str] | None
     :return: The estimate.
-    :rtype: JudgeRepeatEstimate
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run cannot be repeated.
     """
@@ -1049,16 +970,11 @@ async def judge_repeat(
     :class:`~threetears.evals.run.JudgeRepeatReport`.
 
     :param host: The host: its store, its judge clients and its out-of-run cap.
-    :ptype host: OpsHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param result_ids: The results to repeat; ``None`` for every result of the run.
-    :ptype result_ids: list[str] | None
     :return: The repeat's one job (``action:<id>``, its record an :class:`~threetears.evals.run.EvalActionJob` under
         ``judge_repeat``); its label names the run.
-    :rtype: JobsStarted
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run cannot be repeated, or its calls are priced above the cap or cannot be
         priced under it — before any call.
@@ -1086,19 +1002,12 @@ async def judge_temperature_estimate(
     ``would_start`` is its answer.
 
     :param host: The host: its store, its judge clients and its out-of-run cap.
-    :ptype host: OpsHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param selection: ``borderline`` (the default) or ``all`` scored dims.
-    :ptype selection: TemperatureSelection
     :param repeats: Calls per dim at each temperature.
-    :ptype repeats: int
     :param result_ids: The results to draw from; ``None`` for every result of the run.
-    :ptype result_ids: list[str] | None
     :return: The estimate.
-    :rtype: JudgeTemperatureEstimate
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The comparison cannot be made.
     """
@@ -1134,19 +1043,12 @@ async def judge_temperature(
     (:func:`~threetears.evals.analysis.read_judge_temperatures` over the record's answers) once it has completed.
 
     :param host: The host: its store, its judge clients, its out-of-run cap and its job manager.
-    :ptype host: OpsHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param selection: ``borderline`` (the default) or ``all`` scored dims.
-    :ptype selection: TemperatureSelection
     :param repeats: Calls per dim at each temperature.
-    :ptype repeats: int
     :param result_ids: The results to draw from; ``None`` for every result of the run.
-    :ptype result_ids: list[str] | None
     :return: The comparison's one job (``judge-temperature:<id>``); its target is the run.
-    :rtype: JobsStarted
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The comparison cannot be made, or its calls are priced above the cap or cannot be
         priced under it — before any call.
@@ -1181,21 +1083,13 @@ async def judge_second_estimate(
     ``would_start`` is its answer.
 
     :param host: The host: its store, its judge clients and its out-of-run cap.
-    :ptype host: OpsHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param judge: The second judge.
-    :ptype judge: SecondJudge
     :param sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``.
-    :ptype sample_fraction: float
     :param seed: The seed the share is drawn with.
-    :ptype seed: int
     :param result_ids: The results to draw from; ``None`` for every result of the run.
-    :ptype result_ids: list[str] | None
     :return: The estimate.
-    :rtype: SecondJudgeEstimate
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run cannot be asked about.
     """
@@ -1232,23 +1126,14 @@ async def judge_second(
     agreement and drift its pairs read (:class:`~threetears.evals.ops.SecondJudgeRead`) — once it has completed.
 
     :param host: The host: its store, its judge clients, its out-of-run cap and its job manager.
-    :ptype host: OpsHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param judge: The second judge: its model, its prompts, its temperature.
-    :ptype judge: SecondJudge
     :param sample_fraction: The share of the run's judgeable results to ask about, in ``(0, 1]``.
-    :ptype sample_fraction: float
     :param seed: The seed the share is drawn with.
-    :ptype seed: int
     :param result_ids: The results to draw from; ``None`` for every result of the run.
-    :ptype result_ids: list[str] | None
     :param asked_by: The operation asking, recorded on the pass.
-    :ptype asked_by: SecondJudgeAskedBy
     :return: The pass's one job (``second-judge:<pass id>``); its target is the run.
-    :rtype: JobsStarted
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run cannot be asked about, or its calls are priced above the cap or cannot be
         priced under it — before any call.
@@ -1277,17 +1162,11 @@ async def judge_drift_check(
     movement between the two judges, never which one is right.
 
     :param host: The host: its store, its judge clients, its out-of-run cap and its job manager.
-    :ptype host: OpsHost
     :param run_id: The finished run whose stored evidence is re-scored.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param judge: The changed judge.
-    :ptype judge: SecondJudge
     :param result_ids: The frozen set to re-score; ``None`` for every result of the run.
-    :ptype result_ids: list[str] | None
     :return: The pass's one job, as :func:`judge_second` returns it.
-    :rtype: JobsStarted
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: As :func:`judge_second`.
     """
@@ -1311,15 +1190,10 @@ def run_delete(host: EvalHost, run_id: str, scope_id: str, *, confirm: str | Non
     by the run id they carry, never read, and it is refused only while a process may still hold it.
 
     :param host: The host whose store holds the run.
-    :ptype host: EvalHost
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param confirm: Must echo ``run_id``.
-    :ptype confirm: str | None
     :return: What was removed.
-    :rtype: RunDeleted
     :raises NotFoundError: No run with that id in the scope — refused before ``confirm`` is read.
     :raises ValidationFailedError: ``confirm`` does not echo the id, or the run is still running (one this build
         cannot read: stored running under a lease that has not lapsed).

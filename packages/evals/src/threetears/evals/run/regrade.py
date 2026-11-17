@@ -142,19 +142,12 @@ async def regrade(
 
     :param host: The host: the result's store, the world registry a ``state.*`` check resolves through
         (``profile.world``), and, to apply a judged re-ask, the judge clients.
-    :ptype host: EvalHost
     :param result_id: The stored result (one trial) to re-grade.
-    :ptype result_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param checks: Re-grade its check dims from its trace.
-    :ptype checks: bool
     :param judges: Name its failed judged dims, and ask them again when applying.
-    :ptype judges: bool
     :param apply: Store the new verdicts and ask the judge; ``False`` (the default) reports and spends nothing.
-    :ptype apply: bool
     :return: What moved, what was left as stored and why, and whether it was written.
-    :rtype: Regrade
     :raises NotFoundError: No such result, or its run, in the scope.
     :raises ValidationFailedError: Its run is still pending or running; or a failed judged dim's apparatus cannot be
         reproduced from what the run recorded (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`
@@ -295,7 +288,6 @@ def _regrade_checks(
 
     :return: The outcomes to store, or ``None`` when no verdict moved, so only a moved result is rewritten. An outcome
         that did not move is kept verbatim, detail included.
-    :rtype: list[GoalStateOutcome] | None
     """
     if not result.goal_state_outcomes:
         report.checks_not_regraded = "it carries no goal-state outcomes"

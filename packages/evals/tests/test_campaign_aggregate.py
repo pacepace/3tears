@@ -22,12 +22,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import (
-    campaign_report,
-    campaign_report_html,
-    campaign_report_markdown,
-    serialize_report,
-)
+from threetears.evals.analysis import campaign_report, campaign_report_html, serialize_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.campaign_readings import reading_name
 from threetears.evals.analysis.campaign_bundle import (
     CAMPAIGN_BUNDLE_SHAPE,

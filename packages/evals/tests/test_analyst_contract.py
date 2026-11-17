@@ -48,16 +48,16 @@ from threetears.evals.actions import (
     ActionCatalogue,
     ActionOutcome,
     MountedTool,
-    analyst_actions,
     analyst_tools,
-    catalogue_primer,
-    engine_actions,
     eval_catalogue,
     read_only_tools,
     standard_tools,
 )
+from threetears.evals.actions.analyst import analyst_actions
+from threetears.evals.actions.catalogue import catalogue_primer
+from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
 from threetears.evals.actions.render import render_cited
-from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis.analyst.analyses import dominance, sensitivity
 from threetears.evals.analysis.analyst.cited import CitedFigure, cite, cite_if
 from threetears.evals.analysis.analyst.facts import campaign_overview
@@ -76,7 +76,8 @@ from threetears.evals.analysis.report.figure_keys import (
 )
 from threetears.evals.analysis.report.figures import PER_THOUSAND_REPLIES
 from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.kernel import EvalReportSnapshot, report_snapshot_id
+from threetears.evals.kernel import EvalReportSnapshot
+from threetears.evals.kernel.report_snapshot import report_snapshot_id
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -741,7 +742,7 @@ async def test_a_gap_is_noted_alike_for_the_same_need_logged_and_stored_once_und
 
 
 def test_the_evals_and_read_only_tools_carry_the_engines_actions_and_parameters_alone() -> None:
-    engine = ActionCatalogue(engine_actions())
+    engine = ActionCatalogue(engine_actions_in_catalogue())
     for spec in (*standard_tools(), *read_only_tools()):
         mounted = eval_catalogue().mount(spec)
         assert mounted.input_schema() == engine.mount(spec).input_schema(), spec.name

@@ -16,7 +16,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.schema import DocumentStore, GroupMeasure, ResultReadings, narrow_items, omit_paths
+from threetears.evals.schema import DocumentStore, GroupMeasure, ResultReadings, omit_paths
+from threetears.evals.schema.store_port import narrow_items
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.testing import (
     RESULT_READINGS_CONFORMANCE_CASES,

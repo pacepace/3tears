@@ -34,7 +34,8 @@ from packages.evals.tests.rung_support import program_lines
 from packages.evals.tests.test_package_matrix import REPO_ROOT, SOURCE_ROOT, public_root_violations
 from packages.evals.tests.writer_eval_support import ScoredReply
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.harness import AnalystSkill, WriterEval, read_writer_cases
+from threetears.evals.harness import AnalystSkill, WriterEval
+from threetears.evals.harness.writer_cases import read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.ops.report_writer import writer_pairwise
 from threetears.evals.ops.report_writer.writer_bank import writer_group_side

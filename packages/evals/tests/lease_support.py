@@ -14,16 +14,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.ops import (
-    LaunchArguments,
-    OpsHost,
-    SweepArguments,
-    SweepArm,
-    job_poll,
-    parse_job_id,
-    run_job_id,
-    run_launch,
-)
+from threetears.evals.ops import LaunchArguments, OpsHost, SweepArguments, SweepArm, job_poll, run_job_id, run_launch
+from threetears.evals.ops.jobs import parse_job_id
 from threetears.evals.schema.models import ArmSchedule
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.fixtures.toyhost.kind import ScriptedExtractionClient

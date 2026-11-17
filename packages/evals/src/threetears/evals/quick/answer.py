@@ -65,10 +65,8 @@ def unwrap_answer(returned: Any) -> tuple[Any, CandidateTelemetry]:
     """What a candidate returned, as the answer to grade and the telemetry its spend lands on.
 
     :param returned: The candidate's return value: an :class:`Answer`, or a plain answer.
-    :ptype returned: Any
     :return: The answer's value and a telemetry carrying its ``candidate`` usage row; a plain answer as given,
         with telemetry that reports no usage.
-    :rtype: tuple[Any, CandidateTelemetry]
     """
     if not isinstance(returned, Answer):
         return returned, CandidateTelemetry()

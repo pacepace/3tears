@@ -94,9 +94,7 @@ def analysis_writer(analysis: EvalAnalysis) -> str:
     the day.
 
     :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
     :return: The words.
-    :rtype: str
     """
     generation = analysis.generation
     return (
@@ -125,45 +123,34 @@ def build_code_only_report(
 
     :param bundle: The campaign's evidence, as
         :func:`~threetears.evals.analysis.bundle.assemble.assemble_context_bundle` assembled it.
-    :ptype bundle: AnalysisContextBundle
     :param assembled_at: When the bundle was assembled (ISO-8601), stated as the report's date.
-    :ptype assembled_at: str
     :param campaign_name: The campaign's name, which the title qualifies what it compares with; ``None`` names the
         campaign by its id.
-    :ptype campaign_name: str | None
     :param arm_labels: The labels the campaign gives its arms, by variant key
         (:meth:`~threetears.evals.analysis.campaign_readings.CampaignReadings.arm_labels`), which name those arms
         everywhere on the page in place of their variants' names; None names every arm by its variant.
-    :ptype arm_labels: Mapping[str, str] | None
     :param arm_tags: The letter tag each arm carries across the campaign's page, by variant key
         (:func:`~threetears.evals.analysis.report.words.campaign_arm_tags`), so an arm this aspect shares with others
         is tagged and coloured as on every other chart of that page; None tags this page's arms by themselves, as
         does a map that leaves out an arm of this page: in the order the aspect's variant index lists them, since an
         aspect's bundle does not carry its campaign's declared order, so a caller showing the page beside its
         campaign's passes the campaign's tags.
-    :ptype arm_tags: Mapping[str, str] | None
     :param arm_short_names: The short names the campaign's arms declare, by variant key
         (:func:`~threetears.evals.analysis.style.declared_arm_names`), which a chart prints for those arms in
         its tight places ahead of any it would compute; None computes every arm's.
-    :ptype arm_short_names: Mapping[str, str] | None
     :param writer: Who wrote the analysis of the campaign page this page is a fold of, as the methods name a writer
         (:func:`analysis_writer`); None says no analysis was written. This page lays out none of its words.
-    :ptype writer: str | None
     :param bundle_fingerprint: The bundle's fingerprint in the current version
         (:meth:`~threetears.evals.analysis.bundle.schema.AnalysisContextBundle.fingerprint`), where the caller has
         just checked it against the bundle — a stored analysis's page, whose frame names it — so the bundle is not
         hashed a second time; None hashes it.
-    :ptype bundle_fingerprint: str | None
     :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): every record by
         default, or ``table`` for their table alone.
-    :ptype trials: TrialDetail
     :param measure_order: The aspect's graders' measures, in the order its design lists them
         (``AspectDesign.measure_order``), which the verdict line leads on the first of, as the campaign's page and
         the quick print do (:func:`~threetears.evals.analysis.report.verdict.verdict_line`); empty where none is
         listed.
-    :ptype measure_order: Sequence[str]
     :return: The aspect's page, code's alone.
-    :rtype: Report
     """
     return build_code_only_report_in_forms(
         bundle,
@@ -199,30 +186,18 @@ def build_code_only_report_in_forms(
     :func:`contrast_evidence`) and builds them once for both. Not exported: the forms are the engine's own.
 
     :param bundle: The aspect's evidence, as :func:`build_code_only_report` reads it.
-    :ptype bundle: AnalysisContextBundle
     :param assembled_at: When the bundle was assembled (ISO-8601), stated as the report's date.
-    :ptype assembled_at: str
     :param campaign_name: As :func:`build_code_only_report` reads it.
-    :ptype campaign_name: str | None
     :param arm_labels: As :func:`build_code_only_report` reads them.
-    :ptype arm_labels: Mapping[str, str] | None
     :param arm_tags: As :func:`build_code_only_report` reads them.
-    :ptype arm_tags: Mapping[str, str] | None
     :param arm_short_names: As :func:`build_code_only_report` reads them.
-    :ptype arm_short_names: Mapping[str, str] | None
     :param writer: As :func:`build_code_only_report` reads it.
-    :ptype writer: str | None
     :param bundle_fingerprint: As :func:`build_code_only_report` reads it.
-    :ptype bundle_fingerprint: str | None
     :param trials: As :func:`build_code_only_report` reads it.
-    :ptype trials: TrialDetail
     :param measure_order: As :func:`build_code_only_report` reads it.
-    :ptype measure_order: Sequence[str]
     :param forms: The page's forms (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`), built over
         ``bundle``.
-    :ptype forms: PageForms
     :return: The aspect's page, code's alone.
-    :rtype: Report
     :raises ValueError: ``forms`` were built from another bundle.
     """
     source = ReportSource(
@@ -250,9 +225,7 @@ def analysis_campaign_bundle(analysis: EvalAnalysis) -> CampaignBundle:
     """The campaign bundle a stored analysis was written over, put back together from its frame and frozen aspects.
 
     :param analysis: The analysis, of one aspect or several.
-    :ptype analysis: EvalAnalysis
     :return: The bundle, as frozen at generation.
-    :rtype: CampaignBundle
     :raises RefusedInput: The analysis was written over a bundle of another shape, refused before any aspect's bundle
         is read.
     """
@@ -288,7 +261,6 @@ class AnalysisLead(NamedTuple):
         results recorded before a run stopped is no opening.
 
         :return: The line.
-        :rtype: str
         """
         return " ".join([self.verdict, *self.caveats] if self.stopped else [*self.caveats, self.verdict])
 
@@ -310,12 +282,9 @@ def analysis_lead(analysis: EvalAnalysis, *, bundle: CampaignBundle | None = Non
     (:func:`~threetears.evals.analysis.report.campaign_page.campaign_verdict`).
 
     :param analysis: The analysis.
-    :ptype analysis: EvalAnalysis
     :param bundle: The campaign bundle frozen with it (:func:`analysis_campaign_bundle`), where the caller has put it
         back together already; None puts it back together here.
-    :ptype bundle: CampaignBundle | None
     :return: The caveats and the verdict.
-    :rtype: AnalysisLead
     :raises RefusedInput: The analysis was written over a bundle of another shape.
     """
     campaign = bundle if bundle is not None else analysis_campaign_bundle(analysis)

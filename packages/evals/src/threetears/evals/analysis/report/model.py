@@ -144,9 +144,7 @@ def _named_terms(block: TableBlock) -> list[str]:
     in a column of readings, that is a term (``Measuring spend, all roles``), so a page that prints one defines it.
 
     :param block: The table.
-    :ptype block: TableBlock
     :return: The terms, in the order the table names them, each once.
-    :rtype: list[str]
     """
     by_words = {term.casefold(): term for term in GLOSSARY}
     named = [_PER_COUNT.sub("", column.header.split(" (")[0]) for column in block.columns]
@@ -172,9 +170,7 @@ def _check_entries(
 
     :param read: Each aspect's evidence, with the name the page calls the aspect by (None on an aspect's own page), in
         the page's order.
-    :ptype read: Sequence[tuple[str | None, AnalysisContextBundle]]
     :return: ``(name, [(expression, aspect or None), ...])`` per name, in the order first named.
-    :rtype: list[tuple[str, list[tuple[str, str | None]]]]
     """
     by_name: dict[str, dict[str, list[str]]] = {}
     names_of: dict[str, set[str]] = {}
@@ -309,9 +305,7 @@ class Report(EvalDocumentModel):
         Markdown.
 
         :param out_dir: The directory; created when missing.
-        :ptype out_dir: Path | str
         :return: Each file written, by role.
-        :rtype: dict[ReportFile, Path]
         """
         directory = Path(out_dir)
         directory.mkdir(parents=True, exist_ok=True)
@@ -540,7 +534,6 @@ class CampaignReport(EvalDocumentModel):
         what was not tested, the methods) after them. The first screen and the glossary are laid out apart.
 
         :return: ``(before, after)``, each a list of section ids.
-        :rtype: tuple[list[str], list[str]]
         """
         present = [
             section
@@ -607,9 +600,7 @@ class CampaignReport(EvalDocumentModel):
         the one a reader computes from the file.
 
         :param out_dir: The directory; created when missing.
-        :ptype out_dir: Path | str
         :return: Each file written, by role: ``html``, ``markdown``, ``json``, and ``bundle:<aspect>`` per aspect.
-        :rtype: dict[str, Path]
         """
         directory = Path(out_dir)
         directory.mkdir(parents=True, exist_ok=True)
@@ -650,7 +641,6 @@ class CampaignReport(EvalDocumentModel):
         The page's models keep their figures as computed.
 
         :return: A JSON-ready mapping.
-        :rtype: dict[str, object]
         """
         document: dict[str, object] = {
             "kind": "campaign",

@@ -8,7 +8,7 @@ fragment-only and lands on an id the page carries, outside any closed ``<details
 page models refuse a link to a place they do not hold and one id carried twice.
 
 The stored analysis read here is the toy campaign's retired memo: its aspect's page is code's over the bundle frozen
-with it (``report_support.toy_report``), and its campaign's page is the one ``analysis_report`` lays out by its id.
+with it (``report_support.toy_report``), and its campaign's page is the one ``campaign_report`` lays out for it.
 """
 
 from __future__ import annotations
@@ -28,11 +28,11 @@ from threetears.evals.analysis import (
     TableBlock,
     TableCell,
     TableColumn,
-    analysis_report,
     build_code_only_report,
     campaign_report_html,
     report_html,
 )
+from threetears.evals.analysis.service import campaign_report
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.report.model import fold_ids, reading_anchor
@@ -86,8 +86,8 @@ def _carrying(page: Report, anchor: str) -> tuple[TableBlock, TableCell]:
 
 
 def _campaign_page(host: EvalHost, analysis: EvalAnalysis) -> CampaignReport:
-    """The campaign's page ``analysis_report`` lays out by the analysis's id, over the bundles frozen with it."""
-    return analysis_report(host.storage, analysis.id, analysis.scope_id)
+    """The page of the campaign the analysis is the report of."""
+    return campaign_report(host, analysis.campaign_id, analysis.scope_id)
 
 
 class _Landings(HTMLParser):

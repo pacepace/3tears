@@ -51,13 +51,9 @@ def _level_quantity(report_input: ReportInput, key: str, *, kind: str | None = N
     (per 1,000 replies for money per reply, per 1,000,000 where it is under a cent per 1,000); any other unit as it is.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param key: The measure's or judged dimension's key.
-    :ptype key: str
     :param kind: A contrast's kind where the key is one's; None for a measure's.
-    :ptype kind: str | None
     :return: The quantity its levels are drawn as.
-    :rtype: Quantity
     """
     unit = figure_unit(report_input, key, kind=kind)
     return quantity_of(unit, held_means(report_input, key)) if kind != "judged" else quantity(unit)
@@ -71,15 +67,10 @@ def _change_quantity(
     (#993); any other unit's change quantity as it is.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param measure: The measure's key.
-    :ptype measure: str
     :param kind: The comparisons' kind.
-    :ptype kind: str | None
     :param contrasts: Every comparison on the measure the page states.
-    :ptype contrasts: Sequence[Contrast]
     :return: The quantity its changes are drawn as.
-    :rtype: Quantity
     """
     amounts = _level_quantity(report_input, measure, kind=kind)
     if amounts.unit != MONEY:
@@ -107,11 +98,8 @@ def _written_stated(
     printed, which a set with no interval reads its decimals from.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param kinds: Each measure the page states, by its key and kind.
-    :ptype kinds: Iterable[tuple[str, _MeasureKind]]
     :return: The half-widths, stated on the written page, and each set's figures.
-    :rtype: tuple[list[_Width], dict[MeasureSet, list[float]]]
     """
     found: list[_Gathered] = []
     figures: dict[MeasureSet, list[float]] = {}
@@ -213,15 +201,10 @@ def _change_span(report_input: ReportInput, measure: str, kind: str | None, draw
     None for any other measure, whose range the input does not bound.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param measure: The measure's key.
-    :ptype measure: str
     :param kind: The comparison's kind.
-    :ptype kind: str | None
     :param drawn: How its changes are drawn.
-    :ptype drawn: Quantity
     :return: The reach, or None.
-    :rtype: float | None
     """
     if drawn.unit == POINTS:
         return 100.0

@@ -89,7 +89,6 @@ def writer_turns(limits: _WriterCaps) -> int:
     :param limits: What the writing loop is held to.
     :ptype limits: WriterLimits
     :return: The worst-case turn count.
-    :rtype: int
     """
     return _analyst_turns(limits) + _editor_turns(limits)
 
@@ -126,11 +125,8 @@ def writer_ceiling_s(limits: _WriterCaps, *, request_s: RequestCeiling, turns: i
         which ``analysis_generate`` runs unchanged.
     :ptype limits: WriterLimits
     :param request_s: The host's ceiling for one request on its client, by output cap.
-    :ptype request_s: RequestCeiling
     :param turns: The report budget's turn cap (``ReportBudget.turns``), or ``None`` when it declares none.
-    :ptype turns: int | None
     :return: The ceiling in seconds.
-    :rtype: float
     :raises ValueError: ``turns`` is not a whole number above 0.
     """
     if turns is not None and (isinstance(turns, bool) or not isinstance(turns, int) or turns <= 0):
@@ -157,18 +153,12 @@ def judge_phase_ceiling_s(
     cell's deadline bounds the judging too, and a ceiling without it cuts a slow cell off while it is scored.
 
     :param judge_dims: Dimensions the judge scores on each cell.
-    :ptype judge_dims: int
     :param judge_concurrency: Judge requests in flight at once.
-    :ptype judge_concurrency: int
     :param judge_call_attempts: Requests one judge dimension can make, its parse retries included.
-    :ptype judge_call_attempts: int
     :param judge_max_tokens: The judge's output cap, as its requests are built with.
-    :ptype judge_max_tokens: int
     :param request_s: The host's ceiling for one request on its client, by output cap.
-    :ptype request_s: RequestCeiling
     :return: The judge phase's ceiling in seconds: ``waves * judge_call_attempts * request_s(judge_max_tokens)``,
         with ``waves`` the dimensions over the concurrency, rounded up.
-    :rtype: float
     """
     judge_waves = -(-max(judge_dims, 0) // max(judge_concurrency, 1))
     return judge_waves * judge_call_attempts * request_s(judge_max_tokens)

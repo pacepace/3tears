@@ -1177,7 +1177,8 @@ def test_the_candidate_kind_is_a_coordinate_of_every_variant():
     import inspect
 
     from threetears.evals.kernel import identity as identity_module
-    from threetears.evals.kernel.host import CANDIDATE_KIND_LEVER, SHARED_CORE, HostProfile, MeasureRegistry
+    from threetears.evals.kernel.host import SHARED_CORE, HostProfile, MeasureRegistry
+    from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER
 
     params = set(inspect.signature(identity_module.derive_variant_identity).parameters)
     assert params == {"run", "profile"}, (

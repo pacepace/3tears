@@ -211,9 +211,7 @@ def cap_words(exclusions: Iterable[ArmExclusions] = ()) -> str:
 
     :param exclusions: The arm's cells' exclusions, whose ``truncated_sent_caps`` and ``truncated_cap_unreported`` say
         what the cut-off judge calls were sent, as their completions reported it.
-    :ptype exclusions: Iterable[ArmExclusions]
     :return: The cap in words; never filled from what the run asked for.
-    :rtype: str
     """
     cells = list(exclusions)
     known = [str(cap) for cap in sorted({cap for cell in cells for cap in cell.truncated_sent_caps})]
@@ -246,9 +244,7 @@ def arm_run_statuses(bundle: AnalysisContextBundle) -> dict[str, frozenset[str]]
     """Each arm's member runs' stored statuses, by variant key: ``completed`` for a run ``incomplete_runs`` omits.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :return: The statuses, for every arm the realized design places.
-    :rtype: dict[str, frozenset[str]]
     """
     design = bundle.design
     arms = [*([design.control_arm] if design.control_arm is not None else []), *design.contrasts]
@@ -264,11 +260,8 @@ def unfinished_line(bundle: AnalysisContextBundle, arm: Callable[[str], str]) ->
     nothing is set in bold.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key, as every table of the report does.
-    :ptype arm: Callable[[str], str]
     :return: The line, its rule ``unfinished``, or None.
-    :rtype: VerdictLine | None
     """
     opening = unfinished_opening(bundle, arm)
     if opening is None:
@@ -284,11 +277,8 @@ def measured_nothing(exclusions: Iterable[ArmExclusions], run_statuses: Iterable
     stored before a run that measured nothing failed, keep their own words.
 
     :param exclusions: The arm's cells' exclusions (:func:`arm_exclusions`).
-    :ptype exclusions: Iterable[ArmExclusions]
     :param run_statuses: The arm's runs' statuses (:func:`arm_run_statuses`).
-    :ptype run_statuses: Iterable[str]
     :return: True when the arm ran trials, every one was excluded as ``infra``, and every run of it ended ``failed``.
-    :rtype: bool
     """
     cells = list(exclusions)
     ran = sum(cell.n_trials for cell in cells)
@@ -302,18 +292,13 @@ def loss_words(
     """Why trials were lost to ``cause``, in words, with its remedy.
 
     :param cause: The loss cause.
-    :ptype cause: str
     :param exclusions: The arm's cells' losses (:func:`arm_exclusions`), which carry the cap a ``truncated`` judge was
         sent.
-    :ptype exclusions: Iterable[ArmExclusions]
     :param arms: How many arms the campaign ran, which the remedy names.
-    :ptype arms: int
     :param run_statuses: The arm's runs' stored statuses (:func:`arm_run_statuses`); none known, the cause's own words.
-    :ptype run_statuses: Iterable[str]
     :return: The words. A cause this build has no words for is named as itself and says so, rather than taking another
         cause's remedy. ``infra`` on an arm whose run the account stopped takes :data:`ACCOUNT_REFUSED_REMEDY`, and on
         an arm that measured nothing (:func:`measured_nothing`) :data:`NOTHING_MEASURED_REMEDY`, never the rerun.
-    :rtype: CauseWords
     """
     cells = list(exclusions)
     worded = LOSS_CAUSE_WORDS.get(cause)
@@ -400,12 +385,9 @@ def passed_clause(arm: str, count: PassCount) -> str:
     listing's line all say it through this.
 
     :param arm: The arm, as the page names it.
-    :ptype arm: str
     :param count: Its count, read off the census
         (:func:`~threetears.evals.analysis.bundle.trials.pass_count`).
-    :ptype count: PassCount
     :return: The clause, with no closing stop.
-    :rtype: str
     """
     lost = count.ungraded
     if count.none_answered:
@@ -466,13 +448,9 @@ def ungraded_sentence(count: PassCount, case_name: Callable[[str], str], *, arm:
     b:`` where ``arm`` names the arm among several); empty where none was lost.
 
     :param count: The arm's count.
-    :ptype count: PassCount
     :param case_name: Names a case by its id.
-    :ptype case_name: Callable[[str], str]
     :param arm: The arm's name, where the sentence stands among several arms'.
-    :ptype arm: str | None
     :return: The sentence, with a leading space and its closing stop, or empty.
-    :rtype: str
     """
     if not count.ungraded:
         return ""
@@ -502,9 +480,7 @@ def not_graded_words(count: PassCount) -> str:
     the graded trials, from the same count as :func:`passed_clause`; empty where every trial was graded.
 
     :param count: The arm's count.
-    :ptype count: PassCount
     :return: The words, or empty.
-    :rtype: str
     """
     if not count.ungraded:
         return ""
@@ -522,13 +498,9 @@ def ungraded_sentences(
     on a compared aspect say it through this.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key.
-    :ptype arm: Callable[[str], str]
     :param case_name: Names a case by its id.
-    :ptype case_name: Callable[[str], str]
     :return: The sentences, each with a leading space and its closing stop, or empty.
-    :rtype: str
     """
     said = ""
     for board in bundle.scoreboard:
@@ -558,19 +530,12 @@ def interval_words(
     the table's header states it. An interval reaching both sides never reads as "the same".
 
     :param arm: The arm, as the page names it.
-    :ptype arm: str
     :param low: The interval's low end, on the change's ruler (points for a rate).
-    :ptype low: float
     :param high: Its high end.
-    :ptype high: float
     :param amount: A change's size as the sentence states it, unsigned.
-    :ptype amount: Callable[[float], str]
     :param unit: What follows the sizes once, `` points`` for a rate; empty where ``amount`` carries the unit.
-    :ptype unit: str
     :param higher_is_better: The reading's direction: a rise is better where True.
-    :ptype higher_is_better: bool
     :return: The sentence, with its closing stop.
-    :rtype: str
     """
     worse_end, better_end = (low, high) if higher_is_better else (high, low)
     sign = 1 if higher_is_better else -1
@@ -588,11 +553,8 @@ def _is_cost(measure: str, bundle: AnalysisContextBundle) -> bool:
     never what a result leads on.
 
     :param measure: The measure's key.
-    :ptype measure: str
     :param bundle: The aspect's evidence, whose catalog describes it.
-    :ptype bundle: AnalysisContextBundle
     :return: True for a cost.
-    :rtype: bool
     """
     described = bundle.measure_catalog.get(measure) or METRIC_DESCRIPTORS.get(measure)
     return described is not None and (described.merit_axis == "cost" or is_money(described.unit or ""))
@@ -604,13 +566,9 @@ def _lead_measure(bundle: AnalysisContextBundle, tested: Iterable[str], order: S
     classifier's accuracy where no question is asked of the aspect; None where neither names one.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param tested: The measures a contrast tested, by key (never the pass rate, ``trial``).
-    :ptype tested: Iterable[str]
     :param order: The graders' measures, in the order listed; empty where none is listed.
-    :ptype order: Sequence[str]
     :return: The measure's key, or None.
-    :rtype: str | None
     """
     held = set(tested)
     if not order:
@@ -633,23 +591,15 @@ def led_sentences(
     is marked a lead. Empty where no contrast was tested on a lead measure.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param verdicts: The aspect's typed verdicts, worded as its page words them.
-    :ptype verdicts: Sequence[Verdict]
     :param order: The graders' measures, in the order listed.
-    :ptype order: Sequence[str]
     :param asked: Whether a question is asked, so a contrast outside it is marked a lead.
-    :ptype asked: bool
     :param on: Where it was read, said after the measure's name (`` on billing``) on a page of several aspects.
-    :ptype on: str
     :param evidence: The figures each verdict rests on, as sentences (both arms' readings, the change and its
         interval, and for an undecided one the cases that would settle it), said after its decision; None says the
         decision alone.
-    :ptype evidence: Callable[[Verdict], str | None] | None
     :param also: What else the evidence tells apart, said after the last arm's decision, before its figures.
-    :ptype also: Sequence[str]
     :return: One decision per arm, each with its closing stop and its figures after it.
-    :rtype: list[str]
     """
     led = _led(bundle, verdicts, order)
     said = []
@@ -697,23 +647,16 @@ def verdict_line(
     """The verdict line, by the first rule that fires (the module docstring's order).
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key, as every table of the report does.
-    :ptype arm: Callable[[str], str]
     :param case_name: Names a case by its id, as the cases table does; its id where None. One arm's line names the
         cases it missed by it.
-    :ptype case_name: Callable[[str], str] | None
     :param verdicts: The aspect's typed verdicts as its page words them, whose words a comparison's line prints, so
         it reads as every other surface does; none reads the bundle's contrasts in their verdict words alone.
-    :ptype verdicts: Sequence[Verdict]
     :param order: The graders' measures, in the order the eval lists them (``AspectDesign.measure_order``), which a
         comparison's line leads on the first of (:func:`_lead_measure`).
-    :ptype order: Sequence[str]
     :param evidence: The figures each lead verdict rests on, said after its decision (:func:`led_sentences`); None
         says the decision alone.
-    :ptype evidence: Callable[[Verdict], str | None] | None
     :return: The rule and its sentences.
-    :rtype: VerdictLine
     """
     boards = bundle.scoreboard
     unfinished = unfinished_line(bundle, arm)
@@ -834,13 +777,10 @@ def caveat_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) -> li
     """What qualifies the verdict, said under the scoreboard in normal weight: never bold, never first.
 
     :param bundle: The campaign's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key.
-    :ptype arm: Callable[[str], str]
     :return: The lines: today, that an arm is under the case floor. A "too few" line says what is withheld and why, in
         the reader's terms, never a bare count: under the floor no interval is estimated, so a rate is shown as a
         count and no gap between the arms is sized.
-    :rtype: list[str]
     """
     small = [board for board in bundle.scoreboard if board.usable_cases < MIN_CASES]
     if not small:
@@ -931,13 +871,9 @@ def _not_compared(bundle: AnalysisContextBundle, arm: Callable[[str], str], key:
     definition.``
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key.
-    :ptype arm: Callable[[str], str]
     :param key: An arm not read against the control (:func:`~threetears.evals.analysis.cells.unread_arms`).
-    :ptype key: str
     :return: The sentence, with its closing stop.
-    :rtype: str
     """
     control = _control_of(bundle)
     split = split_arms(bundle.cells)
@@ -1158,13 +1094,9 @@ def guardrail_name(bundle: AnalysisContextBundle, name: str, reading: str) -> st
     expression, any other measure by its reader name.
 
     :param bundle: The aspect's evidence, whose catalog and check names name it.
-    :ptype bundle: AnalysisContextBundle
     :param name: The guardrail's measure key or judged dimension.
-    :ptype name: str
     :param reading: ``judged`` for a judged dimension; anything else reads a measure.
-    :ptype reading: str
     :return: The name.
-    :rtype: str
     """
     if reading == "judged":
         return judged_heading(name)
@@ -1179,11 +1111,8 @@ def guardrail_lines(bundle: AnalysisContextBundle, arm: Callable[[str], str]) ->
     read off the bundle's guardrail checks: ``v2 may do worse than v1 on the No invented total score guardrail.``
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :param arm: Names an arm by its variant key.
-    :ptype arm: Callable[[str], str]
     :return: The sentences, the breached first; none where every guardrail held.
-    :rtype: list[str]
     """
     said = []
     for decision, template in GUARDRAIL_SAID.items():

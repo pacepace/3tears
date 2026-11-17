@@ -26,7 +26,7 @@ from typing import Any
 import pytest
 
 from threetears.evals import Eval
-from threetears.evals.analysis import report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink
 from threetears.evals.kernel.failed_call import failed_call_output
@@ -35,7 +35,8 @@ from threetears.evals.kernel.result_condition import ResultOutcome, classify_res
 from threetears.evals.ops import LaunchArguments, OpsHost, run_launch, run_job_id
 from threetears.evals.providers import ProviderError, describe_failure
 from threetears.evals.providers.failures import error_from_response
-from threetears.evals.run import ModelUnservedError, RunnerOptions, execute_run, resumable_jobs, resume_run
+from threetears.evals.run import ModelUnservedError, RunnerOptions, execute_run, resumable_jobs
+from packages.evals.tests.resume_support import resumed_run
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service
@@ -496,7 +497,7 @@ async def test_an_arm_its_model_stopped_is_taken_up_once_the_model_is_served_and
 
     provider["retired"] = False
     resumer = other_process(holder)
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = off_loop(_run, holder, run_id)

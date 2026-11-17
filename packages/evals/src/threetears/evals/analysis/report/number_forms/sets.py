@@ -152,13 +152,9 @@ def campaign_set(page: str, measure: str, kind: _MeasureKind) -> MeasureSet:
 
     :param page: The name of the page that states the figure: ``written``, ``code``, or an aspect's page
         (:func:`_aspect_page`).
-    :ptype page: str
     :param measure: The measure's key.
-    :ptype measure: str
     :param kind: The measure's kind; None for a measure's own.
-    :ptype kind: _MeasureKind
     :return: The set's name.
-    :rtype: MeasureSet
     """
     return (page if _SET_SCOPE == "page" else "campaign", _measure_kind(kind), measure)
 
@@ -202,19 +198,12 @@ def _glyph_ends(
     a percent's without its ``%`` and money's each with its ``$``; with no places, at the unit's precision.
 
     :param low: The low end, in ``unit``.
-    :ptype low: float
     :param high: The high end, in ``unit``.
-    :ptype high: float
     :param unit: The unit the ends are read in: the cell's own, else the one its column's head names.
-    :ptype unit: str
     :param places: The decimals the cell's figure reads at; None where its unit's precision spells it.
-    :ptype places: int | None
     :param money: Money's form, where the cell's figure is written in one.
-    :ptype money: MoneyForm | None
     :param change: Whether the figure is a change, whose ends carry their signs.
-    :ptype change: bool
     :return: The two ends' texts.
-    :rtype: tuple[str, str]
     """
 
     def signed(text: str, value: float) -> str:
