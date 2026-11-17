@@ -324,6 +324,7 @@
 "threetears.evals.schema.WorldPlacement": "stable",
 "threetears.evals.schema.WorldRound": "provisional",
 "threetears.evals.schema.WorldSeed": "host-contract",
+"threetears.evals.schema.WrittenOver": "provisional",
 "threetears.evals.kernel.ABSENT": "provisional",
 "threetears.evals.kernel.ACCURACY_MEASURE": "provisional",
 "threetears.evals.kernel.ActionSeam": "stable",

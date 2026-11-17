@@ -6,6 +6,32 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: the engine's first cancel lets the cells in flight finish; every comparison family says how many cells ran again
+
+**Changed:** the engine keeps the quick path's interrupt rule. A run's first cancel (`job_cancel` on the run, or on
+the launch or sweep holding it; `cancel_run`; a foreground `await_job` interrupted; a cancel asked on the record from
+another process) starts no further cell and lets the cells in flight finish and record, each within its own deadline;
+the run then ends `cancelled`, and a take-up runs only the cells it never started. A second cancel, from any process,
+or a second Ctrl+C, cuts the cells still running, recorded `cancelled`, and a take-up runs them again. Before, the
+first cancel cut, and a cut cell drawn afresh leans a comparison where one arm's wrong answers are its slow ones: a
+null simulation of the engine (`test_engine_take_up_null.py`) drew 13% false separations over three planned looks
+with every interrupt cutting, where the reading's own rate is 4.5%. A process shutdown and a run fenced off its lease
+still cut at once. One rule serves every holder of runs (`kernel.offload.drain_then_cut`), the quick path's included,
+and the job manager reads a run's first cancel as a drain (`EvalJobManager.cancel_job`; `cut_job` cuts at once).
+
+**Added:** a row a take-up writes over a cut or unanswered row records what it replaced
+(`EvalResult.written_over`: `cut` or `unanswered`; core minor 15.23), so the count of cells that ran again
+(`redrawn_cells`) still counts a cell the take-up wrote over. Every comparison family, an engine campaign's included,
+now says that count where any cell ran again, in the one sentence that says it (`redrawn_sentence`); before, only a
+quick-path family did.
+
+**For hosts:** a first Ctrl+C, or a first `job_cancel`, now finishes the running cells before the run stops, so a
+cancel no longer returns a run to `cancelled` at once: poll until it lands, or cancel again to stop at once. Two
+cancels of a launch or a sweep that land before its job has heard the first are one cancel. `written_over` is left out
+of a row that replaced nothing, so such rows are stored as before; a build before this one reads a row carrying it
+under its newer-minor tolerance and ignores the field, which is correct (the row is the cell's one answer) and only
+misses the count. Roll forward in any order; a rollback loses nothing but that count on rows taken up meanwhile.
+
 ### evals: a second Ctrl+C on a quick comparison is raised as itself, and the comparison is filed wherever it lands
 
 **Fixed:** a quick comparison interrupted twice in a terminal raises the `KeyboardInterrupt` itself once its campaign

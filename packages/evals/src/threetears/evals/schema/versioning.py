@@ -150,6 +150,8 @@ the document, so extending one is a major. Each, and why:
 - ``ArmSchedule`` — whether a comparison's arms were co-loaded on their providers; a reader that cannot say which
   cannot say whether a difference between arms can be the host's capacity.
 - ``CellTermination`` — decides whether a cell is excluded from every figure.
+- ``WrittenOver`` — whether a cell that ran again was cut while it ran, which the count of cells run again names
+  apart, since only a cut can lean a reading.
 - ``ConversationStopCause`` — its members are split into a conversation ending on its own terms and a rig fault,
   which excludes the cell.
 - ``GoalCheckProof``, ``GoalCheckIntent`` — what a goal check proves, and how it is checked.

@@ -726,12 +726,20 @@ _SURE = 0.001
 
 #: Each simulation, as (reading, latency law, grader, interrupt), and what it shows.
 _SHOWN: dict[tuple[_Reading, _Law, _Grader, _Stop], _Shown] = {
+    # The engine as it is: a first interrupt drains, so no cell is cut and none drawn afresh, whatever the latency law.
     **{
         (reading, law, grader, "drain"): "no_lean"
         for reading in ("fixed", "looks")
         for law in _LAWS
         for grader in ("check", "grade")
     },
+    # A second interrupt in three of ten interrupted holdings, 5 ms after the first, cuts what is still in flight: the
+    # slow arm's wrong answers, and nothing else, where its wrong answers are its slow ones. A check read as a family of
+    # one is the grade's reading on the same values, so the grade's alone are drawn.
+    **{(reading, law, "grade", "second"): "no_lean" for reading in ("fixed", "looks") for law in _LAWS},
+    # The engine before it drained, every interrupt cutting: the comparison that shows why it drains.
+    ("looks", "b-slower-20x", "check", "cut"): "leans",
+    ("looks", "b-slower-20x", "grade", "cut"): "leans",
 }
 
 

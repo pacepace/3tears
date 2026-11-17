@@ -7223,6 +7223,7 @@ __all__ = [
     "CassetteSeam",
     "CatalogRubricDim",
     "CellTermination",
+    "WrittenOver",
     "ClientRequestSettings",
     "RunDisclosure",
     "CompletenessSource",
