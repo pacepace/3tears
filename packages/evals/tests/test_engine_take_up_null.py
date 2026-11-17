@@ -29,8 +29,9 @@ run to its end.
 
 Two graders, since the engine's reading of each differs: a check (``correct``) is read in a family beside the pass rate
 (``passed``) it equals, so Holm halves α in effect; a grade on the range 0 to 1 (``grade``) is alone in its family and
-read at α. **What the simulations show** (:data:`_SHOWN` has the shares): read by a check, every share holds at most α,
-at a fixed count and over the plan, because the doubled family leaves the lean room; read by a grade, the control sits at
+read at α. **What the simulations show** (:data:`_SHOWN` has the shares): read by a check, the shares hold at most α at a
+fixed count, because the doubled family leaves the lean room, and over the plan's looks all but one do: arms of
+different laws at 20x drew 4.2% on the pool, an upper bound above α; read by a grade, the control sits at
 α, as the t test does with no cut at all (``test_simulated_looks.py``, "one look on the exact t test"), and arms of
 different laws separate past it: about 7% at a fixed count, and 7% and 13% over the plan's three looks, almost all
 toward the slow arm, whose wrong answers the cuts took (in the 20x rows, about seven of its wrong answers redrawn for
@@ -510,11 +511,15 @@ _Shown = Literal["held", "at_alpha", "unheld", "leans"]
 #: 3 looks, α/3      b-slower-20x    4/300, 1.3% (0.4-3.4)  39/300, 13.0% (9.4-17.3); lost a 174/154, b 429/2980
 #: ================  ==============  =====================  ==========================================================
 #:
+#: The check over three looks at 20x drew again at :data:`_LOOKS_REPLICATES` on the pool: 21/500, 4.2% (2.6-6.3), its
+#: upper bound above α (lost a 410/402, b 986/5373), so it is held to ``at_alpha``, not ``held``.
+#:
 #: Over another 600 comparisons at a fixed count, the check's raw p read at α (the family of one a grade gives): arms of
 #: different laws at 20x, 62 separated (10.3%, 8.0-13.1), 56 of them toward ``b``; one law, 33 (5.5%, 3.8-7.6), 17
 #: toward ``b``.
 _SHOWN: dict[tuple[_Reading, _Law, _Grader], _Shown] = {
     **{(reading, law, "check"): "held" for reading in ("fixed", "looks") for law in _LAWS},
+    ("looks", "b-slower-20x", "check"): "at_alpha",
     ("fixed", "alike-20x", "grade"): "at_alpha",
     ("looks", "alike-20x", "grade"): "at_alpha",
     ("fixed", "b-slower-4x", "grade"): "unheld",
