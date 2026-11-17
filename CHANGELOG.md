@@ -9,7 +9,7 @@ packages (bumped in lock-step).
 ### evals: the engine's first cancel lets the cells in flight finish; every comparison family says how many cells ran again
 
 **Changed:** the engine keeps the quick path's interrupt rule. A run's first cancel (`job_cancel` on the run, or on
-the launch or sweep holding it; `cancel_run`; a foreground `await_job` interrupted; a cancel asked on the record from
+the launch or sweep holding it; a foreground `await_job` interrupted; a cancel asked on the record from
 another process) starts no further cell and lets the cells in flight finish and record, each within its own deadline;
 the run then ends `cancelled`, and a take-up runs only the cells it never started. A second cancel, from any process,
 or a second Ctrl+C, cuts the cells still running, recorded `cancelled`, and a take-up runs them again. Before, the
