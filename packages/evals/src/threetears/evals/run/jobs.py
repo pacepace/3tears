@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from concurrent.futures import Executor
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
@@ -473,6 +473,11 @@ class EvalJobManager:
         # boundary — the only frame that can attach the reason to the
         # terminal status write.
         self._cancel_reasons: dict[str, str] = {}
+        #: How each run asks its work to start no further cell (``RunnerOptions.stop_starting``), by run id, as the
+        #: group that started it handed it over: what a first cancel of the run does (:meth:`cancel_job`).
+        self._drains: dict[str, Callable[[], object]] = {}
+        #: The jobs, runs and tasks alike, whose first cancel has been asked: a further cancel cuts.
+        self._asked: set[str] = set()
         # Whether each in-flight run's work function has started, keyed by run id.
         # Set False when the job is admitted and True immediately before the work
         # function is awaited, so a terminal status write can tell "this run never
@@ -638,12 +643,20 @@ class EvalJobManager:
             await asyncio.wait(tasks)
 
     def cancel_job(self, job_id: str, reason: str | None = None) -> bool:
-        """Cancel a running job.
+        """Cancel a running job: the first cancel drains it, a further one cuts it.
+
+        **The interrupt rule** (the quick path's, the engine's alike): a run started with a way to stop starting cells
+        (:meth:`start_group`'s ``drains``) is asked, on its first cancel, to start no further cell; the cells it is
+        running finish and are recorded, each bounded by its own deadline, and the run then ends ``cancelled``. A
+        further cancel cuts at once: the cells still running are recorded cut (termination ``cancelled``), and a run
+        taken up again runs them again (:func:`~threetears.evals.kernel.result_condition.runs_again`). Cutting a cell
+        in flight to draw it afresh would lean a reading where a slow answer is a wrong one, so nothing cuts first. A
+        run started with no way to drain is cut by its first cancel.
 
         Cancellation is request-then-converge: the task's own
         ``CancelledError`` boundary writes the terminal ``cancelled``
         status (with ``reason``, when given) as it unwinds — typically
-        at its next await point.
+        at its next await point, or once a drained run's cells have finished.
 
         :param job_id: Run id to cancel.
         :ptype job_id: str
@@ -661,8 +674,48 @@ class EvalJobManager:
             return False
         if reason is not None:
             self._cancel_reasons[job_id] = reason
+        if job_id not in self._asked:
+            self._asked.add(job_id)
+            drain = self._drains.get(job_id)
+            if drain is not None:
+                drain()
+                return True
         task.cancel()
         return True
+
+    def cut_job(self, job_id: str, reason: str | None = None) -> bool:
+        """Cut a running job at once, whatever it was asked before: the cells it is running are recorded cut (termination
+        ``cancelled``). For a holder that has ended and must leave nothing running behind it (a launch fenced off its
+        record, or whose progress write failed); an operator's cancel goes through :meth:`cancel_job`.
+
+        :param job_id: The run.
+        :ptype job_id: str
+        :param reason: Why, recorded on the run's terminal status.
+        :ptype reason: str | None
+        :return: True if the cut was requested, False if the job is not found or already done.
+        :rtype: bool
+        """
+        task = self._tasks.get(job_id)
+        if task is None or task.done():
+            return False
+        if reason is not None:
+            self._cancel_reasons[job_id] = reason
+        self._asked.add(job_id)
+        task.cancel()
+        return True
+
+    def _asked_to_cancel(self, job_id: str, reason: str | None) -> None:
+        """A cancel asked of a run on its record, as its lease's renewal delivers it: the run's first cancel, which an
+        in-process :meth:`cancel_job` may already have made (an operator's ``job_cancel`` asks both ways), so a run
+        already asked is left draining rather than cut.
+
+        :param job_id: The run.
+        :ptype job_id: str
+        :param reason: Why, as the request recorded it.
+        :ptype reason: str | None
+        """
+        if job_id not in self._asked:
+            self.cancel_job(job_id, reason=reason)
 
     async def shutdown(self, timeout: float = SHUTDOWN_SETTLE_TIMEOUT_S) -> list[str]:
         """Cancel all active jobs and wait for them to settle, the whole shutdown bounded by ``timeout``.
@@ -809,7 +862,7 @@ class EvalJobManager:
                 kind,
                 job_id,
                 scope_id,
-                cancel=lambda _reason: self.cancel_task(job_id),
+                cancel=lambda _reason: None if job_id in self._asked else self.cancel_task(job_id),
                 stop=lambda: self.cancel_task(job_id),
                 epoch=epoch,
             )
@@ -870,6 +923,9 @@ class EvalJobManager:
         task = self._detached.get(job_id)
         if task is None or task.done():
             return False
+        # Each cancel is the task's: a launch's work drains its runs on the first and cuts them on a further one. A
+        # cancel asked on its record is delivered only where none was made here (its lease's ``cancel`` above).
+        self._asked.add(job_id)
         task.cancel()
         return True
 
@@ -947,6 +1003,7 @@ class EvalJobManager:
             # the work's own record already written.
             self._detached.pop(job_id, None)
             self._task_keys.pop(job_id, None)
+            self._asked.discard(job_id)
             if self._leases is not None:
                 self._leases.release(job_id)
                 self._leases.forget(job_id)
@@ -979,6 +1036,7 @@ class EvalJobManager:
         measure_latency: bool = False,
         in_turn: bool = False,
         on_member_end: Callable[[str], None] | None = None,
+        drains: Mapping[str, Callable[[], object]] | None = None,
     ) -> list[str]:
         """Start several runs as one group: they share one concurrency slot and start together.
 
@@ -996,6 +1054,9 @@ class EvalJobManager:
         :param on_member_end: Told each member's run id once its task is done, however it ended — before it started
             included — so whatever its siblings wait on from it (an interleaved launch's turns) stops waiting.
         :ptype on_member_end: Callable[[str], None] | None
+        :param drains: By run id, what asks the run to start no further cell, which its first cancel calls in place of
+            cutting it (:meth:`cancel_job`); a run with none is cut by its first cancel.
+        :ptype drains: Mapping[str, Callable[[], object]] | None
         :return: The run ids, in the order given.
         :rtype: list[str]
         :raises ValueError: ``members`` is empty.
@@ -1040,7 +1101,7 @@ class EvalJobManager:
                         RUN_JOB,
                         run.id,
                         run.scope_id,
-                        cancel=functools.partial(self.cancel_job, run.id),
+                        cancel=functools.partial(self._asked_to_cancel, run.id),
                         stop=functools.partial(self._fence, run.id),
                         epoch=run.lease.epoch if run.lease is not None else 0,
                     )
@@ -1054,6 +1115,8 @@ class EvalJobManager:
                 if on_member_end is not None:
                     task.add_done_callback(functools.partial(_tell_member_end, on_member_end, run.id))
                 self._tasks[run.id] = task
+                if drains is not None and run.id in drains:
+                    self._drains[run.id] = drains[run.id]
                 started.add(run.id)
         except BaseException as failed:
             if isinstance(failed, ConflictError):
@@ -1097,7 +1160,8 @@ class EvalJobManager:
         """
         if self._leases is not None:
             self._leases.let_go(run_id)
-        self.cancel_job(run_id)
+        # Cut at once, never drained: a run its process no longer holds writes nothing more, a cell's row included.
+        self.cut_job(run_id)
 
     def _let_go_of(self, run_id: str) -> bool:
         """Whether this process let go of the run's lease, so it writes, broadcasts and tells nothing more of it."""
@@ -1318,6 +1382,8 @@ class EvalJobManager:
                 await self._tell_run_end(run_id, scope_id, ended)
             self._tasks.pop(run_id, None)
             self._cancel_reasons.pop(run_id, None)
+            self._drains.pop(run_id, None)
+            self._asked.discard(run_id)
             self._work_ran.pop(run_id, None)
             if self._leases is not None:
                 self._leases.forget(run_id)

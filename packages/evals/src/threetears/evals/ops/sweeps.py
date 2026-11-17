@@ -85,7 +85,7 @@ from threetears.evals.kernel.refusals import job_refusal
 from threetears.evals.schema.refusal import JobRefusal
 from threetears.evals.kernel.job_timeout import EvalJobTimeout, timed_out_detail
 from threetears.evals.schema.models import DEFAULT_LAUNCH_K_RUNS, ArmSchedule, CaseSetRef, EvalRun, utc_now_iso
-from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.offload import drain_then_cut, run_blocking
 from threetears.evals.ops.analysis import CampaignDefinition, campaign_create
 from threetears.evals.ops.host import OpsHost
 from threetears.evals.ops.jobs import JobHandle, JobsStarted, sweep_job_id, sweep_key
@@ -777,18 +777,24 @@ async def _run_sweep(host: OpsHost, sweep: EvalSweep, *, budget_s: float, taking
             else:
                 await run.launch_in_order()
             await asyncio.gather(*run.in_flight.values())
-    except asyncio.CancelledError:
-        await run.stop_arms(SWEEP_CANCEL_REASON)
-        run.end("cancelled", "cancelled before every arm ran")
+    except asyncio.CancelledError as first:
+        second = await run.stop_arms(SWEEP_CANCEL_REASON, drain=True)
         try:
-            await run.save()
-        except JobFenced as why:
-            # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over it.
-            fenced(why)
+            run.end("cancelled", "cancelled before every arm ran")
+            try:
+                await run.save()
+            except JobFenced as why:
+                # NOSILENT: the sweep's record, written lost elsewhere, is its ending; this process writes nothing over
+                # it.
+                fenced(why)
+        finally:
+            # The second Ctrl+C is the interrupt the person gave: raised whatever the save met, which rides on it.
+            if second is not None:
+                raise second from first
         raise
     except EvalJobTimeout as timed_out:
         log.warning("eval.sweep sweep=%s scope=%s timed out: %s", sweep.id, scope_id, timed_out)
-        await run.stop_arms(SWEEP_TIMEOUT_REASON)
+        await run.stop_arms(SWEEP_TIMEOUT_REASON, drain=False)
         run.end("timed_out", timed_out_detail(timed_out))
         try:
             await run.save()
@@ -873,13 +879,32 @@ class _SweepRun:
             self.sweep.scope_id,
         )
 
-    async def stop_arms(self, reason: str) -> None:
+    async def stop_arms(self, reason: str, *, drain: bool) -> KeyboardInterrupt | None:
+        """Stop every arm's run in flight, and wait for each to settle.
+
+        ``drain``: the sweep was cancelled, so the interrupt rule holds (``drain_then_cut``): its runs' cells in flight
+        finish and record, and a further cancel of the sweep, or a second Ctrl+C, cuts them; the ``KeyboardInterrupt``
+        that cut is returned for the caller to raise. Otherwise (its budget ran out) each run is cut at once.
+        """
         manager = self.host.launch.job_manager
-        for run_id, waiter in self.in_flight.items():
-            manager.cancel_job(run_id, reason=reason)
+        run_ids = list(self.in_flight)
+        for waiter in self.in_flight.values():
             waiter.cancel()
-        await manager.wait_for(list(self.in_flight))
+        second = None
+        if drain:
+            second = await drain_then_cut(
+                lambda: [manager.cancel_job(run_id, reason=reason) for run_id in run_ids],
+                lambda: [
+                    manager.cut_job(run_id, reason=f"{reason} again: the cells running were cut") for run_id in run_ids
+                ],
+                [(lambda: manager.wait_for(run_ids), f"sweep {self.sweep.id}'s wait for its cancelled arms failed")],
+            )
+        else:
+            for run_id in run_ids:
+                manager.cut_job(run_id, reason=reason)
+            await manager.wait_for(run_ids)
         await asyncio.gather(*self.in_flight.values(), return_exceptions=True)
+        return second
 
     async def settle(self, label: str, run_id: str, *, done: asyncio.Semaphore | None = None) -> None:
         """Wait for one arm's run, recording it failed if it ended so, and free its place when it holds one."""

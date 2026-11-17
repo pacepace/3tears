@@ -77,7 +77,7 @@ from threetears.evals.kernel.job_leases import (
     settle_job_record,
 )
 from threetears.evals.run.lifecycle import require_cancellable
-from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.offload import drain_then_cut, run_blocking
 from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import AdmittedCall, OutOfRunBudget, PlannedCall
 from threetears.evals.kernel.host.eval_host import CompletionRole
@@ -893,7 +893,10 @@ async def await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[
 
     For a caller that is not a transport — a script, a test, a host's own batch — and that started the jobs in this
     process: it waits as long as the work takes, which no transport call may. **Waiting here is owning**: a caller
-    cancelled while it waits cancels the jobs it was waiting on, as a script interrupted would want, then re-raises.
+    cancelled while it waits cancels the jobs it was waiting on, as a script interrupted would want, then re-raises:
+    the first interrupt lets their cells in flight finish and record, and a second cuts them
+    (:func:`~threetears.evals.kernel.offload.drain_then_cut`). A second Ctrl+C delivered into the wait is raised after
+    the cancel.
 
     :param host: The host whose job manager runs the jobs.
     :ptype host: OpsHost
@@ -903,19 +906,33 @@ async def await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[
     :ptype scope_id: str
     :return: Each job's final status, in the order started.
     :rtype: list[JobStatus]
-    :raises asyncio.CancelledError: The caller was cancelled; the jobs were asked to stop.
+    :raises asyncio.CancelledError: The caller was cancelled; the jobs were asked to stop, and have settled.
+    :raises KeyboardInterrupt: A second Ctrl+C reached the wait and cut the jobs; raised once they settled.
     """
     manager = host.launch.job_manager
     record_ids = [_record_id(handle.job_id) for handle in started.jobs]
-    try:
-        await manager.wait_for(record_ids)
-    except asyncio.CancelledError:
+
+    def cancel(reason: str) -> None:
+        # A run's first cancel drains it and a further one cuts it (``EvalJobManager.cancel_job``); a task's work (a
+        # launch's) keeps the same rule over the runs it holds.
         for handle, record_id in zip(started.jobs, record_ids, strict=True):
             if handle.kind == "run":
-                manager.cancel_job(record_id, reason="its foreground caller was cancelled")
+                manager.cancel_job(record_id, reason=reason)
             else:
                 manager.cancel_task(record_id)
-        await asyncio.shield(manager.wait_for(record_ids))
+
+    try:
+        await manager.wait_for(record_ids)
+    except asyncio.CancelledError as first:
+        # The interrupt rule: the first interrupt (``asyncio.run`` cancels the waiting task on a first Ctrl+C) lets the
+        # cells in flight finish and record; a second, a cancel or a Ctrl+C, cuts them.
+        second = await drain_then_cut(
+            lambda: cancel("its foreground caller was cancelled"),
+            lambda: cancel("its foreground caller was interrupted again: the cells running were cut"),
+            [(lambda: manager.wait_for(record_ids), "a foreground wait for its cancelled jobs failed")],
+        )
+        if second is not None:
+            raise second from first
         raise
     return [await job_poll(host, handle.job_id, scope_id) for handle in started.jobs]
 

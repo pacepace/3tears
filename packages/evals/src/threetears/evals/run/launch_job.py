@@ -22,12 +22,13 @@ launches, and cancelled healthy runs that had not yet started. Its id is the lau
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import Field, field_validator
 
 from threetears.evals.kernel.job_leases import LeasedJobKind
-from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.offload import drain_then_cut, run_blocking
 from threetears.evals.run.job_work import JobOutcome, JobRecorder, JobWork, end_record, leased_job_kind
 from threetears.evals.run.jobs import JOB_TIMEOUT_CAP_S
 from threetears.evals.run.launch import AdmittedLaunch, LaunchHost
@@ -45,6 +46,16 @@ from threetears.evals.schema.versioning import CORE_SCHEMA_VERSION
 
 #: The reason recorded on a run its launch's cancel stopped.
 LAUNCH_CANCEL_REASON = "its launch was cancelled"
+
+#: The reason recorded on a run whose launch was cancelled again while its cells in flight were finishing.
+_LAUNCH_CUT_REASON = "its launch was cancelled again: the cells running were cut"
+
+
+def _each(act: Callable[..., bool], run_ids: list[str], reason: str) -> None:
+    """``act`` on each run (the job manager's ``cancel_job``, which drains a run its first time, or ``cut_job``)."""
+    for run_id in run_ids:
+        act(run_id, reason=reason)
+
 
 #: A launch's wall-clock ceiling on its preparation — its launchers, a generating launch's calls among them — in
 #: seconds: the engine's cap on one run's job, a backstop against a launcher or a provider that hangs. The runs it
@@ -194,11 +205,22 @@ def _launch_work(
         try:
             await recorder.save(recorder.record.model_copy(update={"run_ids": run_ids}))
             await manager.wait_for(run_ids)
+        except asyncio.CancelledError as first:
+            # Cancelled: the runs it started stop with it, each recording its own ending, rather than run on under a
+            # launch that has ended. The interrupt rule (``drain_then_cut``): a first cancel drains every run, its
+            # cells in flight finishing and recorded; a further cancel of the launch, or a second Ctrl+C, cuts them.
+            second = await drain_then_cut(
+                lambda: _each(manager.cancel_job, run_ids, LAUNCH_CANCEL_REASON),
+                lambda: _each(manager.cut_job, run_ids, _LAUNCH_CUT_REASON),
+                [(lambda: manager.wait_for(run_ids), f"launch {record.id}'s wait for its cancelled runs failed")],
+            )
+            if second is not None:
+                raise second from first
+            raise
         except BaseException:
-            # Cancelled, fenced off, or the progress write failed: the runs it started stop with it, each
-            # recording its own ending, rather than run on under a launch that has ended.
+            # Fenced off, or the progress write failed: the launch has ended, and its runs are cut with it.
             for run_id in run_ids:
-                manager.cancel_job(run_id, reason=LAUNCH_CANCEL_REASON)
+                manager.cut_job(run_id, reason=LAUNCH_CANCEL_REASON)
             await asyncio.shield(manager.wait_for(run_ids))
             raise
         eval_host = host.eval_host
