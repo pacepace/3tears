@@ -200,17 +200,21 @@ core = ["packages/core/**"]
 agent = ["packages/agent/**"]
 platform = ["packages/**"]
 
-# The long simulations: seeded simulation shards marked `long_simulation`, each minutes of CPU, which the unit suite
-# leaves out so its batches stay within `batch_timeout_s`. The unit suite keeps one shard of each beside the bound it
-# feeds, as a smoke check; this suite runs the rest, side by side on the pool. Run it whenever the reading it simulates,
-# or the path that files and continues the comparisons it drives, changes: `testament run --no-fallback --suite
-# simulation`. For test_rereadable_bet.py, which drives `Eval.run` end to end, a change to any of these (under
-# packages/evals/src/threetears/evals/):
-#   analysis/stats.py analysis/significance.py analysis/summary.py analysis/campaigns.py
-#   analysis/bundle/assemble.py analysis/bundle/comparisons.py analysis/bundle/trials.py analysis/bundle/observations.py
-#   kernel/candidate_kind.py kernel/result_condition.py
+# The long simulations: simulations marked `long_simulation`, each minutes of CPU, which the unit suite leaves out so
+# its batches stay within `batch_timeout_s`. The unit suite keeps a smoke check of each; this suite runs the rest, side
+# by side on the pool. Run it whenever the reading it simulates, or the path that launches, runs, stops, files and
+# continues the comparisons it drives, changes: `testament run --no-fallback --suite simulation`. For
+# test_rereadable_bet.py, which drives `Eval.run` end to end, that is a change to ANY file under
+# packages/evals/src/threetears/evals/analysis/, quick/ or run/, or to kernel/candidate_kind.py,
+# kernel/result_condition.py or kernel/offload.py. The files the simulations are known to drive, listed so a reader
+# can check the rule covers them (under packages/evals/src/threetears/evals/):
+#   analysis/stats.py analysis/significance.py analysis/summary.py analysis/campaigns.py analysis/run_ending.py
+#   analysis/contention.py analysis/bundle/assemble.py analysis/bundle/comparisons.py analysis/bundle/trials.py
+#   analysis/bundle/observations.py
+#   kernel/candidate_kind.py kernel/result_condition.py kernel/offload.py
 #   quick/contract.py quick/result.py quick/one_call.py quick/continuation.py quick/graders.py
-#   run/reads.py run/runner.py run/jobs.py run/arm_schedule.py run/budget.py
+#   run/launch.py run/executor.py run/runner.py run/jobs.py run/lifecycle.py run/arm_schedule.py run/budget.py
+#   run/reads.py
 # A path more than one suite holds runs in the unit suite, so this suite runs only when named.
 [suites.simulation]
 adapter = "pytest"

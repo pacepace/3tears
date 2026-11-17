@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import annotationlib
 import ast
-import asyncio
 import csv
 import inspect
 import json
@@ -59,6 +58,7 @@ from threetears.evals.quick.one_call import (
     JUDGED_CALLABLE_KIND,
     SHARED_ARM_MODEL,
     CallableArm,
+    Launched,
     callable_host,
     grade_judge_examples,
     launch_arms,
@@ -655,6 +655,68 @@ class Eval:
                     None,
                     new_comparison_sentence("the graders, the guardrails, the question or its margin changed"),
                 )
+
+        def campaign(
+            launched: Launched,
+        ) -> tuple[dict[str, EvalSummary], str, dict[str, tuple[str, ...]], Callable[[], Result]]:
+            """What ``launched`` files: each arm's summary by name, the control, each arm's runs, and the filing."""
+            summaries = launched.summaries
+            keyed = {
+                arm if arm is not None else summary.candidate_model: summary
+                for arm, summary in zip(self.arms, summaries, strict=True)
+            }
+            control = self.control if self.control is not None else summaries[0].candidate_model
+            filed_levels = levels if levels else {control: {"model": summaries[0].candidate_model}}
+            runs_of = {
+                arm if arm is not None else summary.candidate_model: run_ids
+                for arm, summary, run_ids in zip(self.arms, summaries, launched.run_ids, strict=True)
+            }
+
+            def filed() -> Result:
+                return declare(
+                    host,
+                    keyed,
+                    factors,
+                    levels=filed_levels,
+                    kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
+                    control=control,
+                    scope_id=scope_id,
+                    name=self.name,
+                    behavior="classify" if self.plan.classifier is not None else "score",
+                    repetitions=self.k,
+                    created_by=CREATED_BY,
+                    guardrail_margins=[
+                        GuardrailMargin(dimension=dimension, margin=margin)
+                        for dimension, margin in (judge.guard_margins if judge is not None else {}).items()
+                    ],
+                    measure_latency=self.measure_latency,
+                    # A continued comparison's design and control were fixed when it first ran, and nothing a
+                    # continuation may change is part of them.
+                    declared_at=(
+                        earlier.declared_at
+                        if launched.continued and earlier is not None and earlier.declared_at is not None
+                        else declared_at
+                    ),
+                    question=self.question,
+                    margin=self.margin,
+                    measure_order=self.plan.readings,
+                    runs=runs_of,
+                )
+
+            return keyed, control, runs_of, filed
+
+        async def file_cancelled(launched: Launched) -> None:
+            # Filed as a stopped comparison is, and nothing more is read or asked of a model: the cancel goes on.
+            try:
+                await run_blocking(host.blocking_executor, campaign(launched)[3])
+            except Exception as exc:
+                contain(
+                    exc,
+                    log=log,
+                    what="a cancelled comparison's runs could not be filed; a run again starts a new comparison",
+                    level="error",
+                )
+
         launched = await launch_arms(
             self.cases,
             arms,
@@ -679,22 +741,20 @@ class Eval:
             control_index=control_index,
             said=said,
             # A comparison cancelled while it runs is filed as a stopped one is, before the cancel goes on: every result
-            # it recorded is kept, and a run again runs only the cases it never reached.
-            keep_cancelled=self.comparison,
+            # it recorded is kept, and a run again runs only the cells it never recorded.
+            on_cancel=file_cancelled if self.comparison else None,
         )
         summaries = launched.summaries
         if (
-            not launched.cancelled
-            and (refused := _a_field_no_answer_carries(self.plan, self.cases, summaries, world=self.world is not None))
-            is not None
-        ):
+            refused := _a_field_no_answer_carries(self.plan, self.cases, summaries, world=self.world is not None)
+        ) is not None:
             # The runs measured the author's wiring, not the product: archived, as an operator retires a contaminated
             # run, so no listing, history or frontier reads them, and no campaign is filed. A continued comparison's
             # earlier runs stay as they were: only the runs this call launched are archived.
             await run_blocking(host.blocking_executor, _archive_runs, host, launched.launched, scope_id)
             raise ValueError(refused)
         examples = None
-        if not launched.cancelled and judge is not None and judge.examples and summaries[0].template_id is not None:
+        if judge is not None and judge.examples and summaries[0].template_id is not None:
             # Graded once for the eval, after its arms, through the judge every arm's answers were graded by, each
             # example judged as a cell's answer is (the classifier's label hidden alike), and held to what the arms
             # left of the eval's cap. A grading that fails is said on the reading, so the arms' results still land.
@@ -708,62 +768,7 @@ class Eval:
                 max_cost_usd=self.max_cost_usd,
                 landed_usd=_landed_usd(summaries),
             )
-        keyed = {
-            arm if arm is not None else summary.candidate_model: summary
-            for arm, summary in zip(self.arms, summaries, strict=True)
-        }
-        control = self.control if self.control is not None else summaries[0].candidate_model
-        if not levels:
-            levels = {control: {"model": summaries[0].candidate_model}}
-
-        runs_of = {
-            arm if arm is not None else summary.candidate_model: run_ids
-            for arm, summary, run_ids in zip(self.arms, summaries, launched.run_ids, strict=True)
-        }
-
-        def filed() -> Result:
-            return declare(
-                host,
-                keyed,
-                factors,
-                levels=levels,
-                kind=CALLABLE_KIND if judge is None else JUDGED_CALLABLE_KIND,
-                control=control,
-                scope_id=scope_id,
-                name=self.name,
-                behavior="classify" if self.plan.classifier is not None else "score",
-                repetitions=self.k,
-                created_by=CREATED_BY,
-                guardrail_margins=[
-                    GuardrailMargin(dimension=dimension, margin=margin)
-                    for dimension, margin in (judge.guard_margins if judge is not None else {}).items()
-                ],
-                measure_latency=self.measure_latency,
-                # A continued comparison's design and control were fixed when it first ran, and nothing a
-                # continuation may change is part of them.
-                declared_at=(
-                    earlier.declared_at
-                    if launched.continued and earlier is not None and earlier.declared_at is not None
-                    else declared_at
-                ),
-                question=self.question,
-                margin=self.margin,
-                measure_order=self.plan.readings,
-                runs=runs_of,
-            )
-
-        if launched.cancelled:
-            # Filed as a stopped comparison is, and nothing more is read or asked of a model: the cancel goes on.
-            try:
-                await run_blocking(host.blocking_executor, filed)
-            except Exception as exc:
-                contain(
-                    exc,
-                    log=log,
-                    what="a cancelled comparison's runs could not be filed; a run again starts a new comparison",
-                    level="error",
-                )
-            raise asyncio.CancelledError
+        keyed, control, runs_of, filed = campaign(launched)
 
         def declared() -> Result:
             said = (

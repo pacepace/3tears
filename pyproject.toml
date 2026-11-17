@@ -447,7 +447,7 @@ markers = [
     # Seeded simulations whose replicates take minutes of CPU each, beyond the shard of each kept in the unit suite as
     # a smoke check. .testament.toml's unit suite leaves them out and its `simulation` suite runs them on the pool:
     # `testament run --no-fallback --suite simulation`.
-    "long_simulation: a seeded simulation shard of minutes of CPU; left out of the unit suite, run by the pool's simulation suite",
+    "long_simulation: a simulation, or a shard of one, of minutes of CPU; left out of the unit suite, run by the pool's simulation suite",
 ]
 # Note on the `allowed_objects` warning:
 # `langgraph.checkpoint.serde.jsonplus` instantiates a module-level

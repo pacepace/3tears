@@ -20,19 +20,22 @@ its name, model and levers, and a grader by its name and declaration (a judge by
 its code: a runner or a grader function edited under the same name continues the comparison, its new cases pooled
 with the ones run before, as the continuation's sentence says; give the eval a new name (or run it in another scope or
 store) to compare an edit afresh. A run that stopped or was cancelled (its cost cap, a replay miss, an interrupt, a
-person who stopped it after watching its results) is kept as it ran: every result it recorded counts where it was
-observed, and running it again, the cap raised, runs only the cases no arm reached, after them, and the comparison
-finishes as any other. A case it reached on some arms or repeats only is never run again: it stays as it ran, and the
-print counts it. A comparison whose call is cancelled files its campaign before the cancel goes on, so what it
-recorded is kept. Discarding a stopped run's results and drawing its cases again would let a stop chosen after looking
-choose what the bet reads; kept, a stop at any time and for any reason is a pause in the one bet.
+person who stopped it after watching its results) is kept as it ran: every result it recorded counts, and running it
+again, the cap raised, runs only the cells no run recorded (a case's missing arms and repeats, as well as the cases no
+arm reached; `run.KindWiring.observed` counts the recorded ones done, as a take-up's own are), and the comparison
+finishes as any other; the print counts each kind. A comparison whose call is cancelled files its campaign before the
+cancel goes on, and the cancel that landed is the one re-raised, so what it recorded is kept. No recorded cell is ever
+drawn again, so whether a case counts never depends on when a run stopped.
 
 Each paired contrast on a declared range (a pass rate, a score on its scale) of a quick-path comparison is read by a
-mixture bet: the mean of ten bets staking fixed shares of the cap, over the cases in the order they were observed
-(launch by launch, each launch's cases in the order of the cases file), hedged over the two directions (`stats.bounded_separation_p`, `bounded_difference_interval`, `bounded_mean_p` and
+mixture bet: the mean of ten bets staking fixed shares of the cap, over the cases in the order they were completed
+(a case once every arm and repeat of it is recorded, at its last cell's `scored_at`, launch by launch: the order a
+person watching saw them), hedged over the two directions (`stats.bounded_separation_p`, `bounded_difference_interval`, `bounded_mean_p` and
 `paired_equivalence` gain `mixture`; `separation_test` too). No stake depends on a declared count, and the quick path
-never runs a case of the comparison twice, so a newcomer may add cases and run it again as often as they like, and
-each such verdict, p and interval keeps its error over every reading. Holm stays the correction: a bet reading's
+never runs a cell of the comparison twice, so a newcomer may add cases and run it again as often as they like, and
+each such verdict, p and interval keeps its error over every reading, a stop chosen after watching included, valid if
+a case's latency does not depend on its outcome (where wrong answers take longer, which cases a stop finds complete
+depends on the answers, and the error stated is not guaranteed). Holm stays the correction: a bet reading's
 adjusted p holds every t reading's p at 1. The print says so in one sentence under its first line, the family's
 disclosure on the page and in the bundle says it too, and it names what it does not cover: guardrails, floors, each
 arm's own rate, cost, latency and the exit status, still read at the cases run so far (`comparisons.REREAD_SENTENCE`,
@@ -45,9 +48,9 @@ separates 36 of 400 (9.0%, lower bound 6.4%); cancelling a run as soon as the ru
 continuing, separates 5 of 600 (0.8%, 95% upper bound 1.9%). A single read at k = 1, 80% against 60% on 60 cases separates 37.1% of
 the time where the reading it replaces did 43.6%. A quick-path comparison is one the quick path filed
 (`EvalCampaign.created_by` is `kernel.candidate_kind.QUICK_PATH_FILER`) over runs of kinds only it launches
-(`QUICK_PATH_KINDS`), no arm observing a case in two runs, with no plan of looks (`trials.bet_places`): a campaign a host
+(`QUICK_PATH_KINDS`), no arm recording a cell in two runs, with no plan of looks (`trials.bet_places`): a campaign a host
 files over the same runs (`campaign_create`) reads as every engine campaign does, α or α/L, and no declaration opts
-one in. In such a comparison a launch that stopped is a pause once a later launch ran (`trials.taken_up`): it is not
+one in. In such a comparison a launch that stopped is taken up once a later launch ran (`trials.taken_up`): it is not
 listed among the bundle's `incomplete_runs`, so the page and the print open on the newest launch's ending, and what it
 delivered short of its matrix is still said in `short_runs`.
 
@@ -59,8 +62,10 @@ and rung 3b's `total` no longer reads equivalent within its 20-point margin on 3
 **For hosts:** nothing to do, in either order. No stored or served shape gains a field: the bet's sentence is carried
 in the family's existing `disclosure`, so a build from before this change reads every bundle, frozen analysis and
 `bundle:<aspect>` file this one writes, and this one reads every document an older build wrote. A rollback reads stored
-quick campaigns the old way again; a host's own campaigns read as before on both builds. A host that cancels an
-`Eval.run` comparison finds its campaign filed, its runs cancelled, as a budget stop's is.
+quick campaigns the old way again; a host's own campaigns read as before on both builds. The read order is the
+results' existing `scored_at`, so nothing is stored to carry it. A host that cancels an `Eval.run` comparison finds
+its campaign filed, its runs cancelled, as a budget stop's is, and receives the cancel it sent. `run.KindWiring` gains
+`observed` (default `None`, every cell runs): a launcher that builds one is unchanged.
 
 ### evals: a scoreboard block and a run's summary read an arm's or a role's unanswered calls without raising
 

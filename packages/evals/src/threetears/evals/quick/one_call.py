@@ -49,7 +49,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel
 
-from threetears.evals.kernel.offload import run_blocking
+from threetears.evals.kernel.offload import run_blocking, wait_through_cancellation
 from threetears.evals.kernel.candidate_kind import CALLABLE_KIND, JUDGED_CALLABLE_KIND
 from threetears.evals.kernel.scoring import measure_catalog_of
 from threetears.evals.kernel.metrics import declaration_of
@@ -120,6 +120,8 @@ from threetears.evals.run import (
     LaunchGroup,
     LaunchSettings,
     RunJudge,
+    StoredCell,
+    StoredCells,
     TemplateField,
     UnknownSubject,
     build_judge_context,
@@ -1620,13 +1622,45 @@ def _reads_otherwise(
                 "margins": stored.declared_margins,
             }
         )
+        # A run whose every cell its arm's earlier runs recorded holds no result to read a variant from.
+        variant = variant_key_of_run(list_results(host.storage, run.id, scope_id))
         if (
-            variant_key_of_run(list_results(host.storage, run.id, scope_id)) != arm.variant_key
+            (variant is not None and variant != arm.variant_key)
             or stored.context_key != arm.context_key
             or declared != arm.declared
         ):
             return True
     return False
+
+
+def _recorded_cells(
+    host: EvalHost, run_ids: Sequence[tuple[str, ...]], cases: set[str], scope_id: str
+) -> list[StoredCells | None]:
+    """Each arm's cells of ``cases`` its runs ``run_ids`` recorded, as the done cells its continuation's run counts and
+    never runs again (``KindWiring.observed``); ``None`` for an arm with none. A cell a stop cut short holds a row, so it
+    is recorded and not run again.
+
+    :param host: The host whose store holds the runs.
+    :ptype host: EvalHost
+    :param run_ids: Each arm's earlier runs, in arm order.
+    :ptype run_ids: Sequence[tuple[str, ...]]
+    :param cases: The cases the continuation runs.
+    :ptype cases: set[str]
+    :param scope_id: The scope.
+    :ptype scope_id: str
+    :return: Each arm's recorded cells, in arm order.
+    :rtype: list[StoredCells | None]
+    """
+    observed: list[StoredCells | None] = []
+    for held in run_ids:
+        done = tuple(
+            StoredCell.from_result(result)
+            for run_id in held
+            for result in list_results(host.storage, run_id, scope_id)
+            if result.test_case_id in cases
+        )
+        observed.append(StoredCells(done=done) if done else None)
+    return observed
 
 
 def _archive_run_ids(host: EvalHost, run_ids: Sequence[str], scope_id: str) -> None:
@@ -1965,6 +1999,9 @@ class _WiredArm:
     #: Whether the caller named ``model``. One it did not is launched as the kind's default, so the run records
     #: its model inherited rather than chosen, and no surface reads the label as a model moved off production.
     named: bool = True
+    #: The cells of its run's cases this arm's earlier runs recorded (a continued comparison's), which its run counts
+    #: as done and never runs again (``KindWiring.observed``); ``None`` runs every cell.
+    observed: StoredCells | None = None
 
     @property
     def requested_model(self) -> str | None:
@@ -2058,6 +2095,7 @@ def _launch_host(
                 default_candidate_model=None if arm.named else arm.model,
                 # What every kind the factory builds declares — the callable kind's, which a world cell adopts.
                 max_concurrent_cells=CallableKind.max_concurrent_cells,
+                observed=arm.observed,
             ),
         )
 
@@ -2281,8 +2319,8 @@ class Launched:
     :ivar continued: Whether it continued an earlier comparison.
     :ivar said: The sentence saying how the comparison ran (:func:`~threetears.evals.quick.continuation.continued_sentence`
         or :func:`~threetears.evals.quick.continuation.new_comparison_sentence`); ``None`` with no earlier comparison.
-    :ivar cancelled: Whether the call was cancelled while its runs ran (``keep_cancelled``): its runs are settled
-        cancelled, every result they recorded kept, and the caller files them and re-raises the cancel.
+    :ivar cancelled: Whether the call was cancelled while its runs ran: its runs are settled cancelled, every result
+        they recorded kept, and it is handed to the caller's ``on_cancel`` to file before the cancel goes on.
     """
 
     summaries: list[EvalSummary]
@@ -2315,18 +2353,18 @@ async def launch_arms(
     earlier: EarlierComparison | None = None,
     control_index: int = 0,
     said: str | None = None,
-    keep_cancelled: bool = False,
+    on_cancel: Callable[[Launched], Awaitable[None]] | None = None,
 ) -> Launched:
     """Run every arm over every case ``k`` times as ONE launch, and summarise each arm's run, in arm order.
 
     **Continuing a comparison.** With ``earlier``, the comparison the quick path filed last under this eval's name
     (:func:`~threetears.evals.quick.continuation.earlier_comparison`), the launch continues it where it is the same
     comparison: the same arms (``control_index`` the control), the same repeats, and every case it ran still at its
-    place, unedited, with the same rubric, intent and goal checks over them. Then only the cases no arm ran run, into
-    its case set: those a launch of it that stopped or was cancelled never reached
-    (:attr:`~threetears.evals.quick.continuation.EarlierComparison.unrun`), then the cases appended; and each arm reads
-    its earlier runs with its new one. A case that ran on any arm is never run again, so every result a stopped launch
-    observed counts where it observed it. A new run whose variant key, measurement
+    place, unedited, with the same rubric, intent and goal checks over them. Then only the cells no launch recorded
+    run, into its case set: each case a launch of it that stopped or was cancelled left short on some arm or repeat
+    (:attr:`~threetears.evals.quick.continuation.EarlierComparison.unfinished`), its recorded cells counted as done so
+    only its missing ones run, then the cases appended; and each arm reads its earlier runs with its new one. A
+    recorded cell is never run again, so every result a stopped launch observed counts. A new run whose variant key, measurement
     context or graders' declarations differ from its arm's earlier runs is archived, and every case runs again. Where
     it is not the same comparison, every case runs, and :attr:`Launched.said` names what changed. ``said`` is a
     sentence the caller found already (a design that changed), which the launch keeps.
@@ -2381,10 +2419,11 @@ async def launch_arms(
     :ptype margins: Mapping[str, float] | None
     :param measure_latency: Declare latency under test: the cases run one at a time.
     :ptype measure_latency: bool
-    :param keep_cancelled: A cancel while the runs run settles them, and is then delivered as
-        :attr:`Launched.cancelled` with what they recorded, for the caller to file before it re-raises the cancel (a
-        comparison's: the results it observed are kept). ``False`` re-raises it once the runs are settled.
-    :ptype keep_cancelled: bool
+    :param on_cancel: Handed what the runs recorded (:attr:`Launched.cancelled` set) when a cancel lands while they
+        run, once they are settled cancelled and before the cancel goes on, for the caller to file (a comparison's:
+        the results it observed are kept); waited for to its end even through a second cancel, and then the cancel
+        that landed is re-raised. ``None`` re-raises it once the runs are settled.
+    :ptype on_cancel: Callable[[Launched], Awaitable[None]] | None
     :return: Each arm's finished run's summary, read back from the store, in arm order.
     :rtype: list[EvalSummary]
     :raises ValueError: The cases, the arms, the graders, the cap or the world refused, each naming why; a host of the
@@ -2460,6 +2499,7 @@ async def launch_arms(
     test_cases = cases_of(template_id)
     # A comparison continued: its case set, its runs read again, and only the cases appended after them run.
     reading: list[tuple[str, ...]] = [() for _ in arms]
+    observed: list[StoredCells | None] = [None for _ in arms]
     to_run = test_cases
     keys = [launched_as(arm.arm, model, arm.levers) for arm, model in zip(arms, models, strict=True)]
     if earlier is not None:
@@ -2502,12 +2542,20 @@ async def launch_arms(
         else:
             template, template_id = stored, earlier.template_id
             test_cases = cases_of(template_id)
-            # The cases no arm ran (a launch that stopped before it reached them), then the cases appended: a case
-            # that ran is read as it ran and never run again.
-            unrun = set(earlier.unrun)
+            # The cases a launch that stopped left short on some arm or repeat, then the cases appended: each runs
+            # only the cells no launch recorded, and a recorded cell is read as it ran and never run again.
+            unfinished = set(earlier.unfinished)
             held = len(earlier.case_ids)
-            to_run = [case for case in test_cases[:held] if case.id in unrun] + test_cases[held:]
+            to_run = [case for case in test_cases[:held] if case.id in unfinished] + test_cases[held:]
             reading = [earlier.arms[key].run_ids for key in keys]
+            observed = await run_blocking(
+                host.blocking_executor,
+                _recorded_cells,
+                host,
+                reading,
+                {case.id for case in to_run},
+                scope_id,
+            )
     if world is not None and world.stateful:
         # The authoring gate itself, before anything is stored or run: the grammar, the paths, a string match
         # over model prose, a text comparison over a call parameter its schema does not close, and calls or
@@ -2589,8 +2637,9 @@ async def launch_arms(
             arm=arm.arm,
             shared_subject=subject,
             named=arm.model is not None,
+            observed=done,
         )
-        for arm, model in zip(arms, models, strict=True)
+        for arm, model, done in zip(arms, models, observed, strict=True)
     ]
     preparing: list[_WiredArm] = []
     launch_host = _launch_host(
@@ -2630,7 +2679,83 @@ async def launch_arms(
         return prepared
 
     runs: list[EvalRun] = []
-    cancelled = False
+
+    async def read(*, cancelled: bool) -> Launched:
+        """Each arm read over every run it reads, as :class:`Launched` says, ``cancelled`` where a cancel landed."""
+        by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
+        read_runs = [(*held, *((runs[index].id,) if runs else ())) for index, held in enumerate(reading)]
+
+        def summarized() -> list[EvalSummary]:
+            return [
+                _with_case_results(
+                    host,
+                    _ended_as_newest(host, summarize_runs(host, run_ids, scope_id, case_names=by_id), run_ids, scope_id)
+                    if len(run_ids) > 1
+                    else summarize_runs(host, run_ids, scope_id, case_names=by_id),
+                    run_ids,
+                    test_cases,
+                    names,
+                    behavior="classify" if expected is not None else "score",
+                )
+                for run_ids in read_runs
+            ]
+
+        # Summarizing reads each run and its results back from the store, so it runs off the loop.
+        summaries = await run_blocking(host.blocking_executor, summarized)
+        # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
+        # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
+        idle = (
+            world.did_nothing_passes(goal_checks, [(seeds[i], tc.variation_params) for i, tc in enumerate(test_cases)])
+            if world is not None and seeds is not None and goal_checks
+            else None
+        )
+        # The store keeps the intent but not where it came from; a judged run's summary carries both.
+        return Launched(
+            summaries=[
+                _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
+                for summary, arm in zip(summaries, arms, strict=True)
+            ],
+            run_ids=read_runs,
+            launched=[run.id for run in runs],
+            continued=continuing,
+            cancelled=cancelled,
+            said=(
+                continued_sentence(
+                    len(test_cases) - len(to_run),
+                    len(to_run),
+                    unreached=len(earlier.unrun) if earlier is not None else 0,
+                    incomplete=earlier.incomplete if earlier is not None else 0,
+                )
+                if continuing
+                else said
+            ),
+        )
+
+    async def differs() -> bool:
+        """Whether a continuation's new runs read otherwise than their arms' earlier runs; where they do, they are
+        archived. Each new run must be its arm's earlier runs measured alike: the same variant, the same measurement
+        context (the graders' and the judge's definitions among it) and the same graders' declarations."""
+        if not (continuing and earlier is not None and runs):
+            return False
+        found = await run_blocking(host.blocking_executor, _reads_otherwise, host, earlier, keys, runs, scope_id)
+        if found:
+            await run_blocking(host.blocking_executor, _archive_run_ids, host, [run.id for run in runs], scope_id)
+        return found
+
+    async def file_cancelled(deliver: Callable[[Launched], Awaitable[None]]) -> None:
+        """Hand what the cancelled runs recorded to ``deliver``, unless they were archived: then they are another
+        comparison's and nothing is left to keep. A failure is recorded, since the cancel goes on in its place."""
+        try:
+            if not await differs():
+                await deliver(await read(cancelled=True))
+        except Exception as exc:
+            contain(
+                exc,
+                log=log,
+                what="a cancelled comparison's runs could not be read to file; a run again starts a new comparison",
+                level="error",
+            )
+
     if to_run:
         runs = await launch_as_group(
             launch_host,
@@ -2645,100 +2770,46 @@ async def launch_arms(
         except asyncio.CancelledError:
             # This call owns the runs it started: cancelled, it settles them as cancelled rather than
             # leaving pending ones behind in a store that outlives it. A comparison's caller files them before the
-            # cancel goes on, so what they recorded is kept and a run again runs only the cases they never reached.
+            # cancel goes on, so what they recorded is kept and a run again runs only the cells they never recorded.
             await launch_host.job_manager.shutdown()
-            if not keep_cancelled:
-                raise
-            cancelled = True
-    if continuing and earlier is not None and runs:
-        # Each new run must be its arm's earlier runs measured alike: the same variant, the same measurement context
-        # (the graders' and the judge's definitions among it) and the same graders' declarations. Where one is not,
-        # the comparison cannot continue: the new runs are archived, and every case runs as a new comparison.
-        differs = await run_blocking(host.blocking_executor, _reads_otherwise, host, earlier, keys, runs, scope_id)
-        if differs:
-            await run_blocking(host.blocking_executor, _archive_run_ids, host, [run.id for run in runs], scope_id)
-            if cancelled:
-                # Archived, the runs are another comparison's and no part of this one: nothing is left to keep.
-                raise asyncio.CancelledError
-            return await launch_arms(
-                cases,
-                arms,
-                scorers,
-                scope_id=scope_id,
-                host=host,
-                template_name=template_name,
-                expected=expected,
-                label_field=label_field,
-                judge=judge,
-                intent=intent,
-                world=world,
-                goal_checks=goal_checks,
-                k=k,
-                max_cost_usd=max_cost_usd,
-                subject=subject,
-                margins=margins,
-                measure_latency=measure_latency,
-                said=new_comparison_sentence("an arm's levers, a grader's declaration or the judge changed"),
-                keep_cancelled=keep_cancelled,
-            )
-    by_id = {test_case.id: name for test_case, name in zip(test_cases, names, strict=True)}
-    read_runs = [(*held, *((runs[index].id,) if runs else ())) for index, held in enumerate(reading)]
-
-    def summarized() -> list[EvalSummary]:
-        return [
-            _with_case_results(
-                host,
-                _ended_as_newest(host, summarize_runs(host, run_ids, scope_id, case_names=by_id), run_ids, scope_id)
-                if len(run_ids) > 1
-                else summarize_runs(host, run_ids, scope_id, case_names=by_id),
-                run_ids,
-                test_cases,
-                names,
-                behavior="classify" if expected is not None else "score",
-            )
-            for run_ids in read_runs
-        ]
-
-    # Summarizing reads each run and its results back from the store, so it runs off the loop.
-    summaries = await run_blocking(host.blocking_executor, summarized)
-    # What a candidate that did nothing would pass, from each case's own starting state: a quick world's template
-    # names no controls, so every check is unproven, and this is the baseline its pass rate is read against.
-    idle = (
-        world.did_nothing_passes(goal_checks, [(seeds[i], tc.variation_params) for i, tc in enumerate(test_cases)])
-        if world is not None and seeds is not None and goal_checks
-        else None
-    )
-    # The store keeps the intent but not where it came from; a judged run's summary carries both.
-    return Launched(
-        summaries=[
-            _with_baseline(summary, idle, len(test_cases), intent_source).model_copy(update={"arm": arm.arm})
-            for summary, arm in zip(summaries, arms, strict=True)
-        ],
-        run_ids=read_runs,
-        launched=[run.id for run in runs],
-        continued=continuing,
-        cancelled=cancelled,
-        said=(
-            continued_sentence(
-                len(test_cases) - len(to_run),
-                len(to_run),
-                unreached=len(earlier.unrun) if earlier is not None else 0,
-                incomplete=earlier.incomplete if earlier is not None else 0,
-            )
-            if continuing
-            else said
-        ),
-    )
+            if on_cancel is not None:
+                # Waited for to its end even through a second cancel; the cancel that landed is the one re-raised.
+                await wait_through_cancellation(asyncio.ensure_future(file_cancelled(on_cancel)))
+            raise
+    if await differs():
+        # The comparison cannot continue: the new runs are archived, and every case runs as a new comparison.
+        return await launch_arms(
+            cases,
+            arms,
+            scorers,
+            scope_id=scope_id,
+            host=host,
+            template_name=template_name,
+            expected=expected,
+            label_field=label_field,
+            judge=judge,
+            intent=intent,
+            world=world,
+            goal_checks=goal_checks,
+            k=k,
+            max_cost_usd=max_cost_usd,
+            subject=subject,
+            margins=margins,
+            measure_latency=measure_latency,
+            said=new_comparison_sentence("an arm's levers, a grader's declaration or the judge changed"),
+            on_cancel=on_cancel,
+        )
+    return await read(cancelled=False)
 
 
 def _ended_as_newest(host: EvalHost, pooled: EvalSummary, run_ids: Sequence[str], scope_id: str) -> EvalSummary:
     """A continued comparison's arm over every launch of it, as it stands: its results every run's together, its ending
     its newest run's, and its cases each once.
 
-    A launch of it that stopped or was cancelled was taken up by the launches after it, which ran every case it never
-    reached (:func:`~threetears.evals.analysis.bundle.trials.taken_up`, which the campaign's page reads alike), so the
+    A launch of it that stopped or was cancelled was taken up by the launches after it, which ran every cell it never
+    recorded (:func:`~threetears.evals.analysis.bundle.trials.taken_up`, which the campaign's page reads alike), so the
     arm ends as its newest run ends: completed once that run completed, and stopped while it is stopped. A case a
-    launch never reached is in a later run's cases too, and counts once.
+    launch left short is in a later run's cases too, and counts once.
 
     :param host: The host whose store holds the runs.
     :ptype host: EvalHost

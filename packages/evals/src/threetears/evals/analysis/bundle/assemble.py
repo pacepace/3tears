@@ -745,8 +745,8 @@ def assemble_context_bundle(
         # removes a run, and a cancelled run that nobody archived stays pooled. Naming them
         # here is what lets the writer say a partial arm is partial instead of reading its
         # truncated case count as a real one.
-        # A quick-path comparison's launch that stopped is a pause once a later launch has run every case it never
-        # reached (:func:`~threetears.evals.analysis.bundle.trials.taken_up`): it is not unfinished, and the reading
+        # A quick-path comparison's launch that stopped is taken up once a later launch has run every cell it never
+        # recorded (:func:`~threetears.evals.analysis.bundle.trials.taken_up`): it is not unfinished, and the reading
         # opens on the newest launch's ending. What it delivered short of its matrix is still said (``short_runs``).
         incomplete_runs={run.id: str(run.status) for run in runs if run.status != "completed" and run.id not in paused},
         # Status cannot answer how much of the matrix a run delivered: a run that reaches the

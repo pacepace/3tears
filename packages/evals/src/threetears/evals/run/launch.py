@@ -101,6 +101,7 @@ from threetears.evals.run.runner import (
     KindFactory,
     RunCallbacks,
     RunnerOptions,
+    StoredCells,
     execute_run,
     template_as_graded,
 )
@@ -1509,6 +1510,11 @@ class KindWiring:
         :attr:`LaunchSettings.max_concurrent_cells` and its matrix; the runner refuses a kind whose own
         declaration is narrower than the run, so stating more here than the kind does fails the run before
         anything is spent. Defaults to ``1``, the safe width: a launcher that says nothing runs serially.
+    :ivar observed: The cells of the run's matrix that another run of the same arm already recorded, as a run taken
+        up again holds its own (:class:`~threetears.evals.run.runner.StoredCells`' ``done``): the run never runs them
+        and counts them as done, so its matrix is its cases at its repeats and it runs only what was never recorded
+        (the quick path's continued comparison, whose earlier launch stopped partway). Every cell must be one of the
+        run's cases at one of its repeats. ``None`` runs every cell; never beside a take-up, which holds its own.
     """
 
     kind_factory: KindFactory
@@ -1524,6 +1530,7 @@ class KindWiring:
     external_rates: ExternalRateTable | None = None
     teardown: contextlib.AsyncExitStack | None = None
     max_concurrent_cells: int | None = 1
+    observed: StoredCells | None = None
 
     def __post_init__(self) -> None:
         """Refuse a width no run can execute at.
@@ -4064,6 +4071,19 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
             f"{request.template.id!r} in scope {request.scope_id!r}; a run's cases are its template's, in its scope, "
             "or its results name cases nothing in that scope resolves"
         )
+    if wiring.observed is not None and request.resuming is not None:
+        raise ValueError(
+            f"kind {kind!r}'s launcher handed cells another run recorded to a run taken up again, which holds its own"
+        )
+    if wiring.observed is not None and (
+        strays := sorted(
+            {cell.summary.test_case_id for cell in wiring.observed.done} - {case.id for case in wiring.test_cases}
+        )
+    ):
+        raise ValueError(
+            f"kind {kind!r}'s launcher counted cells of case(s) {', '.join(strays)} as recorded, which the run does "
+            "not hold; a cell counted as done is one of the run's own"
+        )
     if request.case_set is not None and (frozen := [case.id for case in wiring.test_cases]) != list(
         request.case_set.test_case_ids
     ):
@@ -4547,7 +4567,9 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
                     budget_gate=cost_cap.check,
                     on_cost=cost_cap.record,
                     cell_sink=cells,
-                    stored=request.resuming.stored if request.resuming is not None else None,
+                    # A run taken up again holds its own cells; a run whose arm another run already observed in
+                    # part (``KindWiring.observed``) counts those as done, and runs only the rest.
+                    stored=request.resuming.stored if request.resuming is not None else wiring.observed,
                 )
             finally:
                 try:

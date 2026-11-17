@@ -400,14 +400,22 @@ def case_places(case_lists: Sequence[Sequence[str]]) -> dict[str, int]:
 def bet_places(
     created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView], *, planned_looks: int | None
 ) -> dict[str, int] | None:
-    """Each case's place in the order a quick-path comparison observed its cases, which the mixture bet reads its
+    """Each case's place in the order a quick-path comparison recorded its cases whole, which the mixture bet reads its
     paired contrasts in; ``None`` where the campaign is not one, and every reading is as an engine campaign's.
 
-    The order is the runs' in the bundle's order (launch by launch), each run's cases that hold a result in its own
-    case list's order (:func:`case_places` over those lists): a case its run never reached holds no place there, so
-    where a launch stopped or was cancelled partway, the cases it observed are bet on where it observed them, and the
-    cases it never reached, which the quick path runs in a later launch (:mod:`threetears.evals.quick.continuation`),
-    are bet on after them.
+    **The order is the order the cases were completed in, as a person watching the results saw them.** A case is
+    complete once every arm (each variant key the campaign's results carry) has recorded every repeat of it, each
+    ``k_iteration`` from 1 to the runs' ``k_runs``, over any of its runs; its time is its last cell's: the launch that
+    recorded it (the runs' launch groups, in the bundle's run order) and, within that launch, its ``scored_at``, the
+    stamp a cell's result takes as it is recorded. Cases are placed by that time, ties by their place in the cases
+    file (:func:`case_places` over the runs' lists). A case not yet complete holds no place, so the bet does not read
+    it until it is: then its values are final, and every reading is a prefix of one sequence that only grows, the cases
+    of a launch that stopped among it where they were completed, and the cells it never recorded, which a later launch
+    of the comparison runs (:mod:`threetears.evals.quick.continuation`), completing their cases after them.
+
+    A stop of a launch, whoever chose it after seeing whatever readings, is then a stopping time on that one sequence,
+    and the bet's p keeps its error under it, valid if a case's latency does not depend on its outcome: where a wrong
+    answer takes longer, which cases a stop finds completed depends on their values, and no reading order keeps it.
 
     A quick-path comparison is decided from stored facts only, so every reader of a stored campaign reads it alike:
 
@@ -416,9 +424,8 @@ def bet_places(
       runs (``campaign_create``, filed as its caller) is not one;
     - every run is of a kind only the quick path launches
       (:data:`~threetears.evals.kernel.candidate_kind.QUICK_PATH_KINDS`), and it holds a result;
-    - no arm observed a case in two runs: each arm's runs hold results for disjoint cases, chained in launch order,
-      which is how the quick path continues one comparison (a case that holds a result is never run again, and only
-      the cases appended or never reached run), so the bet is one process;
+    - no arm recorded a cell (a case at a repeat) in two runs, which is how the quick path continues one comparison: a
+      recorded cell is never run again, so the bet is one process;
     - no plan of looks is in force (``planned_looks``), which reads α/L instead.
 
     :param created_by: Who filed the campaign.
@@ -429,7 +436,7 @@ def bet_places(
     :ptype results: Sequence[ResultView]
     :param planned_looks: The plan of looks in force, or ``None``.
     :ptype planned_looks: int | None
-    :return: Each case's place, by case id, or ``None``.
+    :return: Each complete case's place, by case id, or ``None``.
     :rtype: dict[str, int] | None
     """
     if (
@@ -439,20 +446,33 @@ def bet_places(
         or any(run.candidate_kind not in QUICK_PATH_KINDS for run in runs)
     ):
         return None
-    arms_of: dict[str, set[str]] = {}
-    observed: dict[str, set[str]] = {}
-    for result in results:
-        arms_of.setdefault(result.eval_run_id, set()).add(result.variant_key)
-        observed.setdefault(result.eval_run_id, set()).add(result.test_case_id)
-    ran: dict[str, set[str]] = {}
+    # Each launch's index, in the bundle's run order; a run launched in no group is its own launch.
+    launches: dict[str, int] = {}
+    launch_of: dict[str, int] = {}
     for run in runs:
-        cases = observed.get(run.id, set())
-        for arm in arms_of.get(run.id, set()):
-            held = ran.setdefault(arm, set())
-            if held & cases:
-                return None
-            held |= cases
-    return case_places([[case for case in run.test_case_ids if case in observed.get(run.id, ())] for run in runs])
+        launch_of[run.id] = launches.setdefault(run.launch_group_id or run.id, len(launches))
+    held: set[tuple[str, str, int]] = set()
+    repeats: dict[str, dict[str, set[int]]] = {}
+    last: dict[str, tuple[int, str]] = {}
+    for result in results:
+        cell = (result.variant_key, result.test_case_id, result.k_iteration)
+        if cell in held:
+            return None
+        held.add(cell)
+        repeats.setdefault(result.test_case_id, {}).setdefault(result.variant_key, set()).add(result.k_iteration)
+        # Stamped by one stamper with a +00:00 offset, so the strings order as the instants do.
+        recorded = (launch_of.get(result.eval_run_id, len(launches)), result.scored_at)
+        last[result.test_case_id] = max(recorded, last.get(result.test_case_id, recorded))
+    arms = {result.variant_key for result in results}
+    every_repeat = set(range(1, max((run.k_runs for run in runs), default=1) + 1))
+    filed = case_places([run.test_case_ids for run in runs])
+    complete = [
+        case
+        for case, on_arms in repeats.items()
+        if set(on_arms) == arms and all(ran == every_repeat for ran in on_arms.values())
+    ]
+    complete.sort(key=lambda case: (last[case], filed.get(case, len(filed) + 1), case))
+    return {case: place for place, case in enumerate(complete, start=1)}
 
 
 def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView]) -> frozenset[str]:
@@ -460,10 +480,9 @@ def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultV
     every run that did not reach ``completed`` in any launch before the newest, where the bet reads the comparison
     (:func:`bet_places`, with no plan of looks; empty otherwise).
 
-    The quick path continues a comparison by running every case its launches never reached, after the cases they
-    recorded, which it keeps (:mod:`threetears.evals.quick.continuation`). So a launch that stopped, whoever stopped it
-    and whenever, is a pause in the comparison once a later launch has run: no case of it is left unread except one it
-    reached on some arms or repeats only, which stays as it ran, and whether the comparison opens with a verdict is the
+    The quick path continues a comparison by running every cell its launches never recorded, after the cells they
+    recorded, which it keeps (:mod:`threetears.evals.quick.continuation`). So a launch that stopped is taken up once a
+    later launch has run: that launch ran every cell it left, and whether the comparison opens with a verdict is the
     newest launch's ending alone. A launch is a launch group (``EvalRun.launch_group_id``); a run with none takes up
     nothing and is taken up by nothing.
 

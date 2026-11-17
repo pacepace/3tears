@@ -83,10 +83,10 @@ where `testament status --json` names the pool's `coordinator_version`), and non
 there leaves out the integration and `loop_timing` tests, the `docker` and `secrets` ones, and the
 `long_simulation` shards (`.testament.toml` selects `-m "not integration and not loop_timing and not
 docker and not secrets and not long_simulation"`; CI runs `loop_timing` serially on its own runner).
-A `long_simulation` test is one shard of a seeded simulation that takes minutes of CPU, beyond the
-one shard of it the unit suite keeps beside the bound it feeds; the manifest's `simulation` suite runs
+A `long_simulation` test is a simulation, or one shard of one, that takes minutes of CPU, beyond the
+smoke check of it the unit suite keeps; the manifest's `simulation` suite runs
 them on the pool, `testament run --no-fallback --suite simulation`, and is run whenever the reading the
-simulation holds changes (the suite's comment names the files). CI's GitHub shards still collect them. `docker` marks a test that drives a
+simulation holds, or the path it drives, changes (the suite's comment states the rule and names the files). CI's GitHub shards still collect them. `docker` marks a test that drives a
 Docker daemon itself, which the pool's image has none of, and `secrets` one that reads a
 credential, which never ships to a runner; both run on this machine
 (`tests/enforcement/test_docker_marker.py` and `test_secrets_marker.py` hold them to it). A
@@ -232,12 +232,12 @@ serving an earlier passing result on the same tree. Every difference from the sh
   does. When the pool is lost mid-run it skips that step, since the shards run them. The manifest
   leaves them out of every pool run too, so a local `test.sh` pool run never meets them;
   `./scripts/ci-unit-tests.sh --loop-timing` runs them serially here.
-- **`long_simulation`** shards are left out of the pool's unit suite, and the shards collect them. Each is one
-  shard of a seeded simulation of minutes of CPU, past the one shard the unit suite keeps beside the bound it feeds,
-  and a pool batch of several would pass `batch_timeout_s`. The manifest's `simulation` suite runs them on the pool,
-  side by side: `testament run --no-fallback --suite simulation`. Run it when a file its comment in `.testament.toml`
-  names changes (the reading the simulation holds, and the quick path that files and continues the comparisons it
-  drives); a `default` run never starts it.
+- **`long_simulation`** tests are left out of the pool's unit suite, and the shards collect them. Each is a
+  simulation, or one shard of one, of minutes of CPU, past the smoke check the unit suite keeps, and a pool batch of
+  several would pass `batch_timeout_s`. The manifest's `simulation` suite runs them on the pool, side by side:
+  `testament run --no-fallback --suite simulation`. Run it on a change its comment in `.testament.toml` covers (the
+  reading the simulation holds, and every module of the path that launches, stops, files and continues the
+  comparisons it drives); a `default` run never starts it.
 - **`docker` and `secrets`** are left out on the pool; the shards collect them. Every `docker` test
   is also an integration test, so the shards leave it out too. The `secrets` tests outside the
   integration set (the live Claude CLI batch, the live Tavily call) skip on the shards, which have

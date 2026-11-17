@@ -21,13 +21,19 @@ campaign holds every arm's runs of both. Whether it is the same comparison is re
   stored case's content, label and name at its place, so a case removed, moved or edited is seen.
 
 A launch of it that did not finish (a cost cap, a replay miss, a cancel, whoever chose it and whatever they had seen)
-is kept as it ran: every result it observed counts, where it observed it, and a continuation runs only the cases that
-no arm ran, after the cases before them, as though appended. Its partial readings were shown (the print and the page
-read what it recorded before it stopped), so discarding them and drawing those cases again would let a stop chosen
-after looking choose what the bet reads; keeping them makes a stop, at any time and for any reason, a pause in the one
-bet, which a test that holds at every count allows. A case a launch reached on some arms or some repeats but not all
-is never run again: its results are read as they ran, the case incomplete (an arm missing from it leaves it out of
-the paired readings), and the print says how many. Raising the cap and running again finishes the comparison.
+is kept as it ran: every result it recorded counts, and a continuation runs only the cells no launch recorded, every
+case's missing arms and repeats as well as the cases no arm reached, then the cases appended. No recorded cell is
+ever drawn again, so whether a case counts never depends on when the launch stopped, and raising the cap and running
+again finishes the comparison.
+
+The bet reads each case once every arm has recorded every repeat of it, at the time its last cell was recorded
+(:func:`~threetears.evals.analysis.bundle.trials.bet_places`): the order a person watching the results saw the cases
+completed in, launch by launch. Every reading is then a prefix of one sequence, and a stop is a stopping time on it,
+whoever chose it and whatever they had seen of the cases read. **Valid if a case's latency does not depend on its
+outcome**: where a wrong answer takes longer than a right one, which cases a stop finds completed depends on their
+values, and no reading order restores the bound. A stop chosen on a case's partial results (one arm's answer seen
+before the other's) is outside what the order proves; the simulations in ``tests/test_rereadable_bet.py`` measure both.
+A cell a stop cut short is recorded excluded and counts as recorded, so it is not run again.
 
 Anything else starts a NEW comparison, which runs every case and says so in one sentence naming what changed
 (:func:`new_comparison_sentence`). A comparison continued says so too (:func:`continued_sentence`), and says how to start
@@ -89,9 +95,12 @@ class EarlierComparison:
         guardrails' margins, latency under test and the question, as JSON.
     :ivar margin: The question's margin, a share of 0 to 1; ``None`` declares none.
     :ivar unrun: The cases of :attr:`case_ids` that no arm ran (a launch stopped or was cancelled before it reached
-        them), in that order: a continuation runs them, then the cases appended.
-    :ivar incomplete: How many cases of :attr:`case_ids` some arm ran and some arm, or some repeat, did not: read as
-        they ran, and never run again.
+        them), in that order.
+    :ivar unfinished: The cases of :attr:`case_ids` missing a cell on some arm, at some repeat, in that order: the
+        :attr:`unrun` cases and the ones a stopped launch reached on some arms or repeats only. A continuation runs
+        each one's missing cells alone, counting the cells its arms' runs (:attr:`EarlierArm.run_ids`) recorded as
+        done, then the cases appended.
+    :ivar incomplete: How many of :attr:`unfinished` some arm ran: a continuation runs only their missing cells.
     """
 
     campaign_id: str
@@ -105,6 +114,7 @@ class EarlierComparison:
     design: str
     margin: float | None
     unrun: tuple[str, ...] = ()
+    unfinished: tuple[str, ...] = ()
     incomplete: int = 0
 
 
@@ -149,8 +159,8 @@ def earlier_comparison(
 ) -> EarlierComparison | None:
     """The comparison the quick path filed last under ``name`` in ``scope_id``, or ``None`` where there is none to
     continue: none filed, one of a single arm, or one whose runs are not one quick-path case set run alike launch by
-    launch. Every launch is kept, finished or not: a case that holds a result on any arm ran, and the cases no arm
-    ran are :attr:`EarlierComparison.unrun`. Reads the store.
+    launch. Every launch is kept, finished or not: a cell that holds a result is recorded, and the cases missing a
+    cell on some arm are :attr:`EarlierComparison.unfinished`. Reads the store.
 
     :param host: The host whose store is read.
     :ptype host: EvalHost
@@ -199,8 +209,8 @@ def earlier_comparison(
         return None
     by_arm: dict[tuple[str | None, str, str], EarlierArm] = {}
     case_lists: list[tuple[str, ...]] = []
-    # The repeats each arm ran of each case, over all its runs: a case that holds a result on any arm ran, whether its
-    # launch finished or not, and is never run again.
+    # The repeats each arm recorded of each case, over all its runs: a cell that holds a result was recorded, whether
+    # its launch finished or not, and is never run again.
     repeats: dict[tuple[str | None, str, str], dict[str, set[int]]] = {}
     for key, held in grouped.items():
         results = {run.id: list_results(host.storage, run.id, scope_id) for run in held}
@@ -227,7 +237,7 @@ def earlier_comparison(
                 }
             ),
         )
-        # Each case once, where it was first launched: a later launch holds the cases an earlier one never reached.
+        # Each case once, where it was first launched: a later launch holds the cases an earlier one left short.
         case_lists.append(tuple(dict.fromkeys(case_id for run in held for case_id in run.test_case_ids)))
     # Every arm's launches held every case, in one order: a comparison whose arms held other cases is not one to
     # extend.
@@ -240,6 +250,10 @@ def earlier_comparison(
     design = aspect.design
     k = runs[0].k_runs
     ran = {case for on_arm in repeats.values() for case in on_arm}
+    every_repeat = set(range(1, k + 1))
+    unfinished = tuple(
+        case for case in case_lists[0] if any(on_arm.get(case, set()) != every_repeat for on_arm in repeats.values())
+    )
     return EarlierComparison(
         campaign_id=campaign.id,
         declared_at=campaign.declared_at,
@@ -257,7 +271,8 @@ def earlier_comparison(
         ),
         margin=None if aspect.margin is None else aspect.margin / 100,
         unrun=tuple(case for case in case_lists[0] if case not in ran),
-        incomplete=sum(1 for case in ran if any(len(on_arm.get(case, ())) < k for on_arm in repeats.values())),
+        unfinished=unfinished,
+        incomplete=sum(1 for case in unfinished if case in ran),
     )
 
 
@@ -275,28 +290,30 @@ UNKEPT_SENTENCE = (
 
 def continued_sentence(already: int, added: int, unreached: int = 0, incomplete: int = 0) -> str:
     """What a continued comparison's print says of how it ran: the cases read again as they ran, the cases that ran
-    now (``unreached`` of them held by a launch that stopped before it reached them), the cases a stopped launch reached
-    on some arms or repeats only (``incomplete``), what a runner or a grader is known by, and how to start a new
-    comparison instead. The one owner of the sentence."""
+    now (``unreached`` of them held by a launch that stopped before it reached them, and ``incomplete`` reached by one
+    on some arms or repeats only, whose missing cells alone ran), the assumption a stopped launch's reading rests on,
+    what a runner or a grader is known by, and how to start a new comparison instead. The one owner of the sentence."""
     if not added:
         ran = "no case was added, so nothing ran"
-    elif unreached:
-        ran = (
-            f"{added} case{'s' if added != 1 else ''} ran, {unreached} of them held by a run that stopped before it "
-            "reached them"
-        )
+    elif unreached or incomplete:
+        held = [
+            f"{unreached} held by a run that stopped before it reached {'them' if unreached != 1 else 'it'}"
+            if unreached
+            else "",
+            f"{incomplete} it reached on only some arms or repeats, whose missing ones alone ran" if incomplete else "",
+        ]
+        ran = f"{added} case{'s' if added != 1 else ''} ran, {' and '.join(part for part in held if part)}"
     else:
         ran = f"{added} new case{'s' if added != 1 else ''} ran"
-    partial = (
-        f" {incomplete} case{'s' if incomplete != 1 else ''} a run that stopped reached on only some arms or repeats "
-        f"{'are' if incomplete != 1 else 'is'} read as {'they' if incomplete != 1 else 'it'} ran, incomplete: a case "
-        "that ran is never run again, so every result already shown counts."
-        if incomplete
+    stopped = (
+        " A run that stopped is read in the order its cases were completed, which keeps the error where how long a "
+        "case takes does not depend on its answer."
+        if unreached or incomplete
         else ""
     )
     return (
         f"Continues the comparison run before under this name: its {already} case{'s' if already != 1 else ''} already "
-        f"run are read as they ran, and {ran}.{partial} An arm is known by its name, model and levers, and a grader by "
+        f"run are read as they ran, and {ran}.{stopped} An arm is known by its name, model and levers, and a grader by "
         "its name and declaration (a judge by its model and criteria), never by its code, so a runner or a grader "
         "edited under the same name is pooled with the cases run before: to compare an edit, or to start afresh, give "
         "the eval a new name, or run it in another scope or store."

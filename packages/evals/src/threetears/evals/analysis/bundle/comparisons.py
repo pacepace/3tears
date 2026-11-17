@@ -524,7 +524,7 @@ def _compare(
         bundle withheld (:mod:`~threetears.evals.analysis.contention`) — so an untested comparison says that,
         rather than that too few cases carried the reading.
     :ptype contended: tuple[str, ...]
-    :param places: Each case's place in the order the campaign observed its cases
+    :param places: Each case's place in the order the campaign recorded its cases whole
         (:func:`~threetears.evals.analysis.bundle.trials.bet_places`), on a quick-path comparison (every result of a
         kind only the quick path launches, read with no plan of looks); None otherwise. Where given, a paired reading on a declared range is read by the mixture bet over its cases in
         that order (:func:`_bet_samples`), its p, its equivalence p and its interval alike.
@@ -540,7 +540,7 @@ def _compare(
     # have spread, and where they have none — every shared case moved by one amount, or each side constant — the
     # bounded test on the reading's declared range, decided on exact values. With no range a gap with no spread
     # is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597). On a quick-path
-    # comparison the mixture bet reads a paired reading on its range whatever its spread, in the order cases were added.
+    # comparison the mixture bet reads a paired reading on its range whatever its spread, in the order cases were completed.
     separation = (
         separation_test(a, b, paired=paired, value_range=value_range)
         if bet is None
@@ -573,6 +573,8 @@ def _compare(
             )
         elif len(a) < 2 or len(b) < 2:
             untested_reason = "fewer than two cases carry this reading on a side"
+        elif bet is not None and len(bet[0]) < 2:
+            untested_reason = _TOO_FEW_COMPLETE
         elif separation.refusal is None:
             untested_reason = "the values differ by less than floating point resolves, so no t statistic exists"
     # The equivalence test only where the separation test produced a p, so each equivalence hypothesis has
@@ -633,27 +635,38 @@ def _compare(
     return _Tested(comparison, p_raw, equivalence_p_raw, (a, b), value_range, bet_samples=bet)
 
 
+#: Why a quick-path comparison is untested while fewer than two of its cases are complete: the bet reads a case once
+#: every arm has recorded every repeat of it (:func:`~threetears.evals.analysis.bundle.trials.bet_places`).
+_TOO_FEW_COMPLETE = (
+    "fewer than two cases have every arm and repeat recorded, and the bet reads a case once it has, so there is "
+    "nothing to read yet"
+)
+
+
 def _bet_samples(
     control_values: Mapping[str, float],
     contrast_values: Mapping[str, float],
     value_range: tuple[float, float] | None,
     places: Mapping[str, int] | None,
 ) -> tuple[list[float], list[float]] | None:
-    """The paired samples the mixture bet reads, over the cases both sides ran in the order the campaign observed them
-    (a case with no place last, by id): None where no bet reads this comparison — no ``places`` (the aspect is not
-    a quick-path comparison), no declared range, fewer than two shared cases, or a value outside the range, which bounds
-    nothing then.
+    """The paired samples the mixture bet reads, over the cases both sides ran that the campaign holds complete, in the
+    order it completed them (``places``; a case not yet complete is read once it is): None where no bet reads this
+    comparison — no ``places`` (the aspect is not a quick-path comparison), no declared range, fewer than two shared
+    cases, or a value outside the range, which bounds nothing then. Fewer than two complete cases leave the bet
+    nothing to read yet (:data:`_TOO_FEW_COMPLETE`).
 
-    The order is the one a newcomer adds cases in: a case appended to the cases file is launched after every case
-    before it, and a case a stopped launch never reached runs in a later launch, after every case observed before it,
-    so a later reading's bet is the earlier one's with the new cases after it, one capital read again.
+    The order is the one the cases were recorded whole in, as a person watching the results saw them, launch by launch
+    (:func:`~threetears.evals.analysis.bundle.trials.bet_places`): a case appended to the cases file is launched after
+    every case before it, and the cells a stopped launch never recorded run in a later launch, so a later reading's bet
+    is the earlier one's with the newly completed cases after it, one capital read again.
     """
     if places is None or value_range is None:
         return None
     cases, _, paired = contrast_cases(control_values, contrast_values)
     if not paired:
         return None
-    cases.sort(key=lambda case: (places.get(case, len(places) + 1), case))
+    cases = [case for case in cases if case in places]
+    cases.sort(key=lambda case: (places[case], case))
     control = [control_values[case] for case in cases]
     contrast = [contrast_values[case] for case in cases]
     low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
@@ -1030,7 +1043,7 @@ def multiple_comparisons(
         read at α/L (:func:`~threetears.evals.analysis.significance.looks_alpha`) and a guardrail's ``held`` on the
         interval at :func:`~threetears.evals.analysis.significance.looks_confidence`. None reads every look at α.
     :ptype planned_looks: int | None
-    :param reread_order: On a quick-path comparison, each case's place in the order the campaign observed its
+    :param reread_order: On a quick-path comparison, each case's place in the order the campaign recorded its whole
         cases (:func:`~threetears.evals.analysis.bundle.trials.bet_places`): every paired comparison on
         a declared range is then read by the mixture bet over its cases in that order, so it keeps its error however
         often cases are added and it is read again (:func:`_corrected_family`). None reads every comparison as before.

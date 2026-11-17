@@ -357,7 +357,7 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
 - **Why it holds.** Run again into the same store, the comparison continues: the invoices already run are read as they
   ran, and only the ones you added run. The print says so, last: `Continues the comparison run before under this
   name: ...`. Each pass rate, and each score on its declared range, is read by a bet whose stakes depend on no count
-  of cases declared ahead: a mixture of fixed betting fractions over the cases in the order they were observed. A
+  of cases declared ahead: a mixture of fixed betting fractions over the cases in the order they were completed. A
   reading after you add cases is the same bet read later, so stopping when it first tells the arms apart keeps the
   error it states.
 - **What starts a new comparison.** Change an arm's name, model or levers, the control, a grader's name or what it
@@ -370,10 +370,12 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
   prompt or a grader's code, give the eval a new `name=` (or another scope or store) to compare it afresh. A store kept
   in memory (`store=":memory:"`) keeps nothing between runs, so each run there is a new comparison, and the line under
   the first line says so in place of the one above.
-- **A run that stopped.** A run stopped by its cost cap, a replay miss or a cancel is kept as it ran: every result it
-  recorded counts, and running it again (with the cap raised) runs only the cases it never reached, and the comparison
-  continues. Stopping, for any reason and at any time, is a pause in the one bet. A case it reached on one arm only is
-  never run again, so it stays out of the paired readings.
+- **A run that stopped.** A run stopped by its cost cap, a replay miss or a cancel is kept as it ran: every answer it
+  recorded counts, and running it again (with the cap raised) runs only what it never recorded, a case's missing arms
+  and repeats as well as the cases it never reached, and the comparison finishes. The bet reads a case once every arm
+  and repeat of it is recorded, in the order the cases were completed, so every reading is the one bet read later.
+  That is valid if a case's latency does not depend on its outcome: where wrong answers take longer, which cases a
+  stop finds complete depends on the answers, and the error stated is not guaranteed.
 - **What it costs.** Read once, it tells the arms apart a little later than a test fixed for that many cases would:
   its intervals are somewhat wider. That is the price of reading again freely.
 - **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at
