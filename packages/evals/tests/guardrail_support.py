@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.analysis import AnalysisContextBundle, assemble_context_bundle
 from threetears.evals.kernel import CampaignArm
 from threetears.evals.kernel.metrics import MeritAxis
@@ -47,7 +48,7 @@ QUALITY_QUESTION = "does the contrast do the job better?"
 QUALITY_AXES: tuple[MeritAxis, ...] = ("quality",)
 
 #: Per dimension: its name, axis and each arm's per-case scores (control, contrast).
-Scored = tuple[str, RubricAxis | None, tuple[Sequence[int], Sequence[int]]]
+Scored = tuple[str, RubricAxis, tuple[Sequence[int], Sequence[int]]]
 
 
 def two_arm_bundle(
@@ -62,8 +63,8 @@ def two_arm_bundle(
 ) -> AnalysisContextBundle:
     """The control and one contrast over the same cases, each scored on every dimension in ``dimensions``.
 
-    :param dimensions: Each judged dimension: its name, the axis its scores are stamped with (None = judged
-        before the axis was stamped) and each arm's per-case scores, one per case, control first.
+    :param dimensions: Each judged dimension: its name, the axis its scores are stamped with and each arm's
+        per-case scores, one per case, control first.
     :ptype dimensions: Sequence[Scored]
     :param scale: The scale every dimension is judged on.
     :ptype scale: RubricScale
@@ -109,7 +110,9 @@ def two_arm_bundle(
         design=minimal_aspect_design(merit_axes=list(merit_axes) if question else None),
         question=question,
         asked_at=min(run.created_at for run in runs) if question else None,
-        control=CampaignArm(label="control", role="control", variant_key=fixture_variant_key(CONTROL))
+        control=CampaignArm(
+            identity_version=IDENTITY_VERSION, label="control", role="control", variant_key=fixture_variant_key(CONTROL)
+        )
         if control
         else None,
         scope_id=runs[0].scope_id,

@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator
 from typing import Any, get_args
 from pathlib import Path
 
@@ -164,6 +164,12 @@ def _arms(held: ReportInput, family: str) -> dict[str, Figure]:
             # NOSILENT: an arm the input states no such figure for is no member of the family's set.
             continue
     return figures
+
+
+def _number(figure: Figure) -> float:
+    """A figure's number; a figure stating anything else fails here, naming it."""
+    assert isinstance(figure.value, int | float), figure
+    return float(figure.value)
 
 
 # --- the form is chosen per set ----------------------------------------------------------------------------------
@@ -503,7 +509,7 @@ def test_r2s_cost_reads_in_its_tables_as_its_key_reads_in_prose() -> None:
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_a_charts_notes_and_ticks_read_in_one_form(name: str) -> None:
     held = INPUTS[name]
-    costs = [float(figure.value) for figure in _arms(held, "cost_per_1k.{arm}").values()]
+    costs = [_number(figure) for figure in _arms(held, "cost_per_1k.{arm}").values()]
     if not costs:
         pytest.skip(f"{name} states no cost")
     drawn = quantity("usd_per_1k", costs)
@@ -572,6 +578,7 @@ def test_a_money_change_reads_in_its_amounts_form_to_its_intervals_precision(nam
         means = [float(stat.mean) for stat in measure.per_arm.values() if stat.mean is not None]
         low, high = (float(end) for end in contrast.interval)
         figure = resolve(f"contrast.{contrast.arm}.{contrast.measure}.delta", held)
+        assert contrast.delta is not None, contrast
         text = format_figure(figure, forms=PageForms.of(held))
         if figure.per and min(abs(mean) for mean in means if mean) < CENT:
             # Money per something under a cent reads per 1,000 of it with its count, on its amounts' ruler.
@@ -601,7 +608,7 @@ def test_the_kairo_cost_contrast_reads_two_figures_of_its_interval() -> None:
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_a_cost_gap_reads_in_the_form_of_the_costs_it_compares(name: str) -> None:
     held = INPUTS[name]
-    costs = {arm: float(figure.value) for arm, figure in _arms(held, "cost_per_1k.{arm}").items()}
+    costs = {arm: _number(figure) for arm, figure in _arms(held, "cost_per_1k.{arm}").items()}
     if len(costs) < 2:
         pytest.skip(f"{name} states fewer than two costs")
     form = money_form(costs.values(), rate=True)
@@ -848,7 +855,7 @@ def _shrunk(node: Any, keys: frozenset[str], by: float) -> Any:
         return [_shrunk(item, keys, by) for item in node]
     if not isinstance(node, dict):
         return node
-    shrunk = {}
+    shrunk: dict[str, Any] = {}
     for name, value in node.items():
         if name in keys and isinstance(value, dict) and "per_arm" not in value and "mean" in value:
             shrunk[name] = _stat_shrunk(value, by)
@@ -1156,13 +1163,13 @@ def _naming(node: Any) -> Iterator[str]:
             yield from _naming(value)
 
 
-def _stored(held: ReportInput, keys: Iterable[str]) -> list[float]:
+def _stored(held: ReportInput, keys: Collection[str]) -> list[float]:
     """Every money figure the input states of some keys, as stored: each statistic wherever it sits, each contrast,
     each two arms' difference within a place, and each step's price along every frontier."""
     return [*_stored_of(held, keys), *(value for value, _ in _tails(held))]
 
 
-def _stored_of(held: ReportInput, keys: Iterable[str]) -> list[float]:
+def _stored_of(held: ReportInput, keys: Collection[str]) -> list[float]:
     """Every money figure the input states of some keys, as stored: each statistic wherever it sits, each contrast,
     and each two arms' difference within a place."""
     data = held.model_dump(mode="json", by_alias=True)
@@ -1231,11 +1238,11 @@ def _tails(held: ReportInput) -> list[tuple[float, int]]:
                 ends = (*(row.interval or ()), *opened)
                 found.extend((value, 1000) for value in (float(row.item.value), *(float(end) for end in ends)))
     for arm in held.arms:
-        row = held.scoreboard.get(arm.id)
-        if row is not None:
+        board = held.scoreboard.get(arm.id)
+        if board is not None:
             # A reply's cost is per reply; a run's total counts nothing per anything (0: never scaled).
             found.extend(
-                (float(v), own) for v, own in ((row.reply_cost_usd, 1), (row.test_cost_usd, 0)) if v is not None
+                (float(v), own) for v, own in ((board.reply_cost_usd, 1), (board.test_cost_usd, 0)) if v is not None
             )
         try:
             # The arm's cost by the package's one cost rule, a figure the Full results table states.
@@ -1434,8 +1441,8 @@ def test_every_kind_that_draws_money_under_a_cent_moves_its_ruler_and_states_it(
             axis = dump.get(f"{field[0]}_title") if field in ("x_fmt", "y_fmt") else None
             named = _COUNT.findall(axis) if isinstance(axis, str) else []
             here_scale = int(named[0].replace(",", "")) / here if named and not totals else scale
-            off = [value for value in values if not _reconciles(value, stored, here_scale)]
-            assert not off, (label, field, here_scale, off[:4])
+            strays = [value for value in values if not _reconciles(value, stored, here_scale)]
+            assert not strays, (label, field, here_scale, strays[:4])
     assert checked, "the control: the one-form check reads some chart"
     read = 0
     owned = _owned(held)
@@ -1541,13 +1548,18 @@ def test_a_chart_of_totals_under_a_cent_reads_plain_dollars() -> None:
     )
     assert isinstance(page.chart, ChartBlock) and isinstance(page.chart.data, BarsChart)
     rows = page.chart.data.rows or []
-    stored = {arm: row.test_cost_usd for arm, row in held.scoreboard.items()}
-    assert rows and all(row.value == pytest.approx(stored[row.id]) for row in rows)
+    stored: dict[str, float] = {}
+    for arm, board in held.scoreboard.items():
+        assert board.test_cost_usd is not None, arm
+        stored[arm] = board.test_cost_usd
+    ids = [row.id for row in rows if row.id is not None]
+    assert rows and len(ids) == len(rows)
+    assert all(row.value == pytest.approx(stored[key]) for row, key in zip(rows, ids, strict=True))
     form = money_form(stored.values())
     assert min(stored.values()) < CENT, "the control: the planted set is under a cent"
     assert page.chart.data.fmt == f"usd:{form.decimals}"
     _, table = page.chart.values_table()
-    assert [line[1] for line in table] == [form.spell(stored[row.id]) for row in rows]
+    assert [line[1] for line in table] == [form.spell(stored[key]) for key in ids]
     assert not any("/1000" in text for text in [*(row.note or "" for row in rows), *(line[1] for line in table)])
     assert not any("per 1,000" in note for note in page.notes)
     assert not any("/1000" in note for note in page.notes)

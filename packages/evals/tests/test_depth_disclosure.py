@@ -168,8 +168,8 @@ def test_a_frontier_point_states_the_depth_it_delivered_and_its_subject_the_comm
     # The planned depth is the shallowest k_runs (1), and B's once is the fewest runs any arm gave a case.
     assert (subject.k, subject.common_depth, subject.unmeasured_for) == (1, 1, [])
     # A at depth 1 over all its runs: the mean of its shares, (1 + 1/2 + 0 + 1) / 4.
-    assert (a.common_pass_hat_k, a.n_common_cases, a.n_cases_left_out) == (pytest.approx(0.625), 4, 0)
-    assert (b.common_pass_hat_k, b.n_common_cases, b.n_cases_left_out) == (pytest.approx(0.75), 4, 0)
+    assert (a.common_pass_hat_k, a.n_common_cases, a.n_cases_left_out) == pytest.approx((0.625, 4, 0))
+    assert (b.common_pass_hat_k, b.n_common_cases, b.n_cases_left_out) == pytest.approx((0.75, 4, 0))
 
 
 def test_a_depth_above_an_arm_s_reach_is_unmeasured_for_it_and_the_common_depth_falls_to_its_reach() -> None:
@@ -182,9 +182,9 @@ def test_a_depth_above_an_arm_s_reach_is_unmeasured_for_it_and_the_common_depth_
     assert subject.unmeasured_for == [arms.key_b]
     assert b.pass_hat_k is None and b.n_cases_short_of_k == 4
     # A's pass^2 at the planned depth: C(2,2)/C(2,2) on tc1 and tc4, 0 on tc2 and tc3.
-    assert (a.pass_hat_k, a.n_pass_cases, a.n_cases_short_of_k) == (pytest.approx(0.5), 4, 0)
+    assert (a.pass_hat_k, a.n_pass_cases, a.n_cases_short_of_k) == pytest.approx((0.5, 4, 0))
     assert subject.common_depth == 1
-    assert (a.common_pass_hat_k, b.common_pass_hat_k) == (pytest.approx(0.625), pytest.approx(0.75))
+    assert (a.common_pass_hat_k, b.common_pass_hat_k) == pytest.approx((0.625, 0.75))
 
 
 def test_depths_mixed_within_one_arm_are_stated_and_its_short_case_is_counted() -> None:
@@ -260,7 +260,7 @@ def test_no_existing_frontier_value_moves() -> None:
     a, b = arms.point(arms.key_a), arms.point(arms.key_b)
 
     # pass^k still reads the planned depth on each point's own cases, and its curve every depth a case reached.
-    assert (a.k, a.pass_hat_k, a.n_pass_cases) == (2, pytest.approx(0.5), 4)
+    assert (a.k, a.pass_hat_k, a.n_pass_cases) == pytest.approx((2, 0.5, 4))
     assert a.pass_hat_k_curve == [
         {"k": 1, "pass_hat_k": pytest.approx(0.625), "n_cases": 4},
         {"k": 2, "pass_hat_k": pytest.approx(0.5), "n_cases": 4},

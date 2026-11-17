@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.analysis import (
     CampaignReport,
     build_campaign_report,
@@ -349,7 +350,12 @@ async def hostile_campaign_page() -> CampaignReport:
     assert control is not None
     arms = [
         control.model_copy(update={"label": control_label}),
-        CampaignArm(label=candidate_label, role="candidate", variant_key=measured[0].candidate),
+        CampaignArm(
+            identity_version=IDENTITY_VERSION,
+            label=candidate_label,
+            role="candidate",
+            variant_key=measured[0].candidate,
+        ),
     ]
     bundles = {one.bundle.aspect: one.bundle for one in measured}
     read = campaign_readings(campaign, bundles, arms=arms)

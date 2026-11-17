@@ -180,7 +180,7 @@ def test_a_floor_states_its_worst_case_its_margin_and_how_far_it_is_short_after_
     ) or (0.0, 0.0)
 
     assert status.status == "unclear"
-    assert (status.margin, status.worst_drop) == (10.0, pytest.approx(-100 * low))
+    assert status.margin == 10.0 and status.worst_drop == pytest.approx(-100 * low)
     assert status.short_by == pytest.approx(-100 * low - 10.0)
 
     assert [(row.aspect, row.arm_label, row.reading, round(row.change, 1)) for row in read.readings] == [

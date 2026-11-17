@@ -30,6 +30,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.factories import memory_storage
+from packages.evals.tests.json_support import json_at, json_list
 from packages.evals.tests.fixtures.writer_cases.analyst_cli import seeded_host
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.ops_support import CALLER, ops_fixture
@@ -427,9 +428,10 @@ def test_a_session_that_kept_no_reply_goes_through_the_gate_with_no_digest() -> 
         created_by=CALLER.identity,
     )
 
-    entries = record.generation["sessions"]
-    assert entries["editor-1"] == {"digest": None, "turns": 0, "ref": report_session_id(report_doc_id, "editor-1")}
-    assert entries["analyst"]["digest"] == "a" * 64 and entries["analyst"]["turns"] == 2
+    entries = json_at(record.generation, "sessions")
+    editor = {"digest": None, "turns": 0, "ref": report_session_id(report_doc_id, "editor-1")}
+    assert json_at(entries, "editor-1") == editor
+    assert json_at(entries, "analyst", "digest") == "a" * 64 and json_at(entries, "analyst", "turns") == 2
     loaded = storage.load_report_sessions(report_doc_id, CALLER.scope_id)
     assert (loaded["editor-1"].digest, loaded["editor-1"].turns) == (None, 0)
     assert loaded["editor-1"].session == SESSIONS["editor-1"]
@@ -509,13 +511,17 @@ async def test_an_editor_session_reloaded_from_storage_resumes_with_the_bytes_an
 
 async def test_a_stored_session_keeps_w3_s_elision_and_resuming_re_derives_each_elided_body() -> None:
     host, result, interrupted, _ = await stored_run()
+    assert result.stored is not None
     stored = sessions_of(host, result.stored.id, name="analyst")["analyst"].session["session"]
 
     elided = [
-        block for text in stored["messages"] for block in json.loads(text)["content"] if block["type"] == "tool_result"
+        block
+        for text in json_list(stored, "messages")
+        for block in json_list(json.loads(str(text)), "content")
+        if json_at(block, "type") == "tool_result"
     ]
-    assert [item["stored"] for item in stored["results"]] == ["rederive"]
-    assert [block["content"] for block in elided] == [""], "a re-derivable body is stored elided"
+    assert [json_at(item, "stored") for item in json_list(stored, "results")] == ["rederive"]
+    assert [json_at(block, "content") for block in elided] == [""], "a re-derivable body is stored elided"
 
     mount, later = mounted(host, "analyst"), FakeToolTurnClient(reply(submitted()))
     record = sessions_of(host, result.stored.id, name="analyst")["analyst"].session
@@ -604,6 +610,7 @@ async def test_a_session_resumed_from_a_store_that_reorders_keys_sends_the_bytes
     draft = FakeToolTurnClient(*unordered_script())
     result = await written(FakeTurnModel(analyst=draft, editor_1=FakeToolTurnClient(*editor_script())), host=host)
     assert result.ending == "stored", result.outcome.reason
+    assert result.stored is not None
 
     uninterrupted = FakeToolTurnClient(*unordered_script(), reply(submitted()))
     whole = AnalystSession.start(

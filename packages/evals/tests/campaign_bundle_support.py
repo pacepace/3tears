@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.analysis.arms import arm_names
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
@@ -61,6 +62,7 @@ def arms_of(bundles: Sequence[AnalysisContextBundle]) -> list[CampaignArm]:
             continue
         arms.append(
             CampaignArm(
+                identity_version=IDENTITY_VERSION,
                 label=names.get(key, key[:12]),
                 role="control" if declared is None and key == realized else "candidate",
                 variant_key=key,

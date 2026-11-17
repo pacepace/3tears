@@ -14,6 +14,7 @@ from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals import Answer, Eval
 from threetears.evals.analysis import (
     AnalysisContextBundle,
@@ -164,7 +165,7 @@ class MeasuredKind:
         named = list(self.campaign.arms)
         taken = {arm.variant_key for arm in named}
         return named + [
-            CampaignArm(label=name, role="candidate", variant_key=key)
+            CampaignArm(identity_version=IDENTITY_VERSION, label=name, role="candidate", variant_key=key)
             for name, key in self.keys.items()
             if key not in taken
         ]
@@ -354,9 +355,18 @@ def arms_of(measured: MeasuredAspect) -> list[CampaignArm]:
     candidate labelled :data:`THIRD_LABEL` where one ran."""
     control = measured.campaign.control
     assert control is not None
-    arms = [control, CampaignArm(label=CANDIDATE_LABEL, role="candidate", variant_key=measured.candidate)]
+    arms = [
+        control,
+        CampaignArm(
+            identity_version=IDENTITY_VERSION, label=CANDIDATE_LABEL, role="candidate", variant_key=measured.candidate
+        ),
+    ]
     if measured.third is not None:
-        arms.append(CampaignArm(label=THIRD_LABEL, role="candidate", variant_key=measured.third))
+        arms.append(
+            CampaignArm(
+                identity_version=IDENTITY_VERSION, label=THIRD_LABEL, role="candidate", variant_key=measured.third
+            )
+        )
     return arms
 
 

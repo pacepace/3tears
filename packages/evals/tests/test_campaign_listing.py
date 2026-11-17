@@ -33,6 +33,7 @@ Contracts held here (``threetears.evals.ops.campaigns_list``, ``CampaignLine``):
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from packages.evals.tests.campaign_bundle_support import campaign_bundle
@@ -80,8 +81,8 @@ from threetears.evals.ops.analysis import (
     CAMPAIGN_NAME_CHARS,
     QUESTION_SHORT_CHARS,
     CampaignLine,
-    campaign_title,
 )
+from threetears.evals.analysis.campaign_title import campaign_title
 
 
 def _line(lines: list[CampaignLine], campaign_id: str) -> CampaignLine:
@@ -471,9 +472,9 @@ def _outcomes_read(host: EvalHost, campaign_id: str) -> None:
     one = (first.variant_key, first.label)
     two = (second.variant_key, second.label)
     third = ("other-key", "third")
-    empty = {"readings": [], "pairs": [], "measures": [], "floors": [], "bars": []}
+    empty: dict[str, Sequence[object]] = {"readings": [], "pairs": [], "measures": [], "floors": [], "bars": []}
 
-    def read(kind: str, **rows: list[object]) -> str | None:
+    def read(kind: str, **rows: Sequence[object]) -> str | None:
         readings: CampaignReadings = named.readings.model_copy(update={**empty, "kind": kind, **rows})
         host.storage.save_analysis(
             analysis.model_copy(update={"campaign_bundle": named.model_copy(update={"readings": readings}).frame()})
@@ -500,8 +501,8 @@ def _outcomes_read(host: EvalHost, campaign_id: str) -> None:
     assert read("choice", pairs=cycle) == "Arms differ", "an arm ahead of one and behind another leads nowhere"
     assert read("measurement") == "No readings yet"
     assert read("measurement", measures=[_measure(aspect, *one)]) == "Measured"
-    missed = {"bars": [_bar(aspect, *two)]}
-    broke = {"floors": [_floor(aspect, *two)]}
+    missed: dict[str, Sequence[object]] = {"bars": [_bar(aspect, *two)]}
+    broke: dict[str, Sequence[object]] = {"floors": [_floor(aspect, *two)]}
     win = [_change_row(aspect, *two, "better")]
     assert read("measurement", measures=[_measure(aspect, *one)], **missed) == "Measured, fast missed a bar"
     assert read("change", **missed, readings=win) == "fast improved, missed a bar"
@@ -517,9 +518,15 @@ def _outcomes_read(host: EvalHost, campaign_id: str) -> None:
     ), "past the length, the warnings are counted"
     assert read("choice", **broke, pairs=[_pair(aspect, one, two, two[0])]) == "fast ahead, broke a floor"
     assert read("choice", **broke, pairs=[_pair(aspect, one, two, one[0])]) == f"{one[1]} ahead"
-    lots = {"floors": [_floor(aspect, *two), _floor(aspect, *two)], "bars": [_bar(aspect, *two)]}
+    lots: dict[str, Sequence[object]] = {
+        "floors": [_floor(aspect, *two), _floor(aspect, *two)],
+        "bars": [_bar(aspect, *two)],
+    }
     long_win = [_change_row(aspect, "k", "an arm with a very long printed name", "better")]
-    long = {"floors": [_floor(aspect, "k", "an arm with a very long printed name")], "bars": [_bar(aspect, "k", "x")]}
+    long: dict[str, Sequence[object]] = {
+        "floors": [_floor(aspect, "k", "an arm with a very long printed name")],
+        "bars": [_bar(aspect, "k", "x")],
+    }
     assert read("change", **long, readings=long_win) == "an arm with a very long printed name improved, 2 warnings"
     assert read("change", **lots, readings=win) == "fast improved, broke a floor and missed a bar"
 

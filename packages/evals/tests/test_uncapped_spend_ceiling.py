@@ -10,6 +10,9 @@ unrecorded: the ceiling is no dimension of the rig (``Sweepable.no_rig_coordinat
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from threetears.evals.analysis.reads import bisect_runs
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.host.sweepables import UNCAPPED_SPEND
@@ -25,7 +28,7 @@ _UNCAPPED = {"max_cost_usd": None, "max_cost_usd_origin": "uncapped"}
 _UNRECORDED = {"max_cost_usd": None, "max_cost_usd_origin": None}
 
 
-def _bisect(a: dict[str, object], b: dict[str, object]) -> dict[str, object]:
+def _bisect(a: Mapping[str, object], b: Mapping[str, object]) -> dict[str, Any]:
     storage = EvalStorage(InMemoryDocumentStore())
     run_a, run_b = make_eval_run(id="run-a", **a), make_eval_run(id="run-b", **b)
     for run in (run_a, run_b):
@@ -58,7 +61,7 @@ def test_an_uncapped_origin_wins_over_a_number_that_bound_nothing() -> None:
     assert "max_cost_usd" in bisected["same"], bisected
 
 
-def _bundle_confounds(*updates: dict[str, object]) -> dict[str, str]:
+def _bundle_confounds(*updates: Mapping[str, object]) -> dict[str, str]:
     """The toy campaign's apparatus confounds, its runs' ceilings rewritten as ``updates`` in order."""
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(profile=profile)

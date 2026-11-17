@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 from threetears.evals.kernel.candidate_kind import (
     CandidateKindDefect,
     CandidateOutput,
@@ -31,7 +31,6 @@ from threetears.evals.kernel.candidate_kind import (
     CandidateTelemetry,
     CellSink,
     CellSpanWindow,
-    JudgedArtifact,
     UnknownCandidateKind,
     VariantConfig,
 )
@@ -49,6 +48,8 @@ from threetears.evals.run.runner import (
     run_one_result,
 )
 from threetears.evals.schema.models import (
+    CellTermination,
+    JudgedArtifact,
     AsyncDelivery,
     ConversationStopCause,
     EvalRun,
@@ -86,6 +87,9 @@ class _FakeSingleShotKind:
     payload, ``invoke`` returns one document. It records what it was handed so the seam's
     own arguments can be asserted rather than assumed.
     """
+
+    #: Nothing held per cell, but one cell at a time: the width a kind declaring nothing runs at.
+    max_concurrent_cells: int | None = 1
 
     def __init__(self, output: CandidateOutput, *, judged_artifact: JudgedArtifact = JudgedArtifact.UNJUDGED) -> None:
         """Bind the canned output this kind reports.
@@ -633,7 +637,7 @@ async def test_live_background_work_with_no_spend_row_is_logged_as_a_broken_carr
     ],
 )
 async def test_background_work_that_honestly_spent_nothing_measurable_is_not_logged(
-    caplog: pytest.LogCaptureFixture, delivery
+    caplog: pytest.LogCaptureFixture, delivery: AsyncDelivery
 ) -> None:
     """The detector's condition is narrow on purpose: one that cries wolf trains its reader to ignore it."""
     kind = _FakeSingleShotKind(CandidateOutput(output=[{"content": "x"}], async_deliveries=[delivery]))
@@ -875,7 +879,7 @@ async def test_a_kind_payload_is_stored_verbatim_and_never_unpacked_by_the_runne
     entitled to read, and nothing static would catch it — so the payload here even holds an
     ``async_deliveries`` key of its own, and it still does not land on the result's field.
     """
-    payload = {
+    payload: dict[str, JsonValue] = {
         "labels_emitted": 7,
         "async_deliveries": [{"tool": "not the runner's to read"}],
         "nested": {"stop_reason": "budget", "phases": [1.5, None, True]},
@@ -890,7 +894,10 @@ async def test_a_kind_payload_is_stored_verbatim_and_never_unpacked_by_the_runne
 
 async def test_a_kind_payload_round_trips_through_storage() -> None:
     """What a kind reported is what a later reader gets back from the store, field for field."""
-    payload = {"router": {"label": "attack", "confidence": 0.82, "runner_up": None}, "turns": [1, 2]}
+    payload: dict[str, JsonValue] = {
+        "router": {"label": "attack", "confidence": 0.82, "runner_up": None},
+        "turns": [1, 2],
+    }
     delivery = AsyncDelivery(
         tool="scout_ahead", status="failed", acknowledged_turn=0, error="timed out", substituted=False
     )
@@ -918,7 +925,7 @@ async def test_a_kind_payload_round_trips_through_storage() -> None:
 #: values whose leading and trailing space a kind meant. Every model these pass through strips
 #: ``str`` fields, so a payload that never carried any whitespace could not tell verbatim storage
 #: from a trimmed copy.
-_WHITESPACE_PAYLOAD = {
+_WHITESPACE_PAYLOAD: dict[str, JsonValue] = {
     "note": "plain",
     "  note ": "  indented narration\n",
     "nested": {" key ": [" spaced ", "\ttabbed"]},
@@ -953,14 +960,14 @@ def test_a_host_payload_keeps_its_keys_verbatim_on_a_run_and_a_case() -> None:
     [object(), "a lone \ud800 surrogate"],
     ids=["not-a-json-value", "a-lone-surrogate"],
 )
-def test_a_kind_payload_that_storage_cannot_encode_is_refused_at_construction(carrier) -> None:
+def test_a_kind_payload_that_storage_cannot_encode_is_refused_at_construction(carrier: object) -> None:
     """Refused where the kind builds its output, not at the write after the judging was paid for.
 
     A lone surrogate is refused for the same reason: no UTF-8 store can hold it as written, and the
     payload is stored verbatim or not at all.
     """
     with pytest.raises(ValidationError, match="kind_payload"):
-        CandidateOutput(output=[{"content": "x"}], kind_payload={"carrier": carrier})
+        CandidateOutput.model_validate({"output": [{"content": "x"}], "kind_payload": {"carrier": carrier}})
 
 
 # =============================================================================
@@ -975,7 +982,9 @@ def test_a_kind_payload_that_storage_cannot_encode_is_refused_at_construction(ca
         ("seed_failed", "apparatus: malformed seed"),
     ],
 )
-async def test_a_refused_preparation_records_one_cleanly_excluded_cell(termination: str, error: str) -> None:
+async def test_a_refused_preparation_records_one_cleanly_excluded_cell(
+    termination: CellTermination, error: str
+) -> None:
     """The termination the kind names is the arm the record carries — it is how an operator navigates."""
     kind = _FailingPrepareKind(CandidatePreparationFailed(error, termination=termination))
 
@@ -1029,7 +1038,7 @@ def test_a_template_that_names_no_kind_is_refused() -> None:
     it — the reason ``EvalAnalysis.subject_kind`` is un-defaulted too.
     """
     with pytest.raises(ValidationError, match="candidate_kind"):
-        EvalTemplate(scope_id="uni-1", name="t", intent="i")
+        EvalTemplate.model_validate({"scope_id": "uni-1", "name": "t", "intent": "i"})
     assert EvalTemplate(scope_id="uni-1", name="t", intent="i", candidate_kind="any-kind").candidate_kind == "any-kind"
 
 
@@ -1392,7 +1401,7 @@ def _judge_evidence() -> Any:
     ids=["a-document-with-no-evidence", "a-transcript-with-no-evidence", "an-unjudged-kind-with-evidence"],
 )
 async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_judge_call(
-    declared, evidence: bool
+    declared: JudgedArtifact, evidence: bool
 ) -> None:
     """The axes follow the kind's declaration, and the evidence is the kind's to render.
 
@@ -1428,7 +1437,7 @@ async def test_a_cell_contradicting_its_kinds_declaration_is_refused_before_any_
 
 
 @pytest.mark.parametrize("declared", [JudgedArtifact.DOCUMENT, JudgedArtifact.TRANSCRIPT])
-async def test_a_judged_kind_that_produced_nothing_owes_no_evidence(declared) -> None:
+async def test_a_judged_kind_that_produced_nothing_owes_no_evidence(declared: JudgedArtifact) -> None:
     """An empty output is a cell that produced nothing to judge — a failed generation — not a defect."""
     from threetears.evals.run.judge_service import JudgeService
     from threetears.evals.schema.models import RubricDim
@@ -1478,7 +1487,8 @@ async def test_a_kind_without_a_declaration_is_refused_by_name_before_it_is_buil
     if declared is None:
         del kind.judged_artifact
     else:
-        kind.judged_artifact = declared
+        # A bare string where the declaration's enum belongs, on purpose.
+        vars(kind)["judged_artifact"] = declared
 
     with pytest.raises(TypeError, match=f"{_FAKE_KIND}.*declares no judged_artifact"):
         await _run(kind, _template())
@@ -1616,14 +1626,14 @@ def test_a_host_declared_boolean_measure_refuses_every_number_and_names_each_mis
             MetricDescriptor(
                 name=name,
                 reader_name=name,
-                data_type=data_type,
+                data_type="boolean",
                 family="mechanical",
                 transferability_class="mechanical",
                 attribution_scope="end_to_end",
                 description=f"{name}, for the test.",
                 higher_is_better=True,
             )
-            for name, data_type in (("top_up_never", "boolean"), ("arrival_greeting_never", "boolean"))
+            for name in ("top_up_never", "arrival_greeting_never")
         )
     )
 

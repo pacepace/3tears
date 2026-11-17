@@ -6,7 +6,7 @@ point. ``A`` is the control, ``B`` the candidate; their attempts are given case 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 
 from threetears.evals.analysis import assemble_context_bundle, campaign_readings
@@ -60,7 +60,7 @@ def _key(run: EvalRun) -> str:
     return derive_variant_identity(run=run, profile=PROFILE).variant_key
 
 
-def _results(run: EvalRun, outcomes: dict[str, tuple[bool, ...]]) -> list[EvalResult]:
+def _results(run: EvalRun, outcomes: Mapping[str, tuple[bool, ...]]) -> list[EvalResult]:
     """One result per attempt, each case's attempts in order, every candidate call naming the model that answered."""
     usage = [
         RoleUsage(
@@ -88,8 +88,8 @@ class TwoArms:
 
     def __init__(
         self,
-        a: dict[str, tuple[bool, ...]],
-        b: dict[str, tuple[bool, ...]],
+        a: Mapping[str, tuple[bool, ...]],
+        b: Mapping[str, tuple[bool, ...]],
         *,
         k_a: int,
         k_b: int,
@@ -101,8 +101,8 @@ class TwoArms:
         self.key_a, self.key_b = _key(self.run_a), _key(self.run_b)
         self.results = {self.run_a.id: _results(self.run_a, a), self.run_b.id: _results(self.run_b, b)}
         self.arms = [
-            CampaignArm(label="A", role="control", variant_key=self.key_a),
-            CampaignArm(label="B", role="candidate", variant_key=self.key_b),
+            CampaignArm(label="A", role="control", variant_key=self.key_a, identity_version=IDENTITY_VERSION),
+            CampaignArm(label="B", role="candidate", variant_key=self.key_b, identity_version=IDENTITY_VERSION),
         ]
         self.campaign = make_aspect_campaign(
             label="character",

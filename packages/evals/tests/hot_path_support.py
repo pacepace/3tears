@@ -38,6 +38,7 @@ from unittest import mock
 
 from pydantic import BaseModel
 
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis import service as analysis_service
 from threetears.evals.analysis.campaign_bundle import CampaignBundle, build_campaign_bundle
@@ -489,7 +490,13 @@ def hot_path_corpus(
         design=design,
         question="does any candidate answer better than the control, at what cost?",
         asked_at=HOT_PATH_INSTANT,
-        control=CampaignArm(label="control", role="control", variant_key=control_key, named_at=HOT_PATH_INSTANT),
+        control=CampaignArm(
+            identity_version=IDENTITY_VERSION,
+            label="control",
+            role="control",
+            variant_key=control_key,
+            named_at=HOT_PATH_INSTANT,
+        ),
         id="hot-path-campaign",
         scope_id=scope_id,
         name="support model sweep",

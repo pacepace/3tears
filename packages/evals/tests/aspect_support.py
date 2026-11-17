@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from threetears.evals.kernel.identity import IDENTITY_VERSION
 from threetears.evals.analysis.aspects import aspect_view
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import CampaignArm, DecisionClause
@@ -112,7 +113,11 @@ def with_control(campaign: EvalCampaign, variant_key: str | None) -> EvalCampaig
     :rtype: EvalCampaign
     """
     candidates = [arm for arm in campaign.arms if arm.role != "control"]
-    control = [] if variant_key is None else [CampaignArm(label="control", role="control", variant_key=variant_key)]
+    control = (
+        []
+        if variant_key is None
+        else [CampaignArm(identity_version=IDENTITY_VERSION, label="control", role="control", variant_key=variant_key)]
+    )
     return campaign.model_copy(update={"arms": [*control, *candidates]})
 
 

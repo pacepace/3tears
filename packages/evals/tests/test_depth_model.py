@@ -41,7 +41,7 @@ def test_the_model_reads_pass_hat_k_off_a_beta_fitted_by_the_method_of_moments()
 
     assert read is not None
     assert read.basis == "model" and read.assumes == MODEL_ASSUMES
-    assert (read.alpha, read.beta) == (pytest.approx(5 / 172), pytest.approx(3 / 172))
+    assert (read.alpha, read.beta) == pytest.approx((5 / 172, 3 / 172))
     assert read.pass_hat_k == pytest.approx(_A_PASS_3)
     assert read.cases == 4
     # At depth 1 the beta's first moment is the mean share.
