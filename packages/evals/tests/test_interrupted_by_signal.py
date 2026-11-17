@@ -7,8 +7,8 @@ The first signal cancels the comparison's task (``asyncio.run``'s handler), whic
 
 - the loop idle, awaiting I/O (the usual case for a model candidate): it leaves the loop from its selector, and
   ``asyncio.run`` cancels every task once before it reports it;
-- a cell's own step running on the loop thread (a CPU-busy candidate): it ends that cell's task and leaves the loop
-  from there.
+- a cell's own step running on the loop thread (a CPU-busy candidate): the cell records itself cut, then the
+  interrupt ends its task and leaves the loop from there.
 
 Each signal is sent after an event the comparison says on its stdout or stderr, never after a wait: the child is
 ``fixtures/interrupted_comparison.py``. The one wait for a state rather than a line is the idle case's: the main
@@ -182,11 +182,10 @@ def test_two_sigints_cut_the_cells_in_flight_file_the_comparison_and_raise_keybo
     assert len(filed) == 1, stderr
     answered, waiting = child.cells("answered"), child.cells("waiting")
     assert answered and all(rows[cell] == [("completed", False)] for cell in answered), rows
-    # Every cell awaiting I/O when the cut came is recorded cut; the cell the interrupt itself landed in ended with it,
-    # recording nothing, and runs again as a cell never recorded does.
-    cut = waiting - spinning
-    assert cut and all(rows.get(cell) == [("cancelled", True)] for cell in cut), rows
-    assert not any(cell in rows for cell in spinning), rows
+    # Every cell in flight when the cut came is recorded cut, the cell the interrupt itself landed in among them, and
+    # each runs again: none recorded an answer.
+    assert waiting - spinning and spinning <= waiting, (waiting, spinning)
+    assert all(rows.get(cell) == [("cancelled", True)] for cell in waiting), rows
 
     again = _Child("continue", store)
     code, stderr = again.finish()

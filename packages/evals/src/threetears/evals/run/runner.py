@@ -4477,6 +4477,9 @@ async def execute_run(
     async def run_and_record(k: int, tc: EvalTestCase, sink: _CellSink) -> None:
         nonlocal done, unserved_in_a_row, unserved_cells, last_unserved
         cancelled_in_cell = False
+        # A ``KeyboardInterrupt`` raised in this cell's own step (a Ctrl+C landing while candidate code or the cell's
+        # scoring runs on the loop thread): the cell is recorded cut as a cancelled one is, then it is raised.
+        interrupted: KeyboardInterrupt | None = None
         run_defect: CandidateKindDefect | CompletionProtocolDefect | ApparatusError | None = None
         try:
             async with host.cell_timeout(options.cell_timeout_s):
@@ -4555,9 +4558,9 @@ async def execute_run(
             )
             # A set-aside here is neither a stop nor counted on the cap's record: a phase waits only while another holds
             # room it may not bill, so the cap's shortage was never established. The cell's mark is its count.
-        except asyncio.CancelledError:
-            # NOSILENT: the cell is recorded excluded with what it spent, and the cancel is re-raised once it is saved.
-            # The run was cancelled while this cell ran. The cancel still ends the run — it is
+        except (asyncio.CancelledError, KeyboardInterrupt) as stopped:
+            # NOSILENT: the cell is recorded excluded with what it spent, and the cancel (or the interrupt) is re-raised
+            # once it is saved. The run was cancelled, or the person interrupted it, while this cell ran. The cancel still ends the run — it is
             # re-raised below, once the cell is accounted for — but the cell's spend was real, and
             # it lives only on this sink, so it is recorded as an excluded cell first rather than
             # dropped with the frame. Excluded on the rig's side: nothing the candidate did ended it.
@@ -4591,6 +4594,8 @@ async def execute_run(
                 unfinished_judging=f"did not finish: {msg}",
             )
             cancelled_in_cell = True
+            if isinstance(stopped, KeyboardInterrupt):
+                interrupted = stopped
         except (CandidateKindDefect, CompletionProtocolDefect, ApparatusError, JudgeCallUnserved) as raised:
             # NOSILENT: the cell is recorded excluded with what it spent, and the defect is re-raised to fail the run.
             # The host's code — a kind contradicting its declaration, a judge completion short of the protocol —
@@ -4690,6 +4695,8 @@ async def execute_run(
                 run.id,
                 fenced,
             )
+            if interrupted is not None:
+                raise interrupted from fenced
             if cancelled_in_cell or cancelled_while_saving:
                 raise asyncio.CancelledError from fenced
             raise
@@ -4723,6 +4730,8 @@ async def execute_run(
         # ceiling is read against these and never against calls a running cell has made.
         if options.metered_calls is not None and sink.meter is not None:
             options.metered_calls.land(sink.meter)
+        if interrupted is not None:
+            raise interrupted
         if cancelled_in_cell or cancelled_while_saving:
             raise asyncio.CancelledError
         if run_defect is not None:

@@ -2916,11 +2916,16 @@ def _to_its_end(work: Callable[[], Awaitable[object]]) -> asyncio.Future[None]:
     """
     loop = asyncio.get_running_loop()
     ended: asyncio.Future[None] = loop.create_future()
+    # The task running the work now, held so it is not collected mid-run: the loop keeps only a weak reference.
+    held: list[asyncio.Future[object]] = []
 
     def begin() -> None:
-        asyncio.ensure_future(work()).add_done_callback(finished)
+        task = asyncio.ensure_future(work())
+        held[:] = [task]
+        task.add_done_callback(finished)
 
     def finished(task: asyncio.Future[object]) -> None:
+        held.clear()
         # Cancelled, or ended by a ``KeyboardInterrupt`` landing in its step (which has left the loop already, and is
         # reported where it lands): what the work waited for has not ended, so it is begun again.
         if task.cancelled() or isinstance(task.exception(), KeyboardInterrupt):

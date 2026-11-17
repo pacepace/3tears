@@ -14,11 +14,14 @@ is filed, chained from the first cancel, where before it raised that first cance
 cancel it might read as its own. The campaign is filed wherever the second interrupt lands: with the loop idle
 awaiting I/O, or inside a cell running on the loop thread (a CPU-busy candidate), it leaves the loop and
 `asyncio.run` cancels every task, and before this fix that cancel ended the comparison's waits and nothing was filed,
-so running it again re-ran every cell. The cells cut are recorded `cancelled` and run again in a continuation; a cell
-the interrupt landed in records nothing and runs again as a cell never reached does. **For hosts:** a host that runs a
-quick comparison on its own loop and catches `asyncio.CancelledError` from it after a second interrupt now gets
-`KeyboardInterrupt` there (its `__cause__` the first cancel); catch that to treat it as the person's stop. Nothing
-stored changes.
+so running it again re-ran every cell. The cells cut are recorded `cancelled`, counted, and run again in a
+continuation, the cell the interrupt landed in among them: a `KeyboardInterrupt` raised in a cell's own step (a
+CPU-busy candidate) records that cell cut, as a cancel does, before it goes on. **For hosts:** a host that awaits a
+quick comparison directly in its own coroutine, and catches `asyncio.CancelledError` there after a second interrupt,
+now gets `KeyboardInterrupt` at that `await` (its `__cause__` the first cancel); catch it to treat it as the person's
+stop. A host that runs the comparison as a task of its own (`create_task`, `gather`, a `TaskGroup`) gets it from its
+event loop's `run_until_complete` or `run_forever` instead, since asyncio raises a `KeyboardInterrupt` out of the loop
+from the task it ends. Nothing stored changes.
 
 **Changed:** the count of a quick comparison's cells that recorded no answer and run again is one count
 (`analysis.bundle.trials.redrawn_cells`), which the print and the page both say: it now includes the launch that
