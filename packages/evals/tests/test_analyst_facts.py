@@ -34,15 +34,11 @@ from functools import cache
 from typing import Any
 
 import pytest
-
-from packages.evals.tests.analyst_support import ANALYST_CALLS, KAIRO, TEXT_BUDGET, fixture_snapshots
-from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, NAMES
-from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
-from packages.evals.tests.report_shapes_support import SHAPES
 from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.analysis.analyst.cited import CitedFigure
 from threetears.evals.analysis.analyst.facts import (
+    BarRow,
+    FloorRow,
     campaign_overview,
     caveats_list,
     contrasts_list,
@@ -52,7 +48,6 @@ from threetears.evals.analysis.analyst.facts import (
 )
 from threetears.evals.analysis.analyst.snapshot import frozen_input, report_snapshot
 from threetears.evals.analysis.campaign_bundle import build_campaign_bundle
-from threetears.evals.analysis.report.figure_keys import reader_names, resolve
 from threetears.evals.analysis.report.call import (
     caveat_materiality,
     implied_caveats,
@@ -60,11 +55,19 @@ from threetears.evals.analysis.report.call import (
     surviving_options,
     unsettled_arms,
 )
-from threetears.evals.analysis.report_margins import CriterionFigure, criterion_figures
-from threetears.evals.analysis.report_input import Aspect, Criterion, ReportInput, Stat
+from threetears.evals.analysis.report.figure_keys import reader_names, resolve
 from threetears.evals.analysis.report.input_build import report_input
+from threetears.evals.analysis.report_input import Aspect, BarRead, Criterion, FloorRead, ReportInput, Stat
+from threetears.evals.analysis.report_margins import CriterionFigure, criterion_figures
 from threetears.evals.kernel import EvalReportSnapshot
 from threetears.evals.kernel.errors import RefusedInput
+
+from packages.evals.tests.analyst_support import ANALYST_CALLS, KAIRO, TEXT_BUDGET, fixture_snapshots
+from packages.evals.tests.figure_support import figure_number
+from packages.evals.tests.fixtures.report_inputs.misfits import MISFITS, NAMES
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
+from packages.evals.tests.report_shapes_support import SHAPES
 
 #: Every fixture snapshot, by name.
 FIXTURES = (*NAMES, *MISFITS, KAIRO)
@@ -418,21 +421,25 @@ def test_readings_list_every_reading_pair_floor_and_bar_by_its_aspect(name: str)
         assert [(row.floor, row.arm, row.status) for row in group.floors] == [
             (r.floor, r.arm, r.status) for r in floors
         ]
-        for row, read in zip(group.floors, floors, strict=True):
-            assert _by_stat(row.figures).get("interval") == _pair(read.interval)
+        for floor_row, floor_read in zip(group.floors, floors, strict=True):
+            assert _by_stat(floor_row.figures).get("interval") == _pair(floor_read.interval)
         assert [(row.measure, row.arm, row.status) for row in group.bars] == [
             (r.measure, r.arm, r.status) for r in bars
         ]
         total += len(aspect.readings) + len(aspect.pairs) + len(floors) + len(bars)
     held_ids = {aspect.id for aspect in held.aspects}
-    unheld = [read for read in [*held.floors, *held.bars] if read.aspect not in held_ids]
-    for read in unheld:
-        group = groups[read.aspect]
+    warnings: list[FloorRead | BarRead] = [*held.floors, *held.bars]
+    unheld = [read for read in warnings if read.aspect not in held_ids]
+    for stray in unheld:
+        group = groups[stray.aspect]
         assert group.note is not None and "no record for aspect" in group.note
         assert (group.margin, group.family) == (None, [])
-        for row in [*group.floors, *group.bars]:
-            assert row.figures and all(figure.key.startswith(f"aspects.{read.aspect}.") for figure in row.figures)
-            assert _by_stat(row.figures)["status"] == row.status
+        warned_rows: list[FloorRow | BarRow] = [*group.floors, *group.bars]
+        for warned in warned_rows:
+            assert warned.figures and all(
+                figure.key.startswith(f"aspects.{stray.aspect}.") for figure in warned.figures
+            )
+            assert _by_stat(warned.figures)["status"] == warned.status
     assert listing.total == total + len(unheld)
     assert listing.next_offset is None
 
@@ -490,8 +497,8 @@ def test_contrasts_list_every_contrast_its_confounds_by_caveat_id_and_the_famili
         for named, dimension in zip(row.confounds, contrast.confounds, strict=True):
             assert named in {f"confound:{dimension}", f"apparatus:{dimension}"} & caveat_ids or named == dimension
     assert [family.aspect for family in listing.families] == [family.aspect for family in held.contrast_families]
-    for row, family in zip(listing.families, held.contrast_families, strict=True):
-        assert _by_stat(row.figures).get("correction") == family.correction
+    for family_row, family in zip(listing.families, held.contrast_families, strict=True):
+        assert _by_stat(family_row.figures).get("correction") == family.correction
 
 
 def test_a_family_naming_no_aspect_among_several_is_keyed_by_its_place_and_each_reads_its_own() -> None:
@@ -537,10 +544,10 @@ def test_a_kairo_contrast_says_how_many_cases_its_test_read_and_that_it_paired_t
     for row in rows:
         figures = {figure.key.rsplit(".", 1)[1]: figure for figure in row.figures}
         assert figures["paired"].reads == "paired"
-        assert figures["n_cases"].value > 1 and figures["n_cases"].scale == "count"
+        assert figure_number(figures["n_cases"]) > 1 and figures["n_cases"].scale == "count"
         assert "control_n_cases" not in figures, "a paired test reads the same cases on both sides"
         # A correlation is stated where both arms' per-case values vary; a constant side has none.
-        assert "pairing_r" not in figures or -1 <= figures["pairing_r"].value <= 1
+        assert "pairing_r" not in figures or -1 <= figure_number(figures["pairing_r"]) <= 1
     assert any("pairing_r" in {figure.key.rsplit(".", 1)[1] for figure in row.figures} for row in rows)
 
 
@@ -1004,7 +1011,7 @@ def test_a_gate_cleared_on_a_point_estimate_cites_its_threshold_and_each_clearan
             assert keys[1:] and all(
                 key.startswith(f"criteria.{criterion}.") and key.endswith(".gap") for key in keys[1:]
             )
-            assert all(figure.value >= 0 for figure in row.figures[1:]), "a clearance is signed toward passing"
+            assert all(figure_number(figure) >= 0 for figure in row.figures[1:]), "a clearance is signed toward passing"
             assert all(any(key.startswith(f"criteria.{criterion}.{arm}.") for key in keys) for arm in row.touches_arms)
             assert all(
                 any(key.startswith(f"criteria.{criterion}.{arm}.") for arm in row.touches_arms) for key in keys[1:]
@@ -1028,7 +1035,7 @@ def test_a_gate_a_survivor_clears_on_a_borderline_figure_is_a_caveat_citing_its_
             assert keys[1:] and all(
                 key.startswith(f"criteria.{criterion}.") and key.endswith(".gap") for key in keys[1:]
             )
-            assert all(figure.value >= 0 for figure in row.figures[1:]), "the figure clears the line"
+            assert all(figure_number(figure) >= 0 for figure in row.figures[1:]), "the figure clears the line"
             assert all(any(key.startswith(f"criteria.{criterion}.{arm}.") for key in keys) for arm in row.touches_arms)
             raised += 1
     assert raised, "the control: a fixture's survivor clears a gate on a borderline figure"

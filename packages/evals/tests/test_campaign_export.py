@@ -24,23 +24,12 @@ import ast
 import dataclasses
 import json
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
-
 import threetears.evals.ops.campaign_closure as campaign_closure_module
-from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import held_out_path
-from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import (
-    CALLER,
-    TOYHOST_SCOPE,
-    generate,
-    judged_as_launched,
-    ops_fixture,
-    settled,
-)
 from threetears.evals.actions import eval_catalogue, standard_tools
 from threetears.evals.analysis import host_declarations_digest
 from threetears.evals.harness import ReasonedOn, WriterCaseFile
@@ -56,6 +45,18 @@ from threetears.evals.schema import (
     judge_config_of,
 )
 from threetears.evals.storage import InMemoryDocumentStore
+
+from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import held_out_path
+from packages.evals.tests.json_support import json_at, json_list
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import (
+    CALLER,
+    TOYHOST_SCOPE,
+    generate,
+    judged_as_launched,
+    ops_fixture,
+    settled,
+)
 
 SCOPE = TOYHOST_SCOPE
 
@@ -488,7 +489,7 @@ def test_the_profile_declaration_carries_the_packages_digest_and_the_factory_nam
     ).profile
     bundle = WriterCaseFile.read(held_out_path("courierhost")).snapshot.bundle
     assert bundle is not None
-    (recorded,) = {aspect["host_declarations_digest"] for aspect in bundle["aspects"]}
+    (recorded,) = {json_at(aspect, "host_declarations_digest") for aspect in json_list(bundle, "aspects")}
     assert courier.host_declarations_digest == recorded == host_declarations_digest(courier_profile())
     assert courier.built_by == "courier.evals:profile" and courier.host_id == "courier"
     assert {"built_by", "host_declarations_digest"} <= set(json.loads(courier.model_dump_json()))
@@ -850,7 +851,7 @@ def test_a_ceilinged_export_reads_what_an_unbounded_one_reads_over_every_field_r
     }
     for run_id in campaign["aspects"][0]["run_ids"]:
         assert store.merge_fields(run_id, SCOPE, pins)
-    stored = [
+    stored: list[dict[str, Any]] = [
         {"doc_type": "eval_report_doc", "id": "report-1", "campaign_id": toy.campaign_id},
         {"doc_type": "eval_report_snapshot", "id": "snapshot-1", "campaign_id": toy.campaign_id},
         {"doc_type": "eval_report_session", "id": "session-1", "report_doc_id": "report-1"},
@@ -902,6 +903,14 @@ def test_the_function_exports_a_closure_past_the_actions_ceiling() -> None:
     assert _closure_bytes(exported) > host.campaign_export_max_bytes and exported.page is None
 
 
+def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
+    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
+
+    The tests that use it assert the call is refused: the bad value is what they exercise.
+    """
+    return function
+
+
 async def test_the_host_raises_and_lowers_the_ceiling() -> None:
     toy = off_loop(Toy)
     size = _closure_bytes(off_loop(toy.export))
@@ -911,9 +920,9 @@ async def test_the_host_raises_and_lowers_the_ceiling() -> None:
             dataclasses.replace(toy.host, campaign_export_max_bytes=ceiling), toy.campaign_id
         )
         assert outcomes[-1].is_error is refused, (ceiling, outcomes[-1].text)
-    for ceiling in (0, -1, True, 1.5):
+    for bad in (0, -1, True, 1.5):
         with pytest.raises(ValueError, match="campaign_export_max_bytes must be a positive integer"):
-            dataclasses.replace(toy.host, campaign_export_max_bytes=ceiling)
+            _unchecked(dataclasses.replace)(toy.host, campaign_export_max_bytes=bad)
 
 
 def test_a_reading_host_takes_the_ceiling() -> None:

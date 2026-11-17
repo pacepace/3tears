@@ -19,12 +19,11 @@ from pathlib import Path
 from typing import Any, Self
 
 import pytest
-
 from threetears.evals import Eval, Example, Judge
-from threetears.evals.providers.failures import error_from_response
-from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
-from threetears.evals.testing import RecordedCompletions
+from threetears.evals.analysis import campaign_report, campaign_report_markdown, summarize_run
+from threetears.evals.analysis.report.blocks import DisclosureBlock
 from threetears.evals.kernel.host import EvalHost, KindContract, TemplateChecks
+from threetears.evals.providers.failures import error_from_response
 from threetears.evals.quick import one_call
 from threetears.evals.quick.one_call import (
     CALLABLE_KIND_CONTRACT,
@@ -32,7 +31,6 @@ from threetears.evals.quick.one_call import (
     JUDGED_CALLABLE_KIND_CONTRACT,
     callable_host,
 )
-from threetears.evals.analysis import campaign_report, campaign_report_markdown, summarize_run
 from threetears.evals.run import (
     get_result_trace,
     get_template,
@@ -41,9 +39,13 @@ from threetears.evals.run import (
     list_templates,
     update_template,
 )
+from threetears.evals.schema import JudgedArtifact, RubricDim, StopReason
+from threetears.evals.testing import RecordedCompletions
+
+from packages.evals.tests.clock_support import frozen_clock
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import page_violations
-from packages.evals.tests.clock_support import frozen_clock
+from packages.evals.tests.spend_support import spent
 
 
 @pytest.fixture(autouse=True)
@@ -589,6 +591,7 @@ async def test_a_miss_is_said_with_its_verdicts_in_the_print_and_on_the_page_bes
     assert lines[at - 1].startswith("judge: 0 labels: judge uncalibrated"), "read beside its labels, never pooled"
     assert lines[at + 1] == f"  missed: {miss}"
     (block,) = [block for block in result.page.blocks if block.anchor == "judge-examples"]
+    assert isinstance(block, DisclosureBlock)
     assert block.section == "provenance" and block.source == "calibration"
     assert block.text == (
         "The judge graded 1 of 2 of its examples as they must be on every one of 2 repeats ($0.0012 over 4 call(s)). "
@@ -609,7 +612,7 @@ async def test_the_examples_spend_is_the_judge_s_ledgered_out_of_run_and_beside_
     assert read is not None
     assert (read.spend.role, read.spend.calls, read.stopped) == ("judge", 2, None)
     assert read.spend.cost_usd == pytest.approx(2 * JUDGE_COST_USD)
-    assert result.summary.role_spend("judge").calls == 4, "the arm's results hold their own calls and no example's"
+    assert spent(result.summary, "judge").calls == 4, "the arm's results hold their own calls and no example's"
 
     # Made outside any run, so each is a row of the out-of-run ledger, under the judge's purpose and the template.
     rows = off_loop(result.host.storage.query_out_of_run_spend, SCOPE, purpose="judge")
@@ -626,7 +629,7 @@ async def test_the_examples_are_held_to_the_eval_s_cap_on_landed_spend_so_the_ca
     # eval at $0.0015, over the cap, and no other is made.
     capped = Eval(CASES, answer, [_judge(_FakeJudgeClient(), examples=EXAMPLES)], k=1, max_cost_usd=0.0013)
     result = await capped.run(store=MEMORY, scope=SCOPE)
-    assert result.summary.role_spend("judge").calls == 4, "the arm's results hold their own calls and no example's"
+    assert spent(result.summary, "judge").calls == 4, "the arm's results hold their own calls and no example's"
     read = result.judge_examples
     over = "the eval's cost cap stopped the grading, the eval having landed $0.0015, over its $0.0013 cap"
     assert read is not None and read.stopped == over and read.spend.calls == 1
@@ -846,8 +849,9 @@ async def test_a_grading_that_fails_is_stated_on_the_result_and_the_arms_spent_r
         "judge: 2 examples not graded, since the grading failed (CompletionProtocolDefect"
     )
     (block,) = [block for block in result.page.blocks if block.anchor == "judge-examples"]
+    assert isinstance(block, DisclosureBlock)
     assert block.text.startswith("The judge's 2 examples were not graded, since the grading failed")
-    assert result.summary.role_spend("judge").calls == 4 and result.campaign_id, "the arms' results and campaign land"
+    assert spent(result.summary, "judge").calls == 4 and result.campaign_id, "the arms' results and campaign land"
 
 
 @dataclass(frozen=True)

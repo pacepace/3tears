@@ -44,11 +44,19 @@ class _Completion:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float | None = None
+    price_source: str | None = None
     model: str = ""
     served_model: str | None = None
     reasoning_tokens: int | None = None
-    stop_reason: str = "end_turn"
+    stop_reason: StopReason = "end_turn"
     temperature: float | None = None
+
+
+def _off_vocabulary(*, content: str, stop_reason: str) -> _Completion:
+    """A completion stopped for a reason no word of the engine's names, on purpose: a provider's word passed through."""
+    completion = _Completion(content=content)
+    vars(completion)["stop_reason"] = stop_reason
+    return completion
 
 
 class TestSumOptionalTokens:
@@ -152,9 +160,9 @@ class TestCompletionPort:
         )
 
     @pytest.mark.parametrize("renamed", USAGE_LEDGER_ATTRIBUTES)
-    def test_renaming_any_attribute_the_ledger_reads_fails_naming_it(self, renamed) -> None:
+    def test_renaming_any_attribute_the_ledger_reads_fails_naming_it(self, renamed: str) -> None:
         """A rename the ledger would read as "unreported" in silence fails the host's check by name."""
-        fields = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
+        fields: dict[str, object] = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
         fields.update(content="{}", stop_reason="end_turn")
         fields[f"{renamed}_renamed"] = fields.pop(renamed)
         completion = type("RenamedCompletion", (), fields)()
@@ -171,7 +179,7 @@ class TestCompletionPort:
             check_completion_conformance(type("RawCompletion", (), fields)())
 
     @pytest.mark.parametrize("reason", get_args(StopReason))
-    def test_every_member_of_the_vocabulary_passes_the_check(self, reason) -> None:
+    def test_every_member_of_the_vocabulary_passes_the_check(self, reason: StopReason) -> None:
         """``truncated`` included: a host mapping an unnamed stop onto it conforms."""
         fields: dict[str, object] = {name: None for name in COMPLETION_RESULT_ATTRIBUTES}
         fields.update(content="{}", stop_reason=reason)
@@ -206,7 +214,7 @@ class TestDescribeIncompleteCompletion:
     def test_a_normal_finish_has_nothing_to_explain(self) -> None:
         """``None`` lets a caller append this unconditionally and add a clause only when there is one."""
         assert describe_incomplete_completion(_Completion(content='{"ok": true}', stop_reason="end_turn")) is None
-        assert describe_incomplete_completion(_Completion(content="", stop_reason="tool_use")) is None
+        assert describe_incomplete_completion(_off_vocabulary(content="", stop_reason="tool_use")) is None
 
     def test_a_cap_hit_names_the_truncation_and_the_move_that_fixes_it(self) -> None:
         """A caller told only "not valid JSON" retries or blames the prompt; neither helps here."""
@@ -324,4 +332,4 @@ class TestDescribeIncompleteCompletion:
         ``describe_incomplete_completion`` indexes the wording map directly, so this is the
         assertion that the membership test in front of it is what keeps that lookup safe.
         """
-        assert describe_incomplete_completion(_Completion(content="x", stop_reason="banana")) is None
+        assert describe_incomplete_completion(_off_vocabulary(content="x", stop_reason="banana")) is None

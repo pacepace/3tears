@@ -42,6 +42,21 @@ def json_list(value: JsonValue, *path: str | int) -> list[JsonValue]:
     return found
 
 
+def json_object(value: JsonValue, *path: str | int) -> dict[str, JsonValue]:
+    """The JSON object at ``path`` below ``value``; anything else there fails, naming it.
+
+    :param value: The JSON to read.
+    :ptype value: JsonValue
+    :param path: Object keys and array indexes, outermost first.
+    :ptype path: str | int
+    :return: The object the path reaches.
+    :rtype: dict[str, JsonValue]
+    """
+    found = json_at(value, *path)
+    assert isinstance(found, dict), f"{path!r} reaches {found!r}, not an object"
+    return found
+
+
 def json_number(value: JsonValue, *path: str | int) -> float:
     """The JSON number at ``path`` below ``value``; anything else there fails, naming it.
 

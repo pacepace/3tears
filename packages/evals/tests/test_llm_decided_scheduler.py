@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from threetears.evals.run.simulator import (
     SCHEDULER_CALL_ATTEMPTS,
@@ -10,12 +12,12 @@ from threetears.evals.run.simulator import (
     TurnDriver,
     next_speaker_response_format,
 )
-from threetears.evals.schema.models import ROUND_DONE, ConversationSpec, ConversationStopCause
+from threetears.evals.schema.models import ROUND_DONE, ActorPolicy, ConversationSpec, ConversationStopCause
 
 from packages.evals.tests.scripted_table import DONE, Raw, ScriptedTable, actor
 
 
-def _driver(actor_ids: list[str] = ["a", "b", "c"], **overrides) -> TurnDriver:  # noqa: B006 - read only
+def _driver(actor_ids: list[str] = ["a", "b", "c"], **overrides: Any) -> TurnDriver:  # noqa: B006 - read only
     fields = dict(
         actors=[actor(actor_id) for actor_id in actor_ids],
         turn_scheduler="llm_decided",
@@ -23,7 +25,14 @@ def _driver(actor_ids: list[str] = ["a", "b", "c"], **overrides) -> TurnDriver: 
         max_turns=5,
     )
     fields.update(overrides)
-    return TurnDriver(conversation=ConversationSpec(**fields), variation={})
+    return TurnDriver(conversation=ConversationSpec.model_validate(fields), variation={})
+
+
+async def _speaker(driver: TurnDriver, table: ScriptedTable) -> ActorPolicy:
+    """The next speaker the driver names; a driver naming none fails here."""
+    speaker = await driver.next_speaker(table)
+    assert speaker is not None
+    return speaker
 
 
 async def _round(driver: TurnDriver, table: ScriptedTable) -> list[str]:
@@ -56,7 +65,7 @@ async def test_round_done_is_not_offered_before_anyone_has_spoken() -> None:
     """A round the candidate answers holds at least one utterance, so the first pick must name an actor."""
     driver = _driver()
     table = ScriptedTable(picks=["b"], lines={"b": ["hi"]})
-    await driver.next_user_turn(table, await driver.next_speaker(table))
+    await driver.next_user_turn(table, await _speaker(driver, table))
 
     first_prompt, first_legal = table.schedule_calls[0]
     assert ROUND_DONE not in first_legal
@@ -97,7 +106,7 @@ async def test_a_bad_reply_gets_one_repair_naming_what_was_wrong() -> None:
 
 
 @pytest.mark.parametrize("illegal", ["zed", ROUND_DONE], ids=["unknown-actor", "round-done-on-first-pick"])
-async def test_an_answer_outside_the_legal_set_is_refused_and_repaired(illegal) -> None:
+async def test_an_answer_outside_the_legal_set_is_refused_and_repaired(illegal: str) -> None:
     driver = _driver()
     table = ScriptedTable(picks=[illegal, "a"], lines={})
 
@@ -138,8 +147,8 @@ async def test_an_actor_that_leaves_is_no_longer_offered() -> None:
     driver = _driver()
     table = ScriptedTable(picks=["b", "a", "c"], lines={"b": [DONE], "a": ["still here"]})
 
-    await driver.next_user_turn(table, await driver.next_speaker(table))
-    await driver.next_user_turn(table, await driver.next_speaker(table))
+    await driver.next_user_turn(table, await _speaker(driver, table))
+    await driver.next_user_turn(table, await _speaker(driver, table))
     await driver.next_speaker(table)
 
     assert driver.departed == {"b"}
@@ -154,9 +163,9 @@ async def test_the_last_actor_leaving_ends_the_conversation() -> None:
     driver = _driver(["a", "b"])
     table = ScriptedTable(picks=["a", "b"], lines={"a": [DONE], "b": [DONE]})
 
-    await driver.next_user_turn(table, await driver.next_speaker(table))
+    await driver.next_user_turn(table, await _speaker(driver, table))
     assert driver.should_continue() is True
-    await driver.next_user_turn(table, await driver.next_speaker(table))
+    await driver.next_user_turn(table, await _speaker(driver, table))
 
     assert driver.stop_cause is ConversationStopCause.USER_DONE
     assert driver.transcript == []
@@ -182,7 +191,7 @@ async def test_an_actor_from_another_conversation_cannot_speak() -> None:
 async def test_an_actor_that_left_cannot_speak() -> None:
     driver = _driver()
     table = ScriptedTable(picks=["a"], lines={"a": [DONE]})
-    leaver = await driver.next_speaker(table)
+    leaver = await _speaker(driver, table)
     await driver.next_user_turn(table, leaver)
 
     with pytest.raises(ValueError, match="has left the conversation"):
@@ -197,7 +206,7 @@ async def test_the_opener_opens_or_not_at_all() -> None:
 
 
 @pytest.mark.parametrize("reserved", [ROUND_DONE, "__candidate__"])
-def test_a_reserved_actor_id_is_refused(reserved) -> None:
+def test_a_reserved_actor_id_is_refused(reserved: str) -> None:
     with pytest.raises(ValueError, match="is reserved"):
         ConversationSpec(actors=[actor("a"), actor(reserved)])
 

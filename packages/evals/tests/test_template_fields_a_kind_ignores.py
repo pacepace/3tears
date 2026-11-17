@@ -14,10 +14,10 @@ refusal (``refuse_ignored_template_fields``) over the kind's entry in the host's
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from typing import Any
 
 import pytest
-
 from threetears.evals.kernel import JUDGE_KIND, JUDGE_KIND_CONTRACT, ValidationFailedError, default_job_timeout
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.run import (
@@ -33,9 +33,10 @@ from threetears.evals.run import (
 )
 from threetears.evals.run.authoring import refuse_ignored_template_fields
 from threetears.evals.schema import EvalTemplate, Precondition, WorldSeed
+
+from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host, with_registry
 from packages.evals.tests.fixtures.toyhost.launch import TOYHOST_LAUNCH_SETTINGS
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
-from packages.evals.tests.fixtures.toyhost.host import TOYHOST_TEMPLATE_CHECKS, toyhost_host, with_registry
 from packages.evals.tests.off_loop import off_loop
 
 _SCOPE = "judge-template-fields"
@@ -98,10 +99,18 @@ def test_the_judge_kind_declares_every_field_but_what_it_reads() -> None:
     assert set(TEMPLATE_FIELDS) - entry.ignored_template_fields == set(), "a judge template is a kind and an intent"
 
 
+def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
+    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
+
+    The tests that use it assert the call is refused: the bad value is what they exercise.
+    """
+    return function
+
+
 def test_a_kind_declaring_a_name_no_template_has_is_refused() -> None:
     with pytest.raises(ValueError, match="not template fields"):
-        LaunchableKind(
-            launch=lambda _request: None,  # type: ignore[arg-type,return-value]
+        _unchecked(LaunchableKind)(
+            launch=lambda _request: None,
             resolve_subject=lambda _subject, _scope: None,
             ignored_template_fields=frozenset({"world_sed"}),
         )
@@ -145,7 +154,9 @@ def test_create_template_refuses_a_field_the_kind_ignores_with_the_host_calls_me
         create_template(host, {**definition, "world_seed": _SEED}, scope_id=_SCOPE)
 
     template_id = refused.value.message.split("'")[1]
-    expected = _host_call(EvalTemplate(id=template_id, scope_id=_SCOPE, **definition, world_seed=_SEED))
+    expected = _host_call(
+        EvalTemplate.model_validate({"id": template_id, "scope_id": _SCOPE, **definition, "world_seed": _SEED})
+    )
     assert (refused.value.message, refused.value.remedy) == (expected.message, expected.remedy)
     assert host.storage.load_template_by_name("a judge", _SCOPE) is None, "nothing is stored"
     assert create_template(host, definition, scope_id=_SCOPE).candidate_kind == JUDGE_KIND

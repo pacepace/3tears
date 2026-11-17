@@ -27,7 +27,37 @@ from dataclasses import replace
 from typing import Any, Literal, get_args
 
 import pytest
+from threetears.evals.analysis import ChartBlock, TableBlock
+from threetears.evals.analysis.analyst.snapshot import frozen_input
+from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.block_spec import block_look, chart_faults, small_multiple_faults
+from threetears.evals.analysis.report.call import control_arm
+from threetears.evals.analysis.report.charts import (
+    KIT_CHARTS,
+    ChartReference,
+    ConfusionChart,
+    DiffHeatmapChart,
+    DotIntervalChart,
+    DotIntervalPanel,
+    HeatmapChart,
+    HeatmapPanel,
+    RangeBarsChart,
+    ScatterChart,
+)
+from threetears.evals.analysis.report.fact_arms import fact_arms
+from threetears.evals.analysis.report.figure_keys import figure_unit, resolve
+from threetears.evals.analysis.report.forms import PageForms
+from threetears.evals.analysis.report.gates import gate_check
+from threetears.evals.analysis.report.parts.charting import COMPUTED, misses_line
+from threetears.evals.analysis.report.parts.look import PageLook, quantity
+from threetears.evals.analysis.report.parts.model import PageChart
+from threetears.evals.analysis.report.parts.resolve import resolve_chart
+from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE
+from threetears.evals.analysis.report.rows import query_rows
+from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
+from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 
+from packages.evals.tests.analyst_support import SHAPE_NAMES, shape_snapshots
 from packages.evals.tests.fixtures.report_inputs import dataset
 from packages.evals.tests.hostile_page_support import HOSTILE_LINE
 from packages.evals.tests.page_contract_support import what_runs
@@ -39,34 +69,6 @@ from packages.evals.tests.plan_charts_support import (
     stored_charts,
 )
 from packages.evals.tests.static_page_support import assert_static
-from threetears.evals.analysis import ChartBlock, TableBlock
-from threetears.evals.analysis.errors import UnresolvableReference
-from threetears.evals.analysis.report.charts import (
-    KIT_CHARTS,
-    ChartReference,
-    ConfusionChart,
-    DiffHeatmapChart,
-    DotIntervalChart,
-    HeatmapChart,
-    RangeBarsChart,
-    ScatterChart,
-)
-from threetears.evals.analysis.report.figure_keys import resolve, figure_unit
-from threetears.evals.analysis.report.parts.charting import COMPUTED, misses_line
-from threetears.evals.analysis.report.parts.look import PageLook, quantity
-from threetears.evals.analysis.report.parts.model import PageChart
-from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.analysis.report.parts.resolve import resolve_chart
-from threetears.evals.analysis.report.parts.words import COMPUTED_NOTE
-from threetears.evals.analysis.report.call import control_arm
-from threetears.evals.analysis.report.gates import gate_check
-from threetears.evals.analysis.report_input import Cell, ReportInput, ScoreboardRow, Stat, Stratum, Task
-from threetears.evals.analysis.report.block_spec import block_look, chart_faults, small_multiple_faults
-from threetears.evals.analysis.report.fact_arms import fact_arms
-from threetears.evals.analysis.analyst.snapshot import frozen_input
-from packages.evals.tests.analyst_support import SHAPE_NAMES, shape_snapshots
-from threetears.evals.analysis.report.rows import query_rows
-from threetears.evals.kernel.chart_query import ChartQuery, ChartSpec
 
 INPUTS = ("r1", "r2", "r3", "r4", "r5")
 
@@ -339,7 +341,7 @@ def test_a_heatmap_of_cells_draws_the_target_matrix_its_counts_and_the_cell_floo
     floor = _criterion(report_input, key, "each_cell")
     for arm, panel in zip(arms, panels, strict=True):
         if data.panels is not None:
-            assert panel.title == _look(name).arm(arm).name
+            assert isinstance(panel, HeatmapPanel) and panel.title == _look(name).arm(arm).name
         assert [row.label for row in panel.rows or []] == [level.name or level.id for level in matrix.rows.levels]
         columns = data.columns if panel.columns is None else panel.columns
         assert [column.label for column in columns or []] == [level.name or level.id for level in matrix.columns.levels]
@@ -390,8 +392,8 @@ def test_a_dot_strip_marks_each_figure_against_its_criterions_line_hollow_where_
     strips: dict[str, tuple[dict[str, Stat], float | None]] = {}
     if spec.query.source == "tasks":
         assert spec.query.small_multiples_by != "arm", "a strip per arm is not read here: hold it before storing one"
-        for row in query_rows(spec.query, report_input):
-            task = row.item
+        for source_row in query_rows(spec.query, report_input):
+            task = source_row.item
             assert isinstance(task, Task)
             stats = {arm: task.per_arm[arm][key] for arm in spec.query.arms if key in task.per_arm.get(arm, {})}
             if stats:
@@ -622,7 +624,8 @@ def test_a_dot_strip_draws_changes_floors_and_slices(name: str, source: str) -> 
     drawn = _draw(name, _spec("dot_interval", _query(source), level="95%"))
     data = _data(drawn)
     assert isinstance(data, DotIntervalChart)
-    rows = [row for panel in (data.panels or [data]) for row in panel.rows or []]
+    panels: list[DotIntervalPanel] | list[DotIntervalChart] = data.panels or [data]
+    rows = [row for panel in panels for row in panel.rows or []]
     selected = query_rows(_query(source), report_input)
     if source == "floors":
         for row in rows:
@@ -734,7 +737,8 @@ def _assert_a_row_per_slice_and_arm(name: str, source: str, block: TableBlock, s
     """A slice table's contract: exactly one row per (slice, arm) the query selects that holds figures, each
     measure's figure in its own column, a dash where the input holds none."""
     report_input, look = _input(name), _look(name)
-    expected: dict[tuple[str, str], dict[str, Any]] = {}
+    # Keyed as the table lays its cells out, so a cell holding no name is a key no slice matches.
+    expected: dict[tuple[object, object], dict[str, Any]] = {}
     for row in selected:
         for arm, figures in row.item.per_arm.items():
             if arm in look.arms and figures:

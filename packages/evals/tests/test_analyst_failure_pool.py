@@ -25,6 +25,17 @@ from __future__ import annotations
 from itertools import combinations
 
 import pytest
+from threetears.evals.analysis.analyst.blocks import block_render
+from threetears.evals.analysis.analyst.facts import campaign_overview, examples_list
+from threetears.evals.analysis.analyst.keys import figure_keys_check
+from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input
+from threetears.evals.analysis.campaign_bundle import CampaignBundle
+from threetears.evals.analysis.errors import UnstatedFigure
+from threetears.evals.analysis.report.figure_keys import reader_name, resolve
+from threetears.evals.analysis.report.input_build import EXAMPLE_EXCERPT_CHARS, report_input
+from threetears.evals.analysis.report.keys.counts import OVERLAP_WORDS
+from threetears.evals.analysis.report_input import ReportInput, report_input_digest, report_input_document_digest
+from threetears.evals.kernel.chart_query import ChartQuery
 
 from packages.evals.tests.analyst_support import (
     KAIRO,
@@ -34,19 +45,8 @@ from packages.evals.tests.analyst_support import (
     fixture_snapshots,
     shape_bundle,
 )
+from packages.evals.tests.figure_support import figure_number
 from packages.evals.tests.fixtures.report_inputs.dataset import kairo_bundle
-from threetears.evals.analysis.analyst.blocks import block_render
-from threetears.evals.analysis.analyst.facts import campaign_overview, examples_list
-from threetears.evals.analysis.analyst.keys import figure_keys_check
-from threetears.evals.analysis.analyst.snapshot import analyst_input, frozen_input
-from threetears.evals.analysis.campaign_bundle import CampaignBundle
-from threetears.evals.analysis.errors import UnstatedFigure
-from threetears.evals.analysis.report_input import report_input_digest, report_input_document_digest
-from threetears.evals.analysis.report.figure_keys import reader_name, resolve
-from threetears.evals.analysis.report.keys.counts import OVERLAP_WORDS
-from threetears.evals.analysis.report_input import ReportInput
-from threetears.evals.analysis.report.input_build import EXAMPLE_EXCERPT_CHARS, report_input
-from threetears.evals.kernel.chart_query import ChartQuery
 
 
 def _bundles() -> dict[str, CampaignBundle]:
@@ -162,7 +162,7 @@ def test_examples_list_says_how_many_it_kept_of_how_many_failed(name: str) -> No
 def test_a_slice_kept_from_more_failures_than_it_shows_says_so(name: str) -> None:
     held = _counted(name)
     rows = examples_list(held, {}, limit=200).kept_from
-    short = [row for row in rows if row.failed is not None and row.failed.value > row.kept.value]
+    short = [row for row in rows if row.failed is not None and figure_number(row.failed) > figure_number(row.kept)]
     expected = {
         (row.aspect, row.arm)
         for row in held.failed_trials or ()

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,7 +47,7 @@ def _dim_of(system: str) -> str:
 class _CapturingClient:
     """Records the prompts it received and returns a fixed score for the asked dim."""
 
-    def __init__(self, *, score: Any = 4, reasoning: str = "ok", cost: float = 0.002, fail: bool = False) -> None:
+    def __init__(self, *, score: Any = 4, reasoning: object = "ok", cost: float = 0.002, fail: bool = False) -> None:
         self.score = score
         self.reasoning = reasoning
         self.cost = cost
@@ -97,7 +98,9 @@ class _PromptSensitiveClient:
         )
 
 
-def _recording_factory(client: Any):
+def _recording_factory(
+    client: Any,
+) -> tuple[Callable[[str | None, float | None], Any], list[tuple[str | None, float | None]]]:
     """Return ``(factory, calls)`` — factory hands back ``client`` and logs its args."""
     calls: list[tuple[str | None, float | None]] = []
 
@@ -106,6 +109,12 @@ def _recording_factory(client: Any):
         return client
 
     return factory, calls
+
+
+def _error(outcome: JudgeOutcome) -> str:
+    """The error a failed judging names; one that names none fails here."""
+    assert outcome.error is not None, outcome
+    return outcome.error
 
 
 def _context(
@@ -200,7 +209,7 @@ async def test_an_on_scale_score_is_stored_as_given(on_scale: str | int | float)
 
 
 @pytest.mark.parametrize(("answer", "scored"), [(CANNOT_TELL, False), (4, True)])
-async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(answer, scored: bool) -> None:
+async def test_a_cannot_tell_answer_leaves_the_dim_unscored_and_a_score_scores(answer: int | str, scored: bool) -> None:
     """One fixture, both answers: the judge's reply decides, not the harness."""
     client = _CapturingClient(score=answer, reasoning="the transcript never reaches the moment this dim is about")
     service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
@@ -346,7 +355,7 @@ async def test_a_document_is_placed_under_its_own_heading_and_a_transcript_under
         (JudgedArtifact.DOCUMENT, "# Output under review\nARTIFACT", "# Transcript"),
     ):
         client = _CapturingClient()
-        service = JudgeService(client_factory=lambda m, t, c=client: c, failure_describer=withhold_failure_detail)
+        service = JudgeService(client_factory=lambda m, t: client, failure_describer=withhold_failure_detail)
         await service.score_dimension(
             RubricDim(name="conversation.faithful", description="d", scale="ordinal"),
             _context(judged_artifact=declared, evidence=evidence),
@@ -373,10 +382,10 @@ def test_no_judge_context_is_built_for_an_unjudged_kind() -> None:
     ],
     ids=["empty-case-material", "empty-artifact", "no-artifact", "no-case-material", "an-undeclared-field"],
 )
-def test_judge_evidence_refuses_a_judge_nothing_to_read(fields) -> None:
+def test_judge_evidence_refuses_a_judge_nothing_to_read(fields: dict[str, object]) -> None:
     """Both texts a judge reads are required and non-empty; nothing else rides along."""
     with pytest.raises(ValueError):
-        JudgeEvidence(**fields)
+        JudgeEvidence.model_validate(fields)
 
 
 async def test_default_axes_use_builtin_instructions_and_default_client() -> None:
@@ -495,7 +504,7 @@ async def test_judge_failure_returns_error_and_no_score() -> None:
 @pytest.mark.parametrize("reasoning", [None, {"why": "it hedges"}, ["it", "hedges"], 3])
 @pytest.mark.parametrize("answer", [4, CANNOT_TELL], ids=["scored", "cannot-tell"])
 async def test_a_reply_whose_reasoning_is_not_a_string_is_a_parse_failure_that_keeps_its_spend(
-    reasoning, answer
+    reasoning: object, answer: int | str
 ) -> None:
     """A malformed ``reasoning`` is the judge breaking its protocol, refused where every other break is.
 
@@ -753,7 +762,7 @@ async def test_a_finished_reply_is_retried_and_a_truncated_one_is_not(stop_reaso
 
     assert outcome.score is None
     assert client.calls == calls
-    assert names in outcome.error
+    assert names in _error(outcome)
     # The spend is reported whichever way it ended, and counts every call made.
     assert outcome.usage is not None
     assert outcome.usage.calls == calls
@@ -768,11 +777,12 @@ async def test_a_truncated_reply_names_the_cap_and_the_reasoning_share_not_a_par
         RubricDim(name="conversation.tone", description="d", scale="ordinal"), _context()
     )
 
-    assert "Failed to parse" not in outcome.error
-    assert "TRUNCATED at the output cap" in outcome.error
-    assert "4096 output token(s), of which 3900 were reasoning" in outcome.error
-    assert "not retried" in outcome.error
-    assert outcome.usage.reasoning_tokens == 3900
+    error = _error(outcome)
+    assert "Failed to parse" not in error
+    assert "TRUNCATED at the output cap" in error
+    assert "4096 output token(s), of which 3900 were reasoning" in error
+    assert "not retried" in error
+    assert outcome.usage is not None and outcome.usage.reasoning_tokens == 3900
 
 
 async def test_a_truncated_reply_is_refused_even_when_its_content_parses() -> None:
@@ -790,11 +800,11 @@ async def test_a_truncated_reply_is_refused_even_when_its_content_parses() -> No
 
     assert outcome.score is None
     assert client.calls == 1
-    assert "cut short by the provider" in outcome.error
+    assert "cut short by the provider" in _error(outcome)
 
 
 @pytest.mark.parametrize("stop_reason", sorted(INCOMPLETE_STOP_REASONS))
-async def test_every_cut_short_reason_the_port_names_is_refused_after_one_call(stop_reason) -> None:
+async def test_every_cut_short_reason_the_port_names_is_refused_after_one_call(stop_reason: str) -> None:
     """The refusal reads the port's vocabulary, not one member of it.
 
     A content filter refuses the same request the same way, and a reply with no choices
@@ -809,6 +819,7 @@ async def test_every_cut_short_reason_the_port_names_is_refused_after_one_call(s
         label="Judge",
         case_id="tc-1",
     )
+    assert result is not None
 
     assert client.calls == 1
     assert "cut short by the provider" in result["error"]
@@ -1114,6 +1125,7 @@ async def test_judge_result_carries_no_rival_composite() -> None:
         label="Judge",
         case_id="c1",
     )
+    assert result is not None
 
     assert set(result["criteria_scores"]) == {"a", "b"}
     assert "composite_criteria" not in result

@@ -488,7 +488,9 @@ def _chooses_digits(spec: str) -> bool:
 
 
 def _joined_spec(spec: ast.JoinedStr) -> str:
-    return "".join(part.value if isinstance(part, ast.Constant) else "{}" for part in spec.values)
+    return "".join(
+        part.value if isinstance(part, ast.Constant) and isinstance(part.value, str) else "{}" for part in spec.values
+    )
 
 
 def _rule_primitives() -> tuple[frozenset[str], frozenset[str]]:
@@ -961,9 +963,11 @@ class _PythonForms(ast.NodeVisitor):
         for form, expression, spec in _spec_sites(node):
             self._add(node, form, expression, spec)
         if isinstance(node, ast.Call):
-            if (form := _call_form(node, self.where, self.lookup)) is not None:
-                self._add(node, form, ast.unparse(node))
-        elif (read := self.lookup.read(node, self.where)) is not None:  # a property is called by reading it
+            if (called := _call_form(node, self.where, self.lookup)) is not None:
+                self._add(node, called, ast.unparse(node))
+        elif (
+            isinstance(node, ast.expr) and (read := self.lookup.read(node, self.where)) is not None
+        ):  # a property is called by reading it
             self._add(node, f"{read}()", ast.unparse(node))
         # A primitive handed on as a function value (``map(format_number, ...)``, ``key=spell_at``, a table of
         # formatters, a name bound to one, a parameter's default, a return) decides where it is applied, which the
@@ -1120,11 +1124,11 @@ def _definitions(tree: ast.Module) -> Iterator[tuple[ast.FunctionDef | ast.Async
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     yield member, "method", node.name
     for top in tree.body:
-        for node in ast.walk(top):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        for walked in ast.walk(top):
+            if isinstance(walked, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 cls = top.name if isinstance(top, ast.ClassDef) else ""
-                for inner in ast.walk(node):
-                    if inner is not node and isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for inner in ast.walk(walked):
+                    if inner is not walked and isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         yield inner, "nested", cls
 
 
@@ -1350,7 +1354,8 @@ def _code_only(source: str) -> str:
             if chars[at] != "\n":
                 chars[at] = " "
 
-    at, last, templates = 0, "", []
+    at, last = 0, ""
+    templates: list[int] = []
     while at < len(source):
         char = source[at]
         if char.isspace():
@@ -1502,7 +1507,7 @@ def _js_sites(source: str, module: str = "sample.js") -> list[_Site]:
     code = _code_only(source)
     offsets, names = _js_statements(code)
     bounds = [*offsets[1:], len(code)]
-    spans = {}
+    spans: dict[str, list[tuple[int, int]]] = {}
     for start, end, name in zip(offsets, bounds, names, strict=True):
         if name != "<top>" and name not in _KIT_OWNERS:
             spans.setdefault(name, []).extend(_js_returned(code, start, end))
@@ -1695,7 +1700,9 @@ class TestTheWalkSeesEveryPythonForm:
             ('t"{value:.2f}"', ("value", ".2f")),
         ],
     )
-    def test_the_walk_sees_every_way_python_spells_a_number(self, source: str, expected) -> None:
+    def test_the_walk_sees_every_way_python_spells_a_number(
+        self, source: str, expected: tuple[str, str | None]
+    ) -> None:
         assert _specs(source) == [expected]
 
     def test_a_t_string_field_is_its_own_form(self) -> None:
@@ -1732,7 +1739,7 @@ class TestTheWalkSeesEveryPythonForm:
             ("math.ceil(-math.log10(top / 5))", ("<module>", "ceil(log10)", "math.ceil(-math.log10(top / 5))")),
         ],
     )
-    def test_the_walk_sees_rounding_and_every_primitive(self, source: str, expected) -> None:
+    def test_the_walk_sees_rounding_and_every_primitive(self, source: str, expected: tuple[str, str, str]) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_a_site_is_keyed_by_its_enclosing_definition(self) -> None:
@@ -1967,7 +1974,9 @@ class TestASiteHandedThroughAHelperIsStillASite:
         ],
         ids=["argument", "nested-call", "local"],
     )
-    def test_a_figure_handed_to_a_helper_makes_the_hander_a_wrapper(self, body: str, inner) -> None:
+    def test_a_figure_handed_to_a_helper_makes_the_hander_a_wrapper(
+        self, body: str, inner: tuple[str, str, str]
+    ) -> None:
         source = (
             _JOINED
             + "def _trimmed(text):\n    return text.strip()\n\n"
@@ -2063,7 +2072,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
         ],
         ids=["dict", "list", "bound-name"],
     )
-    def test_a_table_or_a_name_of_a_primitive_is_a_site(self, source: str, expected) -> None:
+    def test_a_table_or_a_name_of_a_primitive_is_a_site(self, source: str, expected: tuple[str, str, str]) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_an_annotation_a_class_test_or_a_field_read_is_not(self) -> None:
@@ -2117,7 +2126,7 @@ class TestAPrimitiveHandedOnAsAValueIsASite:
         ],
         ids=["positional", "keyword-only", "through-a-module", "lambda"],
     )
-    def test_a_primitive_as_a_parameter_s_default_is_a_site(self, source: str, expected) -> None:
+    def test_a_primitive_as_a_parameter_s_default_is_a_site(self, source: str, expected: tuple[str, str, str]) -> None:
         assert _forms(_python_sites(source)) == [expected]
 
     def test_a_primitive_returned_by_its_name_is_a_site_and_its_returner_is_a_factory(self) -> None:
@@ -2378,7 +2387,7 @@ class TestTheWalkSeesEveryKitForm:
             ("function a(v){return kShort(v,1);}", ("a", "kShort", "kShort(v,1)")),
         ],
     )
-    def test_the_walk_sees_every_way_the_kit_spells_a_number(self, source: str, expected) -> None:
+    def test_the_walk_sees_every_way_the_kit_spells_a_number(self, source: str, expected: tuple[str, str, str]) -> None:
         assert _forms(_js_sites(source)) == [expected]
 
     @pytest.mark.parametrize(

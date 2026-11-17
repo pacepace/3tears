@@ -11,17 +11,18 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from threetears.evals.run.jobs import EvalJobManager
+from threetears.evals.run.jobs import EvalJobManager, ProgressFn, WorkFn
+from threetears.evals.schema.models import EvalRun
 
 from packages.evals.tests.factories import make_eval_run
 from packages.evals.tests.job_support import InMemoryRunStore, blocked_work, start_tracked
 
 
-def _released_work():
+def _released_work() -> tuple[WorkFn, asyncio.Event, asyncio.Event]:
     """A work fn that parks until released, plus its started event and its release."""
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def work(progress) -> None:
+    async def work(progress: ProgressFn) -> None:
         started.set()
         await release.wait()
 
@@ -108,7 +109,7 @@ async def test_every_member_is_saved_before_any_starts() -> None:
     runs = [make_eval_run(), make_eval_run()]
     seen: list[set[str]] = []
 
-    async def work(progress) -> None:
+    async def work(progress: ProgressFn) -> None:
         seen.append(set(storage.runs))
 
     tasks = await start_tracked(manager, [(run, work, None) for run in runs])
@@ -149,7 +150,7 @@ async def test_a_sibling_that_cannot_be_saved_cancels_the_runs_already_saved() -
             super().__init__()
             self.saves = 0
 
-        def save_eval_run(self, run, *, if_match=None) -> None:
+        def save_eval_run(self, run: EvalRun, *, if_match: str | None = None) -> None:
             self.saves += 1
             if self.saves == 2:
                 raise OSError("disk full")
@@ -178,7 +179,7 @@ async def test_a_cancellation_that_cannot_be_saved_neither_stops_the_rest_nor_ma
             super().__init__()
             self.saves = 0
 
-        def save_eval_run(self, run, *, if_match=None) -> None:
+        def save_eval_run(self, run: EvalRun, *, if_match: str | None = None) -> None:
             self.saves += 1
             if self.saves == 3:
                 raise StorageError("the third member could not be saved")

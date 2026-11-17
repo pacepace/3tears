@@ -33,32 +33,12 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import pytest
-
-from packages.evals.tests.fixtures.writer_cases.analyst_cli import seeded_host
-from packages.evals.tests.off_loop import off_loop
-from packages.evals.tests.ops_support import CALLER, ops_fixture, OpsFixture
-from packages.evals.tests.report_support import stored_plan_analysis
-from packages.evals.tests.report_doc_support import snapshot_of
-from packages.evals.tests.report_writer_support import (
-    DOC,
-    MODEL,
-    FakeToolTurnClient,
-    FakeTurnModel,
-    answer,
-    call,
-    kairo_id,
-    reply,
-    review,
-    submitted,
-    thinking,
-    written,
-)
 from threetears.evals.actions import Caller, MountedTool, analyst_tools, eval_catalogue
 from threetears.evals.actions.report_writing import ReportNotStored, write_report
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.doc_page.build import build
-from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report.doc_page.store import doc_verdicts, generation_record, made_line, store_report_doc
+from threetears.evals.analysis.report.doc_page.text import doc_page_text
 from threetears.evals.analysis.report_input import ReportInput
 from threetears.evals.kernel import StorageError
 from threetears.evals.kernel.report_doc import (
@@ -75,7 +55,29 @@ from threetears.evals.ops.report_writer.loop import WriterLimits
 from threetears.evals.ops.report_writer.rubric import editor_rubric
 from threetears.evals.ops.report_writer.session import ToolOutcome, ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally
+from threetears.evals.ops.report_writer.write import ReportWritten
 from threetears.evals.schema.turns import TurnText
+
+from packages.evals.tests.fixtures.writer_cases.analyst_cli import seeded_host
+from packages.evals.tests.json_support import json_at, json_list, json_object
+from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import CALLER, OpsFixture, ops_fixture
+from packages.evals.tests.report_doc_support import snapshot_of
+from packages.evals.tests.report_support import stored_plan_analysis
+from packages.evals.tests.report_writer_support import (
+    DOC,
+    MODEL,
+    FakeToolTurnClient,
+    FakeTurnModel,
+    answer,
+    call,
+    kairo_id,
+    reply,
+    review,
+    submitted,
+    thinking,
+    written,
+)
 
 #: A finding that sends a report back however it scored.
 MUST_FIX: Final = {"claim": "c2", "severity": "must_fix", "finding": "Say what clearing the margin would buy."}
@@ -146,23 +148,24 @@ async def test_a_review_that_clears_in_round_one_stores_the_report_finished() ->
     assert model.asked == ["analyst", "editor-1"]
     assert (result.outcome.analyst_rounds, result.outcome.editor_rounds) == (1, 1)
     (stored,) = _stored(host)
+    assert result.stored is not None
     assert stored.id == result.stored.id and stored.ending == "stored"
     assert not stored.draft and stored.findings == []
     assert ReportDoc.model_validate(stored.doc) == ReportDoc.model_validate(DOC)
     generation = stored.generation
-    assert generation["model"] == model.model_name
-    assert set(generation["tally"]["by_round"]) == {"analyst:1", "editor:1"}
-    assert generation["tally"]["total"]["tool_calls"] == 2
-    assert [item["total"] for item in generation["reviews"]] == [13]
-    assert set(generation["sessions"]) == {"analyst", "editor-1"}
-    assert {entry["ref"] for entry in generation["sessions"].values()} == {
+    assert json_at(generation, "model") == model.model_name
+    assert set(json_object(generation, "tally", "by_round")) == {"analyst:1", "editor:1"}
+    assert json_at(generation, "tally", "total", "tool_calls") == 2
+    assert [json_at(item, "total") for item in json_list(generation, "reviews")] == [13]
+    assert set(json_object(generation, "sessions")) == {"analyst", "editor-1"}
+    assert {json_at(entry, "ref") for entry in json_object(generation, "sessions").values()} == {
         report_session_id(stored.id, "analyst"),
         report_session_id(stored.id, "editor-1"),
     }
     sessions = off_loop(host.eval_host.storage.load_report_sessions, stored.id, CALLER.scope_id)
-    assert sessions["analyst"].session["session"]["name"] == "analyst"
+    assert json_at(sessions["analyst"].session, "session", "name") == "analyst"
     assert sessions["editor-1"].session["name"] == "editor-1"
-    assert {result["stored"] for result in sessions["editor-1"].session["results"]} == {"rederive"}
+    assert {json_at(result, "stored") for result in json_list(sessions["editor-1"].session, "results")} == {"rederive"}
     assert result.page is not None and result.page.made.startswith(f"Written by {model.model_name}")
     assert not result.page.draft and result.page.findings == []
     assert "Draft" not in doc_page_text(result.page)
@@ -201,7 +204,7 @@ async def test_a_review_that_fails_sends_the_analyst_back_and_a_review_of_the_re
 
     assert result.ending == "stored", result.outcome.reason
     assert (result.outcome.analyst_rounds, result.outcome.editor_rounds) == (2, 2)
-    assert result.stored is not None and len(result.stored.doc["omitted"]) == len(revised()["omitted"])
+    assert result.stored is not None and len(json_list(result.stored.doc, "omitted")) == len(revised()["omitted"])
     assert result.stored.findings == []
     revision = analyst_client.requests[-1]["messages"][-1]
     asked = _texts({"messages": [revision]})
@@ -244,7 +247,9 @@ async def test_three_failing_reviews_end_stored_with_findings_and_no_fourth_roun
     assert (result.outcome.analyst_rounds, result.outcome.editor_rounds) == (3, 3)
     assert result.stored is not None and result.stored.ending == "stored_with_findings"
     assert result.stored.findings == [kept(MUST_FIX, "f2.1", 2), kept(SHOULD_FIX, "f3.1", 3)]
-    assert len(result.stored.doc["omitted"]) == len(revised()["omitted"]), "the last document is the one stored"
+    assert len(json_list(result.stored.doc, "omitted")) == len(revised()["omitted"]), (
+        "the last document is the one stored"
+    )
     assert result.page is not None
     assert {shown.finding for shown in result.page.findings} == {MUST_FIX["finding"], SHOULD_FIX["finding"]}
     assert result.stored.draft and result.page.draft
@@ -1048,8 +1053,17 @@ def _unsubmitted() -> FakeToolTurnClient:
     return FakeToolTurnClient(*(reply(TurnText("Still reading.")) for _ in range(4)))
 
 
-async def _written_from(fixture: OpsFixture, model: FakeTurnModel, **source: str) -> Any:
-    return await write_report(fixture.host, CALLER, model=model, budget=ReportBudget(usd=10), **source)
+async def _written_from(
+    fixture: OpsFixture, model: FakeTurnModel, *, campaign_id: str | None = None, analysis_id: str | None = None
+) -> ReportWritten:
+    return await write_report(
+        fixture.host,
+        CALLER,
+        model=model,
+        budget=ReportBudget(usd=10),
+        campaign_id=campaign_id,
+        analysis_id=analysis_id,
+    )
 
 
 def _assert_frozen_and_read_only(result: Any, model: FakeTurnModel, client: FakeToolTurnClient) -> None:

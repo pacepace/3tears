@@ -25,12 +25,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from threetears.evals import Eval
 from threetears.evals.analysis import host_declarations_digest
+from threetears.evals.analysis.campaign_title import declared_title, title_arm_name
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.service import campaign_report
-from threetears.evals.analysis.campaign_title import declared_title, title_arm_name
+from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.kernel.declaration import (
     AspectDesign,
     CampaignArm,
@@ -41,11 +41,11 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.kernel.host import RegistrationError, Sweepable, SweepableRegistry
 from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.quick.one_call import callable_host
-from threetears.evals.analysis.style import lever_reader_name
 from threetears.evals.schema import SweepableValue
 from threetears.evals.schema.campaign_upgrade import upgrade_campaign_v16
 from threetears.evals.schema.lever_words import lever_id_words
 from threetears.evals.storage import SqliteDocumentStore
+
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 from packages.evals.tests.off_loop import off_loop
@@ -73,9 +73,8 @@ ARMS = {
 
 
 def _lever(**fields: Any) -> Sweepable:
-    return Sweepable(
-        **{"name": "depth", "role": "lever", "read": lambda _run, _results: 1, "reader_prose": "x"} | fields
-    )
+    defaults: dict[str, Any] = {"name": "depth", "role": "lever", "read": lambda _run, _results: 1, "reader_prose": "x"}
+    return Sweepable(**defaults | fields)
 
 
 # --- a host declares the name, or is refused -------------------------------------------------------------------------

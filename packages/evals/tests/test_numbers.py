@@ -98,7 +98,7 @@ class TestWholeAndAbsent:
         assert format_number(value) == text
 
     @pytest.mark.parametrize("value", [None, math.nan, math.inf, -math.inf])
-    def test_an_absent_or_non_finite_value_is_a_dash_never_a_zero(self, value) -> None:
+    def test_an_absent_or_non_finite_value_is_a_dash_never_a_zero(self, value: float | None) -> None:
         assert format_number(value) == ABSENT == "—"
 
 
@@ -116,7 +116,7 @@ class TestTheSignedForm:
             (math.nan, "—"),
         ],
     )
-    def test_a_change_carries_its_direction_and_the_one_spelling(self, value, text: str) -> None:
+    def test_a_change_carries_its_direction_and_the_one_spelling(self, value: float | None, text: str) -> None:
         assert format_signed(value) == text
 
 
@@ -171,7 +171,9 @@ class TestOneRulerPerQuantity:
         ("values", "unit", "scaled"),
         [([900.0, 1200.0], "ms", (0.001, "s")), ([450.0], "ms", (1.0, "ms")), ([5.0], None, (1.0, ""))],
     )
-    def test_display_scale_picks_one_unit_for_every_value(self, values, unit: str | None, scaled) -> None:
+    def test_display_scale_picks_one_unit_for_every_value(
+        self, values: list[float], unit: str | None, scaled: tuple[float, str]
+    ) -> None:
         assert quantities.display_scale(values, unit) == scaled
 
 
@@ -194,13 +196,13 @@ class TestThePrefixedForm:
             (math.inf, ABSENT),
         ],
     )
-    def test_the_prefix_is_on_the_number(self, value, text) -> None:
+    def test_the_prefix_is_on_the_number(self, value: float | None, text: str) -> None:
         assert format_number(value, prefix="$") == text
 
     @pytest.mark.parametrize(
         "value", [1.23, -1.23, 0.0, 42.0, -42.0, 12345.6, -12345.6, 3.6e-169, -3.3e-7, 5.165e-5, None, math.nan]
     )
-    def test_an_empty_prefix_is_the_text_without_one(self, value) -> None:
+    def test_an_empty_prefix_is_the_text_without_one(self, value: float | None) -> None:
         assert format_number(value, prefix="") == format_number(value)
 
     @pytest.mark.parametrize("value", [1.23, -1.23, 3.6e-169, -3.3e-7, 12345.6])
@@ -254,7 +256,7 @@ class TestAPValue:
         assert spell_p(p) == text
 
     @pytest.mark.parametrize("p", [None, math.nan, math.inf])
-    def test_an_absent_p_reads_as_absent(self, p) -> None:
+    def test_an_absent_p_reads_as_absent(self, p: float | None) -> None:
         assert spell_p(p) == ABSENT
 
 
@@ -268,7 +270,7 @@ class TestAnEffectSize:
         assert spell_effect(value) == text
 
     @pytest.mark.parametrize("value", [None, math.nan, -math.inf])
-    def test_an_absent_effect_reads_as_absent(self, value) -> None:
+    def test_an_absent_effect_reads_as_absent(self, value: float | None) -> None:
         assert spell_effect(value) == ABSENT
 
 
@@ -280,7 +282,7 @@ class TestThereIsOneImplementation:
         for module in (quantities, report_forms):
             assert module.format_number is numbers.format_number, module.__name__
         assert not hasattr(references, "format_number")
-        assert references.PageForms is report_forms.PageForms
+        assert vars(references)["PageForms"] is report_forms.PageForms
 
     def test_no_other_module_defines_a_number_formatter(self) -> None:
         """A second ``def format_number`` anywhere in the engine or its surfaces is the defect itself.
@@ -325,6 +327,7 @@ class TestTheWidenedModulesRenderByTheRule:
         partition = latency_partition.decompose_total_ms(
             LatencyMetrics(total_ms=100.0, llm_ms=overrun + 100.0, tool_ms=0.0)
         )
+        assert partition.withheld is not None
         assert f"total_ms by {format_number(overrun)}ms, " in partition.withheld
         assert format_number(overrun) == "1234468"
 

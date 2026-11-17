@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a completion client's `model_name` is read-only to the engine
+
+`BoundCompletionClient`, `PricedCompletion` and `VariationLLM` declare `model_name` as a read-only property instead of
+a settable attribute. The engine only reads it, and a client answering it from a property (the shipped
+`threetears.evals.testing.RecordedCompletions`, whose replayed model is the recording's) did not satisfy the protocol
+under a type checker. A client holding it as a plain attribute satisfies it as before; nothing changes at run time.
+
 ### iam: `EXPIRES_INDEX_DDL` is range-sharded on YugabyteDB
 
 The purge index is now `(expires_at ASC)`. On YugabyteDB an index's first column is hashed unless it says otherwise,

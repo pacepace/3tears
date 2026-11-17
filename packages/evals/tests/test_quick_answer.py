@@ -12,12 +12,13 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
-
-from threetears.evals.analysis import TableBlock
 from threetears.evals import Answer, Eval
+from threetears.evals.analysis import TableBlock
 from threetears.evals.quick.one_call import callable_host
 from threetears.evals.run import get_result_trace, list_results
+
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.spend_support import spent
 
 SCOPE = "candidate-answer-tests"
 CASES = [
@@ -55,8 +56,8 @@ async def test_an_answer_s_spend_lands_on_each_result_and_on_the_summary() -> No
     (match,) = [measure for measure in summary.measures if measure.name == "match"]
     assert match.mean == 1.0
     tokens = [len(case["text"]) * 10 for case in CASES]
-    assert summary.role_spend("candidate").calls == 3
-    assert summary.role_spend("candidate").cost_usd == pytest.approx(sum(tokens) * RATE)
+    assert spent(summary, "candidate").calls == 3
+    assert spent(summary, "candidate").cost_usd == pytest.approx(sum(tokens) * RATE)
     # $0.00016, shown to three significant figures rather than rounded away.
     assert "candidate spend: $0.00016 over 3 call(s)" in summary.render()
     for result in off_loop(list_results, host.storage, summary.run_id, SCOPE):
@@ -86,7 +87,7 @@ async def test_an_unpriced_answer_leaves_the_cost_unknown_never_zero() -> None:
 
     host = callable_host()
     summary = (await Eval(CASES, unpriced, [LABEL], k=1).run(host=host, scope=SCOPE)).summary
-    assert summary.role_spend("candidate").calls == 3 and summary.role_spend("candidate").cost_usd is None
+    assert spent(summary, "candidate").calls == 3 and spent(summary, "candidate").cost_usd is None
     assert "candidate spend: unpriced over 3 call(s): its client reported no price for them" in summary.render()
     assert all(result.cost_usd is None for result in off_loop(list_results, host.storage, summary.run_id, SCOPE))
 
@@ -124,13 +125,13 @@ async def test_a_comparison_tests_the_arms_reported_cost_against_the_control() -
     comparison = await Eval(
         COMPARED_CASES, {"dearer": dearer, "cheaper": priced}, [LABEL], k=2, name="dearer vs cheaper"
     ).run(store=":memory:", scope=SCOPE)
-    assert comparison.arms["cheaper"].role_spend("candidate").cost_usd == pytest.approx(
-        comparison.arms["dearer"].role_spend("candidate").cost_usd / 10  # type: ignore[operator]
-    )
+    dearer_cost = spent(comparison.arms["dearer"], "candidate").cost_usd
+    assert dearer_cost is not None
+    assert spent(comparison.arms["cheaper"], "candidate").cost_usd == pytest.approx(dearer_cost / 10)
     tables = {block.name: block for block in comparison.report.blocks if isinstance(block, TableBlock)}
     by_reading = {row["reading"]: row for row in tables["comparisons"].values()}
     # The candidate's spend, not cost_usd, which sums a judge's spend too: what it cost to measure the arm.
-    assert not {reading for reading in by_reading if reading.startswith("Measuring spend")}
+    assert not {reading for reading in by_reading if str(reading).startswith("Measuring spend")}
     # Priced under a cent per reply on both arms, so the reading is headed per 1,000 replies.
     cost = by_reading["Production cost, per 1,000 replies"]
     # Two arms: the candidate's figure heads its own column, by its name.

@@ -7,19 +7,22 @@ here pools two such results and fails if the pooled figure drops either basis or
 
 from __future__ import annotations
 
-import pytest
+from collections.abc import Sequence
+from typing import Any
 
-from threetears.evals.analysis.reads import compare_two_runs
-from threetears.evals.analysis.reporting import METRIC_COMPOSITE, pooled_composite_basis, project_score_records
-from threetears.evals.analysis.lenses.pivot import compute_pivot
+import pytest
 from threetears.evals.analysis.lenses.frontier import compute_frontier
 from threetears.evals.analysis.lenses.history import compute_history
+from threetears.evals.analysis.lenses.pivot import compute_pivot
+from threetears.evals.analysis.reads import compare_two_runs
+from threetears.evals.analysis.reporting import METRIC_COMPOSITE, pooled_composite_basis, project_score_records
 from threetears.evals.kernel.errors import NotFoundError
-from threetears.evals.schema.models import EvalResult, EvalTemplate, GoalStateOutcome, RubricScore
-from threetears.evals.kernel.scoring import composite_basis, compute_composite_summary, pool_composite_bases
 from threetears.evals.kernel.run_pages import ResultKey
+from threetears.evals.kernel.scoring import composite_basis, compute_composite_summary, pool_composite_bases
 from threetears.evals.ops.lenses import RunsCompared, history_text, pivot_text, runs_compared_text
-from packages.evals.tests.factories import make_eval_result, make_eval_run, make_subject, make_campaign
+from threetears.evals.schema.models import EvalResult, EvalRun, EvalTemplate, GoalStateOutcome, RubricScore
+
+from packages.evals.tests.factories import make_campaign, make_eval_result, make_eval_run, make_subject
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
 _HOST = toyhost_profile(every_seat=True)
@@ -29,7 +32,7 @@ _LEFT = ["extraction.accuracy", "extraction.format"]
 _RIGHT = ["extraction.tone"]
 
 
-def _result(run, case: str, dims: list[str], *, score: int = 4, **overrides) -> EvalResult:
+def _result(run: EvalRun, case: str, dims: list[str], *, score: int = 4, **overrides: Any) -> EvalResult:
     return make_eval_result(
         eval_run_id=run.id,
         scope_id=run.scope_id,
@@ -43,7 +46,7 @@ def _result(run, case: str, dims: list[str], *, score: int = 4, **overrides) -> 
     )
 
 
-def _ragged_run(**run_overrides):
+def _ragged_run(**run_overrides: Any) -> tuple[EvalRun, list[EvalResult]]:
     run = make_eval_run(subject_snapshot=make_subject("ent-maple", "Maple"), **run_overrides)
     return run, [_result(run, "tc1", _LEFT), _result(run, "tc2", _RIGHT, score=2)]
 
@@ -136,14 +139,14 @@ class TestWhereThePoolIsShown:
         results_b = [_result(run_b, "tc1", _LEFT), _result(run_b, "tc2", _LEFT)]
 
         class _Store:
-            def query_eval_result_keys_by_run(self, run_id: str, scope_id: str):
+            def query_eval_result_keys_by_run(self, run_id: str, scope_id: str) -> list[ResultKey]:
                 rows = results_a if run_id == run_a.id else results_b
                 return [ResultKey(r.id, r.test_case_id, r.k_iteration, r.model, r.scored_at) for r in rows]
 
-            def load_eval_results(self, result_ids, scope_id: str):
+            def load_eval_results(self, result_ids: Sequence[str], scope_id: str) -> list[EvalResult]:
                 return [r for r in (*results_a, *results_b) if r.id in set(result_ids)]
 
-            def load_eval_run(self, run_id: str, scope_id: str):
+            def load_eval_run(self, run_id: str, scope_id: str) -> EvalRun:
                 return run_a if run_id == run_a.id else run_b
 
         compared = compare_two_runs(

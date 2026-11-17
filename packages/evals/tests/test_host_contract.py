@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import warnings
+from collections.abc import Callable
 from dataclasses import fields, replace
 from pathlib import Path
 
@@ -346,7 +347,6 @@ def test_a_host_with_no_world_reports_inapplicable_rather_than_uncovered() -> No
     answer = worldless.representable("scan_quality")
 
     assert answer.state == "inapplicable"
-    assert answer.state != "uncovered"
 
 
 def test_the_default_profile_is_built_without_a_warning_and_holds_no_style_field() -> None:
@@ -358,11 +358,19 @@ def test_the_default_profile_is_built_without_a_warning_and_holds_no_style_field
     assert not {"style", "caveat_kinds"} & {f.name for f in fields(toy)}
 
 
+def _unchecked(function: Callable[..., object]) -> Callable[..., object]:
+    """``function`` with its signature unchecked, for a call that hands it an ill-typed value on purpose.
+
+    The tests that use it assert the call is refused: the bad value is what they exercise.
+    """
+    return function
+
+
 @pytest.mark.parametrize("retired", ["style", "caveat_kinds"])
 def test_passing_a_retired_style_field_is_refused_naming_it(retired: str) -> None:
     """A host still passing ``style=`` or ``caveat_kinds=`` is refused, the field named, rather than ignored."""
     with pytest.raises(TypeError, match=retired):
-        replace(toyhost_profile(), **{retired: frozenset({"adjudication_scope"})})
+        _unchecked(replace)(toyhost_profile(), **{retired: frozenset({"adjudication_scope"})})
 
 
 def test_a_campaign_bar_looser_than_the_registered_one_is_refused_quoting_the_incumbent() -> None:
@@ -572,7 +580,8 @@ def test_a_seed_that_would_loosen_a_registered_bar_is_flagged_rather_than_adopte
 
     assert slipped.vacuous
     assert "does not tighten" in slipped.reason
-    assert toy.bars.get("extract_invoice_fields", "field_accuracy").threshold == 0.92, "the incumbent stands"
+    incumbent = toy.bars.get("extract_invoice_fields", "field_accuracy")
+    assert incumbent is not None and incumbent.threshold == 0.92, "the incumbent stands"
 
     # And a genuine tightening is not flagged, or the flag would mean nothing.
     tightened = toy.bars.propose(
@@ -836,6 +845,7 @@ def test_no_engine_module_reaches_into_the_hosts_opaque_payload() -> None:
                 and node.slice.value == "host_payload"
             )
             if reached:
+                assert isinstance(node, ast.Attribute | ast.Subscript)
                 offenders.append(f"{relative.as_posix()}:{node.lineno}")
 
     assert offenders == [], (
@@ -911,7 +921,7 @@ def test_a_subject_component_no_lever_carries_is_refused() -> None:
 
 
 @pytest.mark.parametrize("engine_lever", [CANDIDATE_MODEL_LEVER, CANDIDATE_KIND_LEVER, "extractor.page_limit"])
-def test_a_reader_that_resolves_a_lever_the_engine_resolves_is_refused(engine_lever) -> None:
+def test_a_reader_that_resolves_a_lever_the_engine_resolves_is_refused(engine_lever: str) -> None:
     """Two writers of one coordinate are two places to disagree; the engine's is the only one."""
     toy = toyhost_profile()
     assert toy.variant_levers is not None
@@ -1142,7 +1152,7 @@ def _refusal_prefix(registry: MeasureRegistry) -> str:
     """
     with pytest.raises(KeyError) as refused:
         registry.merit_axis("never_declared")
-    message = refused.value.args[0]
+    message = str(refused.value.args[0])
     return message[: message.index("never_declared")]
 
 

@@ -17,22 +17,20 @@ is pinned here holds for FastMCP (``test_fastmcp_transport.py``) and any adapter
 
 from __future__ import annotations
 
-from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
-
 import re
 from typing import Any
 
 import pytest
 from pydantic import BaseModel, Field
-
 from threetears.evals.actions import (
     Action,
     ActionCatalogue,
     Caller,
     HelpTopic,
+    PermissionClass,
+    ToolSpec,
     analyst_tools,
     catalogue_primer,
-    ToolSpec,
     engine_actions,
     eval_catalogue,
     read_only_tools,
@@ -41,10 +39,12 @@ from threetears.evals.actions import (
 )
 from threetears.evals.actions.render import render_cited
 from threetears.evals.kernel.errors import ValidationFailedError
-from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.ops import JobHandle, JobsStarted, OpsHost, RunLine
-from packages.evals.tests.ops_support import CALLER, ops_fixture
+from threetears.evals.schema import DEFAULT_LAUNCH_K_RUNS
+from threetears.evals.schema.base import EvalBaseModel
+
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import CALLER, ops_fixture
 
 #: The most characters a primer may run to: one client was measured cutting a server's instructions at 2,045
 #: characters without a mark, and the catalogue holds a primer to 1,800 so it reaches a model whole.
@@ -459,18 +459,17 @@ def test_every_engine_action_that_starts_jobs_reads_them_back_the_one_way() -> N
 
 def test_a_short_action_declaring_no_render_is_refused() -> None:
     """The jobs-started render reads only JobsStarted; an action whose result is anything else says how it reads."""
-    fields = {
-        "name": "note_echo",
-        "summary": "Echo a note back.",
-        "workflow": "Host",
-        "permission": "read",
-        "params": _Echo,
-        "result": _Echoed,
-        "handler": _echo,
-        "example": {"note": "hello"},
-    }
     with pytest.raises(ValueError, match="declares its render"):
-        Action(**fields)
+        Action(
+            name="note_echo",
+            summary="Echo a note back.",
+            workflow="Host",
+            permission="read",
+            params=_Echo,
+            result=_Echoed,
+            handler=_echo,
+            example={"note": "hello"},
+        )
 
 
 def test_no_engine_parameter_is_described_by_the_action_that_takes_it() -> None:
@@ -543,7 +542,7 @@ def test_a_tool_cut_to_workflows_mounts_their_actions_alone() -> None:
 
 
 def test_a_tool_cut_to_workflows_says_in_one_line_why_its_role_goes_without_the_others_and_only_it_does() -> None:
-    reads = frozenset({"read"})
+    reads: frozenset[PermissionClass] = frozenset({"read"})
     for left_out in ("", "  ", "two\nlines"):
         with pytest.raises(ValueError, match="left_out"):
             ToolSpec(name="t", description="d", permissions=reads, workflows=frozenset({"Count"}), left_out=left_out)
@@ -567,7 +566,7 @@ async def test_an_action_a_role_goes_without_is_refused_with_why_and_a_remedy_ne
     count = _action(name="note_count", workflow="Count", result=_Counted, handler=_refers_to_echo)
     catalogue = ActionCatalogue([_action(), count])
     why = "a counter counts what it is given and echoes nothing; ask the echoing role for the note"
-    reads = frozenset({"read"})
+    reads: frozenset[PermissionClass] = frozenset({"read"})
     tool = catalogue.mount(
         ToolSpec(name="counter", description="d", permissions=reads, workflows=frozenset({"Count"}), left_out=why)
     )

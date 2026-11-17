@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-
 from threetears.evals.analysis.bundle.schema import RunSummary
-from threetears.evals.schema.models import EvalRun
 from threetears.evals.run.runner import cell_execution_order
+from threetears.evals.schema.models import EvalRun
+
 from packages.evals.tests.factories import make_eval_run, make_test_case
 
 
@@ -70,9 +70,9 @@ def test_a_run_summary_names_one_candidate_model() -> None:
         "n_cost_unpriced": 0,
     }
 
-    assert RunSummary(**fields, candidate_model="m1").candidate_model == "m1"
+    assert RunSummary.model_validate({**fields, "candidate_model": "m1"}).candidate_model == "m1"
     with pytest.raises(ValidationError, match="candidate_model"):
-        RunSummary(**fields, candidate_model="")
+        RunSummary.model_validate({**fields, "candidate_model": ""})
 
 
 def test_the_matrix_is_cases_by_repeats_at_the_one_model() -> None:

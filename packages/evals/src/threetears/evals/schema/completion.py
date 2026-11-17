@@ -363,8 +363,14 @@ class BoundCompletionClient(CompletionClient, Protocol):
     call rather than a re-derivation of the host's cascade.
     """
 
-    #: The model this client calls, as the host resolved it.
-    model_name: str
+    @property
+    def model_name(self) -> str:
+        """The model this client calls, as the host resolved it.
+
+        Read-only to the engine, so a client may hold it as a plain attribute or answer it from a property (a
+        recording client names the model its recording holds).
+        """
+        ...
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` with this prompt pair can cost, in dollars, or ``None`` when it cannot say.
@@ -388,8 +394,13 @@ class PricedCompletion(Protocol):
     :class:`BoundCompletionClient` and :class:`VariationLLM` both satisfy it.
     """
 
-    #: The model this client calls, as the host resolved it — what the call is priced and recorded as.
-    model_name: str
+    @property
+    def model_name(self) -> str:
+        """The model this client calls, as the host resolved it — what the call is priced and recorded as.
+
+        Read-only to the engine, so a client may hold it as a plain attribute or answer it from a property.
+        """
+        ...
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` with this prompt pair can cost, in dollars, or ``None`` when it cannot say.
@@ -467,8 +478,14 @@ class VariationLLM(SimulatorLLM, Protocol):
     (:data:`~threetears.evals.kernel.host.eval_host.CompletionRole`) satisfies it.
     """
 
-    #: The model this client calls, as the host resolved it.
-    model_name: str
+    @property
+    def model_name(self) -> str:
+        """The model this client calls, as the host resolved it.
+
+        Read-only to the engine, so a client may hold it as a plain attribute or answer it from a property (a
+        recording client names the model its recording holds).
+        """
+        ...
 
     def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
         """The most one :meth:`generate` with this prompt pair can cost — see :meth:`PricedCompletion.price_ceiling`.

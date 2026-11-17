@@ -23,11 +23,12 @@ import random
 import tracemalloc
 from collections.abc import Callable
 from dataclasses import replace
-
 from typing import Any
 
 import pytest
-
+from threetears.evals.analysis import assemble_context_bundle, reads
+from threetears.evals.analysis.bundle import comparisons
+from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.analysis.stats import (
     DETECTABLE_POWER,
     SIGNIFICANCE_ALPHA,
@@ -36,21 +37,19 @@ from threetears.evals.analysis.stats import (
     paired_t_power,
     variance_components,
 )
-from threetears.evals.analysis import assemble_context_bundle, reads
-from threetears.evals.analysis.bundle import comparisons
-from threetears.evals.analysis.bundle.comparisons import planning_readings
 from threetears.evals.kernel import EvalStorage, ValidationFailedError
 from threetears.evals.kernel import storage as storage_module
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.result_condition import candidate_failure_cause, harness_faulted
-from threetears.evals.schema.models import EvalResult, EvalRun, RubricScore
-from threetears.evals.ops import DetectableEffects, LaunchArguments, launch_estimate
+from threetears.evals.ops import DetectableEffect, DetectableEffects, LaunchArguments, launch_estimate
 from threetears.evals.ops.lenses import detectable_effects, estimate_text
+from threetears.evals.schema.models import EvalResult, EvalRun, RubricScore
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.factories import make_campaign, make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.corpus import ToyhostStorage
-from packages.evals.tests.hot_path_support import hot_path_corpus
 from packages.evals.tests.fixtures.toyhost.run import toyhost_template
+from packages.evals.tests.hot_path_support import hot_path_corpus
 from packages.evals.tests.ops_support import TOYHOST_SCOPE, TOYHOST_SUBJECT, ops_fixture
 from packages.evals.tests.read_path_support import EngineOnlyStore
 from packages.evals.tests.run_pages_support import BatchRecordingStore
@@ -209,7 +208,7 @@ def _host() -> EvalHost:
     return replace(ops_fixture().host.eval_host, storage=EvalStorage(InMemoryDocumentStore()))
 
 
-def _reading(block: DetectableEffects) -> object:
+def _reading(block: DetectableEffects) -> DetectableEffect:
     (effect,) = [effect for effect in block.effects if effect.name == READING]
     return effect
 

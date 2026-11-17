@@ -35,19 +35,19 @@ import json
 import math
 import re
 from collections.abc import Collection, Iterable, Iterator
-from typing import Any, get_args
 from pathlib import Path
+from typing import Any, get_args
 
 import pytest
 from pydantic import ValidationError
-
-from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
 from threetears.evals.analysis import ABSENT, UNPRICED, dollars_text, format_number
 from threetears.evals.analysis.analyst.snapshot import frozen_input
 from threetears.evals.analysis.errors import UnresolvableReference
+from threetears.evals.analysis.report.block_spec import block_look, complete_chart
 from threetears.evals.analysis.report.blocks import ChartBlock, TableBlock, TableCell
 from threetears.evals.analysis.report.charts import BarRow, BarsChart, GateMatrixChart, LatticeChart
-from threetears.evals.analysis.report.block_spec import block_look, complete_chart
+from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
+from threetears.evals.analysis.report.fact_arms import fact_arms
 from threetears.evals.analysis.report.figure_keys import (
     Figure,
     cost_basis,
@@ -56,19 +56,20 @@ from threetears.evals.analysis.report.figure_keys import (
     render,
     resolve,
 )
-from threetears.evals.analysis.report.rows import PriceStep, query_rows
+from threetears.evals.analysis.report.forms import ColumnMoney, PageForms
+from threetears.evals.analysis.report.gates import gate_check
 from threetears.evals.analysis.report.parts.full_results import every_table
 from threetears.evals.analysis.report.parts.look import figure_text, quantity
 from threetears.evals.analysis.report.parts.model import PageChart
 from threetears.evals.analysis.report.parts.resolve import resolve_chart
 from threetears.evals.analysis.report.parts.tables import arms_table
-from threetears.evals.kernel.chart_query import ChartQuery, PlanChartKind, PlannedChart
-from threetears.evals.analysis.report.cost_unit import MoneyRuler, money_ruler
-from threetears.evals.analysis.report.gates import gate_check
+from threetears.evals.analysis.report.rows import PriceStep, query_rows
 from threetears.evals.analysis.report_input import Criterion, Pricing, ReportInput, Unanswered
-from threetears.evals.analysis.report.fact_arms import fact_arms
-from threetears.evals.analysis.report.forms import ColumnMoney, PageForms
+from threetears.evals.kernel.chart_query import ChartQuery, PlanChartKind, PlannedChart
 from threetears.evals.kernel.numbers import CENT, MoneyForm, money_form, spell_dollars
+
+from packages.evals.tests.analyst_support import KAIRO, fixture_inputs, fixture_snapshots
+from packages.evals.tests.figure_support import figure_number
 
 #: r1 to r5, and Kairo round 2 frozen from its bundle.
 INPUTS: dict[str, ReportInput] = {
@@ -164,12 +165,6 @@ def _arms(held: ReportInput, family: str) -> dict[str, Figure]:
             # NOSILENT: an arm the input states no such figure for is no member of the family's set.
             continue
     return figures
-
-
-def _number(figure: Figure) -> float:
-    """A figure's number; a figure stating anything else fails here, naming it."""
-    assert isinstance(figure.value, int | float), figure
-    return float(figure.value)
 
 
 # --- the form is chosen per set ----------------------------------------------------------------------------------
@@ -509,7 +504,7 @@ def test_r2s_cost_reads_in_its_tables_as_its_key_reads_in_prose() -> None:
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_a_charts_notes_and_ticks_read_in_one_form(name: str) -> None:
     held = INPUTS[name]
-    costs = [_number(figure) for figure in _arms(held, "cost_per_1k.{arm}").values()]
+    costs = [figure_number(figure) for figure in _arms(held, "cost_per_1k.{arm}").values()]
     if not costs:
         pytest.skip(f"{name} states no cost")
     drawn = quantity("usd_per_1k", costs)
@@ -608,7 +603,7 @@ def test_the_kairo_cost_contrast_reads_two_figures_of_its_interval() -> None:
 @pytest.mark.parametrize("name", sorted(INPUTS))
 def test_a_cost_gap_reads_in_the_form_of_the_costs_it_compares(name: str) -> None:
     held = INPUTS[name]
-    costs = {arm: _number(figure) for arm, figure in _arms(held, "cost_per_1k.{arm}").items()}
+    costs = {arm: figure_number(figure) for arm, figure in _arms(held, "cost_per_1k.{arm}").items()}
     if len(costs) < 2:
         pytest.skip(f"{name} states fewer than two costs")
     form = money_form(costs.values(), rate=True)

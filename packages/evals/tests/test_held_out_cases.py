@@ -14,6 +14,9 @@ import json
 import platform
 
 import pytest
+from threetears.evals.harness import WriterCaseFile, read_writer_cases
+from threetears.evals.ops.report_writer.writer_bank import writer_group_side
+from threetears.evals.schema.hashing import identity_json
 
 from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import (
     DOW_RUNGS,
@@ -24,9 +27,7 @@ from packages.evals.tests.fixtures.writer_cases.export_held_out_cases import (
     reproducible_cases,
 )
 from packages.evals.tests.fixtures.writer_cases.export_writer_cases import CASES_DIR
-from threetears.evals.harness import WriterCaseFile, read_writer_cases
-from threetears.evals.ops.report_writer.writer_bank import writer_group_side
-from threetears.evals.schema.hashing import identity_json
+from packages.evals.tests.json_support import json_at
 
 #: The held-out share the acceptance run is launched at.
 ACCEPTANCE_FRACTION = 0.99
@@ -83,7 +84,7 @@ def test_cases_of_one_campaign_are_one_group_withholding_one_note() -> None:
     seen: dict[str, WriterCaseFile] = {}
     clashes = []
     for case in _union():
-        campaign = str(case.snapshot.report_input["meta"]["campaign"])
+        campaign = str(json_at(case.snapshot.report_input, "meta", "campaign"))
         first = seen.setdefault(campaign, case)
         if (first.group or first.name, sorted(first.withhold)) != (case.group or case.name, sorted(case.withhold)):
             clashes.append(f"{first.name!r} and {case.name!r} both report on {campaign!r}")
@@ -153,6 +154,7 @@ def test_the_production_minted_case_is_the_first_real_one() -> None:
         [],
         "report-snapshot:de914e5e66bb9ac748f9e753210aff29",
     )
+    assert case.minted is not None
     assert len(case.minted.unmatched) == 2
     assert case.minted.withheld == []
 
@@ -165,6 +167,7 @@ def test_the_second_production_minted_case_is_the_judge_shortlist() -> None:
         [],
         "report-snapshot:7e6a1af7d990096595843eb8f1f4f26f",
     )
+    assert case.minted is not None
     assert len(case.minted.unmatched) == 2
     assert case.minted.withheld == []
 
@@ -177,6 +180,7 @@ def test_the_third_production_minted_case_is_kairo_models_pilot() -> None:
         [],
         "report-snapshot:e0a71713362c27521787292b03d1a15f",
     )
+    assert case.minted is not None
     assert len(case.minted.unmatched) == 13
     assert case.minted.withheld == []
 
@@ -189,6 +193,7 @@ def test_the_fourth_production_minted_case_is_1017_reasoning_effort() -> None:
         [],
         "report-snapshot:ef124642639ad38eb722f746f3621670",
     )
+    assert case.minted is not None
     assert len(case.minted.unmatched) == 11
     assert case.minted.withheld == []
 
@@ -201,6 +206,7 @@ def test_the_fifth_production_minted_case_is_planted_effect() -> None:
         [],
         "report-snapshot:6aeeefc093054d1d54012f80805739a4",
     )
+    assert case.minted is not None
     assert len(case.minted.unmatched) == 11
     assert case.minted.withheld == []
 
@@ -213,6 +219,7 @@ def test_the_sixth_production_minted_case_is_kairo_directives_ab() -> None:
         [],
         "report-snapshot:c06d084cbed5c085dccbc65d77531547",
     )
+    assert case.minted is not None
     assert len(case.minted.unmatched) == 10
     assert case.minted.withheld == []
 
@@ -225,5 +232,6 @@ def test_the_seventh_production_minted_case_is_kairo_persona_r1() -> None:
         [],
         "report-snapshot:7fba39b1797487dc8ae8cf79a6e9c794",
     )
+    assert case.minted is not None
     assert len(case.minted.unmatched) == 12
     assert case.minted.withheld == []

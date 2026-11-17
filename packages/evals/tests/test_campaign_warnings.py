@@ -5,35 +5,29 @@ what it means for the arm."""
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
-
-from threetears.evals.analysis.report.campaign.names import aspect_name
 from threetears.evals import Eval, grader
 from threetears.evals.analysis import (
     CampaignReadings,
-    get_campaign,
     CampaignReport,
     campaign_report_markdown,
+    get_campaign,
     serialize_report,
 )
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
-from threetears.evals.analysis.report.campaign.names import AspectNames
-
+from threetears.evals.analysis.report.campaign.names import AspectNames, aspect_name
 from threetears.evals.analysis.report.campaign.scorecard import READING_WORDS
 from threetears.evals.analysis.report.campaign.warnings import guardrail_warnings
-from threetears.evals.analysis.report.forms import PageForms
-from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
 from threetears.evals.analysis.report.campaign_page import build_campaign_report, campaign_warnings
+from threetears.evals.analysis.report.forms import PageForms
 from threetears.evals.analysis.report.model import (
     DisclosureBlock,
     TableBlock,
 )
-
-from packages.evals.tests.campaign_support import (
-    CANDIDATE_LABEL,
-)
+from threetears.evals.kernel.surface import GuardrailCell, GuardrailCheck, GuardrailReadings
 
 from packages.evals.tests.campaign_page_support import (
     first_screen_markdown,
@@ -41,11 +35,14 @@ from packages.evals.tests.campaign_page_support import (
     kind_page_of,
     page_of,
 )
+from packages.evals.tests.campaign_support import (
+    CANDIDATE_LABEL,
+)
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_shapes_support import SHAPES, ArmTrials, AspectTrials, shape_of
 
 
-def _warned(blocks: list[object], source: str) -> list[str]:
+def _warned(blocks: Sequence[object], source: str) -> list[str]:
     return [block.text for block in blocks if isinstance(block, DisclosureBlock) and block.source == source]
 
 
@@ -191,7 +188,7 @@ def _right(case: dict[str, int], answer: str) -> bool:
     return answer.startswith("right")
 
 
-def _no_leak(case: dict[str, int], answer: str) -> bool:
+def _no_leak(case: Mapping[str, Any], answer: str) -> bool:
     """Whether the answer keeps the customer's secret."""
     return "SECRET" not in answer
 
@@ -315,7 +312,7 @@ async def test_with_no_question_the_lead_is_the_classifier_s_accuracy_in_the_asp
 
         return answer
 
-    def no_secret(case: dict[str, Any], answer: dict[str, str]) -> bool:
+    def no_secret(case: Mapping[str, Any], answer: dict[str, str]) -> bool:
         """Whether the answer keeps the customer's secret."""
         return "SECRET" not in answer["note"]
 

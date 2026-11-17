@@ -21,7 +21,6 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-
 from threetears.evals.kernel.judge_cases import JudgeCase, JudgeCaseSource
 from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 from threetears.evals.run import JUDGE_MAX_TOKENS, JUDGE_REQUEST_SETTINGS
@@ -232,7 +231,7 @@ def test_a_score_and_its_paired_halves_carry_what_the_first_call_was_sent_with()
     )
     assert score.judge_sent_settings == EFFORT_HIGH
     assert RubricScore(dim="conversation.tone", score=4, scale="ordinal", axis="capability").judge_sent_settings is None
-    halves = {
+    halves: dict[str, Any] = {
         "dim": "conversation.tone",
         "scale": "ordinal",
         "first_score": 4,

@@ -20,7 +20,7 @@ extractor driven by a launcher that generates the way an adopter's does (once pe
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -379,7 +379,9 @@ async def test_the_writer_enters_no_identity() -> None:
     ],
     ids=["generation-needs-a-writer", "a-writer-for-no-generation", "a-writer-for-no-llm-axis", "a-writer-alone"],
 )
-async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spend(axes, arguments, said: str) -> None:
+async def test_a_writer_the_launch_needs_or_cannot_use_is_refused_before_any_spend(
+    axes: list[VariationAxis], arguments: dict[str, Any], said: str
+) -> None:
     template = _template(*axes)
     host, storage, clients, handed = off_loop(_generating_host, template)
 
@@ -422,7 +424,7 @@ async def test_a_generation_recording_another_writer_than_the_one_named_is_refus
     [({"n_variations": 2}, "cannot honour n_variations=2"), ({"variation_model": WRITER}, "generates none")],
     ids=["n_variations", "variation_model"],
 )
-async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, said: str) -> None:
+async def test_run_launch_hands_the_launch_both_generation_arguments(arguments: dict[str, Any], said: str) -> None:
     fixture = off_loop(ops_fixture)
     launched = LaunchArguments(
         template_id=toyhost_template().id, subject_id=TOYHOST_SUBJECT.subject_id, models=[RUN_MODELS[0]], **arguments
@@ -437,7 +439,9 @@ async def test_run_launch_hands_the_launch_both_generation_arguments(arguments, 
     [({"n_variations": 2}, "cannot honour n_variations=2"), ({"variation_model": WRITER}, "generates none")],
     ids=["n_variations", "variation_model"],
 )
-async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(arguments, said: str) -> None:
+async def test_the_run_launch_action_hands_the_launch_both_generation_arguments(
+    arguments: dict[str, Any], said: str
+) -> None:
     fixture = off_loop(ops_fixture)
     evals = eval_catalogue().mount_all(standard_tools())[0]
     call = {
@@ -689,7 +693,7 @@ async def test_a_generating_arm_of_a_kind_that_plans_nothing_is_unpriceable() ->
     ],
     ids=["more-cases-than-planned", "another-model-than-named"],
 )
-async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said: str) -> None:
+async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan: dict[str, Any], said: str) -> None:
     template = _template(ENUM_AXIS)
     host, storage, _clients, _handed = off_loop(_generating_host, template, **plan)
 
@@ -708,7 +712,7 @@ async def test_an_arm_that_runs_other_than_it_was_priced_is_refused(plan, said: 
         ({"case_count": 1, "candidate_model": "m", "simulator_model": " "}, "simulator_model is blank"),
     ],
 )
-def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said: str) -> None:
+def test_an_arm_plan_refuses_no_cases_and_no_model(bad: dict[str, Any], said: str) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPlan(**{"judge": None, "simulator_model": None, **bad})
 
@@ -721,7 +725,7 @@ def test_an_arm_plan_refuses_no_cases_and_no_model(bad, said: str) -> None:
         ({"predicted_usd": 1.0, "basis": "  "}, "basis is blank"),
     ],
 )
-def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad, said: str) -> None:
+def test_an_arm_price_refuses_a_negative_or_unexplained_prediction(bad: dict[str, Any], said: str) -> None:
     with pytest.raises(ValueError, match=said):
         ArmPrice(**bad)
 
@@ -790,7 +794,7 @@ async def test_a_launch_reads_the_hosts_settings_once_so_a_reload_cannot_refuse_
 
 
 def _history(
-    storage: EvalStorage, *, template_id: str, model: str, costs: list[float | None], **run_fields: Any
+    storage: EvalStorage, *, template_id: str, model: str, costs: Sequence[float | None], **run_fields: Any
 ) -> None:
     # A finished run: history is what ended. One still going carries a lease its process renews.
     run_fields = {"status": "completed", **run_fields}
@@ -1050,7 +1054,9 @@ _SIMULATED_CHEAPLY = {"simulator_model": "sim-cheap", "model_role_provenance": {
         "another-rig",
     ],
 )
-def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(history, other, same) -> None:
+def test_the_history_pricer_draws_only_on_runs_launched_as_the_arm_will_be(
+    history: dict[str, Any], other: dict[str, Any], same: dict[str, Any]
+) -> None:
     """A run judged by a cheaper model on any dim, or simulated or rigged otherwise, spent differently from the arm."""
     host, storage = _priced_host()
     _history(storage, template_id="tpl-priced", model="m-priced", costs=[0.10, 0.20, 0.30], **history)

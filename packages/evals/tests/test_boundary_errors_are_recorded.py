@@ -12,31 +12,37 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from collections.abc import Callable
 from typing import Any
 
 import pytest
 from pydantic import BaseModel
-
+from threetears.evals.actions.render import render_job_status
+from threetears.evals.kernel import (
+    ANALYSIS_JOB,
+    RUN_JOB,
+    SWEEP_JOB,
+    EvalAnalysisAttempt,
+    EvalSweep,
+    JobLeases,
+    SweepArmRecord,
+)
 from threetears.evals.kernel.candidate_kind import CandidateOutput, CellSink, VariantConfig
 from threetears.evals.kernel.cassettes import ActionSeam, CellCassettes, DeliverySeam, ToolWrap
-from threetears.evals.actions.render import render_job_status
-from threetears.evals.kernel import ANALYSIS_JOB, RUN_JOB, SWEEP_JOB, EvalSweep, JobLeases, SweepArmRecord
-from threetears.evals.kernel.job_leases import LeasedJobKind, settle_job_record
-from threetears.evals.ops import job_poll, sweep_job_id
-from threetears.evals.run import LAUNCH_JOB, EvalLaunch
 from threetears.evals.kernel.errors import ConflictError, StorageError
 from threetears.evals.kernel.host.eval_host import EvalHost
+from threetears.evals.kernel.job_leases import LeasedJobKind, settle_job_record
 from threetears.evals.kernel.scoring import CellSummary
 from threetears.evals.kernel.storage import EvalStorage
+from threetears.evals.ops import job_poll, sweep_job_id
+from threetears.evals.run import LAUNCH_JOB, EvalLaunch
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.run.lifecycle import record_completeness
 from threetears.evals.run.runner import RunnerOptions, execute_run
-from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.schema.models import EvalCassette, EvalRun, JudgedArtifact
 from threetears.evals.storage import InMemoryDocumentStore
+
 from packages.evals.tests.factories import (
     DEFAULT_KIND,
     make_analysis_attempt,
@@ -47,8 +53,8 @@ from packages.evals.tests.factories import (
 )
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.job_support import InMemoryRunStore
-from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.ops_support import TOYHOST_SCOPE, ops_fixture
 
 # =============================================================================
 # record_completeness: a record that is not written says so on the run
@@ -179,6 +185,8 @@ class _FakeRollingKind:
     """Wires whatever cassettes it is handed, then rolls once per cell."""
 
     judged_artifact = JudgedArtifact.UNJUDGED
+    #: One cell at a time: the width a kind declaring nothing runs at.
+    max_concurrent_cells: int | None = 1
 
     async def prepare(
         self,
@@ -374,7 +382,10 @@ def _launch(scope_id: str) -> EvalLaunch:
 
 
 #: Each job record kind as it is held, and the field its own ending is written in — the one a loss writes over.
-_HELD_KINDS: dict[str, tuple[LeasedJobKind[Any], Callable[[str], EvalDocumentModel], Callable[[Any], str | None]]] = {
+#: A record a leased job holds: each kind's own model, every one declaring the lease fields.
+_HeldRecord = EvalRun | EvalSweep | EvalLaunch | EvalAnalysisAttempt
+
+_HELD_KINDS: dict[str, tuple[LeasedJobKind[Any], Callable[[str], _HeldRecord], Callable[[Any], str | None]]] = {
     "run": (
         RUN_JOB,
         lambda scope_id: make_eval_run(status="running", scope_id=scope_id),
@@ -391,7 +402,7 @@ _HELD_KINDS: dict[str, tuple[LeasedJobKind[Any], Callable[[str], EvalDocumentMod
 
 
 async def _expired(
-    store: _RenewalRefusingStore, storage: EvalStorage, kind: LeasedJobKind[Any], record: EvalDocumentModel
+    store: _RenewalRefusingStore, storage: EvalStorage, kind: LeasedJobKind[Any], record: _HeldRecord
 ) -> str:
     """Hold ``record`` under a 0.9s lease whose every renewal the store refuses, until its holder stops it; its fault.
 
@@ -408,6 +419,7 @@ async def _expired(
     stored, _ = off_loop(storage.load_job_record, kind.model, held.id, held.scope_id)
     assert stored is not None and stored.lost is None and not kind.ended(stored), "no ending of its own yet"
     [fault] = stored.faults
+    assert isinstance(fault, str)
     return fault
 
 

@@ -12,22 +12,21 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import types
-
 import json
+import types
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import pytest
-
 from threetears.evals.analysis import JudgeKey, judge_kind_readings
 from threetears.evals.kernel import (
     JUDGE_CASE_KEY,
-    AuthoredJudgeCase,
     JUDGE_KIND,
     JUDGE_LABEL_AGREEMENT_MEASURE,
     JUDGE_PARSE_VALID_MEASURE,
+    AuthoredJudgeCase,
+    AuthoredVerdict,
     JudgeKindOverlays,
     ValidationFailedError,
     VariantConfig,
@@ -61,21 +60,22 @@ from threetears.evals.schema import (
     RubricDim,
 )
 from threetears.evals.testing import RecordedCompletions, RecordingRefused
+
 from packages.evals.tests.factories import make_eval_result, make_eval_run
-from packages.evals.tests.scripted_table import FakeCellSink
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_INSTANT, TOYHOST_SCOPE
 from packages.evals.tests.fixtures.toyhost.host import toyhost_host
 from packages.evals.tests.fixtures.toyhost.judge import (
     FAITHFULNESS_DIM,
-    toyhost_rubric,
     TOY_JUDGE_MODEL,
     ScriptedJudgeClient,
     ToyJudgeCompletion,
     toyhost_judge_service,
     toyhost_judged_template,
+    toyhost_rubric,
 )
 from packages.evals.tests.fixtures.toyhost.run import RUN_K, execute_toyhost_run
 from packages.evals.tests.off_loop import off_loop
+from packages.evals.tests.scripted_table import FakeCellSink
 
 #: The word the harsh config's prompt carries, which the arm-aware judge below reads.
 _HARSH = "HARSH"
@@ -87,7 +87,26 @@ _UNREADABLE_INVOICE = "Invoice doc-02"
 _RATER = "ana@example.com"
 
 
-class _ArmAwareJudge(ScriptedJudgeClient):
+class _UnpricedJudge:
+    """What every judge client below is besides its replies: bound to the toy judge's model, unable to price a call
+    (the engine's ceiling then reads none, as for a client with no ``price_ceiling``), with nothing to release."""
+
+    model_name = TOY_JUDGE_MODEL
+
+    def price_ceiling(self, *, system: str, user: str, response_format: dict[str, Any] | None = None) -> float | None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        await self.aclose()
+
+
+class _ArmAwareJudge(ScriptedJudgeClient, _UnpricedJudge):
     """The toy host's scripted judge, read through each arm's system prompt.
 
     Under the built-in prompt it is the toy judge exactly. Under a prompt carrying :data:`_HARSH` it scores one
@@ -288,7 +307,7 @@ async def test_freezing_a_judged_run_makes_one_case_per_judged_output_carrying_w
         stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
         assert stored is not None and stored.template_id == template.id and stored.stratum == FAITHFULNESS_DIM
         case = judge_case_of(stored)
-        assert case is not None
+        assert case is not None and case.source.result_id is not None
         result = by_result[case.source.result_id]
         trace = off_loop(host.storage.load_eval_trace, result.id, TOYHOST_SCOPE)
         assert trace is not None
@@ -433,7 +452,7 @@ async def test_a_judge_trial_holds_its_call_against_the_runs_cap_and_counts_what
     assert again.telemetry.usage and not again.candidate_errors
 
 
-class _ProviderAnswers:
+class _ProviderAnswers(_UnpricedJudge):
     """The judge's client, whose provider answers every call with ``error`` instead of a reply."""
 
     def __init__(self, error: ProviderError) -> None:
@@ -496,7 +515,7 @@ async def test_whose_failure_a_judge_call_was_decides_whether_its_trial_fails_is
         assert output.account_refused is True
 
 
-class _UnreadableThenProviderAnswers:
+class _UnreadableThenProviderAnswers(_UnpricedJudge):
     """The judge's client: its first reply is one no parser reads, and the provider answers the retry with ``error``."""
 
     def __init__(self, inner: Any, error: ProviderError) -> None:
@@ -544,7 +563,7 @@ async def test_a_parse_retry_the_provider_declined_excludes_its_trial_naming_the
     assert sum(row.cost_usd or 0.0 for row in output.telemetry.usage) > 0, "the first call's spend is kept"
 
 
-class _Untempered:
+class _Untempered(_UnpricedJudge):
     """Hands back the judge's replies stripped of ``temperature``: a host completion type short of the protocol."""
 
     def __init__(self, inner: Any) -> None:
@@ -694,7 +713,7 @@ def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:
     )
     with pytest.raises(ValueError, match="pins model 'other/model'"):
         JudgeKind(
-            clients=lambda role, model, *, temperature=None: None,
+            clients=lambda role, model, *, temperature=None: _ArmAwareJudge(),
             model=TOY_JUDGE_MODEL,
             failure_describer=withhold_failure_detail,
             configs={FAITHFULNESS_DIM: config},
@@ -820,9 +839,9 @@ async def test_a_label_follows_a_byte_identical_output_into_its_case_and_never_c
     for frozen in again.cases:
         stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
         assert stored is not None
-        case = judge_case_of(stored)
-        assert case is not None
-        assert [label.rating_id for label in case.labels] == [later.id]
+        judged = judge_case_of(stored)
+        assert judged is not None
+        assert [label.rating_id for label in judged.labels] == [later.id]
 
 
 class _ServedJudge(_ArmAwareJudge):
@@ -881,7 +900,7 @@ async def test_a_label_outlives_its_evidence_and_still_calibrates_a_judge_after_
         stored = off_loop(host.storage.load_test_case, frozen.test_case_id, TOYHOST_SCOPE)
         assert stored is not None
         case = judge_case_of(stored)
-        assert case is not None and case.labels
+        assert case is not None and case.labels and case.source.result_id is not None
         assert case.evidence == read[case.source.result_id], "the case is the evidence the rater read"
         assert case.source.first_score is None and case.source.test_case_id is None
     run = await _judge_arm(
@@ -979,7 +998,7 @@ _AUTHORED_INVOICE = "\n".join(
 _AUTHOR = "cy@example.com"
 
 
-def _authored(fields: dict[str, str], expected: int | str, note: str, **overrides: Any) -> AuthoredJudgeCase:
+def _authored(fields: dict[str, str], expected: AuthoredVerdict, note: str, **overrides: Any) -> AuthoredJudgeCase:
     """One hand-written case on the toy criterion, judged against :data:`_AUTHORED_INVOICE`."""
     (criterion,) = toyhost_rubric()
     return AuthoredJudgeCase(
@@ -1104,7 +1123,7 @@ async def test_authored_cases_freeze_beside_stored_ones_into_one_case_set() -> N
     ],
 )
 def test_an_authored_verdict_its_criterion_s_scale_cannot_hold_is_refused_naming_both(
-    scale: str, verdict: int | str, named: str
+    scale: str, verdict: AuthoredVerdict, named: str
 ) -> None:
     (criterion,) = toyhost_rubric()
     if scale == "pass_fail":

@@ -24,11 +24,6 @@ from typing import Any, Final
 
 import httpx
 import pytest
-
-from packages.evals.tests.ops_support import CALLER
-from packages.evals.tests.report_doc_support import snapshot_of
-from packages.evals.tests.report_writer_support import DOC
-from packages.evals.tests.stored_models import stored_sample
 from threetears.evals.analysis.analyst.skill import SkillText
 from threetears.evals.analysis.report.doc_page.store import generation_record, made_line
 from threetears.evals.analysis.summary import EvalSummary, RoleSpend, dollars_text
@@ -39,8 +34,8 @@ from threetears.evals.kernel.capped_completion import (
     prompt_token_bound,
     turn_prompt_token_bound,
 )
-from threetears.evals.ops.lenses import ArmEstimate, LaunchEstimate, estimate_text
 from threetears.evals.kernel.report_doc import EvalReportDoc
+from threetears.evals.ops.lenses import ArmEstimate, LaunchEstimate, estimate_text
 from threetears.evals.ops.report_writer.session import ToolSession
 from threetears.evals.ops.report_writer.tally import ReportBudget, Tally, TurnCost
 from threetears.evals.providers import (
@@ -54,10 +49,16 @@ from threetears.evals.providers import (
     PriceSource,
     Provider,
 )
-from threetears.evals.providers.model import DEFAULT_MAX_TOKENS
+from threetears.evals.providers.model import DEFAULT_MAX_TOKENS, Completion
 from threetears.evals.providers.wire import usage_counts
 from threetears.evals.run import CallCeiling
 from threetears.evals.schema import EvalRun, OutOfRunSpend, RoleUsage, TurnCeiling, TurnMessage, TurnToolSpec
+from threetears.evals.schema.completion import StopReason
+
+from packages.evals.tests.ops_support import CALLER
+from packages.evals.tests.report_doc_support import snapshot_of
+from packages.evals.tests.report_writer_support import DOC
+from packages.evals.tests.stored_models import stored_sample
 
 FIXTURES: Final = Path(__file__).parent / "fixtures" / "providers"
 
@@ -385,7 +386,9 @@ async def test_host_rates_give_the_bound_price_ceiling_gives_on_the_same_rates_c
 
     # The host handed the rates the default holds for Opus 5.5, so the engine's bound is the default's, exactly.
     assert completion == COMPLETION_PINS[("opening", "published")][0]
-    assert turn == TurnCeiling(usd=TURN_PINS[("opening", "published")][0], estimate=False)
+    pinned = TURN_PINS[("opening", "published")][0]
+    assert pinned is not None
+    assert turn == TurnCeiling(usd=pinned, estimate=False)
     # And it is the engine's arithmetic on whatever rates the host hands: the host computes no bound.
     dealt = hosted(FakeHostPricer({MODEL: DEAL}), TURNS["opening"]["reply"])
     assert dealt.price_ceiling(system="s", user="u") == float(
@@ -401,6 +404,7 @@ async def test_the_host_pricer_receives_the_raw_usage_the_served_provider_and_th
     model = hosted(host, anthropic_body(SPLIT_USAGE))
 
     completion = await model.generate(system="s", user="u")
+    assert isinstance(completion, Completion)
 
     (seen,) = host.priced
     assert seen == Priced(MODEL, "anthropic", SPLIT_USAGE, None), "the usage block exactly as the wire returned it"
@@ -578,6 +582,7 @@ async def test_a_reason_the_pricer_gave_is_kept_through_role_usage_and_the_tally
     model = hosted(host, TURNS["opening"]["reply"])
 
     completion = await model.generate(system="s", user="u")
+    assert isinstance(completion, Completion)
     reply = await model.turn(system=SYSTEM, messages=[TurnMessage("user", OPENING)], tools=TOOLS, max_tokens=32000)
 
     assert (completion.cost_usd, completion.price_source, completion.pricing_failure) == (None, None, why)
@@ -621,9 +626,9 @@ def test_a_host_s_price_that_contradicts_itself_is_refused() -> None:
 
 
 def test_price_source_keeps_openrouter_s_two_reported_words_unchanged() -> None:
-    assert PriceSource.OPENROUTER_REPORTED == "openrouter:reported"
-    assert PriceSource.OPENROUTER_REPORTED_UPSTREAM == "openrouter:reported+upstream"
-    assert PriceSource.OPENROUTER_CATALOGUE == "openrouter-catalogue"
+    assert PriceSource.OPENROUTER_REPORTED.value == "openrouter:reported"
+    assert PriceSource.OPENROUTER_REPORTED_UPSTREAM.value == "openrouter:reported+upstream"
+    assert PriceSource.OPENROUTER_CATALOGUE.value == "openrouter-catalogue"
 
 
 # --- support ---------------------------------------------------------------------------------------------------------
@@ -708,7 +713,7 @@ class Reported:
     content: str = "{}"
     model: str = "host-model"
     served_model: str | None = None
-    stop_reason: str = "end_turn"
+    stop_reason: StopReason = "end_turn"
     temperature: float | None = None
     input_tokens: int | None = 10
     output_tokens: int | None = 5
