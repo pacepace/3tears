@@ -4,15 +4,18 @@ The record of what is wrong with each held-out app, for whoever reads a run on t
 trial gets a copy of `apps/<app>/` only, and the twin is laid over it at grading.
 
 These apps were written blind to the package's docs, and nobody has read a transcript of them while writing a docs
-change. They are registered in `held-out.jsonl`, not `apps.jsonl`, so no default run covers them: a held-out app runs
-only when a committed plan names it. They stop being held out once any run's transcripts on them have been read while
+change. They are registered in `held-out.jsonl`, not `apps.jsonl`, so no default run covers them. `held-out.jsonl` is to be
+read only by a run whose committed plan names the apps it runs; that plan-based selection is added on the harness
+branch (`evals/bp-onramp-harness`), and until it lands no harness command runs a held-out app. They stop being held out once any run's transcripts on them have been read while
 writing a docs change. From then on they are development-set apps, and a comparison on them is development-set
 evidence like any other.
 
 Each share below is printed by `python packages/evals/onramp/held_out_shares.py` (standard library only), which runs
-every case in the app's shipped data through the app and through the app with its twin laid over it, and checks that
-the twin agrees with the data's labels on every case. The app's own `tests/` pass on both the app and its twin. Run
-them from the app's directory with `python -m pytest tests` or `python -m unittest discover tests`.
+every case in the app's shipped data through the app and through the app with its twin laid over it.
+`packages/evals/tests/test_onramp_held_out.py` holds every app in `held-out.jsonl`, on the pool, to three promises:
+the twin agrees with every label (for the two apps whose labels grade, the app never reads better than the twin), the
+defect reaches more than a fifth of the cases and fewer than all, and the app's own `tests/` pass under
+`python -m unittest discover tests`, run from the app's directory as a trial would, on the app and on its twin.
 
 Graded apps, whose outputs need a graded judgement rather than an exact match: `weatherboard` (a tolerance),
 `faqrank` (a ranking against graded relevance), `digest` (the share of key facts a summary carries).
@@ -43,17 +46,19 @@ Graded apps, whose outputs need a graded judgement rather than an exact match: `
   +    return int(math.copysign(math.floor(abs(celsius) + 0.5), celsius))
   ```
 
-## docnames: text normalisation, mishandled unicode
+## docnames: text normalisation, a dropped separator rule
 
-- **Defect.** `naming.slug` composes the title (`NFC`) before dropping non-ASCII characters, so an accented letter is
-  dropped whole instead of keeping its base letter: `Café` becomes `caf`, `Résumé` becomes `rsum`.
-- **Where.** `apps/docnames/naming.py`, `slug`, its first line.
-- **Share.** 14 of 42 archive documents (33%) get a stored name other than the archive's (`data/archive_index.jsonl`,
-  `archive_name`).
+- **Defect.** The docstring says apostrophes are dropped so a word keeps together (`Chef's notes` is `chefs-notes`),
+  but `naming.slug` treats an apostrophe like any other separator, so `Chef's notes` becomes `chef-s-notes`. A
+  trailing apostrophe (`Suppliers' price review`) comes out right either way. Accented letters are handled correctly
+  in both the app and the twin: this is not the development app glossator's accent defect.
+- **Where.** `apps/docnames/naming.py`, `slug`, the line that splits the title into words.
+- **Share.** 13 of 42 archive documents (31%) get a stored name other than the archive's
+  (`data/archive_index.jsonl`, `archive_name`).
 - **Twin diff.**
   ```diff
-  -    folded = unicodedata.normalize("NFC", title).encode("ascii", "ignore").decode("ascii")
-  +    folded = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
+  -    words = [word for word in _SEPARATORS.split(folded.lower()) if word]
+  +    words = [word for word in _SEPARATORS.split(folded.lower().replace("'", "")) if word]
   ```
 
 ## previews: notification text, an off-by-one
@@ -90,8 +95,8 @@ Graded apps, whose outputs need a graded judgement rather than an exact match: `
   that word stops counting and the ranking falls back on the query's other words, or returns nothing.
 - **Where.** `apps/faqrank/search.py`, `Index.search`, its first line.
 - **Share.** 13 of 44 logged queries (30%) rank with a lower NDCG@5 than the twin against the support team's graded
-  judgments (`data/judgments.jsonl`); mean NDCG@5 is 0.727 on the app and 0.958 on the twin, and 11 queries lose the
-  best article from first place. One query reads slightly better on the app (1.000 against 0.964).
+  judgments (`data/judgments.jsonl`); mean NDCG@5 is 0.726 on the app and 0.958 on the twin, and 11 queries lose the
+  best article from first place. No query reads better on the app.
 - **Twin diff.**
   ```diff
   -        query_terms = [stem(word) for word in query.lower().split() if word not in STOPWORDS]
@@ -121,7 +126,8 @@ Graded apps, whose outputs need a graded judgement rather than an exact match: `
 - **Where.** `apps/statements/importer.py`, `DAY_FIRST` (the default of `parse_date`, `read_statement` and
   `read_statement_file`).
 - **Share.** 20 of 74 ledger transactions (27%) import with a date other than the hand-kept ledger's
-  (`data/ledger.jsonl`); 4 of the 8 statements have at least one.
+  (`data/ledger.jsonl`); 4 of the 8 statements have at least one. The ledger is in date order across the accounts, as
+  a hand-kept ledger is, so the affected rows (each month's early days) recur through it: 6 of its first 20 rows.
 - **Twin diff.**
   ```diff
   -DAY_FIRST = False

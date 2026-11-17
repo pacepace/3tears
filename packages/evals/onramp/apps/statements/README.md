@@ -10,4 +10,4 @@ the savings account. Until now, Sam typed every transaction into the budget by h
 `data/ledger.jsonl` is that hand-kept ledger for the quarter, one line per transaction, with the statement it came
 from. The importer should give the same transactions the ledger has.
 
-Tests: `python -m pytest tests` (or `python -m unittest discover tests`) from this directory.
+Tests: `python -m unittest discover tests` from this directory.

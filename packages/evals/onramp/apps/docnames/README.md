@@ -9,4 +9,4 @@ spreadsheets, so every document has to keep the name the archive gave it. `data/
 index: each document's title, upload date and extension as entered, and the name the archive filed it under
 (`archive_name`). The archive used the same naming rules.
 
-Tests: `python -m pytest tests` (or `python -m unittest discover tests`) from this directory.
+Tests: `python -m unittest discover tests` from this directory.
