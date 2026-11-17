@@ -6,6 +6,24 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a second Ctrl+C on a quick comparison is raised as itself, and the comparison is filed wherever it lands
+
+**Fixed:** a quick comparison interrupted twice in a terminal raises the `KeyboardInterrupt` itself once its campaign
+is filed, chained from the first cancel, where before it raised that first cancel: under `asyncio.run` the person sees
+`KeyboardInterrupt` as before, and a host not under `asyncio.run`'s handler now gets the interrupt rather than a
+cancel it might read as its own. The campaign is filed wherever the second interrupt lands: with the loop idle
+awaiting I/O, or inside a cell running on the loop thread (a CPU-busy candidate), it leaves the loop and
+`asyncio.run` cancels every task, and before this fix that cancel ended the comparison's waits and nothing was filed,
+so running it again re-ran every cell. The cells cut are recorded `cancelled` and run again in a continuation; a cell
+the interrupt landed in records nothing and runs again as a cell never reached does.
+
+**Changed:** the count of a quick comparison's cells that recorded no answer and run again is one count
+(`analysis.bundle.trials.redrawn_cells`), which the print and the page both say: it now includes the launch that
+prints it, so the two agree, and it counts cells, each once, where it counted rows (a cell cut in two launches was
+two). Its sentence (`comparisons.redrawn_sentence`) keys its verb on the cut count ("2 of them were cut", "1 of them
+was cut", "it was cut") and names what it counts as it is: "cut while running, by an interrupt or a shutdown", where it
+said "cut by a second interrupt".
+
 ### evals: a quick comparison may be read again as cases are added, with nothing declared
 
 **Changed:** a comparison an `Eval` runs (two arms or more) into a store that holds the one it filed before under its

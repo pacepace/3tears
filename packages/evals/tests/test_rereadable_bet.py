@@ -1066,13 +1066,15 @@ async def test_a_call_the_account_refused_or_a_model_not_served_runs_again_when_
     assert read_by_bet(family) and _same_p(_correct_p(finished), _reading_p(runs, results))
 
 
-async def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_raises_the_first_cancel(
+def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_raises_it_after_the_first_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """In a terminal a second Ctrl+C reaches the comparison's own task as ``KeyboardInterrupt``, not as a second cancel
     (here, raised as the drain says it is finishing the cells in flight). It is the cutting interrupt: the cells in
-    flight are cut, the runs settle cancelled, the campaign is filed, and the cancel that landed first is raised. Run
-    again, only the cells no run recorded run, the cut ones among them, and nothing recorded is drawn twice."""
+    flight are cut, the runs settle cancelled, the campaign is filed, and the ``KeyboardInterrupt`` itself is raised,
+    from the cancel that landed first, so a host that would read a cancel as its own still gets the interrupt. Run
+    again, only the cells no run recorded run, the cut ones among them, and nothing recorded is drawn twice. Run on a
+    loop of its own, as a host's is, since the interrupt leaves the loop it is raised on."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
     running: list[asyncio.Task[Result]] = []
@@ -1102,14 +1104,18 @@ async def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_rai
         return run
 
     arms = {arm: interrupting(arm) for arm in "ab"}
-    running.append(
-        asyncio.create_task(Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s"))
-    )
-    task = running[0]
-    with pytest.raises(asyncio.CancelledError) as cancelled:
-        await task
+
+    async def interrupted() -> Result:
+        running.append(
+            asyncio.create_task(Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s"))
+        )
+        return await running[0]
+
+    with pytest.raises(KeyboardInterrupt) as second:
+        asyncio.run(interrupted())
     monkeypatch.undo()
-    assert cancelled.value.args == ("interrupted",)
+    assert isinstance(second.value.__cause__, asyncio.CancelledError)
+    assert second.value.__cause__.args == ("interrupted",)
     host = as_host([Eval(_cases(12), arms, [_correct], k=1, name="keys")], store=store)
     (campaign,) = off_loop(list_campaigns, host.storage, "s", subject_id="keys")
     cut_runs, cut_results = off_loop(_stored, host.storage, campaign.id)
@@ -1117,7 +1123,7 @@ async def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_rai
     cut = [result for result in cut_results if runs_again(result)]
     assert cut and {result.termination for result in cut} == {"cancelled"}
 
-    finished = await Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s")
+    finished = asyncio.run(Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s"))
     assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
     runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
     kept = [result for result in results if not runs_again(result)]
