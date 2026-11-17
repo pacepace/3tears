@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 from uuid import UUID
 
-from threetears.core.keyed import AnyOf, Fragment, Joined, Sort, keyset_rows, read_reached
+from threetears.core.keyed import AnyOf, Const, Fragment, Joined, Sort, keyset_rows, read_reached
 from threetears.core.sql_fragments import quote_identifier
 
 from threetears.agent.acl.types import MAX_GROUP_MEMBERSHIP_DEPTH
@@ -101,6 +101,14 @@ def _within(column: str, placeholder: str, *, platform_rows: bool) -> str:
     return f"({column} IS NULL OR {within})" if platform_rows else within
 
 
+#: the walk's discriminators, fixed by this code and written into its statement as literals (:class:`Const`): bound,
+#: PostgreSQL never cached the walk's generic plan (costed 510 against the custom 391) and re-planned it every call,
+#: ~75-100 us each, 2.3x the hand-written statement on the exclusive runner (Pace's ruling 2026-11-16; IT2 diagnosis).
+#: As literals (2026-11-16, local, the speed test 20 runs alone): PostgreSQL 0.99-1.29x the old statement (was
+#: 1.43-1.54x locally), YugabyteDB 0.87-0.91x; the plan test test_the_visible_set_caches_its_generic_plan holds it
+_USER: Final[Const] = Const("user")
+_GROUP: Final[Const] = Const("group")
+
 #: the partitions a namespace is written in: a namespace grant's namespace is read by its id in either
 _NAMESPACE_SCOPES: Final[tuple[str, ...]] = ("platform", "customer")
 
@@ -139,10 +147,10 @@ async def visible_customers(pool: Any, *, user_id: UUID, namespace_type: str | N
     rows = await read_reached(
         pool,
         "group_members",
-        start={"member_type": "user", "member_id": user_id},
+        start={"member_type": _USER, "member_id": user_id},
         on="member_id",
         to="group_id",
-        by={"member_type": "group"},
+        by={"member_type": _GROUP},
         columns=("group_id",),
         depth=MAX_GROUP_MEMBERSHIP_DEPTH,
         joins=[

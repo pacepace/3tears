@@ -19,6 +19,7 @@ __all__ = [
     "PLACEHOLDER",
     "SQL_TYPE",
     "AnyOf",
+    "Const",
     "Derived",
     "Fragment",
     "Lock",
@@ -331,6 +332,57 @@ def narrowing(fragment: Fragment, before: int) -> str:
     return f"({renumbered(fragment, before)})"
 
 
+#: the text a :class:`Const` holds: a plain identifier-like word (``user``, ``group``, ``proposed``), nothing a
+#: statement could read as more than one literal
+_CONST_TEXT: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,62}")
+
+
+def _text_literal(text: str) -> str:
+    """``text`` as a SQL text literal, each quote in it doubled: the one spelling every literal pin is written in.
+
+    :param text: the text
+    :ptype text: str
+    :return: ``'<text>'``
+    :rtype: str
+    """
+    return "'" + text.replace("'", "''") + "'"
+
+
+class Const(str):
+    """a ``by`` (or ``start``, ``follow``) value that is fixed text from our own code, written into the statement as
+    its literal (``"member_type" = 'user'``) where any other value is bound (``= $n``).
+
+    WHY (Pace's ruling 2026-11-16, extending the 2026-11-14 one that wrote a declared partial index's text as its
+    literal): a bound discriminator makes PostgreSQL's generic plan estimate costlier than the custom one, so it is
+    never cached and the read is re-planned on every call. The visible-customer walk bound ``member_type = $1``
+    (``'user'``) and ``= $3`` (``'group'``): generic 510 against custom 391, 0 generic / 800 custom plans, ~75-100 us
+    of planning a call (2.3x the hand-written statement it replaced). With the two written as literals the generic
+    plan is cached and the walk costs what the old statement did (IT2 diagnosis, scratchpad it2/logs/diag.txt).
+
+    Only text the code itself fixes, never anything a caller or an end user supplies: the text must be a plain
+    identifier-like word (:data:`_CONST_TEXT`), and the enforcement test
+    ``tests/enforcement/test_const_pins_are_code_constants.py`` holds every ``Const(...)`` in the workspace to a
+    string literal or a module-level constant bound to one. A ``str`` so every reader, comparison and bind that takes
+    the text takes it unchanged.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, text: str) -> Const:
+        if type(text) is not str or _CONST_TEXT.fullmatch(text) is None:
+            raise ValueError(f"a Const is a plain identifier-like word from the code, not {text!r}")
+        return super().__new__(cls, text)
+
+    @property
+    def sql(self) -> str:
+        """the text as its SQL literal.
+
+        :return: ``'<text>'``
+        :rtype: str
+        """
+        return _text_literal(str(self))
+
+
 class Pin(str):
     """a ``by`` key pinning a TRUSTED expression of the row rather than a column: ``by={Pin.expr("metadata->>'pod'"):
     pod}`` binds ``metadata->>'pod' = $n``, the expression rendered once, as written, with no alias or quoting added.
@@ -393,8 +445,9 @@ def by_conditions(
 ) -> tuple[list[str], list[Any]]:
     """the conditions keeping only ``by``'s rows, placeholders numbered from ``first``, and their values.
 
-    :param by: column -> its value (``None`` as ``IS NULL``, ``True`` / ``False`` as their literal), or an
-        :class:`AnyOf` of its values; columns are TRUSTED identifiers, or a :class:`Pin` of a TRUSTED expression
+    :param by: column -> its value (``None`` as ``IS NULL``, ``True`` / ``False`` and a :class:`Const` as their
+        literal), or an :class:`AnyOf` of its values; columns are TRUSTED identifiers, or a :class:`Pin` of a
+        TRUSTED expression
     :ptype by: Mapping[str, Any]
     :param first: the first placeholder's number
     :ptype first: int
@@ -434,11 +487,16 @@ def by_conditions(
             # ``WHERE flag = false`` under a generic plan (PostgreSQL's after five runs of a prepared statement), so
             # the planner would pass over the index the read pins; ``flag = false`` states the predicate every time
             conditions.append(f"{spelled} = {'TRUE' if value else 'FALSE'}")
+        elif isinstance(value, Const):
+            # Pace's ruling 2026-11-16 (extends 2026-11-14's below): fixed text from our own code is written as its
+            # literal, so a generic plan is costed with it and cached; bound, the visible-customer walk was re-planned
+            # every call (generic 510 vs custom 391, 0 generic / 800 custom, ~75-100 us a call; more at Const)
+            conditions.append(f"{spelled} = {value.sql}")
         elif isinstance(value, str) and not isinstance(column, Pin) and (column, value) in stated:
             # coordinator ruling 2026-11-14 (as Pace's boolean ruling): a text a declared partial index's predicate
             # names (``WHERE status = 'proposed'``) is written as that literal, for the same reason; it comes from
             # the declaration, so only a value the code itself declared is ever written into the statement
-            conditions.append(f"{spelled} = '{value.replace(chr(39), chr(39) * 2)}'")
+            conditions.append(f"{spelled} = {_text_literal(value)}")
         else:
             conditions.append(f"{spelled} = ${place}")
             values.append(value)

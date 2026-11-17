@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from threetears.core.keyed._filters import Fragment, Selected
+from threetears.core.keyed._filters import Const, Fragment, Selected
 from threetears.core.keyed._filters import sent_by
 from threetears.core.keyed._joining import Joined, cast_of, check_joins, join_rows, joined_columns, lateral_joins
 from threetears.interfaces.keyed.filters import by_conditions, quote_identifier, quoted_table
@@ -211,11 +211,11 @@ def _reached_statement(
 
         WITH RECURSIVE reached("member_id", "group_id", "level") AS (
             SELECT t."member_id", t."group_id", 1 FROM "group_members" AS t
-             WHERE t."member_type" = $1 AND t."member_id" = $2
+             WHERE t."member_type" = 'user' AND t."member_id" = $1
             UNION
             SELECT t."member_id", t."group_id", r."level" + 1 FROM reached AS r
-              JOIN "group_members" AS t ON t."member_id" = r."group_id" AND t."member_type" = $3
-             WHERE r."level" < $4
+              JOIN "group_members" AS t ON t."member_id" = r."group_id" AND t."member_type" = 'group'
+             WHERE r."level" < $2
         )
         SELECT DISTINCT r."group_id", j1."scope_type" AS "scope_type", ...
           FROM (SELECT DISTINCT "group_id" FROM reached) AS r
@@ -233,6 +233,10 @@ def _reached_statement(
     0.55-0.69 ms on PostgreSQL (1.23-1.36x the hand-written CTE), 1.64-2.09 ms on YugabyteDB (1.14-1.15x); the
     guard is the caller's speed test (``test_visible_customers_speed_live``).
 
+    A pin the caller fixes in code (:class:`~threetears.core.keyed.Const`, ``'user'`` / ``'group'`` above) is written as
+    its literal, in ``start``, ``by`` and ``follow`` alike: bound, PostgreSQL never cached the walk's generic plan and
+    re-planned it every call (Pace's ruling 2026-11-16; the why and numbers at :class:`Const`).
+
     :return: the statement and its binds
     :rtype: tuple[str, list[Any]]
     :raises ValueError: when ``depth`` is under one
@@ -248,6 +252,10 @@ def _reached_statement(
     params += values
     walked: list[str] = []
     for column, value in followed.items():
+        # a code constant is written as its literal, as by_conditions writes one (Const: the why)
+        if isinstance(value, Const):
+            walked.append(f"r.{quote_identifier(column)} = {value.sql}")
+            continue
         params.append(value)
         walked.append(f"r.{quote_identifier(column)} = ${len(params)}")
     params.append(depth)

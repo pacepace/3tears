@@ -367,6 +367,9 @@ def register_partial_predicates(table: str, predicates: Iterable[str]) -> None:
     WHY (coordinator ruling 2026-11-14, as Pace's boolean ruling): ``status = $3`` cannot prove a partial index's
     ``WHERE status = 'proposed'`` under PostgreSQL's generic plan (a prepared statement's after five runs), so the
     planner passes over the index the read pins; written ``status = 'proposed'`` it states the predicate every time.
+    Pace extended the ruling 2026-11-16 to any fixed text from our own code, never a caller's or an end user's
+    (:class:`~threetears.interfaces.keyed.filters.Const`): a bound discriminator also kept the generic plan from
+    being cached at all (the why and numbers at ``Const``).
 
     :param table: the table's name as declared: ``schema.table``, or bare for the one the search path finds
     :ptype table: str

@@ -141,6 +141,31 @@ async def world(db_container: str) -> AsyncIterator[tuple[str, uuid.UUID]]:
         await held.close()
 
 
+#: reads on one session before PostgreSQL settles a prepared statement's plan: it tries a custom plan for the first
+#: five, then caches the generic one when that is estimated no costlier
+_SETTLED = 12
+
+
+async def test_the_visible_set_caches_its_generic_plan(db_container: str, world: tuple[str, uuid.UUID]) -> None:
+    """Flips if PostgreSQL re-plans the visible-customer walk on every call (a custom plan each time, no generic plan
+    cached): a discriminator bound as ``$n`` (``member_type = $1``, ``'user'``) estimated the generic plan costlier
+    (510 against 391), so it was never cached and every call paid ~75-100 us of planning (IT2, 2026-11-16: 0 generic
+    / 800 custom). The walk writes its code's own constants (:class:`~threetears.core.keyed.Const`) as literals."""
+    schema, caller = world
+    conn = await asyncpg.connect(db_container, server_settings={"search_path": f'"{schema}", public'})
+    try:
+        for _ in range(_SETTLED):
+            await visible_customers(conn, user_id=caller, namespace_type=_TYPE)
+        plans = await conn.fetch(
+            "SELECT generic_plans, custom_plans FROM pg_prepared_statements"
+            " WHERE statement LIKE 'WITH RECURSIVE reached%' AND statement LIKE '%group_members%'"
+        )
+        assert len(plans) == 1, plans
+        assert plans[0]["generic_plans"] > 0, dict(plans[0])
+    finally:
+        await conn.close()
+
+
 @pytest.mark.loop_timing
 async def test_the_visible_set_costs_within_twice_the_statement_it_replaced(
     db_container: str, world: tuple[str, uuid.UUID]

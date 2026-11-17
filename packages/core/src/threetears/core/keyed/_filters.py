@@ -21,6 +21,7 @@ from threetears.interfaces.keyed.page import Sort
 from threetears.interfaces.keyed.filters import (
     IN_SUBQUERY,
     AnyOf,
+    Const,
     Derived,
     Fragment,
     Lock,
@@ -41,6 +42,7 @@ from threetears.interfaces.keyed.filters import (
 __all__ = [
     "IN_SUBQUERY",
     "AnyOf",
+    "Const",
     "Derived",
     "Fragment",
     "Lock",

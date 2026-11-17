@@ -58,6 +58,7 @@ from __future__ import annotations
 
 from threetears.core.keyed._filters import (
     AnyOf,
+    Const,
     Derived,
     Fragment,
     Lock,
@@ -205,6 +206,7 @@ __all__ = [
     "DEFAULT_KEY_BATCH",
     "DIRECT_KEY_BATCH",
     "AnyOf",
+    "Const",
     "BoundedCount",
     "Count",
     "Max",
