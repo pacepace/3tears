@@ -1,0 +1,1 @@
+Gift card balances showed as zero in the app for three hours on Friday. Balances were correct on the website and at checkout. The app read balances from a cache that a deploy had emptied. Users who tried to check a balance contacted support, about 90 in all. The cache was warmed again at 13:30.

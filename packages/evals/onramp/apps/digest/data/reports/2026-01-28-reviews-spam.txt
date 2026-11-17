@@ -1,0 +1,1 @@
+A wave of spam reviews was posted on Wednesday night. Roughly 1,500 reviews were posted from 40 accounts between 01:00 and 03:00. The spam filter missed them because they contained no links. We removed the reviews and the accounts by 09:00. The filter now also scores accounts by how fast they post.

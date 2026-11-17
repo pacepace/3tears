@@ -1,0 +1,1 @@
+Stock levels on the site did not update for three hours on Wednesday. The warehouse sync job failed because the supplier changed a column name in their feed. Customers were able to order items that were out of stock, approx. 220 orders in all. Support is contacting each of them. The sync now refuses a feed whose columns it does not know, and pages the on-call engineer.

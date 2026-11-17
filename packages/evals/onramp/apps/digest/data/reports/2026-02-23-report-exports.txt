@@ -1,0 +1,1 @@
+Scheduled report exports for merchants failed overnight on Sunday. The export workers ran out of memory on a merchant with an unusually large catalogue. Exports for 130 merchants were late. They were re-run by 09:00 on Monday. Workers now stream large exports instead of loading them whole.

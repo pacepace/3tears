@@ -1,0 +1,1 @@
+Search results were less relevant than usual for a day after a ranking change. Conversion from search fell by 9%. The new ranking weighted recency too heavily. The change was rolled back on Thursday morning. We will test ranking changes on a share of traffic first.

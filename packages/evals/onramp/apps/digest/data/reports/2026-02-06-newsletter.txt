@@ -1,0 +1,1 @@
+A newsletter went to 12,000 customers who had unsubscribed. The list sync with the email provider failed silently for a week, so unsubscribes made on our site never reached the provider. We apologised to the affected customers and reported the error to our data protection officer. The sync now alerts when a run fails.
