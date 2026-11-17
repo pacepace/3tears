@@ -22,6 +22,13 @@ messages, and lost what was being routed to it when the connection retired. A re
 its server drops it; its subscriptions are already on the successor. A leaving member whose connection closed first
 sends no `UNSUB` (the server dropped it with the connection) instead of logging a failure.
 
+**Fixed:** a reconnect could retry one dead server forever. nats-py shuffles the server pool once per reconnect and
+passes it in the same order on every attempt, and the client's reconnect handler always took the first server, so
+a client whose shuffle put a dead server first (a node that left, a lame-duck server that closed its listener)
+never tried the live servers beside it: 2 of 12 local runs stayed on a killed server for 20 s, where 12 of 12 now
+fail over within about a second. The handler now takes the server tried least since it last connected, ties by the
+pool's order, so each failure moves it on as nats-py's own round-robin does.
+
 ### web: a JavaScript workspace, and @3tears/web-pwa for installable web apps
 
 **Added:** `web/`, the family's browser packages, published to npm as `@3tears/web-<name>` at the

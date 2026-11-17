@@ -611,11 +611,18 @@ def _make_reconnect_to_server_handler(
     nats-py calls the returned handler on EVERY reconnect attempt (``_attempt_reconnect``), passing a
     snapshot of the eligible servers (each carrying its own ``reconnects`` count) and the current
     server info, and expects back ``(selected_server, callback_delay)``; it then sleeps
-    ``callback_delay`` before connecting. the handler selects the first eligible server (the pool is
-    already shuffled by nats-py before the call, so this matches the default round-robin selection) and
-    returns a FULL-JITTER capped-exponential delay keyed on THAT server's ``reconnects`` -- so the
+    ``callback_delay`` before connecting. the handler selects the eligible server tried least since it
+    last connected -- the first of them in the pool's order, which nats-py shuffles once per reconnect --
+    and returns a FULL-JITTER capped-exponential delay keyed on THAT server's ``reconnects`` -- so the
     per-attempt count drives the backoff and a mass reconnect spreads across the window rather than
     synchronizing. the handler is sync because nats-py calls it un-awaited.
+
+    the least-tried server, not simply the first: nats-py shuffles the pool once per reconnect, not per
+    attempt, and passes it in the same order every attempt, so the first server stays first. a client
+    whose shuffle put a dead server first -- a node that left the cluster, a lame-duck server that
+    closed its listener -- would retry it forever (``max_reconnect_attempts`` is unbounded) and never
+    try the live servers beside it. each failed attempt counts against its server, so the least-tried
+    one rotates through the pool as nats-py's own round-robin does.
 
     :param base: base backoff (seconds) for :func:`_full_jitter_backoff`
     :ptype base: float
@@ -629,9 +636,12 @@ def _make_reconnect_to_server_handler(
         servers: list[_NatsServer],
         server_info: dict[str, Any],
     ) -> tuple[_NatsServer | None, float]:
-        """select the next server and return a full-jitter backoff delay keyed on its reconnect count."""
+        """select the least-tried server and return a full-jitter backoff delay keyed on its reconnect count."""
         selected = servers[0] if servers else None
         try:
+            if servers:
+                # min keeps the first of equals, so ties go to the pool's (shuffled) order
+                selected = min(servers, key=lambda server: server.reconnects)
             attempt = selected.reconnects if selected is not None else 0
             delay = _full_jitter_backoff(attempt, base=base, cap=cap)
         except Exception as exc:
