@@ -87,12 +87,11 @@ def test_a_cluster_address_is_a_free_loopback_other_than_127_0_0_1() -> None:
         assert all(0 <= part <= 255 for part in rest)
 
 
-def test_an_address_with_a_cluster_port_taken_is_passed_over(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_address_with_a_cluster_port_taken_is_passed_over() -> None:
     """Flips if an address one of whose cluster ports is taken is handed out."""
     picks = iter(["127.3.3.3", "127.3.3.4"])
-    monkeypatch.setattr(services, "_random_loopback", lambda: next(picks))
-    monkeypatch.setattr(services, "ports_free", lambda address: address == "127.3.3.4")
-    assert services.yugabyte_address() == "127.3.3.4"
+    chosen = services.yugabyte_address(pick=lambda: next(picks), free=lambda address: address == "127.3.3.4")
+    assert chosen == "127.3.3.4"
 
 
 def test_a_port_held_on_the_address_is_not_free() -> None:

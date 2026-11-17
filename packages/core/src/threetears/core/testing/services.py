@@ -918,18 +918,22 @@ def ports_free(address: str, ports: tuple[int, ...] = _YB_PORTS) -> bool:
     return True
 
 
-def yugabyte_address() -> str:
+def yugabyte_address(pick: Callable[[], str] = _random_loopback, free: Callable[[str], bool] = ports_free) -> str:
     """a loopback address of a cluster's own: its every port free there.
 
     A cluster's servers each listen on fixed ports (the master's 7100, YSQL's 5433, ...); one address per cluster
     gives two clusters in one container (two batches) no port to share, with every port where YugabyteDB puts it.
 
+    :param pick: draws a candidate address
+    :ptype pick: Callable[[], str]
+    :param free: whether every cluster port is free at an address
+    :ptype free: Callable[[str], bool]
     :return: the address
     :rtype: str
     """
     for _ in range(_PORT_ATTEMPTS * 4):
-        address = _random_loopback()
-        if ports_free(address):
+        address = pick()
+        if free(address):
             return address
     pytest.fail(f"no loopback address with YugabyteDB's ports {_YB_PORTS} free in {_PORT_ATTEMPTS * 4} tries")
 
@@ -1039,6 +1043,7 @@ def _stop_group(child: subprocess.Popen[bytes]) -> None:
     :rtype: None
     """
     _stop(child, signal.SIGTERM)
+    # NOSILENT: no process left in the group is the outcome wanted
     with contextlib.suppress(ProcessLookupError):
         os.killpg(child.pid, signal.SIGKILL)
 
