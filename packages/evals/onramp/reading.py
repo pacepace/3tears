@@ -8,7 +8,7 @@ trials passed, per arm, compared paired across apps (``_per_case_values``: repea
 test sees them). No trial is pooled with another app's, and no model is called: the reading spends nothing.
 
 A trial is replayed as the run ended it: one the run lost is lost again (its grade refuses it), and one whose runner
-raised fails again, against its arm.
+raised fails again, as the package read it in the run.
 
 One check is read per comparison, so the primary check of a plan is tested on its own, not in a family with the other
 two. Tiers are never pooled: rows of more than one tier are read tier by tier.
@@ -113,7 +113,8 @@ def _replay(
 
     A trial as the run ended it: one the run counted lost answers ``None``, which the grade refuses, so the package
     loses it too (a grader that raises is the rig's fault, counted for nothing); one the run counted failed with no
-    grade (its runner raised) raises here, so the package counts it failed, against its arm, as the run did.
+    grade (its runner raised) raises here, so the package reads it as the run did: failed on the pass rate, with no
+    value on the check.
     """
     left = {app: deque(rows) for app, rows in trials.items()}
 
@@ -172,11 +173,11 @@ def _rate(rows: Sequence[Mapping[str, Any]], check: str) -> str:  # Any: stored 
     return f"{sum(1 for row in graded if row['scores'][check] == 1.0)} of {len(graded)}"
 
 
-def reading_lines(
+async def read_lines(
     rows: Sequence[Mapping[str, Any]], *, primary: str = PRIMARY, question: str | None = None
 ) -> list[str]:  # Any: stored rows
     """What the package reads of a stored run, tier by tier: each check's verdict, the primary first, with apps as cases,
-    and each app's tally per arm, the units the verdict rests on."""
+    and each app's tally per arm, the units the verdict rests on. :func:`reading_lines` outside an event loop."""
     lines: list[str] = []
     for tier, own in tiers_of(rows).items():
         design = design_of(own)
@@ -189,7 +190,7 @@ def reading_lines(
             continue
         for check in (primary, *[name for name in CHECKS if name != primary]):
             role = "primary" if check == primary else "secondary, a lead only"
-            result = asyncio.run(read(own, check, question=question if check == primary else None))
+            result = await read(own, check, question=question if check == primary else None)
             lines.append(f"  {check} ({role}): {result.render().splitlines()[0]}")
             for row in result.contrasts(check):
                 lines.append(
@@ -202,6 +203,13 @@ def reading_lines(
             ]
             lines.append(f"    by app ({', '.join(design.arms)}): {'; '.join(tallies)}")
     return lines
+
+
+def reading_lines(
+    rows: Sequence[Mapping[str, Any]], *, primary: str = PRIMARY, question: str | None = None
+) -> list[str]:  # Any: stored rows
+    """:func:`read_lines`, from code with no event loop running (the command line)."""
+    return asyncio.run(read_lines(rows, primary=primary, question=question))
 
 
 def simulated_rows(

@@ -71,8 +71,12 @@ async def test_a_trial_is_replayed_as_the_run_ended_it_lost_or_failed() -> None:
 
     states = sorted(trial.state for trial in result.results("b"))
     assert states == ["failed", "lost", "passed", "passed"], "a lost trial is in no app's share; a failed one is"
-    (row,) = result.contrasts(PRIMARY)
-    assert row["arm_mean"] == pytest.approx(100 * (2 / 2 + 0 / 1) / 2), "y's share is over its one usable trial"
+    # As the live run read it: the failed trial has no grade, so the check's reading has no value for y on that arm,
+    # and the pass rate counts it failed.
+    (check,) = result.contrasts(PRIMARY)
+    assert check["cases"] == "1 vs 2" and check["arm_mean"] == pytest.approx(100.0)
+    (passed,) = result.contrasts("passed")
+    assert passed["cases"] == "2 paired" and passed["arm_mean"] == pytest.approx(100 * (2 / 2 + 0 / 1) / 2)
 
 
 def test_trials_of_two_tiers_are_never_pooled_and_each_tier_is_read_on_its_own() -> None:
