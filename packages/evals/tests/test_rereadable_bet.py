@@ -1158,36 +1158,27 @@ def test_the_committed_order_only_appends_and_depends_on_the_cases_alone() -> No
     assert committed_order("other", [first]) != one
 
 
-async def test_a_comparison_plays_its_cells_case_by_case_in_the_committed_order_the_arms_in_turn() -> None:
-    """Each launch plays its cells case by case in the committed order, every arm and repeat of a case together, four
-    at a time (k = 2, two arms), and no cell of the next case starts until a cell of this one has finished; a
-    continuation after a stop plays the cases the stop left where they stand in that order, then the cases appended in
-    theirs.
+async def test_a_comparison_plays_each_run_s_cells_case_by_case_in_the_committed_order() -> None:
+    """Each arm's run plays its cells case by case in the committed order, every repeat of a case before the next case
+    (k = 2); a continuation after a stop plays the cases the stop left where they stand in that order, then the cases
+    appended in theirs.
 
-    Read without any timing: each answer is held until all four cells of its case have reached the runner, so a slot
-    frees only once the whole case is in flight, and a cell of the next case can reach the runner only after every
-    cell of this one has. The order the runner is reached in is then exactly case by case, whatever a loaded machine
-    does to the time between a cell's start and its call. Within a case the four calls are both arms' two repeats,
-    together; the order the interleaver hands them out in is its own (``test_arm_schedule``). Each answer costs a
-    quarter and each arm's cap is 0.9, so a launch stops when a case's cells have landed past it: after its second case,
-    with no case left part-run."""
+    Read without any timing: the comparison declares latency under test, so each run plays one cell at a time and its
+    arms run one after another, and the order the runner calls each arm in is its run's cell order exactly, whatever a
+    loaded machine does between a cell's start and its call. (Several cells at once, a cell started later can reach the
+    runner first, and the arms' lanes start when the job manager starts their runs, so neither the order of calls nor
+    the arms' turns can be read off the calls there; the interleaver's turns are ``test_arm_schedule``'s.) Each answer
+    costs a quarter and each arm's cap is 0.9, so a run stops once four of its cells have landed: after its second
+    case, with no case left part-run."""
     store = InMemoryDocumentStore()
     calls: Counter[tuple[int, str]] = Counter()
     started: list[tuple[int, str]] = []
-    arrived: Counter[int] = Counter()
-    whole: dict[int, asyncio.Event] = {}
 
     def recording(arm: str) -> Callable[[Mapping[str, Any]], Any]:
         draw = _priced("played", arm, 0.5, calls, cost=0.25)
 
         async def run(case: Mapping[str, Any]) -> Answer:
             started.append((case["n"], arm))
-            arrived[case["n"]] += 1
-            held = whole.setdefault(case["n"], asyncio.Event())
-            if arrived[case["n"]] == 4:
-                held.set()
-            # Held until the whole case has reached the runner: no slot frees for the next case before then.
-            await held.wait()
             answer: Answer = await draw(case)
             return answer
 
@@ -1197,13 +1188,12 @@ async def test_a_comparison_plays_its_cells_case_by_case_in_the_committed_order_
     arms = {arm: recording(arm) for arm in "ab"}
 
     def compare(n: int, cap: float) -> Eval:
-        return Eval(_cases(n), arms, [_correct], k=2, name="played", max_cost_usd=cap)
+        return Eval(_cases(n), arms, [_correct], k=2, name="played", max_cost_usd=cap, measure_latency=True)
 
     def played(starts: list[tuple[int, str]], cases: list[int]) -> None:
-        """The runner is reached case by case in ``cases``' order, each case's four calls both arms' two repeats."""
-        assert [n for n, _ in starts] == [n for n in cases for _ in range(4)], starts
-        for at in range(0, len(starts), 4):
-            assert Counter(arm for _, arm in starts[at : at + 4]) == {"a": 2, "b": 2}, starts
+        """Each arm is called case by case in ``cases``' order, both repeats of a case before the next case."""
+        for arm in "ab":
+            assert [n for n, side in starts if side == arm] == [n for n in cases for _ in range(2)], (arm, starts)
 
     stopped = await compare(12, 1.8).run(store=store, scope="s")
     assert stopped.exit_code() == 1
@@ -1211,6 +1201,8 @@ async def test_a_comparison_plays_its_cells_case_by_case_in_the_committed_order_
     template = runs[0].template_id
     case_n = {f"{template}-{n}": n for n in range(20)}
     order = [case_n[case] for case in committed_order(template, [[f"{template}-{n}" for n in range(12)]])]
+    # Not the cases file's order: the cases were shuffled once, before any answer.
+    assert order != list(range(12))
     played(started, order[:2])
     unfinished = order[2:]
 
