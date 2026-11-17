@@ -41,7 +41,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -88,8 +88,9 @@ _INTERRUPTED, _HOLDINGS = 0.8, 5
 #: each (20, 40 and 60 cases at its three looks), and the looks it plans.
 _FIXED_CASES, _LOOK_CASES, _PLANNED = 40, 20, 3
 
-#: Comparisons in each long simulation, and in the smoke check.
-_REPLICATES, _SMOKE = 600, 3
+#: Comparisons in each long simulation at a fixed count, in each under a plan of looks, and in each smoke check: each
+#: long one a pool request of its own, inside its window.
+_FIXED_REPLICATES, _LOOKS_REPLICATES, _SMOKE = 800, 500, 3
 
 _CALLER = Caller(scope_id=_SCOPE, identity="engine-operator")
 
@@ -281,7 +282,11 @@ async def _launched(engine: _Engine, rng: random.Random, cases: list[EvalTestCas
         if all(run.status == "completed" for run in runs):
             # The cancel reached the launch after its runs had ended: nothing is left to take up.
             break
-        rows = [row for run_id in off_loop(_run_ids, engine, launch_id) for row in off_loop(list_results, storage, run_id, _SCOPE)]
+        rows = [
+            row
+            for run_id in off_loop(_run_ids, engine, launch_id)
+            for row in off_loop(list_results, storage, run_id, _SCOPE)
+        ]
         recorded = [row for row in rows if not runs_again(row)]
         for row in rows:
             if runs_again(row):
@@ -291,7 +296,8 @@ async def _launched(engine: _Engine, rng: random.Random, cases: list[EvalTestCas
     else:
         raise AssertionError(f"launch {launch_id} did not complete within {_HOLDINGS} holdings")
     runs = sorted(
-        off_loop(storage.load_eval_runs, off_loop(_run_ids, engine, launch_id), _SCOPE), key=lambda run: run.candidate_model
+        off_loop(storage.load_eval_runs, off_loop(_run_ids, engine, launch_id), _SCOPE),
+        key=lambda run: run.candidate_model,
     )
     # The take-up finished the launch as one uninterrupted would have: every cell one row, none left to run again.
     for run in runs:
@@ -445,3 +451,39 @@ async def test_a_few_engine_comparisons_interrupted_and_taken_up_finish_whole_an
         separated, cuts = await _simulate(reading, "b-slower-20x", _SMOKE, "smoke")
         assert separated <= 1, _said(reading, "b-slower-20x", separated, _SMOKE, cuts)
         assert cuts.holdings >= _SMOKE
+
+
+def _held(reading: _Reading, law: _Law, separated: int, count: int, cuts: _Cuts) -> None:
+    """Print what the simulation drew (``-rP`` shows it on a pass), and hold its 95% Clopper-Pearson upper bound at α."""
+    said = _said(reading, law, separated, count, cuts)
+    print(said)
+    bound = exact_rate_interval(separated, count)
+    assert bound is not None and bound[1] <= SIGNIFICANCE_ALPHA, said
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(1700)
+@pytest.mark.parametrize("law", ["alike-20x", "b-slower-4x", "b-slower-20x"])
+async def test_under_the_null_an_engine_comparison_interrupted_and_taken_up_read_at_a_fixed_count_separates_at_most_alpha(
+    law: _Law,
+) -> None:
+    """:data:`_FIXED_REPLICATES` comparisons of :data:`_FIXED_CASES` cases (:func:`_at_a_fixed_count`), each launch
+    interrupted and taken up as :func:`_launched` holds it, read once by the engine's default reading: the share that
+    separates has a 95% Clopper-Pearson upper bound at most α, for arms of one latency law and for arms of different
+    laws whose slow arm is slower again when wrong."""
+    separated, cuts = await _simulate("fixed", law, _FIXED_REPLICATES, "engine")
+    _held("fixed", law, separated, _FIXED_REPLICATES, cuts)
+
+
+@pytest.mark.long_simulation
+@pytest.mark.timeout(1700)
+@pytest.mark.parametrize("law", ["alike-20x", "b-slower-4x", "b-slower-20x"])
+async def test_under_the_null_an_engine_comparison_interrupted_and_taken_up_over_planned_looks_separates_at_most_alpha(
+    law: _Law,
+) -> None:
+    """:data:`_LOOKS_REPLICATES` comparisons under a plan of :data:`_PLANNED` looks
+    (:func:`_watched_over_planned_looks`), each look's launch interrupted and taken up as :func:`_launched` holds it, the
+    watcher stopping at the first look that separates: the share that separates has a 95% Clopper-Pearson upper bound
+    at most α."""
+    separated, cuts = await _simulate("looks", law, _LOOKS_REPLICATES, "engine")
+    _held("looks", law, separated, _LOOKS_REPLICATES, cuts)
