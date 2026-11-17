@@ -31,7 +31,6 @@ def _reading_settings() -> LaunchSettings:
     host has no kind to launch. Built per call rather than held at module level, so no two hosts share an instance.
 
     :return: The settings.
-    :rtype: LaunchSettings
     """
     return LaunchSettings(
         max_launch_arms=1,
@@ -155,12 +154,9 @@ class OpsHost:
         (templates, runs, campaigns, reports, gates) works over ``eval_host``'s storage.
 
         :param eval_host: The host whose runs are read, as :func:`~threetears.evals.quick.as_host` builds one.
-        :ptype eval_host: EvalHost
         :param campaign_export_max_bytes: The ``campaign_export`` action's ceiling
             (:attr:`campaign_export_max_bytes`).
-        :ptype campaign_export_max_bytes: int
         :return: The host.
-        :rtype: OpsHost
         """
         # The registry is the host's template checks' ``kinds``, so nothing launches here by emptying it.
         checks = eval_host.template_checks

@@ -116,7 +116,6 @@ class TurnModel(Protocol):
         freezes or spends anything. It may bring the client's prices up to date first.
 
         :return: ``None``, or the pricing refusal, naming the model and what to do.
-        :rtype: str | None
         :raises ValueError: The model sends no turn at all (its route or settings), which is no pricing refusal.
         """
         ...
@@ -125,11 +124,8 @@ class TurnModel(Protocol):
         """The client one named session's turns go through.
 
         :param name: The session's name (``analyst``, ``editor-1``).
-        :ptype name: str
         :param snapshot: The snapshot the session reads.
-        :ptype snapshot: str
         :return: The client.
-        :rtype: ToolTurnClient
         """
         ...
 
@@ -227,31 +223,18 @@ async def write_rounds(
 
     :param model: The model the analyst's session runs on, and every review's unless ``editor_model`` is named; the
         client of each named session it runs.
-    :ptype model: TurnModel
     :param snapshot: The frozen snapshot's id.
-    :ptype snapshot: str
     :param report_input: Its report input, which the editor's page and its facts read.
-    :ptype report_input: ReportInput
     :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, bound to its host and caller.
-    :ptype analyst_mount: ToolMount
     :param editor_mount: The tool on the editor's cut, bound the same way.
-    :ptype editor_mount: ToolMount
     :param analyst_skill: The analyst's system text.
-    :ptype analyst_skill: SkillText
     :param editor_skill: The editor's system text.
-    :ptype editor_skill: SkillText
     :param check: The invariants' checker on the snapshot, which every submission passes before review.
-    :ptype check: InvariantCheck
     :param tally: The report's tally, which every turn of every session is counted in.
-    :ptype tally: Tally
     :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
-    :ptype budget: ReportBudget
     :param limits: What the loop is held to; :class:`WriterLimits`' defaults when ``None``.
-    :ptype limits: WriterLimits | None
     :param editor_model: The model every review session runs on, and their client; ``None`` runs them on ``model``.
-    :ptype editor_model: TurnModel | None
     :return: How it ended, and what to store.
-    :rtype: WritingOutcome
     """
     held = limits if limits is not None else WriterLimits()
     editor = editor_model if editor_model is not None else model

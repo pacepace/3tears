@@ -176,11 +176,8 @@ class BudgetedJudgeClient:
         """Wrap ``inner`` so its calls are made through ``budget``.
 
         :param inner: The host's judge client, which this owns from here and releases.
-        :ptype inner: BoundCompletionClient
         :param budget: The budget the calls are admitted against.
-        :ptype budget: OutOfRunBudget
         :param purpose: The ledger purpose each call is admitted and written under.
-        :ptype purpose: KnownOutOfRunPurpose
         """
         self._inner = inner
         self._budget = budget
@@ -270,18 +267,13 @@ def collect_repeatable(
     """Load the run and every result to repeat, refusing what cannot be reproduced — blocking, so off the loop.
 
     :param storage: The store.
-    :ptype storage: EvalStorage
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param result_ids: The results to collect; ``None`` for every result of the run.
-    :ptype result_ids: Sequence[str] | None
     :param request_settings: ``"today"`` (a repeat: its answers pair with the run's first scores, so the run must have
         been asked exactly as a call is asked now, at the temperature a call now asks) or ``"as_recorded"`` (a
         judge temperature comparison, which forces its own temperature on both of its sides and pairs nothing
         with the run's scores, so only an unrecorded apparatus is refused — see :data:`RequestSettingsPolicy`).
-    :ptype request_settings: RequestSettingsPolicy
     :raises NotFoundError: No run with that id, or the run's template does not load.
     :raises ValidationFailedError: The run is still running, its judging apparatus was not recorded (or, ``"today"``,
         cannot be sent today), ``result_ids`` names a result not in the run, or no result of the run can be
@@ -445,17 +437,11 @@ async def estimate_judge_repeat(
     ``would_start`` is its answer.
 
     :param host: The host: the run's store and the judge clients.
-    :ptype host: EvalHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param out_of_run_cap_usd: The cap the repeat would be held to; ``None`` when the host enforces none.
-    :ptype out_of_run_cap_usd: float | None
     :param result_ids: The results to repeat; ``None`` for every result of the run.
-    :ptype result_ids: Sequence[str] | None
     :return: The estimate.
-    :rtype: JudgeRepeatEstimate
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run cannot be repeated (see :func:`judge_repeat_work`).
     :raises ValueError: The host supplies no completion clients.
@@ -509,19 +495,13 @@ async def judge_repeat_work(
 
     :param host: The host: the run's store, the judge clients — through the same run-pinned resolution the run
         scored through — and how a judge call that raised reads.
-    :ptype host: EvalHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param out_of_run_cap_usd: The most the repeat's calls may be priced at together; ``None`` when the host
         enforces no out-of-run cap.
-    :ptype out_of_run_cap_usd: float | None
     :param result_ids: The results to repeat; ``None`` for every result of the run.
-    :ptype result_ids: Sequence[str] | None
     :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`JUDGE_REPEAT_ACTION`.
-    :rtype: JobWork[EvalActionJob]
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run is still running; its judging apparatus was not recorded or would be
         asked differently today; ``result_ids`` names a result outside it; no result can be repeated; or
@@ -650,7 +630,6 @@ def _record(storage: EvalStorage, result_id: str, scope_id: str, repeat: JudgeRe
     :return: True once the repeat is stored; False when the result is gone, could not be read (``StorageError``, or
         a pydantic ``ValidationError`` hydrating it), or every write was refused (``ConflictError``) or failed
         (``StorageError``).
-    :rtype: bool
     :raises Exception: Anything else the store raises — a host adapter's own driver exception, which the store
         port names no type for — propagates, loudly, out of :func:`judge_repeat_work`: the calls already
         made stay in the out-of-run ledger, but that report is not returned. This catches only the types

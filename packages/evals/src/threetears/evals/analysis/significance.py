@@ -83,15 +83,11 @@ def significance_read(*, significant: bool | None, p: float | None = None, effec
     it is not part of the predicate and is not a parameter here.
 
     :param significant: The verdict, or ``None`` when no test was run.
-    :ptype significant: bool | None
     :param p: The p-value the verdict was thresholded against, when one exists.
-    :ptype p: float | None
     :param effect: The effect size, when one exists — paired or not, since which
         test produced it changes what it is CALLED but not whether one ran.
-    :ptype effect: float | None
     :return: :data:`SIGNIFICANT_LABEL`, :data:`NOT_SIGNIFICANT_LABEL`, or
         :data:`NOT_TESTED_LABEL`.
-    :rtype: str
     """
     if p is None and effect is None:
         return NOT_TESTED_LABEL
@@ -132,23 +128,16 @@ def format_significance(
     "not tested" looks like a fault in the harness.
 
     :param significant: The verdict, or ``None`` when no test was run.
-    :ptype significant: bool | None
     :param paired: Whether the test that produced ``effect`` paired its samples.
         Decides only the effect size's NAME (:data:`PAIRED_EFFECT_LABEL` vs
         :data:`UNPAIRED_EFFECT_LABEL`) — a caller must pass what actually
         ran, not what the surface is called.
-    :ptype paired: bool
     :param p: The p-value the verdict was thresholded against.
-    :ptype p: float | None
     :param effect: The effect size.
-    :ptype effect: float | None
     :param n: The sample size the test would have run over.
-    :ptype n: int | None
     :param hedges: Whether ``effect`` is Hedges' g (the engine's tests, ``hedges_g``) rather than Cohen's d (a
         stored delta-table row's historical ``d_z``). Decides the name with ``paired``.
-    :ptype hedges: bool
     :return: e.g. ``"significant (p=0.0123, d_z=1.42, n=8)"`` or ``"not tested (n=1)"``.
-    :rtype: str
     """
     if hedges:
         effect_label = PAIRED_HEDGES_LABEL if paired else UNPAIRED_HEDGES_LABEL
@@ -193,12 +182,9 @@ def cross_subject_disclosure(subject_a: str | None, subject_b: str | None) -> st
     but a subject key cannot be blank, so the pair is not constructible.
 
     :param subject_a: Run A's subject key.
-    :ptype subject_a: str | None
     :param subject_b: Run B's subject key.
-    :ptype subject_b: str | None
     :return: The disclosure, or ``None`` when both sides name the same subject and
         the composites are therefore comparable.
-    :rtype: str | None
     """
     left = (subject_a or "").strip()
     right = (subject_b or "").strip()
@@ -222,11 +208,8 @@ def looks_alpha(planned: int | None, alpha: float = SIGNIFICANCE_ALPHA) -> float
     (:func:`looks_taken`) and qualifies the reading rather than tightening it after the fact.
 
     :param planned: The looks the aspect's design declares (``AspectDesign.planned_looks``); None where none is.
-    :ptype planned: int | None
     :param alpha: The error rate the readings state.
-    :ptype alpha: float
     :return: The level each look reads at.
-    :rtype: float
     """
     return alpha / planned if planned else alpha
 
@@ -242,11 +225,8 @@ def looks_confidence(confidence: float, planned: int | None) -> float:
     tightened.
 
     :param confidence: The nominal two-sided level.
-    :ptype confidence: float
     :param planned: The looks the aspect's design declares; None where none is.
-    :ptype planned: int | None
     :return: The level the claim is read at: ``confidence`` with no plan or a plan of one.
-    :rtype: float
     """
     return 1.0 - (1.0 - confidence) / planned if planned and planned > 1 else confidence
 
@@ -409,11 +389,8 @@ def measured_upper_bound(rate: float, replicates: int) -> float:
     rate is at or under a level is shown only where this is.
 
     :param rate: The measured rate, as a share.
-    :ptype rate: float
     :param replicates: The replicates it was measured on.
-    :ptype replicates: int
     :return: The upper bound, as a share.
-    :rtype: float
     """
     z = NormalDist().inv_cdf(UPPER_BOUND_LEVEL)
     n = replicates
@@ -486,17 +463,11 @@ def looks_false_separation(
     (``largest_step``), known from stored facts, fall outside the setting the two rows simulated (``outside_setting``).
 
     :param test: The test the contrast's claims are read by.
-    :ptype test: SeparationTest
     :param planned: The looks the plan in force allows; None where none is.
-    :ptype planned: int | None
     :param taken: The looks taken, at least one.
-    :ptype taken: int
     :param launched: The cases the campaign's contrast read at its first look; None where not known.
-    :ptype launched: int | None
     :param largest_step: The most cases one of its later looks added; None where not known.
-    :ptype largest_step: int | None
     :return: The rate with its row and setting, or why none is quoted.
-    :rtype: MeasuredRate
     """
     rows = _rows(test, planned)
     if set(rows) != set(LOOKS_PROCEDURES) or any(taken > len(row.rates) for _, row in rows.values()):
@@ -533,13 +504,9 @@ def plan_kept(test: SeparationTest, planned: int, taken: int) -> bool:
     be shown; a plan, a test or a count no planner-sized row measured is not.
 
     :param test: The test the contrast's claims are read by.
-    :ptype test: SeparationTest
     :param planned: The looks the plan in force allows.
-    :ptype planned: int
     :param taken: The looks taken, at most ``planned``.
-    :ptype taken: int
     :return: Whether keeping the plan is shown to hold α.
-    :rtype: bool
     """
     if taken <= 1:
         return True
@@ -584,21 +551,14 @@ def looks_taken(
 
     :param deliveries: Each result of the two arms, as when its evidence reached the contrast (scored, or joined where
         it joined later), its arm, its case, and the occasion that brought it.
-    :ptype deliveries: Iterable[tuple[datetime, str, str, Hashable]]
     :param arms: The contrast's two arms.
-    :ptype arms: tuple[str, str]
     :param changes: Occasions that changed the evidence of every contrast, each with when it was made.
-    :ptype changes: Iterable[tuple[datetime, Hashable]]
     :param departed: When the evidence of each run that has since left first reached the contrast, each with the occasion that brought it.
-    :ptype departed: Iterable[tuple[datetime, Hashable]]
     :param rejudges: Each result's re-judges, as when each was made.
-    :ptype rejudges: Iterable[Iterable[datetime]]
     :param uncounted: Occasions that changed the evidence but whose being a look is not recorded (a run that joined
         before membership was recorded, launched as it was stored): they date the first look where they made it, and
         are not counted after it, so the count is the looks recorded since, a lower count.
-    :ptype uncounted: Collection[Hashable]
     :return: ``(looks, lower_bound)``; None where the two arms never both held a result, so there is no contrast.
-    :rtype: tuple[int, bool] | None
     """
     walked = _walk(deliveries, arms)
     if walked is None:
@@ -624,11 +584,8 @@ def look_sizes(
     first change; one that adds trials to held cases adds no cases.
 
     :param deliveries: Each result of the two arms, as :func:`looks_taken` takes them.
-    :ptype deliveries: Iterable[tuple[datetime, str, str, Hashable]]
     :param arms: The contrast's two arms.
-    :ptype arms: tuple[str, str]
     :return: ``(cases at the first look, largest step)``; None where there is no contrast.
-    :rtype: tuple[int, int] | None
     """
     walked = _walk(deliveries, arms)
     if walked is None:

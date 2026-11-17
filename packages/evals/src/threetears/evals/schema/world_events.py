@@ -108,7 +108,6 @@ class WorldEvent(EvalDocumentModel, CoreShapeModel):
         """Refuse a record whose fields contradict its kind.
 
         :return: The record.
-        :rtype: Self
         :raises ValueError: An ambient record names a dimension, a condition, an event or a world cause, or claims
             to be armed; a fired record names no dimension, condition or event, or carries what ambient
             moved; a ``human`` record claims the rig caused it — no fire handle can be bound to a human
@@ -183,13 +182,10 @@ class Firings:
         unknowable and ``fired_armed()`` is not established.
 
         :param events: The cell's world events, in any order.
-        :ptype events: Iterable[WorldEvent]
         :param provenance: The apparatus provenance of the run the cell belongs to
             (:attr:`~threetears.evals.schema.models.EvalRun.apparatus_provenance`).
-        :ptype provenance: ApparatusProvenance
         :return: Every dimension that fired, and those on which an armed event fired — or, for a witnessed
             cell, no armed set and ``armed_known=False``.
-        :rtype: Firings
         """
         fired = [event for event in events if event.dimension is not None]
         dimensions = frozenset(event.dimension for event in fired if event.dimension is not None)

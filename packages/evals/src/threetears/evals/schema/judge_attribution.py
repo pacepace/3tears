@@ -67,13 +67,10 @@ def attribution_state(
     future writer bug degrades to "cannot say" rather than to "measured".
 
     :param effective_judges: ``{dim_id: resolved_model}``, or ``None``/empty.
-    :ptype effective_judges: dict[str, str] | None
     :param source: The recorded provenance, or ``None``.
-    :ptype source: str | None
     :return: ``recorded`` — captured at launch, the only state that may enter a context
         key. ``derived`` — reconstructed afterwards, displayable but never
         hashable. ``absent`` — the run cannot say.
-    :rtype: JudgeAttributionState
     """
     if not effective_judges:
         return "absent"
@@ -92,12 +89,9 @@ def judges_sharing_a_candidate_model(
     recorded, so a candidate named by an alias the judge's id does not spell is not caught.
 
     :param effective_judges: ``{dim_id: resolved_model}`` as the run recorded it, or ``None``.
-    :ptype effective_judges: dict[str, str] | None
     :param candidate_models: The run's candidate models.
-    :ptype candidate_models: Sequence[str]
     :return: ``{dim_id: model}`` for each dim judged by a candidate's model; empty when none is, or
         when the run recorded no attribution.
-    :rtype: dict[str, str]
     """
     candidates = set(candidate_models)
     return {dim: model for dim, model in (effective_judges or {}).items() if model in candidates}

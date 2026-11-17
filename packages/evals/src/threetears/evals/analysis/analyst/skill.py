@@ -104,9 +104,7 @@ class AnalystSkill:
 
         :param path: The skill's root directory; a relative path is read beside the eval file being loaded, else in the
             working directory.
-        :ptype path: str | Path
         :return: The skill, checked whole.
-        :rtype: AnalystSkill
         :raises ValueError: When ``path`` is not a directory, or the skill there is not whole.
         """
         root = beside_eval_file(path)
@@ -118,11 +116,8 @@ class AnalystSkill:
         """This skill with one file's text replaced: a variant differing in that file alone, under its own digest.
 
         :param name: The file, by its path relative to the skill's root (``SKILL.md``, ``exemplars/INDEX.md``).
-        :ptype name: str
         :param text: Its new text.
-        :ptype text: str
         :return: The new skill, checked whole.
-        :rtype: AnalystSkill
         :raises ValueError: When the skill holds no file of that name, or the new skill is not whole.
         """
         if name not in self.files:
@@ -141,7 +136,6 @@ class AnalystSkill:
         """The sha256 of every file's path and text, as canonical JSON: which skill a report was written with.
 
         :return: A 64-character lowercase hex digest, the same for the same files in any order.
-        :rtype: str
         """
         return canonical_digest(dict(self.files))
 
@@ -150,9 +144,7 @@ class AnalystSkill:
 
         :param withhold: Notes, by file name, the analyst must not be given, as a blind run withholds the note
             reasoned on its own campaign. The index drops their rows too, since a row tells a note's story.
-        :ptype withhold: Collection[str]
         :return: The text, and the notes it holds.
-        :rtype: SkillText
         :raises TypeError: When ``withhold`` is a single string rather than a collection of names.
         :raises ValueError: When ``withhold`` names a note the index has no row for.
         """
@@ -172,7 +164,6 @@ class AnalystSkill:
         """The report editor's system text: ``editor.md``, the rubric and the answer it returns.
 
         :return: The text, from ``editor.md`` alone.
-        :rtype: SkillText
         """
         return SkillText(text=_assemble((_EDITOR,), (self.files[_EDITOR],)), files=(_EDITOR,))
 
@@ -207,7 +198,6 @@ def load_skill() -> AnalystSkill:
     """The analyst skill this build ships, read once from the package's ``skill/`` data.
 
     :return: The skill, checked whole.
-    :rtype: AnalystSkill
     :raises ValueError: When the shipped skill is not whole (see :class:`AnalystSkill`).
     """
     return AnalystSkill(files=_read_tree(files("threetears.evals.analysis.analyst").joinpath("skill")))

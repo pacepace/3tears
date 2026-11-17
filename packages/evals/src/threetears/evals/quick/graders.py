@@ -158,15 +158,10 @@ def grader(
 
     :param target: The function or field name to wrap; ``None`` returns a decorator that wraps the function it
         decorates.
-    :ptype target: Callable[[Mapping[str, Any], Any], float | bool] | str | None
     :param margin: The equivalence margin, in the reading's own units (0.05 is five points on a pass rate).
-    :ptype margin: float | None
     :param guard: Makes the reading a guardrail with this margin.
-    :ptype guard: float | None
     :param range: The lowest and highest grade a function returning a number gives.
-    :ptype range: tuple[float, float] | None
     :return: The :class:`Grader`, or, with no ``target``, the decorator building one.
-    :rtype: Grader | Callable[[Callable[[Mapping[str, Any], Any], float | bool]], Grader]
     :raises ValueError: As :class:`Grader` refuses.
     """
     if target is None:
@@ -183,12 +178,9 @@ def field_value(out: Any, name: str) -> Any:
     answer's attribute of that name (a pydantic model's field, a dataclass's).
 
     :param out: The runner's answer; a world runner's is read through its ``answer``.
-    :ptype out: Any
     :param name: The field.
-    :ptype name: str
     :return: The value as JSON would carry it, or a sentinel the label reads as unusable when the answer has no such
         field.
-    :rtype: Any
     """
     if isinstance(out, WorldOutcome):
         out = out.answer
@@ -247,9 +239,7 @@ def field_scorer(name: str) -> GraderFunction:
     labels, refuses a ``null``.
 
     :param name: The field.
-    :ptype name: str
     :return: The grading function, named ``name`` and annotated ``-> bool``.
-    :rtype: GraderFunction
     """
 
     def matches(case: Mapping[str, Any], out: Any) -> bool:
@@ -295,11 +285,8 @@ def declares_a_check(function: Callable[..., Any], *, ranged: bool = False) -> b
     function of ``(case, out)``, never awaited.
 
     :param function: The function grader.
-    :ptype function: Callable[..., Any]
     :param ranged: Whether a range is declared for it.
-    :ptype ranged: bool
     :return: Whether it is a check.
-    :rtype: bool
     :raises ValueError: It is an ``async def``; its annotation names ``None``, or both bool and a number
         (``-> bool | float``), or something read as neither (``-> np.float64``, ``-> Decimal``, an alias, ``-> Any``):
         the message says what was read and the spellings accepted.
@@ -473,9 +460,7 @@ def plan_graders(graders: Any) -> GraderPlan:
 
     :param graders: One grader, or a list of them, each a function, a field name, an expression, a
         :class:`~threetears.evals.quick.judged.Judge` or a :class:`Grader`.
-    :ptype graders: Any
     :return: The plan.
-    :rtype: GraderPlan
     :raises ValueError: No grader; two judges; a grader of no known form; a function that cannot take ``(case,
         out)``; a function written ``async def`` or whose return annotation is read as both kinds, neither, or names
         ``None`` (:func:`declares_a_check`); a field named after an engine core measure; or a name graded twice.

@@ -1127,16 +1127,11 @@ def campaigns_list(
     """One page of the scope's campaigns, newest first, and the next page's cursor.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param archived: Only archived (``True``) or only active (``False``) campaigns; ``None`` for both. A predicate of
         the store's read, so every page is full but the last.
-    :ptype archived: bool | None
     :param cursor: The ``next`` of the page before; ``None`` reads the first page.
-    :ptype cursor: str | None
     :param limit: The campaigns a page reads, 1 to :data:`~threetears.evals.kernel.list_pages.LIST_PAGE_MAX`.
-    :ptype limit: int
     :return: The page: each campaign with its question, declared arms, recorded call, its report's state, headline
         and cost, and the declared campaigns an exploratory one feeds, read among every campaign of the scope,
         archived or not, on any page. One read of the page's campaigns, and where the page holds an exploratory
@@ -1146,7 +1141,6 @@ def campaigns_list(
         line reads off it, and one of its analysis attempts where it has a report; for a campaign declaring no arm,
         one read of its runs, which its title names. An analysis that does not read back (a bundle of another shape,
         a corrupt record) lists its report as needing regeneration, with why, and fails nothing else.
-    :rtype: CampaignListing
     :raises ValidationFailedError: ``cursor`` is not one ``campaigns_list`` returned, or ``limit`` is out of range.
     """
     page: CampaignsPage = host.storage.list_campaigns_page(
@@ -1167,15 +1161,10 @@ def campaign_create(host: EvalHost, definition: CampaignDefinition, scope_id: st
     """Create a campaign over runs already in the scope, declared as it is created when the definition says so.
 
     :param host: The host whose store the campaign is written to.
-    :ptype host: EvalHost
     :param definition: What the campaign is.
-    :ptype definition: CampaignDefinition
     :param scope_id: The scope it lives in, with its runs.
-    :ptype scope_id: str
     :param created_by: Who is creating it, as the calling surface knows them.
-    :ptype created_by: str
     :return: The campaign as created.
-    :rtype: CampaignLine
     :raises NotFoundError: A campaign it adopts from, or a template an aspect names, is not in the scope.
     :raises ValidationFailedError: The definition declares neither a design nor ``exploratory``, or both; fails
         campaign validation; holds a run outside the scope or in two aspects; declares an aspect without a margin, or
@@ -1205,17 +1194,11 @@ def campaign_update(
     declaration and its control are written together, so a refused designation leaves the declaration as it was.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param changes: What to change.
-    :ptype changes: CampaignChanges
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param updated_by: Who is amending it, as the calling surface knows them; recorded on a declaration this writes.
-    :ptype updated_by: str
     :return: The campaign as persisted.
-    :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ConflictError: The campaign holds a run, and the change writes its declaration or re-points or clears its
         control.
@@ -1259,17 +1242,11 @@ def campaign_runs_add(
     run outside the scope, or held by another aspect, is refused, all-or-nothing, as at creation.
 
     :param host: The host whose store holds the campaign and the runs.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param run_ids: The runs to add.
-    :ptype run_ids: list[str]
     :param scope_id: The scope they all live in.
-    :ptype scope_id: str
     :param aspect: The aspect they join, by label; None routes each by its template.
-    :ptype aspect: str | None
     :return: The campaign as persisted.
-    :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: No run is named; the aspect is not the campaign's; a run does not exist in the
         scope, is held by another aspect, or ran a template no aspect or several aspects are gathered on.
@@ -1289,17 +1266,11 @@ def campaign_runs_remove(
     run it was named from leaves it named; where no remaining run carries it, the report says the arm is unobserved.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param run_ids: The runs to take out; every one must be in the campaign.
-    :ptype run_ids: list[str]
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param aspect: The aspect holding them, by label; None takes each from wherever it is held.
-    :ptype aspect: str | None
     :return: The campaign as persisted.
-    :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: No run is named, or one is not in the campaign (or the aspect); nothing was removed.
     :raises StorageError: The write failed.
@@ -1346,33 +1317,19 @@ def campaign_record(
     A new call replaces the earlier one.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param arm: The decided arm, by the label its page shows or by its variant key.
-    :ptype arm: str
     :param called_by: Who made the call, as the calling surface knows them.
-    :ptype called_by: str
     :param reason: Why, in the decider's words.
-    :ptype reason: str
     :param floors_overridden: The key of each broken floor the call overrides.
-    :ptype floors_overridden: list[str] | None
     :param bars_overridden: Each missed bar the call overrides, by aspect and measure.
-    :ptype bars_overridden: list[OverriddenBar] | None
     :param analysis_id: The analysis whose memo the call was made over; None for code's readings alone.
-    :ptype analysis_id: str | None
     :param made_by: A person or a model; None records neither.
-    :ptype made_by: Maker | None
     :param person: Whose call it is, a person's call only, in the caller's spelling.
-    :ptype person: str | None
     :param model: The model that made a model's call, by id.
-    :ptype model: str | None
     :param on_behalf_of: Who a model made its call for.
-    :ptype on_behalf_of: str | None
     :return: The call as stored.
-    :rtype: CampaignCallLine
     :raises EvalServiceError: Status 403: a person's call the host does not attest the caller for; nothing is
         written.
     :raises NotFoundError: No campaign with that id in the scope, or no such analysis.
@@ -1421,15 +1378,10 @@ def campaign_archive(host: EvalHost, campaign_id: str, scope_id: str, *, archive
     """Archive or restore a campaign — retired from listings, nothing destroyed.
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param archived: ``True`` retires it, ``False`` restores it.
-    :ptype archived: bool
     :return: The campaign as persisted.
-    :rtype: CampaignLine
     :raises NotFoundError: No campaign with that id in the scope.
     :raises StorageError: The write failed.
     """
@@ -1565,17 +1517,11 @@ def analysis_archive(
     (:func:`~threetears.evals.run.set_analysis_archived`).
 
     :param host: The host whose store holds the analysis.
-    :ptype host: EvalHost
     :param analysis_id: The analysis.
-    :ptype analysis_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param archived: ``True`` retires it, ``False`` restores it.
-    :ptype archived: bool
     :param reason: Why it is archived; cleared on restore.
-    :ptype reason: str | None
     :return: The analysis as persisted.
-    :rtype: AnalysisLine
     :raises NotFoundError: No analysis with that id in the scope.
     :raises StorageError: The write failed.
     """
@@ -1588,16 +1534,12 @@ def analyses_list(host: EvalHost, campaign_id: str, scope_id: str) -> AnalysisLi
     """A campaign's stored analyses.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The listing, newest first. The campaign's analyses are read a page at a time
         (:meth:`~threetears.evals.kernel.storage.EvalStorage.iter_analyses_by_campaign`), each kept only as its line,
         so the listing holds one page of whole analyses at once however many the campaign has archived. Each line's
         verdict and title are written by code from the bundle frozen with its analysis, so no lighter read serves it.
-    :rtype: AnalysisListing
     """
     return AnalysisListing(
         campaign_id=campaign_id,
@@ -1638,11 +1580,8 @@ def analyses_undescribable(host: EvalHost, scope_id: str) -> UndescribableArmsLi
     can still be read and restored.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :return: The listing. Each campaign's analyses are read a page at a time, as :func:`analyses_list` reads them.
-    :rtype: UndescribableArmsListing
     """
     lines: list[UndescribableArmsLine] = []
     read = 0
@@ -1813,15 +1752,10 @@ async def analysis_estimate(
     depends on the conversation before it.
 
     :param host: The host: its generation settings and its clients.
-    :ptype host: OpsHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param model: The writer model, or ``None`` for the host's default.
-    :ptype model: str | None
     :return: The estimate.
-    :rtype: AnalysisGenerationEstimate
     :raises ValidationFailedError: The host generates no analyses here, has set no report budget, supplies no clients,
         or the writer model is not one the host allows.
     :raises NotFoundError: No campaign with that id in the scope.
@@ -1892,19 +1826,13 @@ async def analysis_generate(
     report budget is the only admission. The attempt's and the analysis's provenance is the analyst skill's digest.
 
     :param host: The host: its generation settings, its clients and the job manager the task runs under.
-    :ptype host: OpsHost
     :param campaign_id: The campaign to analyse.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param writer: What writes the report, bound to the caller who started it (the action's
         :func:`~threetears.evals.actions.report_writing.campaign_report_writer`).
-    :ptype writer: ReportWriter
     :param model: The writer model, or ``None`` for the host's default.
-    :ptype model: str | None
     :return: The generation's one job. Poll it: a refusal its preparation met ends the job refused rather than raising
         here.
-    :rtype: JobsStarted
     :raises ValidationFailedError: The host generates no analyses here, has set no report budget, or the named writer
         model is not one the host allows (``HostProfile.analysis_writer_models``).
     :raises ConflictError: A generation of this campaign is already running — in this process, or in any process:
@@ -2433,21 +2361,13 @@ async def link_written_report(
     No generation slot is claimed and nothing is ledgered: the caller ran the writing and holds its spend.
 
     :param host: The host whose store holds the campaign, the document and its snapshot.
-    :ptype host: OpsHost
     :param written: The writing, which stored a document.
-    :ptype written: ReportWritten
     :param campaign_id: The campaign the document is about.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param writer_model: The model the report was written with.
-    :ptype writer_model: str
     :param started_at: When the writing started (ISO-8601).
-    :ptype started_at: str
     :param tally: The tally every turn of the writing was counted in.
-    :ptype tally: Tally
     :return: The analysis stored.
-    :rtype: EvalAnalysis
     :raises ValueError: The writing stored no document.
     :raises StorageError: The snapshot holds no bundle, or the analysis or an insight could not be stored.
     """
@@ -2511,7 +2431,6 @@ def _refuse_unstartable(host: EvalHost, campaign_id: str, scope_id: str, model: 
     The checks a start makes in its call. Everything that reads the campaign's runs is its job's.
 
     :return: The campaign.
-    :rtype: EvalCampaign
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: ``model`` is not one the host allows.
     """
@@ -2557,15 +2476,10 @@ def _claim_generation_slot(host: EvalHost, campaign_id: str, scope_id: str, atte
     lands; the other's is refused, re-reads, and finds the winner's attempt — recorded before its claim — live.
 
     :param host: Where the slot and the attempts live.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: Its scope.
-    :ptype scope_id: str
     :param attempt_id: The attempt claiming it, already recorded ``running`` with its lease.
-    :ptype attempt_id: str
     :return: ``None`` when the slot is claimed; otherwise the live attempt that holds it.
-    :rtype: str | None
     :raises ConflictError: The slot kept changing under every attempt to claim it.
     """
     for _ in range(LEASE_WRITE_ATTEMPTS):
@@ -2638,29 +2552,20 @@ def report_read(
     page draws its stored snapshot).
 
     :param host: The host whose store holds the campaign.
-    :ptype host: EvalHost
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param format: ``markdown``, ``html`` (one page, its charts drawn by the kit's inlined script; see ``static``) or
         ``json`` (the page's machine form: code's readings across the campaign's aspects, the call, each aspect's
         bundle by its fingerprint, as ``campaign.json`` beside a written page holds it, and ``report_doc``, the stored
         report document the page draws, or None).
-    :ptype format: ReportFormat
     :param trials: ``table`` (the default) or ``all``, which adds each failed or lost trial's full record.
-    :ptype trials: TrialDetail
     :param static: For ``html``, the static page, for a host whose policy lets a page neither run nor load anything:
         no ``<script>``, no ``<link>``, the system faces, every chart its table of values. Markdown and JSON are
         the same either way.
-    :ptype static: bool
     :param report_doc_id: One of the campaign's stored report documents, any version, to read in place of the
         campaign's report; None for the campaign's report.
-    :ptype report_doc_id: str | None
     :param include_sessions: With ``json``, add the transcripts of the report document the page draws.
-    :ptype include_sessions: bool
     :return: The report in that form.
-    :rtype: ReportDocument
     :raises NotFoundError: No campaign with that id in the scope; or no report document with ``report_doc_id`` in the
         scope, or one written for another campaign.
     :raises ValidationFailedError: ``include_sessions`` with a form other than ``json``; or the page refuses what it is
@@ -2755,13 +2660,9 @@ def bars_propose(host: EvalHost, campaign_id: str, scope_id: str) -> BarProposal
     mutation API.
 
     :param host: The host whose measures, bars and store this reads.
-    :ptype host: EvalHost
     :param campaign_id: The baseline campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The proposals.
-    :rtype: BarProposals
     :raises NotFoundError: No campaign with that id in the scope.
     :raises ValidationFailedError: The campaign measured no cell or more than one: a baseline is one configuration
         under one rig.
@@ -2811,15 +2712,10 @@ def analysis_delete(host: EvalHost, analysis_id: str, scope_id: str, *, confirm:
     """Destroy a stored analysis — its insights stay; archive is the reversible answer.
 
     :param host: The host whose store holds the analysis.
-    :ptype host: EvalHost
     :param analysis_id: The analysis.
-    :ptype analysis_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param confirm: Must echo ``analysis_id``.
-    :ptype confirm: str | None
     :return: What was removed.
-    :rtype: AnalysisDeleted
     :raises NotFoundError: No analysis with that id in the scope — refused before ``confirm`` is read.
     :raises ValidationFailedError: ``confirm`` does not echo the id.
     :raises StorageError: The delete failed.
@@ -2837,15 +2733,10 @@ def insights_list(
     matches nothing is an answer (that campaign minted no insights), not a refusal.
 
     :param host: The host whose store holds the ledger.
-    :ptype host: EvalHost
     :param scope_id: The scope whose ledger is read.
-    :ptype scope_id: str
     :param subject_id: Only insights about this subject.
-    :ptype subject_id: str | None
     :param source_campaign_id: Only insights an analysis of this campaign minted.
-    :ptype source_campaign_id: str | None
     :return: The listing.
-    :rtype: InsightListing
     """
     insights = list_insights(host.storage, scope_id, subject_id=subject_id, source_campaign_id=source_campaign_id)
     standing = _insight_standing(host, insights, scope_id)
@@ -2874,13 +2765,9 @@ def insight_get(host: EvalHost, insight_id: str, scope_id: str) -> InsightDetail
     """One insight in full: everything stored on it, and where it stands.
 
     :param host: The host whose store holds the ledger.
-    :ptype host: EvalHost
     :param insight_id: The insight.
-    :ptype insight_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :return: The insight and its standing.
-    :rtype: InsightDetail
     :raises NotFoundError: No insight with that id in the scope.
     """
     insight = host.storage.load_insight(insight_id, scope_id)
@@ -2897,15 +2784,10 @@ def insight_delete(host: EvalHost, insight_id: str, scope_id: str, *, confirm: s
     retracts every insight that analysis minted; this removes one.
 
     :param host: The host whose store holds the ledger.
-    :ptype host: EvalHost
     :param insight_id: The insight.
-    :ptype insight_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param confirm: Must echo ``insight_id``.
-    :ptype confirm: str | None
     :return: What was removed.
-    :rtype: InsightDeleted
     :raises NotFoundError: No insight with that id in the scope — refused before ``confirm`` is read.
     :raises ValidationFailedError: ``confirm`` does not echo the id.
     :raises StorageError: The delete failed.

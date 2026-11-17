@@ -53,9 +53,7 @@ def get_logger(name: str) -> logging.Logger:
     """Return the logger for a module of this package.
 
     :param name: The module's ``__name__``.
-    :ptype name: str
     :return: The stdlib logger of that name.
-    :rtype: logging.Logger
     """
     return logging.getLogger(name)
 
@@ -64,9 +62,7 @@ def _site_of(frame: FrameType | None) -> str:
     """Name a frame as ``module:qualified.function``.
 
     :param frame: The frame that caught the exception, or ``None`` when none is known.
-    :ptype frame: FrameType | None
     :return: The site.
-    :rtype: str
     """
     if frame is None:
         return "<unknown>"
@@ -84,17 +80,11 @@ def _record(
     """Log ``exc`` with its traceback, naming the function that caught it.
 
     :param exc: The exception being absorbed.
-    :ptype exc: Exception
     :param frame: The catching frame.
-    :ptype frame: FrameType | None
     :param log: The catching module's logger.
-    :ptype log: logging.Logger
     :param what: The message, verbatim.
-    :ptype what: str
     :param extra: Structured fields for the record's ``extra_data``.
-    :ptype extra: Mapping[str, object] | None
     :param level: The record's level.
-    :ptype level: ContainedLevel
     :raises ValueError: ``level`` is not one of ``"warning"``, ``"error"``, ``"critical"``.
     """
     if level not in _LEVELS:
@@ -117,16 +107,11 @@ def contain(
     would otherwise make. It does not change control flow.
 
     :param exc: The caught exception.
-    :ptype exc: Exception
     :param log: The catching module's logger.
-    :ptype log: logging.Logger
     :param what: The message, verbatim.
-    :ptype what: str
     :param extra: Structured fields for the record's ``extra_data``; ``contained_site`` and ``exc_type``
         are added to them.
-    :ptype extra: Mapping[str, object] | None
     :param level: ``"warning"`` by default; nothing below it.
-    :ptype level: ContainedLevel
     :raises ValueError: ``level`` is not one of ``"warning"``, ``"error"``, ``"critical"``.
     """
     if exc.__traceback__ is not None:
@@ -178,12 +163,8 @@ def contained(
     """Absorb and record an :class:`Exception` raised in the block; let everything else through.
 
     :param what: The message if the block fails, verbatim.
-    :ptype what: str
     :param log: The calling module's logger.
-    :ptype log: logging.Logger
     :param extra: Structured fields for the record's ``extra_data``.
-    :ptype extra: Mapping[str, object] | None
     :return: A context manager that contains an :class:`Exception` and passes anything else.
-    :rtype: AbstractContextManager[None]
     """
     return _Contained(what, log, extra)

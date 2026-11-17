@@ -126,11 +126,8 @@ def check_state(state: str, reason: str | None, coordinate: str | None = None) -
     """Refuse a state, reason and coordinate that do not belong together.
 
     :param state: One of :data:`ReadingState`.
-    :ptype state: str
     :param reason: The reason, a member of the state's own set (:data:`REASONS_OF`); None for ``counted`` only.
-    :ptype reason: str | None
     :param coordinate: The coordinate a ``split`` is on, or the one an unrecorded identity names; None otherwise.
-    :ptype coordinate: str | None
     :raises ValueError: If the state is none of the four, ``counted`` carries a reason, another state carries none or
         one of another state's, a ``split`` or an unrecorded identity names no coordinate, or a reason that names none
         carries one.

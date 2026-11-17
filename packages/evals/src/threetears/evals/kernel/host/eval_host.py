@@ -92,18 +92,14 @@ class CompletionClients(Protocol):
         """Build a client for ``role`` bound to ``model``.
 
         :param role: Which apparatus role the client serves.
-        :ptype role: CompletionRole
         :param model: The model to bind, or ``None`` for the role's default as the host resolves it.
             The built client names what it resolved to (``model_name``).
-        :ptype model: str | None
         :param temperature: The sampling temperature, or ``None`` for the provider default. The judge always
             names one (:data:`~threetears.evals.schema.models.DEFAULT_JUDGE_TEMPERATURE` unless a config
             says otherwise); a client whose model refuses a temperature sends none and says so on each
             completion (``CompletionResult.temperature`` is ``None``), because the score records what was
             sent, never what was asked.
-        :ptype temperature: float | None
         :return: The client, owned by the caller.
-        :rtype: BoundCompletionClient
         """
         ...  # pragma: no cover — protocol
 
@@ -173,15 +169,11 @@ class AttestsPerson(Protocol):
         """The person's name as the host knows them, when it vouches that ``caller`` relays that person's rating.
 
         :param scope_id: The scope the rating is written in, as the host resolved it for the call.
-        :ptype scope_id: str
         :param caller: The calling identity, as the host resolved it for the call (``Caller.identity``).
-        :ptype caller: str
         :param person: Who the caller says gave the rating (or the judge case's verdict), in the caller's spelling.
-        :ptype person: str
         :return: The host's own name for that person (one name however the caller spells them: the rating is stored
             under it, so an alias or a case-folded email is the same rater); ``None`` refuses, and nothing is written.
             A check that raises is a defect in the host: it propagates, and nothing is written.
-        :rtype: str | None
         """
         ...  # pragma: no cover — protocol
 
@@ -281,9 +273,7 @@ class EvalHost:
         """The host's client factory, or a refusal naming what needed one.
 
         :param purpose: What is asking, for the refusal — e.g. ``"a re-judge"``.
-        :ptype purpose: str
         :return: The factory.
-        :rtype: CompletionClients
         :raises RefusedInput: This host supplies no completion clients — a :class:`ValueError`, as every caller
             documents, that a surface reports as a refusal rather than as an unanticipated error.
         """
@@ -298,9 +288,7 @@ class EvalHost:
         """The host's template checks, or a refusal naming what needed them.
 
         :param purpose: What is admitting a template, for the refusal — e.g. ``"create_template"``.
-        :ptype purpose: str
         :return: The checks.
-        :rtype: TemplateChecks
         :raises RefusedInput: This host supplies no template checks — a :class:`ValueError`, as every caller documents,
             that a surface reports as a refusal rather than as an unanticipated error.
         """

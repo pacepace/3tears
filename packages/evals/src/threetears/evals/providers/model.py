@@ -180,7 +180,6 @@ def _run_started_at() -> float:
     instant is taken one second early: a recording written just after the first call is never read as older than it.
 
     :return: epoch seconds, one second before the first call
-    :rtype: float
     """
     return time.time() - _FILE_CLOCK_SLACK_SECONDS
 
@@ -1055,69 +1054,51 @@ class Model:
         """Build the client; nothing is sent until the first call.
 
         :param id: The model id: ``vendor/model`` for OpenRouter, the provider's own id otherwise.
-        :ptype id: str
         :param provider: ``"openrouter"``, ``"anthropic"`` or ``"openai"``; required for a bare id with no ``base_url``.
-        :ptype provider: Provider | None
         :param api_key: The key, or ``None`` to read the provider's variable and the fallback keys
             ``<VARIABLE>_FALLBACKS`` names (the class docstring's **Keys**). A key passed here never fails over:
             which key a call spends is then the host's choice.
-        :ptype api_key: str | None
         :param base_url: An OpenAI-compatible endpoint's root (``https://api.deepseek.com/v1``), or ``None``.
-        :ptype base_url: str | None
         :param max_tokens: The output cap, reasoning included; ``None`` sends :data:`DEFAULT_MAX_TOKENS`. Above the
             model's own cap (as the catalogue or a refusal says), that cap.
-        :ptype max_tokens: int | None
         :param effort: Reasoning, as an effort word (``none`` to ``max``) or a token budget, sent as the family takes
             it: Anthropic's ``output_config.effort`` over adaptive thinking or a thinking budget
             (``thinking.budget_tokens``), OpenAI's ``reasoning_effort``, OpenRouter's ``reasoning.effort`` or
             ``reasoning.max_tokens``. A budget where only words are taken (OpenAI's chat completions, a model
             that refused a budget) goes as the word its share of ``max_tokens`` maps to, and the completion's
             ``sent_settings.unsent_reasoning_max_tokens`` names it. ``None`` sends none.
-        :ptype effort: str | int | None
         :param temperature: The sampling temperature, or ``None`` for the model's own. Never sent to a Claude 5.5
             model, nor beside Anthropic thinking; each completion says what was sent.
-        :ptype temperature: float | None
         :param recording: A JSONL recording to replay, or to record into; a relative path is read beside the eval
             file being loaded (``python -m threetears.evals FILE``), else in the working directory.
-        :ptype recording: str | os.PathLike[str] | None
         :param turn_recording: A tool-turn recording, per session (:meth:`turn_session`): replayed when the file exists,
             whatever ``RECORD`` says, else recorded live; read where ``recording`` is. Anthropic only. A model replaying
             one still sends its completions live, so it still needs a key unless ``recording`` replays those.
-        :ptype turn_recording: str | os.PathLike[str] | None
         :param catalogue: The price catalogue to share with other models, or ``None`` for one of its own.
-        :ptype catalogue: Catalogue | None
         :param http: An ``httpx.AsyncClient`` to send through, used as it is built, or ``None`` to open one.
-        :ptype http: httpx.AsyncClient | None
         :param own_http: Whether the model owns ``http``, so :meth:`aclose` closes it; ``False`` leaves it the caller's.
             Refused without ``http``.
-        :ptype own_http: bool
         :param transport: The ``httpx`` transport of the client the model opens itself (HTTP/2, a proxy, a test's mock),
             or ``None`` for ``httpx``'s own. Closing the model closes it with that client, as ``httpx`` does, so
             a transport shared between models is closed by the first one closed. Refused beside ``http``.
-        :ptype transport: httpx.AsyncBaseTransport | None
         :param timeout: The timeout of the client the model opens itself (seconds, or an ``httpx.Timeout``); ``None``
             is 600 seconds a request, 20 to connect. Refused beside ``http``, whose own timeout holds.
-        :ptype timeout: float | httpx.Timeout | None
         :param headers: Headers every request on the client the model opens itself carries; ``None`` for none. The
             provider's key and version headers, which each request sets, win over one of the same name. Refused
             beside ``http``, whose own headers hold.
-        :ptype headers: Mapping[str, str] | None
         :param catalogue_fetch_timeout: How long this model's price-catalogue read waits, in seconds: on a fetch another
             task started (it then gives up, unpriced, while that fetch goes on for its starter), and as the timeout of
             a fetch it starts itself on a client the catalogue opens. ``None`` is
             :data:`~threetears.evals.providers.CATALOGUE_FETCH_TIMEOUT_S`. Models sharing a catalogue each keep their own.
-        :ptype catalogue_fetch_timeout: float | None
         :param retry: How a call the provider declined (a 429 that is no spent quota, a 529, a 503) is sent again;
             ``None`` is :class:`~threetears.evals.providers.DeclinedRetry`'s defaults: three attempts, waiting the
             provider's ``retry-after`` or one then two seconds, any wait at most twenty; and two attempts of a tool
             turn the provider failed with a 5xx, or whose connection was never made.
-        :ptype retry: DeclinedRetry | None
         :param pricer: What the host pays for a call (:class:`~threetears.evals.providers.Pricer`): asked for its rates
             before every call is bounded and, when it answered them, for the call's price after it returns; a call it
             answers no rates for is bounded and priced by the default's catalogue route. ``None`` with no ``catalogue`` either is the default for
             standalone and development use, :class:`~threetears.evals.providers.AnthropicPublishedRates`; ``None``
             beside a ``catalogue`` prices every call from that catalogue, as before.
-        :ptype pricer: Pricer | None
         :raises ValueError: A bare id with no provider, an unknown provider, no key for a live model (naming the
             variable), a ``<VARIABLE>_FALLBACKS`` naming a variable the environment does not set, the primary itself
             or one variable twice, ``transport``, ``timeout`` or ``headers`` beside ``http``, ``own_http`` without it,
@@ -1248,14 +1229,10 @@ class Model:
         derived model leaves this one on an open transport.
 
         :param id: The model id, or ``None`` for this one.
-        :ptype id: str | None
         :param temperature: The temperature, or ``None`` for the model's own.
-        :ptype temperature: float | None
         :param catalogue: The catalogue to share, or ``None`` for one of its own.
-        :ptype catalogue: Catalogue | None
         :return: A new model, built as this one was in every other setting but ``turn_recording``, which stays this
             model's: a derived model serves a role's completions.
-        :rtype: Model
         """
         options = dict(self._options)
         if self._live is not None and options["http"] is None:
@@ -1268,14 +1245,10 @@ class Model:
         """Send a prompt pair, or serve it from the recording: the completion port's one call.
 
         :param system: The system message; an empty one is not sent.
-        :ptype system: str
         :param user: The user message.
-        :ptype user: str
         :param response_format: ``None``, a ``json_object`` directive, or a strict ``json_schema`` one, which goes as
             each provider enforces it (and as JSON mode, or no format on Anthropic, where it cannot be).
-        :ptype response_format: dict[str, Any] | None
         :return: The completion: a :class:`Completion` live, a replayed one from a recording.
-        :rtype: CompletionResult
         :raises ProviderError: The provider refused or failed the request (a refused setting is resent first).
         :raises httpx.HTTPError: The request could not be sent, or timed out.
         :raises ValueError: ``response_format`` is not a directive the client sends.
@@ -1290,11 +1263,8 @@ class Model:
         """The reply to ``user``, as text.
 
         :param user: The user message.
-        :ptype user: str
         :param system: A system message, or ``None``.
-        :ptype system: str | None
         :return: The reply's text.
-        :rtype: str
         :raises ValueError: The reply did not finish (cut short, filtered, or an error), named with its stop reason.
         """
         return _finished(await self.generate(system=system or "", user=user)).content
@@ -1303,13 +1273,9 @@ class Model:
         """The reply to ``user`` as ``schema``, sent as a strict ``json_schema`` and validated on return.
 
         :param user: The user message.
-        :ptype user: str
         :param schema: The pydantic model the reply must be.
-        :ptype schema: type[T]
         :param system: A system message, or ``None``.
-        :ptype system: str | None
         :return: The validated reply.
-        :rtype: T
         :raises ValueError: The reply did not finish, named with its stop reason.
         :raises pydantic.ValidationError: The reply is not a ``schema``: pydantic's message says why. Never a default.
         """
@@ -1326,13 +1292,9 @@ class Model:
         by name when the runner is called, and a placeholder that is not a plain name when the template is read.
 
         :param template: The user message, with ``{field}`` placeholders.
-        :ptype template: str
         :param schema: The pydantic model each answer must be, or ``None`` for text.
-        :ptype schema: type[T] | None
         :param system: A system message, or ``None``.
-        :ptype system: str | None
         :return: ``async (case) -> answer``, whose docstring is the template's first line.
-        :rtype: Callable[[Mapping[str, Any]], Awaitable[str | T]]
         :raises ValueError: A placeholder that is not a plain name (``{0}``, ``{a.b}``, ``{a!r}``), or an unbalanced
             brace.
         """
@@ -1375,23 +1337,16 @@ class Model:
         The reply is priced as a completion is, ``None`` when unpriced, never ``0``.
 
         :param system: The system prompt; an empty one is not sent.
-        :ptype system: str
         :param messages: The conversation, oldest first.
-        :ptype messages: Sequence[TurnMessage]
         :param tools: The tools the model may call.
-        :ptype tools: Sequence[TurnToolSpec]
         :param max_tokens: The turn's output cap, thinking included.
-        :ptype max_tokens: int
         :param clearing: Old tool results the provider clears itself past its trigger (server-side context editing,
             sent as ``context_management`` with the ``context-management-2025-06-27`` beta); ``None`` clears nothing.
-        :ptype clearing: ToolResultClearing | None
         :param binding: The check the provider runs on the thinking blocks the conversation replays, sent as
             ``thinking.block_binding`` with the ``thinking-binding-controls-2026-08-01`` beta where the turn sends
             thinking; ``None`` asks for none. With ``error``, a history changed under a replayed thinking block is
             the provider's 400, a :class:`ProviderError`.
-        :ptype binding: ThinkingBinding | None
         :return: The model's reply.
-        :rtype: TurnReply
         :raises ValueError: A route other than Anthropic's, naming the one that works; a model with a
             ``turn_recording``, whose turns go through :meth:`turn_session`; settings a tool turn refuses (a
             temperature; a thinking budget, or ``effort='none'``, on a model whose declared facts say it takes none: a
@@ -1418,15 +1373,10 @@ class Model:
         (:meth:`turn_pricing_refusal` says which before a loop starts).
 
         :param system: The system prompt the turn would send.
-        :ptype system: str
         :param messages: The conversation it would send.
-        :ptype messages: Sequence[TurnMessage]
         :param tools: The tools it would send.
-        :ptype tools: Sequence[TurnToolSpec]
         :param max_tokens: Its output cap.
-        :ptype max_tokens: int
         :return: The ceiling, or ``None``.
-        :rtype: TurnCeiling | None
         :raises ValueError: As :meth:`turn` refuses the model.
         """
         return self._turn_client().turn_price_ceiling(
@@ -1446,7 +1396,6 @@ class Model:
         not read, too old, or holding no row for it.
 
         :return: ``None``, or the pricing refusal, naming the model, why, and what to do.
-        :rtype: str | None
         :raises ValueError: As :meth:`turn` refuses the model (a route other than Anthropic's, settings a tool turn
             refuses, completions replayed with no live client): that is no pricing refusal, so it is not returned as one.
         """
@@ -1486,11 +1435,8 @@ class Model:
         ceiling it answers kept for its turn.
 
         :param name: The session's name (``analyst``, ``editor-1``).
-        :ptype name: str
         :param snapshot: The snapshot the session reads.
-        :ptype snapshot: str
         :return: The session's client.
-        :rtype: ToolTurnClient
         :raises ValueError: As :meth:`turn` refuses the model, or an empty name or snapshot id.
         """
         if self._turns is not None:
@@ -1537,13 +1483,9 @@ class Model:
         replaying.
 
         :param system: The system message the call would send.
-        :ptype system: str
         :param user: The user message the call would send.
-        :ptype user: str
         :param response_format: The directive the call would send, or ``None``.
-        :ptype response_format: dict[str, Any] | None
         :return: The ceiling in dollars, or ``None``.
-        :rtype: float | None
         """
         return self._client.price_ceiling(system=system, user=user, response_format=response_format)
 
@@ -1557,7 +1499,6 @@ class Model:
         would be priced from.
 
         :return: The reason, or ``None``.
-        :rtype: str | None
         """
         if self._live is None:
             return None
@@ -1576,7 +1517,6 @@ class Model:
         bring-your-own-key upstream bills at its own rates. ``False`` for a replay, which costs nothing.
 
         :return: Whether the bound is an estimate.
-        :rtype: bool
         """
         return self._live.ceiling_is_estimate() if self._live is not None else False
 
@@ -1588,7 +1528,6 @@ class Model:
         then. ``0`` for a model that sends live or records.
 
         :return: The count so far.
-        :rtype: int
         """
         if isinstance(self._client, RecordedCompletions):
             return self._client.served_over_changed_prompts
@@ -1616,7 +1555,6 @@ class Model:
         :return: What the read found (:class:`~threetears.evals.providers.PriceRefresh`), also kept as
             :attr:`last_price_refresh`: whether it fetched the rows anew, when the rows held were fetched, and why the
             prices are not current. While replaying, nothing read and no failure.
-        :rtype: PriceRefresh
         """
         await self._client.refresh_prices()  # recording, the recorder forwards it to the live client
         read = _NOTHING_READ if self._live is None else self._live.last_refresh
@@ -1724,17 +1662,12 @@ class Clients:
         """Hold the configuration; nothing is built and no key is read until a role is asked for.
 
         :param default: The model a role named nowhere else gets, or ``None``.
-        :ptype default: str | Model | None
         :param catalogue: The catalogue every model shares, or ``None`` for one of the factory's own.
-        :ptype catalogue: Catalogue | None
         :param http: The ``httpx.AsyncClient`` every model given by id sends through, never closing it, or ``None``
             for each to open its own.
-        :ptype http: httpx.AsyncClient | None
         :param own_http: Whether the factory owns ``http``, so :meth:`aclose` closes it after every model; ``False``
             leaves it the caller's. Refused without ``http``.
-        :ptype own_http: bool
         :param **roles: Role (``judge``, ``simulator``, ``analysis``, ``variation``, ``proposer``) -> its model.
-        :ptype roles: str | Model
         :raises ValueError: A keyword that is not one of the engine's roles, or ``own_http`` without ``http``.
         """
         if own_http and http is None:
@@ -1755,13 +1688,9 @@ class Clients:
         """A client for ``role`` bound to ``model``, built on first use and kept.
 
         :param role: The role it serves.
-        :ptype role: CompletionRole
         :param model: The model id, or ``None`` for the role's own.
-        :ptype model: str | None
         :param temperature: The temperature, or ``None`` for the model's own.
-        :ptype temperature: float | None
         :return: A lease on the factory's model; closing it releases nothing.
-        :rtype: BoundCompletionClient
         :raises ValueError: No model was named and the role has none, or the model cannot be built (no key, no
             provider).
         """
@@ -1795,7 +1724,6 @@ class Clients:
         every role, since each prices from the same rows. Never raises; a first read that fails is logged.
 
         :return: What the read found (:class:`~threetears.evals.providers.PriceRefresh`).
-        :rtype: PriceRefresh
         """
         return await self.catalogue.read()
 
@@ -1807,7 +1735,6 @@ class Clients:
 
         :return: Model id -> why it is unpriced, for each model named in the factory the catalogue cannot price; empty
             when every one is priced.
-        :rtype: dict[str, str]
         """
         named = {
             template if isinstance(template, str) else template.model_name: template
@@ -1853,11 +1780,8 @@ class Clients:
         of says so by answering for ``role=None`` in a factory of its own.
 
         :param model: The model id, as the launch names it.
-        :ptype model: str
         :param role: The engine role the model serves, or ``None`` for a candidate the host calls itself.
-        :ptype role: CompletionRole | None
         :return: The listing, or ``None`` when the factory reads no list for the model in that role.
-        :rtype: ModelListing | None
         """
         if role is None:
             return None

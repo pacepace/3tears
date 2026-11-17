@@ -592,22 +592,14 @@ def price_tradeoff(
     step along it, every option priced against one, why each other option is off the frontier, and a what-if.
 
     :param report_input: The snapshot's report input.
-    :ptype report_input: ReportInput
     :param gain_key: The gain axis: a measure with a direction, or a judged dimension, by key.
-    :ptype gain_key: str
     :param arm: The option every other is priced against; None for the control, where it is priced.
-    :ptype arm: str | None
     :param slice_filter: The one task, stratum or cell to price within, by id (a cell as ``<row>.<column>``); None
         prices overall.
-    :ptype slice_filter: str | None
     :param what_if: An option the gates remove or leave undecided, to price as a labelled what-if; None for none.
-    :ptype what_if: str | None
     :param limit: The most options one page covers: the frontier's first, cheapest first, then the others.
-    :ptype limit: int
     :param offset: The first option the page covers.
-    :ptype offset: int
     :return: The trade, priced.
-    :rtype: PriceTradeoff
     :raises RefusedInput: The gain key names no measure or judged dimension, or one with no direction; no arm has a
         cost; ``arm`` names no priced option; ``slice_filter`` names no one slice; ``what_if`` names no option the
         gates remove or leave undecided.

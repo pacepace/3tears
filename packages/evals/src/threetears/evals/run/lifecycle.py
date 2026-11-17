@@ -109,13 +109,9 @@ def get_run(storage: RunStore, run_id: str, scope_id: str) -> EvalRun:
     """Load an eval run by id within its scope, whole.
 
     :param storage: The run's store.
-    :ptype storage: RunStore
     :param run_id: The run to load.
-    :ptype run_id: str
     :param scope_id: The partition the run lives in.
-    :ptype scope_id: str
     :return: The run.
-    :rtype: EvalRun
     :raises NotFoundError: No run with that id in the scope.
     """
     run = storage.load_eval_run(run_id, scope_id)
@@ -128,7 +124,6 @@ def require_cancellable(run: EvalRun) -> None:
     """Refuse a cancel of a run that has already ended — a cancel's first check, for a caller that splits it.
 
     :param run: The run as read.
-    :ptype run: EvalRun
     :raises ValidationFailedError: The run is already terminal; a lost run says so, with its cause.
     """
     if run.status not in NON_TERMINAL_RUN_STATUSES:
@@ -176,14 +171,11 @@ def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> Abando
     past the run that can fail it (:func:`~threetears.evals.kernel.job_leases.settle_tolerantly`).
 
     :param storage: The runs' store.
-    :ptype storage: ReclaimStore
     :param scopes: The scopes to sweep, which the host names — the engine cannot enumerate the scopes a store holds
         and does not assume the store can. Each is scanned in turn.
-    :ptype scopes: Iterable[str]
     :return: Counts plus the ids written lost. ``already_settled`` / ``skipped_live`` / ``unreadable`` say why a scan
         wrote less than it saw — ``skipped_live`` counts runs some process holds a live lease on, and a non-zero
         ``unreadable`` means the corpus has outlived the model that wrote it.
-    :rtype: AbandonedRunSweepReport
     """
     runs: list[EvalRun] = []
     unreadable_rows = 0
@@ -259,14 +251,10 @@ async def rejudge_result(
     :param host: The host: the result's store, the judge clients it builds — through the same
         run-pinned resolution the launch scored through — and how a judge call that raised
         becomes the text its outcome keeps.
-    :ptype host: EvalHost
     :param result_id: The result to re-judge.
-    :ptype result_id: str
     :param scope_id: The partition the result's run lives in.
-    :ptype scope_id: str
     :return: The result as stored after the re-judge. Dims that failed again stay missing
         and are named in its recomposed ``judge_error``.
-    :rtype: EvalResult
     :raises NotFoundError: No result, run, template, judge config or test case with the recorded id.
     :raises ValidationFailedError: The result has no failed judge dimension, or an apparatus
         input cannot be reproduced (:func:`~threetears.evals.run.rejudge.reproducible_judge_inputs`
@@ -345,7 +333,6 @@ def _rejudge_inputs(
 
     :return: The result, the etag its rewrite must present, its run, the run's reproduced judge inputs, and the
         dims to re-ask.
-    :rtype: tuple[EvalResult, str | None, EvalRun, ReproducibleJudgeInputs, list[str]]
     :raises NotFoundError: No result, run, template, judge config or test case with the recorded id.
     :raises ValidationFailedError: Nothing to re-judge, or an apparatus input cannot be reproduced.
     """
@@ -505,13 +492,9 @@ def record_completeness(
     in the log; that write failing too is logged with both errors.
 
     :param storage: The run's store.
-    :ptype storage: JobStore
     :param run_id: The run whose loop just finished.
-    :ptype run_id: str
     :param scope_id: The partition the run lives in.
-    :ptype scope_id: str
     :param cells: One summary per cell the loop ran.
-    :ptype cells: Sequence[CellSummary]
     :param metered: The run ledger's final tally of metered third-party calls, or
         ``None`` for a caller with no ledger. Written on the SAME document
         write as the completeness record because it answers the same
@@ -523,12 +506,10 @@ def record_completeness(
         the completeness counts it is NOT recomputed per attempt — the
         tally belongs to the run's ledger, not to whichever document
         version this write lands on.
-    :ptype metered: MeteredCallTally | None
     :param leases: The leases of the process running the run, so the record is the holder's own write
         (:func:`update_eval_run`): declined, and nothing written, once the run's lease has lapsed or passed to another
         holding of the run — another process, or a later epoch, which counts the cells itself. ``None`` for a run held
         under no lease.
-    :ptype leases: JobLeases | None
     """
     record: RunCompleteness | None = None
 

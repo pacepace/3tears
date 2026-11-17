@@ -41,16 +41,11 @@ async def run_blocking[**P, T](
     active span — and dropping them would not fail, it would run the call under their defaults.
 
     :param executor: Where to run it; ``None`` for the loop's default executor.
-    :ptype executor: Executor | None
     :param fn: The blocking callable.
-    :ptype fn: Callable[P, T]
     :param *args: Positional arguments for ``fn``.
-    :ptype args: P.args
     :param **kwargs: Keyword arguments for ``fn``.
-    :ptype kwargs: P.kwargs
     :return: What ``fn`` returned. Typed through ``fn``'s own signature, so a call missing an argument
         ``fn`` requires is a type error at the call site rather than a ``TypeError`` on a worker.
-    :rtype: T
     """
     context = contextvars.copy_context()
     call = functools.partial(context.run, fn, *args, **kwargs)
@@ -69,10 +64,8 @@ async def wait_through_cancellation(
     deliver that cancellation itself once it has recorded what the work did.
 
     :param work: The future of the blocking call, typically from :func:`run_blocking`.
-    :ptype work: asyncio.Future[Any]
     :param on_cancel: Called each time a cancellation aimed at the waiter arrives, before the wait goes on: what the
         waiter does about it meanwhile (cut the work short, say), so a cancel is acted on without abandoning the work.
-    :ptype on_cancel: Callable[[], object] | None
 
 
     Not the same contract as the job manager's terminal-status write (:mod:`threetears.evals.run.jobs`), on purpose:
@@ -83,7 +76,6 @@ async def wait_through_cancellation(
 
     :return: Whether a cancellation aimed at the waiter arrived while it waited. The caller owes a
         ``raise asyncio.CancelledError`` once it has read ``work``'s outcome.
-    :rtype: bool
     :raises asyncio.CancelledError: ``work`` itself was cancelled — a queued work item the executor
         dropped — so there is no outcome to record.
     """

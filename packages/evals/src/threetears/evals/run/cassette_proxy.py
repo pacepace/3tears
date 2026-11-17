@@ -122,9 +122,7 @@ def params_hash(params: Mapping[str, Any]) -> str:
     gap in the corpus.
 
     :param params: The action parameters, or the background work's request.
-    :ptype params: Mapping[str, Any]
     :return: A 16-char hex prefix of the sha256 of the canonical JSON — 64 bits, ample within one case.
-    :rtype: str
     """
     canonical = json.dumps(dict(params or {}), sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
@@ -204,22 +202,14 @@ class CassetteCell:
         """Bind the cell to its run's corpus and its own coordinates.
 
         :param mode: Whether the cell records or replays.
-        :ptype mode: Literal['capture', 'replay']
         :param store: Where the corpus lives.
-        :ptype store: CassetteStore
         :param scope_id: The scope the corpus lives in.
-        :ptype scope_id: str
         :param corpus_id: The capture run whose corpus this is.
-        :ptype corpus_id: str
         :param template_id: The template the cell runs.
-        :ptype template_id: str
         :param test_case_id: The cell's case.
-        :ptype test_case_id: str
         :param model: The cell's candidate model — capture provenance.
-        :ptype model: str
         :param holes: Where a recording the capture failed to write is named, one ``error_details`` entry each, for
             the runner to write on the capture run (:attr:`CassetteLane.holes`); ``None`` keeps none.
-        :ptype holes: list[str] | None
         """
         self._mode: Literal["capture", "replay"] = mode
         self._store = store
@@ -398,7 +388,6 @@ class CassetteCell:
         (:meth:`open`) before handing it to ``prepare``.
 
         :param seams: The cell candidate's seams.
-        :ptype seams: CassetteSeams
         :raises TypeError: ``seams`` is not a :class:`~threetears.evals.kernel.cassettes.CassetteSeams`.
         :raises ValueError: The cell was already wired, or was never opened; ``seams`` declares no seam at all;
             its action seam names no tool; a tool is declared on both seams; or the action seam did not
@@ -521,7 +510,6 @@ class CassetteCell:
 
         :return: The call's key, and the recording rebuilt as ``result_type`` in replay or ``None`` in
             capture, where the caller runs the tool live and hands the result to :meth:`_record_action`.
-        :rtype: tuple[CassetteKey, Recordable | None]
         :raises CassetteMiss: Replay, and the corpus never recorded this call.
         :raises CassetteExhausted: Replay, and it recorded this call fewer times than it is now made.
         :raises CassetteCorrupt: Replay, and the recording could not be read back or rebuilt.
@@ -630,9 +618,7 @@ class CassetteCell:
         only: it may legitimately not have caught up.
 
         :param deliveries: The kind's ``async_deliveries``.
-        :ptype deliveries: Sequence[AsyncDelivery] | None
         :param complete: Whether this is the kind's returned output rather than a mid-cell reading.
-        :ptype complete: bool
         :raises ReplayReportDefect: The report says a replayed piece of work ran live, or leaves one out.
         """
         if not self._replayed_tools:
@@ -688,11 +674,8 @@ class CassetteProxy:
         """Wrap one tool for one cell.
 
         :param wrapped: The tool.
-        :ptype wrapped: ToolLike | SyncToolLike
         :param act: The cell's capture-or-replay of one awaited call to it.
-        :ptype act: Callable[[str, dict[str, Any]], Awaitable[Recordable]] | None
         :param act_sync: The cell's capture-or-replay of one blocking call to it.
-        :ptype act_sync: Callable[[str, dict[str, Any]], Recordable] | None
         :raises ValueError: Not exactly one of ``act`` and ``act_sync`` was given.
         """
         if (act is None) == (act_sync is None):
@@ -836,11 +819,8 @@ class CassetteLane:
 
         :param run: The run: its ``cassette_mode``, its ``scope_id``, and the corpus — its own ``id`` for a
             capture, ``cassette_corpus_id`` for a replay.
-        :ptype run: EvalRun
         :param store: Where its cassettes are read and written.
-        :ptype store: CassetteStore
         :return: The lane, or ``None`` for ``cassette_mode='off'``.
-        :rtype: CassetteLane | None
         """
         if run.cassette_mode == "off":
             return None
@@ -854,13 +834,9 @@ class CassetteLane:
         """The handle one cell of this run is given.
 
         :param template_id: The template the cell runs.
-        :ptype template_id: str
         :param test_case_id: The cell's case.
-        :ptype test_case_id: str
         :param model: The cell's candidate model.
-        :ptype model: str
         :return: The cell's handle, unwired.
-        :rtype: CassetteCell
         """
         return CassetteCell(
             mode=self.mode,

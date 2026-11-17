@@ -125,11 +125,8 @@ def judge_clients_for_run(clients: CompletionClients, judge_model: str | None) -
     judge role's default.
 
     :param clients: The host's completion-client factory.
-    :ptype clients: CompletionClients
     :param judge_model: The run's judge pin, resolved, or ``None``.
-    :ptype judge_model: str | None
     :return: The factory a :class:`JudgeService` is built with.
-    :rtype: JudgeClientFactory
     """
 
     def build(model: str | None, temperature: float | None) -> BoundCompletionClient:
@@ -243,9 +240,7 @@ def fold_judge_outcomes(outcomes: list[tuple[str, JudgeOutcome]]) -> JudgeFold:
     when any call went unpriced (:func:`~threetears.evals.kernel.usage_capture.blended_cost`).
 
     :param outcomes: ``(dim_id, outcome)`` for every call made, in call order.
-    :ptype outcomes: list[tuple[str, JudgeOutcome]]
     :return: The fold.
-    :rtype: JudgeFold
     """
     config_ids: dict[str, str] = {}
     errors: list[tuple[str, str]] = []
@@ -347,12 +342,9 @@ def _dimension_instructions(dim: RubricDim, *, document: bool = False) -> str:
     """Build the default judging instructions for a template rubric dimension.
 
     :param dim: The dimension being scored.
-    :ptype dim: RubricDim
     :param document: Whether the candidate's output is a document judged against case material,
         rather than its side of a conversation.
-    :ptype document: bool
     :return: The system instructions, before the JSON-format suffix.
-    :rtype: str
     """
     return _dimension_wording(
         name=dim.name, description=dim.description, scale=dim.scale, scoring_guide=dim.scoring_guide, document=document
@@ -467,13 +459,9 @@ def judge_config_ids_for(
     result's record with.
 
     :param rubric: The template's rubric.
-    :ptype rubric: Sequence[RubricDim]
     :param configs: ``{dim_id: JudgeConfig id}`` for the dims a config asks, as a run records its set.
-    :ptype configs: Mapping[str, str]
     :param judged_artifact: What the kind's judge reads, which picks the axes and the wording.
-    :ptype judged_artifact: JudgedArtifact
     :return: ``{dim_id: recorded id}``, in judge-phase order.
-    :rtype: dict[str, str]
     :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
     """
     builtin = builtin_judge_config_ids(rubric, judged_artifact=judged_artifact)
@@ -497,11 +485,8 @@ def builtin_judge_config_ids(rubric: Sequence[RubricDim], *, judged_artifact: Ju
     two judges (:func:`~threetears.evals.schema.models.builtin_judge_config_id`).
 
     :param rubric: The template's rubric.
-    :ptype rubric: Sequence[RubricDim]
     :param judged_artifact: What the kind's judge reads, which picks the axes and the wording.
-    :ptype judged_artifact: JudgedArtifact
     :return: ``{dim_id: builtin id}`` for the two axes (a conversation's) and every rubric dim, in judge-phase order.
-    :rtype: dict[str, str]
     :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
     """
     if judged_artifact is JudgedArtifact.UNJUDGED:
@@ -620,11 +605,8 @@ def _input_key(system_prompt: str, asked: _Asked) -> dict[str, Any]:
     is a rendering of ``asked.evidence``.
 
     :param system_prompt: The call's system prompt, as sent.
-    :ptype system_prompt: str
     :param asked: What its user prompt was laid out from.
-    :ptype asked: _Asked
     :return: The key, a JSON object.
-    :rtype: dict[str, Any]
     """
     return {
         "judge_prompt": canonical_digest({"judge_prompt": system_prompt}),
@@ -654,17 +636,14 @@ class JudgeService:
 
         :param client_factory: Builds a judge client for a ``(model, temperature)``
             pair. Called at most once per distinct pair (results cached).
-        :ptype client_factory: JudgeClientFactory
         :param configs: Active :class:`JudgeConfig` per ``rubric_dim_id``, resolved
             once at run start. A dim absent from the map uses the built-in
             default prompt + default client. ``None`` ⇒ all defaults.
-        :ptype configs: dict[str, JudgeConfig] | None
         :param failure_describer: The host's reading of what a judge client raises — the only thing
             that can say a call was refused for the calling account. Required: a reading that
             cannot tell would quietly turn an account refusal into one excluded dim after
             another, so a caller with no reading of its own names
             :func:`~threetears.evals.kernel.provider.withhold_failure_detail` explicitly.
-        :ptype failure_describer: ProviderFailureDescriber
         """
         self._client_factory = client_factory
         self._failure_describer = failure_describer
@@ -738,11 +717,8 @@ class JudgeService:
         """Send one call already built by a ``*_request`` method — what a caller that priced it first sends.
 
         :param request: The call, as built.
-        :ptype request: JudgeRequest
         :param case_id: The test case, for log context.
-        :ptype case_id: str
         :return: The call's outcome.
-        :rtype: JudgeOutcome
         """
         return await self._score(request, case_id=case_id)
 
@@ -752,9 +728,7 @@ class JudgeService:
         What a caller pricing a call before it is made asks: a call's price is its client's.
 
         :param request: The call.
-        :ptype request: JudgeRequest
         :return: The client, built on first ask and cached like every other.
-        :rtype: Any
         """
         return self._client_for(request.config)
 
@@ -767,9 +741,7 @@ class JudgeService:
         make (:data:`~threetears.evals.run.judge.JUDGE_CALL_ATTEMPTS`).
 
         :param request: The call, as built.
-        :ptype request: JudgeRequest
         :return: The ceiling in dollars, or ``None`` when the client has no ``price_ceiling`` or answers ``None``.
-        :rtype: float | None
         """
         return call_ceiling(
             self.client_for(request),
@@ -829,14 +801,10 @@ class JudgeService:
         least as high as its floor request.
 
         :param rubric: The template's rubric, whose dims are the per-dim calls.
-        :ptype rubric: Sequence[RubricDim]
         :param intent: The template's intent, which every call states.
-        :ptype intent: str
         :param judged_artifact: What the kind's judge reads, which picks the axes and the wording.
-        :ptype judged_artifact: JudgedArtifact
         :return: One request per call, in :func:`~threetears.evals.run.runner.judge_requests`'s order, each carrying
             no label key: it reads no output.
-        :rtype: list[JudgeRequest]
         :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
         """
         if judged_artifact is JudgedArtifact.UNJUDGED:
@@ -872,11 +840,8 @@ class JudgeService:
         call returns, raises or is cut off with its cell — the same ids its calls' outcomes carry.
 
         :param rubric: The template's rubric.
-        :ptype rubric: Sequence[RubricDim]
         :param judged_artifact: What the kind's judge reads, which picks the axes and the wording.
-        :ptype judged_artifact: JudgedArtifact
         :return: ``{dim_id: config id or builtin id}``, in judge-phase order.
-        :rtype: dict[str, str]
         :raises ValueError: ``judged_artifact`` declares a kind no judge reads.
         """
         return judge_config_ids_for(
@@ -1121,21 +1086,13 @@ def _user_prompt(
     empty — what makes it a lower bound — and cannot drift from it.
 
     :param intent: The template's intent.
-    :ptype intent: str
     :param variation: The case's variation, rendered.
-    :ptype variation: str
     :param subject: The kind's rendering of the candidate, or ``None`` to leave its section out.
-    :ptype subject: str | None
     :param goals: The goal-state outcomes, rendered, or ``None`` to leave their section out.
-    :ptype goals: str | None
     :param case_material: What the output is judged against.
-    :ptype case_material: str
     :param artifact: The output under review, or the transcript.
-    :ptype artifact: str
     :param document: Whether the output is a document, which picks the headings.
-    :ptype document: bool
     :return: The user prompt.
-    :rtype: str
     """
     sections = ["# Scenario", f"**Intent:** {intent}", "", "# Variation params", variation, ""]
     if subject is not None:

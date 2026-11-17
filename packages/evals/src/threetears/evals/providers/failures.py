@@ -87,15 +87,10 @@ def _model_unserved(provider: Provider, status: int, error: Mapping[str, object]
     data policy, parameters, allowed providers) are not this: the model is still served, so they stay the candidate's.
 
     :param provider: The provider that answered.
-    :ptype provider: Provider
     :param status: The HTTP status, or an in-body error's code.
-    :ptype status: int
     :param error: The body's error object.
-    :ptype error: Mapping[str, object]
     :param message: The provider's own message, or ``None``.
-    :ptype message: str | None
     :return: True when every call naming that model would meet the same answer.
-    :rtype: bool
     """
     if provider == "anthropic":
         return status == 404 and error.get("type") == _ANTHROPIC_NOT_FOUND
@@ -142,15 +137,10 @@ class ProviderError(Exception):
         """Name the failure; ``body`` is kept for :meth:`refusal` alone and never shown.
 
         :param provider: The provider that answered.
-        :ptype provider: Provider
         :param status: The HTTP status, or an in-body error's code.
-        :ptype status: int
         :param message: The provider's own message, or ``None``.
-        :ptype message: str | None
         :param body: The response body, parsed or as text, which the refusal readers read.
-        :ptype body: object
         :param attempts: How many times the call was sent, this answer's attempt included.
-        :ptype attempts: int
         """
         self.provider: Provider = provider
         self.status = status
@@ -188,7 +178,6 @@ class ProviderError(Exception):
         setting the request carried. Anything else (``None``) is raised as it came.
 
         :return: The refusal, or ``None``.
-        :rtype: SettingRefusal | None
         """
         if self.provider == "openrouter":
             return read_router_refusal(self.status, self._body)
@@ -201,15 +190,10 @@ def error_from_response(provider: Provider, status: int, body: object, *, attemp
     """The error for a response the provider answered with a failure, its message read off the body.
 
     :param provider: The provider that answered.
-    :ptype provider: Provider
     :param status: The HTTP status (or an in-body error's code).
-    :ptype status: int
     :param body: The body, parsed or as text.
-    :ptype body: object
     :param attempts: How many times the call was sent, this answer's attempt included.
-    :ptype attempts: int
     :return: The error to raise.
-    :rtype: ProviderError
     """
     parsed = _parsed(body)
     message = _error_object(parsed).get("message")
@@ -230,9 +214,7 @@ def describe_failure(exc: BaseException) -> ProviderFailure:
     :class:`ProviderError` is the ``candidate``'s: nothing in it says the account or the provider declined the call.
 
     :param exc: Whatever the client raised, or anything else the engine caught around the call.
-    :ptype exc: BaseException
     :return: The failure as the engine may record it.
-    :rtype: ProviderFailure
     """
     if isinstance(exc, ProviderError):
         return ProviderFailure(str(exc), payload_withheld=False, owner=exc.owner)

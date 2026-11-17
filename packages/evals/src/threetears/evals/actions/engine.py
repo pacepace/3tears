@@ -767,7 +767,6 @@ class WriterCaseMintParams(EvalBaseModel):
         """The operation's arguments, refused as the operation refuses them (one source; two set names).
 
         :return: The mint.
-        :rtype: WriterCaseMint
         :raises ValidationFailedError: No source or several are named, or one name is given for both sets.
         """
         try:
@@ -2097,7 +2096,6 @@ def engine_actions() -> tuple[Action, ...]:
     """The engine's actions, in the order help lists them.
 
     :return: The actions.
-    :rtype: tuple[Action, ...]
     """
     run_id, campaign_id, analysis_id = "0193a1b2-run", "0193a1b2-campaign", "0193a1b2-analysis"
     insight_id = "0193a1b2-insight"
@@ -3466,9 +3464,7 @@ def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
 
     :param host_actions: Actions the host contributes — its kinds' own, its curation — each named, classed and
         rendered like the engine's.
-    :ptype host_actions: tuple[Action, ...]
     :return: The catalogue.
-    :rtype: ActionCatalogue
     :raises ValueError: A host action takes a name the engine's catalogue already has.
     """
     return ActionCatalogue((*engine_actions(), *analyst_actions())).extended(host_actions)

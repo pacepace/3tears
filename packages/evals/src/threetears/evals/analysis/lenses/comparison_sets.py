@@ -231,11 +231,8 @@ def measure_definition_disclosure(
     headline pass^k cell.
 
     :param runs: One comparison group's runs.
-    :ptype runs: Sequence[EvalRun]
     :param results_by_run: Each run's results, by run id; a run absent from it is read as holding no host measure.
-    :ptype results_by_run: Mapping[str, Sequence[ResultView]]
     :return: The reading.
-    :rtype: MeasureDefinitionReading
     """
     recorded = [run for run in runs if run.measure_definitions]
     silent = [
@@ -314,11 +311,8 @@ def _served_model_group_reading(
     results hears of nothing.
 
     :param runs: One comparison group's runs.
-    :ptype runs: Sequence[EvalRun]
     :param results_by_run: Each run's results, by run id.
-    :ptype results_by_run: Mapping[str, Sequence[ResultView]]
     :return: The reading.
-    :rtype: _ServedModelGroupReading
     """
     attested = attested_served_models(runs)
     by_requested: dict[str, dict[str, set[str]]] = {}
@@ -415,7 +409,6 @@ def compute_comparison_sets(
     :func:`project_score_records`.
 
     :param runs: Runs to group. Order is irrelevant; output is sorted for stability.
-    :ptype runs: list[EvalRun]
     :param results: The results those runs produced, in any order and from any run —
         they are indexed by ``eval_run_id`` here. **A caller that omits them
         asks a narrower question**: the measurement-window badge cannot be
@@ -423,13 +416,11 @@ def compute_comparison_sets(
         reads as sharing a clock when nothing checked. Every production caller
         supplies the scope's results; the default exists for callers whose
         question really is only about the run documents.
-    :ptype results: Sequence[ResultView]
     :param full_windows: List every measurement span rather than summarising above
         :data:`MAX_INLINE_MEASUREMENT_WINDOWS`. Off by default because this
         surface groups a whole scope — the group that most needs the
         disclosure is the one with the most runs, and so the one the listing
         form renders unreadable.
-    :ptype full_windows: bool
     :param scope_run_ids: Narrow every group to these runs before badging — the run
         ids of the set actually under analysis, typically a campaign's members
         resolved by the caller. ``None`` groups and badges every supplied run,
@@ -441,9 +432,7 @@ def compute_comparison_sets(
         not here is logged rather than refused: unlike an unknown run *status*,
         which names nothing that can exist, a member absent from the scope
         is a real and reachable state.
-    :ptype scope_run_ids: Iterable[str] | None
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A :class:`ComparisonSetsResult` — one :class:`ComparisonSet` per
         (subject, template) group, sorted by subject then template, plus the
         count of runs excluded for having no captured subject identity, plus
@@ -454,7 +443,6 @@ def compute_comparison_sets(
         because a group with no in-scope run has nothing to say about the set the
         caller asked about — its members are still named at the result level, so
         the narrowing stays visible rather than becoming a group that vanished.
-    :rtype: ComparisonSetsResult
     """
     results_by_run: dict[str, list[ResultView]] = {}
     for result in results:

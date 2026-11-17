@@ -147,41 +147,32 @@ async def generate_variations(
 
     :param template: The :class:`EvalTemplate` whose variation_axes drive
         generation.
-    :ptype template: EvalTemplate
     :param n_variations: Target number of test cases. The final count may be
         smaller (axis exhaustion) but never larger.
-    :ptype n_variations: int
     :param storage: Storage for dedup-lookup and persistence.
-    :ptype storage: EvalTestCaseStore
     :param scope_id: Scope partition key for the test cases.
-    :ptype scope_id: str
     :param blocking_executor: Where every ``storage`` read and write runs, off the event loop — the host's
         ``EvalHost.blocking_executor``, or ``None`` for the loop's default executor. The model calls
         stay on the loop, because the writer's client is bound to it, so a host cannot move the
         whole generation to a thread and this is how the store calls leave it. No default, as the
         host's own has none: the default executor is the one a host's liveness probes may share.
         The ``budget``'s ledger writes go where the budget's own ``blocking_executor`` says.
-    :ptype blocking_executor: Executor | None
     :param generation: The ``llm`` axes' calls, admitted by the caller before this is called
         (:class:`~threetears.evals.kernel.out_of_run.AdmittedGeneration`: the writer, the budget that admitted
         them, each axis's admitted call). Required exactly when an axis declares ``generator='llm'``, and
         refused otherwise: a writer nothing calls would be recorded as the model that wrote the cases. This
         admits nothing; each call is made on the writer it was priced on and ledgered through its budget.
-    :ptype generation: AdmittedGeneration | None
     :param rng: Optional :class:`random.Random` for deterministic sampling.
         Defaults to a fresh ``random.Random()``.
-    :ptype rng: random.Random | None
     :param preview: When True, returns generated variations *without*
         persisting or deduplicating against storage — useful for web
         UI preview before committing.
-    :ptype preview: bool
     :return: The :class:`EvalTestCase` documents — persisted (or simulated when
         ``preview=True``) in the order generated, existing test cases with
         matching ``variation_params`` reused — and the requested / kept /
         reused counts, so a run holding fewer cases than it asked for says so,
         with the model that wrote the ``llm`` axes' values (``None`` when
         no axis is ``llm``) — and the ledger row of every call it made.
-    :rtype: GeneratedVariations
     :raises ValueError: When an axis declares ``llm`` generator but no
         ``generation`` was supplied, one was supplied for a template with
         no ``llm`` axis, its admitted calls are not one per ``llm`` axis,
@@ -301,22 +292,14 @@ async def price_variations(
     Commits nothing to ``budget``.
 
     :param template: The template whose ``llm`` axes would be written.
-    :ptype template: EvalTemplate
     :param n_variations: The cases the generation would ask for.
-    :ptype n_variations: int
     :param storage: Where the template's existing cases are read — the values each axis's prompt excludes.
-    :ptype storage: EvalTestCaseStore
     :param scope_id: The scope the cases would be generated into.
-    :ptype scope_id: str
     :param blocking_executor: Where the ``storage`` read runs, off the event loop — as
         :func:`generate_variations` takes it.
-    :ptype blocking_executor: Executor | None
     :param llm: The client the axes would be written with.
-    :ptype llm: VariationLLM
     :param budget: The budget the generation would be admitted under.
-    :ptype budget: OutOfRunBudget
     :return: Each ``llm`` axis's call ceiling, in declaration order.
-    :rtype: list[float | None]
     :raises ValueError: ``n_variations`` is non-positive, or the template has no ``llm`` axis.
     :raises ValidationFailedError: The calls cannot be priced under an enforced cap, or are priced above it.
     """

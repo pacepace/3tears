@@ -33,19 +33,14 @@ async def job_resume(host: OpsHost, job_id: str, scope_id: str, *, max_cost_usd:
     and for a sweep or a launch, every arm's. Any other kind of job is started again by the action that started it.
 
     :param host: The host whose launcher wires the runs again and whose job manager runs them.
-    :ptype host: OpsHost
     :param job_id: The job's id, as its start returned it or ``resumable_jobs`` lists it.
-    :ptype job_id: str
     :param scope_id: The scope the job lives in.
-    :ptype scope_id: str
     :param max_cost_usd: The cost cap to resume under — every arm's, for a sweep or a launch — above what was spent;
         ``None`` keeps each run's recorded cap. Not part of the measurement: each holding records the cap it ran
         under.
-    :ptype max_cost_usd: float | None
     :return: The job taken up (``run:<id>``, ``sweep:<id>`` or ``launch:<id>``). Its ``notices`` say what admitting
         the take-up found and did not refuse it for: a served-model check that could not be made because the
         provider's model list could not be read.
-    :rtype: JobsStarted
     :raises ValidationFailedError: The id names no job, or a job of a kind not resumed; the job cannot be taken up, or
         would measure otherwise now (every difference named); or a launch of a run would be refused now.
     :raises NotFoundError: No such job in the scope, or a template is gone.

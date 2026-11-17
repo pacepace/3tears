@@ -132,32 +132,19 @@ async def write_report(
     """Write a report over one frozen snapshot, and store what its ending stores (the module docstring).
 
     :param host: The host whose store holds the evidence, the snapshot and the report.
-    :ptype host: OpsHost
     :param caller: Who asks for the report, and the scope it is written in.
-    :ptype caller: Caller
     :param model: The model every session runs on (``Model(id, provider="anthropic", api_key=...)``).
-    :ptype model: TurnModel
     :param budget: The report's budget (dollars, or tokens and turns), which admits every turn.
-    :ptype budget: ReportBudget
     :param snapshot_id: A snapshot already frozen; exactly one of it, ``campaign_id`` and ``analysis_id``.
-    :ptype snapshot_id: str | None
     :param campaign_id: A campaign to freeze and write the report on.
-    :ptype campaign_id: str | None
     :param analysis_id: A stored analysis to freeze and write the report on.
-    :ptype analysis_id: str | None
     :param withhold: Exemplar notes, by file name, the analyst is not given (a blind run's own campaign's note).
-    :ptype withhold: Collection[str]
     :param limits: What the loop is held to; :class:`WriterLimits`' defaults when ``None``.
-    :ptype limits: WriterLimits | None
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :param tally: The tally every turn is counted in, when the caller keeps it; a fresh one when ``None``.
-    :ptype tally: Tally | None
     :param skill: The skill both sessions start from, when the write runs a version of it under test; the shipped
         skill when ``None``.
-    :ptype skill: AnalystSkill | None
     :return: How it ended, the stored document if any, and the generation record.
-    :rtype: ReportWritten
     :raises ValueError: Not exactly one of the sources named, or ``withhold`` naming a note the skill has none of.
     :raises ReportNotStored: The loop ended with a document to store, and the store gate or the store refused it;
         the run's record rides on it (:attr:`ReportNotStored.written`), raised from the cause.
@@ -198,23 +185,14 @@ def report_writer_kind(
     ``caller``; the gap note stores nothing, so a cell leaves no gap and no report in the scope.
 
     :param host: The host whose store the tools read.
-    :ptype host: OpsHost
     :param caller: Who the cells' tool calls run as, and the scope they read.
-    :ptype caller: Caller
     :param overlays: The arm's overlays, as the launch validated them.
-    :ptype overlays: WriterOverlays
     :param models: The host's model factory: the arm's candidate model at a reasoning effort.
-    :ptype models: WriterModels
     :param budget: Each report's budget.
-    :ptype budget: ReportBudget
     :param skills: The skill versions the launch may run, by digest; the shipped skill is always one.
-    :ptype skills: Mapping[str, AnalystSkill]
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :param editor_models: The host's model factory for the editor's model, for an arm whose overlays name one.
-    :ptype editor_models: WriterModels | None
     :return: The arm's kind.
-    :rtype: ReportWriterKind
     """
     return ReportWriterKind(
         host=host,
@@ -261,30 +239,20 @@ def launchable_report_writer_kind(
 
     :param ops_host: Returns the host the entry is registered on; a callable because the host is built with its
         registry, this entry in it.
-    :ptype ops_host: Callable[[], OpsHost]
     :param identity: Who the cells' tool calls run as, as the host names its campaign runner.
-    :ptype identity: str
     :param models: The host's model factory for an arm: its writer, by every lever the arm runs
         (:class:`~threetears.evals.ops.report_writer.writer_contract.WriterArm`), asked for the analyst's model and,
         for an arm naming an editor model, for the editor's.
-    :ptype models: WriterModelFactory
     :param budget: Each report's budget.
-    :ptype budget: ReportBudget
     :param request_s: The host's ceiling for one request on its client, by output cap.
-    :ptype request_s: RequestCeiling
     :param model_family: The host's reading of a model's family, which holds the judge to another than the writer's.
-    :ptype model_family: ModelFamily
     :param skills: The skill versions a launch may run, by digest; the shipped skill is always one.
-    :ptype skills: Mapping[str, AnalystSkill]
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :param candidate_role: The role of the host's client factory that ``models`` builds the writer on (``analyst``,
         when the host's writer is its factory's analyst client), so the launch checks the writer's model against that
         provider's model list (:attr:`~threetears.evals.run.LaunchableKind.candidate_role`); ``None`` when ``models``
         builds it elsewhere, and the check is then reported skipped.
-    :ptype candidate_role: CompletionRole | None
     :return: The registry entry.
-    :rtype: LaunchableKind
     """
 
     def admitted(request: LaunchRequest) -> WriterAdmitted:
@@ -365,11 +333,8 @@ def campaign_report_writer(caller: Caller, *, prefix: str = DEFAULT_PREFIX) -> R
 
     :param caller: Who started the generation, and the scope it runs in: the tool calls of both sessions run as them,
         and the stored document names them.
-    :ptype caller: Caller
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :return: The writer.
-    :rtype: ReportWriter
     """
 
     async def write(

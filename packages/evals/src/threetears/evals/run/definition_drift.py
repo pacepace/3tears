@@ -738,16 +738,12 @@ def definition_drift(
     """Read every definition of a seed corpus against its scope's stored one. Writes nothing, spends nothing.
 
     :param host: The host: the store read, and the profile a template's spec is resolved by.
-    :ptype host: EvalHost
     :param corpus: The corpus, loaded for the scope it reads (:func:`~threetears.evals.run.load_seed_corpus`).
-    :ptype corpus: SeedCorpus
     :param seeded_digests: What the host seeded before ``.30``, when the store recorded nothing: the digest of each
         definition it seeded then (:func:`corpus_digests` over that corpus), by the key a reading names it by. A
         stored record's own digest wins over it. ``None`` for none, when such rows read ``unknown``.
-    :ptype seeded_digests: Mapping[str, str] | None
     :return: One reading per corpus definition: templates, rubric dims, judge configs, template cases, judge cases, case
         sets.
-    :rtype: DefinitionDrift
     :raises ValidationFailedError: A corpus judge case cannot be built, as the boot seed refuses it.
     """
     survey = _Survey.read(host, corpus, seeded_digests)
@@ -764,11 +760,8 @@ def corpus_digests(host: EvalHost, corpus: SeedCorpus) -> dict[str, str]:
 
     :param host: The host whose profile resolves a template's spec, and whose store resolves a criterion template the
         corpus does not carry.
-    :ptype host: EvalHost
     :param corpus: The corpus, loaded for the scope it describes.
-    :ptype corpus: SeedCorpus
     :return: Each definition's key -> its digest.
-    :rtype: dict[str, str]
     """
     return {reading.key: reading.seed_digest for reading in definition_drift(host, corpus).readings}
 
@@ -824,25 +817,18 @@ def reset_definitions(
 
     :param host: The host: the store written, and the profile and template checks (``template_checks``) a template is
         admitted under, as ``create_template`` admits one.
-    :ptype host: EvalHost
     :param corpus: The corpus, loaded for the scope it writes.
-    :ptype corpus: SeedCorpus
     :param definitions: The keys to reset, as a drift read names them (:meth:`DefinitionDrift.keys`).
-    :ptype definitions: Sequence[str]
     :param overwrite_customized: Write over a definition reading ``customized`` or ``unknown``, and, without
         ``carry_live_cases``, leave a template's live cases the corpus does not carry out of its new revision. What is
         superseded stays stored, archived, readable by id.
-    :ptype overwrite_customized: bool
     :param carry_live_cases: Copy each live case the corpus does not carry from a template's current revision into
         its new one, beside the corpus's cases, unchanged but for its id and template (``carried_from`` naming the
         source). It answers only those cases: a definition reading ``customized`` or ``unknown`` still needs
         ``overwrite_customized``.
-    :ptype carry_live_cases: bool
     :param seeded_digests: As :func:`definition_drift` takes it.
-    :ptype seeded_digests: Mapping[str, str] | None
     :return: What was written, the presentation names given to the templates it left current (and any fill the store
         refused), and the drift read after.
-    :rtype: DefinitionReset
     :raises ValidationFailedError: A key names no corpus definition, or a template or judge case authoring would refuse;
         nothing was written, every refusal named.
     :raises ConflictError: A definition may be an operator's (customized or unknown) without

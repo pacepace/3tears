@@ -140,9 +140,7 @@ def subsumed(caveats: Iterable[CaveatEntry]) -> list[CaveatEntry]:
     several caveats would silence one, the one with the least id is named.
 
     :param caveats: The caveat list.
-    :ptype caveats: Iterable[CaveatEntry]
     :return: The same caveats, the silenced ones marked.
-    :rtype: list[CaveatEntry]
     """
     held = list(caveats)
     by_id = sorted(held, key=lambda caveat: caveat.id)
@@ -194,16 +192,11 @@ def first_screen(
     """The first screen's slots for one caveat list.
 
     :param caveats: The one caveat list, in any order.
-    :ptype caveats: Sequence[CaveatEntry]
     :param gate: What stops the campaign being read, or None when it can be.
-    :ptype gate: Gate | None
     :param called_arms: The arms code's own read of the options calls, by id.
-    :ptype called_arms: Collection[str]
     :param call: The call, where one was made; copied through untouched.
-    :ptype call: CallRead | None
     :return: The gate (with the count waiting below it), the reasons shown and the count past them, the count of
         open report-wide caveats, and the call.
-    :rtype: FirstScreen
     """
     called = set(called_arms)
 

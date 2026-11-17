@@ -44,9 +44,7 @@ def serialized_campaign_write[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     otherwise each read the membership list and the later save would drop the earlier's runs.
 
     :param fn: The writer.
-    :ptype fn: Callable[P, R]
     :return: ``fn``, serialized.
-    :rtype: Callable[P, R]
     """
 
     @functools.wraps(fn)

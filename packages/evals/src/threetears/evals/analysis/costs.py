@@ -54,9 +54,7 @@ def per_noun(measure: Measure) -> str:
     """What one money measure is per, as a plural noun; empty where it is no money measure or does not say.
 
     :param measure: The measure.
-    :ptype measure: Measure
     :return: The noun (``replies`` for money per one thing; the label's noun for money per a count).
-    :rtype: str
     """
     if measure.unit == "usd":
         return REPLIES

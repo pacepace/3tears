@@ -487,11 +487,8 @@ def correction_words(report_input: ReportInput, contrast: Contrast) -> str:
     or no one family is on the contrast's aspect. A ``compare.*.basis`` key and a compare block's words say it alike.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param contrast: The contrast.
-    :ptype contrast: Contrast
     :return: The words, after the contrast's "its own interval, ".
-    :rtype: str
     """
     families = [family for family in report_input.contrast_families if family.aspect == contrast.aspect]
     if len(families) != 1:
@@ -540,17 +537,11 @@ def pairing_contrast(report_input: ReportInput, arm_id: str, other: str, key: st
     interval; None where the compare family reads the two arms' own spreads as independent.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm_id: The first arm.
-    :ptype arm_id: str
     :param other: The second.
-    :ptype other: str
     :param key: The measure or judged dimension.
-    :ptype key: str
     :param where: The place, as a separation key spells it.
-    :ptype where: str
     :return: The contrast; None for none.
-    :rtype: Contrast | None
     """
     return _paired(report_input, arm_id, other, key) if where == _OVERALL else None
 

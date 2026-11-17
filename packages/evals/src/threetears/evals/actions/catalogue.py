@@ -176,7 +176,6 @@ class ConformanceStage:
         The runs execute as jobs, so their judges' requests are a job's. Arranged before the call under test.
 
         :return: The first run's id; it finished, and was judged when the host's judge answered.
-        :rtype: str
         """
         launch = self.host.launch
         runs = await start_run(
@@ -445,9 +444,7 @@ def standard_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec, ToolSpec]:
     """The two tools a host mounts by default: ``<prefix>`` and ``<prefix>_admin``.
 
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :return: ``<prefix>`` — read, spend and write — and ``<prefix>_admin`` — the destructive actions.
-    :rtype: tuple[ToolSpec, ToolSpec]
     """
     return (
         ToolSpec(
@@ -467,9 +464,7 @@ def read_only_tools(prefix: str = DEFAULT_PREFIX) -> tuple[ToolSpec]:
     """One tool carrying only the ``read`` actions, for an agent that may look but not act.
 
     :param prefix: The host's prefix for its eval tools.
-    :ptype prefix: str
     :return: ``<prefix>``, read actions only.
-    :rtype: tuple[ToolSpec]
     """
     return (
         ToolSpec(
@@ -518,10 +513,8 @@ class Refusal:
         """The refusal an engine error makes: the kind of its nearest public class, and its own status.
 
         :param error: The error a handler raised.
-        :ptype error: EvalServiceError
         :return: The refusal. A host's own subclass of a public error takes that error's kind, and keeps the
             status it was raised with.
-        :rtype: Refusal
         """
         return cls(kind=refusal_kind(error), status=error.status_code)
 
@@ -728,7 +721,6 @@ class MountedTool:
 
         :return: A JSON Schema object. Nothing beyond ``action`` is required at the tool: each action holds
             the call to its own required parameters.
-        :rtype: dict[str, Any]
         """
         names = [_HELP_ACTION, *(action.name for action in self.actions)]
         properties: dict[str, Any] = {
@@ -746,9 +738,7 @@ class MountedTool:
         """One action's help page: its parameters, what it returns and an example call.
 
         :param name: The action.
-        :ptype name: str
         :return: The page.
-        :rtype: str
         :raises KeyError: This tool has no such action.
         """
         action = self.action(name)
@@ -769,12 +759,9 @@ class MountedTool:
         builds one of its own.
 
         :param refused: The error the host raised.
-        :ptype refused: EvalServiceError
         :param action: The call's ``action`` argument, as given: it was never checked, so it may name nothing.
-        :ptype action: object
         :return: The refused outcome, carrying ``action`` when it names one of this tool's actions and ``None``
             otherwise, as any outcome does.
-        :rtype: ActionOutcome
         """
         named = self.action(action) if isinstance(action, str) else None
         return ActionOutcome(
@@ -805,13 +792,9 @@ class MountedTool:
         propagates as the defect it is.
 
         :param arguments: The call's arguments, ``action`` among them.
-        :ptype arguments: Mapping[str, Any]
         :param host: The host the action works in.
-        :ptype host: OpsHost
         :param caller: Who is calling, and their scope.
-        :ptype caller: Caller
         :return: The outcome.
-        :rtype: ActionOutcome
         """
         given = dict(arguments)
         name = given.pop("action", None)
@@ -1003,9 +986,7 @@ def _null_is_omitted(params: type[BaseModel]) -> frozenset[str]:
     (:class:`~threetears.evals.actions.params.NullIsOmitted`).
 
     :param params: An action's parameter model.
-    :ptype params: type[BaseModel]
     :return: Their names.
-    :rtype: frozenset[str]
     """
     return frozenset(
         name
@@ -1087,9 +1068,7 @@ def catalogue_primer(tools: Sequence[MountedTool]) -> str:
     of a server it builds; a host building its own server passes it there.
 
     :param tools: The tools the server mounts.
-    :ptype tools: Sequence[MountedTool]
     :return: The primer.
-    :rtype: str
     :raises ValueError: No tool is given, or the primer runs past 1,800 characters: a client would cut it, so
         shorten a tool's description or constraints.
     """
@@ -1117,7 +1096,6 @@ class ActionCatalogue:
         No action can be named ``help``: it is one word, and an action's name is ``noun_verb``.
 
         :param actions: The actions, in the order help lists them within a workflow.
-        :ptype actions: Iterable[Action]
         :raises ValueError: Two actions share a name.
         """
         held: dict[str, Action] = {}
@@ -1143,9 +1121,7 @@ class ActionCatalogue:
         """This catalogue with a host's actions added after the engine's.
 
         :param actions: The host's actions.
-        :ptype actions: Iterable[Action]
         :return: The new catalogue.
-        :rtype: ActionCatalogue
         :raises ValueError: A host action's name is already in the catalogue, or two of them share one.
         """
         return ActionCatalogue([*self._actions.values(), *actions])
@@ -1154,9 +1130,7 @@ class ActionCatalogue:
         """Cut one tool from the catalogue: the actions of the tool's cut and workflows whose class the tool mounts.
 
         :param spec: The tool.
-        :ptype spec: ToolSpec
         :return: The mounted tool.
-        :rtype: MountedTool
         :raises ValueError: No action of its cut and workflows has a class the tool mounts, or two of its actions
             declare one parameter name with different meanings (type or description).
         """
@@ -1196,9 +1170,7 @@ class ActionCatalogue:
         """Mount several tools, refusing two that share a name.
 
         :param specs: The tools.
-        :ptype specs: Sequence[ToolSpec]
         :return: The mounted tools, in order.
-        :rtype: tuple[MountedTool, ...]
         :raises ValueError: Two tools share a name, or :meth:`mount` refuses one.
         """
         names = [spec.name for spec in specs]

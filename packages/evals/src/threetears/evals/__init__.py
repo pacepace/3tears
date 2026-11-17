@@ -96,9 +96,7 @@ def __getattr__(name: str) -> Any:  # Any: __version__ is a str, and a lazy expo
     """Resolve :data:`__version__` from the distribution's metadata, and each name of ``_LAZY_EXPORTS``, on first read.
 
     :param name: The attribute asked for: ``__version__``, or one of the exported names (``Eval``, ``Model``, ...).
-    :ptype name: str
     :return: The installed distribution's version string, or the exported object.
-    :rtype: Any
     :raises AttributeError: For any other name, as a module normally would.
     :raises importlib.metadata.PackageNotFoundError: When no ``3tears-evals`` distribution is installed, so the
         version cannot be stated; a host records the version only from an installed build.
@@ -199,9 +197,7 @@ def surface_tier(qualified_name: str) -> Literal["host-contract", "stable", "pro
 
     :param qualified_name: The name as its root exports it: ``threetears.evals.kernel.host.EvalHost``, or
         ``threetears.evals.Eval`` for the package's own.
-    :ptype qualified_name: str
     :return: Its tier.
-    :rtype: Literal['host-contract', 'stable', 'provisional']
     :raises KeyError: No public root of this build exports that name: it is below a root, misspelled, or gone.
     """
     tier = _tier_map().get(qualified_name)
@@ -214,7 +210,6 @@ def declared_names() -> frozenset[str]:
     """Every declared public name of the installed build (``host-contract`` and ``stable``), by ``root.name``.
 
     :return: The names a release promises something about; every other public name is ``provisional``.
-    :rtype: frozenset[str]
     """
     return frozenset(name for name, tier in _tier_map().items() if tier != "provisional")
 

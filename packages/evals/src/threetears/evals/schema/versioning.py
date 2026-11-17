@@ -1058,17 +1058,11 @@ def upgrade_document(
     step never writes the number itself. A document already at ``current`` is returned as a copy, unchanged.
 
     :param document: The stored document, as the store returned it.
-    :ptype document: Mapping[str, Any]
     :param steps: The upgrade chain (:data:`DURABLE_UPGRADERS` in production; the core's is empty).
-    :ptype steps: Sequence[CoreUpgrader]
     :param current: The version to read to.
-    :ptype current: int
     :param baseline: The oldest version read.
-    :ptype baseline: int
     :param space: The version space's name, as a refusal states it.
-    :ptype space: str
     :return: A new document at ``current``; the input is not modified.
-    :rtype: dict[str, Any]
     :raises CoreVersionRefused: ``schema_version`` is missing or not an integer, above ``current``, below
         ``baseline``, or a step the chain needs is not registered; or a step failed on the document, whatever it
         raised, so a stored read meets one refusal type and never a step's own exception.
@@ -1119,11 +1113,8 @@ def read_core_minor(document: Mapping[str, Any], *, space: str = "core") -> int:
     field's absence reads as its default.
 
     :param document: The stored document, as the store returned it.
-    :ptype document: Mapping[str, Any]
     :param space: The version space's name, as a refusal states it.
-    :ptype space: str
     :return: Its ``schema_minor``.
-    :rtype: int
     :raises CoreVersionRefused: ``schema_minor`` is present and is not a whole number of zero or more.
     """
     if "schema_minor" not in document:
@@ -1141,9 +1132,7 @@ def upgrade_durable_document(document: Mapping[str, Any]) -> dict[str, Any]:
     """:func:`upgrade_document` with this build's durable chain, version and baseline.
 
     :param document: A stored durable document.
-    :ptype document: Mapping[str, Any]
     :return: The document at :data:`DURABLE_SCHEMA_VERSION`.
-    :rtype: dict[str, Any]
     :raises CoreVersionRefused: See :func:`upgrade_document`.
     """
     return upgrade_document(

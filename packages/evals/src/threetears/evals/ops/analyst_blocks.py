@@ -48,7 +48,6 @@ def figure_key_grammar() -> str:
     examples in their page's forms.
 
     :return: The section, heading first.
-    :rtype: str
     """
     return figure_keys.figure_key_grammar(forms_of=PageForms.of)
 
@@ -58,9 +57,7 @@ def figure_key_index(topic: str) -> str:
     their page's forms.
 
     :param topic: What the reference is served as: each group's page is ``<topic>.<group>``.
-    :ptype topic: str
     :return: The index, heading first.
-    :rtype: str
     """
     return figure_keys.figure_key_index(topic, forms_of=PageForms.of)
 
@@ -70,7 +67,6 @@ def figure_key_pages() -> dict[str, str]:
     their page's forms.
 
     :return: Each page, by its group's name.
-    :rtype: dict[str, str]
     """
     return figure_keys.figure_key_pages(forms_of=PageForms.of)
 
@@ -109,30 +105,18 @@ async def block_render(
     """The block a page would draw of a query on the snapshot, as its values table.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param block_kind: The kind of block.
-    :ptype block_kind: str
     :param query: What it reads.
-    :ptype query: ChartQuery
     :param reference: The reference line to draw; None for none.
-    :ptype reference: str | None
     :param emphasis: The one arm, stratum or task it stresses; empty for none.
-    :ptype emphasis: str
     :param title: Its title, figure keys allowed; empty for none.
-    :ptype title: str
     :param limit: The most values-table rows on the page.
-    :ptype limit: int
     :param offset: The rows to skip.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the most rows within ``limit`` that pass it, one
         row at least. None sizes a page by its cells' characters alone.
-    :ptype fits: Callable[[RenderedBlock], bool] | None
     :return: The block.
-    :rtype: RenderedBlock
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read, or the block cannot be drawn on it, naming every fault.
     """
@@ -158,13 +142,9 @@ async def block_catalog(host: OpsHost, scope_id: str, *, snapshot_id: str) -> Bl
     """Every block the snapshot can be shown by: the kinds, the sources, the query's options, the figure key forms.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :return: The catalog.
-    :rtype: BlockCatalog
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the remedy is to freeze again.
     """

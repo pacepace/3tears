@@ -163,7 +163,6 @@ class CallTimedOut(Exception):
         """Name the timeout the call outlived.
 
         :param timeout_s: The timeout, in seconds.
-        :ptype timeout_s: float
         """
         super().__init__(
             f"the call outlived its {spell_declared(timeout_s)}s call timeout and was stopped; {_TIMED_OUT_REMEDY}"
@@ -340,22 +339,15 @@ class ToolBinding:
         """Bind a mounted tool to the host, caller resolver, hooks and call timeout its calls run under.
 
         :param mounted: The tool cut from the catalogue.
-        :ptype mounted: MountedTool
         :param host: The one host its actions work in; or
-        :ptype host: OpsHost | None
         :param host_resolver: Resolves the host per call. Exactly one of ``host`` and ``host_resolver``.
-        :ptype host_resolver: HostResolver | None
         :param caller: Resolves who is calling, per call.
-        :ptype caller: CallerResolver
         :param around: Wraps every call (:data:`CallHook`); ``None`` for none.
-        :ptype around: CallHook | None
         :param annotate: Adds the host's note to what a call returns (:data:`CallAnnotator`); ``None`` for none. Held
             here and applied where the outcome becomes the tool's result (:meth:`CatalogueTool.run`):
             :meth:`call` returns the outcome bare.
-        :ptype annotate: CallAnnotator | None
         :param call_timeout_s: The one timeout every call is held to, in seconds, or a function read once as each call
             starts (:data:`CallTimeout`).
-        :ptype call_timeout_s: CallTimeout
         :raises ValueError: Both or neither of ``host`` and ``host_resolver`` were given, or ``call_timeout_s`` is a
             number that is not positive.
         :raises TypeError: ``around`` is not an async generator function.
@@ -398,9 +390,7 @@ class ToolBinding:
         the refusal as its outcome, as it would an action's (:data:`CallHook`).
 
         :param arguments: The call's arguments, ``action`` among them.
-        :ptype arguments: dict[str, Any]
         :return: The catalogue's outcome, exactly as it returned it, or the refusal a resolver raised.
-        :rtype: ActionOutcome
         :raises CallTimedOut: The call outlived the call timeout before its action finished; the action was stopped,
             and a :class:`CallTimedOut` thrown into the hook at its yield. It reports the timeout this call read.
         :raises ValueError: ``call_timeout_s`` is a function and answered anything but a positive number; nothing ran.
@@ -677,22 +667,14 @@ class CatalogueTool(Tool):
         """The FastMCP tool for one mounted tool.
 
         :param mounted: The tool cut from the catalogue.
-        :ptype mounted: MountedTool
         :param host: The one host its actions work in; or
-        :ptype host: OpsHost | None
         :param host_resolver: Resolves the host per call. Exactly one of ``host`` and ``host_resolver``.
-        :ptype host_resolver: HostResolver | None
         :param caller: Resolves who is calling, per call.
-        :ptype caller: CallerResolver
         :param around: Wraps every call (:data:`CallHook`); ``None`` for none.
-        :ptype around: CallHook | None
         :param annotate: Adds the host's note to what a call returns (:data:`CallAnnotator`); ``None`` for none.
-        :ptype annotate: CallAnnotator | None
         :param call_timeout_s: The one timeout every call is held to, in seconds, or a function read once as each call
             starts (:data:`CallTimeout`).
-        :ptype call_timeout_s: CallTimeout
         :return: The tool, ready for :meth:`fastmcp.FastMCP.add_tool`.
-        :rtype: CatalogueTool
         :raises ValueError: Both or neither of ``host`` and ``host_resolver`` were given, or ``call_timeout_s`` is a
             number that is not positive.
         :raises TypeError: ``around`` is not an async generator function.
@@ -728,7 +710,6 @@ class CatalogueTool(Tool):
         """Carry out one call through the catalogue.
 
         :param arguments: The call's arguments, ``action`` among them.
-        :ptype arguments: dict[str, Any]
         :return: The result: text always; as structured content, the result model's JSON whole when the call
             succeeded (``report_read``'s ``body`` included, which is also its text), or
             ``{"ending": "refused" | "raised", "refusal": {"kind": ..., "status": ...}}``, with ``recovery`` (the
@@ -736,7 +717,6 @@ class CatalogueTool(Tool):
             (:attr:`~threetears.evals.actions.ActionOutcome.ending`); and the error flag alone, with text saying so
             and to read what it may have done before calling it again, when it outlived the call timeout. A note the ``annotate`` hook answered follows the outcome's text as a text block
             of its own, and changes nothing else (:data:`CallAnnotator`).
-        :rtype: ToolResult
         """
         binding = self.binding
         try:
@@ -835,39 +815,27 @@ def mount_fastmcp(
     :param server: The host's server; or the one host every action works in, an
         :class:`~threetears.evals.kernel.host.EvalHost` or an :class:`~threetears.evals.ops.OpsHost`, to serve
         on a server built here, which is returned.
-    :ptype server: FastMCP | EvalHost | OpsHost
     :param catalogue: The actions to serve — :func:`~threetears.evals.actions.eval_catalogue`, with the host's own;
         ``None`` for the engine's alone.
-    :ptype catalogue: ActionCatalogue | None
     :param host: The one host every action works in: an :class:`~threetears.evals.ops.OpsHost`, or an
         :class:`~threetears.evals.kernel.host.EvalHost`, served through :meth:`~threetears.evals.ops.OpsHost.reading`;
         or
-    :ptype host: EvalHost | OpsHost | None
     :param host_resolver: Resolves the host per call, for a server serving several. Exactly one of ``host``
         and ``host_resolver``.
-    :ptype host_resolver: HostResolver | None
     :param caller: Resolves who is calling and their scope, once per call; or
-    :ptype caller: CallerResolver | None
     :param scope: The one scope every call acts in, as ``identity``. Exactly one of ``caller`` and ``scope``.
-    :ptype scope: str | None
     :param identity: Who the caller is, with ``scope``: recorded where a write records an author.
-    :ptype identity: str
     :param around: Wraps every call to every tool, for the host's tracing, metrics or audit
         (:data:`CallHook`); ``None`` for none.
-    :ptype around: CallHook | None
     :param annotate: Adds the host's note to what a call to any tool returns — a text block after the outcome's,
         never in its place (:data:`CallAnnotator`); ``None`` for none.
-    :ptype annotate: CallAnnotator | None
     :param tools: The tools to cut; ``None`` for :func:`~threetears.evals.actions.standard_tools` under the
         default prefix, or :func:`~threetears.evals.actions.read_only_tools` over an eval host, which
         launches nothing. Pass ``read_only_tools()`` for an agent that may only read, or either with the
         host's own prefix.
-    :ptype tools: Sequence[ToolSpec] | None
     :param call_timeout_s: The one timeout every call is held to, in seconds, or a function read once as each call
         starts, for a host that retunes it from live configuration (:data:`CallTimeout`).
-    :ptype call_timeout_s: CallTimeout
     :return: The names of the tools added; or, handed a host alone, the server built, ready to ``run()``.
-    :rtype: FastMCP | tuple[str, ...]
     :raises ValueError: The catalogue refuses a tool (see :meth:`~threetears.evals.actions.ActionCatalogue.mount`),
         a server built here would carry a primer past its budget (:func:`~threetears.evals.actions.catalogue_primer`),
         or both or neither of ``host`` and ``host_resolver``, or of ``caller`` and ``scope``, were given, or

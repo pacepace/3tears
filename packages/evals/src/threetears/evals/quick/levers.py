@@ -36,9 +36,7 @@ def refuse_unusable_lever_names(names: Iterable[str]) -> tuple[str, ...]:
     """The lever names, refusing one no overlay field could carry or that would read as the model.
 
     :param names: The levers' names, as a caller spells them.
-    :ptype names: Iterable[str]
     :return: The names, in the order given.
-    :rtype: tuple[str, ...]
     :raises ValueError: A name that is not an identifier, is a keyword, starts with ``_``, is ``model`` or one
         of a model's own attributes, or is given twice.
     """
@@ -69,9 +67,7 @@ def levers_model(names: Iterable[str]) -> type[CallableLevers]:
     caller wrote it: what every page calls the lever (``prompt``, never ``callable.prompt``).
 
     :param names: The levers' names.
-    :ptype names: Iterable[str]
     :return: The model, for a callable kind's :class:`~threetears.evals.kernel.host.KindContract`.
-    :rtype: type[CallableLevers]
     :raises ValueError: As :func:`refuse_unusable_lever_names`.
     """
     fields: dict[str, object] = {

@@ -398,13 +398,9 @@ def agreement_statistic(scale: RubricScale, kappa: float | None, weighted_kappa:
     read publishes no weighted kappa on pass/fail; reading ``kappa`` there is reading that number.
 
     :param scale: The dimension's scale.
-    :ptype scale: RubricScale
     :param kappa: The unweighted kappa.
-    :ptype kappa: float | None
     :param weighted_kappa: The quadratic-weighted kappa (None on pass/fail).
-    :ptype weighted_kappa: float | None
     :return: The figure, or None when it is undefined.
-    :rtype: float | None
     """
     return weighted_kappa if scale == "ordinal" else kappa
 
@@ -420,19 +416,13 @@ def criterion_state(
     """How one criterion reads, decided on the agreement's interval and never on its point estimate.
 
     :param results: The distinct results the agreement covers.
-    :ptype results: int
     :param agreement: The agreement figure, or None when undefined.
-    :ptype agreement: float | None
     :param interval: Its confidence bounds ``(lower, upper)``, or None when there are none.
-    :ptype interval: tuple[float, float] | None
     :param threshold: The agreement asked for (inclusive).
-    :ptype threshold: float
     :param min_results: The fewest distinct results (inclusive).
-    :ptype min_results: int
     :return: ``insufficient`` below the floor, or on an undefined agreement or interval; else ``met`` when the
         lower bound reaches the threshold, ``not_met`` when the upper bound is below it, and ``undecided``
         when the interval straddles it.
-    :rtype: CriterionState
     """
     if results < min_results or agreement is None or interval is None:
         return "insufficient"
@@ -494,13 +484,10 @@ def tier_of(calibration: TierCriterion, separation: TierCriterion) -> JudgedEvid
     """The tier two criteria decide.
 
     :param calibration: The judge's agreement with people.
-    :ptype calibration: TierCriterion
     :param separation: The judge's agreement with itself.
-    :ptype separation: TierCriterion
     :return: ``calibrated`` when calibration is met; else ``separation`` when separation is met; else
         ``incidental`` when both were shown below their bars (``not_met``); else ``undetermined`` — which an
         ``undecided`` criterion leads to, since an interval across the bar shows neither.
-    :rtype: JudgedEvidenceTier
     """
     if calibration.state == "met":
         return "calibrated"
@@ -515,9 +502,7 @@ def weakest_judged_tier(tiers: list[JudgedEvidenceTier]) -> JudgedEvidenceTier:
     """What several judged readings can bear together: the weakest of them (see :data:`JUDGED_TIERS_WEAKEST_FIRST`).
 
     :param tiers: At least one tier.
-    :ptype tiers: list[JudgedEvidenceTier]
     :return: The weakest.
-    :rtype: JudgedEvidenceTier
     :raises ValueError: ``tiers`` is empty — no reading has no tier to compose, and none is not undetermined.
     """
     if not tiers:

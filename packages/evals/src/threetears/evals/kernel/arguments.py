@@ -26,11 +26,8 @@ def normalize_blank(value: str | None, default: str) -> str:
     reads it that way.
 
     :param value: Raw argument from the caller.
-    :ptype value: str | None
     :param default: What an unsupplied argument means.
-    :ptype default: str
     :return: The stripped value, or ``default`` when it is empty or whitespace.
-    :rtype: str
     """
     return (value or "").strip() or default
 

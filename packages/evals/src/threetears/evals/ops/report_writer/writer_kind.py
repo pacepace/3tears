@@ -187,13 +187,9 @@ class WriterCase(BaseModel):
         """Freeze a stored snapshot into a case.
 
         :param snapshot: The snapshot the report is written over.
-        :ptype snapshot: EvalReportSnapshot
         :param withhold: The notes the analyst is not given.
-        :ptype withhold: Collection[str]
         :param origin: Where the case came from, as its mint records it; ``None`` for a case no mint writes.
-        :ptype origin: WriterCaseOrigin | None
         :return: The case.
-        :rtype: WriterCase
         :raises TypeError: ``withhold`` is a single string rather than a collection of names.
         """
         if isinstance(withhold, str):
@@ -205,7 +201,6 @@ class WriterCase(BaseModel):
         """The id of the snapshot the case froze.
 
         :return: The id.
-        :rtype: str
         :raises ValidationError: The frozen snapshot carries no id, campaign or report input digest that reads.
         """
         return _FrozenIdentity.model_validate(self.snapshot).id
@@ -215,7 +210,6 @@ class WriterCase(BaseModel):
         """What makes two mints one case: the campaign the snapshot froze, or its report input for a bare one.
 
         :return: ``campaign:<id>``, or ``report-input:<digest>`` for a snapshot with no campaign behind it.
-        :rtype: str
         :raises ValidationError: The frozen snapshot carries no id, campaign or report input digest that reads, so
             no source can be named for it.
         """
@@ -229,9 +223,7 @@ def writer_case_payload(case: WriterCase) -> dict[str, Any]:  # Any: the case's 
     """The ``host_payload`` a writer ``EvalTestCase`` carries.
 
     :param case: The case to store.
-    :ptype case: WriterCase
     :return: The payload, keyed so :func:`writer_case_of` can read it back.
-    :rtype: dict[str, Any]
     """
     return {WRITER_CASE_KEY: case.model_dump(mode="json")}
 
@@ -240,9 +232,7 @@ def writer_case_of(test_case: EvalTestCase) -> WriterCase | None:
     """Read a writer case back off a stored test case.
 
     :param test_case: Any stored case.
-    :ptype test_case: EvalTestCase
     :return: The case, or ``None`` when this test case carries no writer case.
-    :rtype: WriterCase | None
     :raises ValidationError: It carries one that does not read.
     """
     payload = test_case.host_payload
@@ -259,9 +249,7 @@ def writer_subject_components(skill: AnalystSkill) -> dict[str, SweepableValue]:
     ``skill`` overlay, so the variant identity's derivation accepts it only beside an arm that runs that skill.
 
     :param skill: The skill the arm runs.
-    :ptype skill: AnalystSkill
     :return: ``{SKILL_LEVER: the digest as a level}``.
-    :rtype: dict[str, SweepableValue]
     """
     return {SKILL_LEVER: SweepableValue.of(skill.digest, display=f"skill {skill.digest[:12]}")}
 
@@ -287,21 +275,13 @@ def writer_cell_timeout_s(
     Not covered: restoring the case's snapshot and the tool calls the turns make, which the host's headroom covers.
 
     :param limits: What the arm's writing loop is held to.
-    :ptype limits: WriterLimits
     :param request_s: The host's ceiling for one request on its client, by output cap.
-    :ptype request_s: RequestCeiling
     :param turns: The report budget's turn cap, or ``None`` when it declares none.
-    :ptype turns: int | None
     :param judge_dims: Rubric dimensions the run's judge scores on each cell.
-    :ptype judge_dims: int
     :param judge_concurrency: Judge requests in flight at once.
-    :ptype judge_concurrency: int
     :param judge_call_attempts: Requests one judge dimension can make, its parse retries included.
-    :ptype judge_call_attempts: int
     :param judge_max_tokens: The judge's output cap.
-    :ptype judge_max_tokens: int
     :return: The cell ceiling in seconds.
-    :rtype: float
     """
     judging_s = judge_phase_ceiling_s(
         judge_dims=judge_dims,
@@ -367,24 +347,15 @@ class ReportWriterKind:
 
         :param host: The host whose store the analyst tools read, and whose failure describer reads what a model
             client raises.
-        :ptype host: OpsHost
         :param scope_id: The scope the mounts read: each case's snapshot is restored there.
-        :ptype scope_id: str
         :param overlays: The arm's overlays, as the launch validated and froze them.
-        :ptype overlays: WriterOverlays
         :param models: The host's model factory: the arm's candidate model at a reasoning effort.
-        :ptype models: WriterModels
         :param budget: Each report's budget; every cell is written under a fresh one of the same caps.
-        :ptype budget: ReportBudget
         :param analyst_mount: The ``evals_analyst`` tool on the analyst's cut, read-only, its gap note storing nothing.
-        :ptype analyst_mount: ToolMount
         :param editor_mount: The tool on the editor's cut, bound the same way.
-        :ptype editor_mount: ToolMount
         :param skills: The skill versions the launch may run, by digest. The shipped skill is always one of them.
-        :ptype skills: Mapping[str, AnalystSkill]
         :param editor_models: The host's model factory for the editor's model, at a reasoning effort, for an arm whose
             overlays name an ``editor_model``; ``None`` for an arm whose editor runs on the candidate model.
-        :ptype editor_models: WriterModels | None
         :raises ValueError: A skill is keyed by a digest other than its own.
         """
         if misfiled := sorted(digest for digest, skill in skills.items() if skill.digest != digest):
@@ -415,17 +386,12 @@ class ReportWriterKind:
         :param subject_snapshot: The arm's subject, which must carry the skill lever's component, at the arm's skill.
         :ptype subject_snapshot: SubjectSnapshot | None
         :param variant_config: This cell's contestant stack; its model is the one the factory must build.
-        :ptype variant_config: VariantConfig
         :param world_seed: Unread: a writer acts on no world.
-        :ptype world_seed: Any
         :param span_window: This cell's tracing windows, opened in :meth:`invoke`.
-        :ptype span_window: CellSpanWindow
         :param cassettes: Unwired: the writer's turns are recorded by its model (``turn_recording``), not a cassette.
         :ptype cassettes: CellCassettes | None
         :param world: Unread: a writer acts on no world.
-        :ptype world: Any
         :return: The cell's model, skill and windows.
-        :rtype: PreparedWriter
         :raises CandidatePreparationFailed: The arm's revisions are not ones the loop runs; the arm's skill is not one
             the launch was given, or its ``editor.md`` states no rubric its reviews can be read on; the subject does
             not carry it; the factory's model is not the cell's, or not the editor's the arm names; or, under a
@@ -504,13 +470,9 @@ class ReportWriterKind:
         output's usage and on the sink's reading, so a cell cut off at its deadline keeps what it paid for.
 
         :param instance: What :meth:`prepare` bound.
-        :ptype instance: PreparedWriter
         :param test_case: The cell's case, carrying the writer case in its ``host_payload``.
-        :ptype test_case: EvalTestCase
         :param sink: This cell's sink, handed the tally's reading.
-        :ptype sink: CellSink
         :return: The final page, its judge evidence, the run's measures and its usage.
-        :rtype: CandidateOutput
         """
         with instance.span_window.identity():
             prepared = await self._case_input(instance, test_case)
@@ -657,13 +619,9 @@ def _page_inputs(document: Mapping[str, Any], snapshot_id: str, findings: Sequen
     stored.
 
     :param document: The stored report document (the cell's output).
-    :ptype document: Mapping[str, Any]
     :param snapshot_id: The snapshot it was written over.
-    :ptype snapshot_id: str
     :param findings: The editor's findings left open, which the page prints.
-    :ptype findings: Sequence[ReportFinding]
     :return: The evidence's inputs.
-    :rtype: dict[str, Any]
     """
     return {
         "document": canonical_digest({"report_document": dict(document)}),

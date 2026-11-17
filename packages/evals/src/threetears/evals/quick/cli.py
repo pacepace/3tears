@@ -187,7 +187,6 @@ def _refuse_colliding_commands(commands: Sequence[HostCommand]) -> None:
     """Refuse host commands whose names would shadow an engine command or each other.
 
     :param commands: The host's commands.
-    :ptype commands: Sequence[HostCommand]
     :raises ValueError: A name is an engine command's, or two host commands share one.
     """
     seen: set[str] = set()
@@ -235,9 +234,7 @@ def _load_host_factory(spec: str) -> HostFactory:
     """The host factory a ``module:attribute`` spec names.
 
     :param spec: ``package.module:callable``.
-    :ptype spec: str
     :return: The callable.
-    :rtype: HostFactory
     :raises _Refused: The spec is not ``module:attribute``, the module cannot be imported, it has no such
         attribute, or the attribute is not callable.
     """
@@ -262,14 +259,10 @@ def build_parser(
     """The command line's parser.
 
     :param prog: The program name usage lines print.
-    :ptype prog: str
     :param takes_host: Whether each command takes ``--host``. A product that mounts the commands with its
         own host factory passes ``False``, and the option does not exist.
-    :ptype takes_host: bool
     :param commands: The host's own subcommands, added after the engine's.
-    :ptype commands: Sequence[HostCommand]
     :return: The parser; ``command`` on the parsed namespace names the subcommand.
-    :rtype: argparse.ArgumentParser
     :raises ValueError: A host command's name is an engine command's, or two host commands share one.
     """
     _refuse_colliding_commands(commands)
@@ -488,19 +481,14 @@ def run_cli(
     """Parse ``argv`` and carry out the command, printing to stdout and refusals to stderr.
 
     :param argv: The arguments after the program name; ``None`` reads ``sys.argv``.
-    :ptype argv: Sequence[str] | None
     :param host_factory: The host to work in, for a product mounting these commands; ``None`` takes it
         from ``--host``.
-    :ptype host_factory: HostFactory | None
     :param prog: The program name usage lines print.
-    :ptype prog: str
     :param commands: The host's own subcommands, mounted beside the engine's (:data:`ENGINE_COMMANDS`); each
         one's handler is handed the host the factory built.
-    :ptype commands: Sequence[HostCommand]
     :return: The exit code: 0, 1 when a launched run did not complete, 2 when the command was refused, 3 when
         it failed on an error nothing anticipated (its traceback is printed to stderr), 4 when ``gate`` read an
         outcome its ``--fail-on`` names, or whatever a host command's handler returned.
-    :rtype: int
     :raises ValueError: A host command's name is an engine command's, or two host commands share one —
         refused before ``argv`` is parsed, since it is the mounting product's code and not the
         user's command line.

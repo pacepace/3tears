@@ -35,11 +35,8 @@ def input_check_name(key: str, report_input: ReportInput) -> str | None:
     reads.
 
     :param key: Any measure key.
-    :ptype key: str
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The check's name; None for a key that is no goal check's.
-    :rtype: str | None
     """
     check = goal_check_of(key)
     if check is None:
@@ -74,17 +71,12 @@ def reader_name(kind: NamedKind, identifier: str, report_input: ReportInput, *, 
     name.
 
     :param kind: What the id names.
-    :ptype kind: NamedKind
     :param identifier: The id, as the input keys it.
-    :ptype identifier: str
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param aspect: For a stratum, the aspect whose stratum of that id is named: a stratum id held on more than one
         aspect is a stratum on each, and each aspect may name its own differently. None names the first the input
         holds.
-    :ptype aspect: str | None
     :return: The reader name.
-    :rtype: str
     :raises KeyError: The input holds no such id of that kind (a stratum: on that aspect).
     """
     if kind == "aspect":
@@ -117,10 +109,8 @@ def reader_names(report_input: ReportInput) -> dict[NamedKind, dict[str, str]]:
     keyed by its id.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Aspects, measures, judged dimensions, strata, tasks and criteria, each kind present only where the input
         holds one.
-    :rtype: dict[NamedKind, dict[str, str]]
     """
     ids: dict[NamedKind, list[str]] = {
         "aspect": [aspect.id for aspect in report_input.aspects],
@@ -168,9 +158,7 @@ def page_arm_names(report_input: ReportInput) -> dict[str, str]:
     (:func:`~threetears.evals.analysis.per_input.kept_for`); each caller gets its own copy.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Arm id -> its name on the page.
-    :rtype: dict[str, str]
     """
     return dict(kept_for(report_input).get(_page_arm_names, lambda: _page_arm_names(report_input)))
 
@@ -197,9 +185,7 @@ def printed_arm_name(arm: Arm) -> str:
     Every page passes these names to :func:`render`, so ``{arm:<id>}`` prints this beside the arm's tag.
 
     :param arm: The arm.
-    :ptype arm: Arm
     :return: Its name on the page.
-    :rtype: str
     """
     return arm.short_name or arm.name or arm.id
 

@@ -93,7 +93,6 @@ class JobLease(EvalBaseModel, CoreShapeModel):
         """The expiry as an aware datetime.
 
         :return: :attr:`expires_at`, parsed.
-        :rtype: datetime
         """
         return datetime.fromisoformat(self.expires_at)
 
@@ -187,11 +186,8 @@ def with_fault(faults: list[str], entry: str) -> list[str]:
     :data:`JOB_FAULTS_MAX` entries gives its last place to the new one, keeping the earliest.
 
     :param faults: The record's faults as stored.
-    :ptype faults: list[str]
     :param entry: The fault to add; blank is refused.
-    :ptype entry: str
     :return: The new list; ``faults`` is not changed.
-    :rtype: list[str]
     :raises ValueError: ``entry`` is blank.
     """
     if not entry.strip():

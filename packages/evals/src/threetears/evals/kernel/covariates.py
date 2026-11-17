@@ -127,9 +127,7 @@ def _candidate_turn_records(trace: list[dict[str, Any]]) -> list[dict[str, Any]]
 
     :param trace: The cell's judge-visible trace entries. Non-candidate entries (simulator
         utterances) carry no ``turn_record`` and contribute nothing.
-    :ptype trace: list[dict[str, Any]]
     :return: The dumped turn records, empty when no candidate turn ran.
-    :rtype: list[dict[str, Any]]
     """
     return [entry["turn_record"] for entry in trace if isinstance(entry.get("turn_record"), dict)]
 
@@ -138,7 +136,6 @@ def count_dropped_tool_calls(trace: list[dict[str, Any]]) -> int | None:
     """Count the dropped tool calls across a cell's candidate turns.
 
     :param trace: The cell's judge-visible trace entries.
-    :ptype trace: list[dict[str, Any]]
     :return: The total number of dropped calls, counting repeats — two reaches in one turn is a
         different observation from one. ``0`` when candidate turns ran and dropped nothing,
         and ``None`` when **no candidate turn ran at all**, which is not the same fact.
@@ -149,7 +146,6 @@ def count_dropped_tool_calls(trace: list[dict[str, Any]]) -> int | None:
         ``EvalResult`` — so it recorded ``dropped_tool_calls=0``, "watched and clean", for a
         cell nobody watched. An analyst pooling the covariate read crashed cells as
         well-behaved ones.
-    :rtype: int | None
     """
     records = _candidate_turn_records(trace)
     if not records:
@@ -169,12 +165,10 @@ def count_refused_tool_attaches(trace: list[dict[str, Any]]) -> int | None:
     sparse rule then omits the key rather than publishing a zero the harness never observed.
 
     :param trace: The cell's judge-visible trace entries.
-    :ptype trace: list[dict[str, Any]]
     :return: The total number of refusals, counting repeats — a candidate that asked twice and
         was refused twice behaved differently from one refused once. ``0`` when candidate
         turns reported the field and none was refused; ``None`` when no candidate turn
         reported it at all.
-    :rtype: int | None
     """
     reporting = [record for record in _candidate_turn_records(trace) if "refused_tool_attaches" in record]
     if not reporting:
@@ -194,11 +188,9 @@ def count_truncated_rounds(trace: list[dict[str, Any]]) -> int | None:
     watched for this, and publishing a zero for it would claim it was.
 
     :param trace: The cell's judge-visible trace entries.
-    :ptype trace: list[dict[str, Any]]
     :return: The total number of cut rounds over the turns that reported the field. ``0`` when
         candidate turns reported it and none was cut; ``None`` when no candidate turn
         reported it at all.
-    :rtype: int | None
     """
     reporting = [record for record in _candidate_turn_records(trace) if "truncated_rounds" in record]
     if not reporting:
@@ -216,11 +208,8 @@ def count_delivered_turns(trace: list[dict[str, Any]], *, reported: int | None) 
     reader would take for "refused before any turn".
 
     :param trace: The cell's judge-visible trace entries.
-    :ptype trace: list[dict[str, Any]]
     :param reported: The kind's own count (``CandidateTelemetry.turns_delivered``), or ``None``.
-    :ptype reported: int | None
     :return: The count, or ``None`` when nothing counted.
-    :rtype: int | None
     """
     if reported is not None:
         return reported
@@ -251,9 +240,7 @@ def undeclarable_covariates(names: Iterable[str]) -> list[str]:
     engine-owned key would pool into the engine's own observations of that name.
 
     :param names: The keys a result's covariates carry.
-    :ptype names: Iterable[str]
     :return: The engine-owned keys among them that are not covariates.
-    :rtype: list[str]
     """
     return engine_owned_names(names, written_by_the_engine=COVARIATE_KEYS)
 
@@ -272,7 +259,6 @@ def derive_covariates(
     :param usage: The per-role rows captured for this result. ``context_tokens_in`` and
         ``reasoning_ratio`` are read off the candidate rows — plural, because rows are
         keyed by (role, model).
-    :ptype usage: list[RoleUsage]
     :param concurrent_eval_jobs: How much eval work was executing when this cell ran, *including*
         this one — the eval jobs holding a slot, or the run's own cell width when it executes its
         cells concurrently, whichever is larger — or ``None`` when nothing sampled it. Jobs, not runs:
@@ -280,31 +266,25 @@ def derive_covariates(
         job would contend on the same provider account exactly as a run does. None yields no
         ``execution_mode`` key — "nobody
         looked" is not "nothing else was running".
-    :ptype concurrent_eval_jobs: int | None
     :param dropped_tool_calls: How many tool calls the candidate emitted that the client
         dropped before dispatch, or ``None`` when no candidate turn was observed —
         see :data:`_DROPPED_TOOL_CALLS_KEY`. Unlike a resolved-model origin on the
         run renders, defaulting this one asserts nothing: a caller that omits it
         produces no key, which reads as "not measured" and is exactly what a cell
         that never reached a candidate turn should say.
-    :ptype dropped_tool_calls: int | None
     :param refused_tool_attaches: How many self-attach requests the harness refused for
         being outside the run's ``tools_allowed``, or ``None`` when no candidate turn
         reported the field — see :data:`_REFUSED_TOOL_ATTACHES_KEY`. Defaults the same
         way and for the same reason as ``dropped_tool_calls``: omitting it asserts
         nothing.
-    :ptype refused_tool_attaches: int | None
     :param truncated_rounds: How many of the candidate's rounds the provider cut off at the
         output cap, or ``None`` when no candidate turn reported the field — see
         :data:`TRUNCATED_ROUNDS_KEY`. Defaults the same way as its two siblings:
         omitting it asserts nothing.
-    :ptype truncated_rounds: int | None
     :param turns_ended_by_budget: How many of the candidate's turns the host's turn budget ended,
         or ``None`` when no budget bounded them — see :data:`TURN_BUDGET_ENDED_KEY`.
         Defaults the same way as its siblings: omitting it asserts nothing.
-    :ptype turns_ended_by_budget: int | None
     :return: A sparse ``{covariate: value}`` mapping — only what was actually measured.
-    :rtype: dict[str, str | float]
     """
     out: dict[str, str | float] = {}
 
@@ -394,7 +374,6 @@ def fold_phase_timings(
     one fold.
 
     :return: One sentence per entry not folded; empty when every entry folded or the tool measured none.
-    :rtype: list[str]
     """
     if timings is None:
         return []

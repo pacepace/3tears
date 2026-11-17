@@ -190,7 +190,6 @@ class CompletionGuard:
         """Wait, for a job's request, until no call is running — or refuse it when the call does not return.
 
         :param where: The request, described.
-        :ptype where: str
         :raises JobAwaitedByItsCall: The running call did not return within ``call_return_timeout_s``.
         """
         try:
@@ -206,7 +205,6 @@ class CompletionGuard:
         """Count one request (a completion or a turn): refuse it outside a job; inside one, once no call is running.
 
         :param where: The request, described.
-        :ptype where: str
         :raises CompletionOutsideJob: It was made outside any job's work.
         :raises JobAwaitedByItsCall: The running call did not return in time (:meth:`after_the_call`).
         """
@@ -220,9 +218,7 @@ class CompletionGuard:
         """The host's client factory, every client it builds watched.
 
         :param clients: The host's own factory.
-        :ptype clients: CompletionClients
         :return: A factory the host builds its :class:`~threetears.evals.kernel.host.EvalHost` with for the kit.
-        :rtype: CompletionClients
         """
 
         def guarded(role: Any, model: str | None, *, temperature: float | None = None) -> Any:
@@ -387,14 +383,10 @@ def jobs_conformance_cases(
     """Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
 
     :param catalogue: The actions — the engine's and the host's (:func:`~threetears.evals.actions.eval_catalogue`).
-    :ptype catalogue: ActionCatalogue
     :param job_timeout_s: How long a happy path's jobs may run before the case fails.
-    :ptype job_timeout_s: float
     :param call_return_timeout_s: How long a job's request waits for the running call to return before the case
         fails it as a call that waits on its own job.
-    :ptype call_return_timeout_s: float
     :return: The cases, in catalogue order: an action's call case, then, for a spend action, its happy-path case.
-    :rtype: tuple[JobsConformanceCase, ...]
     """
     cases: list[JobsConformanceCase] = []
     for action in catalogue.actions:

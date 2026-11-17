@@ -96,17 +96,12 @@ def pass_threshold_label(
     is never stated as if goal checks and a judge were all it asked.
 
     :param k: The depth the figure is read at, or None where no depth was reached.
-    :ptype k: int | None
     :param threshold: The 1–5 level a criterion had to reach.
-    :ptype threshold: int
     :param criteria: What the attempts behind the figure were held to (:data:`PassCriterion`); empty when nothing was.
-    :ptype criteria: Collection[PassCriterion]
     :param checks: Each other check an attempt was held to, as its rule names it: the measure and the value it must
         hold to pass, ``Never topped up is false``. Empty where none was.
-    :ptype checks: Sequence[str]
     :return: The label: ``every goal check``, each of ``checks`` and ``criterion >= <threshold> of 5``, as many as
         hold, joined by commas and a last ``and``; or ``no criterion``.
-    :rtype: str
     """
     depth = "k=?" if k is None else f"k={k}"
     held = [
@@ -196,9 +191,7 @@ class Bar:
         it by the interval.
 
         :param value: The observed measure value.
-        :ptype value: float
         :return: True when the value is at or beyond the threshold in the better direction.
-        :rtype: bool
         """
         return value >= self.threshold if self.higher_is_better else value <= self.threshold
 
@@ -210,9 +203,7 @@ class Bar:
         proposal would be asserting both the threshold and the rule the threshold is judged by.
 
         :param incumbent: The registered bar this one is proposed against.
-        :ptype incumbent: Bar
         :return: True when this threshold is strictly stricter in the incumbent's better direction.
-        :rtype: bool
         """
         if incumbent.higher_is_better:
             return self.threshold > incumbent.threshold
@@ -252,9 +243,7 @@ class BarRegistry(HostAttributed):
 
         :param bars: The registered incumbents. A host with no standards yet registers none, which
             is a well-formed empty registry rather than an error.
-        :ptype bars: Iterable[Bar]
         :param pass_thresholds: The behaviors whose pass^k threshold is not :data:`DEFAULT_PASS_THRESHOLD`.
-        :ptype pass_thresholds: Iterable[PassThreshold]
         :raises BarRegistrationError: The declaration set is unsound.
         """
         self._init_attribution()
@@ -309,9 +298,7 @@ class BarRegistry(HostAttributed):
 
         :param behavior: The behavior a figure is computed for, or None where no behavior applies (a lens over a
             scope's runs, which belong to no one behavior).
-        :ptype behavior: str | None
         :return: The declared threshold, or :data:`DEFAULT_PASS_THRESHOLD` when none is declared.
-        :rtype: int
         """
         if behavior is None:
             return DEFAULT_PASS_THRESHOLD
@@ -330,7 +317,6 @@ class BarRegistry(HostAttributed):
         """Refuse a campaign bar looser than the registered incumbent.
 
         :param proposed: The bar a campaign wants to be measured against.
-        :ptype proposed: Bar
         :raises BarRegistrationError: The proposal is looser than the registered bar, quoting the
             registered value so the refusal names what it is protecting.
         """
@@ -372,21 +358,15 @@ class BarRegistry(HostAttributed):
           than from an author does not exempt it.
 
         :param behavior: The behavior the bar would govern.
-        :ptype behavior: str
         :param measure: The measure it is read on. Must be one this host declares — a proposal on a
             measure nobody can see is a standard nobody can check.
-        :ptype measure: str
         :param observed: The incumbent configuration's measured baseline — its mean moved toward the
             permissive end of its interval (:func:`~threetears.evals.analysis.stats.bar_seed`), as
             :func:`~threetears.evals.analysis.propose_bars` passes it.
-        :ptype observed: float
         :param measures: The host's measure registry, which owns the better-direction and the range.
-        :ptype measures: MeasureRegistry
         :param rationale: Why this is the standard. Required for the same reason
             :meth:`__init__` refuses a bar without one.
-        :ptype rationale: str
         :return: The proposal, with ``bar.vacuous_seed`` set and ``reason`` naming which vacuity it is.
-        :rtype: BarProposal
         :raises BarRegistrationError: The measure is not declared by this host, it declares no better
             direction (so "clearing" has no meaning), or ``rationale`` is blank.
         """
@@ -422,11 +402,8 @@ class BarRegistry(HostAttributed):
         """Why adopting ``proposed`` would register a standard nothing can fail, or ``""``.
 
         :param proposed: The bar the ratchet computed.
-        :ptype proposed: Bar
         :param value_range: The measure's declared inclusive bounds, or None when it has none.
-        :ptype value_range: tuple[float, float] | None
         :return: The reason, ready to render, or the empty string when the seed discriminates.
-        :rtype: str
         """
         if value_range is not None:
             floor, ceiling = value_range
@@ -465,7 +442,6 @@ class BarRegistry(HostAttributed):
         (:func:`~threetears.evals.kernel.declaration.refuse_an_undeclarable_design`).
 
         :param measures: The host's measure registry.
-        :ptype measures: MeasureRegistry
         :raises BarRegistrationError: A bar names an undeclared measure or one with no better end, or
             declares the opposite better-direction from the descriptor; or a judged bar names
             something no judged dimension can be called, a measure this host declares, or runs
@@ -539,11 +515,8 @@ def contradicts_descriptor(descriptor: MetricDescriptor | None, higher_is_better
     :meth:`BarRegistry.propose` does before seeding.
 
     :param descriptor: The measure's descriptor, or None when this host declares no such measure.
-    :ptype descriptor: MetricDescriptor | None
     :param higher_is_better: The direction being proposed.
-    :ptype higher_is_better: bool
     :return: True only when the host declared a direction and it is the opposite one.
-    :rtype: bool
     """
     return (
         descriptor is not None
@@ -571,9 +544,7 @@ def no_better_end(descriptor: MetricDescriptor) -> str | None:
     sends an operator looking for a number that was never recorded.
 
     :param descriptor: The measure's descriptor.
-    :ptype descriptor: MetricDescriptor
     :return: A noun phrase naming the measure's kind when it declares no better end, else None.
-    :rtype: str | None
     """
     if descriptor.higher_is_better is not None:
         return None
@@ -651,9 +622,7 @@ def load_bar_registry(declaration: Mapping[str, Any]) -> BarRegistry:
     (:meth:`BarRegistry.validate_against`).
 
     :param declaration: The parsed declaration.
-    :ptype declaration: Mapping[str, Any]
     :return: The registry.
-    :rtype: BarRegistry
     :raises BarRegistrationError: A field the declaration does not know, a field missing, a value of the
         wrong type, or anything :class:`BarRegistry` refuses. Every defect of the shape is named at
         once, by its place in the declaration.

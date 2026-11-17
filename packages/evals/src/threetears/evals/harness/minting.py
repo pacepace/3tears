@@ -106,9 +106,7 @@ class MintManifest(EvalBaseModel):
         """Read a manifest from its JSON file.
 
         :param path: The file.
-        :ptype path: str | Path
         :return: The manifest.
-        :rtype: MintManifest
         :raises RefusedInput: The file cannot be read, or does not read as a manifest.
         """
         source = Path(path)
@@ -176,9 +174,7 @@ def host_profile_from(spec: str) -> HostProfile:
     :param spec: ``package.module:callable``, a zero-argument callable returning a
         :class:`~threetears.evals.kernel.host.HostProfile` or an :class:`~threetears.evals.kernel.host.EvalHost`
         (only its profile is read; nothing is read from or written to its storage).
-    :ptype spec: str
     :return: The profile.
-    :rtype: HostProfile
     :raises RefusedInput: The spec is not ``module:attribute``, the module does not import, it has no such callable,
         or what it returns is neither a profile nor a host.
     """
@@ -198,9 +194,7 @@ def eval_host_from(spec: str) -> EvalHost:
 
     :param spec: ``package.module:callable``, a zero-argument callable returning an
         :class:`~threetears.evals.kernel.host.EvalHost`; the export only reads its store.
-    :ptype spec: str
     :return: The host.
-    :rtype: EvalHost
     :raises RefusedInput: The spec is not ``module:attribute``, the module does not import, it has no such callable,
         or what it returns is not a host.
     """
@@ -222,9 +216,7 @@ def read_profile_file(path: str | Path) -> ProfileFile:
     runs only the factory its operator names.
 
     :param path: The file, a JSON object.
-    :ptype path: str | Path
     :return: Its digest.
-    :rtype: ProfileFile
     :raises RefusedInput: The file cannot be read or is not a JSON object, ``built_by`` is there and not a string, or
         ``host_declarations_digest`` is missing (naming any key that looks like it) or not a string.
     """
@@ -297,9 +289,7 @@ def read_documents_file(path: str | Path) -> list[dict[str, Any]]:
     """The documents an export file holds: one JSON list of documents, each as stored.
 
     :param path: The file.
-    :ptype path: str | Path
     :return: The documents, in the file's order.
-    :rtype: list[dict[str, Any]]
     :raises RefusedInput: The file cannot be read, or is not a JSON list of objects.
     """
     source = Path(path)
@@ -442,13 +432,9 @@ async def export_checked(documents: Iterable[Mapping[str, Any]], *, campaign_id:
     """Check, with no profile, that an export holds what a mint of the campaign reads: a dry check of an export.
 
     :param documents: The export, as :func:`writer_case_from_export` takes it.
-    :ptype documents: Iterable[Mapping[str, Any]]
     :param campaign_id: The campaign.
-    :ptype campaign_id: str
     :param as_of: The instant it would be frozen at; ``None`` for the moment its evidence was complete.
-    :ptype as_of: str | None
     :return: The instant the case would be frozen at.
-    :rtype: str
     :raises RefusedInput: As :func:`writer_case_from_export` refuses the documents.
     """
     evidence = await run_blocking(None, _evidence, documents, campaign_id, as_of)
@@ -476,37 +462,24 @@ async def writer_case_from_export(
         least the campaign, every run it names, the template every run ran and the runs' results
         (:data:`REQUIRED_DOC_TYPES`); the traces when a result records one; the test cases and the insights on its
         subject when there are any. Any other document is loaded and never read.
-    :ptype documents: Iterable[Mapping[str, Any]]
     :param profile: The host's live profile, the one the campaign's runs were measured under: the freeze calls its
         readers.
-    :ptype profile: HostProfile
     :param campaign_id: The campaign to freeze.
-    :ptype campaign_id: str
     :param name: The case's name.
-    :ptype name: str
     :param created_by: Who mints it, as the host names the caller; the snapshot records it.
-    :ptype created_by: str
     :param group: The split group; ``None`` for the case's name.
-    :ptype group: str | None
     :param stratum: The kind of case it is (the domain it comes from).
-    :ptype stratum: str | None
     :param reasoned_on: The documents that reasoned on the campaign (its analyses, reports and insights): every note
         of ``skill`` holding one's id or name is withheld, and the case records which led to each note and which led
         to none.
-    :ptype reasoned_on: Collection[ReasonedOn]
     :param withhold: Notes withheld by file name besides those ``reasoned_on`` leads to.
-    :ptype withhold: Collection[str]
     :param skill: The skill whose notes are withheld, the one the case's arms run; ``None`` for the skill this build
         ships.
-    :ptype skill: AnalystSkill | None
     :param declarations_digest: The host's declaration of the profile, by its ``host_declarations_digest``; ``None``
         to check nothing.
-    :ptype declarations_digest: str | None
     :param as_of: The instant the snapshot is assembled and frozen at (ISO-8601, with its offset), and the insight
         ledger's cutoff; ``None`` for the moment the campaign's evidence was complete.
-    :ptype as_of: str | None
     :return: The case, unwritten (:meth:`~threetears.evals.harness.WriterCaseFile.write` writes it).
-    :rtype: WriterCaseFile
     :raises RefusedInput: The export lacks a document the freeze needs, holds the campaign in two scopes,
         ``as_of`` is not an instant, the profile's declarations are not the ones declared, or ``withhold`` names a
         note the skill does not hold.

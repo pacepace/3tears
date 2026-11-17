@@ -75,14 +75,10 @@ def equal_weight_figures(
     where its cell prints it. A withheld figure holds no value.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :return: One figure per arm the matrix holds a column for; none on one aspect, for a measurement, or where no
         matrix is laid out.
-    :rtype: dict[str, tuple[AggregateFigure, str]]
     """
     aggregate = _row_aggregate(readings)
     if aggregate is None:
@@ -97,15 +93,10 @@ def aggregate_blocks(
     weighting once in the methods.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The blocks; none for a measurement, or where neither the row nor the chart is laid out.
-    :rtype: list[ReportBlock]
     """
     aggregate = readings.aggregate
     if aggregate is None:

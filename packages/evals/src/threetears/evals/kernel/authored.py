@@ -99,9 +99,7 @@ def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     model declares the values as strings in it (a ``Literal["1", "2"]``, a ``str`` enum) and converts on read.
 
     :param schema: A pydantic-generated JSON schema.
-    :ptype schema: dict[str, Any]
     :return: The projected schema.
-    :rtype: dict[str, Any]
     :raises MapFieldInSchema: An object carries an open ``additionalProperties``.
     :raises UnportableSchema: A node carries a keyword outside the portable subset that validation does not stand in
         for, or an ``enum`` or ``const`` holding a value that is not a string.
@@ -169,11 +167,8 @@ def strict_response_format(name: str, schema: Mapping[str, Any]) -> dict[str, An
     mode, a tool's input schema) — and the reply is validated against the model on return either way.
 
     :param name: The schema's name, as the directive carries it.
-    :ptype name: str
     :param schema: A pydantic-generated JSON schema (``Model.model_json_schema()``), or one shaped like it.
-    :ptype schema: Mapping[str, Any]
     :return: The OpenAI-shaped directive.
-    :rtype: dict[str, Any]
     :raises MapFieldInSchema: An object in it admits arbitrary keys, which no strict mode accepts.
     :raises UnportableSchema: A node in it carries a keyword outside the portable subset that validation does not stand
         in for, or an ``enum`` or ``const`` holding a value that is not a string (:func:`strict_schema`).

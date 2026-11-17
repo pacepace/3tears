@@ -171,9 +171,7 @@ def borderline_dims(result: EvalResult) -> set[str]:
     has disagreed on it: run a judge repeat first, or select every dim.
 
     :param result: The result.
-    :ptype result: EvalResult
     :return: The borderline dims, as their scores spell them.
-    :rtype: set[str]
     """
     chosen: set[str] = set()
     for score in result.judge_scores():
@@ -354,21 +352,13 @@ async def estimate_judge_temperature_comparison(
     is its answer.
 
     :param host: The host: the run's store and the judge clients.
-    :ptype host: EvalHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param out_of_run_cap_usd: The cap it would be held to; ``None`` when the host enforces none.
-    :ptype out_of_run_cap_usd: float | None
     :param selection: ``borderline`` (the default) or ``all`` scored dims.
-    :ptype selection: TemperatureSelection
     :param repeats: Calls per dim per setting, at least :data:`MIN_TEMPERATURE_REPEATS`.
-    :ptype repeats: int
     :param result_ids: The results to draw from; ``None`` for every result of the run.
-    :ptype result_ids: Sequence[str] | None
     :return: The estimate.
-    :rtype: JudgeTemperatureEstimate
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The comparison cannot be made (see :func:`judge_temperature_work`).
     :raises ValueError: The host supplies no completion clients.
@@ -497,21 +487,13 @@ async def judge_temperature_work(
 
     :param host: The host: the run's store, its judge clients — through the run-pinned resolution the run scored
         through — and how a judge call that raised reads.
-    :ptype host: EvalHost
     :param run_id: The finished run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param out_of_run_cap_usd: The most the calls may be priced at together; ``None`` when the host enforces none.
-    :ptype out_of_run_cap_usd: float | None
     :param selection: ``borderline`` (the default: see :func:`borderline_dims`) or ``all`` scored dims.
-    :ptype selection: TemperatureSelection
     :param repeats: Calls per dim per setting, at least :data:`~threetears.evals.kernel.MIN_TEMPERATURE_REPEATS`.
-    :ptype repeats: int
     :param result_ids: The results to draw from; ``None`` for every result of the run.
-    :ptype result_ids: Sequence[str] | None
     :return: The admitted work; its record is the comparison.
-    :rtype: JobWork[EvalJudgeTemperatureCheck]
     :raises NotFoundError: No run with that id, or a record it names does not load.
     :raises ValidationFailedError: The run is still running; its judging cannot be reproduced; ``result_ids`` names a
         result outside it; ``repeats`` is under the floor; no result has a dim ``selection`` takes; every score to
@@ -571,18 +553,12 @@ async def _ask(
     """Make an admitted comparison's calls, and gather every answer per case and setting.
 
     :param prepared: The admitted comparison.
-    :ptype prepared: _Prepared
     :param selection: Which dims were selected.
-    :ptype selection: TemperatureSelection
     :param repeats: Calls per dim per setting.
-    :ptype repeats: int
     :param out_of_run_cap_usd: The cap the calls were admitted under.
-    :ptype out_of_run_cap_usd: float | None
     :param keep: Records the answers so far, called as each call returns — what makes a comparison stopped part-way
         keep what it paid for.
-    :ptype keep: Callable[[JudgeTemperatureAnswers], Awaitable[None]]
     :return: Per case and setting every answer in call order, the case count and the spend.
-    :rtype: JudgeTemperatureAnswers
     """
     answered: dict[tuple[str, str, TemperatureSetting], list[JudgeOutcome]] = {}
     stopped: str | None = None

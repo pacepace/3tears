@@ -73,9 +73,7 @@ class FunctionTool:
         """Bind the function to the name the candidate calls it by.
 
         :param name: The tool's name, which is also its one action and the ``tool`` of its recordings.
-        :ptype name: str
         :param function: The function, called with the candidate's keyword arguments.
-        :ptype function: Tool
         """
         self._name = name
         self._function = function
@@ -198,9 +196,7 @@ class CellTools:
         """Adapt each declared function to a tool.
 
         :param tools: The declared tools, by name.
-        :ptype tools: Mapping[str, Tool]
         :param recording: Where their answers are recorded or replayed from; ``None`` calls them live.
-        :ptype recording: ToolRecording | None
         """
         self._tools: dict[str, ToolLike] = {name: FunctionTool(name, function) for name, function in tools.items()}
         self._fault: ApparatusError | None = None

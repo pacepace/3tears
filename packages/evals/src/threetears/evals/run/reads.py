@@ -52,9 +52,7 @@ def _listing_status_filter(status: str | None) -> EvalRunStatus | None:
     9 runs answered HTTP 200 with an empty list — as did ``status=banana``.
 
     :param status: Raw filter from the caller, straight off the wire.
-    :ptype status: str | None
     :return: ``None`` to list every run, else the status to filter on.
-    :rtype: EvalRunStatus | None
     :raises ValidationFailedError: The value is not a status a run can carry, nor
         ``"all"``.
     """
@@ -109,19 +107,13 @@ def list_runs(
     :func:`_listing_status_filter`.
 
     :param host: The host: its storage, and the listing elisions its profile declares.
-    :ptype host: EvalHost
     :param scope_id: Partition key — the scope whose runs to list.
-    :ptype scope_id: str
     :param status: Optional run status filter (e.g. ``"completed"``). Unspecified,
         blank, or ``"all"`` (any case) lists every run.
-    :ptype status: str | None
     :param include_archived: Include operator-archived runs (default: exclude).
-    :ptype include_archived: bool
     :param label: Only runs an operator gave this label (``EvalRun.labels``), compared after stripping it; None lists
         every run. Like the archive predicate, it runs in Python over what the store returns.
-    :ptype label: str | None
     :return: Eval runs in the scope matching the filters.
-    :rtype: list[EvalRun]
     :raises ValidationFailedError: ``status`` is not one a run can carry, nor
         ``"all"``.
     :raises UnreadableRunError: A run the listing matched does not validate under this build's model; the paged
@@ -153,21 +145,13 @@ def list_runs_page(
     narrowed, so a caller reading every page reads every run once.
 
     :param host: As :func:`list_runs` takes it.
-    :ptype host: EvalHost
     :param scope_id: As :func:`list_runs` takes it.
-    :ptype scope_id: str
     :param limit: The page's size in stored rows, at least 1.
-    :ptype limit: int
     :param after: Where the page starts: the ``after`` of the page before, or ``None`` for the first.
-    :ptype after: tuple[Any, str] | None
     :param status: As :func:`list_runs` takes it.
-    :ptype status: str | None
     :param include_archived: As :func:`list_runs` takes it.
-    :ptype include_archived: bool
     :param label: As :func:`list_runs` takes it.
-    :ptype label: str | None
     :return: The page, its runs narrowed by the label filter; ``rows`` is what the store returned.
-    :rtype: RunsPage
     :raises ValidationFailedError: ``status`` is not one a run can carry, nor ``"all"``.
     :raises UnreadableRunError: A run read, but writing it lost was refused by a model.
     """
@@ -199,13 +183,9 @@ def list_results(storage: RunResultsStore, run_id: str, scope_id: str) -> list[E
     not, walks the run's pages itself.
 
     :param storage: Eval storage backend.
-    :ptype storage: RunResultsStore
     :param run_id: The eval run whose results to list.
-    :ptype run_id: str
     :param scope_id: Partition key — the scope the run lives in.
-    :ptype scope_id: str
     :return: Every :class:`~threetears.evals.schema.models.EvalResult` produced by the run.
-    :rtype: list[EvalResult]
     """
     return list(iter_stored_results(storage, run_id, scope_id))
 
@@ -214,13 +194,9 @@ def get_result(storage: ResultStore, result_id: str, scope_id: str) -> EvalResul
     """Load one eval result by id within its scope.
 
     :param storage: Eval storage backend.
-    :ptype storage: ResultStore
     :param result_id: The result's UUID.
-    :ptype result_id: str
     :param scope_id: Partition key — the scope the result lives in.
-    :ptype scope_id: str
     :return: The loaded :class:`~threetears.evals.schema.models.EvalResult`.
-    :rtype: EvalResult
     :raises NotFoundError: No result with that id in the scope.
     """
     result = storage.load_eval_result(result_id, scope_id)
@@ -246,11 +222,8 @@ def get_result_trace(storage: ResultStore, result: EvalResult) -> EvalTrace | No
     trace", silently, which is the one reading that is certainly wrong.
 
     :param storage: Eval storage backend.
-    :ptype storage: ResultStore
     :param result: The result whose payload to load.
-    :ptype result: EvalResult
     :return: The payload, or ``None`` when the result recorded none.
-    :rtype: EvalTrace | None
     """
     payload = storage.load_eval_trace(result.id, result.scope_id)
     if payload is None and result.has_trace:

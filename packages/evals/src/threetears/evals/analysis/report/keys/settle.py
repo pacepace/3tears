@@ -467,11 +467,8 @@ def passed_aspects(report_input: ReportInput, arms: Sequence[str]) -> list[str]:
     ``settle.passed.<aspect>.`` key settles them apart on, in the input's aspect order.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arms: The arms, by id.
-    :ptype arms: Sequence[str]
     :return: The aspects, by id; empty where none holds every arm's pass rate.
-    :rtype: list[str]
     """
     return [
         aspect for aspect in _passed_aspects(report_input) if set(arms) <= set(_passing_board(report_input, aspect))
@@ -484,13 +481,9 @@ def separation_wheres(report_input: ReportInput, arms: Sequence[str], key: str) 
     ``strata.<stratum>``, each where every arm states a mean.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arms: The arms, by id.
-    :ptype arms: Sequence[str]
     :param key: The measure or judged dimension, by key.
-    :ptype key: str
     :return: The places, in the input's order; empty where the arms share none.
-    :rtype: list[str]
     """
     return _wheres(report_input, arms, key)
 
@@ -500,13 +493,9 @@ def criterion_wheres(report_input: ReportInput, criterion_id: str, arm: str) -> 
     ``overall``, ``task.<task>`` or ``cells.<row>.<column>``, each place the criterion reads a figure for the arm.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion_id: The criterion, by id.
-    :ptype criterion_id: str
     :param arm: The arm, by id.
-    :ptype arm: str
     :return: The places, in the criterion's order; empty where it reads no figure for the arm.
-    :rtype: list[str]
     :raises StopIteration: The input declares no criterion of that id.
     """
     return _criterion_wheres(report_input, _criterion(report_input, criterion_id), arm)
@@ -936,15 +925,10 @@ def assumable(report_input: ReportInput, arms: Sequence[str], key: str, where: s
     states a mean on ``key`` there and no count.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arms: The arms, by id.
-    :ptype arms: Sequence[str]
     :param key: The measure or judged dimension, by key.
-    :ptype key: str
     :param where: The place, as ``<where>`` spells it.
-    :ptype where: str
     :return: Whether an ``assumed.`` key reads there.
-    :rtype: bool
     """
     if where == _OVERALL:
         return False

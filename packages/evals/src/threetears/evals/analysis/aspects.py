@@ -119,9 +119,7 @@ def aspect_views(campaign: EvalCampaign) -> list[AspectView]:
     """Every aspect of ``campaign``, each as a per-aspect reader reads it, in the campaign's order.
 
     :param campaign: The stored campaign.
-    :ptype campaign: EvalCampaign
     :return: One view per aspect; a campaign stored before aspects existed has one, labelled with its behavior.
-    :rtype: list[AspectView]
     """
     return [_view(campaign, aspect) for aspect in campaign.aspects]
 
@@ -130,11 +128,8 @@ def aspect_view(campaign: EvalCampaign, aspect: str | None = None) -> AspectView
     """One aspect of ``campaign``, by its label, or its only aspect when ``aspect`` is None.
 
     :param campaign: The stored campaign.
-    :ptype campaign: EvalCampaign
     :param aspect: The aspect's label; None reads the campaign's only aspect.
-    :ptype aspect: str | None
     :return: The aspect's view.
-    :rtype: AspectView
     :raises RefusedInput: ``aspect`` is None and the campaign has more than one aspect, or it names none of them.
     """
     views = aspect_views(campaign)

@@ -150,10 +150,8 @@ def dollars_text(amount: float | None) -> str:
     amount, not a locale setting. A negative amount carries its sign before the dollar sign (``-$1,234.50``).
 
     :param amount: Dollars, as stored; ``None`` when the amount went unpriced.
-    :ptype amount: float | None
     :return: The amount with its dollar sign: ``$0`` for zero, two decimals from ten cents up (``$0.50``,
         ``$1.20``), two significant figures below (``$0.012``, ``$0.00016``); :data:`UNPRICED` for ``None``.
-    :rtype: str
     """
     if amount is None:
         return UNPRICED
@@ -179,9 +177,7 @@ def budget_stop_line(stops: Sequence[BudgetStop]) -> str:
         stopped by its cost cap: $1.80 of $2.67 at the stop, $2.10 once 3 running cells finished (-$0.57); 0 cells not started; 2 cells not judged, as the cap had too little left for their judging
 
     :param stops: The run's ``budget_stops``, at least one.
-    :ptype stops: Sequence[BudgetStop]
     :return: One sentence, without indentation.
-    :rtype: str
     :raises ValueError: ``stops`` is empty.
     """
     if not stops:
@@ -328,7 +324,6 @@ class GoalCheckSummary(BaseModel):
         """The check as :meth:`EvalSummary.render` prints it: its pass count, and, unless proven, why it is not one.
 
         :return: One line, without indentation.
-        :rtype: str
         """
         if self.refused is not None:
             return (
@@ -537,25 +532,16 @@ class CaseResult(BaseModel):
         """One stored result, read as a case result.
 
         :param result: The stored result.
-        :ptype result: EvalResult
         :param case: The case's name.
-        :ptype case: str
         :param given: The case, as given.
-        :ptype given: JsonValue
         :param expected: A classifier's expected label, or ``None``.
-        :ptype expected: str | None
         :param answer: The candidate's answer, as its kind stored it.
-        :ptype answer: JsonValue
         :param stratum: The stratum the case declares, or ``None``.
-        :ptype stratum: str | None
         :param catalog: Each measure the result carries, described as the host declares it, which says which are checks;
             the state and the misses are read through it exactly as the page reads its trials.
-        :ptype catalog: Mapping[str, MetricDescriptor] | None
         :param rubric_threshold: The 1–5 level a judged dimension must reach, as the page's trials read it.
-        :ptype rubric_threshold: int
         :return: The case result, its state and its miss reasons by the page's own reading of a trial
             (:attr:`missed_because`).
-        :rtype: CaseResult
         """
         outcome = _CASE_OUTCOMES[classify_result(result)]
         if outcome == "scored" and result.judging_set_aside:
@@ -615,7 +601,6 @@ class CaseResult(BaseModel):
         """The result as a few lines of text: the case, the answer, the grades, and why it missed or failed.
 
         :return: The text, without a trailing newline.
-        :rtype: str
         """
         # The stratum by the name every surface prints for it, among its summary's strata where a summary handed it
         # out; :attr:`stratum` keeps its id.
@@ -950,7 +935,6 @@ class EvalSummary(BaseModel):
         """Every result: each case's answer on each repeat, its grades, and why it failed or was excluded.
 
         :return: One :class:`CaseResult` per result, in case order then repeat.
-        :rtype: list[CaseResult]
         :raises ValueError: The summary carries no results — it was summarised without its cases (the CLI's and
             ``run_get``'s summaries are); read the stored results with
             :func:`~threetears.evals.run.list_results` instead.
@@ -979,7 +963,6 @@ class EvalSummary(BaseModel):
         about the candidate — so read :meth:`results` for those; the summary's :attr:`n_excluded` counts them.
 
         :return: The missed results, in case order then repeat.
-        :rtype: list[CaseResult]
         :raises ValueError: The summary carries no results (:meth:`results`).
         """
         return [result for result in self.results() if result.missed]
@@ -988,9 +971,7 @@ class EvalSummary(BaseModel):
         """What one role spent over the run, or ``None`` when its results name no row of it.
 
         :param role: The role.
-        :ptype role: UsageRole
         :return: Its :class:`RoleSpend`, or ``None``.
-        :rtype: RoleSpend | None
         """
         return next((spend for spend in self.spend if spend.role == role), None)
 
@@ -1062,7 +1043,6 @@ class EvalSummary(BaseModel):
         reason reads it. A replay miss is one: the line names the call the recording does not hold.
 
         :return: The ending; its reason None for a finished run, and for one whose record gives none.
-        :rtype: RunEnding
         """
         reason = self.stopped_because
         if self.status in ("failed", "exhausted") and self.errors:
@@ -1096,9 +1076,7 @@ class EvalSummary(BaseModel):
 
         :param guardrail_said: What the comparison came to on each guardrail for this run's arm, by measure name; a
             guardrail it names nothing for is printed with its level alone.
-        :ptype guardrail_said: Mapping[str, str]
         :return: Each measure's state and line, in ``measures`` order.
-        :rtype: list[MeasureLine]
         """
         return [self._measure_line(measure, guardrail_said.get(measure.name)) for measure in self.measures]
 
@@ -1288,7 +1266,6 @@ class EvalSummary(BaseModel):
         spend — a first run of a free function is not handed the vocabulary of a rig it does not have.
 
         :return: The text, without a trailing newline.
-        :rtype: str
         """
         lines = [self.headline, f"  {self.results_text}"]  # one line: the results line is counts
         # an operator's reason for a cancel is their own words, and can run over lines
@@ -1454,16 +1431,11 @@ def summarize_run(
     and its interval) and the errors the summary lists — O(n) scalars, never O(n) results.
 
     :param host: The host whose store holds the run, and whose measures are summarised.
-    :ptype host: EvalHost
     :param run_id: The run.
-    :ptype run_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param case_names: What each case is called in the summary's errors, by stored test case id; a case it does
         not name, and every case when it is ``None``, is called by its id.
-    :ptype case_names: Mapping[str, str] | None
     :return: The summary.
-    :rtype: EvalSummary
     :raises NotFoundError: No run with that id in the scope.
     """
     run = host.storage.load_eval_run(run_id, scope_id)
@@ -1495,15 +1467,10 @@ def summarize_runs(
     One run reads exactly as :func:`summarize_run` reads it.
 
     :param host: The host whose store holds the runs, and whose measures are summarised.
-    :ptype host: EvalHost
     :param run_ids: The runs, at least one, in the order they were launched.
-    :ptype run_ids: Sequence[str]
     :param scope_id: The scope they live in.
-    :ptype scope_id: str
     :param case_names: What each case is called in the summary's errors, by stored test case id.
-    :ptype case_names: Mapping[str, str] | None
     :return: The summary.
-    :rtype: EvalSummary
     :raises NotFoundError: No run with one of those ids in the scope.
     :raises ValueError: No run is named, or the runs differ in their template, model, repeats, judge or overlays.
     """

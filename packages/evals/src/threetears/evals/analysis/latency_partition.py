@@ -117,10 +117,8 @@ def decompose_total_ms(latency: LatencyView | None) -> LatencyPartition:
 
     :param latency: The result's captured latency, or ``None`` for a cell that timed
         nothing whatever.
-    :ptype latency: LatencyView | None
     :return: A :class:`LatencyPartition` carrying either the four numbers or a sentence
         naming why they were withheld.
-    :rtype: LatencyPartition
     """
     if latency is None:
         return LatencyPartition(withheld="this cell timed nothing, so there is no total to partition.")

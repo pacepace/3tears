@@ -149,15 +149,10 @@ def phase_logged(lens: str, *, scope_id: str, campaign_id: str, residual: Phase 
     """Log one ``eval.read_tier`` line for the block, at INFO, when it ends, whether or not it raised.
 
     :param lens: The call, as the line names it (``assemble_context_bundle``, ``report_read``).
-    :ptype lens: str
     :param scope_id: The scope read.
-    :ptype scope_id: str
     :param campaign_id: The campaign read.
-    :ptype campaign_id: str
     :param residual: The phase charged the time no :func:`charged` block took.
-    :ptype residual: Phase
     :return: A context manager; the line is logged on its exit.
-    :rtype: Iterator[None]
     """
     line = _CallLine(lens, scope_id, campaign_id, residual)
     outer = _OPEN.get()
@@ -183,9 +178,7 @@ def charged(phase: Phase) -> Iterator[None]:
     Outside any :func:`phase_logged` call it measures nothing and costs a clock read.
 
     :param phase: The phase the block's time goes to.
-    :ptype phase: Phase
     :return: A context manager timing the block.
-    :rtype: Iterator[None]
     """
     outer = _OPEN.get()
     charge = _Charge(phase=phase, lines=outer.lines, started=time.perf_counter())
@@ -207,9 +200,7 @@ def took_in(*, runs: int, results: int) -> None:
     """Add ``runs`` and ``results`` to what every open call's line reports it read.
 
     :param runs: Runs read.
-    :ptype runs: int
     :param results: Results read.
-    :ptype results: int
     """
     for line in _OPEN.get().lines:
         line.take_in(runs, results)
@@ -223,9 +214,7 @@ def served_by(path: Literal["store", "engine"], *, store_calls: int) -> None:
 
     :param path: The path that served the read: the store's own narrowed and grouped reads (``store``), or the
         engine's reads by key and by id (``engine``).
-    :ptype path: Literal["store", "engine"]
     :param store_calls: The store calls made since the read last reported (zero to report the path alone).
-    :ptype store_calls: int
     """
     for line in _OPEN.get().lines:
         line.serve(path, store_calls)

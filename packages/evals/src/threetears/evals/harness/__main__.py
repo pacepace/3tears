@@ -351,9 +351,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     or, after ``export``, export a campaign as the files a mint reads.
 
     :param argv: The arguments after the program name; ``None`` reads ``sys.argv``.
-    :ptype argv: Sequence[str] | None
     :return: The exit code.
-    :rtype: int
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == [MINT]:

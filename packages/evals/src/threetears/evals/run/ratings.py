@@ -111,41 +111,29 @@ def rate_result(
     """Record one rater's score for one judged dimension of one result — a person's, or an agent's.
 
     :param storage: Where the result is read and the rating written.
-    :ptype storage: RatingStore
     :param result_id: The result rated.
-    :ptype result_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param rubric_dim: The judged dimension, spelled as the result's score spells it (a template
         dimension's ``<context>.<dim>``, or a reserved dual-score axis id).
-    :ptype rubric_dim: str
     :param rater: Who rated, as the host names them: a person's account, or an agent's identity.
-    :ptype rater: str
     :param rater_kind: ``person`` or ``agent``. Required, and the caller's to state from what it knows of who is
         calling — an agent writing through a tool is an ``agent`` whatever account it acts for — because only
         a person's rating is read as judge-versus-human agreement.
-    :ptype rater_kind: RaterKind
     :param score: The score, on the dimension's scale: 1-5, or 1 (pass) / 0 (fail).
-    :ptype score: int
     :param reason: The rater's own words for the score.
-    :ptype reason: str
     :param source: Where the person gave the rating, when someone else relays it for them (a blind read's id);
         ``None`` for a rating its rater, or the host for its person, records directly. Set with ``collected_by``.
-    :ptype source: str | None
     :param collected_by: Who relayed the person's rating: the caller the host attested for that person. The caller
         vouches here, not this function: a host's own code is the host, and an action caller reaches this only through
         :func:`~threetears.evals.ops.result_rate_person`, which asks the host first. Set with ``source``.
-    :ptype collected_by: str | None
     :param rated_at: When the rater gave the rating, ISO-8601 with an offset and no later than now; stored in UTC.
         ``None`` is now. A relay names the person's own time, because a dated write decides which of the rater's
         ratings stands (below).
-    :ptype rated_at: str | None
     :return: The rating as written, carrying the judge score's label key (the fingerprints of the output read
         and of the criterion) when the score has one, and what was rated (``rated``) or why it could not be
         rebuilt (``rated_withheld``). A rater holds one rating of one dimension of one result, of one kind. An
         undated write replaces the stored one. A dated write replaces a stored rating given at the same time or
         earlier, and is refused when the stored one was given later, which then stands unchanged.
-    :rtype: CalibrationRating
     :raises ConflictError: ``rated_at`` is named, and the rater's stored rating of the same dimension of the same
         result was given later; the refusal names its time and source, and nothing is written.
     :raises NotFoundError: No such result in the scope.
@@ -280,7 +268,6 @@ def _rated_at(stamp: str) -> str:
     reading of the reply it records.
 
     :param stamp: When the rater says they rated.
-    :ptype stamp: str
     :raises ValidationFailedError: It is not ISO-8601 with an offset, or it is after now.
     """
     try:
@@ -303,14 +290,10 @@ def _rated_content(storage: RatingStore, result: EvalResult, judged: RubricScore
     """What the rater read on ``judged``, rebuilt from what the result's run recorded, or why it cannot be.
 
     :param storage: Where the run, template, test case and trace are read.
-    :ptype storage: RatingStore
     :param result: The rated result.
-    :ptype result: EvalResult
     :param judged: Its judge score on the rated dimension.
-    :ptype judged: RubricScore
     :return: The content, its fingerprints the score's label key; or the reason it is withheld, in words a reader of the
         rating is shown.
-    :rtype: RatedOutput | str
     :raises StorageError: A read failed: that is not a reason to withhold, and is raised as every read raises it.
     """
     if judged.output_fingerprint is None or judged.criterion_fingerprint is None:

@@ -219,9 +219,7 @@ def blind_read_actions(workflow: str) -> tuple[Action, ...]:
     """The blind read's seven actions, in the order help lists them.
 
     :param workflow: The help index's group they are listed under.
-    :ptype workflow: str
     :return: The actions.
-    :rtype: tuple[Action, ...]
     """
     read_id = "blind-0193a1b2c3d4"
     return (

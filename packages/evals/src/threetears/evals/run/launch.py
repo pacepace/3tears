@@ -206,9 +206,7 @@ class LaunchSettings(BaseModel):
         """What the host calls ``setting``, for a refusal to name.
 
         :param setting: A field of this snapshot.
-        :ptype setting: str
         :return: The host's name for it, or the field's own name when the host gave none.
-        :rtype: str
         """
         return self.setting_names.get(setting, setting)
 
@@ -375,7 +373,6 @@ class ServedCheck:
         """What the caller is told when the check could not be made: the model, its role and why; ``None`` else.
 
         :return: The notice, or ``None`` when the list was read.
-        :rtype: str | None
         """
         if self.listed is not None:
             return None
@@ -560,9 +557,7 @@ class LaunchPricer(Protocol):
         """Predict ``quote``'s cost.
 
         :param quote: The arm.
-        :ptype quote: ArmQuote
         :return: The prediction, or a price with no prediction and the reason there is none.
-        :rtype: ArmPrice
         """
         ...  # pragma: no cover — protocol
 
@@ -729,7 +724,6 @@ class LaunchHost:
         launches no kind. A template naming a kind with no entry is refused before anything is read.
 
         :return: The registry, empty for a host with no template checks.
-        :rtype: Mapping[str, LaunchableKind]
         """
         checks = self.eval_host.template_checks
         # Every entry was refused unless a LaunchableKind when this host was built (``__post_init__``); the kernel
@@ -740,10 +734,8 @@ class LaunchHost:
         """Where ``run`` sits in this host's world: one placement per declared dimension.
 
         :param run: The assembled run.
-        :ptype run: EvalRun
         :return: The placements, or ``{}`` for a host with no world — the recording that the run placed
             nothing, which is a different fact from a run that recorded no placements at all.
-        :rtype: dict[str, WorldPlacement]
         """
         return {} if self.world_placements is None else self.world_placements(run)
 
@@ -759,9 +751,7 @@ def settable_apparatus(registry: SweepableRegistry) -> frozenset[str]:
     """The apparatus dimensions a launch may set: every one the host declares, but none of the engine's.
 
     :param registry: The host's sweepable registry (``HostProfile.sweepables``).
-    :ptype registry: SweepableRegistry
     :return: The names of the host's own ``apparatus`` declarations.
-    :rtype: frozenset[str]
     """
     return frozenset(
         declared.name
@@ -778,11 +768,8 @@ def _refuse_oversized_launch(n_runs: int, ceiling: int, setting: str) -> None:
     concurrently; a model sweep crossed with settings multiplies.
 
     :param n_runs: How many runs the launch would start.
-    :ptype n_runs: int
     :param ceiling: The host's :attr:`LaunchSettings.max_launch_arms`.
-    :ptype ceiling: int
     :param setting: The host's name for that setting.
-    :ptype setting: str
     :raises ValidationFailedError: ``n_runs`` exceeds ``ceiling``.
     """
     if n_runs > ceiling:
@@ -801,9 +788,7 @@ def _normalized_cassette_mode(cassette_mode: str | None) -> CassetteMode:
     what blank meant, so a second spelling of that rule here would recreate the divergence.
 
     :param cassette_mode: The mode the launch was given.
-    :ptype cassette_mode: str | None
     :return: ``'off'``, ``'capture'`` or ``'replay'``.
-    :rtype: CassetteMode
     :raises ValidationFailedError: ``cassette_mode`` is not blank and not a mode.
     """
     mode = normalize_blank(cassette_mode, "off")
@@ -824,9 +809,7 @@ def _refuse_a_corpus_the_mode_cannot_use(cassette_mode: CassetteMode, cassette_c
     before admission and before any read.
 
     :param cassette_mode: The launch's cassette mode, normalised.
-    :ptype cassette_mode: CassetteMode
     :param cassette_corpus_id: The capture run whose corpus the launch replays, or ``None``.
-    :ptype cassette_corpus_id: str | None
     :raises ValidationFailedError: A replay with no corpus, or a corpus with any other mode.
     """
     if cassette_mode == "replay" and cassette_corpus_id is None:
@@ -848,13 +831,9 @@ def _refuse_a_corpus_that_cannot_serve(
     """Refuse a replay corpus that is not a capture of this template in this scope.
 
     :param corpus_run: The run the corpus id names, read in the launch's scope, or ``None``.
-    :ptype corpus_run: EvalRun | None
     :param cassette_corpus_id: The id the launch named.
-    :ptype cassette_corpus_id: str
     :param template: The template the launch runs.
-    :ptype template: EvalTemplate
     :param scope_id: The launch's scope.
-    :ptype scope_id: str
     :raises ValidationFailedError: No run of that id in the scope (a missing run and one in another scope
         read alike, since a run is read only in its own scope), one that did not capture, or one
         that captured another template's cases.
@@ -945,13 +924,10 @@ class LaunchGroup:
         :param candidate_models: Every candidate model the launch names. Required, because the judge is
             chosen against it: a group built without it could hand the launch a judge that is one
             of its own candidates.
-        :ptype candidate_models: Sequence[str]
         :param arm_schedule: How the members share time; ``None`` interleaves them, or runs them one after another
             when they declare latency under test (:func:`~threetears.evals.run.arm_schedule.resolve_arm_schedule`).
-        :ptype arm_schedule: ArmSchedule | None
         :param group_id: The id of the launch whose runs this group takes up again, so its members' cells keep the
             order that launch's id gave them, and a member it launches anew joins that launch; ``None`` mints one.
-        :ptype group_id: str | None
         """
         self.id = group_id if group_id is not None else str(uuid.uuid7())
         self.candidate_models = list(candidate_models)
@@ -976,7 +952,6 @@ class LaunchGroup:
         """Keep what an arm's admission tells the caller, once, for whoever admitted the group to say.
 
         :param notice: The sentence the caller is told.
-        :ptype notice: str
         """
         if notice not in self.notices:
             self.notices.append(notice)
@@ -988,11 +963,8 @@ class LaunchGroup:
         launch abandons as it does for any refusal.
 
         :param key: What is being resolved, and every input it depends on.
-        :ptype key: tuple[str, ...]
         :param compute: Resolves it; awaited at most once per key.
-        :ptype compute: Callable[[], Awaitable[Any]]
         :return: The resolved value.
-        :rtype: Any
         """
         if key not in self._resolved:
             self._resolved[key] = await compute()
@@ -1040,7 +1012,6 @@ class LaunchGroup:
         is cut there, and runs its arms ``sequential`` instead, each under its own budget from its own start.
 
         :return: Each member's run, work function and job budget, in the order added.
-        :rtype: list[tuple[EvalRun, WorkFn, float]]
         """
         self._interleaving = self.arm_schedule == "interleaved" and len(self.members) > 1
         self._interleaver.seal()
@@ -1059,7 +1030,6 @@ class LaunchGroup:
         """Hear that one member's job ended, however it ended, so its siblings no longer wait their turn on it.
 
         :param run_id: The member's run.
-        :ptype run_id: str
         """
         self._interleaver.withdraw(run_id)
 
@@ -1068,7 +1038,6 @@ class LaunchGroup:
         (:func:`~threetears.evals.run.runner.cell_execution_order`), before any member starts.
 
         :param order: The case ids, in the order to play them.
-        :ptype order: Sequence[str]
         """
         self.case_order = tuple(order)
 
@@ -1077,7 +1046,6 @@ class LaunchGroup:
         left a cell unstarted ends cancelled (``RunnerOptions.stop_starting``). A cancel of a member's job still cuts.
 
         :return: How many cells the members were running when asked, which finish first.
-        :rtype: int
         """
         self._stop_starting.set()
         return self._interleaver.in_flight
@@ -1090,11 +1058,8 @@ class LaunchGroup:
         runs on every arm close together in time. Any other group leaves the options as they are.
 
         :param run_id: The member's run.
-        :ptype run_id: str
         :param options: Its options, as its launch built them.
-        :ptype options: RunnerOptions
         :return: The options it executes under.
-        :rtype: RunnerOptions
         """
         options = replace(options, case_order=self.case_order, stop_starting=self._stop_starting)
         if not self._interleaving:
@@ -1265,9 +1230,7 @@ class LaunchRequest:
         else the kind's own.
 
         :param template_cases: The cases the kind plays when the launch names no set.
-        :ptype template_cases: Sequence[EvalTestCase]
         :return: The cases, in the order the run freezes them.
-        :rtype: list[EvalTestCase]
         """
         if self.resuming is not None:
             return list(self.resuming.cases)
@@ -1277,9 +1240,7 @@ class LaunchRequest:
         """The launch's overlays as the kind's own overlay model, typed.
 
         :param model: The overlay model the kind's contract declares.
-        :ptype model: type[_Validated]
         :return: The validated overlays.
-        :rtype: _Validated
         :raises TypeError: The kind's contract declares another model, or none — a launcher reading a
             model its kind does not declare, which no caller input can cause.
         """
@@ -1289,9 +1250,7 @@ class LaunchRequest:
         """The template's kind spec as the kind's own spec model, typed.
 
         :param model: The spec model the kind's contract declares.
-        :ptype model: type[_Validated]
         :return: The validated spec.
-        :rtype: _Validated
         :raises TypeError: The kind's contract declares another model, or none.
         """
         return _typed(self.kind, "kind spec", self.kind_spec, model)
@@ -1301,15 +1260,10 @@ def _typed(kind: str, what: str, validated: BaseModel | None, model: type[_Valid
     """``validated`` as ``model``, or a refusal naming both.
 
     :param kind: The kind, for the refusal.
-    :ptype kind: str
     :param what: What ``validated`` is, for the refusal.
-    :ptype what: str
     :param validated: The value the dispatch validated.
-    :ptype validated: BaseModel | None
     :param model: The model the launcher reads it as.
-    :ptype model: type[_Validated]
     :return: ``validated``, typed.
-    :rtype: _Validated
     :raises TypeError: ``validated`` is not a ``model``.
     """
     if not isinstance(validated, model):
@@ -1575,9 +1529,7 @@ def _host_disclosure(host: LaunchHost) -> RunDisclosure | None:
     nothing; refused, naming the host's disclosure, where its callable fails or returns something else.
 
     :param host: The launching host.
-    :ptype host: LaunchHost
     :return: The disclosure, or None.
-    :rtype: RunDisclosure | None
     :raises ValidationFailedError: The host's disclosure raised, or returned no ``RunDisclosure``; nothing is built.
     """
     if host.run_disclosure is None:
@@ -1606,13 +1558,9 @@ def _no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[
     """The refusal for a template whose kind this host cannot launch — one wording, wherever it fires.
 
     :param template_id: The template.
-    :ptype template_id: str
     :param candidate_kind: The kind it declares.
-    :ptype candidate_kind: str
     :param launchable: The kinds the host launches, keyed by kind, in the order the refusal lists them.
-    :ptype launchable: Mapping[str, Any]
     :return: The error to raise.
-    :rtype: ValidationFailedError
     """
     return ValidationFailedError(
         f"template {template_id!r} declares candidate_kind={candidate_kind!r}, which this "
@@ -1637,22 +1585,15 @@ def _unhonoured_launch_arguments(
     """Collect the launch arguments a launch SUPPLIED that its kind cannot honour.
 
     :param unhonoured: The kind's :attr:`LaunchableKind.unhonoured_launch_arguments`.
-    :ptype unhonoured: frozenset[LaunchArgument]
     :param n_variations: New cases the launch asked to generate.
-    :ptype n_variations: int
     :param judge_model: The launch's judge pin.
-    :ptype judge_model: str | None
     :param judge_config_ids: The launch's per-dim judge-configuration selection.
-    :ptype judge_config_ids: dict[str, str] | None
     :param simulator_model: The launch's simulator pin.
-    :ptype simulator_model: str | None
     :param cassette_mode: The launch's cassette mode, already normalised by
         :func:`_normalized_cassette_mode`; ``'off'`` is the absence of one and so is not reported.
-    :ptype cassette_mode: str
     :return: ``{argument: the value the launch supplied}`` for each supplied argument the kind cannot
         honour, and ``{}`` when there is none. The values are carried so a refusal can echo what it
         is refusing rather than only naming the field.
-    :rtype: dict[LaunchArgument, Any]
     """
     supplied: dict[LaunchArgument, Any] = {
         "n_variations": n_variations or None,
@@ -1669,9 +1610,7 @@ def _llm_axes(template: EvalTemplate) -> list[str]:
     """The template's variation axes whose values a model writes, by name.
 
     :param template: The template.
-    :ptype template: EvalTemplate
     :return: The names of its ``llm``-generated axes, in declaration order; empty when none is.
-    :rtype: list[str]
     """
     return [axis.name for axis in template.variation_axes if axis.generator == "llm"]
 
@@ -1690,11 +1629,8 @@ def _refuse_a_variation_model_the_launch_cannot_use(
     and before a single generation call is paid for.
 
     :param template: The loaded template.
-    :ptype template: EvalTemplate
     :param n_variations: New cases the launch asked to generate, already checked non-negative.
-    :ptype n_variations: int
     :param variation_model: The model the launch named to write the ``llm`` axes' values, or ``None``.
-    :ptype variation_model: str | None
     :raises ValidationFailedError: The launch generates for a template with an ``llm`` axis and names
         no variation model, or names one while generating nothing or for a template with no
         ``llm`` axis.
@@ -1734,14 +1670,10 @@ def _validated_apparatus_settings(
     """Refuse an apparatus setting the template's kind does not honour, and a value the run could not store.
 
     :param template: The loaded template, whose kind is the one asked.
-    :ptype template: EvalTemplate
     :param launchable: That kind's registry entry, which names the settings its launcher reads.
-    :ptype launchable: LaunchableKind
     :param apparatus_settings: The launch's settings, unvalidated, or ``None`` for none.
-    :ptype apparatus_settings: Mapping[str, Any] | None
     :return: The settings as the run stores them: every one the kind honours, the launch's value where it set
         one and the kind's default where it did not — ``{}`` only for a kind whose rig a launch cannot set.
-    :rtype: dict[str, ApparatusSettingValue]
     :raises ValidationFailedError: A setting the kind does not honour, or a value that is not a string, a bool
         or a finite number.
     """
@@ -1798,28 +1730,17 @@ def _launchable(
     """Make every refusal that reads the template and its kind's registry entry, before the launch begins.
 
     :param host: The host, whose launch registry and profile declare the kind.
-    :ptype host: LaunchHost
     :param template: The loaded template.
-    :ptype template: EvalTemplate
     :param n_variations: New cases the launch asked to generate.
-    :ptype n_variations: int
     :param variation_model: The model the launch named to write the template's ``llm`` axes' values.
-    :ptype variation_model: str | None
     :param judge_model: The launch's judge pin.
-    :ptype judge_model: str | None
     :param judge_config_ids: The launch's per-dim judge-configuration selection.
-    :ptype judge_config_ids: dict[str, str] | None
     :param simulator_model: The launch's simulator pin.
-    :ptype simulator_model: str | None
     :param cassette_mode: The launch's cassette mode, already normalised.
-    :ptype cassette_mode: str
     :param overlays: The launch's overlays, unvalidated.
-    :ptype overlays: Mapping[str, Any] | None
     :param apparatus_settings: The launch's apparatus settings, unvalidated.
-    :ptype apparatus_settings: Mapping[str, Any] | None
     :return: The kind the template declares, read once; its registry entry; the overlays and the template's
         kind spec as the kind's models validated them; and the apparatus settings as the run stores them.
-    :rtype: _Launchable
     :raises ValidationFailedError: The template names a kind with no launcher, the launch supplies an
         argument the kind cannot honour, a negative ``n_variations``, a variation model the
         generation needs and the launch does not name or one nothing would call, an apparatus setting
@@ -1890,7 +1811,6 @@ def _refuse_repeated_models(models: Sequence[str]) -> None:
     """Refuse a model named twice: each model is one arm.
 
     :param models: The launch's candidate models.
-    :ptype models: Sequence[str]
     :raises ValidationFailedError: A model is named more than once.
     """
     if repeated := sorted({model for model in models if models.count(model) > 1}):
@@ -1922,39 +1842,23 @@ async def _dispatch(
     """Load a launch's template, find its kind's launcher, and make the refusals that read them.
 
     :param host: The host, whose launch registry names the kind's launcher.
-    :ptype host: LaunchHost
     :param template_id: The template to run.
-    :ptype template_id: str
     :param scope_id: The scope the template is read in.
-    :ptype scope_id: str
     :param subject_id: The subject the launch measures, asked of the template's kind.
-    :ptype subject_id: str
     :param models: The launch's candidate models.
-    :ptype models: list[str]
     :param n_variations: New cases the launch asked to generate.
-    :ptype n_variations: int
     :param variation_model: The model the launch named to write the template's ``llm`` axes' values.
-    :ptype variation_model: str | None
     :param judge_model: The launch's judge pin.
-    :ptype judge_model: str | None
     :param judge_config_ids: The launch's per-dim judge-configuration selection.
-    :ptype judge_config_ids: dict[str, str] | None
     :param simulator_model: The launch's simulator pin.
-    :ptype simulator_model: str | None
     :param cassette_mode: The launch's cassette mode, already normalised.
-    :ptype cassette_mode: CassetteMode
     :param cassette_corpus_id: The capture run a replay serves, already checked against the mode.
-    :ptype cassette_corpus_id: str | None
     :param overlays: The launch's overlays, unvalidated.
-    :ptype overlays: Mapping[str, Any] | None
     :param apparatus_settings: The launch's apparatus settings, unvalidated.
-    :ptype apparatus_settings: Mapping[str, Any] | None
     :param case_set: The case set the launch targets, or ``None``.
-    :ptype case_set: CaseSetRef | None
     :return: The template, its kind, that kind's registry entry, the overlays and the template's kind spec as
         the kind's models validated them, the apparatus settings validated against the kind, and the case set
         with its cases.
-    :rtype: _Dispatched
     :raises NotFoundError: The template is not found, or its kind's host holds no such subject.
     :raises ValidationFailedError: The template names a kind with no launcher, the launch supplies an
         argument the kind cannot honour, an overlay the kind's model refuses, a template kind spec
@@ -2080,79 +1984,57 @@ async def start_run(
     :class:`KindWiring`.
 
     :param host: The host: its storage, its launch registry of kinds, its settings and its job manager.
-    :ptype host: LaunchHost
     :param template_id: Template to run.
-    :ptype template_id: str
     :param subject_id: The subject the launch measures, as the host names it.
-    :ptype subject_id: str
     :param models: Candidate models, one arm and one run each. A kind with a role default of its own
         runs one arm on that default when this is empty, and a kind with none refuses it.
-    :ptype models: list[str]
     :param k_runs: Repeats per case for ``pass^k``.
-    :ptype k_runs: int
     :param n_variations: New test cases to generate (0 = reuse existing).
-    :ptype n_variations: int
     :param variation_model: The model that writes the template's ``llm`` variation axes' values —
         required when ``n_variations`` > 0 and the template has an ``llm`` axis, and refused
         otherwise. Asked of the host in the ``variation`` role and recorded on each run's
         ``variation_counts``. Its calls run before any run starts, once for every arm, and are
         outside every run's cost cap and metered-call ceiling.
-    :ptype variation_model: str | None
     :param judge_model: The judge pin, unresolved.
-    :ptype judge_model: str | None
     :param judge_config_ids: Optional per-dim judge-configuration selection, ``{dim_id: config_id}``.
-    :ptype judge_config_ids: dict[str, str] | None
     :param simulator_model: The simulator pin, unresolved.
-    :ptype simulator_model: str | None
     :param cassette_mode: ``'off'`` (the default, and what blank spells), ``'capture'`` or ``'replay'``.
-    :ptype cassette_mode: str | None
     :param cassette_corpus_id: For ``'replay'``, and only for it: the id of the capture run whose corpus
         the launch replays — a capture of this template in ``scope_id``.
-    :ptype cassette_corpus_id: str | None
     :param overlays: The knobs this launch turns on its runs, by field of the kind's overlay model
         (:attr:`~threetears.evals.kernel.host.profile.HostProfile.kinds`). Validated before any arm is
         prepared; every run records the validated model, defaults included.
-    :ptype overlays: Mapping[str, Any] | None
     :param apparatus_settings: Host-declared apparatus values this launch sets its runs' rig up with, by
         apparatus dimension — each one the kind declares it honours
         (:attr:`LaunchableKind.apparatus_settings`), valued a string, a bool or a finite number. So one
         template can be run at two values of, say, an adjudicator's seat and the runs compared. Every
         run records them (``EvalRun.apparatus_settings``), and they are part of its measurement context.
-    :ptype apparatus_settings: Mapping[str, Any] | None
     :param max_cost_usd: Optional per-run cost-cap override; must be ``> 0`` and at most the host's configured
         ``max_cost_usd`` — a launch may only lower the host's ceiling.
-    :ptype max_cost_usd: float | None
     :param max_metered_calls: Optional per-run metered-call ceiling override; must be ``> 0`` and at most the
         host's configured ``max_metered_calls``.
-    :ptype max_metered_calls: int | None
     :param scope_id: The scope the template is read in and the launch's runs live in.
-    :ptype scope_id: str
     :param launch_group: Prepare the runs into this launch instead of starting them; the caller starts
         the group once every arm is prepared. When omitted, this call is the whole launch: it
         forms the group and starts it through :func:`launch_as_group`.
-    :ptype launch_group: LaunchGroup | None
     :param admission: A reservation the caller already holds, of which this launch takes its runs'
         share instead of asking for room of its own. Ignored with ``launch_group``, whose
         caller's admission covers it. When omitted, a launch that owns its group is admitted here.
-    :ptype admission: AdmissionTicket | None
     :param cell_timeout_s: The deadline each cell of the launch's runs runs under, in seconds, in place of the
         kind's own; ``None`` keeps the kind's. Bounded by the host's ceiling
         (:attr:`LaunchSettings.max_cell_timeout_s`, or the kind's own deadline when the host declares none,
         so an undeclared host can only be lowered). The run's job budget is sized from it, and the run
         records it with its origin (``EvalRun.cell_timeout_s``, ``cell_timeout_s_origin``).
-    :ptype cell_timeout_s: float | None
     :param case_set: A named, versioned case set of the template to run in place of the kind's own choice of cases
         (:func:`~threetears.evals.run.case_sets.mint_case_set`). Every arm runs exactly its cases, in its
         order, and each run records it (``EvalRun.case_set``). Refused beside ``n_variations`` (a launch runs
         the set's cases or new ones, not both), and when the set is another template's or a case of it no
         longer resolves.
-    :ptype case_set: CaseSetRef | None
     :param margins: Margins on core rate measures (``{"accuracy": 0.05}``), the most two arms may differ on one and
         still be alike, declared before any result exists. A core measure's descriptor declares none, so
         this is how a comparison of these runs can read ``equivalent`` on it. Every run records them
         (``EvalRun.declared_margins``), outside its measurement context; the analysis reads one only when
         every run of the campaign declares it alike.
-    :ptype margins: Mapping[str, float] | None
     :param measure_latency: Declare latency under test. Each run then executes its cells one at a time, and the
         launch's runs execute one at a time with nothing else beside them, so the latency they record is
         read clean. ``False`` (the default) runs each run's cells up to the narrower of the host's
@@ -2161,7 +2043,6 @@ async def start_run(
         stamped read under concurrency and kept out of every comparison, bar and ranking. Every run
         records the declaration (``EvalRun.measure_latency``) and the width it ran at
         (``EvalRun.cell_concurrency``).
-    :ptype measure_latency: bool
     :param arm_schedule: How the launch's arms share time (:mod:`threetears.evals.run.arm_schedule`):
         ``interleaved`` runs every arm at once and takes their cells in turn, case by case, under one width shared
         by the launch, which absorbs a provider's bad minute across every arm; ``sequential`` runs one arm after
@@ -2169,7 +2050,6 @@ async def start_run(
         (the default) is ``interleaved``, or ``sequential`` when latency is under test, which takes no other. Every
         run records it (``EvalRun.arm_schedule``). Ignored with ``launch_group``, whose caller built the group with
         its own.
-    :ptype arm_schedule: ArmSchedule | None
 
 
     **Every arm is priced before any launcher runs, by one rule.** Before calling the launcher this asks
@@ -2185,7 +2065,6 @@ async def start_run(
     (:attr:`LaunchRequest.generation_budget`).
 
     :return: The persisted runs, one per model in the order given (status ``pending``).
-    :rtype: list[EvalRun]
     :raises NotFoundError: The template is not found.
     :raises AdmissionRefusedError: The runs would pass the host's admission ceiling — raised before the
         template is read, so the refused launch prepared nothing.
@@ -2275,7 +2154,6 @@ async def admit_launch(
     :meth:`AdmittedLaunch.start` raises.
 
     :return: The admitted launch.
-    :rtype: AdmittedLaunch
     """
     # The host's settings, read ONCE for the whole launch: every refusal and every arm's tail reads this snapshot.
     return await _admit_run(
@@ -2328,17 +2206,12 @@ async def admit_resumed_run(
     (:func:`launch_run`).
 
     :param host: The host.
-    :ptype host: LaunchHost
     :param resuming: The run taken up again, and what it already holds.
-    :ptype resuming: RunResumption
     :param attach: Records the run before its group starts: the take-up's own write of it. ``None`` with
         ``launch_group``, whose caller records its members.
-    :ptype attach: Callable[[list[EvalRun]], Awaitable[None]] | None
     :param launch_group: Prepare the run into this group, beside the other arms its caller takes up or launches with
         it, instead of starting it in a group of its own; the caller admits and starts the group.
-    :ptype launch_group: LaunchGroup | None
     :return: The admitted launch of the one run; prepared only, with ``launch_group``.
-    :rtype: AdmittedLaunch
     :raises ValidationFailedError: The run is ad hoc (no template), or any refusal a launch of it would make now.
     :raises NotFoundError: Its template is gone.
     :raises AdmissionRefusedError: The run would pass the host's admission ceiling.
@@ -2407,11 +2280,8 @@ def _refuse_raised_ceilings(
     reaches it, so none can admit a raised ceiling another refuses.
 
     :param settings: The launch's settings snapshot.
-    :ptype settings: LaunchSettings
     :param max_cost_usd: The per-run cost-cap override.
-    :ptype max_cost_usd: float | None
     :param max_metered_calls: The per-run metered-call ceiling override.
-    :ptype max_metered_calls: int | None
     :raises ValidationFailedError: Either override is above the host's configured ceiling.
     """
     try:
@@ -2440,11 +2310,8 @@ def _refuse_cell_timeout(settings: LaunchSettings, cell_timeout_s: float | None,
     deadline for a host that declares none, which a launch may then only lower.
 
     :param settings: The launch's settings snapshot, which names the host's ceiling in a refusal.
-    :ptype settings: LaunchSettings
     :param cell_timeout_s: The launch's per-cell deadline, or ``None`` for none.
-    :ptype cell_timeout_s: float | None
     :param ceiling: The most it may be, or ``None`` for no ceiling to check here.
-    :ptype ceiling: float | None
     :raises ValidationFailedError: The deadline is not a finite number above zero, or is above ``ceiling``.
     """
     if cell_timeout_s is None:
@@ -2485,23 +2352,14 @@ def _refuse_launch_arguments(
     quote.
 
     :param host: The host, named in a refusal.
-    :ptype host: LaunchHost
     :param settings: The launch's settings snapshot.
-    :ptype settings: LaunchSettings
     :param k_runs: Repeats per case.
-    :ptype k_runs: int
     :param max_cost_usd: The per-run cost-cap override.
-    :ptype max_cost_usd: float | None
     :param max_metered_calls: The per-run metered-call ceiling override.
-    :ptype max_metered_calls: int | None
     :param cassette_mode: The cassette mode, unnormalised.
-    :ptype cassette_mode: str | None
     :param cassette_corpus_id: The corpus a replay serves.
-    :ptype cassette_corpus_id: str | None
     :param cell_timeout_s: The launch's per-cell deadline, or ``None``.
-    :ptype cell_timeout_s: float | None
     :return: The cassette mode, normalised.
-    :rtype: CassetteMode
     :raises ValidationFailedError: A ``cell_timeout_s`` that is not a finite number above zero, or above the
         host's declared ceiling; a non-positive ``max_cost_usd`` or ``max_metered_calls`` (or any
         ``max_metered_calls`` on a host declaring no metered tools), either one above the host's configured
@@ -2586,7 +2444,6 @@ async def _admit_run(
     (:func:`admit_group`).
 
     :return: The admitted launch: every refusal made and every arm priced, no launcher run.
-    :rtype: AdmittedLaunch
     """
     # NOTE: the "at least one model" refusal is NOT here, because it is not the same
     # refusal for every kind — each kind's plan (or, for one that plans nothing, its launcher) makes its own.
@@ -2630,11 +2487,8 @@ async def _admit_run(
         """Every arm's request, planned and priced — no launcher has run, nothing is built and nothing spent.
 
         :param group: The launch the runs are prepared into.
-        :ptype group: LaunchGroup
         :param dispatched: What the dispatch resolved.
-        :ptype dispatched: _Dispatched
         :return: The priced requests, one per model in the order given.
-        :rtype: list[LaunchRequest]
         """
         requests = _arm_requests(
             host,
@@ -2698,7 +2552,6 @@ async def _admit_run(
         """Make the template's refusals, form the launch's group — one arm per model — and price every arm.
 
         :return: The group, and what the dispatch resolved with the priced requests.
-        :rtype: tuple[LaunchGroup, tuple[_Dispatched, list[LaunchRequest]]]
         """
         dispatched = await dispatch()
         group = LaunchGroup(candidate_models=models, arm_schedule=arm_schedule)
@@ -2738,21 +2591,13 @@ async def _with_admitted_generation(
     generates nothing, or whose template no model writes, admits nothing and carries no generation.
 
     :param host: The host: its writer client and the store the existing cases are read from.
-    :ptype host: LaunchHost
     :param template: The template whose ``llm`` axes the generation writes.
-    :ptype template: EvalTemplate
     :param requests: The launch's priced requests, every one carrying the launch's generation budget.
-    :ptype requests: list[LaunchRequest]
     :param n_variations: The cases the launch generates.
-    :ptype n_variations: int
     :param variation_model: The writer model the launch named.
-    :ptype variation_model: str | None
     :param scope_id: The scope the cases are generated into.
-    :ptype scope_id: str
     :param writers: Where the built writer is kept for the launch to release.
-    :ptype writers: list[BoundCompletionClient]
     :return: The requests, each carrying the admitted generation.
-    :rtype: list[LaunchRequest]
     :raises ValidationFailedError: Under an enforced cap, a call the writer cannot price, or calls priced above it — the
         writer released, nothing called.
     :raises ValueError: The host supplies no completion clients.
@@ -2792,19 +2637,12 @@ def _generation_budget(
     One construction for every reader, so nothing can pass a generation the launch would refuse.
 
     :param host: The host, whose store ledgers the calls.
-    :ptype host: LaunchHost
     :param settings: The launch's settings snapshot; the cap is enforced exactly when its enforcement is.
-    :ptype settings: LaunchSettings
     :param scope_id: The scope the generation is for.
-    :ptype scope_id: str
     :param template_id: The template whose cases it writes.
-    :ptype template_id: str
     :param subject_id: The launch's subject.
-    :ptype subject_id: str
     :param launch_group_id: The launch's group, stamped on every ledger row.
-    :ptype launch_group_id: str
     :return: The budget, nothing yet admitted.
-    :rtype: OutOfRunBudget
     """
     return OutOfRunBudget(
         host.eval_host.storage,
@@ -2847,47 +2685,26 @@ def _arm_requests(
     ledgered under the launch's group.
 
     :param host: The host, whose store ledgers the generation.
-    :ptype host: LaunchHost
     :param settings: The launch's settings snapshot, which caps the generation and travels on every request.
-    :ptype settings: LaunchSettings
     :param dispatched: What the dispatch resolved.
-    :ptype dispatched: _Dispatched
     :param group: The launch the arms are prepared into.
-    :ptype group: LaunchGroup
     :param subject_id: The launch's subject.
-    :ptype subject_id: str
     :param models: The launch's candidate models.
-    :ptype models: Sequence[str]
     :param k_runs: Repeats per case.
-    :ptype k_runs: int
     :param scope_id: The scope the runs live in.
-    :ptype scope_id: str
     :param n_variations: New cases the launch generates.
-    :ptype n_variations: int
     :param variation_model: The model that writes the ``llm`` axes' values.
-    :ptype variation_model: str | None
     :param judge_model: The judge pin.
-    :ptype judge_model: str | None
     :param judge_config_ids: The per-dim judge-configuration selection.
-    :ptype judge_config_ids: dict[str, str] | None
     :param simulator_model: The simulator pin.
-    :ptype simulator_model: str | None
     :param cassette_mode: The cassette mode, normalised.
-    :ptype cassette_mode: CassetteMode
     :param cassette_corpus_id: The corpus a replay serves.
-    :ptype cassette_corpus_id: str | None
     :param max_cost_usd: The per-run cost-cap override.
-    :ptype max_cost_usd: float | None
     :param max_metered_calls: The per-run metered-call ceiling override.
-    :ptype max_metered_calls: int | None
     :param cell_timeout_s: The launch's per-cell deadline, or ``None`` for the kind's own.
-    :ptype cell_timeout_s: float | None
     :param measure_latency: Whether the launch declared latency under test.
-    :ptype measure_latency: bool
     :param resuming: The stored run its one arm takes up again, or ``None`` for a launch.
-    :ptype resuming: RunResumption | None
     :return: The requests, in arm order, with no arm plan yet.
-    :rtype: list[LaunchRequest]
     """
     budget: OutOfRunBudget | None = None
     if n_variations > 0:
@@ -2945,15 +2762,11 @@ async def _planned(host: LaunchHost, launchable: LaunchableKind, request: Launch
     """Ask the kind what one arm will run, and refuse a plan the arm contradicts.
 
     :param host: The host, whose blocking executor the plan is asked through — a plan may read the store.
-    :ptype host: LaunchHost
     :param launchable: The kind's registry entry.
-    :ptype launchable: LaunchableKind
     :param request: The arm.
-    :ptype request: LaunchRequest
     :return: The plan, or ``None`` for a kind that plans nothing (:attr:`LaunchableKind.plan_arm`). It carries what
         the providers' model lists said of its models (:attr:`ArmPlan.served_checks`) and, for a kind that prices its
         calls (:attr:`LaunchableKind.price_largest_call`), its largest call's ceiling or the call it could not price.
-    :rtype: ArmPlan | None
     :raises ValidationFailedError: The kind cannot plan the arm (its own refusal).
     :raises ValueError: The plan contradicts what the arm named — another model, another judge pin, a config
         selection it did not plan, or another simulator — a kind defect; or a client priced a call at an
@@ -3011,13 +2824,9 @@ async def _served_checks(host: LaunchHost, launchable: LaunchableKind, plan: Arm
     never be sent to could refuse a launch the host would serve.
 
     :param host: The host, whose client factory reads the lists.
-    :ptype host: LaunchHost
     :param launchable: The kind's registry entry, which says how its candidate is called.
-    :ptype launchable: LaunchableKind
     :param plan: The arm's plan, naming its models.
-    :ptype plan: ArmPlan
     :return: One check per model and role a list was read for, in the order the arm names them.
-    :rtype: tuple[ServedCheck, ...]
     :raises ValueError: The factory's ``model_listing`` answered something other than a ``ModelListing`` or ``None``.
     """
     clients = host.eval_host.clients
@@ -3071,9 +2880,7 @@ def _unserved(request: LaunchRequest) -> tuple[str, str] | None:
     those failures as the arm's.
 
     :param request: The arm, planned.
-    :ptype request: LaunchRequest
     :return: The refusal and the remedy, or ``None``.
-    :rtype: tuple[str, str] | None
     """
     plan = request.arm_plan
     unlisted = [check for check in plan.served_checks if check.listed is False] if plan is not None else []
@@ -3098,9 +2905,7 @@ def _served_notices(requests: Sequence[LaunchRequest]) -> list[str]:
     """Every arm's served-model check that was skipped, as the caller is told it, each once.
 
     :param requests: The launch's arms, planned.
-    :ptype requests: Sequence[LaunchRequest]
     :return: The notices, in arm order.
-    :rtype: list[str]
     """
     notices = [
         notice
@@ -3116,9 +2921,7 @@ def _arm_described(request: LaunchRequest) -> str:
     """One arm, as a pricing refusal names it: its model, its cases by source, its repeats and its template.
 
     :param request: The arm, planned when its kind plans.
-    :ptype request: LaunchRequest
     :return: The description.
-    :rtype: str
     """
     plan = request.arm_plan
     if plan is None:
@@ -3139,11 +2942,8 @@ async def _arm_price(host: LaunchHost, request: LaunchRequest) -> ArmPrice:
     the point: one rule reads it.
 
     :param host: The host, whose pricer predicts.
-    :ptype host: LaunchHost
     :param request: The arm, planned when its kind plans.
-    :ptype request: LaunchRequest
     :return: The price, or a price with no prediction and the reason there is none.
-    :rtype: ArmPrice
     """
     pricer = host.launch_pricer
     if pricer is None:
@@ -3217,9 +3017,7 @@ def _cap_of(request: LaunchRequest) -> tuple[float | None, Literal["chosen", "in
     """The cap ``request``'s run will be held to, and where it came from — from the launch's one settings read.
 
     :param request: The arm.
-    :ptype request: LaunchRequest
     :return: The cap and its origin, or ``(None, None)`` when the host enforces no cap.
-    :rtype: tuple[float | None, Literal['chosen', 'inherited'] | None]
     """
     settings = request.settings
     cap = EvalRunCostCap.resolve_effective_ceiling(
@@ -3258,19 +3056,12 @@ def _largest_call_over_cap(
     """The refusal of an arm whose largest call's ceiling is above its cap, and its remedy.
 
     :param request: The arm.
-    :ptype request: LaunchRequest
     :param ceiling: Its largest call's ceiling.
-    :ptype ceiling: CallCeiling
     :param cap: The cap its run would be held to.
-    :ptype cap: float
     :param price: Its price, whose prediction (when there is one) sizes the room the rest of the run needs.
-    :ptype price: ArmPrice
     :param what: The arm, as a refusal names it.
-    :ptype what: str
     :param refused: When the refusal is made, in words.
-    :ptype refused: str
     :return: The refusal and the remedy.
-    :rtype: tuple[str, str]
     """
     needed = _cents_up(ceiling.usd)
     host_ceiling = request.settings.max_cost_usd
@@ -3335,11 +3126,8 @@ def _judged(request: LaunchRequest, price: ArmPrice) -> ArmVerdict:
     cap enforces it as the spend arrives.
 
     :param request: The arm, planned when its kind plans.
-    :ptype request: LaunchRequest
     :param price: Its price.
-    :ptype price: ArmPrice
     :return: The verdict.
-    :rtype: ArmVerdict
     """
     cap, origin = _cap_of(request)
     what = _arm_described(request)
@@ -3429,13 +3217,9 @@ async def _planned_arms(
     every pricing refusal: an operator who forgot something the kind needs hears that, not "cannot be priced".
 
     :param host: The host, whose executor each plan is asked through.
-    :ptype host: LaunchHost
     :param launchable: The kind's registry entry.
-    :ptype launchable: LaunchableKind
     :param requests: The launch's arms, in order.
-    :ptype requests: Sequence[LaunchRequest]
     :return: The requests with their plans.
-    :rtype: list[LaunchRequest]
     :raises ValidationFailedError: The kind cannot plan an arm.
     :raises ValueError: A plan contradicts what its arm named.
     """
@@ -3457,15 +3241,11 @@ async def price_arms(
     logged here; the launch says it to its caller (:attr:`AdmittedLaunch.notices`).
 
     :param host: The host: its pricer predicts.
-    :ptype host: LaunchHost
     :param launchable: The kind's registry entry, whose ``plan_arm`` plans each arm.
-    :ptype launchable: LaunchableKind
     :param requests: The launch's arms, in order; every one carries the same ``max_cost_usd`` and the same
         settings snapshot.
-    :ptype requests: Sequence[LaunchRequest]
     :return: The requests, each carrying its plan (``None`` for a kind that plans nothing) and, under an enforced
         cap, its price.
-    :rtype: list[LaunchRequest]
     :raises ValidationFailedError: The kind cannot plan an arm; an arm naming a model its provider no longer lists
         (whatever its cap); under a cap, an arm with a call that cannot be priced, one whose largest call's ceiling is
         above its cap, one predicted above its cap, or one unpriceable under an inherited cap.
@@ -3553,48 +3333,27 @@ async def quote_launch(
     ``uncapped``.
 
     :param host: The host.
-    :ptype host: LaunchHost
     :param template_id: As :func:`start_run` takes it.
-    :ptype template_id: str
     :param subject_id: As :func:`start_run` takes it.
-    :ptype subject_id: str
     :param models: As :func:`start_run` takes it.
-    :ptype models: list[str]
     :param k_runs: As :func:`start_run` takes it.
-    :ptype k_runs: int
     :param n_variations: As :func:`start_run` takes it.
-    :ptype n_variations: int
     :param variation_model: As :func:`start_run` takes it.
-    :ptype variation_model: str | None
     :param judge_model: As :func:`start_run` takes it.
-    :ptype judge_model: str | None
     :param judge_config_ids: As :func:`start_run` takes it.
-    :ptype judge_config_ids: dict[str, str] | None
     :param simulator_model: As :func:`start_run` takes it.
-    :ptype simulator_model: str | None
     :param cassette_mode: As :func:`start_run` takes it.
-    :ptype cassette_mode: str | None
     :param cassette_corpus_id: As :func:`start_run` takes it.
-    :ptype cassette_corpus_id: str | None
     :param overlays: As :func:`start_run` takes it.
-    :ptype overlays: Mapping[str, Any] | None
     :param apparatus_settings: As :func:`start_run` takes it.
-    :ptype apparatus_settings: Mapping[str, Any] | None
     :param max_cost_usd: As :func:`start_run` takes it.
-    :ptype max_cost_usd: float | None
     :param max_metered_calls: As :func:`start_run` takes it.
-    :ptype max_metered_calls: int | None
     :param scope_id: As :func:`start_run` takes it.
-    :ptype scope_id: str
     :param case_count: A case count to quote every planned arm at in place of its plan's, for a hypothetical
         grid; ``None`` quotes each at its plan, as the launch prices it.
-    :ptype case_count: int | None
     :param cell_timeout_s: As :func:`start_run` takes it; refused as the launch refuses it, and prices nothing.
-    :ptype cell_timeout_s: float | None
     :param case_set: As :func:`start_run` takes it; resolved and refused as the launch resolves and refuses it.
-    :ptype case_set: CaseSetRef | None
     :return: The quote.
-    :rtype: LaunchQuote
     :raises NotFoundError: The template is not found.
     :raises ValidationFailedError: Any refusal :func:`start_run` makes before it prices an arm, or a
         ``case_count`` below one.
@@ -3706,23 +3465,14 @@ class AdmittedLaunch:
         """Hold an admitted launch; built by :func:`admit_group` and :meth:`into`, never directly.
 
         :param host: The host; its job manager starts the group. ``None`` only for arms prepared into a caller's group.
-        :ptype host: LaunchHost | None
         :param group: The launch's group, formed.
-        :ptype group: LaunchGroup
         :param formed: What the caller's ``form`` returned beside the group, for ``prepare``.
-        :ptype formed: Any
         :param prepare: Prepares every arm into the group — the half that spends.
-        :ptype prepare: Callable[[LaunchGroup, Any], Awaitable[list[EvalRun]]]
         :param event: How the group's log lines begin.
-        :ptype event: str
         :param ticket: The admission reservation held for the launch; ``None`` when a caller holds it.
-        :ptype ticket: AdmissionTicket | None
         :param owns_group: Whether :meth:`start` starts the group, or only prepares into a caller's.
-        :ptype owns_group: bool
         :param attach: Records the prepared runs before they start.
-        :ptype attach: Callable[[list[EvalRun]], Awaitable[None]] | None
         :param detach: Undoes ``attach`` when the group is abandoned after it landed.
-        :ptype detach: Callable[[list[EvalRun]], Awaitable[None]] | None
         """
         self._host = host
         self._group = group
@@ -3742,13 +3492,9 @@ class AdmittedLaunch:
         """Arms admitted into a caller's group: :meth:`start` prepares them, and the caller starts the group.
 
         :param group: The caller's group, which the caller admitted and starts.
-        :ptype group: LaunchGroup
         :param formed: What the arms' admission resolved, for ``prepare``.
-        :ptype formed: Any
         :param prepare: Prepares the arms into the group.
-        :ptype prepare: Callable[[LaunchGroup, Any], Awaitable[list[EvalRun]]]
         :return: The admitted arms.
-        :rtype: AdmittedLaunch
         """
         return cls(None, group, formed, prepare, event="", ticket=None, owns_group=False)
 
@@ -3777,7 +3523,6 @@ class AdmittedLaunch:
         started runs are live tasks that count on their own, and a refused launch's share goes back.
 
         :return: The started runs (prepared only, into a caller's group), as ``prepare`` returned them.
-        :rtype: list[EvalRun]
         :raises RuntimeError: Already started or discarded.
         :raises ValidationFailedError: Any refusal ``prepare`` makes.
         """
@@ -3852,27 +3597,17 @@ async def admit_group(
     The rest — ``prepare``, ``attach`` and the start — is :meth:`AdmittedLaunch.start`.
 
     :param host: The host; its job manager admits the launch.
-    :ptype host: LaunchHost
     :param n_runs: How many runs the launch starts, one per arm.
-    :ptype n_runs: int
     :param settings: The launch's settings snapshot, read once by the caller when the launch began; its arm
         and admission ceilings are applied here, and the caller's arms are prepared under the same read.
-    :ptype settings: LaunchSettings
     :param form: Makes the caller's refusals under the reservation and returns the group, with
         whatever ``prepare`` needs of what it read.
-    :ptype form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]]
     :param prepare: Prepares every arm into the group and returns the prepared runs.
-    :ptype prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]]
     :param event: How the group's log lines begin, e.g. ``eval.start_run``.
-    :ptype event: str
     :param admission: A reservation the caller holds, of which this launch takes ``n_runs``.
-    :ptype admission: AdmissionTicket | None
     :param attach: Records the prepared runs before they start.
-    :ptype attach: Callable[[list[EvalRun]], Awaitable[None]] | None
     :param detach: Undoes ``attach`` when the group is abandoned after it landed.
-    :ptype detach: Callable[[list[EvalRun]], Awaitable[None]] | None
     :return: The admitted launch, holding its reservation until it is started or discarded.
-    :rtype: AdmittedLaunch
     :raises ValidationFailedError: ``n_runs`` is more than one launch may start together, or any refusal ``form`` makes.
     :raises AdmissionRefusedError: The runs would pass the host's admission ceiling.
     """
@@ -3940,26 +3675,16 @@ async def launch_as_group(
     reservation is released however the launch ends.
 
     :param host: The host; its job manager admits the launch.
-    :ptype host: LaunchHost
     :param n_runs: How many runs the launch starts, one per arm.
-    :ptype n_runs: int
     :param settings: The launch's settings snapshot (see :func:`admit_group`).
-    :ptype settings: LaunchSettings
     :param form: Makes the caller's refusals under the reservation and returns the group, with
         whatever ``prepare`` needs of what it read.
-    :ptype form: Callable[[], Awaitable[tuple[LaunchGroup, _Formed]]]
     :param prepare: Prepares every arm into the group and returns the prepared runs.
-    :ptype prepare: Callable[[LaunchGroup, _Formed], Awaitable[list[EvalRun]]]
     :param event: How the group's log lines begin, e.g. ``eval.start_run``.
-    :ptype event: str
     :param admission: A reservation the caller holds, of which this launch takes ``n_runs``.
-    :ptype admission: AdmissionTicket | None
     :param attach: Records the prepared runs before they start.
-    :ptype attach: Callable[[list[EvalRun]], Awaitable[None]] | None
     :param detach: Undoes ``attach`` when the group is abandoned after it landed.
-    :ptype detach: Callable[[list[EvalRun]], Awaitable[None]] | None
     :return: The started runs, as ``prepare`` returned them.
-    :rtype: list[EvalRun]
     :raises ValidationFailedError: ``n_runs`` is more than one launch may start together, or any
         refusal ``form`` or ``prepare`` makes.
     :raises AdmissionRefusedError: The runs would pass the host's admission ceiling.
@@ -3992,13 +3717,9 @@ def resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_mo
     — and the launch tail refuses a launcher that kept a candidate's model where an alternate stood ready.
 
     :param request: The arm.
-    :ptype request: LaunchRequest
     :param role_default: The judge role's default model, resolved as the host's clients resolve it.
-    :ptype role_default: str
     :param candidate_model: The model the arm runs on — the one it named, or the kind's default.
-    :ptype candidate_model: str
     :return: The judge pin, resolved.
-    :rtype: str
     """
     if request.judge_model is not None:
         return request.judge_model
@@ -4017,11 +3738,8 @@ def _judge_origin(request: LaunchRequest, judge_model: str) -> KnownRoleModelOri
     tail has already refused a launcher that kept such a default where the alternate stood ready).
 
     :param request: The arm.
-    :ptype request: LaunchRequest
     :param judge_model: The judge the launcher wired.
-    :ptype judge_model: str
     :return: The origin recorded on the run's ``model_role_provenance``.
-    :rtype: KnownRoleModelOrigin
     """
     if request.judge_model is not None:
         return "chosen"
@@ -4034,11 +3752,8 @@ def _candidates_of(request: LaunchRequest, candidate_model: str) -> frozenset[st
     """Every candidate model of ``request``'s launch: each arm's, and this arm's own.
 
     :param request: The arm.
-    :ptype request: LaunchRequest
     :param candidate_model: The model it runs on.
-    :ptype candidate_model: str
     :return: The candidates.
-    :rtype: frozenset[str]
     """
     return frozenset({*request.launch_group.candidate_models, candidate_model})
 
@@ -4051,11 +3766,8 @@ def require_candidate_model(request: LaunchRequest, default: str | None) -> str:
     named no model on a kind with no default hears exactly that, before anything is priced or built.
 
     :param request: The arm.
-    :ptype request: LaunchRequest
     :param default: The kind's role default, or ``None`` for a kind with none.
-    :ptype default: str | None
     :return: The model.
-    :rtype: str
     :raises ValidationFailedError: The arm named no model and the kind has no default.
     """
     model = request.candidate_model or default
@@ -4072,11 +3784,8 @@ def _refuse_wiring_the_request_contradicts(request: LaunchRequest, wiring: KindW
     another — so each disagreement is refused, before anything is built.
 
     :param request: The arm as the dispatch resolved it.
-    :ptype request: LaunchRequest
     :param wiring: What the kind's launcher resolved for it.
-    :ptype wiring: KindWiring
     :return: The arm's candidate model: the one the request named, or the kind's default.
-    :rtype: str
     :raises ValidationFailedError: The request named no model and the kind supplies no default.
     :raises ValueError: The wiring contradicts the request.
     """
@@ -4206,11 +3915,8 @@ def _cap_checked_on_estimates(request: LaunchRequest, cap_usd: float | None) -> 
     """``True`` when the run's cap is in force and its arm's largest call was bounded on an estimate; else ``None``.
 
     :param request: The arm, as planned (its :attr:`ArmPlan.call_ceiling`).
-    :ptype request: LaunchRequest
     :param cap_usd: The run's effective cap, as it records it.
-    :ptype cap_usd: float | None
     :return: ``True``, or ``None`` (not recorded).
-    :rtype: Literal[True] | None
     """
     plan = request.arm_plan
     if cap_usd is None or plan is None or plan.call_ceiling is None or not plan.call_ceiling.estimate:
@@ -4249,16 +3955,12 @@ async def launch_run(host: LaunchHost, request: LaunchRequest, wiring: KindWirin
     work function.
 
     :param host: The host: its settings, its world placement, its job manager and what every run reads.
-    :ptype host: LaunchHost
     :param request: The arm as :func:`start_run` handed it to the kind's launcher, unchanged. The run is
         stamped with the request's group's id, and its work function, budget and teardown are
         handed to that group, which then owns them and starts them with the run's siblings.
-    :ptype request: LaunchRequest
     :param wiring: What the kind's launcher resolved for the arm.
-    :ptype wiring: KindWiring
     :return: The run (status ``pending``; a run taken up again, ``running`` and reopened), held by the request's
         group.
-    :rtype: EvalRun
     :raises ValidationFailedError: The request named no candidate model and the kind has no default, or
         the assembled run does not validate, or a run taken up again would not measure as it did.
     :raises ValueError: The wiring contradicts the request — a subject other than the one named, a case
@@ -4708,13 +4410,10 @@ def build_judge_service(
 
     :param host: The host: where the judge configs are read, the judge clients it builds, and how a
         raised judge call reads.
-    :ptype host: EvalHost
     :param template: The run's template, whose rubric names the scored dims.
-    :ptype template: EvalTemplate
     :param judge_model: The run's run-level judge fallback, **already resolved** —
         the caller pins it so the model the run records is the model that
         scores.
-    :ptype judge_model: str
     :param selection: Optional ``{dim_id: config_id}`` naming the configuration
         this run is judged by, per dim. Validated here rather than at the
         caller because this is where the dim set and the config records
@@ -4726,15 +4425,12 @@ def build_judge_service(
         correct. An **archived** config is accepted deliberately, since
         naming a superseded record by id is how an A/B's control arm runs
         without un-archiving state every other run reads.
-    :ptype selection: dict[str, str] | None
     :param judged_artifact: What the kind's judge reads, which picks the dims it scores. Required:
         the kind's declaration is the only thing that knows, and a default would attribute a
         document run's judges for axes no judge is asked.
-    :ptype judged_artifact: JudgedArtifact
     :return: The run's judge: the service, the pin, the selection, the model each scored dim is requested
         from, and the configs — all from ONE config load, so the attribution a run records cannot
         disagree with what scores it.
-    :rtype: RunJudge
     :raises ValidationFailedError: ``selection`` names an unscored dim, a config
         that does not load in the template's scope, or a config authored for
         a different dim; or a rubric dim's declared judge is missing or one the
@@ -4785,17 +4481,11 @@ def plan_judge(
     arm is priced.
 
     :param host: The host, where the judge configs are read.
-    :ptype host: EvalHost
     :param template: The arm's template, whose rubric names the scored dims.
-    :ptype template: EvalTemplate
     :param judge_model: The run-level judge pin, **resolved** — the launch's, or the kind's role default.
-    :ptype judge_model: str
     :param selection: The launch's ``judge_config_ids``, or ``None``.
-    :ptype selection: Mapping[str, str] | None
     :param judged_artifact: What the kind's judge reads, which picks the dims it scores.
-    :ptype judged_artifact: JudgedArtifact
     :return: The planned judge.
-    :rtype: PlannedJudge
     :raises ValidationFailedError: ``selection`` names an unscored dim, a config that does not load in the
         template's scope, or one authored for another dim; or a rubric dim's declared judge is missing or one
         the scope contradicts (:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`).
@@ -4818,15 +4508,10 @@ def _judge_configs(
     """The dims a kind's judge scores on ``template``, and the config each is judged by — ONE load for both readers.
 
     :param storage: Where the judge configs are read.
-    :ptype storage: DefinitionStore
     :param template: The template, whose rubric names the scored dims.
-    :ptype template: EvalTemplate
     :param selection: ``{dim_id: config_id}`` as the launch named it, or ``None``.
-    :ptype selection: Mapping[str, str] | None
     :param judged_artifact: What the kind's judge reads.
-    :ptype judged_artifact: JudgedArtifact
     :return: The scored dim ids, and ``{dim_id: config}`` over the dims that have one.
-    :rtype: tuple[list[str], dict[str, JudgeConfig]]
     :raises ValidationFailedError: See :func:`_resolve_selected_judge_configs`; or a rubric dim declares no judge,
         declares ``"configured"`` with no config, or ``"builtin"`` beside an active or selected one
         (:func:`~threetears.evals.run.authoring.refuse_undeclared_judges`).
@@ -4864,17 +4549,12 @@ def _resolve_selected_judge_configs(
     dim scores that dim with someone else's prompt while the recorded set reads right.
 
     :param storage: Where the judge configs are read.
-    :ptype storage: DefinitionStore
     :param selection: ``{dim_id: config_id}`` as passed to the launch, or ``None``.
-    :ptype selection: dict[str, str] | None
     :param dim_ids: This template's scored dims, from
         :func:`~threetears.evals.schema.models.scored_dim_ids`.
-    :ptype dim_ids: list[str]
     :param scope_id: The template's scope, where its judge configs live.
-    :ptype scope_id: str
     :return: ``{dim_id: config}`` over exactly ``selection``'s keys — empty when nothing
         was named.
-    :rtype: dict[str, JudgeConfig]
     :raises ValidationFailedError: A key is not a scored dim of this template, an id
         does not load in the scope, or a loaded config's
         ``rubric_dim_id`` is not the dim it was named under.

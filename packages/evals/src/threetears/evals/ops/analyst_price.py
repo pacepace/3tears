@@ -35,29 +35,18 @@ async def price_tradeoff(
     """The trade between a snapshot's surviving options, priced on one gain axis.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param gain_key: The gain axis: a measure with a direction, or a judged dimension, by key.
-    :ptype gain_key: str
     :param arm: The option every other is priced against; None for the control.
-    :ptype arm: str | None
     :param slice_filter: The one task, stratum or cell to price within, by id; None prices overall.
-    :ptype slice_filter: str | None
     :param what_if: An option the gates remove or leave undecided, to price as a labelled what-if; None for none.
-    :ptype what_if: str | None
     :param limit: The most options one page covers.
-    :ptype limit: int
     :param offset: The first of them the page holds.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[PriceTradeoff], bool] | None
     :return: The frontier, the price per point at each step along it, every option priced against one, why each other
         option is off the frontier, and the what-if asked for.
-    :rtype: PriceTradeoff
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; the gain key names no measure or judged dimension with
         a direction; no arm has a cost; ``arm`` names no priced option; ``slice_filter`` names no one slice; or
