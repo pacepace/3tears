@@ -500,6 +500,21 @@ def bet_places(
     return places
 
 
+def redrawn_cells(results: Sequence[ResultView]) -> tuple[int, int]:
+    """How many of ``results`` recorded no answer, so their cells run again
+    (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those an interrupt cut (termination
+    ``cancelled``): what a quick-path comparison's family says of them
+    (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`), read only where the bet reads it.
+
+    :param results: The campaign's results.
+    :ptype results: Sequence[ResultView]
+    :return: The rows that run again, and the cut ones among them.
+    :rtype: tuple[int, int]
+    """
+    again = [result for result in results if runs_again(result)]
+    return len(again), sum(1 for result in again if result.termination == "cancelled")
+
+
 def taken_up(created_by: str, runs: Sequence[EvalRun], results: Sequence[ResultView]) -> frozenset[str]:
     """The member runs of a quick-path comparison that did not finish and that a later launch of the comparison took up:
     every run that did not reach ``completed`` in any launch before the newest, where the bet reads the comparison

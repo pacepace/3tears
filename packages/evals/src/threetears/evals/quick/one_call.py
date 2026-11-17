@@ -2745,7 +2745,7 @@ async def launch_arms(
                     len(to_run),
                     unreached=len(earlier.unrun) if earlier is not None else 0,
                     incomplete=earlier.incomplete if earlier is not None else 0,
-                    cut=earlier.cut if earlier is not None else 0,
+                    redrawn=earlier.redrawn if earlier is not None else (0, 0),
                 )
                 if continuing
                 else said
@@ -2766,19 +2766,31 @@ async def launch_arms(
     async def drain(group: LaunchGroup | None, run_ids: list[str]) -> None:
         """Let the runs' running cells finish and record, starting none, then settle every run; a cancel landing
         meanwhile (a second interrupt) cuts the cells still running at once, each recorded cut (termination
-        ``cancelled``), which a continuation runs again."""
+        ``cancelled``), which a continuation runs again.
+
+        In a terminal a second Ctrl+C is not a second cancel: ``asyncio.run`` raises ``KeyboardInterrupt`` wherever the
+        main thread is, and where that is this task's own step it arrives here. It is the cutting interrupt all the
+        same: the cells are cut and settled, and the caller files them and re-raises the cancel that landed first, which
+        ``asyncio.run`` reports as the interrupt it was.
+        """
         manager = launch_host.job_manager
-        if group is not None:
-            running = group.stop_starting()
-            said = f"{running} cell{'s' if running != 1 else ''}" if running else "the cells"
-            sys.stderr.write(f"Interrupted: finishing {said} in flight; interrupt again to stop now.\n")
 
         def cut_now() -> None:
             for run_id in run_ids:
                 manager.cancel_job(run_id, reason="interrupted twice: the cells running were cut")
 
-        # A further cancel cuts, and the wait goes on until every run has settled.
-        await wait_through_cancellation(asyncio.ensure_future(manager.wait_for(run_ids)), on_cancel=cut_now)
+        try:
+            if group is not None:
+                running = group.stop_starting()
+                said = f"{running} cell{'s' if running != 1 else ''}" if running else "the cells"
+                sys.stderr.write(f"Interrupted: finishing {said} in flight; interrupt again to stop now.\n")
+            # A further cancel cuts, and the wait goes on until every run has settled.
+            await wait_through_cancellation(asyncio.ensure_future(manager.wait_for(run_ids)), on_cancel=cut_now)
+        except KeyboardInterrupt:
+            # NOSILENT: the second Ctrl+C, delivered into this task; it cuts as a second cancel does, and the cancel
+            # that landed first is re-raised once the cut runs are settled and filed.
+            cut_now()
+            await wait_through_cancellation(asyncio.ensure_future(manager.wait_for(run_ids)))
         # Nothing is left running or pending behind the call.
         await wait_through_cancellation(asyncio.ensure_future(manager.shutdown()))
 

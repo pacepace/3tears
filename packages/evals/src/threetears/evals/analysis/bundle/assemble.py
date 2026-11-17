@@ -175,7 +175,7 @@ from threetears.evals.analysis.bundle.comparisons import (
     reading_scope,
 )
 from threetears.evals.analysis.bundle.judges import judge_change
-from threetears.evals.analysis.bundle.trials import bet_places, taken_up, trials_and_census
+from threetears.evals.analysis.bundle.trials import bet_places, redrawn_cells, taken_up, trials_and_census
 from threetears.evals.analysis.bundle.time_axis import time_axis
 from threetears.evals.analysis.bundle.surface import measure_catalog
 from threetears.evals.kernel.host.measures import MeasureRegistry
@@ -974,6 +974,7 @@ def assemble_context_bundle(
         # so every reader of a stored comparison reads it alike, and no campaign a host files over the same runs, nor
         # any declaration, opts an engine campaign in.
         reread_order=bet_places(campaign.created_by, runs, results, planned_looks=planned_looks),
+        redrawn=redrawn_cells(results),
     )
     # The judge checked against itself, in the judge's own table only: each judged arm's re-score noise and each
     # paired judged contrast's share of it, filled last so no other section copies them.

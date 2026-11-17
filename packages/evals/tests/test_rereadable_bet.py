@@ -40,6 +40,7 @@ import asyncio
 import json
 import math
 import random
+import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -57,7 +58,7 @@ from threetears.evals.analysis import (
     get_campaign,
     list_campaigns,
 )
-from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet
+from threetears.evals.analysis.bundle.comparisons import REREAD_SENTENCE, read_by_bet, redrawn_sentence
 from threetears.evals.analysis.bundle.trials import committed_order
 from threetears.evals.analysis.stats import (
     SIGNIFICANCE_ALPHA,
@@ -987,7 +988,11 @@ async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them
     assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
     assert _how_it_ran(finished) == [
         continued_sentence(
-            len(complete), 12 - len(complete), unreached=len(unreached), incomplete=len(partial), cut=len(cut)
+            len(complete),
+            12 - len(complete),
+            unreached=len(unreached),
+            incomplete=len(partial),
+            redrawn=(len(cut), len(cut)),
         )
     ]
     runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
@@ -1000,6 +1005,16 @@ async def test_a_comparison_interrupted_twice_cuts_its_cells_in_flight_runs_them
     assert all(calls[cell] == 1 + again[cell] for cell in calls)
     (family,) = finished.report.bundle.multiple_comparisons.families
     assert read_by_bet(family) and _same_p(_correct_p(finished), _reading_p(runs, results))
+    # The report says it too: the family's disclosure, which the page and the bundle carry, in the one phrasing.
+    assert redrawn_sentence(len(cut), len(cut)) in family.disclosure
+    page = json.dumps(finished.page.model_dump(mode="json"))
+    assert json.dumps(redrawn_sentence(len(cut), len(cut)))[1:-1] in page
+
+    # Continued again with cases appended, nothing is cut or drawn again now: the count is the running total, and it
+    # says so, unchanged.
+    again_run = await Eval(_cases(16), arms, [_correct], k=1, name="twice").run(store=store, scope="s")
+    assert _how_it_ran(again_run) == [continued_sentence(12, 4, redrawn=(len(cut), len(cut)))]
+    assert "a running total over its runs" in _how_it_ran(again_run)[0]
 
 
 @pytest.mark.parametrize(
@@ -1041,12 +1056,164 @@ async def test_a_call_the_account_refused_or_a_model_not_served_runs_again_when_
     assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
     assert calls[3, "a"] == 2
     assert _how_it_ran(finished) == [
-        continued_sentence(len(complete), 10 - len(complete), unreached=len(unreached), incomplete=len(partial), cut=1)
+        continued_sentence(
+            len(complete), 10 - len(complete), unreached=len(unreached), incomplete=len(partial), redrawn=(1, 0)
+        )
     ]
     runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
     assert _cases_by_state(runs, results)[0] == {case for run in runs for case in run.test_case_ids}
     (family,) = finished.report.bundle.multiple_comparisons.families
     assert read_by_bet(family) and _same_p(_correct_p(finished), _reading_p(runs, results))
+
+
+async def test_a_second_ctrl_c_arriving_as_keyboard_interrupt_cuts_files_and_raises_the_first_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """In a terminal a second Ctrl+C reaches the comparison's own task as ``KeyboardInterrupt``, not as a second cancel
+    (here, raised as the drain says it is finishing the cells in flight). It is the cutting interrupt: the cells in
+    flight are cut, the runs settle cancelled, the campaign is filed, and the cancel that landed first is raised. Run
+    again, only the cells no run recorded run, the cut ones among them, and nothing recorded is drawn twice."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    running: list[asyncio.Task[Result]] = []
+    coins = {"a": _coin("keyboard", "a", 0.5, calls), "b": _coin("keyboard", "b", 0.5, calls)}
+
+    class _SecondCtrlC:
+        """stderr, whose drain notice is where the second Ctrl+C lands."""
+
+        def write(self, text: str) -> int:
+            if text.startswith("Interrupted:"):
+                raise KeyboardInterrupt
+            return len(text)
+
+        def flush(self) -> None:
+            """Nothing is held."""
+
+    def interrupting(arm: str) -> Callable[[Mapping[str, Any]], Any]:
+        async def run(case: Mapping[str, Any]) -> str:
+            answer = await coins[arm](case)
+            await asyncio.sleep(0.05 + random.Random(f"keyboard-{case['n']}-{arm}").random() * 0.3)
+            if sum(calls.values()) >= 9 and running:
+                monkeypatch.setattr(sys, "stderr", _SecondCtrlC())
+                asyncio.get_running_loop().call_soon(running.pop().cancel, "interrupted")
+            return answer
+
+        run.__name__ = arm
+        return run
+
+    arms = {arm: interrupting(arm) for arm in "ab"}
+    running.append(
+        asyncio.create_task(Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s"))
+    )
+    task = running[0]
+    with pytest.raises(asyncio.CancelledError) as cancelled:
+        await task
+    monkeypatch.undo()
+    assert cancelled.value.args == ("interrupted",)
+    host = as_host([Eval(_cases(12), arms, [_correct], k=1, name="keys")], store=store)
+    (campaign,) = off_loop(list_campaigns, host.storage, "s", subject_id="keys")
+    cut_runs, cut_results = off_loop(_stored, host.storage, campaign.id)
+    assert {run.status for run in cut_runs} == {"cancelled"}
+    cut = [result for result in cut_results if runs_again(result)]
+    assert cut and {result.termination for result in cut} == {"cancelled"}
+
+    finished = await Eval(_cases(12), arms, [_correct], k=1, name="keys").run(store=store, scope="s")
+    assert finished.exit_code() in (0, 4) and not finished.report.bundle.incomplete_runs
+    runs, results = off_loop(_stored, finished.host.storage, finished.campaign_id)
+    kept = [result for result in results if not runs_again(result)]
+    assert len({(r.variant_key, r.test_case_id, r.k_iteration) for r in kept}) == len(kept) == 24
+    case_n = {f"{runs[0].template_id}-{n}": n for n in range(12)}
+    arm_of = {run.id: str(launched_as_run(run)[0]) for run in runs}
+    again = Counter((case_n[r.test_case_id], arm_of[r.eval_run_id]) for r in cut)
+    assert all(calls[cell] == 1 + again[cell] for cell in calls)
+
+
+# --- the committed order, and the cells played in it -----------------------------------------------------------------
+
+
+def test_the_committed_order_only_appends_and_depends_on_the_cases_alone() -> None:
+    """The order the bet reads is fixed before any answer, and only grows:
+
+    - a later launch never moves an earlier case: the order after one launch is a prefix of the order after two, and
+      of the order after three, however many cases the later launches add;
+    - a case a launch left unfinished, launched again, keeps its place;
+    - each case appears once, and every case launched is in it;
+    - it is a shuffle, not the cases file's order, and the same for the same cases whatever order a launch lists them
+      in: it reads nothing but the case set and the cases, so no answer, latency or time can move it;
+    - another case set orders the same cases otherwise."""
+    first = [f"set-{n}" for n in range(20)]
+    appended = [f"set-{n}" for n in range(20, 30)]
+    more = [f"set-{n}" for n in range(30, 80)]
+    one = committed_order("set", [first])
+    # A launch that left cases 3 and 7 unfinished; the next holds them again with the cases appended.
+    two = committed_order("set", [first, ["set-3", "set-7", *appended]])
+    three = committed_order("set", [first, ["set-3", "set-7", *appended], more])
+    assert two[: len(one)] == one and three[: len(two)] == two
+    assert one.index("set-3") == two.index("set-3") == three.index("set-3")
+    assert one.index("set-7") == two.index("set-7") == three.index("set-7")
+    assert sorted(three) == sorted({*first, *appended, *more}) and len(three) == len(set(three))
+    # The earlier cases' order does not depend on how many cases a later launch adds.
+    assert committed_order("set", [first, appended[:1]])[:20] == committed_order("set", [first, appended])[:20] == one
+    assert one != first and committed_order("set", [list(reversed(first))]) == one
+    assert committed_order("other", [first]) != one
+
+
+async def test_a_comparison_plays_its_cells_case_by_case_in_the_committed_order_the_arms_in_turn() -> None:
+    """Each launch starts its cells case by case in the committed order, every arm and repeat of a case before the
+    next case, the arms in turn within a case (k = 2, four at a time). A continuation after a stop plays the cases
+    the stop left unfinished where they stand in that order, then the cases appended in theirs."""
+    store = InMemoryDocumentStore()
+    calls: Counter[tuple[int, str]] = Counter()
+    started: list[tuple[int, str]] = []
+
+    def recording(arm: str) -> Callable[[Mapping[str, Any]], Any]:
+        draw = _priced("played", arm, 0.5, calls)
+
+        async def run(case: Mapping[str, Any]) -> Answer:
+            started.append((case["n"], arm))
+            answer: Answer = await draw(case)
+            return answer
+
+        run.__name__ = arm
+        return run
+
+    arms = {arm: recording(arm) for arm in "ab"}
+
+    def compare(n: int, cap: float) -> Eval:
+        return Eval(_cases(n), arms, [_correct], k=2, name="played", max_cost_usd=cap)
+
+    stopped = await compare(12, 1.2).run(store=store, scope="s")
+    runs, _ = off_loop(_stored, stopped.host.storage, stopped.campaign_id)
+    template = runs[0].template_id
+    case_n = {f"{template}-{n}": n for n in range(20)}
+    order = [case_n[case] for case in committed_order(template, [[f"{template}-{n}" for n in range(12)]])]
+
+    def played(starts: list[tuple[int, str]], cases: list[int]) -> None:
+        """Every case's cells start before the next case's, in ``cases``' order, the arms in turn within each."""
+        assert [n for n, _ in starts] == [n for n in cases for _ in range(4)][: len(starts)]
+        for at in range(0, len(starts) - 1, 2):
+            assert {starts[at][1], starts[at + 1][1]} == {"a", "b"}, starts
+
+    first_launch = list(started)
+    assert 0 < len(first_launch) < 48
+    played(first_launch, order)
+    unfinished = [n for n in order if sum(1 for m, _ in first_launch if m == n) < 4]
+
+    started.clear()
+    await compare(20, 100.0).run(store=store, scope="s")
+    appended = [
+        case_n[case]
+        for case in committed_order(
+            template,
+            [[f"{template}-{n}" for n in range(12)], [f"{template}-{n}" for n in (*unfinished, *range(12, 20))]],
+        )
+    ][12:]
+    # The continuation plays the unfinished cases where they stand, then the appended ones, each arm only its missing
+    # cells: each arm's starts follow that order (an arm missing fewer cells runs ahead of the other).
+    for arm in "ab":
+        missing = {n: 2 - sum(1 for m, side in first_launch if (m, side) == (n, arm)) for n in unfinished}
+        expected = [n for n in unfinished for _ in range(missing[n])] + [n for n in appended for _ in range(2)]
+        assert [n for n, side in started if side == arm] == expected, arm
 
 
 # --- the null, through the product -----------------------------------------------------------------------------------

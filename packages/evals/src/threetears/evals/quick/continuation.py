@@ -34,13 +34,16 @@ Each launch plays its cells case by case in that order, every arm and repeat of 
 longest prefix of the order whose every case is recorded on every arm and repeat
 (:func:`~threetears.evals.analysis.bundle.trials.bet_places`). So every reading is a prefix of one sequence fixed in
 advance, and Ville's inequality covers the bet's running maximum at every prefix: a reading taken at any time, chosen
-by someone who watched any cells, keeps its error, however fast or slow each arm answers, and whether or not its speed
-follows its answers.
+by someone who watched any cells, keeps its error, however fast or slow each arm answers short of a cell's deadline,
+and whether or not its speed follows its answers. (A cell that reaches its deadline is recorded excluded, and where the
+slow arm is slow when wrong, that exclusion follows the answer.)
 
 **An interrupt drains.** The first interrupt of a comparison starts no further cell and lets the cells running finish
 and record, then files the comparison; a second cuts at once, and the cells it cut run again in a continuation, which
-its sentence counts (:func:`continued_sentence`): a cut cell drawn again can lean the bet where a slow answer is a
-wrong one, so the number is said.
+its sentence counts, as a running total (:func:`continued_sentence`), and so does its family's disclosure on the page
+and in the bundle: a cut cell drawn again can lean the bet where a slow answer is a wrong one, so the number is said.
+In a terminal the second interrupt can arrive as ``KeyboardInterrupt`` in the comparison's own task rather than as a
+second cancel; it cuts just the same, and the comparison is filed before the first cancel goes on.
 
 Anything else starts a NEW comparison, which runs every case and says so in one sentence naming what changed
 (:func:`new_comparison_sentence`). A comparison continued says so too (:func:`continued_sentence`), and says how to start
@@ -57,6 +60,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from threetears.evals.analysis.bundle.comparisons import redrawn_sentence
 from threetears.evals.analysis.bundle.observations import variant_key_of_run
 from threetears.evals.analysis.campaigns import list_campaigns
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER, QUICK_PATH_KINDS
@@ -111,9 +115,10 @@ class EarlierComparison:
     :ivar incomplete: How many of :attr:`unfinished` some arm ran: a continuation runs only their missing cells.
     :ivar launches: Each launch's cases, in launch order, as its runs hold them: what the committed order is derived
         from (:func:`~threetears.evals.analysis.bundle.trials.committed_order`).
-    :ivar cut: How many stored rows record no answer and run again
-        (:func:`~threetears.evals.kernel.result_condition.runs_again`): cells an interrupt cut, calls refused or
-        unserved.
+    :ivar redrawn: How many of its stored rows, over every run of it, record no answer and run again
+        (:func:`~threetears.evals.kernel.result_condition.runs_again`), and how many of those an interrupt cut: a
+        running total, as its print and its family's disclosure say it
+        (:func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`).
     """
 
     campaign_id: str
@@ -130,7 +135,7 @@ class EarlierComparison:
     unfinished: tuple[str, ...] = ()
     incomplete: int = 0
     launches: tuple[tuple[str, ...], ...] = ()
-    cut: int = 0
+    redrawn: tuple[int, int] = (0, 0)
 
 
 def launched_as(arm: str | None, model: str, levers: Mapping[str, Any] | None) -> tuple[str | None, str, str]:
@@ -227,7 +232,7 @@ def earlier_comparison(
     # The repeats each arm recorded of each case, over all its runs: a cell that holds a result was recorded, whether
     # its launch finished or not, and is never run again.
     repeats: dict[tuple[str | None, str, str], dict[str, set[int]]] = {}
-    cut = 0
+    again = cut = 0
     for key, held in grouped.items():
         results = {run.id: list_results(host.storage, run.id, scope_id) for run in held}
         ran_on_arm = repeats.setdefault(key, {})
@@ -235,7 +240,8 @@ def earlier_comparison(
             for result in each:
                 # A row that records no answer runs again: its cell is not recorded.
                 if runs_again(result):
-                    cut += 1
+                    again += 1
+                    cut += result.termination == "cancelled"
                     continue
                 ran_on_arm.setdefault(result.test_case_id, set()).add(result.k_iteration)
         # A run its launch stopped before it ran anything holds no result to read a variant from.
@@ -294,7 +300,7 @@ def earlier_comparison(
         unfinished=unfinished,
         incomplete=sum(1 for case in unfinished if case in ran),
         launches=tuple(tuple(grouped[control][index].test_case_ids) for index in range(n_launches)),
-        cut=cut,
+        redrawn=(again, cut),
     )
 
 
@@ -310,12 +316,15 @@ UNKEPT_SENTENCE = (
 )
 
 
-def continued_sentence(already: int, added: int, unreached: int = 0, incomplete: int = 0, cut: int = 0) -> str:
+def continued_sentence(
+    already: int, added: int, unreached: int = 0, incomplete: int = 0, redrawn: tuple[int, int] = (0, 0)
+) -> str:
     """What a continued comparison's print says of how it ran: the cases read again as they ran, the cases that ran
     now (``unreached`` of them held by a launch that stopped before it reached them, and ``incomplete`` reached by one
-    on some arms or repeats only, whose missing cells alone ran), how many cells recorded no answer and ran again
-    (``cut``: an interrupt cut them, or the account or the provider turned the call away), what a runner or a grader is
-    known by, and how to start a new comparison instead. The one owner of the sentence."""
+    on some arms or repeats only, whose missing cells alone ran), how many of its cells recorded no answer and run again
+    (``redrawn``, a running total and the cut ones among it, said by
+    :func:`~threetears.evals.analysis.bundle.comparisons.redrawn_sentence`), what a runner or a grader is known by, and
+    how to start a new comparison instead. The one owner of the sentence."""
     if not added:
         ran = "no case was added, so nothing ran"
     elif unreached or incomplete:
@@ -328,18 +337,13 @@ def continued_sentence(already: int, added: int, unreached: int = 0, incomplete:
         ran = f"{added} case{'s' if added != 1 else ''} ran, {' and '.join(part for part in held if part)}"
     else:
         ran = f"{added} new case{'s' if added != 1 else ''} ran"
-    again = (
-        f" {cut} cell{'s' if cut != 1 else ''} that recorded no answer (cut by an interrupt, or the call turned away) "
-        f"ran again: a cut cell drawn again can lean the reading where a slow answer is a wrong one."
-        if cut
-        else ""
-    )
+    again = f" {redrawn_sentence(*redrawn)}" if redrawn[0] else ""
     return (
         f"Continues the comparison run before under this name: its {already} case{'s' if already != 1 else ''} already "
-        f"run {'are' if already != 1 else 'is'} read as {'they' if already != 1 else 'it'} ran, and {ran}.{again} An arm is known by its name, model "
-        "and levers, and a grader by its name and declaration (a judge by its model and criteria), never by its code, so "
-        "a runner or a grader edited under the same name is pooled with the cases run before: to compare an edit, or to "
-        "start afresh, give the eval a new name, or run it in another scope or store."
+        f"run {'are' if already != 1 else 'is'} read as {'they' if already != 1 else 'it'} ran, and {ran}.{again} An arm "
+        "is known by its name, model and levers, and a grader by its name and declaration (a judge by its model and "
+        "criteria), never by its code, so a runner or a grader edited under the same name is pooled with the cases run "
+        "before: to compare an edit, or to start afresh, give the eval a new name, or run it in another scope or store."
     )
 
 

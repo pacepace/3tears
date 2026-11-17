@@ -379,7 +379,7 @@ Where its runs are kept in a store that outlives the run (a file, or a host's), 
   shuffled once and appended. Each run plays its cases one at a time in that order, every arm and repeat of a case
   together, and the bet reads the longest run of cases from the start of the order that are complete on every arm and
   repeat. Every reading is that one sequence read further, so stopping whenever you like, after watching whatever you
-  like, keeps the error it states, however fast or slow each arm answers.
+  like, keeps the error it states, however fast or slow each arm answers, short of a cell's deadline.
 - **What it costs.** Read once, it tells the arms apart a little later than a test fixed for that many cases would:
   its intervals are somewhat wider. That is the price of reading again freely.
 - **What it does not cover.** Guardrails, floors, each arm's own rate, cost, latency and the exit status are read at
