@@ -30,15 +30,24 @@ from pathlib import Path
 from typing import Any
 
 from .agent import Act, Step, done_report, parse_report, read_reply, scored_door_turns
-from .campaign import CASES, failure_causes, slug
+from .campaign import failure_causes, registry, slug
 from .checks import GRADERS, regrade
 from .isolation import Container
 from .sandbox import DocsBuild, Observation, Sandbox
 
 
+def _run_json(run_dir: Path) -> Path | None:
+    """The ``run.json`` of the run ``run_dir`` is, or one tier of (a run of several tiers keeps each in its own
+    directory beneath it); ``None`` for a run from before it was written."""
+    found = [path for path in (run_dir / "run.json", run_dir.parent / "run.json") if path.is_file()]
+    return found[0] if found else None
+
+
 def _replies(run_dir: Path, arm: str) -> dict[tuple[str, int], list[str]]:
-    """Each trial's replies in turn order, by its app and repeat, from the run's recording of ``arm``."""
-    apps = [json.loads(line)["app"] for line in CASES.read_text(encoding="utf-8").splitlines() if line.strip()]
+    """Each trial's replies in turn order, by its app and repeat, from the run's recording of ``arm``: a recorded
+    case is named by its place among the run's cases, which ``run.json`` lists (a run before it ran ``apps.jsonl``'s)."""
+    ran = _run_json(run_dir)
+    apps = json.loads(ran.read_text(encoding="utf-8"))["apps"] if ran is not None else [c["app"] for c in registry()]
     recording = run_dir / "recordings" / f"{slug(arm)}.jsonl"
     found: dict[tuple[str, int], list[str]] = defaultdict(list)
     if not recording.is_file():
@@ -192,7 +201,9 @@ async def _rescore(row: Mapping[str, Any], replies: Sequence[str], images: Path)
 def rescore(run_dir: Path) -> list[str]:
     """Grade every stored trial of ``run_dir`` again (see the module); the lines it prints, also in ``rescore.txt``."""
     rows = [json.loads(line) for line in (run_dir / "trials.jsonl").read_text(encoding="utf-8").splitlines()]
-    images = run_dir.parent / "images"
+    # The workdir the run's images are kept in: the run's parent, or a tier's grandparent.
+    ran = _run_json(run_dir)
+    images = (run_dir.parent if ran is None or ran.parent == run_dir else run_dir.parent.parent) / "images"
     replies = {arm: _replies(run_dir, arm) for arm in {row["arm"] for row in rows}}
 
     async def every() -> list[dict[str, Any]]:  # Any: JSON

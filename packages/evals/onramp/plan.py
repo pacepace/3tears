@@ -56,6 +56,8 @@ class Plan:
     tiers: Mapping[str, float]
     primary: str
     secondary: tuple[str, ...]
+    #: The files under ``onramp/`` its apps are read from: ``apps.jsonl`` (the development set) unless it says.
+    registries: tuple[str, ...] = ("apps.jsonl",)
 
     @property
     def cap_usd(self) -> float:
@@ -87,6 +89,7 @@ def load_plan(path: Path) -> Plan:
             tiers=tiers,
             primary=str(raw["check"]["primary"]),
             secondary=tuple(str(check) for check in raw["check"]["secondary"]),
+            registries=tuple(str(name) for name in raw.get("cases", ["apps.jsonl"])),
         )
     except (KeyError, TypeError) as unshaped:
         raise ValueError(f"{path} is not a plan: {unshaped!r} is missing or misshapen") from unshaped
@@ -94,6 +97,8 @@ def load_plan(path: Path) -> Plan:
         raise ValueError(f"{path} is not a plan: it names two or more arms, each once")
     if unknown := [check for check in (plan.primary, *plan.secondary) if check not in CHECKS]:
         raise ValueError(f"{path} is not a plan: {', '.join(unknown)} is no check the harness grades")
+    if any("/" in name or not name.endswith(".jsonl") for name in plan.registries):
+        raise ValueError(f"{path} is not a plan: its cases are files beside apps.jsonl, named by file name")
     if plan.k < 1 or not plan.apps or any(cap <= 0 for cap in plan.tiers.values()) or not plan.tiers:
         raise ValueError(f"{path} is not a plan: k, the apps and every tier's cap must be stated and positive")
     return plan
