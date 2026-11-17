@@ -99,7 +99,13 @@ from threetears.evals.analysis.report.html_parts import (
 )
 from threetears.evals.analysis.report.doc_page.html import doc_page_html
 from threetears.evals.analysis.report.serialize_md import trial_summary, world_count
-from threetears.evals.analysis.style import CANNOT_TELL_APART, CANNOT_TELL_APART_PHRASE, GLOSSARY, check_definition
+from threetears.evals.analysis.style import (
+    CANNOT_TELL_APART,
+    CANNOT_TELL_APART_PHRASE,
+    EVIDENCE_TERM,
+    GLOSSARY,
+    check_definition,
+)
 from threetears.evals.schema.logs import contain, get_logger
 
 if TYPE_CHECKING:
@@ -684,12 +690,21 @@ def _disclosure(block: DisclosureBlock) -> str:
     return f'<p class="disclosure" data-source="{escape(block.source)}">{text}</p>'
 
 
+#: The terms a verdict line links where its own words say them, rather than after its words: the undecided reading in
+#: its sentence form, and the graded evidence a line leading on a contrast the bet read states.
+_LINKED_IN_PLACE: dict[str, re.Pattern[str]] = {
+    CANNOT_TELL_APART: CANNOT_TELL_APART_PHRASE,
+    EVIDENCE_TERM: re.compile(r"\bevidence\b"),
+}
+
+
 def _verdict_markup(block: DisclosureBlock) -> str:
     """The verdict line's markup: each piece of its raw text escaped on its own (:meth:`DisclosureBlock.emphasis_pieces`),
     its decisions set in bold, its figures and guardrails regular, so one weight carries the one emphasis. The
     undecided reading is linked where its sentence form stands whole in one piece; where it does not (a phrase cut by
     the bold, or longer than the form allows), the line links the term after its words, as every other line does."""
-    linked = block.term != CANNOT_TELL_APART
+    phrase = _LINKED_IN_PLACE.get(block.term or "")
+    linked = phrase is None
     out = []
     for piece, bold in block.emphasis_pieces():
         said = code_html(piece)
@@ -697,25 +712,25 @@ def _verdict_markup(block: DisclosureBlock) -> str:
         # earlier one may cross a span while a whole one follows it
         found = (
             None
-            if linked
+            if linked or phrase is None
             else next(
                 (
                     match
-                    for match in CANNOT_TELL_APART_PHRASE.finditer(piece)
+                    for match in phrase.finditer(piece)
                     if "`" not in match.group(0) and not piece.count("`", 0, match.start()) % 2
                 ),
                 None,
             )
         )
-        if found is not None:
+        if found is not None and block.term is not None:
             said = (
                 code_html(piece[: found.start()])
-                + term_link(CANNOT_TELL_APART, escape(found.group(0)))
+                + term_link(block.term, escape(found.group(0)))
                 + code_html(piece[found.end() :])
             )
             linked = True
         out.append(f"<strong>{said}</strong>" if bold else said)
-    if block.term is not None and (block.term != CANNOT_TELL_APART or not linked):
+    if block.term is not None and (phrase is None or not linked):
         out.append(" " + term_link(block.term, f"({escape(block.term)})", css="term"))
     return "".join(out)
 

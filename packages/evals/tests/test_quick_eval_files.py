@@ -99,11 +99,13 @@ def test_a_comparison_whose_gate_fails_exits_4(capsys: pytest.CaptureFixture[str
     assert main([_write("regression.py", REGRESSION)]) == EXIT_GATE_FAILED
 
     # The exit line opens with the result as the page leads with it, which is what the gate failed on. An interval's
-    # two ends read at one precision, the whole points its width sets (number policy, rule 2): "52" and "100".
+    # two ends read at one precision, the whole points its width sets (number policy, rule 2): "56" and "100". The
+    # evidence past a thousand is said to be over it.
     exit_line = [line for line in capsys.readouterr().out.splitlines() if line.startswith("exit 4: ")]
     assert exit_line == [
-        "exit 4: Accuracy: wrong worse than right. Of 20 trials each, Accuracy was right on 20 for right and 0 for "
-        "wrong. Over 20 paired cases, the interval puts wrong between 52 and 100 points worse. The gate failed on it."
+        "exit 4: Accuracy: wrong worse than right. Over 20 paired cases, wrong is 100 points behind right. The interval "
+        "puts wrong between 56 and 100 points worse. The evidence that wrong is worse is strong (over 1,000), enough to "
+        "decide. Of 20 trials each, Accuracy was right on 20 for right and 0 for wrong. The gate failed on it."
     ]
 
 

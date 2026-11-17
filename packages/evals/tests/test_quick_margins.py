@@ -144,7 +144,7 @@ class TestHowManyCasesEquivalenceTakes:
         return str(_row(comparison, reading)["verdict"])
 
     @pytest.mark.parametrize(
-        ("margin", "expected", "first"), [(0.25, False, 16), (0.1, False, 45), (0.25, True, 20), (0.1, True, 53)]
+        ("margin", "expected", "first"), [(0.25, False, 15), (0.1, False, 40), (0.25, True, 18), (0.1, True, 48)]
     )
     async def test_the_first_count_at_which_alike_arms_read_equivalent(
         self, margin: float, expected: bool, first: int
@@ -153,7 +153,7 @@ class TestHowManyCasesEquivalenceTakes:
         graders = [*(["label"] if expected else []), grader(correct, margin=margin)]
         scope = f"how-many-{margin}-{expected}"
         assert (await self._verdict(first - 1, graders, reading="correct", scope=scope)).startswith(
-            "the evidence cannot tell cheaper and current apart"
+            "cheaper level with current, not decided"
         )
         assert (await self._verdict(first, graders, reading="correct", scope=scope)).startswith(
             "cheaper and current equivalent"
@@ -162,10 +162,10 @@ class TestHowManyCasesEquivalenceTakes:
     async def test_the_first_count_at_which_alike_arms_read_a_score_equivalent_on_its_range(self) -> None:
         """A 1-to-5 score within 0.5, the only reading the family tests."""
         graders = [grader(rating, margin=0.5, range=(1, 5))]
-        assert (await self._verdict(34, graders, reading="rating", scope="how-many-rating")).startswith(
-            "the evidence cannot tell cheaper and current apart"
+        assert (await self._verdict(31, graders, reading="rating", scope="how-many-rating")).startswith(
+            "cheaper level with current, not decided"
         )
-        assert (await self._verdict(35, graders, reading="rating", scope="how-many-rating")).startswith(
+        assert (await self._verdict(32, graders, reading="rating", scope="how-many-rating")).startswith(
             "cheaper and current equivalent"
         )
 
@@ -190,7 +190,7 @@ class TestAPassFailInterval:
         row = _row(comparison, "correct")
         # A pass rate is a share, so its change reads in points on the percent ruler.
         assert row["delta"] == pytest.approx(50.0)
-        assert row["interval"] == "-40 to +91 pts at 95%", (
+        assert row["interval"] == "-36 to +89 pts at 95%", (
             "the bounded interval on the 0-1 range, its upper end where a pass-rate difference ends"
         )
 
@@ -198,7 +198,7 @@ class TestAPassFailInterval:
 class TestNoMargin:
     async def test_no_contrast_reads_equivalent_and_the_report_says_why_in_one_line(self) -> None:
         comparison = await _compare()
-        assert _row(comparison, "correct")["verdict"].startswith("the evidence cannot tell cheaper and current apart")
+        assert _row(comparison, "correct")["verdict"].startswith("cheaper behind current, not decided")
         (line,) = _no_margin_lines(comparison)
         assert "cannot tell apart never means the arms are alike" in line
         # One sentence, then each reading once in a table, with how it takes a margin.
@@ -345,9 +345,7 @@ class TestADeclaredRange:
             2,
         )
         row = _row(comparison, "rating")
-        assert row["verdict"].startswith("the evidence cannot tell cheaper and current apart") and (
-            "margin of ±0.5 on Rating score" in row["verdict"]
-        )
+        assert row["verdict"].startswith("cheaper and current equivalent") and "(margin ±0.5)" in row["verdict"]
         assert "value_range" not in report_markdown(comparison.report)
 
     async def test_a_score_outside_it_fails_the_run_naming_the_scorer_and_the_case(self) -> None:

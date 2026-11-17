@@ -369,7 +369,10 @@ class VerdictLine:
         setup, too few cases).
     :ivar undecided: Whether a decision ``text`` says leaves arms undecided, so its words say the evidence cannot tell
         them apart: a led contrast not separated, or no reading telling any arm apart from the control. Read off the
-        verdicts, never off the words, so a page links that phrase's definition where the line says it.
+        verdicts, never off the words, so a page links that phrase's definition where the line says it. A led contrast
+        the bet read is not one: it says where the arm stands and how strong the evidence is (``graded``).
+    :ivar graded: Whether a decision ``text`` says leaves a contrast the bet read undecided, so its words say where the
+        arm stands and grade the evidence, and a page links the evidence's definition.
     """
 
     rule: VerdictRule
@@ -377,6 +380,7 @@ class VerdictLine:
     lead: str = ""
     decisions: tuple[str, ...] = ()
     undecided: bool = False
+    graded: bool = False
 
     def __post_init__(self) -> None:
         if not self.lead:
@@ -660,6 +664,20 @@ def led_sentences(
     return said
 
 
+def graded_contrast(bundle: AnalysisContextBundle, verdict: Verdict) -> bool:
+    """Whether the bet read the contrast ``verdict`` states, so its evidence is graded: read off the bundle's comparison,
+    never off the verdict's words."""
+    return any(
+        comparison.evidence_better is not None
+        for family in bundle.multiple_comparisons.families
+        if family.aspect == verdict.aspect
+        for comparison in family.comparisons
+        if comparison.contrast.variant_key == verdict.variant_key
+        and comparison.name == verdict.name
+        and comparison.reading == verdict.reading
+    )
+
+
 def _led(bundle: AnalysisContextBundle, verdicts: Sequence[Verdict], order: Sequence[str]) -> list[Verdict]:
     """The contrast verdicts on the measure a result leads on (:func:`_lead_measure`)."""
     contrasts = [verdict for verdict in verdicts if verdict.kind == "contrast" and verdict.reading != "trial"]
@@ -759,7 +777,8 @@ def verdict_line(
                 text=prefix + text + ungraded + _guardrail_sentences(verdicts) + _not_compared_sentences(bundle, arm),
                 lead=result,
                 decisions=decisions,
-                undecided=any(verdict.outcome == "not_separated" for verdict in led),
+                undecided=any(verdict.outcome == "not_separated" and not graded_contrast(bundle, verdict) for verdict in led),
+                graded=any(verdict.outcome == "not_separated" and graded_contrast(bundle, verdict) for verdict in led),
             )
     said = (
         _told_apart(bundle, verdicts, asked=declared_question)
@@ -1270,6 +1289,7 @@ def _separated(bundle: AnalysisContextBundle, arm: Callable[[str], str], *, aske
 
 
 __all__ = [
+    "graded_contrast",
     "FAIL_CAUSE_WORDS",
     "GUARDRAIL_SAID",
     "ACCOUNT_REFUSED_REMEDY",

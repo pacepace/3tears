@@ -6,6 +6,31 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: a small comparison gets a fair read: where the arm stands, how strongly, and when it is decided
+
+**Changed:** a comparison an `Eval` runs leads on the estimate, its interval and the direction, and grades its
+evidence every time, at any number of cases. Its first line reads `Accuracy: v2 ahead of v1, not decided. Over 8
+paired cases, v2 is 29 points ahead of v1. The interval allows v2 to be as much as 24 points worse or 60 better. The
+evidence that v2 is better is moderate (3.6).`, never "the evidence cannot tell v2 and v1 apart". The evidence is the
+e-value the bet holds now (`stats.bet_evidence`, new): weak below 3, moderate from 3, strong from 10
+(`stats.EVIDENCE_STEPS`, new; words by `style.evidence_grade`, new, the one owner), and chance alone reaches 10 at
+most one time in ten however often it is read. With a question asked, the question is decided on its first grader's
+reading alone, at α = 0.05, by the bet staked nine tenths toward the better side it asks about
+(`stats.DECLARED_DIRECTION_SHARE`, new; `bounded_separation_p(..., toward=)`, new): it decides "better" once that
+capital reaches 20 and "worse" only once the other side's reaches 200, and its interval is at 90%, each end a 95%
+bound. Every other reading is secondary, shown with its change, interval and evidence and decided on nothing. With no
+question asked the read stays two-sided, corrected by Holm across measures. The mixture's ten stakes are weighted in
+proportion to their size, so a few cases can grow it: eight cases all won now decide (they read p 0.041 under a
+correction that held them to 0.025 before), and from six they can. A one-check eval's pass rate is that check, so it is
+tested once, not twice. A money scale's zero end on a page reads at its cells' places (`$0.000`). The case for each
+choice, and the simulations behind it: `.prawduct/smalln-report.md`.
+
+**For hosts:** a stored analysis of a quick-path comparison frozen by this build carries `evidence_better`,
+`evidence_worse` and the family's `primary`, which a build from before it refuses by name: upgrade every reader of
+stored analyses before any writer, and after a rollback regenerate an analysis this build froze. No engine campaign's
+bundle carries them, so its fingerprints and pages do not move. A quick comparison's verdicts move: a secondary
+reading of a question reads `not_separated` where it may have separated before, and its `p_adjusted` is `None`.
+
 ### evals: a quick comparison may be read again as cases are added, with nothing declared
 
 **Changed:** a comparison an `Eval` runs (two arms or more) into a store that holds the one it filed before under its

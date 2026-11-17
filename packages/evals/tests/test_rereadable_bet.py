@@ -5,7 +5,9 @@ drain").
 A quick-path comparison (every result of a kind only the quick path launches) reads each paired contrast on a declared
 range by the mixture bet (:func:`~threetears.evals.analysis.stats.bounded_separation_p` and
 :func:`~threetears.evals.analysis.stats.bounded_difference_interval` with ``mixture``): the mean of ten bets, each
-staking a fixed share ``j / 10`` of the cap on every pair, hedged over the two directions, over the longest complete
+staking a fixed share ``j / 10`` of the cap on every pair and weighted in proportion to ``j``, hedged over the two
+directions (evenly with no question asked; nine tenths toward the better side a question asks about, its primary
+decided alone, ``tests/test_small_n_read.py``), over the longest complete
 prefix of an order committed before any answer (each launch's new cases shuffled once and appended,
 :func:`~threetears.evals.analysis.bundle.trials.committed_order`), which each launch plays case by case. No stake
 depends on a declared count, and the quick path continues one comparison by running only the cells no launch recorded
@@ -116,10 +118,11 @@ def _separates(control: list[float], arm: list[float]) -> bool:
 
 
 def _reference_crossing(diffs: list[float]) -> tuple[int, int]:
-    """The simulated construction, ``reference-mix.py``'s ``first_crossing`` on its ``mix_grid`` arm, one row at a time
-    in plain Python: z = (d + 1) / 2, null 1/2, ten fractions λ_j = (j / 10) · 0.9 / 0.5, each direction's log capital a
-    cumulative sum of log1p, the ten combined by successive logaddexp less log 10, hedged as their logaddexp less log
-    2, and the first index at which the hedged log capital reaches log(1/α); the direction there the larger side.
+    """The simulated construction, ``reference-mix.py``'s ``first_crossing`` on its ``mix_grid`` arm with the stakes
+    weighted in proportion to their size, one row at a time in plain Python: z = (d + 1) / 2, null 1/2, ten fractions
+    λ_j = (j / 10) · 0.9 / 0.5, each direction's log capital a cumulative sum of log1p, the ten combined by successive
+    logaddexp, each plus log(j / 55), hedged as their logaddexp less log 2, and the first index at which the hedged log
+    capital reaches log(1/α); the direction there the larger side.
 
     :return: ``(index, direction)``: the 0-based index of the first crossing, or ``len(diffs)`` where none, and +1 up,
         -1 down, 0 none.
@@ -133,12 +136,13 @@ def _reference_crossing(diffs: list[float]) -> tuple[int, int]:
             for z in zz:
                 running += math.log1p(lam * (z - 0.5))
                 path.append(running)
+            weighted = [value + math.log(j / 55) for value in path]
             if acc is None:
-                acc = path
+                acc = weighted
             else:
-                acc = [max(a, b) + math.log1p(math.exp(-abs(a - b))) for a, b in zip(acc, path, strict=True)]
+                acc = [max(a, b) + math.log1p(math.exp(-abs(a - b))) for a, b in zip(acc, weighted, strict=True)]
         assert acc is not None
-        sides.append([value - math.log(10) for value in acc])
+        sides.append(acc)
     up, down = sides
     for index, (u, d) in enumerate(zip(up, down, strict=True)):
         hedged = max(u, d) + math.log1p(math.exp(-abs(u - d))) - math.log(2)
@@ -226,19 +230,21 @@ def _reread_until_separated(rng: random.Random, k: int, rate: float, arms: int) 
     return False
 
 
-@pytest.mark.parametrize(("k", "rate", "arms", "seeded_at"), [(1, 0.5, 2, 66), (3, 0.8, 2, 24), (1, 0.8, 3, 53)])
+@pytest.mark.parametrize(("k", "rate", "arms", "seeded_at"), [(1, 0.5, 2, 188), (3, 0.8, 2, 123), (1, 0.8, 3, 138)])
 def test_re_reading_as_cases_are_added_separates_under_the_null_at_most_alpha(
     k: int, rate: float, arms: int, seeded_at: int
 ) -> None:
     """The bet alone, over rows appended and kept (the reference construction, not the product: the product's own
-    re-runs are simulated below, through ``Eval.run``). 2,000 seeded newcomers a cell, each reading up to five times
+    re-runs are simulated below, through ``Eval.run``). 5,000 seeded newcomers a cell, each reading up to five times
     with adds sized from the data, separate no more
-    often than α = 5%: the Clopper-Pearson 95% upper bound on the rate is below α. The seeded draw gives 66 of 2,000
-    at k = 1, base 0.5 (3.3%, upper bound 4.2%); 24 at k = 3, base 0.8 (1.2%, upper 1.8%); and 53 for three arms at
-    k = 1, base 0.8 under Holm (2.7%, upper 3.5%). The counts are pinned to two either side, so a change to the bet
-    that moves them is seen; the bound is the claim."""
+    often than α = 5%: the Clopper-Pearson 95% upper bound on the rate is below α. The seeded draw gives 188 of 5,000
+    at k = 1, base 0.5 (3.8%, upper bound 4.3%); 123 at k = 3, base 0.8 (2.5%, upper 2.9%); and 138 for three arms at
+    k = 1, base 0.8 under Holm (2.8%, upper 3.3%). The stakes weighted toward the larger ones grow faster on a few
+    cases, so they separate more often than an even weighting did under the null, still within α: the count is read
+    at 5,000 so its bound clears α. The counts are pinned to two either side, so a change to the bet that moves them is
+    seen; the bound is the claim."""
     rng = random.Random(f"rereadable-null-{k}-{rate}-{arms}")
-    replicates = 2000
+    replicates = 5000
     separated = sum(_reread_until_separated(rng, k, rate, arms) for _ in range(replicates))
     bounds = exact_rate_interval(separated, replicates)
     assert bounds is not None and bounds[1] < SIGNIFICANCE_ALPHA
@@ -250,9 +256,9 @@ def test_re_reading_as_cases_are_added_separates_under_the_null_at_most_alpha(
 
 def test_a_single_read_gives_up_some_power_against_the_reading_it_replaces() -> None:
     """At k = 1, the control passing 80% and the arm 60%, on 60 paired cases read once, 2,000 seeded draws: the
-    mixture separates on 742 (37.1%), where the reading it replaces (the paired t test's p below α and the bounded
+    mixture separates on 805 (40.3%), where the reading it replaces (the paired t test's p below α and the bounded
     test's 95% interval, fixed for those 60 cases, excluding zero) separates on 872 (43.6%). That is the price of
-    reading again freely: six and a half points of power at this alternative, held to no more than fifteen."""
+    reading again freely: three and a half points of power at this alternative, held to no more than fifteen."""
     rng = random.Random("rereadable-power")
     mixture = one_shot = 0
     replicates = 2000
@@ -266,7 +272,7 @@ def test_a_single_read_gives_up_some_power_against_the_reading_it_replaces() -> 
             t_p is not None and t_p < SIGNIFICANCE_ALPHA and fixed is not None and (fixed[0] > 0 or fixed[1] < 0)
         )
     assert mixture < one_shot <= mixture + 0.15 * replicates
-    assert abs(mixture - 742) <= 10 and abs(one_shot - 872) <= 10
+    assert abs(mixture - 805) <= 10 and abs(one_shot - 872) <= 10
 
 
 # --- the quick path --------------------------------------------------------------------------------------------------
@@ -276,9 +282,11 @@ async def test_rung_3_s_comparison_is_read_by_the_bet_and_says_so_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Rung 3a, replayed offline into its store: the print says the one sentence under its first line; every paired
-    reading on a range is the bet's, and cost is read by its t test, once; a bet reading's adjusted p is Holm's over the
-    family with the t reading's p held at 1, so no t p lets a bet reading step down. Kept in memory, the line under the
-    first says instead that running it again is a new comparison (:func:`test_kept_in_memory_a_comparison_says_running_it_again_is_a_new_one`)."""
+    reading on a range is the bet's, and cost is read by its t test, once. Its question is asked, so the family is
+    decided on the question's own reading, the first grader's (currency's accuracy), alone: its adjusted p is the bet's
+    staked toward the better side, at α, and every other reading, the t reading of cost among them, is secondary, with
+    no adjusted p and no verdict, so no t p bears on a decision. Kept in memory, the line under the first says instead
+    that running it again is a new comparison (:func:`test_kept_in_memory_a_comparison_says_running_it_again_is_a_new_one`)."""
     offline_copy("3-invoices", tmp_path, monkeypatch)
     module = load(Path("compare.py"), "compare", monkeypatch)
     result = await module.compare.run(store=tmp_path / "kept.sqlite")
@@ -291,11 +299,11 @@ async def test_rung_3_s_comparison_is_read_by_the_bet_and_says_so_once(
     on_bet = [comparison for comparison in family.comparisons if comparison.basis == "bounded"]
     assert [comparison.name for comparison in on_t] == ["production_replicating_cost"]
     assert {comparison.interval_basis for comparison in on_bet} == {"bounded"} and len(on_bet) == 5
-    raw = [comparison.p_raw for comparison in family.comparisons]
-    held = holm_adjust([1.0 if comparison.basis == "t" else p for comparison, p in zip(family.comparisons, raw)])
-    for comparison, adjusted in zip(family.comparisons, held):
-        if comparison.basis == "bounded":
-            assert comparison.p_adjusted == pytest.approx(adjusted)
+    assert family.primary == "accuracy" and family.family_size == 1
+    (primary,) = [comparison for comparison in family.comparisons if comparison.name == family.primary]
+    assert primary.p_adjusted is not None and primary.evidence_better is not None
+    secondaries = [comparison for comparison in family.comparisons if comparison is not primary]
+    assert {(comparison.verdict, comparison.p_adjusted) for comparison in secondaries} == {("not_separated", None)}
 
 
 # --- one comparison, continued ---------------------------------------------------------------------------------------

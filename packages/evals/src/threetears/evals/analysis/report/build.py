@@ -84,7 +84,7 @@ from threetears.evals.analysis.report.model import (
 )
 from threetears.evals.analysis.report.verdict import unfinished_line, verdict_line
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arm_labels
-from threetears.evals.analysis.style import CANNOT_TELL_APART
+from threetears.evals.analysis.style import CANNOT_TELL_APART, EVIDENCE_TERM
 from threetears.evals.kernel.campaign import EvalAnalysis
 from threetears.evals.analysis.completeness import bundle_stopped_short
 
@@ -431,6 +431,8 @@ def _page(
                 # Read off the verdicts the line states, never off its words.
                 else CANNOT_TELL_APART
                 if verdict.undecided
+                else EVIDENCE_TERM
+                if verdict.graded
                 else None
             ),
         ),

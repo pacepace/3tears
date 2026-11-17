@@ -616,6 +616,9 @@ CANNOT_TELL_APART = "cannot tell apart"
 CANNOT_TELL_APART_PHRASE = re.compile(r"cannot tell\b(?:[^<>]{0,160}?\s)?apart\b", re.IGNORECASE)
 
 
+#: The glossary's term for the graded evidence a bet holds, which a lead that grades it links.
+EVIDENCE_TERM = "evidence"
+
 #: The graded evidence a bet holds, in the reader's words, from weakest: below the first of
 #: :data:`~threetears.evals.analysis.stats.EVIDENCE_STEPS` weak, from it moderate, from the second strong.
 EVIDENCE_GRADES: tuple[str, str, str] = ("weak", "moderate", "strong")
@@ -690,10 +693,7 @@ GLOSSARY: dict[str, str] = {
         "means the two are the same."
     ),
     "interval": "The range the true value likely lies in; a wide one means the run measured it loosely.",
-    "evidence": (
-        "How far the cases so far favour one arm, graded weak below 3, moderate from 3 and strong from 10; chance "
-        "alone reaches 10 at most one time in ten, however often it is read."
-    ),
+    EVIDENCE_TERM: "How strongly the cases so far favour one arm: weak below 3, moderate from 3, strong from 10.",
     "change": "The arm's value minus the control's: in points for a rate, in the reading's own unit otherwise.",
     "cases": "How many independent cases are behind a figure; paired means both arms ran the same ones.",
     "depth": "How many times an arm ran each case: the fewest, the median and the most.",
@@ -961,6 +961,7 @@ __all__ = [
     "BANNED_PHRASES",
     "CANNOT_TELL_APART",
     "EVIDENCE_GRADES",
+    "EVIDENCE_TERM",
     "CANNOT_TELL_APART_PHRASE",
     "CASE_LABEL_CHARS",
     "CHECK_LINK_TITLE",

@@ -834,9 +834,7 @@ def _interval_withholds(interval: tuple[float, float] | None, *, rate: bool) -> 
 
 
 #: Why a secondary reading of a quick-path comparison carries no verdict: the one sentence its comparisons say it in.
-_SECONDARY_READING = (
-    "a secondary reading: its estimate, interval and evidence are shown, and only the question's own reading is decided"
-)
+_SECONDARY_READING = "a secondary reading, which the question does not decide"
 
 
 def _is_primary(one: _Tested, primary: str) -> bool:

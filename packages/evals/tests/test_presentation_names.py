@@ -303,12 +303,12 @@ def test_the_kairo_page_links_every_term_at_its_first_use() -> None:
     assert [term for term, use in _first_uses(report_html(_kairo())).items() if use == "bare"] == []
 
 
-def test_the_lead_links_the_undecided_reading_and_the_verdict_header_links_verdict(rungs: dict[str, _Rung]) -> None:
+def test_the_lead_links_the_graded_evidence_and_the_verdict_header_links_verdict(rungs: dict[str, _Rung]) -> None:
     page = rungs["rung3"].html
     header = page[page.index("<header>") : page.index("</header>")]
     (lead,) = re.findall(r'<p class="verdict"[^>]*>.*?</p>', header, flags=re.DOTALL)
-    undecided = html.escape(GLOSSARY["cannot tell apart"])
-    assert re.search(rf'<a href="#[^"]*" title="{re.escape(undecided)}">cannot tell v2 and v1 apart</a>', lead), lead
+    graded = html.escape(GLOSSARY["evidence"])
+    assert re.search(rf'<a href="#[^"]*" title="{re.escape(graded)}">evidence</a>', lead), lead
     headers = re.findall(r"<th[^>]*>(.*?)</th>", page, flags=re.DOTALL)
     verdicts = [cell for cell in headers if re.sub(r"<[^>]+>", "", cell).strip() == "Verdict"]
     assert verdicts and all(f'title="{html.escape(GLOSSARY["verdict"])}"' in cell for cell in verdicts)

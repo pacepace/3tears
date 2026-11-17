@@ -176,7 +176,7 @@ def contrast_evidence(
             size = page.ruled_change_size(
                 ruler, comparison.delta, form=form, places=places, measure=comparison.name, kind=comparison.reading
             )
-            unit = " points" if ruler.unit == PERCENT else ""
+            unit = ("" if ruler.unit != PERCENT else " point" if size == "1" else " points")
             lead = [
                 estimate_sentence(
                     side, verdict.arm, verdict.control, cases=comparison.control.n_cases, size=f"{size}{unit}"
@@ -592,7 +592,12 @@ def contrast_verdicts(
                 detail = f"{small} case{'' if small == 1 else 's'}, under the {MIN_CASES} a rate needs"
                 words = f"not tested (n={small})"
             else:
-                words = _contrast_words(comparison, (named, control), margin, heading, ruler, forms)
+                secondary = family.primary is not None and (
+                    comparison.name != family.primary or comparison.reading == "trial"
+                )
+                words = _contrast_words(
+                    comparison, (named, control), margin, heading, ruler, forms, secondary=secondary
+                )
             verdicts.append(
                 Verdict(
                     kind="contrast",
@@ -640,11 +645,15 @@ def _contrast_words(
     heading: str,
     ruler: MeasureRuler,
     forms: PageForms,
+    *,
+    secondary: bool = False,
 ) -> str:
     """A tested contrast's verdict in words: the verdict naming the arm and the control (``arms``) by label, why where
-    there is more to say, its margin, materiality."""
+    there is more to say, its margin, materiality. An undecided contrast the bet read, and every secondary reading of a
+    family decided on its primary, says where the arm stands (``v2 ahead of v1, not decided``), never that the evidence
+    cannot tell the arms apart."""
     on_runs = ", declared on the runs" if comparison.margin_source == "run" else ""
-    undecided_bet = comparison.verdict == "not_separated" and comparison.evidence_better is not None
+    undecided_bet = comparison.verdict == "not_separated" and (comparison.evidence_better is not None or secondary)
     return (
         (
             standing_words(
