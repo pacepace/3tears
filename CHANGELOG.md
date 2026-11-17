@@ -6,6 +6,33 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### nats: a move off a lame-duck server loses nothing as the server closes the old connection
+
+**Fixed:** a client moving off a server in lame-duck mode kept each subscription's old half in its queue group
+for the longest request (30 s by default), past the server's grace period, so the server closed the old
+connection with the member still in its group, and a message being routed to it at that moment was lost (the CI
+`integration` job's `test_a_lame_duck_server_hands_its_clients_over_without_losing_anything`, one feed message
+in some runs; reproduced on two local servers, the lost message published within a millisecond of the close). The
+old half now leaves after one second, well inside nats-server's default 10 s grace
+and two orders of magnitude past the delivery lag the hold exists for. A credential renewal's hold is unchanged.
+
+**Fixed:** a connection replaced by a renewal or a lame-duck move reconnected when its server dropped it, replaying
+every subscription it still held on another server: each rejoined its group as a member, took a share of its
+messages, and lost what was being routed to it when the connection retired. A replaced connection now closes when
+its server drops it; its subscriptions are already on the successor. A leaving member whose connection closed first
+sends no `UNSUB` (the server dropped it with the connection) instead of logging a failure. The trade: a request still
+waiting on a replaced connection when its server drops it gets no reply and times out, and a reply still owed there
+leaves on the current connection.
+
+**Fixed:** a reconnect could retry one dead server forever. nats-py shuffles the server pool once per reconnect and
+passes it in the same order on every attempt, and the client's reconnect handler always took the first server, so
+a client whose shuffle put a dead server first (a node that left, a lame-duck server that closed its listener)
+never tried the live servers beside it: 2 of 12 local runs stayed on a killed server for 20 s, where 12 of 12 now
+fail over within about a second. The handler now takes the server tried least since it last connected, ties by the
+pool's order, so each failure moves it on as nats-py's own round-robin does. The delay is still keyed on the selected
+server's own count, so with every server of an N-server pool down it reaches its cap after about N times as many
+attempts; each server still sees its own retries back off exponentially.
+
 ### web: a JavaScript workspace, and @3tears/web-pwa for installable web apps
 
 **Added:** `web/`, the family's browser packages, published to npm as `@3tears/web-<name>` at the
