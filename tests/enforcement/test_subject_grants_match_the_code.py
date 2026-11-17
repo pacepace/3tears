@@ -291,7 +291,7 @@ def _receivers() -> dict[str, str | dict[Principal, tuple[str, ...]]]:
         ),
         "packages/nats/src/threetears/nats/client.py::Subscription.subscribe_on": _PRIMITIVE,
         "packages/nats/src/threetears/nats/client.py::JetStreamResultWaiter._subscribe": _ON_THE_INBOX,
-        "packages/nats/src/threetears/nats/client.py::NatsClient.renew_connection": _PRIMITIVE,
+        "packages/nats/src/threetears/nats/client.py::NatsClient._renew_connection": _PRIMITIVE,
         "packages/nats/src/threetears/nats/client.py::NatsClient.renew_on_request": {
             Principal.AGENT_POD: _inbox_subjects(Principal.AGENT_POD)[:1],
             Principal.TOOL_POD: _inbox_subjects(Principal.TOOL_POD)[:1],
