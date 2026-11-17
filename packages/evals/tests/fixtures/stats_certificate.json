@@ -1,6 +1,6 @@
 {
  "command": "uv run python packages/evals/scripts/certify_stats.py",
- "digest": "7c25f6c8f57a3d0658f83b9c1161feccb5ef9ea22e245993480777dd8f3161cc",
+ "digest": "0067b2d37100b5d95398c44bc9ab77deb25bf9c2e961c6c6926ac9efd2af733e",
  "files": {
   "packages/evals/src/threetears/evals/analysis/bundle/assemble.py": "e4687cebd0e6fec09e81950d63a38f03785de6ad23619c7152931fd6a23969bb",
   "packages/evals/src/threetears/evals/analysis/bundle/comparisons.py": "d76584a9c6faccd7f603bf64e04924979b45939f85c36594f7fde5736ac324df",
@@ -39,12 +39,12 @@
   "packages/evals/src/threetears/evals/run/runner.py": "374c962ea7b37427f50e828463ea442632b3dc659761216671a07268e0b36a27",
   "packages/evals/src/threetears/evals/schema/hashing.py": "536ffbf619acc5e66bdeb4484f7a27bca40ad8ca948d7feb17c135aae2e6cb9c",
   "packages/evals/tests/engine_take_up.py": "31109f3f2a8bc164f9ad0524cdee51501d4a4b7230cfe2d949c4cf4359c02566",
-  "packages/evals/tests/null_newcomers.py": "174e98b194dc1bc35a512ffdd39287da1c93143cc95cde1b02488923657c36e1",
-  "packages/evals/tests/stats_certificate.py": "1ea0af64b7e44fe7f04b9a99cf8d2de3d26e920dba1495cc906ac01c6758ad77",
+  "packages/evals/tests/null_newcomers.py": "3ed80dd4782f8a1fe5d53aa398f8d2bbce19f1349a29644eb6fdf3ab8e1a54c5",
+  "packages/evals/tests/stats_certificate.py": "b7cb897953f448395c786343ab79c4d1323f142653581f4c3fbb313267a47ea6",
   "packages/evals/tests/test_certified_simulations.py": "81d982125df16dc8df97f175aed01bbd6cef50b855b988b1e6ce0d58176d9342"
  },
- "pool_request": "2d0a3a21a79f4c8799ddf419f97c0a96",
- "wall_s": 160,
+ "pool_request": "c9236878c19d4a7b94b708f27aa66154",
+ "wall_s": 142,
  "claims": [
   {
    "id": "small-n.once.binary",
@@ -67,7 +67,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.binary.separates",
@@ -90,7 +90,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.binary.strong-better",
@@ -113,7 +113,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.binary.strong-worse",
@@ -136,7 +136,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.once.onramp",
@@ -159,7 +159,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.onramp.separates",
@@ -182,7 +182,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.onramp.strong-better",
@@ -205,7 +205,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.onramp.strong-worse",
@@ -228,7 +228,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.once.skewed",
@@ -251,7 +251,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.skewed.separates",
@@ -274,7 +274,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.skewed.strong-better",
@@ -297,7 +297,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.continued.skewed.strong-worse",
@@ -320,7 +320,30 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
+  },
+  {
+   "id": "small-n.gate.once",
+   "says": "Under the binary null a gate (is v2 no worse within five points?), its bet leaning toward worse beside its equivalence test, read once at sixteen cases, separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 67,
+   "replicates": 6000,
+   "bounds": [
+    0.008664201777117242,
+    0.014159860249784495
+   ],
+   "figure": 0.014159860249784495,
+   "holds": true,
+   "seeds": "gate-once-<index>, 0-5999, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.gate.separates",
@@ -343,11 +366,34 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
+  },
+  {
+   "id": "small-n.late.once",
+   "says": "Under the binary null a question set after the results and pointed at whichever arm leads, which leans no way, read once at sixteen cases, separates at most \u03b1.",
+   "test": "at_most",
+   "target": 0.05,
+   "count": 46,
+   "replicates": 6000,
+   "bounds": [
+    0.005618273402156147,
+    0.010213158536334699
+   ],
+   "figure": 0.010213158536334699,
+   "holds": true,
+   "seeds": "late-once-<index>, 0-5999, restated",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.late.separates",
-   "says": "Under the binary null a question set after each read and pointed at whichever arm leads, which leans no way, continued from eight cases to five reads, each add sized from the reading, separates at most \u03b1.",
+   "says": "Under the binary null a question set after the results and pointed at whichever arm leads, which leans no way, continued from eight cases to five reads, each add sized from the reading, separates at most \u03b1.",
    "test": "at_most",
    "target": 0.05,
    "count": 184,
@@ -366,7 +412,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.interval.misses",
@@ -389,7 +435,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.interval.misses-low",
@@ -412,7 +458,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "small-n.interval.misses-high",
@@ -435,7 +481,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "rereadable.continued",
@@ -458,7 +504,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "rereadable.rerun",
@@ -481,7 +527,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "restated-as-product.small-once",
@@ -504,7 +550,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "restated-as-product.small-continued",
@@ -527,17 +573,17 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "restated-as-product.small-gate",
    "says": "Through Eval.run, a gate continued to five reads reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
    "test": "every",
    "target": 1.0,
-   "count": 30,
-   "replicates": 30,
+   "count": 210,
+   "replicates": 210,
    "bounds": [
-    0.8842966917779722,
+    0.9825872917321361,
     1.0
    ],
    "figure": 1.0,
@@ -550,17 +596,40 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
+  },
+  {
+   "id": "restated-as-product.small-gate-once",
+   "says": "Through Eval.run, a gate read once at sixteen cases reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
+   "test": "every",
+   "target": 1.0,
+   "count": 120,
+   "replicates": 120,
+   "bounds": [
+    0.9697270274225804,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "the first newcomers of the restated claim's own seeds, through the product on the pool",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "restated-as-product.small-late",
    "says": "Through Eval.run, a question set after each read, pointed at the leader reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
    "test": "every",
    "target": 1.0,
-   "count": 30,
-   "replicates": 30,
+   "count": 120,
+   "replicates": 120,
    "bounds": [
-    0.8842966917779722,
+    0.9697270274225804,
     1.0
    ],
    "figure": 1.0,
@@ -573,7 +642,30 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
+  },
+  {
+   "id": "restated-as-product.small-late-once",
+   "says": "Through Eval.run, a question set after one read at sixteen cases, pointed at the leader reads exactly as the restatement over the bet alone reads the same seeded answers: every reading's p and evidence to float rounding, its decision and its interval.",
+   "test": "every",
+   "target": 1.0,
+   "count": 120,
+   "replicates": 120,
+   "bounds": [
+    0.9697270274225804,
+    1.0
+   ],
+   "figure": 1.0,
+   "holds": true,
+   "seeds": "the first newcomers of the restated claim's own seeds, through the product on the pool",
+   "sources": [
+    "stats",
+    "read",
+    "runner",
+    "quick-simulation",
+    "certification"
+   ],
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "restated-as-product.small-cover",
@@ -596,7 +688,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "restated-as-product.rereadable-continued",
@@ -619,7 +711,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "restated-as-product.rereadable-rerun",
@@ -642,7 +734,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "watched.drained.horizon-k3",
@@ -665,7 +757,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "watched.drained.horizon-k1",
@@ -688,7 +780,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "watched.drained.alike-apart",
@@ -711,7 +803,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "watched.drained.alike-slow-wrong",
@@ -734,7 +826,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "watched.drained.b-slower-4x",
@@ -757,7 +849,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "watched.drained.b-slower-20x",
@@ -780,7 +872,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "watched.cut.b-slower-4x",
@@ -803,7 +895,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "watched.cut.b-slower-20x",
@@ -826,7 +918,7 @@
     "quick-simulation",
     "certification"
    ],
-   "digest": "f1d68c4e08b4ae990869d4ec1dd534fc2e13ca57020a63b69f9db21ff8fb80fc"
+   "digest": "7b740acd83db7b25323eb3b5d6ae0a02a312ae22510088e7f7eddceb1d6fd76f"
   },
   {
    "id": "engine.drain.fixed.alike-20x.check",
@@ -850,7 +942,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.fixed.alike-20x.grade",
@@ -874,7 +966,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.second.fixed.alike-20x.grade",
@@ -898,7 +990,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.fixed.b-slower-20x.check",
@@ -922,7 +1014,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.fixed.b-slower-20x.grade",
@@ -946,20 +1038,20 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.second.fixed.b-slower-20x.grade",
    "says": "An engine comparison (fixed, b-slower-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.05276, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.05275542550583546,
-   "count": 50,
+   "count": 52,
    "replicates": 800,
    "bounds": [
-    0.04674092776987583,
-    0.08157156011964789
+    0.04892252617738847,
+    0.08436836222486171
    ],
-   "figure": 0.125588839164189,
+   "figure": 0.07406075789307286,
    "holds": true,
    "seeds": "engine-fixed-b-slower-20x-grade-second-<index>, through the engine",
    "sources": [
@@ -970,7 +1062,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.fixed.b-slower-4x.check",
@@ -994,7 +1086,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.fixed.b-slower-4x.grade",
@@ -1018,20 +1110,20 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.second.fixed.b-slower-4x.grade",
    "says": "An engine comparison (fixed, b-slower-4x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.05276, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.05275542550583546,
-   "count": 34,
+   "count": 42,
    "replicates": 800,
    "bounds": [
-    0.029609058665744925,
-    0.05888565293384934
+    0.03809584725903492,
+    0.07030525669997573
    ],
-   "figure": 0.9194056904895428,
+   "figure": 0.5350492041855246,
    "holds": true,
    "seeds": "engine-fixed-b-slower-4x-grade-second-<index>, through the engine",
    "sources": [
@@ -1042,7 +1134,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.looks.alike-20x.check",
@@ -1066,7 +1158,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.looks.alike-20x.grade",
@@ -1090,20 +1182,20 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.second.looks.alike-20x.grade",
    "says": "An engine comparison (looks, alike-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.044852748968643524,
-   "count": 23,
+   "count": 22,
    "replicates": 500,
    "bounds": [
-    0.029380175392402348,
-    0.06822542788123881
+    0.027776767285571997,
+    0.0658610003235956
    ],
-   "figure": 0.4805241197428548,
+   "figure": 0.5668154858446066,
    "holds": true,
    "seeds": "engine-looks-alike-20x-grade-second-<index>, through the engine",
    "sources": [
@@ -1114,20 +1206,20 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.cut.looks.b-slower-20x.check",
    "says": "An engine comparison (looks, b-slower-20x, check) whose interrupts every one cut leans the reading (exact rate 0.04485, one-sided at 0.001).",
    "test": "leans",
    "target": 0.044852748968643524,
-   "count": 61,
+   "count": 56,
    "replicates": 500,
    "bounds": [
-    0.09461889645641586,
-    0.15394209684645394
+    0.08572058152768447,
+    0.14296852269169652
    ],
-   "figure": 2.8677250747926123e-12,
+   "figure": 5.583457431442715e-10,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-check-cut-<index>, through the engine",
    "sources": [
@@ -1138,7 +1230,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.looks.b-slower-20x.check",
@@ -1162,20 +1254,20 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.cut.looks.b-slower-20x.grade",
    "says": "An engine comparison (looks, b-slower-20x, grade) whose interrupts every one cut leans the reading (exact rate 0.04485, one-sided at 0.001).",
    "test": "leans",
    "target": 0.044852748968643524,
-   "count": 71,
+   "count": 69,
    "replicates": 500,
    "bounds": [
-    0.11259730285774738,
-    0.17571099496625536
+    0.10898386246231262,
+    0.171374656755986
    ],
-   "figure": 1.987088505488776e-17,
+   "figure": 2.44757108030905e-16,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-cut-<index>, through the engine",
    "sources": [
@@ -1186,7 +1278,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.looks.b-slower-20x.grade",
@@ -1210,20 +1302,20 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.second.looks.b-slower-20x.grade",
    "says": "An engine comparison (looks, b-slower-20x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.044852748968643524,
-   "count": 23,
+   "count": 14,
    "replicates": 500,
    "bounds": [
-    0.029380175392402348,
-    0.06822542788123881
+    0.015390600673838864,
+    0.04653332699148355
    ],
-   "figure": 0.4805241197428548,
+   "figure": 0.9793821328496631,
    "holds": true,
    "seeds": "engine-looks-b-slower-20x-grade-second-<index>, through the engine",
    "sources": [
@@ -1234,7 +1326,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.looks.b-slower-4x.check",
@@ -1258,7 +1350,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.drain.looks.b-slower-4x.grade",
@@ -1282,20 +1374,20 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   },
   {
    "id": "engine.second.looks.b-slower-4x.grade",
    "says": "An engine comparison (looks, b-slower-4x, grade) whose interrupts cut a second time in three of ten leans no more than the exact rate's tail allows (exact rate 0.04485, one-sided at 0.001).",
    "test": "no_lean",
    "target": 0.044852748968643524,
-   "count": 29,
+   "count": 24,
    "replicates": 500,
    "bounds": [
-    0.03918386879718837,
-    0.08223822089383676
+    0.03099316879350482,
+    0.07058079625733021
    ],
-   "figure": 0.09801998599608498,
+   "figure": 0.3963097620653791,
    "holds": true,
    "seeds": "engine-looks-b-slower-4x-grade-second-<index>, through the engine",
    "sources": [
@@ -1306,7 +1398,7 @@
     "engine-simulation",
     "certification"
    ],
-   "digest": "77920994d7e616893d7e70830022eda281ddf61ca8cf684d851aa562397d625c"
+   "digest": "605436c0b188a838d5caafce9d719fc345b90452c3b4969cedc80e9776529e55"
   }
  ]
 }
