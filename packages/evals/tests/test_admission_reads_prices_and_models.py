@@ -63,9 +63,9 @@ from threetears.evals.run import (
     admit_launch,
     launchable_judge_kind,
     quote_launch,
-    resume_run,
     start_run,
 )
+from threetears.evals.run.resume import resume_run
 from threetears.evals.schema import EvalTemplate, EvalTestCase, JudgedArtifact, JudgeEvidence
 from threetears.evals.schema.models import TRANSCRIPT_DIM_ID
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_SCOPE

@@ -36,13 +36,13 @@ from threetears.evals.analysis import (
     TableBlock,
     TableCell,
     TableColumn,
-    analysis_report,
     build_code_only_report,
     campaign_report,
     report_html,
     report_markdown,
     set_campaign_control,
 )
+from threetears.evals.analysis.service import analysis_report
 from threetears.evals.analysis.report.build import contrast_rows
 from threetears.evals.analysis.report.model import table_row
 from threetears.evals.kernel.campaign import EvalAnalysis

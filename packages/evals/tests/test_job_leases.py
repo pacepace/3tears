@@ -43,7 +43,6 @@ from threetears.evals.kernel import (
     ANALYSIS_JOB,
     ConflictError,
     RUN_JOB,
-    SHUTDOWN_CAUSE,
     SWEEP_JOB,
     EvalAnalysisAttempt,
     EvalStorage,
@@ -58,6 +57,7 @@ from threetears.evals.kernel import (
     require_held,
     settle_job_record,
 )
+from threetears.evals.kernel.job_leases import SHUTDOWN_CAUSE
 from threetears.evals.kernel import job_leases
 from threetears.evals.ops import OpsHost, analyses_list, job_cancel, job_poll, run_job_id, run_launch
 from threetears.evals.ops import LaunchArguments, SweepArguments, generation_key, sweep_launch

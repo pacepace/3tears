@@ -15,7 +15,8 @@ import pytest
 from pydantic import ValidationError
 
 from packages.evals.tests.factories import make_aspect_campaign, make_campaign, minimal_aspect_design
-from threetears.evals.analysis import AspectReading, CampaignReadings, aspect_view, aspect_views
+from threetears.evals.analysis import AspectReading, CampaignReadings, aspect_view
+from threetears.evals.analysis.aspects import aspect_views
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.schema.campaign_upgrade import UPGRADED_CONTROL_LABEL
 from threetears.evals.kernel.declaration import (

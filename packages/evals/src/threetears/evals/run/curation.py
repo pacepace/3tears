@@ -278,7 +278,7 @@ def require_delete_confirmation(
         )
 
 
-def load_run_as_listed(storage: CurationStore, run_id: str, scope_id: str, *, profile: HostProfile) -> EvalRun:
+def _load_run_as_listed(storage: CurationStore, run_id: str, scope_id: str, *, profile: HostProfile) -> EvalRun:
     """Load one run the way a listing loads it: without the payload paths the host declares a listing leaves out.
 
     For a reader of a run's scalars. The returned run records what its payload is missing
@@ -315,8 +315,8 @@ def set_run_archived(
     restores it everywhere, which is the property that makes this the safe answer
     to a contaminated cohort and hard delete the last resort.
 
-    **The flag is written in place, and the run is read the way a listing reads it**
-    (:func:`load_run_as_listed`). Nothing here needs the host's payload, which is most
+    **The flag is written in place, and the run is read the way a listing reads it.**
+    Nothing here needs the host's payload, which is most
     of a run document, so the write sets the one field and never sends the document
     back — and so cannot lose a concurrent writer's edit to any other field.
 
@@ -340,7 +340,7 @@ def set_run_archived(
         read and the write.
     :raises StorageError: The write failed.
     """
-    current = load_run_as_listed(storage, run_id, scope_id, profile=profile)
+    current = _load_run_as_listed(storage, run_id, scope_id, profile=profile)
     if current.archived == archived:
         return current
     if not storage.set_eval_run_archived(run_id, scope_id, archived=archived):
@@ -353,7 +353,7 @@ def set_run_archived(
     )
     # Re-read rather than returning ``current`` with the flag flipped: the caller is told this is
     # "the run as persisted", and only storage can say what that is.
-    return load_run_as_listed(storage, run_id, scope_id, profile=profile)
+    return _load_run_as_listed(storage, run_id, scope_id, profile=profile)
 
 
 def set_analysis_archived(
@@ -932,7 +932,6 @@ __all__ = [
     "delete_result",
     "delete_run",
     "delete_unreadable_run",
-    "load_run_as_listed",
     "require_delete_confirmation",
     "set_analysis_archived",
     "set_campaign_archived",

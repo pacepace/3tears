@@ -43,7 +43,7 @@ write of the lost holder ever revives it.
 **The one way back is a resume** (:func:`~threetears.evals.ops.resume.job_resume`), asked for and never made on its own. A run's job that was
 lost, cancelled by an operator, or stopped by its budget or its provider account is taken up again as the same run,
 under its lease's next epoch: the cells it has not measured run, and it ends as an uninterrupted run would have
-(:func:`~threetears.evals.run.resume_run`). A sweep's or a launch's job is taken up as a whole, its arms' runs taken up
+(:func:`~threetears.evals.run.resume.resume_run`). A sweep's or a launch's job is taken up as a whole, its arms' runs taken up
 again and a sweep's never-launched arms launched, its arm schedule kept. A holding a job has passed from writes
 nothing more into it. :func:`~threetears.evals.run.resumable_jobs` lists what a resume would take up, for a host to
 offer at boot.
@@ -117,24 +117,24 @@ JobKind = Literal["launch", "run", "analysis", "sweep", "second_judge", "judge_t
 JobState = Literal["running", "completed", "stopped", "failed", "cancelled", "lost"]
 
 #: The states a job does not leave.
-TERMINAL_JOB_STATES: frozenset[str] = frozenset({"completed", "stopped", "failed", "cancelled", "lost"})
+_TERMINAL_JOB_STATES: frozenset[str] = frozenset({"completed", "stopped", "failed", "cancelled", "lost"})
 
 #: The prefix of a launched run's job id.
-RUN_JOB_PREFIX = "run:"
+_RUN_JOB_PREFIX = "run:"
 #: The prefix of an analysis generation's job id.
-ANALYSIS_JOB_PREFIX = "analysis:"
+_ANALYSIS_JOB_PREFIX = "analysis:"
 
 #: The prefix of a sweep's job id.
-SWEEP_JOB_PREFIX = "sweep:"
+_SWEEP_JOB_PREFIX = "sweep:"
 
 #: The prefix of a launch's job id.
-LAUNCH_JOB_PREFIX = "launch:"
+_LAUNCH_JOB_PREFIX = "launch:"
 
 #: The prefix of a second judge's pass's job id — a drift check's too.
-SECOND_JUDGE_JOB_PREFIX = "second-judge:"
+_SECOND_JUDGE_JOB_PREFIX = "second-judge:"
 
 #: The prefix of a judge temperature comparison's job id.
-JUDGE_TEMPERATURE_JOB_PREFIX = "judge-temperature:"
+_JUDGE_TEMPERATURE_JOB_PREFIX = "judge-temperature:"
 
 #: The prefix of a host action's job id.
 ACTION_JOB_PREFIX = "action:"
@@ -142,11 +142,11 @@ ACTION_JOB_PREFIX = "action:"
 #: Each single-id job kind by the prefix its id carries — every kind but the analysis generation, whose id
 #: carries its campaign too.
 _PREFIXED: dict[str, JobKind] = {
-    RUN_JOB_PREFIX: "run",
-    SWEEP_JOB_PREFIX: "sweep",
-    LAUNCH_JOB_PREFIX: "launch",
-    SECOND_JUDGE_JOB_PREFIX: "second_judge",
-    JUDGE_TEMPERATURE_JOB_PREFIX: "judge_temperature",
+    _RUN_JOB_PREFIX: "run",
+    _SWEEP_JOB_PREFIX: "sweep",
+    _LAUNCH_JOB_PREFIX: "launch",
+    _SECOND_JUDGE_JOB_PREFIX: "second_judge",
+    _JUDGE_TEMPERATURE_JOB_PREFIX: "judge_temperature",
     ACTION_JOB_PREFIX: "action",
 }
 
@@ -279,7 +279,7 @@ def generation_key(campaign_id: str, scope_id: str) -> str:
 
 def sweep_job_id(sweep_id: str) -> str:
     """The job id of a sweep."""
-    return f"{SWEEP_JOB_PREFIX}{sweep_id}"
+    return f"{_SWEEP_JOB_PREFIX}{sweep_id}"
 
 
 def sweep_key(sweep_id: str, scope_id: str) -> str:
@@ -330,7 +330,7 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
         kind="sweep",
         state=state,
         status=sweep.outcome,
-        done=state in TERMINAL_JOB_STATES,
+        done=state in _TERMINAL_JOB_STATES,
         progress=sweep_progress(sweep, runs),
         run_ids=[arm.run_id for arm in sweep.arms if arm.run_id is not None],
         campaign_id=sweep.campaign_id,
@@ -344,32 +344,17 @@ def _sweep_status(sweep: EvalSweep, runs: dict[str, EvalRun]) -> JobStatus:
 
 def run_job_id(run_id: str) -> str:
     """The job id of a launched run."""
-    return f"{RUN_JOB_PREFIX}{run_id}"
+    return f"{_RUN_JOB_PREFIX}{run_id}"
 
 
 def analysis_job_id(campaign_id: str, attempt_id: str) -> str:
     """The job id of an analysis generation: its campaign, then its attempt."""
-    return f"{ANALYSIS_JOB_PREFIX}{campaign_id}:{attempt_id}"
+    return f"{_ANALYSIS_JOB_PREFIX}{campaign_id}:{attempt_id}"
 
 
 def launch_job_id(launch_id: str) -> str:
     """The job id of a launch."""
-    return f"{LAUNCH_JOB_PREFIX}{launch_id}"
-
-
-def second_judge_job_id(pass_id: str) -> str:
-    """The job id of a second judge's pass."""
-    return f"{SECOND_JUDGE_JOB_PREFIX}{pass_id}"
-
-
-def judge_temperature_job_id(check_id: str) -> str:
-    """The job id of a judge temperature comparison."""
-    return f"{JUDGE_TEMPERATURE_JOB_PREFIX}{check_id}"
-
-
-def action_job_id(record_id: str) -> str:
-    """The job id of a host action's job."""
-    return f"{ACTION_JOB_PREFIX}{record_id}"
+    return f"{_LAUNCH_JOB_PREFIX}{launch_id}"
 
 
 def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
@@ -385,10 +370,10 @@ def parse_job_id(job_id: str) -> tuple[JobKind, str, str | None]:
     for prefix, kind in _PREFIXED.items():
         if job_id.startswith(prefix) and job_id[len(prefix) :]:
             return kind, job_id[len(prefix) :], None
-    if job_id.startswith(ANALYSIS_JOB_PREFIX):
+    if job_id.startswith(_ANALYSIS_JOB_PREFIX):
         # The attempt id is a uuid and holds no colon, so the LAST colon splits it from a campaign id
         # that might hold one.
-        campaign_id, colon, attempt_id = job_id[len(ANALYSIS_JOB_PREFIX) :].rpartition(":")
+        campaign_id, colon, attempt_id = job_id[len(_ANALYSIS_JOB_PREFIX) :].rpartition(":")
         if colon and campaign_id and attempt_id:
             return "analysis", campaign_id, attempt_id
     raise ValidationFailedError(
@@ -427,7 +412,7 @@ def _run_status(run: EvalRun) -> JobStatus:
         kind="run",
         state=state,
         status=run.status,
-        done=state in TERMINAL_JOB_STATES,
+        done=state in _TERMINAL_JOB_STATES,
         progress=dict(run.progress),
         run_id=run.id,
         detail=detail if state != "completed" else None,
@@ -456,7 +441,7 @@ def _attempt_status(job_id: str, attempt: EvalAnalysisAttempt) -> JobStatus:
         kind="analysis",
         state=state,
         status=attempt.outcome,
-        done=state in TERMINAL_JOB_STATES,
+        done=state in _TERMINAL_JOB_STATES,
         campaign_id=attempt.campaign_id,
         analysis_id=attempt.analysis_id,
         detail=attempt.lost.cause if attempt.lost is not None else (attempt.error if state != "running" else None),
@@ -505,7 +490,7 @@ def _record_status(
         kind=kind,
         state=state,
         status=record.outcome,
-        done=state in TERMINAL_JOB_STATES,
+        done=state in _TERMINAL_JOB_STATES,
         progress=progress or {},
         run_id=run_id,
         run_ids=run_ids or [],
@@ -516,7 +501,7 @@ def _record_status(
     )
 
 
-def launch_progress(launch: EvalLaunch, runs: dict[str, EvalRun]) -> dict[str, Any]:
+def _launch_progress(launch: EvalLaunch, runs: dict[str, EvalRun]) -> dict[str, Any]:
     """A launch's progress: its runs started and finished, and each started run's status by its arm.
 
     :param launch: Its record.
@@ -626,7 +611,7 @@ async def job_poll(host: OpsHost, job_id: str, scope_id: str) -> JobStatus:
         started = await run_blocking(
             eval_host.blocking_executor, eval_host.storage.load_eval_runs, launch.run_ids, scope_id
         )
-        progress = launch_progress(launch, {run.id: run for run in started})
+        progress = _launch_progress(launch, {run.id: run for run in started})
         return _record_status(job_id, kind, launch, run_ids=list(launch.run_ids), progress=progress)
     if kind == "second_judge":
         judged = await _settled(host, SECOND_JUDGE_JOB, target_id, scope_id)
@@ -922,23 +907,12 @@ async def await_job(host: OpsHost, started: JobsStarted, scope_id: str) -> list[
 
 __all__ = [
     "ACTION_JOB_PREFIX",
-    "JUDGE_TEMPERATURE_JOB_PREFIX",
-    "LAUNCH_JOB_PREFIX",
-    "SECOND_JUDGE_JOB_PREFIX",
     "AdmittedJob",
     "SecondJudgeRead",
-    "action_job_id",
     "await_job",
-    "judge_temperature_job_id",
     "launch_job_id",
-    "launch_progress",
-    "second_judge_job_id",
     "start_action_job",
     "start_job",
-    "ANALYSIS_JOB_PREFIX",
-    "RUN_JOB_PREFIX",
-    "SWEEP_JOB_PREFIX",
-    "TERMINAL_JOB_STATES",
     "JobHandle",
     "JobKind",
     "JobState",

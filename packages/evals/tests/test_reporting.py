@@ -51,7 +51,6 @@ from threetears.evals.analysis.lenses.comparison_sets import (
     BADGE_TOOL_CONFIG_DIFFERS,
     ComparisonSet,
     compute_comparison_sets,
-    difference_was_declared_at_launch,
 )
 from threetears.evals.analysis.lenses.cost_estimate import CostEstimateError, PredictedValue, compute_estimate_cost
 from threetears.evals.analysis.lenses.pivot import (
@@ -4435,26 +4434,6 @@ class TestCassetteBadge:
         assert group.shared_test_case_ids
 
 
-class TestDifferenceWasDeclaredAtLaunch:
-    """The generic half — the rule that extracts, tested apart from its vocabulary."""
-
-    def test_every_arm_declaring_is_a_declared_difference(self):
-        assert difference_was_declared_at_launch(["chosen", "chosen"]) is True
-
-    @pytest.mark.parametrize("origins", [["chosen", "inherited"], ["subject", "subject"], ["chosen", None]])
-    def test_one_arm_that_inherited_makes_the_whole_difference_undeclared(self, origins):
-        """Conservative by construction.
-
-        A comparison cannot claim to be sweeping an axis one of its arms was never
-        pointed at, so a single inheriting arm settles it for the set.
-        """
-        assert difference_was_declared_at_launch(origins) is False
-
-    def test_nothing_declared_is_never_read_as_a_declaration(self):
-        """An empty set is silence, and silence is not consent to call it a sweep."""
-        assert difference_was_declared_at_launch([]) is False
-
-
 class TestComparisonSetsScope:
     """Badging the set under analysis rather than everything that groups with it.
 
@@ -7954,31 +7933,6 @@ class TestSignificanceFormatting:
         assert f"{PAIRED_EFFECT_LABEL}=4.02" in paired
         assert f"{UNPAIRED_EFFECT_LABEL}=4.02" in unpaired
         assert f"{PAIRED_EFFECT_LABEL}=" not in unpaired
-
-    def test_the_disclosure_names_the_paired_test_and_its_threshold(self):
-        from threetears.evals.analysis.significance import significance_disclosure
-        from threetears.evals.analysis.stats import PAIRED_TEST_NAME
-
-        sentence = significance_disclosure(paired=True)
-
-        assert PAIRED_TEST_NAME in sentence
-        assert "Descriptive only" in sentence
-
-    def test_the_disclosure_names_the_unpaired_test_when_samples_were_not_paired(self):
-        """Which test ran is most of what a small arm's verdict rests on."""
-        from threetears.evals.analysis.significance import significance_disclosure
-        from threetears.evals.analysis.stats import PAIRED_TEST_NAME, UNPAIRED_TEST_NAME
-
-        sentence = significance_disclosure(paired=False)
-
-        assert UNPAIRED_TEST_NAME in sentence
-        assert PAIRED_TEST_NAME not in sentence
-
-    def test_the_disclosure_promises_no_alerting(self):
-        """Reporting presents and compares; it never routes a verdict anywhere."""
-        from threetears.evals.analysis.significance import significance_disclosure
-
-        assert "no alerting" in significance_disclosure(paired=True)
 
 
 class TestCrossSubjectDisclosure:

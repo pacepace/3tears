@@ -2,8 +2,7 @@
 
 :func:`compute_comparison_sets` groups runs by context identity and case set, and badges every group whose
 members differ in a way a reader must see (context, case set, roles, tool config, measurement windows,
-cassette mode). :func:`difference_was_declared_at_launch` is the rule beneath a lever-origin disclosure: a
-difference between arms is a swept axis only when each arm's launch declared it.
+cassette mode).
 """
 
 from __future__ import annotations
@@ -69,35 +68,7 @@ class CaseSetIdentity(EvalBaseModel):
 #:
 #: The vocabulary of origins is a host's; what the engine owns is the RULE beneath it, and the
 #: surface that renders a particular lever's sentence lives with that lever's vocabulary, in the host.
-DECLARED_INPUT_ORIGIN = "chosen"
-
-
-def difference_was_declared_at_launch(origins: Iterable[str | None]) -> bool:
-    """Whether every one of these runs got its value from its own launch declaration.
-
-    **The generic half of a lever-origin disclosure, and the part that stayed.** The rule is
-    not about any one lever: a difference between arms is a *swept axis* when each arm's launch
-    declared the value, and a *confound* when any arm inherited it from a tier the comparison
-    never named. Only the vocabulary (``chosen`` / a subject-carried tier / an inherited
-    default) is a host's; the rule is the same one a campaign's declared design will state
-    formally once it declares one, at which point this reads the declaration instead of
-    the origins. A host calls it to write, for example, the sentence about which model its
-    arms delegated background work to.
-
-    Conservative by construction: one arm that inherited its value is enough to make the
-    whole difference undeclared, because the comparison cannot claim to be sweeping an
-    axis one of its arms was never pointed at.
-
-    :param origins: One origin per compared run, as the run recorded it. ``None`` means the
-        run recorded no origin and therefore declared nothing that can be read.
-    :ptype origins: Iterable[str | None]
-    :return: ``True`` when every origin is :data:`DECLARED_INPUT_ORIGIN`. ``False`` for an
-        empty set — nothing declared anything — so a caller can never read silence as a
-        declaration.
-    :rtype: bool
-    """
-    listed = list(origins)
-    return bool(listed) and all(origin == DECLARED_INPUT_ORIGIN for origin in listed)
+_DECLARED_INPUT_ORIGIN = "chosen"
 
 
 class ComparisonSet(EvalBaseModel):
@@ -725,6 +696,4 @@ __all__ = [
     "ComparisonSet",
     "ComparisonSetsResult",
     "compute_comparison_sets",
-    "DECLARED_INPUT_ORIGIN",
-    "difference_was_declared_at_launch",
 ]

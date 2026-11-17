@@ -37,7 +37,7 @@ log = get_logger(__name__)
 #: before dispatch (a ``dropped_tool_calls`` list on each turn record the kind dumps into the trace).
 #:
 #: One of the two covariates whose ZERO is load-bearing — see
-#: :data:`REFUSED_TOOL_ATTACHES_KEY` for its sibling — and that is why the key exists.
+#: :data:`_REFUSED_TOOL_ATTACHES_KEY` for its sibling — and that is why the key exists.
 #: A template's ``tools_allowed`` bound is enforced by simply not registering the tool, so a
 #: candidate reaching for a bounded-away tool leaves no dispatch, no ``tool_result``, and no
 #: error — the reach was visible only as a WARNING in the process log, which no eval read
@@ -45,7 +45,7 @@ log = get_logger(__name__)
 #: and a candidate could score as better-behaved under a bound than it was. ``0`` here means
 #: the cell's turns were watched and nothing was dropped; an ABSENT key still means nobody
 #: looked (no candidate turn ran), which is the module's sparse rule intact.
-DROPPED_TOOL_CALLS_KEY = "dropped_tool_calls"
+_DROPPED_TOOL_CALLS_KEY = "dropped_tool_calls"
 
 #: Covariate key: how many times the candidate asked to attach a tool outside its run's
 #: ``tools_allowed`` and the harness refused. Counted off a ``refused_tool_attaches`` list on
@@ -55,7 +55,7 @@ DROPPED_TOOL_CALLS_KEY = "dropped_tool_calls"
 #: whose turn record carries the field owns a test that a real dumped record reaches this
 #: counter, so a rename on its side reddens rather than silently unmeasuring the covariate.
 #:
-#: The sibling of :data:`DROPPED_TOOL_CALLS_KEY`, and the same defect one seam over. A
+#: The sibling of :data:`_DROPPED_TOOL_CALLS_KEY`, and the same defect one seam over. A
 #: bounded-away tool the candidate CALLS leaves a dropped call; a bounded-away tool the
 #: candidate asks to ATTACH leaves a ``_plog.warning`` and a system perception telling it no,
 #: and no eval read surface counted either half. So an operator could not distinguish a
@@ -65,7 +65,7 @@ DROPPED_TOOL_CALLS_KEY = "dropped_tool_calls"
 #:
 #: Its zero is load-bearing for the same reason its sibling's is: ``0`` says the cell's turns
 #: were watched and nothing was refused. An ABSENT key still means nobody looked.
-REFUSED_TOOL_ATTACHES_KEY = "refused_tool_attaches"
+_REFUSED_TOOL_ATTACHES_KEY = "refused_tool_attaches"
 
 #: Covariate key: how many of the candidate's LLM rounds the provider cut off at the output
 #: cap — rounds whose ``stop_reason`` was ``max_tokens`` (the output reached the cap, or the
@@ -162,7 +162,7 @@ def count_refused_tool_attaches(trace: list[dict[str, Any]]) -> int | None:
 
     Reads a ``refused_tool_attaches`` list off each turn record, by the same route and with
     the same absent-versus-zero rule as :func:`count_dropped_tool_calls` —
-    see :data:`REFUSED_TOOL_ATTACHES_KEY` for why the refusal has to be counted at all.
+    see :data:`_REFUSED_TOOL_ATTACHES_KEY` for why the refusal has to be counted at all.
 
     **A turn record that carries no such field contributes nothing and does not make the
     cell measured.** A turn loop that does not stamp it is honestly "not measured", and the
@@ -233,8 +233,8 @@ def count_delivered_turns(trace: list[dict[str, Any]], *, reported: int | None) 
 COVARIATE_KEYS: frozenset[str] = frozenset(
     {
         "execution_mode",
-        DROPPED_TOOL_CALLS_KEY,
-        REFUSED_TOOL_ATTACHES_KEY,
+        _DROPPED_TOOL_CALLS_KEY,
+        _REFUSED_TOOL_ATTACHES_KEY,
         TRUNCATED_ROUNDS_KEY,
         TURN_BUDGET_ENDED_KEY,
         "context_tokens_in",
@@ -283,14 +283,14 @@ def derive_covariates(
     :ptype concurrent_eval_jobs: int | None
     :param dropped_tool_calls: How many tool calls the candidate emitted that the client
         dropped before dispatch, or ``None`` when no candidate turn was observed —
-        see :data:`DROPPED_TOOL_CALLS_KEY`. Unlike a resolved-model origin on the
+        see :data:`_DROPPED_TOOL_CALLS_KEY`. Unlike a resolved-model origin on the
         run renders, defaulting this one asserts nothing: a caller that omits it
         produces no key, which reads as "not measured" and is exactly what a cell
         that never reached a candidate turn should say.
     :ptype dropped_tool_calls: int | None
     :param refused_tool_attaches: How many self-attach requests the harness refused for
         being outside the run's ``tools_allowed``, or ``None`` when no candidate turn
-        reported the field — see :data:`REFUSED_TOOL_ATTACHES_KEY`. Defaults the same
+        reported the field — see :data:`_REFUSED_TOOL_ATTACHES_KEY`. Defaults the same
         way and for the same reason as ``dropped_tool_calls``: omitting it asserts
         nothing.
     :ptype refused_tool_attaches: int | None
@@ -312,10 +312,10 @@ def derive_covariates(
         out["execution_mode"] = "concurrent" if concurrent_eval_jobs > 1 else "serial"
 
     if dropped_tool_calls is not None:
-        out[DROPPED_TOOL_CALLS_KEY] = dropped_tool_calls
+        out[_DROPPED_TOOL_CALLS_KEY] = dropped_tool_calls
 
     if refused_tool_attaches is not None:
-        out[REFUSED_TOOL_ATTACHES_KEY] = refused_tool_attaches
+        out[_REFUSED_TOOL_ATTACHES_KEY] = refused_tool_attaches
 
     if truncated_rounds is not None:
         out[TRUNCATED_ROUNDS_KEY] = truncated_rounds
@@ -425,9 +425,7 @@ def fold_phase_timings(
 __all__ = [
     "COVARIATE_KEYS",
     "undeclarable_covariates",
-    "DROPPED_TOOL_CALLS_KEY",
     "REASONING_RATIO_KEY",
-    "REFUSED_TOOL_ATTACHES_KEY",
     "TRUNCATED_ROUNDS_KEY",
     "TURN_BUDGET_ENDED_KEY",
     "count_delivered_turns",

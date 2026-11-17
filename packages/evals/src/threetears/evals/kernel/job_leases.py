@@ -30,7 +30,7 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
   and hears a cancel asked of it, as a renewal would have; a lease the store's clock reads lapsed is never revived.
 - **The one way back is a resume, under a new epoch.** No renewal and no write of the holding that lost a job brings
   it back. A run that was lost (or cancelled, or stopped by its budget or its account) is continued only when someone
-  asks (:func:`~threetears.evals.run.resume_run`, the ``job_resume`` action): its record is reopened, conditionally on
+  asks (:func:`~threetears.evals.run.resume.resume_run`, the ``job_resume`` action): its record is reopened, conditionally on
   the record as read, under a lease at the next ``epoch`` held by the process resuming it, and every holding at an
   earlier epoch is fenced as above. Nothing resumes a job on its own, at boot or otherwise.
 - **A cancel is a field on the record** (``cancel_requested_at``), written by whichever process was asked
@@ -893,7 +893,7 @@ class JobLeases:
 
         A lease the store's clock reads lapsed is never revived: the record is written lost, as a renewal writes it,
         this process lets it go and stops its job, and nothing is written. Only a resume continues the job, under a
-        new lease at the next epoch (:func:`~threetears.evals.run.resume_run`). A store clock that cannot be read
+        new lease at the next epoch (:func:`~threetears.evals.run.resume.resume_run`). A store clock that cannot be read
         leaves the lease as stored, logged: the write it was only to extend still lands.
 
         Blocking: call it off the event loop, as every store call is.

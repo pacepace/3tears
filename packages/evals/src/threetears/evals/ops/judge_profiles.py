@@ -3,7 +3,7 @@
 A judge campaign's readout (:func:`~threetears.evals.analysis.judge_kind_readings`) lives in that campaign alone.
 :func:`judge_profiles_record` stores it — one :class:`~threetears.evals.kernel.EvalJudgeProfile` per judge and
 criterion — from the runs the operator names, so every campaign the same judge scores reads its evidence tier from
-it where its own evidence decides none (:func:`~threetears.evals.analysis.tiers_with_judge_profiles`).
+it where its own evidence decides none (:func:`~threetears.evals.analysis.judge_profiles.tiers_with_judge_profiles`).
 
 **An explicit step, never a write on completion.** Which runs make up one measurement is the operator's call: a
 campaign's arms are several runs, a re-run of one arm may be meant to replace it, and a run abandoned halfway should

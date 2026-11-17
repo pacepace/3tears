@@ -3,8 +3,7 @@
 The port is :class:`CompletionClient` — ``async generate(*, system, user, response_format=None)``
 plus a lifecycle — built by the host and handed to the engine; the engine never builds one and
 never names a provider. Beside it sit what a completion hands back (:class:`CompletionResult`) and
-why it stopped (:data:`StopReason`); the one-key wire directive for JSON-object output
-(:data:`JSON_OBJECT_RESPONSE_FORMAT`); and the failure half of the port (:class:`ProviderFailure` /
+why it stopped (:data:`StopReason`); and the failure half of the port (:class:`ProviderFailure` /
 :class:`ProviderFailureDescriber`): the client says what a call returns, and the describer says what
 the engine may know when the call raised. The engine never reads an exception's own text, because
 on an OpenAI-shaped provider ``str(exc)`` is the parsed response envelope, account fields included.
@@ -20,13 +19,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol, Self, get_args
 
 from threetears.evals.schema.models import ClientRequestSettings, StopReason
-
-#: ``response_format`` directive asking for any JSON object, with no shape. No package call sends it: every call
-#: whose reply is read into a typed shape (the judge, the analysis generator, the proposer on either axis, the
-#: variation writer, the simulated user) sends that shape as a strict ``json_schema`` directive
-#: (:func:`~threetears.evals.kernel.strict_response_format`). Kept for a host's own calls, and for its client's
-#: translation of the strict directive to a provider that has only JSON mode.
-JSON_OBJECT_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
 
 
 #: The longest one request capped at ``max_tokens`` output tokens can take on the host's client, in
@@ -607,7 +599,6 @@ __all__ = [
     "CompletionProtocolDefect",
     "CompletionResult",
     "FailureOwner",
-    "JSON_OBJECT_RESPONSE_FORMAT",
     "ModelListing",
     "OPTIONAL_COMPLETION_ATTRIBUTES",
     "PricedCompletion",

@@ -87,7 +87,7 @@ _WRITE_ATTEMPTS = 3
 
 #: A repeat's wall-clock ceiling as a job: generous, since every call is bounded by its client and the repeat stops
 #: on an account refusal; it exists so one whose provider hangs is ended rather than held forever.
-JUDGE_REPEAT_BUDGET_S = 6 * 3600.0
+_JUDGE_REPEAT_BUDGET_S = 6 * 3600.0
 
 #: The name a repeat's job record (:class:`~threetears.evals.run.EvalActionJob`) carries as its ``action``.
 JUDGE_REPEAT_ACTION = "judge_repeat"
@@ -546,7 +546,7 @@ async def judge_repeat_work(
         action=JUDGE_REPEAT_ACTION,
         run=repeat,
         label=f"run {prepared.collected.run.id}",
-        budget_s=JUDGE_REPEAT_BUDGET_S,
+        budget_s=_JUDGE_REPEAT_BUDGET_S,
         discard=prepared.service.aclose,
     )
 
@@ -699,6 +699,5 @@ __all__ = [
     "estimate_judge_repeat",
     "planned_judge_call",
     "JUDGE_REPEAT_ACTION",
-    "JUDGE_REPEAT_BUDGET_S",
     "judge_repeat_work",
 ]

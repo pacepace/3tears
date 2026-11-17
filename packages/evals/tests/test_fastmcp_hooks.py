@@ -60,13 +60,13 @@ from threetears.evals.transports import fastmcp as fastmcp_transport
 from threetears.evals.transports.fastmcp import (
     CallAnnotator,
     CallHook,
-    DEFAULT_CALL_TIMEOUT_S,
     CallTimedOut,
     HostResolution,
     ToolBinding,
     ToolCall,
     mount_fastmcp,
 )
+from threetears.evals.transports.fastmcp import DEFAULT_CALL_TIMEOUT_S
 from packages.evals.tests.ops_support import CALLER, ops_fixture
 from packages.evals.tests.off_loop import off_loop
 

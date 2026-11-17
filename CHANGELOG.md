@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: provisional names nothing reaches leave the public roots
+
+**Removed:** 88 provisional names leave the public roots (`MIGRATIONS.toml` records the 87 a release shipped). Each
+is reached by no declared name's signature, field, base, raised error or docstring, is imported by no host's
+production code, and is used by no shipped example or page and by no module but the one defining it. Twelve that
+nothing called are deleted (`run.cancel_run`, whose work `job_cancel` does, `run.get_judge_config`,
+`run.get_rubric_dim`, `run.list_runs_disclosing`, `schema.JSON_OBJECT_RESPONSE_FORMAT`,
+`analysis.significance_disclosure`, `analysis.difference_was_declared_at_launch`, `analysis.metric_help`,
+`analysis.SCOPED_METRICS_HELP`, and the three job-id helpers `ops.action_job_id`, `ops.judge_temperature_job_id`
+and `ops.second_judge_job_id`); each of the rest stays in the module defining it. No stored or served shape moves,
+and no wire name: an action's parameters and results, and every stored document class, count as reached.
+
+**For hosts:** nothing to do. Every name the recorded host's production code imports still resolves from its root,
+and so do the two that its tests import from among the candidates (`kernel.INCOMPLETE_STOP_REASONS`,
+`kernel.host.UNSEATED_LEVEL`), which stay.
+
 ### evals: a quick comparison may be read again as cases are added, with nothing declared
 
 **Changed:** a comparison an `Eval` runs (two arms or more) into a store that holds the one it filed before under its

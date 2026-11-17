@@ -25,7 +25,7 @@ Clients a host builds outside that factory are not watched, so a host routes eve
 request in its call — the request is the job's — and returns ``JobsStarted``, yet the transport call still waits
 on the model. So while a call runs, every request a job makes waits in the guarded client until the call has
 returned; a call that waits on its own job never returns, and the request gives up after
-``call_return_timeout_s`` (:data:`DEFAULT_CALL_RETURN_TIMEOUT_S`), refused (:class:`JobAwaitedByItsCall`) and
+``call_return_timeout_s`` (10 seconds by default), refused (:class:`JobAwaitedByItsCall`) and
 recorded, and the case fails naming it.
 
 A spend action without a happy path is refused when it is declared (:class:`~threetears.evals.actions.Action`), so a
@@ -59,8 +59,6 @@ log = get_logger(__name__)
 
 
 __all__ = [
-    "DEFAULT_CALL_RETURN_TIMEOUT_S",
-    "DEFAULT_JOB_CONFORMANCE_TIMEOUT_S",
     "BuildConformanceHost",
     "CompletionGuard",
     "CompletionOutsideJob",
@@ -72,11 +70,11 @@ __all__ = [
 ]
 
 #: How long a happy path's jobs are polled for before the case gives up on them, in seconds.
-DEFAULT_JOB_CONFORMANCE_TIMEOUT_S = 60.0
+_DEFAULT_JOB_CONFORMANCE_TIMEOUT_S = 60.0
 
 #: How long a job's request waits, while the call that started its job runs, for that call to return, in seconds.
 #: A conforming call returns at once; one still running when this passes is waiting on its own job.
-DEFAULT_CALL_RETURN_TIMEOUT_S = 10.0
+_DEFAULT_CALL_RETURN_TIMEOUT_S = 10.0
 
 
 class JobsConformanceFailure(AssertionError):
@@ -173,7 +171,7 @@ class CompletionGuard:
     outside: list[str] = field(default_factory=list)
     inside: int = 0
     awaited_by_call: list[str] = field(default_factory=list)
-    call_return_timeout_s: float = DEFAULT_CALL_RETURN_TIMEOUT_S
+    call_return_timeout_s: float = _DEFAULT_CALL_RETURN_TIMEOUT_S
     _no_call_running: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -383,8 +381,8 @@ def _happy_path_case(action: Action, timeout_s: float, call_return_timeout_s: fl
 def jobs_conformance_cases(
     catalogue: ActionCatalogue,
     *,
-    job_timeout_s: float = DEFAULT_JOB_CONFORMANCE_TIMEOUT_S,
-    call_return_timeout_s: float = DEFAULT_CALL_RETURN_TIMEOUT_S,
+    job_timeout_s: float = _DEFAULT_JOB_CONFORMANCE_TIMEOUT_S,
+    call_return_timeout_s: float = _DEFAULT_CALL_RETURN_TIMEOUT_S,
 ) -> tuple[JobsConformanceCase, ...]:
     """Every case the catalogue's actions are held to: each action's call, and each spend action's happy path.
 

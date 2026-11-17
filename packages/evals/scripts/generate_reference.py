@@ -368,7 +368,8 @@ def _json_type(schema: dict[str, Any]) -> str:
 
 
 def actions_section() -> Iterator[str]:
-    from threetears.evals.actions import PERMISSION_CLASSES, engine_actions, standard_tools
+    from threetears.evals.actions import PermissionClass, standard_tools
+    from threetears.evals.actions.engine import engine_actions
 
     actions = engine_actions()
     yield anchor("actions")
@@ -384,7 +385,7 @@ def actions_section() -> Iterator[str]:
     yield "| Tool (default prefix) | Classes it mounts | Description |"
     yield "|---|---|---|"
     for tool in standard_tools():
-        classes = ", ".join(f"`{c}`" for c in PERMISSION_CLASSES if c in tool.permissions)
+        classes = ", ".join(f"`{c}`" for c in typing.get_args(PermissionClass) if c in tool.permissions)
         yield f"| `{tool.name}` | {classes} | {cell(md_text(tool.description))} |"
     yield ""
     params: dict[tuple[str, str, str], list[str]] = {}

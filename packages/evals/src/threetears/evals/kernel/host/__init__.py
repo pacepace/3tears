@@ -90,7 +90,6 @@ from threetears.evals.kernel.host.sweepables import (
     RolePins,
     Sweepable,
     SweepableRegistry,
-    served_models_by_score,
     Comparability,
     FamilyMemberTest,
     ProductionDepartureReader,
@@ -204,5 +203,4 @@ __all__ = [
     "freeze",
     "obligations",
     "schema_violations",
-    "served_models_by_score",
 ]

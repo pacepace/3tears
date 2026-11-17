@@ -33,13 +33,8 @@ from threetears.evals.schema import EvalRun
 from threetears.evals.kernel.identity import derive_context_identity, derive_variant_identity
 from threetears.evals.ops import LaunchArguments, run_launch
 from threetears.evals.quick import run_cli
-from threetears.evals.run import (
-    LaunchableKind,
-    LaunchHost,
-    LaunchRequest,
-    settable_apparatus,
-    start_run,
-)
+from threetears.evals.run import LaunchableKind, LaunchHost, LaunchRequest, start_run
+from threetears.evals.run.launch import settable_apparatus
 from threetears.evals.storage import InMemoryDocumentStore
 from threetears.evals.transports.fastmcp import mount_fastmcp
 from packages.evals.tests.factories import make_eval_run

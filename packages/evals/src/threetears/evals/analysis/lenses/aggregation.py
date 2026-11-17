@@ -1,7 +1,6 @@
 """The aggregation vocabulary the read lenses share: weighting modes, observation-to-aggregate names, and the roll-up.
 
-:func:`resolve_measure_name` maps an aggregate name back to the observation it rolls up, :func:`metric_help` glosses
-each, and :func:`_aggregate` rolls a cell's observations into one number under a weighting mode. The pivot, the
+:func:`resolve_measure_name` maps an aggregate name back to the observation it rolls up, and :func:`_aggregate` rolls a cell's observations into one number under a weighting mode. The pivot, the
 frontier and the history all aggregate through here.
 """
 
@@ -161,25 +160,6 @@ _METRIC_GLOSS: dict[str, str] = {
 }
 
 
-def metric_help(accepted: frozenset[str]) -> str:
-    """Render the metrics a surface accepts, each glossed and beside its catalog name, for its help text.
-
-    The one producer of that list for the pivot and history help on REST and MCP alike, so a help
-    text cannot name a metric its surface refuses or leave out one it accepts.
-
-    :param accepted: The observation-level names the surface accepts.
-    :ptype accepted: frozenset[str]
-    :return: A semicolon-joined list, in name order.
-    :rtype: str
-    """
-    return "; ".join(
-        f"'{name}' ({_METRIC_GLOSS[name]}"
-        + (f"; or its catalog name '{_AGGREGATE_OF_OBSERVATION[name]}'" if name in _AGGREGATE_OF_OBSERVATION else "")
-        + ")"
-        for name in sorted(accepted)
-    )
-
-
 def _describe_aggregate(metric: str, *, profile: HostProfile) -> MetricDescriptor:
     """Describe what a pivot CELL holds, which is an aggregate over rows.
 
@@ -285,7 +265,6 @@ def _aggregate(values_by_case: dict[str, list[float]], weighting: str) -> tuple[
 
 __all__ = [
     "DEFAULT_WEIGHTING",
-    "metric_help",
     "resolve_measure_name",
     "WEIGHTING_EQUAL_PER_SCENARIO",
     "WEIGHTING_SAMPLE_WEIGHTED",

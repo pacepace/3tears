@@ -13,14 +13,9 @@ from typing import Any
 import pytest
 
 
-from threetears.evals.actions import engine_actions
-from threetears.evals.analysis import (
-    JudgeKey,
-    assemble_context_bundle,
-    judge_kind_readings,
-    judge_profiles_of,
-    judged_criteria,
-)
+from threetears.evals.actions.engine import engine_actions
+from threetears.evals.analysis import JudgeKey, assemble_context_bundle, judge_kind_readings, judge_profiles_of
+from threetears.evals.analysis.judge_profiles import judged_criteria
 from threetears.evals.analysis.report import DisclosureBlock, build_code_only_report
 from threetears.evals.kernel import (
     CALIBRATION_MIN_RESULTS,

@@ -86,7 +86,7 @@ log = get_logger(__name__)
 #: one field — correctly, and only because someone noticed. A private name reached
 #: across a package boundary is the other way that goes wrong, so these are declared as
 #: what they are: part of what a host's service tells its surfaces.
-TEMPLATE_SERVER_FIELDS: tuple[str, ...] = (
+_TEMPLATE_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
     "schema_version",
@@ -205,8 +205,8 @@ def create_template(
     :raises ConflictError: a template with the same name already exists.
     :raises RefusedInput: The host supplies no template checks.
     """
-    reject_unknown_authoring_fields("create_template", definition, EvalTemplate, TEMPLATE_SERVER_FIELDS)
-    clean = {k: v for k, v in definition.items() if k not in TEMPLATE_SERVER_FIELDS}
+    reject_unknown_authoring_fields("create_template", definition, EvalTemplate, _TEMPLATE_SERVER_FIELDS)
+    clean = {k: v for k, v in definition.items() if k not in _TEMPLATE_SERVER_FIELDS}
     try:
         template = EvalTemplate(**clean, scope_id=scope_id)
     except ValidationError as e:
@@ -421,7 +421,7 @@ def refuse_undeclared_judges(
     )
 
 
-def refuse_stale_presumptions(template: EvalTemplate, *, profile: HostProfile) -> None:
+def _refuse_stale_presumptions(template: EvalTemplate, *, profile: HostProfile) -> None:
     """Refuse a template presuming world state this host's registry no longer declares.
 
     **Called where a template is USED, not where one is listed**, and the distinction is the
@@ -620,7 +620,7 @@ def get_template(host: EvalHost, template_id: str, scope_id: str) -> EvalTemplat
     template = host.storage.load_template(template_id, scope_id)
     if template is None:
         raise NotFoundError("template", template_id, remedy=FIND_TEMPLATE)
-    refuse_stale_presumptions(template, profile=host.profile)
+    _refuse_stale_presumptions(template, profile=host.profile)
     return template
 
 
@@ -685,9 +685,9 @@ def update_template(
         raise ValidationFailedError(
             "update_template was given no field to change", remedy="name at least one template field to change"
         )
-    reject_unknown_authoring_fields("update_template", fields, EvalTemplate, TEMPLATE_SERVER_FIELDS)
+    reject_unknown_authoring_fields("update_template", fields, EvalTemplate, _TEMPLATE_SERVER_FIELDS)
 
-    changes = {key: value for key, value in fields.items() if key not in TEMPLATE_SERVER_FIELDS}
+    changes = {key: value for key, value in fields.items() if key not in _TEMPLATE_SERVER_FIELDS}
     # `updated_at` decides which runs still read this template's criteria and intent, and which may be rejudged or
     # taken up again (a run launched before it reads none of them), so an edit of how a page prints it alone leaves
     # the stamp, and every run, where it was.
@@ -764,7 +764,7 @@ def update_template(
 
 
 #: Identity/lifecycle fields the rubric-dim family owns — never taken from caller input.
-RUBRIC_DIM_SERVER_FIELDS: tuple[str, ...] = (
+_RUBRIC_DIM_SERVER_FIELDS: tuple[str, ...] = (
     "id",
     "doc_type",
     "schema_version",
@@ -798,8 +798,8 @@ def create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, s
     :raises ValidationFailedError: ``definition`` fails catalog-dim validation.
     :raises ConflictError: an active dim with the same ``key`` already exists.
     """
-    reject_unknown_authoring_fields("create_rubric_dim", definition, CatalogRubricDim, RUBRIC_DIM_SERVER_FIELDS)
-    clean = {k: v for k, v in definition.items() if k not in RUBRIC_DIM_SERVER_FIELDS}
+    reject_unknown_authoring_fields("create_rubric_dim", definition, CatalogRubricDim, _RUBRIC_DIM_SERVER_FIELDS)
+    clean = {k: v for k, v in definition.items() if k not in _RUBRIC_DIM_SERVER_FIELDS}
     try:
         dim = CatalogRubricDim(**clean, scope_id=scope_id)
     except ValidationError as e:
@@ -812,17 +812,6 @@ def create_rubric_dim(storage: DefinitionStore, definition: dict[str, Any], *, s
         )
 
     storage.save_rubric_dim(dim)
-    return dim
-
-
-def get_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str) -> CatalogRubricDim:
-    """Load a catalog rubric dim by id within a scope.
-
-    :raises NotFoundError: No rubric dim with that id in the scope.
-    """
-    dim = storage.load_rubric_dim(dim_id, scope_id)
-    if dim is None:
-        raise NotFoundError("rubric dim", dim_id, remedy=FIND_RUBRIC_DIM)
     return dim
 
 
@@ -869,9 +858,9 @@ def update_rubric_dim(storage: DefinitionStore, dim_id: str, scope_id: str, fiel
         raise ValidationFailedError(
             "update_rubric_dim was given no field to change", remedy="name at least one rubric dim field to change"
         )
-    reject_unknown_authoring_fields("update_rubric_dim", fields, CatalogRubricDim, RUBRIC_DIM_SERVER_FIELDS)
+    reject_unknown_authoring_fields("update_rubric_dim", fields, CatalogRubricDim, _RUBRIC_DIM_SERVER_FIELDS)
 
-    changes = {key: value for key, value in fields.items() if key not in RUBRIC_DIM_SERVER_FIELDS}
+    changes = {key: value for key, value in fields.items() if key not in _RUBRIC_DIM_SERVER_FIELDS}
     changes["updated_at"] = utc_now_iso()
     try:
         dim = edited_core_document(CatalogRubricDim, existing, changes)
@@ -1001,17 +990,6 @@ def create_judge_config(storage: DefinitionStore, definition: dict[str, Any], *,
         )
 
     storage.save_judge_config(config)
-    return config
-
-
-def get_judge_config(storage: DefinitionStore, config_id: str, scope_id: str) -> JudgeConfig:
-    """Load a judge config by id within a scope.
-
-    :raises NotFoundError: No judge config with that id in the scope.
-    """
-    config = storage.load_judge_config(config_id, scope_id)
-    if config is None:
-        raise NotFoundError("judge config", config_id, remedy=FIND_JUDGE_CONFIG)
     return config
 
 
@@ -1183,8 +1161,6 @@ def delete_judge_config(storage: DefinitionStore, config_id: str, scope_id: str,
 
 __all__ = [
     "JUDGE_CONFIG_SERVER_FIELDS",
-    "RUBRIC_DIM_SERVER_FIELDS",
-    "TEMPLATE_SERVER_FIELDS",
     "active_judge_config_in",
     "admit_template",
     "admit_template_case",
@@ -1193,14 +1169,11 @@ __all__ = [
     "create_template",
     "delete_judge_config",
     "delete_rubric_dim",
-    "get_judge_config",
-    "get_rubric_dim",
     "get_template",
     "judge_declaration_defects",
     "list_judge_configs",
     "list_rubric_dims",
     "list_templates",
-    "refuse_stale_presumptions",
     "refuse_undeclared_judges",
     "refuse_unsupplied_world",
     "update_judge_config",

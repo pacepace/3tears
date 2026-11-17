@@ -35,7 +35,8 @@ from threetears.evals.kernel.result_condition import ResultOutcome, classify_res
 from threetears.evals.ops import LaunchArguments, OpsHost, run_launch, run_job_id
 from threetears.evals.providers import ProviderError, describe_failure
 from threetears.evals.providers.failures import error_from_response
-from threetears.evals.run import ModelUnservedError, RunnerOptions, execute_run, resumable_jobs, resume_run
+from threetears.evals.run import ModelUnservedError, RunnerOptions, execute_run, resumable_jobs
+from threetears.evals.run.resume import resume_run
 from threetears.evals.run.budget import BudgetStoppedError, EvalRunCostCap
 from threetears.evals.run.judge import JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.launch import build_judge_service

@@ -127,19 +127,14 @@ __all__ = [  # noqa: RUF022 — the sort deletes the note below, which is why th
     "TRANSCRIPT_DIM_ID",
     "METRIC_DESCRIPTORS",
     "CODE_GRADED_FAMILIES",
-    "CLASSIFIER_FAMILY",
     "CLASSIFIER_LABEL_MEASURE_PREFIX",
-    "COMPOSITE_FAMILY",
     "ACCURACY_MEASURE",
     "CONFUSION_CELL_MEASURE",
     "CONFUSION_SEPARATOR",
     "CLASSIFIER_TRACK_MEASURES",
-    "DUAL_AXIS_FAMILY",
     "FRONTIER_RANKING_MEASURE",
     "ENGINE_FAMILIES",
-    "GOAL_STATE_FAMILY",
     "MATCH_MEASURE",
-    "MECHANICAL_FAMILY",
     "RUBRIC_FAMILY",
     "ClassifierStatistic",
     "GradedBy",
@@ -204,17 +199,17 @@ MetricDataType = Literal["numeric", "categorical", "boolean", "text"]
 MetricFamily = str
 
 #: Measured the same way everywhere by code: wall-clock, tokens, spend, counts.
-MECHANICAL_FAMILY: MetricFamily = "mechanical"
+_MECHANICAL_FAMILY: MetricFamily = "mechanical"
 #: A label compared against an expected one by code.
-CLASSIFIER_FAMILY: MetricFamily = "classifier"
+_CLASSIFIER_FAMILY: MetricFamily = "classifier"
 #: A goal-state check's verdict: code compared against what the candidate did.
-GOAL_STATE_FAMILY: MetricFamily = "goal_state"
+_GOAL_STATE_FAMILY: MetricFamily = "goal_state"
 #: A judge's score on an authored rubric dimension.
 RUBRIC_FAMILY: MetricFamily = "rubric"
 #: The two reserved judge axes every judged run is scored on.
-DUAL_AXIS_FAMILY: MetricFamily = "dual_axis"
+_DUAL_AXIS_FAMILY: MetricFamily = "dual_axis"
 #: A figure built over several results or runs: pass^k, the composite, a comparison's effect size.
-COMPOSITE_FAMILY: MetricFamily = "composite"
+_COMPOSITE_FAMILY: MetricFamily = "composite"
 
 #: Who produced a family's numbers. ``code`` is what the analysis generator may rank on and a bar on a
 #: described measure may name; ``judge`` is a model's opinion and never ranks.
@@ -392,16 +387,16 @@ ENGINE_FAMILIES: Mapping[MetricFamily, MeasureFamily] = {
     family.name: family
     for family in (
         MeasureFamily(
-            name=MECHANICAL_FAMILY, graded_by="code", description="Measured by code the same way everywhere."
+            name=_MECHANICAL_FAMILY, graded_by="code", description="Measured by code the same way everywhere."
         ),
         MeasureFamily(
-            name=CLASSIFIER_FAMILY, graded_by="code", description="A label compared against an expected one."
+            name=_CLASSIFIER_FAMILY, graded_by="code", description="A label compared against an expected one."
         ),
-        MeasureFamily(name=GOAL_STATE_FAMILY, graded_by="code", description="A goal-state check's verdict."),
+        MeasureFamily(name=_GOAL_STATE_FAMILY, graded_by="code", description="A goal-state check's verdict."),
         MeasureFamily(name=RUBRIC_FAMILY, graded_by="judge", description="A judge's score on a rubric dimension."),
-        MeasureFamily(name=DUAL_AXIS_FAMILY, graded_by="judge", description="The two reserved judged axes."),
+        MeasureFamily(name=_DUAL_AXIS_FAMILY, graded_by="judge", description="The two reserved judged axes."),
         MeasureFamily(
-            name=COMPOSITE_FAMILY,
+            name=_COMPOSITE_FAMILY,
             graded_by="judge",
             description="A figure built over several results — pass^k, the composite, an effect size.",
         ),

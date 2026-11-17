@@ -51,11 +51,11 @@ from threetears.evals.actions import (
     analyst_actions,
     analyst_tools,
     catalogue_primer,
-    engine_actions,
     eval_catalogue,
     read_only_tools,
     standard_tools,
 )
+from threetears.evals.actions.engine import engine_actions
 from threetears.evals.actions.render import render_cited
 from threetears.evals.analysis import assemble_campaign_bundle
 from threetears.evals.analysis.analyst.analyses import dominance, sensitivity

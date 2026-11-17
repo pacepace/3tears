@@ -39,7 +39,6 @@ from threetears.evals.quick.cli import (
     EXIT_RUN_DID_NOT_COMPLETE,
     HostCommand,
     HostFactory,
-    build_parser,
     run_cli,
 )
 from threetears.evals.quick.contract import as_host
@@ -67,7 +66,6 @@ __all__ = [
     "WorldOutcome",
     "WorldRunner",
     "as_host",
-    "build_parser",
     "measure",
     "run_cli",
 ]

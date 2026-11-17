@@ -34,12 +34,12 @@ from threetears.evals.actions import (
     analyst_tools,
     catalogue_primer,
     ToolSpec,
-    engine_actions,
     eval_catalogue,
     read_only_tools,
     render_jobs_started,
     standard_tools,
 )
+from threetears.evals.actions.engine import engine_actions
 from threetears.evals.actions.params import NullIsOmitted
 from threetears.evals.actions.render import render_cited
 from threetears.evals.kernel.errors import ValidationFailedError

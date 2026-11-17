@@ -702,7 +702,7 @@ def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:
 
 
 async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_receipt() -> None:
-    from threetears.evals.actions import engine_actions
+    from threetears.evals.actions.engine import engine_actions
     from threetears.evals.ops import JudgeCasesFreeze, judge_cases_freeze
 
     host = toyhost_host()
@@ -1225,7 +1225,7 @@ def _vouches_for_itself(*, scope_id: str, caller: str, person: str) -> str | Non
 
 
 async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_the_caller() -> None:
-    from threetears.evals.actions import engine_actions
+    from threetears.evals.actions.engine import engine_actions
     from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
 
     # The operation writes only what the host attests: here, each caller authoring as itself.

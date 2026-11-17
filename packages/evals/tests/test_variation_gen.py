@@ -12,7 +12,7 @@ from threetears.evals.kernel import AdmittedGeneration, EvalStorage, OutOfRunBud
 from threetears.evals.schema import OutOfRunSpend
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
-from threetears.evals.gen import price_variations
+from threetears.evals.gen.variation_gen import price_variations
 from threetears.evals.gen.variation_gen import generate_variations
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop

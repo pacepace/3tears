@@ -220,6 +220,170 @@ notes = [
 ]
 
 [[release.change]]
+from = "threetears.evals.actions"
+to = "removed"
+names = ["ACTION_NAME", "engine_actions", "HELP_ACTION", "PERMISSION_CLASSES", "RESERVED_PARAMETERS", "TOOL_NAME"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["analysis_report", "ArmLevel", "aspect_views", "campaign_aggregate", "CELL_MEASURED", "CELL_NOT_RUN",
+         "CELL_WITHHELD", "component_carrier", "COST_PREDICTION_METHOD", "DECLARED_INPUT_ORIGIN", "HISTORY_METRICS",
+         "judged_criteria", "measure_movement", "StyleViolation", "tiers_with_judge_profiles", "verdict_token"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.analysis"
+to = "removed"
+names = ["difference_was_declared_at_launch", "metric_help", "SCOPED_METRICS_HELP", "significance_disclosure"]
+why = """
+Removed: nothing in the package, its examples or any recorded host called it. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.gen"
+to = "removed"
+names = ["price_variations"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel"
+to = "removed"
+names = ["CLASSIFIER_FAMILY", "COMPOSITE_FAMILY", "CONTRACT_MARKER", "criterion_state", "DROPPED_TOOL_CALLS_KEY",
+         "DUAL_AXIS_FAMILY", "GOAL_STATE_FAMILY", "JUDGED_TIERS_WEAKEST_FIRST", "MECHANICAL_FAMILY",
+         "PORTABLE_STRICT_KEYWORDS", "REFUSED_TOOL_ATTACHES_KEY", "RenewalVerdict", "resolve_result_usage",
+         "save_document", "SHUTDOWN_CAUSE"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.kernel.host"
+to = "removed"
+names = ["served_models_by_score"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "removed"
+names = ["ANALYSIS_JOB_PREFIX", "JUDGE_TEMPERATURE_JOB_PREFIX", "LAUNCH_JOB_PREFIX", "launch_progress",
+         "RUN_JOB_PREFIX", "SECOND_JUDGE_JOB_PREFIX", "SWEEP_JOB_PREFIX", "TERMINAL_JOB_STATES"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.ops"
+to = "removed"
+names = ["action_job_id", "judge_temperature_job_id", "second_judge_job_id"]
+why = """
+Removed: nothing in the package, its examples or any recorded host called it. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.quick"
+to = "removed"
+names = ["build_parser"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.run"
+to = "removed"
+names = ["borderline_dims", "definition_key", "ErrorLedger", "judge_case_labels", "JUDGE_REPEAT_BUDGET_S",
+         "LAUNCH_CANCEL_REASON", "LAUNCH_PREPARATION_BUDGET_S", "load_run_as_listed", "no_launcher_for",
+         "refuse_stale_presumptions", "resume_run", "RUBRIC_DIM_SERVER_FIELDS", "sample_concurrent_eval_jobs",
+         "settable_apparatus", "SIMULATOR_REASONING_ALLOWANCE_TOKENS", "SIMULATOR_REASONING_EFFORT",
+         "TEMPLATE_SERVER_FIELDS"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.run"
+to = "removed"
+names = ["cancel_run", "get_judge_config", "get_rubric_dim", "list_runs_disclosing"]
+why = """
+Removed: nothing in the package, its examples or any recorded host called it. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["BUILTIN_JUDGE_CONFIG_PREFIX", "DURABLE_ADDRESSING_FIELDS", "JOB_FAULT_MAX_CHARS",
+         "judges_sharing_a_candidate_model", "OUT_OF_ROOM_STOP_REASONS", "PASS_ACTION", "PASS_TOOL"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.schema"
+to = "removed"
+names = ["JSON_OBJECT_RESPONSE_FORMAT"]
+why = """
+Removed: nothing in the package, its examples or any recorded host called it. Port: nothing.
+"""
+
+[[release.change]]
+from = "threetears.evals.testing"
+to = "removed"
+names = ["DEFAULT_CALL_RETURN_TIMEOUT_S", "DEFAULT_JOB_CONFORMANCE_TIMEOUT_S"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
+from = "threetears.evals.transports.fastmcp"
+to = "removed"
+names = ["DEFAULT_CALL_TIMEOUT_S"]
+why = """
+Provisional names no public name's signature, field, base, raised error or docstring reaches, that no host's
+production code imports and no shipped example or page uses, and that nothing outside the module defining each needs:
+they leave the public surface, and each stays where it is defined. Port: nothing; a host that used one
+reads the value or behaviour through the declared name that carries it.
+"""
+
+[[release.change]]
 from = "threetears.evals.analysis"
 to = "removed"
 names = ["analysis_verdict"]

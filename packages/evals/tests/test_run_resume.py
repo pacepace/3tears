@@ -57,9 +57,9 @@ from threetears.evals.run import (
     StoredCells,
     launch_run,
     resumable_jobs,
-    resume_run,
     start_run,
 )
+from threetears.evals.run.resume import resume_run
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.schema import ContextComponents, EvalResult, EvalRun, EvalTemplate, JobLease

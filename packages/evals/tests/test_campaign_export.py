@@ -46,14 +46,8 @@ from threetears.evals.analysis.bundle.schema import host_declarations_digest
 from threetears.evals.harness import ReasonedOn, WriterCaseFile
 from threetears.evals.kernel import EvalInsight, NotFoundError, UnreadableRecordError, ValidationFailedError
 from threetears.evals.ops import CampaignExport, OpsHost, UnresolvedLink, campaign_export
-from threetears.evals.schema import (
-    BUILTIN_JUDGE_CONFIG_PREFIX,
-    DOC_TYPE_FACTS,
-    CatalogRubricDim,
-    JudgeConfig,
-    JudgeConfigTombstone,
-    RubricDim,
-)
+from threetears.evals.schema import DOC_TYPE_FACTS, CatalogRubricDim, JudgeConfig, JudgeConfigTombstone, RubricDim
+from threetears.evals.schema.models import BUILTIN_JUDGE_CONFIG_PREFIX
 from threetears.evals.schema.models import judge_config_of
 from threetears.evals.storage import InMemoryDocumentStore
 

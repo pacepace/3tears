@@ -43,13 +43,13 @@ from threetears.evals.quick import run_cli
 from threetears.evals.analysis import JudgeTemperatureComparison, read_judge_temperatures
 from threetears.evals.kernel.judge_temperature import JudgeTemperatureAnswers, TemperatureAnswer, TemperatureCaseAnswers
 from threetears.evals.run import (
-    borderline_dims,
     estimate_judge_repeat,
     EvalJudgeTemperatureCheck,
     estimate_judge_temperature_comparison,
     judge_temperature_work,
     run_job_work,
 )
+from threetears.evals.run.judge_temperature import borderline_dims
 from threetears.evals.run.judge import JUDGE_CALL_ATTEMPTS, JUDGE_REQUEST_SETTINGS
 from threetears.evals.run.judge_service import JudgeService
 from threetears.evals.run.launch import build_judge_service

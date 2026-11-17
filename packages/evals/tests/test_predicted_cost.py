@@ -23,7 +23,8 @@ from typing import Any
 
 import pytest
 
-from threetears.evals.analysis import COST_PREDICTION_METHOD, PredictedValue, pivot
+from threetears.evals.analysis import PredictedValue, pivot
+from threetears.evals.analysis.lenses.cost_estimate import COST_PREDICTION_METHOD
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE, METRIC_COST_USD, ScoreRecord
 from threetears.evals.analysis.lenses.cost_estimate import (
     CostEstimate,

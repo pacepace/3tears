@@ -79,7 +79,7 @@ another.
 ``undetermined`` and a judge campaign recorded a profile of that very judge and criterion
 (:class:`~threetears.evals.kernel.EvalJudgeProfile`) that decides a tier, the entry carries the profile's criteria
 and tier, and names the profile in :attr:`JudgeEvidenceTier.from_profile` — never presented as the campaign's own
-(:func:`~threetears.evals.analysis.tiers_with_judge_profiles`).
+(:func:`~threetears.evals.analysis.judge_profiles.tiers_with_judge_profiles`).
 
 **Tiers are flagged, not dropped** (PD-13): every judged reading stays on every surface, carrying its
 tier and the two criteria that decided it, so a reader sees how much the number can bear.

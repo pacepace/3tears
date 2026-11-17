@@ -932,7 +932,6 @@ def mount_fastmcp(
 
 
 __all__ = [
-    "DEFAULT_CALL_TIMEOUT_S",
     "HOOK_TAIL_TIMEOUT_S",
     "CallAnnotator",
     "CallHook",

@@ -29,7 +29,7 @@ raises rather than answer "none refused" for refusals nobody recorded. A kind th
 with ``CallLedger(refused=[])``, or records the first with :meth:`CallLedger.record_refusal`, which starts the list.
 
 **A deliberate pass is the engine's entry, not a host's spelling.** A candidate that decides to do nothing
-is recorded with :meth:`CallLedger.record_pass` as one reserved entry (:data:`PASS_TOOL`.:data:`PASS_ACTION`),
+is recorded with :meth:`CallLedger.record_pass` as one reserved entry (``__engine__``.``pass``),
 the same for every host. The goal language reads it through ``passed()`` and nothing else: it is not a call,
 so the call builtins (``call_count``, ``calls``, the ordering predicates) do not see it.
 
@@ -45,9 +45,9 @@ from pydantic import Field
 
 #: The tool half of the reserved ledger entry a deliberate pass is recorded as (``__engine__.pass``); no host tool
 #: takes this name.
-PASS_TOOL = "__engine__"
+_PASS_TOOL = "__engine__"
 #: The action half of the reserved deliberate-pass entry (``__engine__.pass``).
-PASS_ACTION = "pass"
+_PASS_ACTION = "pass"
 
 from threetears.evals.schema.base import CoreShapeModel, EvalDocumentModel
 
@@ -143,12 +143,12 @@ class CallLedger(EvalDocumentModel, CoreShapeModel):
         :param reason: The candidate's stated reason, kept on the entry; ``None`` for none.
         :ptype reason: str | None
         """
-        self.record(PASS_TOOL, PASS_ACTION, {} if reason is None else {"reason": reason})
+        self.record(_PASS_TOOL, _PASS_ACTION, {} if reason is None else {"reason": reason})
 
 
 def is_pass(call: RecordedCall) -> bool:
     """Whether ``call`` is the engine's deliberate-pass entry rather than a call the candidate made."""
-    return call.tool == PASS_TOOL and call.action == PASS_ACTION
+    return call.tool == _PASS_TOOL and call.action == _PASS_ACTION
 
 
-__all__ = ["PASS_ACTION", "PASS_TOOL", "CallLedger", "RecordedCall", "RefusedCall", "is_pass"]
+__all__ = ["CallLedger", "RecordedCall", "RefusedCall", "is_pass"]

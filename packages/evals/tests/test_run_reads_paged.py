@@ -49,7 +49,8 @@ from threetears.evals.kernel import EvalStorage, StorageError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, UnreadableResultKey
 from threetears.evals.ops import OpsHost, history_launch_pricer, lenses, run_job_id
-from threetears.evals.run import resumable_jobs, resume_run
+from threetears.evals.run import resumable_jobs
+from threetears.evals.run.resume import resume_run
 from threetears.evals.run import resume
 from threetears.evals.run.resume import take_up_arms
 from threetears.evals.schema import EvalResult, EvalRun

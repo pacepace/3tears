@@ -1,8 +1,8 @@
 """Significance: the three-way read of a test, how often it was looked at, and the disclosure that rides with it.
 
 :func:`significance_read` decides whether a significance flag may be stated at all, :func:`format_significance`
-spells the read with its effect size, and :func:`significance_disclosure` / :func:`cross_subject_disclosure`
-say what the test did and did not cover.
+spells the read with its effect size, and :func:`cross_subject_disclosure`
+says what the test did and did not cover.
 
 **Looks.** A look is an occasion on which a contrast's test could have been read again on more or different
 evidence: one more chance for a test with no true difference behind it to separate, the same thing a family's size
@@ -38,7 +38,7 @@ from statistics import NormalDist
 from types import MappingProxyType
 from typing import Final, Literal, NamedTuple
 
-from threetears.evals.analysis.stats import PAIRED_TEST_NAME, SIGNIFICANCE_ALPHA, UNPAIRED_TEST_NAME
+from threetears.evals.analysis.stats import SIGNIFICANCE_ALPHA
 from threetears.evals.kernel.numbers import format_number
 
 
@@ -171,29 +171,6 @@ def format_significance(
     ]
     read = significance_read(significant=significant, p=p, effect=effect)
     return f"{read} ({', '.join(parts)})" if parts else read
-
-
-def significance_disclosure(*, paired: bool) -> str:
-    """The sentence naming the test and threshold a comparison's verdicts rest on.
-
-    Rendered verbatim by every surface that shows a significance verdict, for
-    the reason :func:`completeness_disclosure` is: a reader must be able to see
-    what was measured without reconstructing it from the code that measured it.
-    Which test ran is not a detail — a paired test over shared cases and an
-    unpaired test over different ones answer different questions, and most of
-    what a small eval arm's verdict rests on is that difference.
-
-    It closes by saying the output is descriptive, because until the judge is
-    calibrated against human labels a flag here is not a trustworthy quality
-    signal, and nothing routes it anywhere.
-
-    :param paired: Whether the comparison paired its samples by test case.
-    :ptype paired: bool
-    :return: The disclosure sentence.
-    :rtype: str
-    """
-    test_name = PAIRED_TEST_NAME if paired else UNPAIRED_TEST_NAME
-    return f"Significance: {test_name}. Descriptive only — no alerting, and no verdict without the statistic behind it."
 
 
 def cross_subject_disclosure(subject_a: str | None, subject_b: str | None) -> str | None:
@@ -704,7 +681,6 @@ __all__ = [
     "NOT_TESTED_LABEL",
     "PAIRED_EFFECT_LABEL",
     "PAIRED_HEDGES_LABEL",
-    "significance_disclosure",
     "significance_read",
     "SIGNIFICANT_LABEL",
     "UNPAIRED_EFFECT_LABEL",

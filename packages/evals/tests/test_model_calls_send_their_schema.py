@@ -9,8 +9,6 @@ still validated on return, so a provider that cannot enforce a strict schema is 
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
 from typing import Any
 
 import jsonschema
@@ -19,6 +17,7 @@ import pytest
 from threetears.evals import kernel
 from threetears.evals.gen import RUBRIC_PROPOSAL_CONTRACT, plan_draft
 from threetears.evals.kernel import plan_variation_calls
+from threetears.evals.kernel.authored import PORTABLE_STRICT_KEYWORDS
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.kernel.authored import strict_schema as authored_strict_schema
 from threetears.evals.run.judge import judge_reply_format
@@ -171,19 +170,6 @@ def test_a_scorer_offering_no_cannot_tell_is_sent_a_schema_without_it() -> None:
         jsonschema.validate({"reasoning": "r", "criteria_scores": {"a": "cannot_tell", "b": "fail"}}, schema)
 
 
-def test_no_package_call_sends_the_unshaped_json_object_directive() -> None:
-    """Named nowhere but where it is defined and exported: every call that reads JSON sends the shape it reads."""
-    source = Path(kernel.__file__).resolve().parent.parent
-    naming = []
-    for path in sorted(source.rglob("*.py")):
-        if path.relative_to(source).parts[0] == "schema":
-            continue
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Name) and node.id == "JSON_OBJECT_RESPONSE_FORMAT":
-                naming.append(f"{path.relative_to(source)}:{node.lineno}")
-    assert naming == []
-
-
 # =============================================================================
 # What is sent is the portable strict subset; what is left out is enforced on return
 # =============================================================================
@@ -242,8 +228,8 @@ def _every_directive() -> dict[str, dict[str, Any] | None]:
 def test_every_directive_sends_only_keywords_both_providers_strict_modes_accept(call: str) -> None:
     """``minLength``, ``minimum`` and ``maximum`` rode in the proposal's schema, which a strict mode refuses or demotes."""
     schema = _strict(_every_directive()[call])
-    assert _keywords(schema, set()) <= kernel.PORTABLE_STRICT_KEYWORDS, sorted(
-        _keywords(schema, set()) - kernel.PORTABLE_STRICT_KEYWORDS
+    assert _keywords(schema, set()) <= PORTABLE_STRICT_KEYWORDS, sorted(
+        _keywords(schema, set()) - PORTABLE_STRICT_KEYWORDS
     )
 
 

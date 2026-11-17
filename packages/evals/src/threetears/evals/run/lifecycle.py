@@ -1,7 +1,7 @@
 """The run lifecycle: reading a run, cancelling it, reclaiming abandoned ones, re-judging a result, and recording completeness.
 
 A run reclaimed here is settled, never continued: it reads lost, and its lease is never revived. The one way back is
-an explicit resume under its lease's next epoch (:func:`~threetears.evals.run.resume_run`); what a resume would take
+an explicit resume under its lease's next epoch (:func:`~threetears.evals.run.resume.resume_run`); what a resume would take
 up is listed by :func:`~threetears.evals.run.resumable_jobs`, which a host offers to an operator at boot.
 
 What happens to a run after its launch, over the run's own storage. Each operation is a function
@@ -32,7 +32,7 @@ from threetears.evals.kernel.result_condition import ResultOutcome, classify_res
 from threetears.evals.kernel.scoring import summarize_completeness
 from threetears.evals.kernel.storage import LeaseStore, NonTerminalRunScan
 from threetears.evals.run.judge_service import JudgeService, judge_clients_for_run
-from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, request_job_cancel, settle_job_record
+from threetears.evals.kernel.job_leases import RUN_JOB, JobLeases, settle_job_record
 from threetears.evals.kernel.offload import run_blocking
 from threetears.evals.run.rejudge import apply_rejudge, failed_judge_dims, reproducible_judge_inputs
 from threetears.evals.run.run_document import fault_entry, record_run_faults, update_eval_run
@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from threetears.evals.schema.models import EvalResult, RunCompleteness
     from threetears.evals.kernel.host.eval_host import EvalHost
     from threetears.evals.kernel.scoring import CellSummary
-    from threetears.evals.run.jobs import EvalJobManager
     from threetears.evals.run.metering import MeteredCallTally
     from threetears.evals.kernel.storage import EvalStorage, JobStore, RunStore
     from threetears.evals.run.rejudge import ReproducibleJudgeInputs
@@ -125,69 +124,8 @@ def get_run(storage: RunStore, run_id: str, scope_id: str) -> EvalRun:
     return run
 
 
-def cancel_run(
-    storage: LeaseStore,
-    run_id: str,
-    scope_id: str,
-    *,
-    job_manager: EvalJobManager | None,
-    reason: str | None = None,
-) -> EvalRun:
-    """Ask a pending/running eval run to stop so it stops burning cost and quota — from any process.
-
-    The run is read as every process reads it (:func:`~threetears.evals.kernel.job_leases.settle_job_record`): one whose
-    lease has lapsed is written lost first, and has then ended. A run that has not ended gets the cancel written on
-    its record (:func:`~threetears.evals.kernel.job_leases.request_job_cancel`), which the process holding it reads at
-    its next lease renewal; when that process is this one, ``job_manager`` cancels it at once as well. Either way the
-    job's own ``CancelledError`` boundary writes ``cancelled`` (plus ``reason`` into ``cancellation_reason``) as
-    the task unwinds. Request-then-converge: the run returned here may still read ``running`` for up to one
-    renewal interval — confirm via :func:`get_run`.
-
-    The reason goes to ``cancellation_reason`` and never to ``error_details``: a cancel is a distinct terminal
-    outcome, so an operator's decision to stop is readable apart from the things that broke. Results already
-    persisted by the run remain valid and readable.
-
-    :param storage: The run's store.
-    :ptype storage: LeaseStore
-    :param run_id: Run to cancel.
-    :ptype run_id: str
-    :param scope_id: The partition the run lives in.
-    :ptype scope_id: str
-    :param job_manager: This process's job manager, to cancel a run it runs without waiting for a renewal; ``None``
-        when the caller has none, and the cancel lands through the record alone.
-    :ptype job_manager: EvalJobManager | None
-    :param reason: Optional operator-facing reason recorded on the run.
-    :ptype reason: str | None
-    :return: The run as persisted after the cancel request (see convergence note above).
-    :rtype: EvalRun
-    :raises NotFoundError: No run with that id in the scope.
-    :raises ValidationFailedError: The run has already ended (``completed`` / ``failed`` / ``cancelled`` /
-        ``budget_stopped`` / ``exhausted``) — lost included, which this read may have just written.
-    :raises ConflictError: The run kept changing while its lapsed lease was being written lost; nothing was decided.
-    :raises StorageError: A read or the request's write failed.
-    """
-    run, _ = settle_job_record(storage, RUN_JOB, run_id, scope_id)
-    if run is None:
-        raise NotFoundError("run", run_id, remedy=FIND_RUN)
-    require_cancellable(run)
-    request_job_cancel(storage, run_id, scope_id, reason=reason)
-    if job_manager is not None and job_manager.cancel_job(run_id, reason=reason):
-        log.info("eval.cancel_run requested run=%s scope=%s reason=%s", run_id, scope_id, reason or "(none)")
-    else:
-        log.info(
-            "eval.cancel_run asked run=%s scope=%s reason=%s on its record — its holder reads it at its next renewal",
-            run_id,
-            scope_id,
-            reason or "(none)",
-        )
-    current, _ = storage.load_job_record(EvalRun, run_id, scope_id)
-    if current is None:
-        raise NotFoundError("run", run_id, remedy=FIND_RUN)
-    return current
-
-
 def require_cancellable(run: EvalRun) -> None:
-    """Refuse a cancel of a run that has already ended — :func:`cancel_run`'s first check, for a caller that splits it.
+    """Refuse a cancel of a run that has already ended — a cancel's first check, for a caller that splits it.
 
     :param run: The run as read.
     :ptype run: EvalRun
@@ -228,7 +166,7 @@ def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> Abando
     **It settles a run; it never continues one.** A host offers that at boot, after this sweep: it lists what a
     resume would take up (:func:`~threetears.evals.run.resumable_jobs`, the ``jobs_resumable`` action, over the
     same scopes) and offers each to an operator, and a run is resumed only when someone asks
-    (:func:`~threetears.evals.run.resume_run`, the ``job_resume`` action). Nothing resumes on its own.
+    (:func:`~threetears.evals.run.resume.resume_run`, the ``job_resume`` action). Nothing resumes on its own.
 
     A row that cannot be *reconstructed* is a third case, and it is not a storage failure: the database answered,
     and the answer is a document this build's model cannot express. Tolerated per row in two places rather than
@@ -674,7 +612,6 @@ def record_completeness(
 __all__ = [
     "AbandonedRunSweepReport",
     "ReclaimStore",
-    "cancel_run",
     "get_run",
     "record_completeness",
     "rejudge_result",

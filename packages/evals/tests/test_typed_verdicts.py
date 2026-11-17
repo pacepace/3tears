@@ -32,8 +32,8 @@ from threetears.evals.analysis import (
     create_campaign,
     gate_verdicts,
     parse_fail_on,
-    verdict_token,
 )
+from threetears.evals.analysis.gate import verdict_token
 from threetears.evals.quick import (
     EXIT_GATE_FAILED,
     EXIT_OK,

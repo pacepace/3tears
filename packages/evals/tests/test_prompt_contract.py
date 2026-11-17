@@ -33,7 +33,6 @@ from threetears.evals.gen import (
 )
 from threetears.evals.schema.models import RubricAxis
 from threetears.evals.kernel import (
-    CONTRACT_MARKER,
     KIND_TEXT,
     SEED_PROMPTS,
     ConflictError,
@@ -48,6 +47,7 @@ from threetears.evals.kernel import (
     seed_digest,
     template_text,
 )
+from threetears.evals.kernel.prompts.contract import CONTRACT_MARKER
 
 _RESET = "call prompt_reset for the slot"
 

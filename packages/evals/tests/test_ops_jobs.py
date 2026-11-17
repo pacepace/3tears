@@ -53,7 +53,7 @@ from threetears.evals.ops import (
     run_launch,
 )
 from threetears.evals.analysis import judge_agreement
-from threetears.evals.run import LAUNCH_CANCEL_REASON
+from threetears.evals.run.launch_job import LAUNCH_CANCEL_REASON
 from threetears.evals.analysis.summary import budget_stop_line, summarize_runs
 from threetears.evals.schema.models import BudgetStop
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION

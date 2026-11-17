@@ -497,7 +497,7 @@ _DEADLINE_CHARGE: dict[CellPending, tuple[Literal["candidate", "infra", "judge"]
 
 
 @dataclass
-class ErrorLedger:
+class _ErrorLedger:
     """Accumulates a cell's errors, categorized candidate-vs-infra at the source.
 
     Replaces the flat ``error_details`` list so scoring can classify structurally:
@@ -526,13 +526,13 @@ class ErrorLedger:
     model_unserved: bool = False
 
     @classmethod
-    def of(cls, candidate: CandidateOutput | None) -> ErrorLedger:
+    def of(cls, candidate: CandidateOutput | None) -> _ErrorLedger:
         """The ledger a kind's report amounts to — empty when it reported nothing.
 
         :param candidate: What the kind returned, or a reading of what it had so far, or ``None``.
         :ptype candidate: CandidateOutput | None
         :return: A fresh ledger holding the report's errors and its account refusal.
-        :rtype: ErrorLedger
+        :rtype: _ErrorLedger
         """
         if candidate is None:
             return cls()
@@ -1015,7 +1015,7 @@ class _CellSink:
     #: The cell's errors as the run loop reads them after the cell, however it ended: built
     #: from what ``invoke`` returned, or at a deadline from the kind's reading plus the
     #: deadline's own charge.
-    errors: ErrorLedger = field(default_factory=ErrorLedger)
+    errors: _ErrorLedger = field(default_factory=_ErrorLedger)
     #: How to read the candidate side so far, as the kind registered it — see
     #: :meth:`~threetears.evals.kernel.candidate_kind.CellSink.report_progress`.
     progress: Callable[[], CandidateOutput] | None = None
@@ -1163,7 +1163,7 @@ class _CellSink:
         :ptype candidate: CandidateOutput
         """
         self.returned = candidate
-        self.errors = ErrorLedger.of(candidate)
+        self.errors = _ErrorLedger.of(candidate)
 
     def side(self) -> CandidateOutput | None:
         """The candidate side as the cell left it: what ``invoke`` returned, else the kind's reading.
@@ -1549,7 +1549,7 @@ async def _run_one_result(
     # R4: measurement conditions are sampled around the work, not read off it afterwards —
     # by the time the result is built, a concurrent run that contended for the provider
     # quota may already have finished.
-    concurrent_eval_jobs = sample_concurrent_eval_jobs(options)
+    concurrent_eval_jobs = _sample_concurrent_eval_jobs(options)
 
     def _excluded_cell(
         *, error: str, termination: CellTermination, preconditions: Sequence[PreconditionOutcome] = ()
@@ -1606,7 +1606,7 @@ async def _run_one_result(
 
         The candidate side is whatever the kind had reported through the cell's sink when the fault
         unwound it — its reading registered with ``report_progress`` — so the spend already billed
-        is on the record, and the fault is recorded through :meth:`ErrorLedger.add_apparatus`,
+        is on the record, and the fault is recorded through :meth:`_ErrorLedger.add_apparatus`,
         which excludes the cell and is what :func:`execute_run` reads to tell a rig that failed
         every cell from one that failed some.
 
@@ -1629,7 +1629,7 @@ async def _run_one_result(
             type(fault).__name__,
             fault,
         )
-        errors = sink.errors = ErrorLedger.of(sink.side())
+        errors = sink.errors = _ErrorLedger.of(sink.side())
         errors.add_apparatus(f"{type(fault).__name__}: {fault}")
         side = sink.side()
         return _cut_short_cell(
@@ -1641,7 +1641,7 @@ async def _run_one_result(
             k_iteration=k_iteration,
             subject_id=real_subject_id,
             variant=variant,
-            concurrent_eval_jobs=sample_concurrent_eval_jobs(options, concurrent_eval_jobs),
+            concurrent_eval_jobs=_sample_concurrent_eval_jobs(options, concurrent_eval_jobs),
             termination="apparatus_failed",
             judge_model=judge_model,
             rate_table=options.external_rates,
@@ -1967,10 +1967,10 @@ async def _run_one_result(
             judge_billed=sink.judge_billed,
         )
 
-    # Second (and final) conditions sample — see sample_concurrent_eval_jobs. Taken after
+    # Second (and final) conditions sample — see _sample_concurrent_eval_jobs. Taken after
     # the judging that closes the cell, so the whole window is covered. The assembly folds
     # in the busiest count the kind itself observed.
-    concurrent_eval_jobs = sample_concurrent_eval_jobs(options, concurrent_eval_jobs)
+    concurrent_eval_jobs = _sample_concurrent_eval_jobs(options, concurrent_eval_jobs)
 
     # 5. Build the EvalResult and its trace — through the one assembly every completed cell takes,
     # the host-observed ones (:func:`~threetears.evals.run.witnessed.record_witnessed_cell`) included. The id is the
@@ -2597,7 +2597,7 @@ def assemble_completed_cell(
     # The ledger the kind's report amounts to — the same one the runner's sink built on ``adopt``, and
     # the same convention: "candidate details first, then infra" is the order an operator reads
     # ``runner_error`` in, and it is one convention in one place.
-    errors = ErrorLedger.of(output)
+    errors = _ErrorLedger.of(output)
 
     # Span-derived latency buckets, read off the trace sink's record by this module, from the
     # record's named fields, rather than splatting whatever mapping a sink chose to return:
@@ -3192,7 +3192,7 @@ def _warn_on_unreported_async_spend(async_deliveries: list[AsyncDelivery] | None
     )
 
 
-def sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = None) -> int | None:
+def _sample_concurrent_eval_jobs(options: RunnerOptions, previous: int | None = None) -> int | None:
     """Sample how much eval work is executing beside this cell, keeping the busiest observation so far (R4).
 
     The count is the larger of the eval jobs executing (the probe, this one included) and the run's own
@@ -4246,7 +4246,7 @@ async def execute_run(
     # One lane for the whole run, so every cell records into — or replays — the one corpus the run
     # names: its own id for a capture, the capture it names for a replay. ``None`` with cassettes off.
     cassettes = CassetteLane.for_run(run, host.storage)
-    # A caller-supplied probe that raises degrades its covariate to unmeasured (``sample_concurrent_eval_jobs``),
+    # A caller-supplied probe that raises degrades its covariate to unmeasured (``_sample_concurrent_eval_jobs``),
     # logged there; each distinct failure is also counted here, to be written on the run as the loop ends.
     probe_failures: Counter[str] = Counter()
     if (probe := options.concurrent_eval_jobs_probe) is not None:
@@ -4518,7 +4518,7 @@ async def execute_run(
             # the account-refusal check below reads it however the cell ended. A deadline in the
             # judge phase is charged to each dim it cut off instead (``_cut_short_cell``); a kind
             # naming the judge outside that phase is waiting on nothing the engine runs, so on the rig.
-            errors = sink.errors = ErrorLedger.of(sink.side())
+            errors = sink.errors = _ErrorLedger.of(sink.side())
             msg = f"cell timeout while waiting on {waiting_on}: {timed_out}"
             if charged_to == "candidate":
                 errors.add_candidate(msg)
@@ -4541,7 +4541,7 @@ async def execute_run(
                 # The cell ran — long enough to time out. A timed-out cell is the single most
                 # valuable observation for "was something else running?", so the conditions are
                 # sampled here rather than nulled.
-                concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
+                concurrent_eval_jobs=_sample_concurrent_eval_jobs(options),
                 termination="cell_timeout",
                 judge_model=run.judge_model,
                 rate_table=options.external_rates,
@@ -4571,7 +4571,7 @@ async def execute_run(
                 k,
                 run.id,
             )
-            errors = sink.errors = ErrorLedger.of(sink.side())
+            errors = sink.errors = _ErrorLedger.of(sink.side())
             msg = f"cell cancelled with its run while waiting on {waiting_on}"
             if sink.judging is None:
                 errors.add_infra(msg)
@@ -4584,7 +4584,7 @@ async def execute_run(
                 k_iteration=k,
                 subject_id=run.subject_snapshot.subject_id,
                 variant=variant,
-                concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
+                concurrent_eval_jobs=_sample_concurrent_eval_jobs(options),
                 termination="cancelled",
                 judge_model=run.judge_model,
                 rate_table=options.external_rates,
@@ -4612,7 +4612,7 @@ async def execute_run(
                 k,
                 run.id,
             )
-            errors = sink.errors = ErrorLedger.of(sink.side())
+            errors = sink.errors = _ErrorLedger.of(sink.side())
             errors.add_apparatus(f"{type(defect).__name__}: {defect}")
             result, cell_trace = _cut_short_cell(
                 sink=sink,
@@ -4623,7 +4623,7 @@ async def execute_run(
                 k_iteration=k,
                 subject_id=run.subject_snapshot.subject_id,
                 variant=variant,
-                concurrent_eval_jobs=sample_concurrent_eval_jobs(options),
+                concurrent_eval_jobs=_sample_concurrent_eval_jobs(options),
                 termination="apparatus_failed",
                 judge_model=run.judge_model,
                 rate_table=options.external_rates,
@@ -4895,7 +4895,6 @@ __all__ = [
     "DEFAULT_JUDGE_CONCURRENCY",
     "CellContext",
     "CellOutcome",
-    "ErrorLedger",
     "EveryCellApparatusFailedError",
     "GoalCheckUnevaluable",
     "JudgeCallUnserved",
@@ -4916,5 +4915,4 @@ __all__ = [
     "metered_cell_tally",
     "precondition_failure_text",
     "run_one_result",
-    "sample_concurrent_eval_jobs",
 ]

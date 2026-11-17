@@ -172,20 +172,13 @@ PROJECTED_METRICS = frozenset(
 # of one of these is the statistic the
 # registry describes only while the coordinate is pinned by an axis or filter; unpinned, it pools every value
 # of it. Read by the pivot's scope check and POOLED caveat, the pivot's unknown-metric hint, the history
-# refusal, and — through SCOPED_METRICS_HELP — the REST and MCP pivot and export help, so a metric added here is qualified on each of them at once,
+# refusal, so a metric added here is qualified on each of them at once,
 # and a per-row metric NOT added here pools silently, which is the defect this table exists to make
 # impossible to write without deciding.
 SCOPED_METRICS: dict[str, tuple[str, str, str]] = {
     METRIC_SCORE: ("rubric_dim", "judged rubric dimension", "dimension"),
     METRIC_GOAL_STATE: ("goal_check", "goal-state check", "check"),
 }
-
-#: How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP
-#: alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
-SCOPED_METRICS_HELP = " ".join(
-    f"'{metric}' has one row per {noun}: put '{field}' on an axis, or each cell pools every {noun}."
-    for metric, (field, noun, _row) in SCOPED_METRICS.items()
-)
 
 
 #: The token a served-model coordinate (:attr:`ScoreRecord.served_model`) carries for candidate calls whose
@@ -2157,7 +2150,6 @@ __all__ = [
     "ProjectionExclusions",
     "SCALAR_LEVEL_TYPES",
     "SCOPED_METRICS",
-    "SCOPED_METRICS_HELP",
     "ScoreProjection",
     "ScoreRecord",
     "self_judging_models",

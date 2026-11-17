@@ -253,24 +253,24 @@ class DefinitionReset(EvalBaseModel):
         lines += [f"carried {source} -> {copy}" for source, copy in self.carried.items()]
         for doc_type, presented in self.presentation_named.items():
             lines += [
-                f"{definition_key(doc_type, name)}: given presentation names from the corpus ({', '.join(entries)})"
+                f"{_definition_key(doc_type, name)}: given presentation names from the corpus ({', '.join(entries)})"
                 for name, entries in presented.items()
             ]
         for doc_type, refused in self.presentation_fill_failed.items():
             lines += [
-                f"{definition_key(doc_type, name)}: PRESENTATION NAMES REFUSED BY STORAGE ({reason})"
+                f"{_definition_key(doc_type, name)}: PRESENTATION NAMES REFUSED BY STORAGE ({reason})"
                 for name, reason in refused.items()
             ]
         return "\n".join([*lines, *self.stranded_case_sets, self.after.summary()])
 
 
-def definition_key(doc_type: str, *natural_key: str) -> str:
+def _definition_key(doc_type: str, *natural_key: str) -> str:
     """A definition's key, as a reading names it: its doc type and natural key joined by ``/``."""
     return "/".join((doc_type, *natural_key))
 
 
 def _case_key(case: SeedJudgeCase, digest: str) -> str:
-    return definition_key("judge_case", case.judge_template, case.name or digest)
+    return _definition_key("judge_case", case.judge_template, case.name or digest)
 
 
 def _newest[R: (CatalogRubricDim, JudgeConfig)](records: Iterable[R]) -> R | None:
@@ -366,7 +366,7 @@ class _Survey:
             digest = JudgeCase.from_authored(authored).content_digest()
             self.built[_case_key(case, digest)] = (case, authored, digest)
         for own_case in self.corpus.template_cases:
-            self.own[definition_key("template_case", own_case.template, own_case.name)] = (own_case, own_case.digest())
+            self.own[_definition_key("template_case", own_case.template, own_case.name)] = (own_case, own_case.digest())
 
         for template in self.corpus.templates:
             self._read_template(template)
@@ -375,7 +375,7 @@ class _Survey:
             dims.setdefault(dim.key, []).append(dim)
         dim_tombstones = {t.key for t in storage.query_rubric_dim_tombstones(scope)}
         for corpus_dim in self.corpus.rubric_dims:
-            key = definition_key("rubric_dim", corpus_dim.key)
+            key = _definition_key("rubric_dim", corpus_dim.key)
             stored_dim = _newest(dims.get(corpus_dim.key, []))
             self.readings[key] = self._record_reading(
                 key,
@@ -391,7 +391,7 @@ class _Survey:
         config_tombstones = {(t.rubric_dim_id, t.name) for t in storage.query_judge_config_tombstones(scope)}
         for corpus_config in self.corpus.judge_configs:
             slot = (corpus_config.rubric_dim_id, corpus_config.name)
-            key = definition_key("judge_config", *slot)
+            key = _definition_key("judge_config", *slot)
             self.readings[key] = self._record_reading(
                 key,
                 "judge_config",
@@ -409,7 +409,7 @@ class _Survey:
             if case_set.name not in latest or case_set.version > latest[case_set.name].version:
                 latest[case_set.name] = case_set
         for corpus_set in self.corpus.case_sets:
-            self.readings[definition_key("case_set", corpus_set.name)] = self._read_case_set(
+            self.readings[_definition_key("case_set", corpus_set.name)] = self._read_case_set(
                 corpus_set, latest.get(corpus_set.name)
             )
 
@@ -426,7 +426,7 @@ class _Survey:
         return self._reading(key, doc_type, seed, digest(stored), stored.id, stored.seed_digest, reason)
 
     def _read_template(self, template: EvalTemplate) -> None:
-        key = definition_key("eval_template", template.name)
+        key = _definition_key("eval_template", template.name)
         seed = template_digest(self.resolved[template.name])
         stored = self.current.get(template.name)
         if stored is None:
@@ -694,11 +694,11 @@ class _Survey:
         )
 
     def _read_case_set(self, corpus_set: SeedCaseSet, stored: CaseSet | None) -> DefinitionReading:
-        key = definition_key("case_set", corpus_set.name)
+        key = _definition_key("case_set", corpus_set.name)
         authored = {case.name: built for case, built, _digest in self.built.values() if case.name}
         seed = seed_case_set_digest(corpus_set, authored)
         if stored is None:
-            listed = [definition_key("judge_case", corpus_set.template, name) for name in corpus_set.judge_cases]
+            listed = [_definition_key("judge_case", corpus_set.template, name) for name in corpus_set.judge_cases]
             if withheld := [k for k in listed if self.readings[k].state == "stale" and not self.readings[k].stored_id]:
                 # The seed withholds a set listing a case it withholds (`needs_reset`): only a reset mints it.
                 return DefinitionReading(
@@ -867,9 +867,9 @@ def reset_definitions(
     corpus_sets = {s.name: s for s in corpus.case_sets}
     refusals: list[_Refusal] = []
     templates: dict[str, None] = {}
-    dims = [d for d in corpus.rubric_dims if definition_key("rubric_dim", d.key) in definitions]
+    dims = [d for d in corpus.rubric_dims if _definition_key("rubric_dim", d.key) in definitions]
     configs = [
-        c for c in corpus.judge_configs if definition_key("judge_config", c.rubric_dim_id, c.name) in definitions
+        c for c in corpus.judge_configs if _definition_key("judge_config", c.rubric_dim_id, c.name) in definitions
     ]
     sets: dict[str, None] = {}
     asked = [key for key in dict.fromkeys(definitions) if readings[key].state != "current"]
@@ -910,7 +910,7 @@ def reset_definitions(
         if not survey.holds_cases(corpus_templates[name]):
             continue
         pulled |= {key: name for key, _name, _digest in survey.cases_of(name)}
-        pulled |= {definition_key("case_set", s.name): name for s in corpus.case_sets if s.template == name}
+        pulled |= {_definition_key("case_set", s.name): name for s in corpus.case_sets if s.template == name}
         stored = survey.current.get(name)
         if stored is None or not (uncarried := survey.uncarried_cases(stored)):
             continue
@@ -918,7 +918,7 @@ def reset_definitions(
             carry[name] = uncarried
         elif not overwrite_customized:
             uncarried_refused[name] = _Refusal(
-                definition_key("eval_template", name),
+                _definition_key("eval_template", name),
                 f"its revision {stored.revision} holds {len(uncarried)} live case(s) the seed corpus does not carry "
                 f"({', '.join(case.id for case in uncarried)}), which the new revision carries only under "
                 "carry_live_cases",
@@ -960,7 +960,7 @@ def reset_definitions(
         if others := sorted(n for (dim, n) in live if dim == config.rubric_dim_id and n != config.name):
             refusals.append(
                 _Refusal(
-                    definition_key("judge_config", config.rubric_dim_id, config.name),
+                    _definition_key("judge_config", config.rubric_dim_id, config.name),
                     f"dimension {config.rubric_dim_id!r} has the live judge config {', '.join(map(repr, others))} of "
                     "another name, which it would contradict; archive one of them",
                     kept=True,
@@ -981,7 +981,7 @@ def reset_definitions(
         if versions and versions[0].test_case_ids == ids:
             refusals.append(
                 _Refusal(
-                    definition_key("case_set", name),
+                    _definition_key("case_set", name),
                     f"{versions[0].ref.label} already lists exactly its cases and differs only in `tracked`, which a new "
                     "version cannot record",
                 )
@@ -994,7 +994,7 @@ def reset_definitions(
     carried: dict[str, str] = {}
     now = utc_now_iso()
     for dim in dims:
-        key = definition_key("rubric_dim", dim.key)
+        key = _definition_key("rubric_dim", dim.key)
         if readings[key].state == "current":
             entries.append(ResetDefinition(key=key, before="current"))
             continue
@@ -1008,7 +1008,7 @@ def reset_definitions(
                 host.storage.save_rubric_dim(record.model_copy(update={"archived": True, "updated_at": now}))
         entries.append(_entry(readings[key], written.id, "a new record"))
     for config in configs:
-        key = definition_key("judge_config", config.rubric_dim_id, config.name)
+        key = _definition_key("judge_config", config.rubric_dim_id, config.name)
         if readings[key].state == "current":
             entries.append(ResetDefinition(key=key, before="current"))
             continue
@@ -1036,9 +1036,9 @@ def reset_definitions(
             template_id=judge.id,
             test_case_ids=_current_case_ids(survey, corpus_set),
             tracked=corpus_set.tracked,
-            seed_digest=readings[definition_key("case_set", name)].seed_digest,
+            seed_digest=readings[_definition_key("case_set", name)].seed_digest,
         )
-        entries.append(_entry(readings[definition_key("case_set", name)], minted.id, minted.ref.label))
+        entries.append(_entry(readings[_definition_key("case_set", name)], minted.id, minted.ref.label))
     for key in dict.fromkeys(definitions):
         if key not in {entry.key for entry in entries} and readings[key].state == "current":
             entries.append(ResetDefinition(key=key, before="current"))
@@ -1096,7 +1096,7 @@ def _entry(reading: DefinitionReading, written_id: str, written: str) -> ResetDe
 
 
 def _listed_key(survey: _Survey, judge_template: str, name: str) -> str:
-    return definition_key("judge_case", judge_template, name)
+    return _definition_key("judge_case", judge_template, name)
 
 
 def _current_case_ids(survey: _Survey, corpus_set: SeedCaseSet) -> list[str]:
@@ -1125,7 +1125,7 @@ def _admitted(
                 active_judge_config=lambda dim: seeded_configs.get(dim) or stored.get(dim),
             )
         except ValidationFailedError as e:
-            refused.append(_Refusal(definition_key("eval_template", template.name), f"authoring refuses it: {e}"))
+            refused.append(_Refusal(_definition_key("eval_template", template.name), f"authoring refuses it: {e}"))
     return admitted, refused
 
 
@@ -1168,7 +1168,7 @@ def _reset_template(
     copy of each of ``carry``, re-homed to the new revision and naming its source. Returns the entries, and each
     carried case's id -> its copy's."""
     storage, scope = survey.host.storage, survey.corpus.scope_id
-    key = definition_key("eval_template", admitted.name)
+    key = _definition_key("eval_template", admitted.name)
     prior = survey.templates.get(admitted.name, [])
     revision = max((t.revision for t in prior), default=0) + 1
     written = admitted.model_copy(
@@ -1228,10 +1228,10 @@ def _reset_template(
             template_id=written.id,
             test_case_ids=[frozen[name] for name in corpus_set.judge_cases],
             tracked=corpus_set.tracked,
-            seed_digest=survey.readings[definition_key("case_set", corpus_set.name)].seed_digest,
+            seed_digest=survey.readings[_definition_key("case_set", corpus_set.name)].seed_digest,
         )
         entries.append(
-            _entry(survey.readings[definition_key("case_set", corpus_set.name)], minted.id, minted.ref.label)
+            _entry(survey.readings[_definition_key("case_set", corpus_set.name)], minted.id, minted.ref.label)
         )
     return entries, copies
 
@@ -1301,6 +1301,5 @@ __all__ = [
     "ResetDefinition",
     "corpus_digests",
     "definition_drift",
-    "definition_key",
     "reset_definitions",
 ]

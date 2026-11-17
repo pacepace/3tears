@@ -649,8 +649,7 @@ class LaunchHost:
         job this host starts — a run, a sweep, an analysis generation — carries one on its record.
     :ivar job_manager: The process's job manager, built here over :attr:`eval_host`'s storage and
         executor and holding :attr:`job_leases`, so the store a run's status is written to is the store
-        its results are. It is the one a host hands :func:`~threetears.evals.run.lifecycle.cancel_run`
-        and its shutdown, which writes every job it holds lost.
+        its results are. Its shutdown writes every job it holds lost.
     """
 
     eval_host: EvalHost
@@ -1354,7 +1353,7 @@ TEMPLATE_FIELDS: tuple[TemplateField, ...] = get_args(TemplateField)
 class LaunchableKind:
     """One entry of the launch registry a host hands :func:`start_run`: how a kind launches, and what it refuses.
 
-    A kind with no entry is refused at the dispatch (:func:`no_launcher_for`), before anything is
+    A kind with no entry is refused at the dispatch, before anything is
     read or built, so a kind the runner could execute but no host can build collaborators for never
     reaches a cell.
 
@@ -1603,7 +1602,7 @@ def _host_disclosure(host: LaunchHost) -> RunDisclosure | None:
     return disclosed
 
 
-def no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[str, Any]) -> ValidationFailedError:
+def _no_launcher_for(template_id: str, candidate_kind: str, launchable: Mapping[str, Any]) -> ValidationFailedError:
     """The refusal for a template whose kind this host cannot launch — one wording, wherever it fires.
 
     :param template_id: The template.
@@ -1836,7 +1835,7 @@ def _launchable(
     candidate_kind = template.candidate_kind
     launchable = host.kinds.get(candidate_kind)
     if launchable is None:
-        raise no_launcher_for(template.id, candidate_kind, host.kinds)
+        raise _no_launcher_for(template.id, candidate_kind, host.kinds)
     # Refused here rather than handed to the kind's launcher to refuse: a launcher that ignored one
     # would run a requested replay live, or record a judge nobody scored with.
     if unusable := _unhonoured_launch_arguments(
@@ -4935,7 +4934,6 @@ __all__ = [
     "build_judge_service",
     "launch_as_group",
     "launch_run",
-    "no_launcher_for",
     "plan_judge",
     "price_arms",
     "quote_launch",

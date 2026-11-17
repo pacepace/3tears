@@ -7,7 +7,7 @@ in the judge campaign alone. :class:`EvalJudgeProfile` is the record that outliv
 (judge, criterion) — the judge as :class:`~threetears.evals.analysis.JudgeKey` keys one (dim, scale, served model,
 config, temperature, sent request settings), the criterion as the cases worded it — holding the measures, the cases they were measured on
 and when, so a campaign scored by that same judge reads its evidence tier from it where its own evidence decides
-none (:func:`~threetears.evals.analysis.tiers_with_judge_profiles`).
+none (:func:`~threetears.evals.analysis.judge_profiles.tiers_with_judge_profiles`).
 
 **Recorded on purpose, never on completion.** A profile is written by an explicit step over the judge campaign's
 runs (:func:`~threetears.evals.analysis.judge_profiles_of` and the ``judge_profiles_record`` operation), because

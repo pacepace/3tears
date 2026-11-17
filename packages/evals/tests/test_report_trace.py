@@ -28,11 +28,11 @@ from threetears.evals.analysis import (
     TableBlock,
     TableCell,
     TableColumn,
-    analysis_report,
     build_code_only_report,
     campaign_report_html,
     report_html,
 )
+from threetears.evals.analysis.service import analysis_report
 from threetears.evals.analysis.bundle.surface import bundle_decision_surface
 from threetears.evals.analysis.cells import cell_ref
 from threetears.evals.analysis.report.model import fold_ids, reading_anchor
