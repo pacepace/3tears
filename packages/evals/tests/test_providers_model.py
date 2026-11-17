@@ -228,6 +228,7 @@ async def test_openrouter_sends_a_strict_schema_enforced_with_reasoning_and_usag
 async def test_a_router_model_no_endpoint_of_which_takes_a_schema_is_sent_json_mode_unenforced() -> None:
     provider = Scripted(chat("{}"))
     completion = await model("z-ai/glm-5.3-flashx", provider).generate(system="", user="hi", response_format=STRICT)
+    assert isinstance(completion, Completion)
     [body] = provider.bodies
     assert body["response_format"] == {"type": "json_object"}
     assert body["provider"] == {"require_parameters": False}
@@ -273,17 +274,20 @@ async def test_a_reasoning_budget_goes_as_a_budget_where_the_provider_takes_one(
     routed = await model("deepseek/deepseek-v4-flash", router, effort=8192, max_tokens=10240).generate(
         system="", user="x"
     )
+    assert isinstance(routed, Completion)
     assert router.bodies[0]["reasoning"] == {"max_tokens": 8192}
     assert routed.sent_settings == ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192)
     thought = await model("claude-sonnet-4-6", claude, provider="anthropic", effort=8192, max_tokens=10240).generate(
         system="", user="x"
     )
+    assert isinstance(thought, Completion)
     assert claude.bodies[0]["thinking"] == {"type": "enabled", "budget_tokens": 8192}
     assert claude.bodies[0]["max_tokens"] == 10240 and "output_config" not in claude.bodies[0]
     assert thought.sent_settings == ClientRequestSettings(max_tokens=10240, reasoning_max_tokens=8192)
     worded = await model("gpt-5-nano", direct, provider="openai", effort=8192, max_tokens=10240).generate(
         system="", user="x"
     )
+    assert isinstance(worded, Completion)
     assert direct.bodies[0]["reasoning_effort"] == "high" and "reasoning" not in direct.bodies[0]
     assert worded.sent_settings == ClientRequestSettings(
         max_tokens=10240, reasoning_effort="high", unsent_reasoning_max_tokens=8192
@@ -297,6 +301,7 @@ async def test_a_router_model_catalogued_without_reasoning_is_sent_no_budget_and
     completion = await model(
         "vendor/plain", provider, effort=8192, max_tokens=10240, catalogue=catalogue(rows)
     ).generate(system="", user="x")
+    assert isinstance(completion, Completion)
     assert "reasoning" not in provider.bodies[0]
     assert completion.sent_settings == ClientRequestSettings(max_tokens=10240, unsent_reasoning_max_tokens=8192)
 
@@ -354,6 +359,7 @@ async def test_an_openai_shaped_stop_maps_onto_the_engines_words(
     if native is not None:
         answer[1]["choices"][0]["native_finish_reason"] = native
     completion = await model("vendor/m", Scripted(answer)).generate(system="", user="x")
+    assert isinstance(completion, Completion)
     assert (completion.stop_reason, completion.provider_stop_reason) == (stop, raw)
 
 
@@ -380,12 +386,13 @@ async def test_an_anthropic_stop_maps_onto_the_engines_words(raw: str | None, st
     completion = await model("claude-x", Scripted(message(stop=raw)), provider="anthropic").generate(
         system="", user="x"
     )
+    assert isinstance(completion, Completion)
     assert (completion.stop_reason, completion.provider_stop_reason) == (stop, raw)
 
 
 async def test_counts_are_none_when_unreported_and_cache_reads_count_as_input() -> None:
-    bare = chat()
-    bare[1]["usage"] = {}
+    status, body = chat()
+    bare: Answer = (status, {**body, "usage": {}})
     silent = await model("vendor/m", Scripted(bare)).generate(system="", user="x")
     assert (silent.input_tokens, silent.output_tokens, silent.reasoning_tokens) == (None, None, None)
     split = await model(
@@ -400,6 +407,7 @@ async def test_counts_are_none_when_unreported_and_cache_reads_count_as_input() 
 async def test_an_alias_echoed_back_names_no_served_model_and_the_upstream_is_kept() -> None:
     alias = "~deepseek/deepseek-flash-latest"
     echoed = await model(alias, Scripted(chat(served=alias, provider="DeepInfra"))).generate(system="", user="x")
+    assert isinstance(echoed, Completion)
     named = await model("deepseek/deepseek-v4-flash", Scripted(chat(provider="DeepInfra"))).generate(
         system="", user="x"
     )
@@ -438,6 +446,7 @@ async def test_openrouter_is_priced_by_its_own_figure_and_absent_is_unpriced_nev
     usage: dict[str, Any], cost: float | None, source: str | None, why: str | None
 ) -> None:
     completion = await model("deepseek/deepseek-v4-flash", Scripted(chat(usage=usage))).generate(system="", user="x")
+    assert isinstance(completion, Completion)
     assert completion.cost_usd == pytest.approx(cost) if cost is not None else completion.cost_usd is None
     assert completion.price_source == source
     assert (completion.pricing_failure is None) if why is None else why in (completion.pricing_failure or "")
@@ -452,11 +461,11 @@ async def test_the_client_writes_exactly_the_price_source_words_a_host_compares_
     direct = await model("claude-haiku-5-5", Scripted(message()), provider="anthropic").generate(system="", user="x")
 
     assert upstream.price_source is PriceSource.OPENROUTER_REPORTED_UPSTREAM
-    assert PriceSource.OPENROUTER_REPORTED_UPSTREAM == "openrouter:reported+upstream", "the stored word is stable"
+    assert PriceSource.OPENROUTER_REPORTED_UPSTREAM.value == "openrouter:reported+upstream", "the stored word is stable"
     assert reported.price_source is PriceSource.OPENROUTER_REPORTED
-    assert PriceSource.OPENROUTER_REPORTED == "openrouter:reported"
+    assert PriceSource.OPENROUTER_REPORTED.value == "openrouter:reported"
     assert direct.price_source == f"{PriceSource.OPENROUTER_CATALOGUE}:anthropic/claude-haiku-5.5"
-    assert PriceSource.OPENROUTER_CATALOGUE == "openrouter-catalogue"
+    assert PriceSource.OPENROUTER_CATALOGUE.value == "openrouter-catalogue"
     assert {source.value for source in PriceSource} == {
         "openrouter:reported",
         "openrouter:reported+upstream",
@@ -475,6 +484,7 @@ async def test_a_direct_call_is_priced_by_the_matching_catalogue_row() -> None:
 
 async def test_a_direct_call_the_catalogue_cannot_price_is_returned_unpriced_saying_why() -> None:
     unlisted = await model("claude-opus-9", Scripted(message()), provider="anthropic").generate(system="", user="x")
+    assert isinstance(unlisted, Completion)
     assert unlisted.cost_usd is None and "matches 'claude-opus-9'" in (unlisted.pricing_failure or "")
 
     def down(_: httpx.Request) -> httpx.Response:
@@ -484,6 +494,7 @@ async def test_a_direct_call_the_catalogue_cannot_price_is_returned_unpriced_say
     answered = await model("claude-haiku-5-5", Scripted(message()), provider="anthropic", catalogue=unread).generate(
         system="", user="x"
     )
+    assert isinstance(answered, Completion)
     assert answered.content == "hello" and answered.cost_usd is None
     assert "could not be read (HTTPStatusError" in (answered.pricing_failure or "")
 
@@ -526,7 +537,9 @@ async def test_the_catalogue_refreshes_on_the_first_call_after_it_expires_and_no
     shared = expiring.catalogue(timedelta(0))
     haiku = model("claude-haiku-5-5", Scripted(message()), provider="anthropic", catalogue=shared)
     before = await haiku.generate(system="", user="x")
+    assert isinstance(before, Completion)
     after = await haiku.generate(system="", user="x")
+    assert isinstance(after, Completion)
     assert expiring.fetches == 2, "an expired catalogue is fetched again on the next call"
     assert before.cost_usd == pytest.approx(10 * 0.000001 + 4 * 0.000005)
     assert after.cost_usd == pytest.approx(10 * 0.000002 + 4 * 0.000005), "the refreshed rates price the call"
@@ -542,6 +555,7 @@ async def test_a_failed_refresh_keeps_the_last_rates_and_marks_the_pricing_stale
     read_by = datetime.now(UTC)
 
     stale = await haiku.generate(system="", user="x")
+    assert isinstance(stale, Completion)
 
     assert stale.content == "hello" and stale.cost_usd == fresh.cost_usd, "the last rates price it"
     assert stale.pricing_stale_since is not None and stale.pricing_stale_since <= read_by
@@ -550,10 +564,12 @@ async def test_a_failed_refresh_keeps_the_last_rates_and_marks_the_pricing_stale
     router = await model(
         "deepseek/deepseek-v4-flash", Scripted(chat(usage={"cost": 0.001, "is_byok": False})), catalogue=shared
     ).generate(system="", user="x")
+    assert isinstance(router, Completion)
     assert shared.stale_since is not None, "the second refresh failed too"
     assert router.pricing_stale_since is None, "OpenRouter's own figure priced it, not the stale rates"
 
     recovered = await haiku.generate(system="", user="x")
+    assert isinstance(recovered, Completion)
     assert server.fetches == 4 and recovered.pricing_stale_since is None and shared.stale_since is None
     assert shared.refresh_failure is None
     assert recovered.cost_usd == pytest.approx(10 * 0.000002 + 4 * 0.000005)
@@ -591,6 +607,7 @@ async def test_a_router_refusal_is_resent_without_the_temperature_and_learned_ac
     first = await model("openai/gpt-5-nano", provider, temperature=0.2, catalogue=shared).generate(
         system="", user="x", response_format=STRICT
     )
+    assert isinstance(first, Completion)
     assert ["temperature" in body for body in provider.bodies] == [True, False]
     assert first.temperature is None and first.sent_settings is not None and first.sent_settings.strict_output
     second = await model("openai/gpt-5-nano", provider, temperature=0.2, catalogue=shared).generate(
@@ -930,6 +947,7 @@ async def test_a_call_the_server_dropped_with_no_response_is_sent_again_once() -
 
     waits = Waits()
     completion = await answering(dropped_then_answered, waits).generate(system="", user="x")
+    assert isinstance(completion, Completion)
     assert len(sent) == 2 and waits.asked == [1.0] and completion.content == "answered"
     # The first send may have been served and billed: the completion names it and counts it, and so does its usage row.
     assert completion.resent_after == (
@@ -979,6 +997,7 @@ async def test_a_response_cut_short_while_its_body_is_read_is_raised_never_sent_
 async def test_a_call_answered_first_time_names_no_resend_and_its_row_counts_none() -> None:
     status, reply = message("answered")
     completion = await answering(Answers((status, reply, {})), Waits()).generate(system="", user="x")
+    assert isinstance(completion, Completion)
     assert (completion.resent_after, completion.maybe_billed_sends) == ((), 0)
     ledger = RoleUsageLedger(role="judge")
     ledger.add_llm_result(completion)
@@ -1151,6 +1170,7 @@ async def test_a_judge_named_by_id_is_built_from_the_judges_request_settings(mon
     judge = clients("judge", None, temperature=0.0)
     assert judge.price_ceiling(system="", user="x") is None  # the catalogue is not loaded yet
     completion = await judge.generate(system="", user="x")
+    assert isinstance(completion, Completion)
     [body] = provider.bodies
     # JUDGE_REQUEST_SETTINGS: a 10240 cap and an 8192 budget, which a router takes as a budget.
     assert (body["max_tokens"], body["reasoning"], body["temperature"]) == (10240, {"max_tokens": 8192}, 0.0)
