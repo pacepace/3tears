@@ -34,6 +34,7 @@ import csv
 import io
 import json
 from dataclasses import replace
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -50,6 +51,7 @@ from threetears.evals.kernel.numbers import format_number
 from threetears.evals.analysis.reporting import ScoreProjection
 from threetears.evals.kernel import ValidationFailedError
 from threetears.evals.ops import (
+    OpsHost,
     LaunchArguments,
     LaunchEstimate,
     history_launch_pricer,
@@ -147,7 +149,7 @@ async def _call(tool: MountedTool, fixture: OpsFixture, arguments: dict[str, Any
 
 async def test_scope_pivot_returns_the_lens_table(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
-    arguments = {"row_factor": "test_case_id", "column_factor": "model", "metric": "cost_usd"}
+    arguments: dict[str, Any] = {"row_factor": "test_case_id", "column_factor": "model", "metric": "cost_usd"}
 
     outcome = await _call(evals, fixture, {"action": "scope_pivot", **arguments})
 
@@ -191,7 +193,7 @@ async def test_a_pivot_says_what_it_left_out(evals: MountedTool) -> None:
 
 async def test_scope_history_returns_the_lens_series(evals: MountedTool) -> None:
     fixture = off_loop(ops_fixture)
-    arguments = {"metric": "cost_usd", "min_relative_change": 0.1}
+    arguments: dict[str, Any] = {"metric": "cost_usd", "min_relative_change": 0.1}
 
     outcome = await _call(evals, fixture, {"action": "scope_history", **arguments})
 
@@ -248,7 +250,8 @@ async def test_launch_estimate_prices_the_launch_by_the_launchs_own_rule(evals: 
     priced, unheard = estimate.arms
     assert (priced.case_count, priced.case_source, priced.n_observations) == (CASES, "stored", CASES * 2)
     assert priced.central_usd == pytest.approx(0.20 * CASES * 2), "the history's mean x the plan's cases x repeats"
-    assert priced.predicted_usd is not None and priced.predicted_usd > priced.central_usd, "held to the upper end"
+    assert priced.predicted_usd is not None and priced.central_usd is not None
+    assert priced.predicted_usd > priced.central_usd, "held to the upper end"
     assert unheard.predicted_usd is None and unheard.outcome == "refused" and estimate.total_predicted_usd is None
     assert unheard.refusal is not None and "cannot be priced: no priced past result" in unheard.refusal
     assert (estimate.cap_usd, estimate.cap_origin, estimate.would_launch) == (
@@ -301,7 +304,7 @@ async def test_an_estimate_handed_back_as_predicted_cost_sits_beside_the_cost_ob
     fixture = off_loop(_priced, off_loop(ops_fixture))
     template_id = toyhost_template().id
     estimated = await _call(evals, fixture, {"action": "launch_estimate", **_launching(template_id, PRICED_MODEL)})
-    arguments = {"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"}
+    arguments: dict[str, Any] = {"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"}
 
     outcome = await _call(
         evals, fixture, {"action": "scope_pivot", **arguments, "predicted_cost": estimated.structured}
@@ -359,7 +362,7 @@ async def test_after_the_launch_each_predicted_cell_says_how_much_of_it_the_laun
         (run_id,) = await launched_runs(
             fixture.host, await run_launch(fixture.host, LaunchArguments(**launching), TOYHOST_SCOPE)
         )
-    arguments = {"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"}
+    arguments: dict[str, Any] = {"row_factor": "template_id", "column_factor": "model", "metric": "cost_usd"}
 
     outcome = await _call(
         evals,
@@ -405,7 +408,11 @@ async def test_a_cap_above_the_hosts_is_refused_by_the_operation_and_the_action(
     fixture = off_loop(_priced, off_loop(ops_fixture))
     above = TOYHOST_COST_CEILING_USD + 1.0
     arguments = _launching(toyhost_template().id, PRICED_MODEL, max_cost_usd=above)
-    operation = {"run_launch": run_launch, "launch_estimate": launch_estimate}[action]
+    operations: dict[str, Callable[[OpsHost, LaunchArguments, str], Awaitable[object]]] = {
+        "run_launch": run_launch,
+        "launch_estimate": launch_estimate,
+    }
+    operation = operations[action]
 
     with pytest.raises(ValidationFailedError, match=f"max_cost_usd={above} is above the host's ceiling"):
         await operation(fixture.host, LaunchArguments(**arguments), TOYHOST_SCOPE)

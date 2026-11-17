@@ -11,7 +11,7 @@ name that mistake, against the router that shows it; the guide's own client pass
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -143,8 +143,19 @@ class Client:
         return None
 
 
+async def _checked_loosely(build_client: Callable[[RouterTransport], Client]) -> None:
+    """:func:`check_refusal_negotiation` over this module's client, whose mistakes include a reply short of the port
+    (:class:`Unreporting`): what the check exists to catch, so the client is handed over unchecked."""
+    await _unchecked(check_refusal_negotiation)(build_client)
+
+
+def _unchecked(check: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
+    """``check`` with its signature unchecked, for a call that hands it an ill-typed client on purpose."""
+    return check
+
+
 async def test_a_client_that_negotiates_passes() -> None:
-    await check_refusal_negotiation(lambda transport: Client(transport))
+    await _checked_loosely(lambda transport: Client(transport))
 
 
 #: The three scripted routers, as each mistake names the one it showed against.
@@ -228,7 +239,7 @@ TEMPERATURE, NO_ENDPOINT, EFFORT_AND_CAP = (
 )
 async def test_each_mistake_is_named(mistake: str | None, asked: WireSettings, named: list[str]) -> None:
     with pytest.raises(NegotiationConformanceFailure) as failed:
-        await check_refusal_negotiation(lambda transport: Client(transport, mistake=mistake, asked=asked))
+        await _checked_loosely(lambda transport: Client(transport, mistake=mistake, asked=asked))
     found = failed.value.mistakes
     for phrase in named:
         assert any(sentence.startswith(phrase) for sentence in found), (phrase, found)
@@ -237,5 +248,5 @@ async def test_each_mistake_is_named(mistake: str | None, asked: WireSettings, n
 
 async def test_a_call_that_raised_is_chained_to_the_failure() -> None:
     with pytest.raises(NegotiationConformanceFailure) as failed:
-        await check_refusal_negotiation(lambda transport: Client(transport, mistake="no_resend"))
+        await _checked_loosely(lambda transport: Client(transport, mistake="no_resend"))
     assert isinstance(failed.value.__cause__, Refused)

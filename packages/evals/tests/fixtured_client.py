@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from threetears.evals.schema.completion import StopReason
+
 __all__ = ["FIXTURED_CALL_CEILING_USD", "MODEL", "FixturedClient", "FixturedCompletion"]
 
 #: The model the fixtured client reports itself bound to.
@@ -18,7 +20,7 @@ MODEL = "anthropic/claude-opus"
 
 @dataclass
 class FixturedCompletion:
-    """The subset of an LLM result the generator reads, with a canned body."""
+    """An LLM result as the port states it (:class:`~threetears.evals.schema.CompletionResult`), with a canned body."""
 
     content: str
     cost_usd: float | None = 0.02
@@ -26,7 +28,9 @@ class FixturedCompletion:
     input_tokens: int | None = 1200
     output_tokens: int | None = 800
     model: str = MODEL
-    stop_reason: str = "end_turn"
+    price_source: str | None = None
+    served_model: str | None = None
+    stop_reason: StopReason = "end_turn"
     temperature: float | None = None
     tool_calls: list[Any] = field(default_factory=list)
     reasoning_tokens: int | None = None

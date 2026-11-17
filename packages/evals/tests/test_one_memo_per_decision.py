@@ -48,7 +48,7 @@ from threetears.evals.kernel.campaign import EvalAnalysis, GenerationProvenance
 from threetears.evals.kernel.evidence_tiers import JUDGED_TIER_RULE
 from threetears.evals.schema.models import utc_now_iso
 from threetears.evals.kernel.declaration import BarOverride, Floor, OverriddenBar, RateDrop
-from threetears.evals.kernel.host import EvalHost
+from threetears.evals.kernel.host import CompletionRole, EvalHost
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.ops import analyses_list, analysis_archive, campaign_record
 from threetears.evals.quick.contract import as_host
@@ -148,7 +148,7 @@ async def _store(evals: Sequence[Eval]) -> Store:
     runs = {ev.name: await ev.run(store=store, scope=SCOPE) for ev in evals}
     built: list[FixturedClient] = []
 
-    def clients(role: str, model: str | None, *, temperature: float | None = None) -> FixturedClient:
+    def clients(role: CompletionRole, model: str | None, *, temperature: float | None = None) -> FixturedClient:
         client = FixturedClient("")
         built.append(client)
         return client
@@ -176,7 +176,7 @@ def _stored_v15(
     control = quick.control
     assert aspect.design is not None and control is not None
     document: dict[str, Any] = json.loads(_FROZEN_V15.read_text(encoding="utf-8"))
-    questions = [
+    questions: list[dict[str, Any]] = [
         {
             "id": str(uuid.uuid4()),
             "text": QUESTION,
@@ -656,10 +656,10 @@ async def test_a_campaign_asked_after_its_readings_reads_as_asked_and_names_each
         ], "the campaign's first screen carries them once"
         assert not [line for line in own if line.startswith("Criteria on ")], "its fold does not repeat the line"
         assert not [b for b in fold.report.blocks if isinstance(b, TableBlock) and b.name == "criteria_set"]
-    bar, floor = _warnings(page)
+    bar_warning, floor_warning = _warnings(page)
     verdict = "; ".join(f"{fold.aspect}: {fold.shows}" for fold in page.aspects)
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
-    assert (line.id, line.verdict) == (analysis_id, " ".join([bar, floor, *said, verdict]))
+    assert (line.id, line.verdict) == (analysis_id, " ".join([bar_warning, floor_warning, *said, verdict]))
 
     timely_page = off_loop(campaign_report, timely_store.host, timely.id, SCOPE)
     assert _timing(timely_page) == [], "set in time: nothing to say"
@@ -937,6 +937,7 @@ async def test_the_action_reads_each_bar_as_aspect_and_measure_and_records_its_c
         {**call, "bars_overridden": named, "call_reason": "wider"}, host=fixture.host, caller=CALLER
     )
     assert not read.is_error, read.text
+    assert read.structured is not None
     recorded = read.structured["call"]
     assert recorded["called_by"] == CALLER.identity and recorded["reason"] == "wider"
     assert recorded["bars_overridden"] == [{"aspect": bar.aspect, "measure": bar.measure}]

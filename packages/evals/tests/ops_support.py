@@ -18,7 +18,7 @@ from typing import Any
 
 from threetears.evals.actions.report_writing import campaign_report_writer
 from threetears.evals.kernel import EvalCampaign, EvalStorage
-from threetears.evals.kernel.host import HostProfile
+from threetears.evals.kernel.host import CompletionRole, HostProfile
 from threetears.evals.ops import (
     AnalysisGeneration,
     JobsStarted,
@@ -143,7 +143,7 @@ def ops_fixture(
     analysts: list[FakeAnalystClient] = []
 
     def clients(
-        role: str, model: str | None, *, temperature: float | None = None
+        role: CompletionRole, model: str | None, *, temperature: float | None = None
     ) -> FixturedClient | FakeAnalystClient:
         if role != "analyst":
             writer = FixturedClient("{}")

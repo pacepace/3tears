@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from threetears.evals.schema.models import EvalResult, EvalRun
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.bundle.assemble import assemble_context_bundle
 from threetears.evals.analysis.bundle.surface import cell_dimension_facts
@@ -59,14 +60,22 @@ def _bundle() -> Any:
 # =============================================================================
 
 
+def _present[T](value: T | None) -> T:
+    """``value``, which the toy campaign holds; one that is missing fails here."""
+    assert value is not None
+    return value
+
+
 def _assemble_with(
-    *, results: dict[str, list[Any]] | None = None, runs: list[Any] | None = None, **campaign_kwargs: Any
+    *, results: dict[str, list[EvalResult]] | None = None, runs: list[EvalRun] | None = None, **campaign_kwargs: Any
 ) -> Any:
     """Assemble the toy campaign over a store whose batches or observations a test has altered."""
     profile = toyhost_profile()
     campaign, storage = toyhost_campaign(**campaign_kwargs)
     stored_runs = (
-        runs if runs is not None else [storage.load_eval_run(run_id, TOYHOST_SCOPE) for run_id in campaign.run_ids]
+        runs
+        if runs is not None
+        else [_present(storage.load_eval_run(run_id, TOYHOST_SCOPE)) for run_id in campaign.run_ids]
     )
     stored_results = (
         results
@@ -109,7 +118,7 @@ class TestACellsFactsAreItsNonFaultedObservations:
 
     def test_a_short_run_and_an_unfinished_run_are_named_on_their_own_cells(self) -> None:
         campaign, storage = toyhost_campaign()
-        narrow, wide = (storage.load_eval_run(run_id, TOYHOST_SCOPE) for run_id in campaign.run_ids)
+        narrow, wide = (_present(storage.load_eval_run(run_id, TOYHOST_SCOPE)) for run_id in campaign.run_ids)
         short = narrow.model_copy(
             update={
                 "completeness": RunCompleteness(
@@ -264,8 +273,8 @@ class TestARemainderIsWithheldByTheSharedRule:
                 result.model_copy(
                     update={
                         "latency": LatencyMetrics(
-                            total_ms=result.latency.total_ms + 400.0,
-                            llm_ms=result.latency.total_ms,
+                            total_ms=_present(_present(result.latency).total_ms) + 400.0,
+                            llm_ms=_present(result.latency).total_ms,
                             tool_ms=300.0 + result.k_iteration,
                         )
                     }

@@ -90,9 +90,9 @@ class TestTheRunRecordsHowItsApparatusWasAsked:
     @pytest.mark.parametrize(
         "fields", [{"max_tokens": 0}, {"max_tokens": -1}, {"max_tokens": 4096, "reasoning_max_tokens": 0}]
     )
-    def test_a_non_positive_setting_is_refused(self, fields) -> None:
+    def test_a_non_positive_setting_is_refused(self, fields: dict[str, Any]) -> None:
         with pytest.raises(ValidationError):
-            ClientRequestSettings(**fields)
+            ClientRequestSettings.model_validate(fields)
 
     def test_an_effort_the_router_does_not_name_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="reasoning_effort"):
@@ -104,7 +104,7 @@ class TestTheRunRecordsHowItsApparatusWasAsked:
         fields = {"max_tokens": 5120, "reasoning_max_tokens": 1024, "reasoning_effort": "minimal"}
         with pytest.raises(ValidationError, match="not both"):
             if build == "construct":
-                ClientRequestSettings(**fields)
+                ClientRequestSettings.model_validate(fields)
             else:
                 EvalRun.model_validate(_run_document(simulator_asked_settings=fields))
 
@@ -115,5 +115,5 @@ class TestTheRunRecordsHowItsApparatusWasAsked:
             {"max_tokens": 5120, "reasoning_effort": "minimal"},
         ],
     )
-    def test_asking_for_reasoning_either_way_alone_is_accepted(self, fields) -> None:
-        assert ClientRequestSettings(**fields).model_dump(exclude_defaults=True) == fields
+    def test_asking_for_reasoning_either_way_alone_is_accepted(self, fields: dict[str, Any]) -> None:
+        assert ClientRequestSettings.model_validate(fields).model_dump(exclude_defaults=True) == fields

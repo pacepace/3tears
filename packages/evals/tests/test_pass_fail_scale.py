@@ -34,6 +34,7 @@ from threetears.evals.schema.models import (
     label_key_of,
 )
 
+from threetears.evals.kernel.declaration import BarName
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.fixtures.toyhost.profile import toyhost_profile
 
@@ -70,7 +71,7 @@ class TestTheAuthoredCriterion:
 
 class TestTheStoredScore:
     @pytest.mark.parametrize(("scale", "score"), [("ordinal", 0), ("ordinal", 6), ("pass_fail", 2), ("pass_fail", -1)])
-    def test_a_score_off_its_scale_is_refused(self, scale: str, score: int) -> None:
+    def test_a_score_off_its_scale_is_refused(self, scale: RubricScale, score: int) -> None:
         with pytest.raises(ValidationError, match="not on the"):
             RubricScore(dim="x.arc", scale=scale, score=score, axis="capability", judge_temperature=0.0)
 
@@ -137,7 +138,7 @@ class TestTheJudgesAnswer:
         assert (await _judged("fail", _PF))["criteria_ordinal_scores"] == {"arc": 0}
 
     @pytest.mark.parametrize("value", [4, 1, 0, True, "PASS", "yes", None, ["pass"]])
-    async def test_anything_else_on_a_pass_fail_criterion_is_refused(self, value) -> None:
+    async def test_anything_else_on_a_pass_fail_criterion_is_refused(self, value: object) -> None:
         with pytest.raises(ValueError, match="pass/fail"):
             SCALE_READERS["pass_fail"]("arc", value)
         parsed = await _judged(value, _PF)
@@ -289,7 +290,7 @@ class TestAggregation:
 
 
 class TestTheProjection:
-    def _project(self, results, **run_overrides) -> list[ScoreRecord]:
+    def _project(self, results: list[EvalResult], **run_overrides: Any) -> list[ScoreRecord]:
         """Project through the toy host: the projection reads the installed host's levers."""
         run = make_eval_run(id="run-1", **run_overrides)
         profile = toyhost_profile()
@@ -379,11 +380,11 @@ class TestDescriptors:
         resolved = resolve_bar_name(
             "x.arc", rubric_dimensions={"x.arc": "pass_fail"}, goal_state_checks=(), measures=MeasureRegistry([])
         )
-        assert resolved.descriptor.value_range == (0.0, 1.0)
+        assert isinstance(resolved, BarName) and resolved.descriptor.value_range == (0.0, 1.0)
         ordinal = resolve_bar_name(
             "x.arc", rubric_dimensions={"x.arc": "ordinal"}, goal_state_checks=(), measures=MeasureRegistry([])
         )
-        assert ordinal.descriptor.value_range == (1.0, 5.0)
+        assert isinstance(ordinal, BarName) and ordinal.descriptor.value_range == (1.0, 5.0)
 
 
 class TestEveryScaleIsKnownEverywhere:
@@ -401,7 +402,7 @@ class TestEveryScaleIsKnownEverywhere:
             SCALES["pass_fail"].labels[0] = "zero"  # type: ignore[index]
 
     @pytest.mark.parametrize("scale", sorted(get_args(RubricScale)))
-    async def test_every_scale_is_asked_for_in_its_own_words(self, scale) -> None:
+    async def test_every_scale_is_asked_for_in_its_own_words(self, scale: RubricScale) -> None:
         """The judge service words each scale's question; a scale it has no wording for never reaches the judge."""
         judge = _Judge("pass" if scale == "pass_fail" else 4)
 
