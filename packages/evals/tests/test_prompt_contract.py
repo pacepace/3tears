@@ -47,7 +47,6 @@ from threetears.evals.kernel.prompts.contract import contract_state
 from threetears.evals.kernel.prompts.contract import declared_contracts
 from threetears.evals.kernel.prompts.contract import require_output_contract
 from threetears.evals.kernel.prompts.contract import template_text
-from threetears.evals.kernel.prompts.contract import CONTRACT_MARKER
 
 _RESET = "call prompt_reset for the slot"
 
@@ -111,7 +110,7 @@ def test_the_proposal_contract_is_pinned_so_a_change_that_refuses_every_stored_p
         "the proposal contract moved: every stored eval_proposer and eval_boundary_gen copy is refused until reset. "
         "If that is intended, update _PINNED_FINGERPRINT and name the reset in the release's migration notes"
     )
-    assert RUBRIC_PROPOSAL_CONTRACT.line == f"{CONTRACT_MARKER} rubric_proposal {_PINNED_FINGERPRINT}"
+    assert RUBRIC_PROPOSAL_CONTRACT.line == f"eval-output-contract: rubric_proposal {_PINNED_FINGERPRINT}"
 
 
 def test_rewording_a_fields_documentation_does_not_move_the_fingerprint() -> None:

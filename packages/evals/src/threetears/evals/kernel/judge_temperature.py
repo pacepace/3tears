@@ -28,7 +28,7 @@ from threetears.evals.schema.models import (
 TemperatureSetting = Literal["pinned", "provider_default"]
 
 #: Which scored dims are re-judged: ``borderline`` (stored score inside its scale, or a recorded repeat or second
-#: judge disagreed on it — :func:`~threetears.evals.run.judge_temperature.borderline_dims`) or ``all``.
+#: judge disagreed on it) or ``all``.
 TemperatureSelection = Literal["borderline", "all"]
 
 #: How many times each dim is judged at each setting when the caller names no number.

@@ -10,14 +10,12 @@ lives beside the model rather than inside it; the model reads it through
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Literal, TypeIs, get_args
 
 __all__ = [
     "JudgeAttributionSource",
     "JudgeAttributionState",
     "attribution_state",
-    "judges_sharing_a_candidate_model",
 ]
 
 
@@ -77,21 +75,3 @@ def attribution_state(
     if source is None or not _is_attribution_source(source):
         return "absent"
     return source
-
-
-def judges_sharing_a_candidate_model(
-    effective_judges: dict[str, str] | None, candidate_models: Sequence[str]
-) -> dict[str, str]:
-    """The dims whose judge is one of the run's candidate models: a model grading its own output.
-
-    Derived from what the run already records rather than stored beside it, so a change to the
-    rule can never disagree with rows written under the old one. Compared on the model ids as
-    recorded, so a candidate named by an alias the judge's id does not spell is not caught.
-
-    :param effective_judges: ``{dim_id: resolved_model}`` as the run recorded it, or ``None``.
-    :param candidate_models: The run's candidate models.
-    :return: ``{dim_id: model}`` for each dim judged by a candidate's model; empty when none is, or
-        when the run recorded no attribution.
-    """
-    candidates = set(candidate_models)
-    return {dim: model for dim, model in (effective_judges or {}).items() if model in candidates}

@@ -1,7 +1,7 @@
 """The run lifecycle: reading a run, cancelling it, reclaiming abandoned ones, re-judging a result, and recording completeness.
 
 A run reclaimed here is settled, never continued: it reads lost, and its lease is never revived. The one way back is
-an explicit resume under its lease's next epoch (:func:`~threetears.evals.run.resume.resume_run`); what a resume would take
+an explicit resume under its lease's next epoch (:func:`~threetears.evals.run.resume.take_up_run`); what a resume would take
 up is listed by :func:`~threetears.evals.run.resumable_jobs`, which a host offers to an operator at boot.
 
 What happens to a run after its launch, over the run's own storage. Each operation is a function
@@ -161,7 +161,7 @@ def sweep_abandoned_runs(storage: ReclaimStore, scopes: Iterable[str]) -> Abando
     **It settles a run; it never continues one.** A host offers that at boot, after this sweep: it lists what a
     resume would take up (:func:`~threetears.evals.run.resumable_jobs`, the ``jobs_resumable`` action, over the
     same scopes) and offers each to an operator, and a run is resumed only when someone asks
-    (:func:`~threetears.evals.run.resume.resume_run`, the ``job_resume`` action). Nothing resumes on its own.
+    (:func:`~threetears.evals.run.resume.take_up_run`, the ``job_resume`` action). Nothing resumes on its own.
 
     A row that cannot be *reconstructed* is a third case, and it is not a storage failure: the database answered,
     and the answer is a document this build's model cannot express. Tolerated per row in two places rather than

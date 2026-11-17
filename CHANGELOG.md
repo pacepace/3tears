@@ -6,6 +6,22 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### evals: what only the package's tests called is deleted or made private
+
+**Removed:** names that no production code calls, whose only callers were the package's own tests:
+`run.resume.resume_run` (the `job_resume` action takes a run up through `take_up_run`, which now carries its
+description), `analysis.service.analysis_report` (reading one stored analysis by its id over the bundles frozen with
+it, which no door offered; `campaign_report` and `report_read` read a campaign's report) with its store port,
+`kernel.usage_capture.resolve_result_usage` with `ResolvedUsage` (on the `kernel` root until now; `MIGRATIONS.toml`
+records it), `gen.variation_gen.price_variations`, `schema.versioning.DURABLE_ADDRESSING_FIELDS`,
+`schema.judge_attribution.judges_sharing_a_candidate_model` and the `campaign_aggregate` wrapper. Thirty-one names
+used only inside their own module are made private; the tests reach what they do through the module's public
+functions. Two sentences that said a run judged on a candidate's model is disclosed on every surface now say what
+happens: the run records it among its judges.
+
+**For hosts:** nothing to do. No root a host imports from loses a name its production code imports, and no stored or
+served shape moves.
+
 ### evals: provisional names the package uses across its own modules leave the public roots too
 
 **Removed:** 249 more provisional root spellings (of 246 names) leave the public roots (`MIGRATIONS.toml` records

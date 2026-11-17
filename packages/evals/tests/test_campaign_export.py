@@ -48,7 +48,6 @@ from threetears.evals.harness.writer_cases import WriterCaseFile
 from threetears.evals.kernel import EvalInsight, NotFoundError, UnreadableRecordError, ValidationFailedError
 from threetears.evals.ops import CampaignExport, OpsHost, UnresolvedLink, campaign_export
 from threetears.evals.schema import DOC_TYPE_FACTS, CatalogRubricDim, JudgeConfig, JudgeConfigTombstone, RubricDim
-from threetears.evals.schema.models import BUILTIN_JUDGE_CONFIG_PREFIX
 from threetears.evals.schema.models import judge_config_of
 from threetears.evals.storage import InMemoryDocumentStore
 
@@ -287,8 +286,8 @@ def test_a_campaign_not_in_the_scope_is_refused_naming_it() -> None:
 #: asked, and the refusals: a bare config id, an empty string and three malformed ``@`` shapes.
 JUDGE_IDENTITIES: tuple[tuple[str | None, str], ...] = (
     ("01a15a15-f896-70a5-946f-b987ea7c2276@7f5d3e70b47a", "config"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534", "builtin"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}not-twelve-hex", "builtin"),
+    ("builtin:576896bef534", "builtin"),
+    ("builtin:not-twelve-hex", "builtin"),
     (None, "none"),
     ("bare-config-id", "refused"),
     ("", "refused"),
@@ -341,7 +340,7 @@ def test_a_recorded_judge_identity_is_read_as_the_packages_reader_reads_it(recor
 #: names the prompt sent rather than the config committed to, and an empty string, which names no config.
 RUN_JUDGE_IDENTITIES: tuple[tuple[str | None, str], ...] = (
     ("01a15a15-f896-70a5-946f-b987ea7c2276", "config"),
-    (f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534", "builtin"),
+    ("builtin:576896bef534", "builtin"),
     (None, "none"),
     ("01a15a15-f896-70a5-946f-b987ea7c2276@7f5d3e70b47a", "refused"),
     ("", "refused"),
@@ -417,7 +416,7 @@ def test_judged_results_reach_their_judge_configs_and_dims_and_name_the_builtin_
     storage.save_rubric_dim(stray)
     storage.save_judge_config_tombstone(tombstone)
     result = _first_result(toy)
-    builtin = f"{BUILTIN_JUDGE_CONFIG_PREFIX}576896bef534"
+    builtin = "builtin:576896bef534"
     judged = {"toy.dim": f"{config.id}@{'0' * 12}", "toy.gone": f"cfg-gone@{'1' * 12}", "toy.builtin": builtin}
     assert toy.store.merge_fields(result["id"], SCOPE, {"judge_config_ids": judged})
 

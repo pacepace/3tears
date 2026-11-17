@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 
-from threetears.evals.actions.engine import engine_actions
+from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
 from threetears.evals.analysis import JudgeKey, assemble_context_bundle, judge_kind_readings
 from threetears.evals.analysis.judge_profiles import judge_profiles_of
 from threetears.evals.analysis.judge_profiles import judged_criteria
@@ -259,7 +259,7 @@ def test_a_profile_survives_a_round_trip_through_the_store_and_refuses_an_id_its
 def test_the_actions_record_and_list_profiles_and_render_their_receipts() -> None:
     host = toyhost_host()
     run_id = _judge_campaign(host)
-    actions = {action.name: action for action in engine_actions()}
+    actions = {action.name: action for action in engine_actions_in_catalogue()}
     record, listing = actions["judge_profiles_record"], actions["judge_profiles_list"]
     assert (record.permission, listing.permission) == ("write", "read")
 

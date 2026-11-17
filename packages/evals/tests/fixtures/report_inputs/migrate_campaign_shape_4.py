@@ -12,8 +12,8 @@ moves only what a sentence held, each read again off facts the bundle keeps:
 - each derived arm whose label code spelled from several levers carries its spelling (``arm_spellings``), read off its
   lever map as :func:`~threetears.evals.analysis.campaigns.campaign_arms_spelled` reads it, and refused unless it spells
   the stored label; an arm spelled from one level, or one a person named, carries none (``arm_spellings`` is ``{}``);
-- a shape-2 bundle gains its readings' ``aggregate``, read off its own readings and aspects' bundles
-  (:func:`~threetears.evals.analysis.campaign_readings.campaign_aggregate`), as the build that read shape 2 as 3 did;
+- a shape-2 bundle is refused: it gained its readings' ``aggregate`` through a read the package no longer has, and
+  every fixture of shape 2 was moved before it went;
 - the campaign bundle's ``schema_version`` becomes 4.
 
 No aspect bundle moves, so no aspect fingerprint moves; the campaign fingerprint does, and every place a file records it
@@ -52,7 +52,6 @@ from packages.evals.tests.fixtures.report_inputs.migrate_bundle_shape_66 import 
 from threetears.evals.analysis import AnalysisContextBundle
 from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.arms import (
-    ArmLevel,
     arm_names,
     distinguishing_axes,
     elide_level,
@@ -60,7 +59,6 @@ from threetears.evals.analysis.arms import (
     short_digest,
 )
 from threetears.evals.analysis.campaign_bundle import CAMPAIGN_BUNDLE_SHAPE, ArmSpelling
-from threetears.evals.analysis.campaign_readings import CampaignReadings, campaign_aggregate
 from threetears.evals.analysis.floors import evaluate_floor, floor_readings, floor_subject
 from threetears.evals.kernel.campaign import CampaignDeclaration, VariantIndexEntry
 from threetears.evals.kernel.host.sweepables import CANDIDATE_KIND_LEVER
@@ -147,7 +145,7 @@ def _spellings(bundle: CampaignBundle) -> dict[str, Document]:
     spelled: dict[str, Document] = {}
     for arm in derived:
         entry = by_key[arm.variant_key]
-        levels: Sequence[ArmLevel] = naming_levels(entry, distinguishing) if entry.levels_unavailable is None else []
+        levels = naming_levels(entry, distinguishing) if entry.levels_unavailable is None else []
         if len(levels) > 1:
             others = [level for level in levels if level.axis_id != CANDIDATE_KIND_LEVER]
             levels = others if len(others) == 1 else levels
@@ -182,10 +180,7 @@ def _migrate_frame(frame: Document, bundles: Sequence[AnalysisContextBundle]) ->
         _floor(status, declaration, by_label, readings["control_label"]) for status in readings.get("floors") or []
     ]
     if shape == 2:
-        if "aggregate" in readings:
-            raise SystemExit("a shape-2 campaign bundle already holds readings.aggregate")
-        aggregate = campaign_aggregate(CampaignReadings.model_validate(readings), by_label)
-        readings["aggregate"] = None if aggregate is None else aggregate.model_dump(mode="json")
+        raise SystemExit("a shape-2 campaign bundle is no longer moved: the read that gave it its aggregate is gone")
     moved: Document = {}
     for key, value in frame.items():
         if key == "schema_version":

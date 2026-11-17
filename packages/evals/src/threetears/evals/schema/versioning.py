@@ -228,7 +228,7 @@ the frozen fixtures under ``tests/fixtures/core_documents/`` (``scripts/regenera
 in its release notes that every core document is deleted before deploying it (``EvalStorage.reset_core``). A
 durable major instead appends one :class:`CoreUpgrader` to :data:`DURABLE_UPGRADERS`, whose ``from_version`` is
 the old major. A step reads every minor of its ``from_version`` up to the newest one released, and obeys four
-rules: it is pure (no store, host, clock or randomness); it never touches :data:`DURABLE_ADDRESSING_FIELDS`,
+rules: it is pure (no store, host, clock or randomness); it never touches a field the store addresses the document by,
 ``host_payload``, ``kind_payload`` or a stored key or digest (``variant_key``, ``context_key``,
 ``context_components``, ``content_hash``, ``identity_version``), because the store filters, sorts and projects on
 the stored bytes before any upgrade runs; a value it cannot derive becomes None, read as "not recorded"; and its
@@ -647,26 +647,6 @@ CORE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
         "eval_second_judge_pass": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_judge_temperature_check": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
         "eval_action_job": _ADDRESSED_EVERYWHERE | {"cancel_requested_at", "cancel_request_reason"},
-    }
-)
-
-#: Per durable type, every field the store reads on the stored bytes, as :data:`CORE_ADDRESSING_FIELDS` is per core
-#: type, and under the same rule: a durable upgrader may not touch one.
-DURABLE_ADDRESSING_FIELDS: Final[Mapping[str, frozenset[str]]] = MappingProxyType(
-    {
-        "eval_test_case": _ADDRESSED_EVERYWHERE | {"template_id", "stratum"},
-        "calibration_rating": _ADDRESSED_EVERYWHERE
-        | {"run_id", "result_id", "rated_at", "output_fingerprint", "criterion_fingerprint"},
-        "eval_template": _ADDRESSED_EVERYWHERE | {"name", "archived", "universal"},
-        "judge_config": _ADDRESSED_EVERYWHERE | {"rubric_dim_id", "archived", "created_at"},
-        "rubric_dim": _ADDRESSED_EVERYWHERE | {"key", "archived", "created_at"},
-        "rubric_dim_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
-        "judge_config_tombstone": _ADDRESSED_EVERYWHERE | {"deleted_at"},
-        "case_set": _ADDRESSED_EVERYWHERE | {"name", "version"},
-        "eval_campaign": _ADDRESSED_EVERYWHERE | {"subject_id", "behavior", "archived", "created_at"},
-        # Listed newest first by its time, a bounded read (``EvalStorage.list_analyst_gaps``).
-        "eval_analyst_gap": _ADDRESSED_EVERYWHERE | {"created_at"},
-        "blind_read": _ADDRESSED_EVERYWHERE | {"campaign_id", "created_at"},
     }
 )
 
@@ -1153,7 +1133,6 @@ __all__ = [
     "CORE_SCHEMA_MINOR",
     "CORE_SCHEMA_VERSION",
     "CORE_VERSION_SPACE",
-    "DURABLE_ADDRESSING_FIELDS",
     "DURABLE_BASELINE_VERSION",
     "DURABLE_DOC_TYPES",
     "DURABLE_SCHEMA_MINOR",

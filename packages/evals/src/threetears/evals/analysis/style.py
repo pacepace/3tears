@@ -712,7 +712,7 @@ _CASE_NUMBER = re.compile(r"\bcase \d+\b")
 
 
 @dataclass(frozen=True)
-class StyleViolation:
+class _StyleViolation:
     """One rule a piece of text breaks."""
 
     rule: Literal["banned", "long_sentence", "numerals", "question", "header", "dash_chain", "key_value", "facts"]
@@ -726,7 +726,7 @@ def sentences(text: str) -> list[str]:
     return [part.strip() for part in _SENTENCE_END.split(flat) if part.strip()]
 
 
-def lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[StyleViolation]:
+def lint_prose(text: str, *, question: str | None = None, header: bool = False) -> list[_StyleViolation]:
     """Every rule ``text`` breaks.
 
     :param text: A sentence, a paragraph or a header.
@@ -734,28 +734,28 @@ def lint_prose(text: str, *, question: str | None = None, header: bool = False) 
     :param header: Whether ``text`` is a header, held to :data:`MAX_HEADER_WORDS` words.
     :return: The violations, in the order found; empty when the text passes.
     """
-    found: list[StyleViolation] = []
+    found: list[_StyleViolation] = []
     lowered = text.casefold()
     # A code span is code a reader copies, not prose: it is held to the banned phrases only.
     text = _CODE_SPAN.sub("code", text)
-    found += [StyleViolation("banned", text, phrase) for phrase in BANNED_PHRASES if phrase in lowered]
+    found += [_StyleViolation("banned", text, phrase) for phrase in BANNED_PHRASES if phrase in lowered]
     for line in text.splitlines():
         if line.count(" — ") >= 2:
-            found.append(StyleViolation("dash_chain", line, f"{line.count(' — ') + 1} segments joined by dashes"))
+            found.append(_StyleViolation("dash_chain", line, f"{line.count(' — ') + 1} segments joined by dashes"))
         if _FACT_LINE.search(line):
-            found.append(StyleViolation("facts", line, "a `Key: value · Key: value` line belongs in a table"))
-    found += [StyleViolation("key_value", text, match) for match in _KEY_VALUE.findall(text)]
+            found.append(_StyleViolation("facts", line, "a `Key: value · Key: value` line belongs in a table"))
+    found += [_StyleViolation("key_value", text, match) for match in _KEY_VALUE.findall(text)]
     if header and (words := len(_WORD.findall(text))) > MAX_HEADER_WORDS:
-        found.append(StyleViolation("header", text, f"{words} words"))
+        found.append(_StyleViolation("header", text, f"{words} words"))
     for sentence in sentences(text):
         if (words := len(_WORD.findall(sentence))) > MAX_WORDS:
-            found.append(StyleViolation("long_sentence", sentence, f"{words} words"))
+            found.append(_StyleViolation("long_sentence", sentence, f"{words} words"))
         # A case named by its number is a name, not a figure, as a trial's ``T4`` is.
         if (numerals := len(_NUMERAL.findall(_CASE_NUMBER.sub("case", sentence)))) > MAX_NUMERALS:
-            found.append(StyleViolation("numerals", sentence, f"{numerals} numerals: make it a table"))
+            found.append(_StyleViolation("numerals", sentence, f"{numerals} numerals: make it a table"))
     if question:
         found += [
-            StyleViolation("question", text, asked)
+            _StyleViolation("question", text, asked)
             for asked in sentences(question)
             if len(asked.split()) >= 8 and asked in " ".join(text.split())
         ]
@@ -883,7 +883,6 @@ __all__ = [
     "MAX_WORDS",
     "ArmName",
     "HumanizeKind",
-    "StyleViolation",
     "arm_display_name",
     "arm_name",
     "cannot_tell_apart",

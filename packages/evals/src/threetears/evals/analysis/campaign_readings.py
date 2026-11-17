@@ -119,7 +119,6 @@ __all__ = [
     "MeasureReading",
     "PairReading",
     "ShownReading",
-    "campaign_aggregate",
     "campaign_kind",
     "campaign_readings",
     "PASSED_READING",
@@ -696,7 +695,7 @@ class CampaignReadings(EvalDocumentModel):
     aggregate: CampaignAggregate | None = Field(
         default=None,
         description=(
-            "A change's or a choice's figures across every aspect, each aspect weighed alike (`campaign_aggregate`). "
+            "A change's or a choice's figures across every aspect, each aspect weighed alike. "
             "None for a measurement, and on readings frozen before the aggregate was read."
         ),
     )
@@ -1320,7 +1319,7 @@ def campaign_readings(
         then the derived candidates). Required: a change whose candidates are derived from its runs names only its
         control, so the named arms alone would read it as a measurement.
     :return: The readings, a change's or a choice's with every arm's figures across aspects
-        (:func:`campaign_aggregate`).
+        (``aggregate``).
     :raises RefusedInput: An aspect has no bundle, a bundle is keyed by a label the campaign does not hold, or a bundle
         reads another aspect than the one it is keyed by.
     """
@@ -1869,8 +1868,8 @@ def _aggregated(
     return readings.model_copy(update={"aggregate": _aggregate(readings, bundles, memo)})
 
 
-def campaign_aggregate(
-    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle]
+def _aggregate(
+    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle], memo: _Floors
 ) -> CampaignAggregate | None:
     """Every arm's figures across a campaign's aspects, each aspect weighed alike: what each arm passes and what a
     reply costs it, and each change's candidate's change against the control.
@@ -1884,15 +1883,9 @@ def campaign_aggregate(
 
     :param readings: What code read off the campaign.
     :param bundles: Each aspect's evidence, keyed by its label.
+    :param memo: Each pair's floor readings, read once.
     :return: The figures; None for a measurement, and where fewer than two arms were compared on any aspect.
     """
-    return _aggregate(readings, bundles, _Floors())
-
-
-def _aggregate(
-    readings: CampaignReadings, bundles: Mapping[str, AnalysisContextBundle], memo: _Floors
-) -> CampaignAggregate | None:
-    """:func:`campaign_aggregate`, each pair's floor readings read through ``memo``."""
     if readings.kind == "change" and readings.control is not None:
         keys = [readings.control, *dict.fromkeys(row.arm for row in readings.readings)]
     elif readings.kind == "choice":

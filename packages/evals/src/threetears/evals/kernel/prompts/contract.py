@@ -44,7 +44,7 @@ ContractState = Literal["current", "outdated", "undeclared", "unbound"]
 REFUSED_CONTRACT_STATES: frozenset[ContractState] = frozenset({"outdated", "undeclared"})
 
 #: The words a contract line starts with. Hyphenated so no field or action name can be mistaken for it.
-CONTRACT_MARKER = "eval-output-contract:"
+_CONTRACT_MARKER = "eval-output-contract:"
 
 #: Hex digits of the digest a line carries: enough that two contracts never share one, few enough to read.
 FINGERPRINT_LENGTH = 16
@@ -55,7 +55,7 @@ _ANNOTATIONS = frozenset({"description", "title", "examples", "default"})
 #: Keywords whose value maps names to subschemas, so its keys are field or definition names and never keywords.
 _NAMED_SUBSCHEMAS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
 
-_LINE = re.compile(rf"^[ \t]*{re.escape(CONTRACT_MARKER)}[ \t]*(\S+)[ \t]+([0-9a-f]+)[ \t]*$", re.MULTILINE)
+_LINE = re.compile(rf"^[ \t]*{re.escape(_CONTRACT_MARKER)}[ \t]*(\S+)[ \t]+([0-9a-f]+)[ \t]*$", re.MULTILINE)
 
 
 def _structure(node: Any, *, names: bool = False) -> Any:
@@ -98,7 +98,7 @@ class OutputContract:
     @property
     def line(self) -> str:
         """The line a prompt written for this contract carries: what the shipped default ends with."""
-        return f"{CONTRACT_MARKER} {self.name} {self.fingerprint}"
+        return f"{_CONTRACT_MARKER} {self.name} {self.fingerprint}"
 
 
 def declared_contracts(text: str) -> tuple[OutputContract, ...]:
@@ -230,7 +230,6 @@ def require_output_contract(prompt_type: str, text: str, contract: OutputContrac
 
 
 __all__ = [
-    "CONTRACT_MARKER",
     "REFUSED_CONTRACT_STATES",
     "ContractState",
     "OutputContract",

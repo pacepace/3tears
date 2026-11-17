@@ -68,7 +68,7 @@ _UNDECIDED_TOKENS: frozenset[GateToken] = frozenset(
 )
 
 
-def verdict_token(verdict: Verdict) -> GateToken | None:
+def _verdict_token(verdict: Verdict) -> GateToken | None:
     """The gate token a verdict counts under, or None for a decided outcome no gate fails on.
 
     :param verdict: The verdict.
@@ -205,9 +205,9 @@ def gate_verdicts(
                 f"{', '.join(sorted({verdict.name for verdict in gated})) or 'none'}"
             )
         gated = [verdict for verdict in gated if verdict.name in wanted or verdict.heading in wanted]
-    failures = [verdict for verdict in gated if verdict_token(verdict) in tokens]
+    failures = [verdict for verdict in gated if _verdict_token(verdict) in tokens]
     undecided = [
-        verdict for verdict in gated if (token := verdict_token(verdict)) in _UNDECIDED_TOKENS and token not in tokens
+        verdict for verdict in gated if (token := _verdict_token(verdict)) in _UNDECIDED_TOKENS and token not in tokens
     ]
     return GateResult(fail_on=tokens, gated=tuple(gated), failures=tuple(failures), undecided=tuple(undecided))
 
@@ -220,5 +220,4 @@ __all__ = [
     "GateToken",
     "gate_verdicts",
     "parse_fail_on",
-    "verdict_token",
 ]

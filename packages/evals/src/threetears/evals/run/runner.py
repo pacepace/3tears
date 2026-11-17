@@ -2865,8 +2865,7 @@ def _degraded_capture_fields(
     exit, timeout included: they are the roles the total sums. What a timed-out total cannot
     hold is the call that was in flight when the deadline struck, whose spend no response ever
     reported — for a single-call kind that is the whole of it; ``termination`` is what tells a
-    reader the total stops there (see
-    :func:`~threetears.evals.kernel.usage_capture.resolve_result_usage`).
+    reader the total stops there.
 
     **Once the kind's ``invoke`` has returned, its whole output is the candidate side's record**
     (:attr:`_CellSink.returned`): a deadline in judging keeps the goal-state facts, host

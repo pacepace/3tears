@@ -19,7 +19,6 @@ from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.kernel.host import EvalHost
 from threetears.evals.quick import HostCommand, as_host, run_cli
 from threetears.evals.quick.cli import ENGINE_COMMANDS
-from threetears.evals.quick.cli import build_parser
 
 
 def _graded(case: Mapping[str, Any], answer: Any) -> float:
@@ -33,6 +32,11 @@ async def _answer(case: Mapping[str, Any]) -> float:
 def _host() -> EvalHost:
     """A fresh host for one eval, in memory."""
     return as_host([Eval([{"q": "a"}], _answer, [_graded])], store=":memory:")
+
+
+def host_for_the_command_line() -> EvalHost:
+    """The host a ``--host`` spec names, as a product's module would expose its factory."""
+    return _host()
 
 
 class _Capture:
@@ -86,9 +90,10 @@ def test_a_coroutine_handler_is_run_to_completion() -> None:
 
 def test_a_host_command_named_on_the_command_line_takes_host_too() -> None:
     capture = _Capture()
-    parser = build_parser(commands=[capture.command()])
-    args = parser.parse_args(["capture", "s-1", "--scope", "dev", "--host", "pkg.mod:factory"])
-    assert (args.host, args.session) == ("pkg.mod:factory", "s-1")
+    spec = f"{__name__}:host_for_the_command_line"
+    assert run_cli(["capture", "s-1", "--scope", "dev", "--host", spec], commands=[capture.command()]) == 0
+    ((_, args),) = capture.seen
+    assert (args.host, args.session) == (spec, "s-1")
 
 
 def test_a_refusal_a_host_command_raises_exits_two(capsys: pytest.CaptureFixture[str]) -> None:
@@ -108,7 +113,11 @@ def test_a_host_command_taking_an_engine_commands_name_is_refused(name: str) -> 
 
 def test_two_host_commands_sharing_a_name_are_refused() -> None:
     with pytest.raises(ValueError, match="two host commands are both named 'capture'"):
-        build_parser(commands=[_Capture().command(), _Capture().command()])
+        run_cli(
+            ["capture", "s-1", "--scope", "dev"],
+            host_factory=_host,
+            commands=[_Capture().command(), _Capture().command()],
+        )
 
 
 def test_the_engine_commands_still_work_beside_a_host_command(capsys: pytest.CaptureFixture[str]) -> None:
@@ -120,5 +129,5 @@ def test_the_engine_commands_still_work_beside_a_host_command(capsys: pytest.Cap
 
 def test_the_usage_line_names_the_host_commands(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
-        build_parser(commands=[_Capture().command()]).parse_args([])
+        run_cli([], host_factory=_host, commands=[_Capture().command()])
     assert "{run,ls,report,bundle,spend,gate,frontier,judge-temperature,capture}" in capsys.readouterr().err

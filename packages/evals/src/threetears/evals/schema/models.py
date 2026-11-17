@@ -1986,11 +1986,11 @@ def current_revision(revisions: Iterable[EvalTemplate]) -> EvalTemplate | None:
 #: What every built-in judge prompt's identity starts with, in the place a versioned :class:`JudgeConfig`'s id
 #: stands (``EvalResult.judge_config_ids``, and every ``judge_config_id`` read from it). A config's id is a uuid
 #: and may never start with it (:class:`JudgeConfig` refuses one that does), so the two cannot be confused.
-BUILTIN_JUDGE_CONFIG_PREFIX: Final = "builtin:"
+_BUILTIN_JUDGE_CONFIG_PREFIX: Final = "builtin:"
 
 
 def builtin_judge_config_id(wording: str) -> str:
-    """The identity of a built-in judge prompt: :data:`BUILTIN_JUDGE_CONFIG_PREFIX` and a fingerprint of its wording.
+    """The identity of a built-in judge prompt: :data:`_BUILTIN_JUDGE_CONFIG_PREFIX` and a fingerprint of its wording.
 
     A dimension with no :class:`JudgeConfig` is judged with the engine's own wording, and that wording is an
     instrument as much as an operator's prompt is: change it and the judge is a different judge. So it has an id,
@@ -2006,7 +2006,7 @@ def builtin_judge_config_id(wording: str) -> str:
     :param wording: The built-in prompt's fixed text, as the judge service renders it for the dimension's family.
     :return: ``builtin:<sha12>``.
     """
-    return BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
+    return _BUILTIN_JUDGE_CONFIG_PREFIX + bytes_digest(wording.encode("utf-8"))[:12]
 
 
 #: The sentence a release's ``MIGRATIONS.toml`` notes carry, verbatim, when it changes the wording of a built-in judge
@@ -2029,7 +2029,7 @@ def is_builtin_judge_config_id(config_id: str | None) -> bool:
     :param config_id: A recorded config id, or ``None`` for a dim no judge asked.
     :return: True for a :func:`builtin_judge_config_id`.
     """
-    return config_id is not None and config_id.startswith(BUILTIN_JUDGE_CONFIG_PREFIX)
+    return config_id is not None and config_id.startswith(_BUILTIN_JUDGE_CONFIG_PREFIX)
 
 
 #: A configured judge's recorded identity: its config's id, ``@``, and the fingerprint of the reply-format wording the
@@ -2177,7 +2177,7 @@ class JudgeConfig(DurableDocumentModel):
         """Refuse an id spelled as a built-in prompt's, which a recorded score could not tell from one."""
         if is_builtin_judge_config_id(v):
             raise ValueError(
-                f"judge config id {v!r} starts with {BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
+                f"judge config id {v!r} starts with {_BUILTIN_JUDGE_CONFIG_PREFIX!r}, which names the judge's "
                 "built-in prompts; give the config another id, or leave it to the default"
             )
         if _CONFIGURED_JUDGE_ID.match(v):
@@ -6253,7 +6253,7 @@ StopReason = Literal["end_turn", "max_tokens", "content_filter", "truncated", "e
 #: early for a cause the provider did not name (``truncated``). A cut-off reply with either is excluded as
 #: ``truncated`` (:func:`~threetears.evals.kernel.result_condition.trial_exclusion`); a filtered or errored one stays
 #: a fault of the rig.
-OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
+_OUT_OF_ROOM_STOP_REASONS: frozenset[StopReason] = frozenset({"max_tokens", "truncated"})
 
 
 class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
@@ -6299,8 +6299,8 @@ class JudgeCutShort(EvalDocumentModel, CoreShapeModel):
 
     @property
     def out_of_room(self) -> bool:
-        """Whether the reply ran out of room (:data:`OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
-        return self.stop_reason in OUT_OF_ROOM_STOP_REASONS
+        """Whether the reply ran out of room (:data:`_OUT_OF_ROOM_STOP_REASONS`), not filtered or failed."""
+        return self.stop_reason in _OUT_OF_ROOM_STOP_REASONS
 
 
 #: The namespace every cell's result id is derived in (:func:`cell_result_id`). Fixed for good: moving it would give
@@ -7116,7 +7116,6 @@ __all__ = [
     "GoalCheckControls",
     "GoalCheckIntent",
     "GoalStateOutcome",
-    "BUILTIN_JUDGE_CONFIG_PREFIX",
     "JudgeConfig",
     "builtin_judge_config_id",
     "JUDGE_WORDING_CHANGE_SENTENCE",

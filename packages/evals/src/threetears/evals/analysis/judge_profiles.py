@@ -7,7 +7,7 @@ Two halves, both pure:
   evidence tiers read them, parse validity, the cases and runs it was measured on, and when. A reading whose judge's
   served model or temperature was not recorded is skipped with why: an unobserved judge cannot be shown to be the
   judge another campaign used.
-- :func:`tiers_with_judge_profiles` — a campaign's evidence tiers, each one its own evidence left ``undetermined``
+- :func:`_tiers_with_judge_profiles` — a campaign's evidence tiers, each one its own evidence left ``undetermined``
   replaced by the stored profile of the very same judge and criterion when that profile decides a tier. Which
   criterion a campaign's judge was asked is read off the template its runs were judged against
   (:func:`judged_criteria`).
@@ -75,7 +75,6 @@ __all__ = [
     "SkippedJudgeProfile",
     "judge_profiles_of",
     "judged_criteria",
-    "tiers_with_judge_profiles",
 ]
 
 
@@ -221,7 +220,7 @@ def judged_criteria(
     return criteria
 
 
-def tiers_with_judge_profiles(
+def _tiers_with_judge_profiles(
     tiers: Iterable[JudgeEvidenceTier],
     profiles: Iterable[EvalJudgeProfile],
     criteria: Mapping[JudgeKey, str | None],
@@ -377,7 +376,7 @@ def judges_tiers(
     """The evidence tier of every judge behind ``runs``' judged scores, decided as a campaign's bundle decides them.
 
     The two agreements over these results (with people's ratings, :func:`judged_ratings`, and with the judges' own
-    repeats), and, for a judge they leave undetermined, its stored profile (:func:`tiers_with_judge_profiles`). What
+    repeats), and, for a judge they leave undetermined, its stored profile (:func:`_tiers_with_judge_profiles`). What
     reads a judged figure outside a campaign — a scope's frontier — reads its judges' tiers here, so it says the tier
     a campaign over the same runs would.
 
@@ -405,7 +404,7 @@ def judges_tiers(
         templates = {template.id: template for template in storage.load_templates(template_ids, scope_id)}
     if ratings is None:
         ratings = judged_ratings(storage, scope_id, runs, results)
-    return tiers_with_judge_profiles(
+    return _tiers_with_judge_profiles(
         judge_evidence_tiers(
             judge_agreement(list(ratings), results),
             judge_self_agreement(results),

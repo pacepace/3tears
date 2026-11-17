@@ -37,7 +37,7 @@ from threetears.evals.analysis.caveats import call_read
 from threetears.evals.schema.reading_states import Maker
 from threetears.evals.analysis.campaigns import campaign_arms_spelled
 from threetears.evals.analysis.generation_tally import GenerationTally
-from threetears.evals.analysis.bundle.schema import BundleInspection, known_fingerprint
+from threetears.evals.analysis.bundle.schema import BundleInspection
 from threetears.evals.analysis.report import CampaignReport, Verdict
 from threetears.evals.analysis.report.keys.names import input_check_name
 from threetears.evals.analysis.report_input_build import report_input
@@ -58,7 +58,7 @@ from threetears.evals.analysis.report.words import (
     reader_arms,
 )
 from threetears.evals.analysis.report.campaign.answer_blocks import NO_LONGER_READS, retired_generation
-from threetears.evals.analysis.report.doc_page.store import ReportDocReads, StoredReportPage, read_report_doc
+from threetears.evals.analysis.report.doc_page.store import StoredReportPage, read_report_doc
 from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.kernel.campaign import CampaignDeclaration, EvalAnalysisAttempt, EvalCampaign
 from threetears.evals.kernel.campaign_writes import serialized_campaign_write
@@ -189,19 +189,6 @@ class AnalysisStore(CampaignReadStore, JobRecordStore, Protocol):
         """Whether one stored analysis is archived, or ``None`` when it no longer resolves — what a generation's
         insight write asks of each ledger insight's minting analysis."""
         ...
-
-
-class AnalysisReportStore(AnalysisStore, ReportDocReads, Protocol):
-    """What :func:`analysis_report` reads: the analysis service's port, and the two reads a stored report document is
-    read back through (:class:`~threetears.evals.analysis.report.doc_page.store.ReportDocReads`).
-
-    A ``doc`` analysis is laid out as its stored document's page, so the reader needs the document and its snapshot
-    beside the analysis. Kept apart from :class:`AnalysisStore`, which every other read of the service takes, so a
-    host's store implementing that port is asked for nothing new by it. :class:`~threetears.evals.kernel.storage.
-    EvalStorage` satisfies both.
-
-    **Provisional:** this protocol may change before it is declared part of the host contract.
-    """
 
 
 def describe_insight_id_filters(subject_id: str | None, source_campaign_id: str | None) -> str:
@@ -1096,164 +1083,9 @@ def _with_declaration(campaign: EvalCampaign, declared: CampaignDeclaration) -> 
     return campaign.model_copy(update=_declared(declared))
 
 
-def _as_analysed(analysis: EvalAnalysis, campaign: EvalCampaign | None) -> EvalCampaign:
-    """The campaign as the analysis's generation read it: what it declared then, and the call recorded since.
-
-    An analysis outliving its campaign is still laid out, named by the campaign's id.
-    """
-    declared = analysis.design_snapshot
-    snapshot = _declared(declared)
-    if campaign is not None:
-        return _with_declaration(campaign, declared)
-    return EvalCampaign.model_validate(
-        {
-            "id": analysis.campaign_id,
-            "scope_id": analysis.scope_id,
-            "name": analysis.campaign_id,
-            "subject_id": analysis.subject_id,
-            "subject_kind": analysis.subject_kind,
-            "behavior": analysis.behavior,
-            "created_by": declared.declared_by or "unknown",
-            **snapshot,
-        }
-    )
-
-
-def _frozen_fingerprints(analysis: EvalAnalysis) -> dict[str, str]:
-    """Each aspect's bundle fingerprint in the analysis's frozen frame, by aspect.
-
-    Putting the bundle back together refused it unless each aspect's entry in the frame is that aspect's bundle
-    fingerprint in the entry's version, so an entry in a version this build computes (``v3:``, or the ``v2:`` an
-    analysis stored before it holds) is the one each fold's source names: a stored analysis's page prints the
-    fingerprint it was stored with.
-    """
-    entries = analysis.campaign_bundle.get("aspects")
-    return {
-        str(entry["aspect"]): str(entry["fingerprint"])
-        for entry in (entries if isinstance(entries, list) else [])
-        if isinstance(entry, dict) and known_fingerprint(str(entry.get("fingerprint", "")))
-    }
-
-
-def _analysis_page(
-    analysis: EvalAnalysis,
-    campaign: EvalCampaign | None,
-    *,
-    trials: TrialDetail,
-) -> CampaignReport:
-    """A stored analysis laid out as its campaign's page, over everything frozen with it. One a retired writer wrote is
-    code's page over that bundle, standing in for it with the retired writer's line (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`)."""
-    bundle = analysis_campaign_bundle(analysis)
-    fingerprints = _frozen_fingerprints(analysis)
-    retired = retired_generation(analysis.basis)
-    if retired is not None:
-        log.info("analysis %s reads code-only: %s", analysis.id, retired)
-        page = _campaign_page(
-            _as_analysed(analysis, campaign),
-            bundle,
-            assembled_at=analysis.generation.bundle_assembled_at,
-            fingerprints=fingerprints,
-            trials=trials,
-            unread_analysis_id=analysis.id,
-            unread_line=retired,
-        )
-        return CampaignReport.model_validate({**dict(page), "needs_regeneration": retired})
-    return _campaign_page(
-        _as_analysed(analysis, campaign),
-        bundle,
-        assembled_at=analysis.generation.bundle_assembled_at,
-        analysis=analysis,
-        fingerprints=fingerprints,
-        trials=trials,
-    )
-
-
-def analysis_report(
-    storage: AnalysisReportStore, analysis_id: str, scope_id: str, *, trials: TrialDetail = "table"
-) -> CampaignReport:
-    """Read one stored analysis as its campaign's page — the one page every door renders.
-
-    Laid out over what was frozen with the analysis at generation, so it reads as it was written whatever has been
-    archived or re-run since. The person's call is the campaign's as recorded now. Derived on every read and never
-    written back, so a stored analysis stays pivotable.
-
-    A report document's analysis (``doc``, the report writer's) is laid out as :func:`campaign_report` lays out the
-    campaign's reported one: the page its stored document draws on its own snapshot (``basis="analysis"``,
-    :attr:`~threetears.evals.analysis.report.CampaignReport.doc_page`), its readings and folds off that snapshot's
-    bundle, carrying the analysis's id. Where this version no longer reads the document (its record does not
-    validate, it was deleted, its snapshot is gone, holds no bundle or no longer reads, or its bundle no longer lays
-    out), the page is code's over the bundles frozen with the analysis itself, never the campaign's evidence now, and
-    says so: its first screen carries the one regenerate line naming the analysis, and ``needs_regeneration`` that
-    line with why and that the page lays out the evidence frozen with the analysis.
-
-    Any other analysis is laid out over the bundles and code's readings frozen with it: the campaign as it was declared
-    then, every aspect's fold over its frozen bundle.
-
-    An analysis a retired report writer wrote (the memo writer's, ``basis="memo"``, or the report planner's,
-    ``basis="plan"``) is laid out as code's page over the same frozen bundles (``basis="code_only"``), its first screen and ``needs_regeneration`` saying in one line
-    which writer wrote it and to regenerate
-    (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`); its stored memo or plan is
-    never read.
-
-    :param storage: Where the analysis is read, and its report document and that document's snapshot.
-    :param analysis_id: The analysis to report.
-    :param scope_id: The scope it lives in.
-    :param trials: How much of each failed or lost trial the page lays out (:data:`TrialDetail`): by default their
-        table alone, each row naming its stored result; ``all`` adds each one's full record.
-    :return: The page: the document's page (``basis="analysis"``) carrying the analysis's ``analysis_id``, or code's
-        over the analysis's frozen bundles (``basis="code_only"``) naming it as ``unread_analysis_id``; :meth:`~threetears.evals.analysis.report.CampaignReport.write`
-        puts it in a directory, and :func:`~threetears.evals.analysis.report.serialize_report` serializes it.
-    :raises NotFoundError: No analysis with that id in the scope.
-    :raises RefusedInput: The page falls to the analysis's frozen bundles and they were written in a shape this build
-        no longer reads; the remedy is to generate it again.
-    """
-    analysis = get_analysis(storage, analysis_id, scope_id)
-    campaign = storage.load_campaign(analysis.campaign_id, scope_id)
-    if analysis.report_doc_id is None or retired_generation(analysis.basis) is not None:
-        return _analysis_page(analysis, campaign, trials=trials)
-    # Only the document not reading falls back: a document gone (NotFoundError) or refused, or a layout its bundle
-    # refuses. Anything else raised while laying it out is not the document failing to read, and propagates.
-    try:
-        read = read_report_doc(storage, analysis.report_doc_id, scope_id)
-    except NotFoundError as missing:
-        return _frozen_stand_in(analysis, campaign, missing.message, trials=trials)
-    except RefusedInput as unread:
-        return _frozen_stand_in(analysis, campaign, unread.fault, trials=trials)
-    try:
-        return _doc_laid_out(_as_analysed(analysis, campaign), read, analysis_id=analysis.id, trials=trials)
-    except RefusedInput as unread:
-        return _frozen_stand_in(analysis, campaign, unread.fault, trials=trials)
-
-
 #: What a stored analysis's page laid out over its own frozen bundles says beside why its document no longer reads:
 #: that it is the evidence the analysis was written over, never the campaign's evidence now.
 _FROZEN_FALLBACK = "this page lays out the evidence frozen with the analysis, not the campaign's evidence now"
-
-
-def _frozen_stand_in(
-    analysis: EvalAnalysis, campaign: EvalCampaign | None, why: str, *, trials: TrialDetail
-) -> CampaignReport:
-    """Code's page over the bundles frozen with ``analysis``, standing in for its report document, which this version
-    no longer reads (``why``): its first screen carries the one regenerate line naming the analysis, and its
-    ``needs_regeneration`` that line, why, and that it lays out the evidence frozen with the analysis.
-
-    :raises RefusedInput: The frozen bundles were written in a shape this build no longer reads.
-    """
-    log.info("analysis %s's report document reads code-only over its frozen bundles: %s", analysis.id, why)
-    page = _campaign_page(
-        _as_analysed(analysis, campaign),
-        analysis_campaign_bundle(analysis),
-        assembled_at=analysis.generation.bundle_assembled_at,
-        fingerprints=_frozen_fingerprints(analysis),
-        trials=trials,
-        unread_analysis_id=analysis.id,
-    )
-    return CampaignReport.model_validate(
-        {
-            **dict(page),
-            "needs_regeneration": f"{NO_LONGER_READS} ({why}; {_FROZEN_FALLBACK})",
-        }
-    )
 
 
 def campaign_report(
@@ -1269,8 +1101,7 @@ def campaign_report(
     **The rule.** The campaign's newest analysis that is not archived. When it has none — no generation has run, or
     every analysis it had was archived (an archive is the claim that an analysis was wrong, so it is not the campaign's
     report) — the campaign's evidence assembled now (``basis="code_only"``), which says that no analysis was written.
-    A particular analysis, archived ones included, is read by its id through :func:`analysis_report`, and a particular
-    report document, any version, through :func:`report_doc_report`.
+    A particular report document, any version, is read through :func:`report_doc_report`.
 
     **What the analysis is laid out as**, by what wrote it:
 
@@ -1832,10 +1663,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AnalysisGenerationEstimate",
-    "AnalysisReportStore",
     "AnalysisStore",
     "DEFAULT_WRITER_UNRESOLVED",
-    "analysis_report",
     "report_doc_report",
     "describe_insight_id_filters",
     "get_analysis",

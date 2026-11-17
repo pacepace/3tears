@@ -48,7 +48,7 @@ def _reading_settings() -> LaunchSettings:
 #: host's allowed writers and asking whether its turns can be priced — in seconds. The job starts with no budget of its
 #: own (the writing enters ``AnalysisGeneration.budget_s`` itself), so without this a client that hangs while it is
 #: built or refreshes its prices would leave the attempt ``running`` for as long as its lease kept renewing.
-#: Preparation makes no model call, so the bound is tight, unlike a launch's (``LAUNCH_PREPARATION_BUDGET_S``), whose
+#: Preparation makes no model call, so the bound is tight, unlike a launch's, whose
 #: launchers call providers: a hang reads as refused within minutes rather than ``running`` for hours. A host that
 #: wants another bound sets it per call.
 ANALYSIS_PREPARATION_BUDGET_S = 900.0

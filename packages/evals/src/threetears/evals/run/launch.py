@@ -170,8 +170,7 @@ class LaunchSettings(BaseModel):
         provided it is itself none of them (:func:`resolve_judge_pin`), spelled as the host's clients name
         the model they resolve. It never overrides a judge the launch named, nor a model a judge config
         pins per dim: those are choices. ``None`` substitutes nothing, and a run judged on a candidate's
-        model says so on every surface that lists its judges
-        (:func:`~threetears.evals.schema.judge_attribution.judges_sharing_a_candidate_model`).
+        model records it among its judges (``EvalRun.effective_judges``).
     :ivar max_cell_timeout_s: The longest per-cell deadline a launch may name (``cell_timeout_s``), in seconds.
         ``None`` declares no ceiling of the host's own: a launch may then only LOWER its kind's deadline (the
         one the kind's launcher wires, or :data:`~threetears.evals.run.runner.DEFAULT_CELL_TIMEOUT_S`), so a
@@ -3710,9 +3709,8 @@ def resolve_judge_pin(request: LaunchRequest, role_default: str, *, candidate_mo
     that names none inherits the judge role's default — unless that default is one of the launch's candidate
     models (every arm's, :attr:`LaunchGroup.candidate_models`, and this arm's own, which is the kind's default
     for an arm that named none), in which case :attr:`LaunchSettings.judge_alternate_model` scores instead,
-    provided it is set and is itself none of the candidates. Otherwise the default stands, and the run's
-    surfaces disclose the overlap
-    (:func:`~threetears.evals.schema.judge_attribution.judges_sharing_a_candidate_model`). A judged kind
+    provided it is set and is itself none of the candidates. Otherwise the default stands, and the run
+    records the overlap among its judges (``EvalRun.effective_judges``). A judged kind
     calls this in its ``plan_arm`` and in its launcher alike — the plan's judges and the launcher's must agree
     — and the launch tail refuses a launcher that kept a candidate's model where an alternate stood ready.
 

@@ -59,7 +59,7 @@ from threetears.evals.run import (
     resumable_jobs,
     start_run,
 )
-from threetears.evals.run.resume import resume_run
+from packages.evals.tests.resume_support import resumed_run
 from threetears.evals.run.definition_digests import measured_template_digest
 from threetears.evals.run.jobs import EvalJobManager
 from threetears.evals.schema import ContextComponents, EvalResult, EvalRun, EvalTemplate, JobLease
@@ -251,7 +251,7 @@ async def test_a_run_taken_up_again_from_a_fresh_process_ends_as_an_uninterrupte
     cut_short = [row for row in before if row.termination == "cancelled"]
     resumer = other_process(holder)
 
-    taken_up = await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    taken_up = await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert taken_up.status == "running"
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
@@ -280,7 +280,7 @@ async def test_an_operator_cancelled_run_is_taken_up_again_by_the_process_that_h
 ) -> None:
     holder, run_id, launched, _ = await _interrupted(monkeypatch, "cancelled")
 
-    await resume_run(holder.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(holder.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(holder, run_job_id(run_id))).state == "completed"
 
     run = await _assert_ends_as_the_control(holder, run_id, launched)
@@ -561,7 +561,7 @@ async def test_a_run_whose_template_was_edited_in_what_it_measures_is_refused_na
     before, rows = off_loop(_run, holder, run_id), _rows(holder, run_id)
 
     with pytest.raises(ValidationFailedError) as refused:
-        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
 
     assert "goal_check_proofs" in refused.value.message, refused.value.message
     assert "edited at" not in refused.value.message, "the edit is refused for what it changed, never for its time"
@@ -580,7 +580,7 @@ async def test_a_run_whose_template_intent_was_edited_is_refused_as_measuring_ot
     assert before.template_digest is not None
 
     with pytest.raises(ValidationFailedError) as refused:
-        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
 
     assert "its measured content changed since the run started" in refused.value.message, refused.value.message
     assert off_loop(_run, holder, run_id) == before, "nothing was written"
@@ -606,7 +606,7 @@ async def test_a_run_stored_before_it_froze_its_template_is_refused_once_its_tem
     before = off_loop(_run, holder, run_id)
 
     with pytest.raises(ValidationFailedError) as refused:
-        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
 
     message = refused.value.message
     assert f"edited at {EDITED_AT}" in message and "whether the edit changed the measurement cannot be told" in message
@@ -621,7 +621,7 @@ async def test_a_run_stored_before_it_froze_its_template_is_taken_up_while_its_t
     _as_stored_before_template_digests(store, run_id)
     resumer = other_process(holder)
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = await _assert_ends_as_the_control(holder, run_id, launched)
@@ -653,7 +653,7 @@ async def test_a_run_interrupted_before_runs_recorded_measure_definitions_is_tak
     resumer = other_process(holder)
 
     with caplog.at_level(logging.WARNING):
-        await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
         assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = off_loop(_run, holder, run_id)
@@ -684,7 +684,7 @@ async def test_a_run_that_recorded_its_measure_definitions_is_taken_up_with_no_n
     resumer = other_process(holder)
 
     with caplog.at_level(logging.WARNING):
-        await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
         assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     assert not [record for record in caplog.records if "stays unrecorded" in record.getMessage()]
@@ -703,7 +703,7 @@ async def test_a_run_that_recorded_other_measure_definitions_than_the_hosts_curr
     before = off_loop(_run, holder, run_id)
 
     with pytest.raises(ValidationFailedError) as refused:
-        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
 
     assert f"measure definitions ({moved})" in refused.value.message, refused.value.message
     assert off_loop(_run, holder, run_id) == before, "nothing was written"
@@ -719,7 +719,7 @@ async def test_a_run_whose_template_was_edited_in_nothing_it_measures_is_taken_u
     off_loop(holder.eval_host.storage.save_template, edited)
     resumer = other_process(holder)
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = await _assert_ends_as_the_control(holder, run_id, launched)
@@ -750,7 +750,7 @@ async def test_a_run_whose_checks_the_current_proof_rules_prove_alike_is_taken_u
     _as_proved_under_older_rules(store, run_id)
     resumer = other_process(holder)
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = await _assert_ends_as_the_control(holder, run_id, launched)
@@ -769,7 +769,7 @@ async def test_a_run_taken_up_under_its_own_proof_rules_records_them_on_each_hol
     holder, run_id, launched, _ = await _interrupted(monkeypatch, "cancelled")
     resumer = other_process(holder)
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = await _assert_ends_as_the_control(holder, run_id, launched)
@@ -799,7 +799,7 @@ async def test_a_run_whose_checks_the_current_proof_rules_prove_otherwise_is_ref
     before = off_loop(_run, holder, run_id)
 
     with pytest.raises(ValidationFailedError) as refused:
-        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
 
     message = refused.value.message
     assert "goal_check_proofs (" in message, message
@@ -835,9 +835,9 @@ async def test_a_run_its_budget_stopped_is_taken_up_only_under_a_cap_above_its_s
     resumer = other_process(holder)
 
     with pytest.raises(ValidationFailedError, match="max_cost_usd above") as refused:
-        await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
-        await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent)
+        await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent)
     assert off_loop(_run, holder, run_id) == stopped, "a refused take-up writes nothing"
     # The listing a host offers at boot notes the very refusal the take-up makes, by the same rule.
     (offered,) = off_loop(resumable_jobs, holder.eval_host.storage, [TOYHOST_SCOPE]).jobs
@@ -846,10 +846,10 @@ async def test_a_run_its_budget_stopped_is_taken_up_only_under_a_cap_above_its_s
     # Just above what it spent: what it spent counts toward the cap, so the first cell it lands stops it again —
     # counted from nothing, it would have run every cell left.
     barely = spent + 0.0000001
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=barely)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=barely)
     assert (await settled(resumer, run_job_id(run_id))).status == "budget_stopped"
     assert len(_rows(holder, run_id)) < 3 * K
-    await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE, max_cost_usd=2.0)
+    await resumed_run(other_process(holder).launch, run_id, TOYHOST_SCOPE, max_cost_usd=2.0)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = off_loop(_run, holder, run_id)
@@ -887,7 +887,7 @@ async def test_a_take_up_counts_what_its_rows_dropped_sends_may_have_billed_towa
     assert dropped > 0
 
     with pytest.raises(ValidationFailedError, match="max_cost_usd above"):
-        await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent + dropped / 2)
+        await resumed_run(other_process(holder).launch, run_id, TOYHOST_SCOPE, max_cost_usd=spent + dropped / 2)
 
 
 async def test_a_replaced_row_s_dropped_sends_move_with_its_spend_onto_the_row_written_over_it(
@@ -911,7 +911,7 @@ async def test_a_replaced_row_s_dropped_sends_move_with_its_spend_onto_the_row_w
     assert cut_short and all(maybe_billed_usd(row.usage, row.cost_roles) == CUT_SHORT_USD for row in cut_short)
 
     resumer = other_process(holder)
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     after = {row.id: row for row in _rows(holder, run_id)}
@@ -970,7 +970,7 @@ async def test_a_run_an_older_build_stored_and_lost_is_taken_up_keeping_its_rows
     resumer = other_process(holder)
     assert (await job_poll(resumer, run_job_id(run_id), TOYHOST_SCOPE)).state == "lost"
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     rows = {row.id: row for row in _rows(holder, run_id)}
@@ -1001,8 +1001,8 @@ async def test_of_two_take_ups_racing_exactly_one_wins(monkeypatch: pytest.Monke
     first, second = other_process(holder), other_process(holder)
 
     outcomes: list[Any] = await asyncio.gather(
-        resume_run(first.launch, run_id, TOYHOST_SCOPE),
-        resume_run(second.launch, run_id, TOYHOST_SCOPE),
+        resumed_run(first.launch, run_id, TOYHOST_SCOPE),
+        resumed_run(second.launch, run_id, TOYHOST_SCOPE),
         return_exceptions=True,
     )
 
@@ -1036,7 +1036,7 @@ async def test_a_cut_short_cell_s_spend_counts_once_before_and_after_its_cell_is
     resumer = _cheaply_priced(other_process(holder))
 
     # Just above what it spent, so the take-up stops once its first cell lands: some cells run again, the rest wait.
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=first_total + 0.0000001)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=first_total + 0.0000001)
     assert (await settled(resumer, run_job_id(run_id))).status == "budget_stopped"
     second = {row.id: row for row in _rows(holder, run_id)}
     run_again = [row_id for row_id in cut_short if second[row_id].lease_epoch == 1]
@@ -1049,9 +1049,9 @@ async def test_a_cut_short_cell_s_spend_counts_once_before_and_after_its_cell_is
     second_total = first_total + sum(row.cost_usd or 0.0 for row in second.values() if row.lease_epoch == 1)
     assert _offered(holder, run_id).spent_usd == pytest.approx(second_total)
     with pytest.raises(ValidationFailedError, match=f"spent \\${second_total:.4f}"):
-        await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=second_total - 0.000000001)
+        await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=second_total - 0.000000001)
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=2.0)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE, max_cost_usd=2.0)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
     last = _rows(holder, run_id)
     assert len(last) == 3 * K
@@ -1098,7 +1098,7 @@ async def test_a_run_that_cannot_be_taken_up_is_refused_with_a_remedy_and_left_a
     stored = off_loop(_run, host, run.id)
 
     with pytest.raises(ValidationFailedError, match=refusal) as refused:
-        await resume_run(host.launch, run.id, TOYHOST_SCOPE)
+        await resumed_run(host.launch, run.id, TOYHOST_SCOPE)
 
     assert refused.value.remedy
     assert off_loop(_run, host, run.id) == stored
@@ -1115,7 +1115,7 @@ async def test_a_run_whose_job_is_still_unwinding_in_this_process_is_refused(mon
     lost = off_loop(_run, holder, run_id)
 
     with pytest.raises(ValidationFailedError, match="still unwinding"):
-        await resume_run(holder.launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(holder.launch, run_id, TOYHOST_SCOPE)
 
     assert off_loop(_run, holder, run_id) == lost
     gate.set()
@@ -1135,7 +1135,7 @@ async def test_a_take_up_across_a_deploy_goes_ahead_and_its_holding_records_the_
     monkeypatch.setitem(TOYHOST_SUBJECTS, TOYHOST_SUBJECT.subject_id, deployed)
     resumer = other_process(holder)
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = off_loop(_run, holder, run_id)
@@ -1180,7 +1180,7 @@ async def test_a_run_its_provider_account_stopped_runs_its_refused_cells_again_o
     resumer = other_process(holder)
 
     account["funded"] = True
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     await _assert_ends_as_the_control(holder, run_id, launched)
@@ -1201,7 +1201,7 @@ async def test_a_take_up_runs_under_the_cap_the_run_recorded_not_the_hosts_curre
     resumer = other_process(holder)
     resumer = dataclasses.replace(resumer, launch=dataclasses.replace(resumer.launch, settings=lambda: raised))
 
-    await resume_run(resumer.launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(resumer.launch, run_id, TOYHOST_SCOPE)
     assert (await settled(resumer, run_job_id(run_id))).state == "completed"
 
     run = off_loop(_run, holder, run_id)
@@ -1224,7 +1224,7 @@ async def test_a_run_stamped_under_an_older_identity_version_with_its_inputs_unc
     # As an older build stamped it: another version, whose predicate digested the same inputs to another key.
     store.upsert(document | {"identity_version": IDENTITY_VERSION - 1, "context_key": "an-older-predicates-key"})
 
-    await resume_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
+    await resumed_run(other_process(holder).launch, run_id, TOYHOST_SCOPE)
     assert (await settled(holder, run_job_id(run_id))).state == "completed"
 
     assert off_loop(_run, holder, run_id).variant_levers == launched.variant_levers
@@ -1445,7 +1445,7 @@ async def test_a_run_its_metered_ceiling_stopped_is_taken_up_only_under_a_ceilin
     assert landed == len(rows), "each row records its cell's one metered call"
 
     with pytest.raises(ValidationFailedError, match="metered-call ceiling of 3") as refused:
-        await resume_run(launching, launched.id, TOYHOST_SCOPE)
+        await resumed_run(launching, launched.id, TOYHOST_SCOPE)
     assert "max_metered_calls" in refused.value.remedy
     assert off_loop(storage.load_eval_run, launched.id, TOYHOST_SCOPE) == stopped, "a refused take-up writes nothing"
     # The listing a host offers at boot notes the very refusal the take-up makes, by the same rule.
@@ -1455,7 +1455,7 @@ async def test_a_run_its_metered_ceiling_stopped_is_taken_up_only_under_a_ceilin
     # Just above what it landed: its landed calls count, so the first cells it lands stop it again — counted from
     # nothing, it would have run every cell left.
     ceiling[0] = landed + 1
-    await resume_run(launching, launched.id, TOYHOST_SCOPE)
+    await resumed_run(launching, launched.id, TOYHOST_SCOPE)
     again, rows = await ended(launched.id)
     assert again.status == "budget_stopped" and len(rows) < METERED_CELLS
     assert again.max_metered_calls == landed + 1, "the run records the ceiling it ran under"
@@ -1464,7 +1464,7 @@ async def test_a_run_its_metered_ceiling_stopped_is_taken_up_only_under_a_ceilin
     assert (stop.currency, stop.landed_at_stop >= landed + 1) == ("metered_calls", True)
 
     ceiling[0] = 100
-    await resume_run(launching, launched.id, TOYHOST_SCOPE)
+    await resumed_run(launching, launched.id, TOYHOST_SCOPE)
     done, rows = await ended(launched.id)
     assert done.status == "completed" and len(rows) == METERED_CELLS
     assert sum(row.metered_calls or 0 for row in rows) == METERED_CELLS, "every cell's call, counted once"
@@ -1493,7 +1493,7 @@ async def test_a_cut_short_cell_s_metered_calls_and_a_stored_cell_s_refused_call
     metered.store.upsert(document | {"metered_calls_refused": 3})
 
     metered.hold.gate.set()
-    await resume_run(metered.launching, launched.id, TOYHOST_SCOPE)
+    await resumed_run(metered.launching, launched.id, TOYHOST_SCOPE)
     run, rows = await metered.ended(launched.id)
 
     assert run.status == "completed" and len(rows) == METERED_CELLS

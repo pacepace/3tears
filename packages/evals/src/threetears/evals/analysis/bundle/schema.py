@@ -4258,7 +4258,7 @@ _ADDED_SINCE_V2: Final[frozenset[str]] = frozenset(
 _V2_CELL_MODEL_VERSION: Final[int] = 14
 
 
-def known_fingerprint(fingerprint: str) -> bool:
+def _known_fingerprint(fingerprint: str) -> bool:
     """Whether ``fingerprint`` is of a version this build computes (``v3:`` or ``v2:``).
 
     :param fingerprint: A stored fingerprint.
@@ -4573,7 +4573,7 @@ class BundleInspection(EvalDocumentModel):
         cause: Literal["package_shape", "host_declarations", "evidence"] | None = None
         if reproduces is False:
             assert recorded_fingerprint is not None
-            if not known_fingerprint(recorded_fingerprint):
+            if not _known_fingerprint(recorded_fingerprint):
                 # A version this build does not compute: the package moved, and nothing says the evidence did.
                 cause = "package_shape"
             elif recorded_fingerprint.startswith(FINGERPRINT_PREFIX):
@@ -4750,7 +4750,6 @@ __all__ = [
     "evidence_digest",
     "exploratory_disclosure",
     "fingerprint_digest",
-    "known_fingerprint",
     "host_declarations_digest",
     "late_criteria",
     "observed_mechanism_key",

@@ -3,7 +3,7 @@ and read it back.
 
 Each is the catalogue's door onto one operation of :mod:`threetears.evals.ops.blind_reads`, which holds the rules
 (who may answer, what a sheet may show, what close writes). The engine's catalogue includes them
-(:func:`~threetears.evals.actions.engine.engine_actions`).
+(:func:`~threetears.evals.actions.engine.eval_catalogue`).
 """
 
 from __future__ import annotations

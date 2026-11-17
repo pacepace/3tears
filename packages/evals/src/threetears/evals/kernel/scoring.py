@@ -1452,9 +1452,8 @@ def compute_cost_summary(
     """
     grouped: dict[tuple[str, str], list[tuple[float | None, float | None]]] = {}
     for r in results:
-        # What the canonical resolution (`resolve_result_usage`) reads, so this aggregate answers "does this result
-        # have a prod cost" the same way the single-result surfaces do: the result's own rows on every arm, and the
-        # substituted deliveries it counts. Read off the result itself, so a compact reading answers alike.
+        # Whether this result has a prod cost is read off the result's own rows on every arm, and the substituted
+        # deliveries it counts. Read off the result itself, so a compact reading answers alike.
         prod = (
             production_replicating_cost(
                 r.usage,

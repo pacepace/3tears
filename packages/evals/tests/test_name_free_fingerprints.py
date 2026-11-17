@@ -23,8 +23,8 @@ The same holds for a measure and for a level:
 - a test case's label, the name its author gave it, rides on each trial (``case_label``) and is left out of every
   fingerprint: the bundle holds the case by its id and orders its trials by it.
 
-A page rebuilt from a stored analysis prints the names it was frozen with, and a rename stales no analysis (owner
-ruling): the stored fingerprint still matches the evidence assembled under the new names.
+A rename stales no analysis (owner ruling): the stored fingerprint still matches the evidence assembled under the new
+names.
 
 Mutations that turn this file red: a derived arm labelled with its levers' reader names; a page printing a derived
 arm's frozen label instead of naming its levers; a factor sentence stored in the bundle, or worded with lever ids; a
@@ -52,18 +52,15 @@ from threetears.evals.analysis.campaigns import set_campaign_control
 from threetears.evals.analysis.floors import floor_subject
 from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
 from threetears.evals.analysis.report.words import input_arm_tags, reader_arm_labels
-from threetears.evals.analysis.service import analysis_report, assemble_campaign_bundle, campaign_report
-from threetears.evals.kernel.campaign import CampaignDeclaration, EvalCampaign
+from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_report
+from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.declaration import Floor, RateDrop
 from threetears.evals.kernel import MetricDescriptor
 from threetears.evals.kernel.host import EvalHost, HostProfile, MeasureRegistry, SweepableRegistry
 from threetears.evals.schema import IntervalScale, SweepableValue
 from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.analysis.style import printed_arm_labels
-from packages.evals.tests.campaign_bundle_support import campaign_bundle
 from packages.evals.tests.factories import (
-    analysed_aspect,
-    make_analysis,
     make_campaign,
     make_eval_result,
     make_test_case,
@@ -377,21 +374,10 @@ _PAIR = "Chunk size and retrieval depth co-vary; 3 of their 6 combinations never
 _COMPLETENESS = "3 factor pair(s) examined over the 3 factors that varied; 1 co-vary"
 
 
-def _stored_page(bundle: AnalysisContextBundle, storage: EvalStorage) -> str:
-    """The page of an analysis frozen over ``bundle``, rebuilt from the store."""
-    campaign = storage.load_campaign(bundle.campaign_id, bundle.scope_id)
-    assert campaign is not None
-    frozen = campaign_bundle(bundle)
-    analysis = make_analysis(
-        campaign_id=bundle.campaign_id,
-        scope_id=bundle.scope_id,
-        behavior=bundle.behavior,
-        aspects=[analysed_aspect(bundle)],
-        campaign_bundle=frozen.frame(),
-        design_snapshot=CampaignDeclaration.of(campaign),
-    )
-    storage.save_analysis(analysis)
-    return campaign_report_markdown(analysis_report(storage, analysis.id, bundle.scope_id))
+def _campaign_page(bundle: AnalysisContextBundle, storage: EvalStorage, profile: HostProfile) -> str:
+    """The campaign's page over ``bundle``'s evidence, as the host reads it from its store."""
+    host = toyhost_host(profile=profile, storage=storage)
+    return campaign_report_markdown(campaign_report(host, bundle.campaign_id, bundle.scope_id))
 
 
 def test_the_factor_sentences_name_each_lever_by_its_reader_name_and_move_no_fingerprint() -> None:
@@ -408,7 +394,7 @@ def test_the_factor_sentences_name_each_lever_by_its_reader_name_and_move_no_fin
         stored = named.to_dict()
         assert all("sentence" not in group for group in stored["aliased_factors"])
         assert stored["factor_pairs"] is not None and "completeness" not in stored["factor_pairs"]
-        page = _stored_page(named, storage)
+        page = _campaign_page(named, storage, renamed)
         for sentence in said:
             assert sentence in page, sentence
         # Never by its id, as the bundle worded these before names left the evidence.
@@ -433,20 +419,6 @@ def _measure_renaming(profile: HostProfile, measure: str, name: str) -> HostProf
         for descriptor in declared
     ]
     return replace(profile, measures=MeasureRegistry(renamed, families=registry.families))
-
-
-def _stored(host: EvalHost, campaign: EvalCampaign, bundle: CampaignBundle) -> str:
-    """The id of an analysis frozen over ``bundle``, stored in ``host``'s store."""
-    analysis = make_analysis(
-        campaign_id=campaign.id,
-        scope_id=campaign.scope_id,
-        behavior=bundle.behavior,
-        aspects=[analysed_aspect(aspect) for aspect in bundle.aspects],
-        campaign_bundle=bundle.frame(),
-        design_snapshot=CampaignDeclaration.of(campaign),
-    )
-    host.storage.save_analysis(analysis)
-    return analysis.id
 
 
 def test_renaming_a_measure_moves_no_fingerprint_or_digest_and_the_page_prints_the_new_name() -> None:
@@ -537,20 +509,15 @@ def test_a_trial_holds_its_failed_check_by_its_measure_key_whatever_the_measure_
     assert [failed.name for failed in held[0]] == [check.name]
 
 
-def test_a_page_rebuilt_from_a_stored_analysis_keeps_the_measure_name_it_was_frozen_with() -> None:
+def test_a_measure_rename_stales_no_frozen_evidence() -> None:
     host, campaign = _armed_campaign()
     frozen = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
-    analysis_id = _stored(host, campaign, frozen)
     renamed = replace(host, profile=_measure_renaming(host.profile, _MEASURE, _NEW_MEASURE_NAME))
 
     fresh = assemble_campaign_bundle(renamed, campaign.id, campaign.scope_id)
-    page = campaign_report_markdown(analysis_report(host.storage, analysis_id, campaign.scope_id))
 
-    # The rename stales nothing: the evidence the analysis was frozen over fingerprints as it does now.
+    # The rename stales nothing: the evidence an analysis was frozen over fingerprints as it does now.
     assert fresh.fingerprint() == frozen.fingerprint()
-    # And its page keeps the name it was written with until it is regenerated.
-    assert f"| {_OLD_MEASURE_NAME} |" in page
-    assert _NEW_MEASURE_NAME not in page
 
 
 # --- a level's declared display is presentation ----------------------------------------------------------------------
@@ -631,19 +598,15 @@ def test_a_declared_crossing_holds_each_level_by_its_content_hash_and_a_page_nam
     assert {"narrow chunks", "wide chunks", "widest chunks"} <= named
 
 
-def test_a_page_rebuilt_from_a_stored_analysis_keeps_the_level_names_it_was_frozen_with() -> None:
+def test_a_level_rename_stales_no_frozen_evidence() -> None:
     host, campaign = _armed_campaign()
     _with_unrun_level(host, campaign)
     frozen = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
-    analysis_id = _stored(host, campaign, frozen)
     _with_unrun_level(host, campaign, names=_LEVEL_NAMES)
 
     fresh = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
-    page = campaign_report_markdown(analysis_report(host.storage, analysis_id, campaign.scope_id))
 
     assert fresh.fingerprint() == frozen.fingerprint()
-    assert "never run: 2048tok." in page
-    assert "widest chunks" not in page
 
 
 # --- a test case's label is presentation -----------------------------------------------------------------------------
@@ -681,18 +644,14 @@ def test_renaming_a_case_moves_no_fingerprint_or_digest_and_the_page_prints_the_
     assert _OLD_CASE_NAME not in page
 
 
-def test_a_page_rebuilt_from_a_stored_analysis_keeps_the_case_label_it_was_frozen_with() -> None:
+def test_a_case_rename_stales_no_frozen_evidence() -> None:
     host, campaign = _armed_campaign()
     _name_case(host, _OLD_CASE_NAME)
     frozen = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
-    analysis_id = _stored(host, campaign, frozen)
     _name_case(host, _NEW_CASE_NAME)
 
     fresh = assemble_campaign_bundle(host, campaign.id, campaign.scope_id)
-    page = campaign_report_markdown(analysis_report(host.storage, analysis_id, campaign.scope_id))
 
-    # The rename stales nothing, and the page keeps the label it was written with until it is regenerated.
+    # The rename stales nothing.
     assert _labels(fresh) == {_NEW_CASE_NAME}
     assert fresh.fingerprint() == frozen.fingerprint()
-    assert _OLD_CASE_NAME in page
-    assert _NEW_CASE_NAME not in page

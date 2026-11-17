@@ -2092,7 +2092,7 @@ ANALYSE = "Analyse and report"
 CURATE = "Curate"
 
 
-def engine_actions() -> tuple[Action, ...]:
+def _engine_actions() -> tuple[Action, ...]:
     """The engine's actions, in the order help lists them.
 
     :return: The actions.
@@ -3467,7 +3467,7 @@ def eval_catalogue(host_actions: tuple[Action, ...] = ()) -> ActionCatalogue:
     :return: The catalogue.
     :raises ValueError: A host action takes a name the engine's catalogue already has.
     """
-    return ActionCatalogue((*engine_actions(), *analyst_actions())).extended(host_actions)
+    return ActionCatalogue((*_engine_actions(), *analyst_actions())).extended(host_actions)
 
 
-__all__ = ["ANALYSE", "CURATE", "DISCOVER", "RUN", "engine_actions", "eval_catalogue"]
+__all__ = ["ANALYSE", "CURATE", "DISCOVER", "RUN", "eval_catalogue"]

@@ -369,9 +369,11 @@ def _json_type(schema: dict[str, Any]) -> str:
 
 def actions_section() -> Iterator[str]:
     from threetears.evals.actions import PermissionClass, standard_tools
-    from threetears.evals.actions.engine import engine_actions
+    from threetears.evals.actions import eval_catalogue
+    from threetears.evals.actions.analyst import analyst_actions
 
-    actions = engine_actions()
+    analyst = {action.name for action in analyst_actions()}
+    actions = [action for action in eval_catalogue().actions if action.name not in analyst]
     yield anchor("actions")
     yield "## The action catalogue (MCP)"
     yield ""
@@ -450,13 +452,15 @@ def cli_section() -> Iterator[str]:
         yield f"### `{name}`"
         yield ""
         yield "```text"
-        yield command_help(cli.build_parser(cli.DEFAULT_PROG), name)
+        yield command_help(name)
         yield "```"
         yield ""
 
 
-def command_help(parser: argparse.ArgumentParser, command: str) -> str:
+def command_help(command: str) -> str:
     """What ``<command> --help`` prints, at a fixed width and without colour, so it is the same on every machine."""
+    from threetears.evals.quick import cli
+
     saved = {key: os.environ.get(key) for key in ("COLUMNS", "NO_COLOR", "FORCE_COLOR", "PYTHON_COLORS")}
     os.environ.update({"COLUMNS": str(HELP_WIDTH), "NO_COLOR": "1"})
     for key in ("FORCE_COLOR", "PYTHON_COLORS"):
@@ -464,7 +468,7 @@ def command_help(parser: argparse.ArgumentParser, command: str) -> str:
     printed = io.StringIO()
     try:
         with contextlib.redirect_stdout(printed), contextlib.suppress(SystemExit):
-            parser.parse_args([command, "--help"])
+            cli.run_cli([command, "--help"])
     finally:
         for key, value in saved.items():
             if value is None:

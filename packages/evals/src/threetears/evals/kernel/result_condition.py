@@ -22,10 +22,8 @@ and live here:
 * **scoring** — how the result participates in aggregates, off the error taxonomy.
 
 The fourth, **per-role capture** (were the rows observed whole, cut short by a deadline, or
-never made?), deliberately stays with :func:`~threetears.evals.kernel.usage_capture.resolve_result_usage`, which
-already owns it and returns it with its own provenance. Re-carrying it here would create
-exactly the second copy this module exists to remove — a surface wanting it calls that
-resolver, and both of them read the same stored ``termination``.
+never made?), is not carried here: a surface showing one result's spend reads its stored rows and the same
+stored ``termination`` this reads.
 
 **A fourth thing this returns is prose.** ``disclosure`` is the canonical sentence for
 whatever a reader must not miss. It is here rather than at the surfaces because three
@@ -134,8 +132,7 @@ CandidateFailureCause = Literal["model_failed", "turn_budget", "output_cap"]
 class ResultCondition(EvalBaseModel):
     """The condition one result is in, on every axis that is a property of the result.
 
-    Returned as a value and never assigned back onto the result — the same rule
-    :class:`~threetears.evals.kernel.usage_capture.ResolvedUsage` holds, and for the same reason:
+    Returned as a value and never assigned back onto the result, because
     two of these three axes are derived, and writing a derivation into the document would
     make it indistinguishable from an observation the next time the document is saved.
     ``termination`` is the exception that proves it — it is stored precisely because it
@@ -509,7 +506,7 @@ JUDGE_CANNOT_TELL_OUTCOME = "judge_cannot_tell"
 
 def runs_again(result: ResultView) -> bool:
     """Whether a stored row's cell runs again when its run, or the comparison it belongs to, is continued: the one rule
-    the engine's take-up (:func:`~threetears.evals.run.resume.resume_run`) and the quick path's continuation
+    the engine's take-up (:func:`~threetears.evals.run.resume.take_up_run`) and the quick path's continuation
     (:mod:`threetears.evals.quick.continuation`) both read.
 
     A row cut short by a cancel (termination ``cancelled``: an attempt a shutdown or a second interrupt abandoned), one
@@ -564,7 +561,7 @@ def judge_truncated_dims(result: ResultView) -> list[str]:
     An entry is read only for a dim that carries no score while ``judge_error`` is set
     (:class:`~threetears.evals.schema.models.JudgeCutShort`): an older build that re-judged the dim wrote its score,
     or cleared the error, without touching the field, so an entry beside either is stale. Only a reply out of room
-    counts (:data:`~threetears.evals.schema.models.OUT_OF_ROOM_STOP_REASONS`): one the provider filtered or failed is
+    counts (a ``max_tokens`` or ``truncated`` stop): one the provider filtered or failed is
     recorded on the entry and stays a fault of the rig.
 
     :param result: The result.

@@ -2516,11 +2516,6 @@
       "signature": "",
       "tier": "provisional"
     },
-    "threetears.evals.kernel.ResolvedUsage": {
-      "kind": "model",
-      "signature": "",
-      "tier": "provisional"
-    },
     "threetears.evals.kernel.ResultCondition": {
       "kind": "model",
       "signature": "",

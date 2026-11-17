@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 #: The ``method_id`` of the cost estimator's predictions: a planned cell priced from the corpus's
 #: own per-observation usage history (:func:`compute_estimate_cost`).
-COST_PREDICTION_METHOD = "usage-history"
+_COST_PREDICTION_METHOD = "usage-history"
 
 #: The ``method_id`` of a prediction borrowed from other templates' history (:func:`compute_borrowed_cost`): an arm
 #: whose template has no priced result of its own, priced from sibling templates launched as it will be. A figure for
@@ -80,7 +80,7 @@ class PredictedValue(EvalBaseModel):
     failure the separation prevents. So a prediction never occupies an observed slot — it has its
     own field wherever it appears, and a surface shows the two side by side.
 
-    Two writers: :func:`compute_estimate_cost` (``method_id`` :data:`COST_PREDICTION_METHOD`), one per
+    Two writers: :func:`compute_estimate_cost` (``method_id`` :data:`_COST_PREDICTION_METHOD`), one per
     planned cell, predicting that cell's total cost from the corpus's usage history; and
     :meth:`~threetears.evals.ops.LaunchEstimate.planned_costs`, one per priced arm of a launch, from the host's
     launch pricer — whose ``method_id`` is the pricer's own (``usage-history`` for the engine's
@@ -317,7 +317,7 @@ class CostEstimateCell(EvalBaseModel):
     """The predicted cost of running one proposed model, from its historical per-observation cost.
 
     One planned cell, and its prediction is a :class:`PredictedValue` (``method_id``
-    :data:`COST_PREDICTION_METHOD`) rather than loose numbers, so the pivot can set it beside the
+    :data:`_COST_PREDICTION_METHOD`) rather than loose numbers, so the pivot can set it beside the
     cost the cell later observed without either one passing for the other.
     ``predicted.value`` is ``mean_cost_per_observation × n_observations``.
     ``predicted.interval_low`` / ``interval_high`` are the ~95% **prediction** band for what
@@ -749,7 +749,7 @@ def compute_estimate_cost(
                     value=estimate,
                     interval_low=low,
                     interval_high=high,
-                    method_id=COST_PREDICTION_METHOD,
+                    method_id=_COST_PREDICTION_METHOD,
                     computed_at=stamp,
                 ),
                 band_basis=band_basis,
@@ -800,7 +800,6 @@ __all__ = [
     "compute_borrowed_cost",
     "compute_estimate_cost",
     "COST_ESTIMATE_MIN_BASIS",
-    "COST_PREDICTION_METHOD",
     "CostEstimate",
     "CostObservation",
     "CostEstimateCell",

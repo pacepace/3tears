@@ -66,9 +66,9 @@ if TYPE_CHECKING:
 # over — the cell fell to the empty-cell branch and claimed nobody tried a
 # combination that was tried and failed in the harness.
 #: A pivot cell state: observations landed here and carried a value for the measure.
-CELL_MEASURED = "measured"
+_CELL_MEASURED = "measured"
 #: A pivot cell state: no observation landed here — the combination was never run, which is not a zero.
-CELL_NOT_RUN = "not_run"
+_CELL_NOT_RUN = "not_run"
 #: A pivot cell state: observations landed here, but none carried a value for the measure.
 CELL_UNMEASURED = "unmeasured"
 #: A fourth state, and not a kind of the other three: the cell HAS measured observations, and its
@@ -76,7 +76,7 @@ CELL_UNMEASURED = "unmeasured"
 #: whose results of one arm are apart on a coordinate of its identity (`PivotCell.split_on`), or a
 #: cost cell pooling replayed results with live ones (#658). `PivotCell.withheld` says why, and
 #: `n` / `n_cases` / `outcomes` still say what the cell held, so withheld never reads as empty.
-CELL_WITHHELD = "withheld"
+_CELL_WITHHELD = "withheld"
 
 
 # Transferability class that may be pooled across subjects.
@@ -838,7 +838,7 @@ def compute_pivot(
                 placed.add(plan.label)
             if not at_cell:
                 cells.append(
-                    PivotCell(row=row, column=column, status=CELL_NOT_RUN, predicted=planned, n_unplanned=unplanned)
+                    PivotCell(row=row, column=column, status=_CELL_NOT_RUN, predicted=planned, n_unplanned=unplanned)
                 )
                 continue
 
@@ -895,7 +895,7 @@ def compute_pivot(
                         n_unplanned=unplanned,
                         row=row,
                         column=column,
-                        status=CELL_WITHHELD,
+                        status=_CELL_WITHHELD,
                         withheld=withheld,
                         split_on=split_on,
                         state=StateOf(state="withheld", reason="split", coordinate=split_on[0]) if split_on else None,
@@ -914,7 +914,7 @@ def compute_pivot(
                 n_unplanned=unplanned,
                 row=row,
                 column=column,
-                status=CELL_MEASURED,
+                status=_CELL_MEASURED,
                 value=value,
                 n=n_valued,
                 n_cases=len(values_by_case),
@@ -1102,10 +1102,7 @@ def _plan_for(
 
 
 __all__ = [
-    "CELL_MEASURED",
-    "CELL_NOT_RUN",
     "CELL_UNMEASURED",
-    "CELL_WITHHELD",
     "compute_pivot",
     "PivotCell",
     "PivotError",

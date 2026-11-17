@@ -24,7 +24,6 @@ from typing import Any
 import pytest
 
 from threetears.evals.analysis import PredictedValue, pivot
-from threetears.evals.analysis.lenses.cost_estimate import COST_PREDICTION_METHOD
 from threetears.evals.analysis.reporting import METRIC_COMPOSITE, METRIC_COST_USD, ScoreRecord
 from threetears.evals.analysis.lenses.cost_estimate import (
     CostEstimate,
@@ -99,7 +98,7 @@ class TestTheEstimateWritesAPredictionPerPlannedCell:
 
         sonnet = by_model["sonnet"].predicted
         assert isinstance(sonnet, PredictedValue)
-        assert sonnet.method_id == COST_PREDICTION_METHOD == "usage-history"
+        assert sonnet.method_id == "usage-history"
         assert sonnet.computed_at == STAMP
         assert sonnet.value == pytest.approx(0.20 * 4), "the planned cell's total: mean per observation x 4"
         assert sonnet.interval_low is not None and sonnet.interval_high is not None
@@ -350,7 +349,7 @@ class TestThePivotSetsThePredictionBesideTheObservedCost:
         assert sonnet.value == pytest.approx(0.30), "the observed mean, untouched by the prediction"
         assert sonnet.predicted is not None
         assert sonnet.predicted.value == pytest.approx(0.20), "per observation: the planned total over its 4 draws"
-        assert sonnet.predicted.method_id == COST_PREDICTION_METHOD
+        assert sonnet.predicted.method_id == "usage-history"
 
         haiku = grid[("tpl-1", "haiku")]
         assert haiku.value == pytest.approx(0.05)

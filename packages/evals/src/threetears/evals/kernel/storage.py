@@ -542,7 +542,7 @@ class NonTerminalRunScan(NamedTuple):
     """
 
 
-def save_document(
+def _save_document(
     repo: DocumentStore, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False
 ) -> None:
     """Upsert ``document`` through ``repo``, raising on any failure.
@@ -1099,8 +1099,8 @@ class EvalStorage:
         return None if stored is not None and stored != expected else data
 
     def _save(self, document: dict[str, Any], *, if_match: str | None = None, create_only: bool = False) -> None:
-        """Upsert ``document`` with :func:`save_document`, which raises on any failure."""
-        save_document(self._store, document, if_match=if_match, create_only=create_only)
+        """Upsert ``document`` with :func:`_save_document`, which raises on any failure."""
+        _save_document(self._store, document, if_match=if_match, create_only=create_only)
 
     # =========================================================================
     # Job records — the lease fields every job record carries (JobRecordStore, LeaseStore)
@@ -3790,5 +3790,4 @@ __all__ = [
     "UnreadableRunError",
     "RunRecordStore",
     "RunStore",
-    "save_document",
 ]

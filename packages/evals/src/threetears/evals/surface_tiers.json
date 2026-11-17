@@ -504,7 +504,6 @@
 "threetears.evals.kernel.resolve_control_arm": "provisional",
 "threetears.evals.kernel.resolve_variant_identity": "provisional",
 "threetears.evals.kernel.ResolvedControl": "provisional",
-"threetears.evals.kernel.ResolvedUsage": "provisional",
 "threetears.evals.kernel.ResultCondition": "provisional",
 "threetears.evals.kernel.ResultKey": "provisional",
 "threetears.evals.kernel.ResultOutcome": "provisional",

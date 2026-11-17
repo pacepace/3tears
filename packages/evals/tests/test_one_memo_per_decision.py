@@ -35,7 +35,6 @@ from threetears.evals.analysis.campaign_bundle import CampaignBundle
 from threetears.evals.analysis.campaign_readings import BarStatus
 from threetears.evals.analysis.doc_analysis import aspect_analysis
 from threetears.evals.analysis.report_input_build import report_input
-from threetears.evals.analysis.service import analysis_report
 from threetears.evals.analysis.report import DisclosureBlock, TableBlock
 from threetears.evals.actions import MountedTool, eval_catalogue, standard_tools
 from threetears.evals.kernel import IDENTITY_VERSION, ConflictError, EvalCampaign, ValidationFailedError
@@ -799,16 +798,13 @@ async def test_a_call_on_the_recommended_arm_records_the_key_the_analysis_record
 
 async def test_the_listing_names_what_was_frozen_with_the_analysis_not_the_campaign_as_it_stands() -> None:
     """The floor is withdrawn from the stored campaign after the analysis was written: the analysis's line still names
-    it, worded over the floors frozen with it, as the analysis's page, read by its id, still opens on it."""
+    it, worded over the floors frozen with it."""
     held, two = await _build_two()
     analysis_id = await _generated(held, two)
     off_loop(held.host.storage.save_campaign, EvalCampaign.model_validate({**two.model_dump(), "floors": []}))
     (line,) = off_loop(analyses_list, held.host, two.id, SCOPE).analyses
     assert line.id == analysis_id
-    by_id = off_loop(analysis_report, held.host.storage, analysis_id, SCOPE)
-    (floor,) = [text for text in _warnings(by_id) if "floor" in text]
-    assert floor == "Adopting candidate overrides the 10-point floor it breaks on billing."
-    assert floor in line.verdict
+    assert "Adopting candidate overrides the 10-point floor it breaks on billing." in line.verdict
 
 
 async def test_an_analysis_with_no_missed_bar_and_no_broken_floor_is_listed_by_its_verdict_alone() -> None:
@@ -864,12 +860,6 @@ async def test_a_call_over_an_analysis_is_read_against_its_readings_and_one_with
     recorded = _record(held, two, arm=candidate.arm, bars_overridden=[missed])
 
     assert recorded.call.analysis_id is None
-    page = off_loop(analysis_report, held.host.storage, analysis_id, SCOPE)
-    assert page.unread_analysis_id == analysis_id
-    assert (
-        "The call does not name the broken floor as overridden: no pass rate drops by more than 10 points on billing."
-        in _first_screen(page)
-    )
 
 
 async def test_a_call_over_an_analysis_the_page_does_not_report_is_refused() -> None:

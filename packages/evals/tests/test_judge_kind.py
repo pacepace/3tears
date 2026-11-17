@@ -702,7 +702,7 @@ def test_a_config_pinning_another_model_than_the_arm_is_refused() -> None:
 
 
 async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_receipt() -> None:
-    from threetears.evals.actions.engine import engine_actions
+    from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
     from threetears.evals.ops import JudgeCasesFreeze, judge_cases_freeze
 
     host = toyhost_host()
@@ -719,7 +719,7 @@ async def test_the_freeze_operation_loads_the_template_in_scope_and_renders_its_
     report = off_loop(judge_cases_freeze, host, freeze, TOYHOST_SCOPE)
 
     assert report.case_set is not None and report.case_set.version == 1 and len(report.cases) == len(source)
-    action = next(action for action in engine_actions() if action.name == "judge_cases_freeze")
+    action = next(action for action in engine_actions_in_catalogue() if action.name == "judge_cases_freeze")
     assert action.permission == "write"
     text = action.render(report)
     lines = text.splitlines()
@@ -1225,7 +1225,7 @@ def _vouches_for_itself(*, scope_id: str, caller: str, person: str) -> str | Non
 
 
 async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_the_caller() -> None:
-    from threetears.evals.actions.engine import engine_actions
+    from packages.evals.tests.catalogue_support import engine_actions_in_catalogue
     from threetears.evals.ops import JudgeCaseAuthor, judge_case_author
 
     # The operation writes only what the host attests: here, each caller authoring as itself.
@@ -1252,7 +1252,7 @@ async def test_the_author_operation_writes_a_case_on_a_template_s_dimension_as_t
     case = judge_case_of(stored)
     assert case is not None and case.criterion == subject.rubric[0] and case.intent == subject.intent
     assert case.labels[0].rater == _AUTHOR and frozen.authored_by == _AUTHOR
-    action = next(action for action in engine_actions() if action.name == "judge_case_author")
+    action = next(action for action in engine_actions_in_catalogue() if action.name == "judge_case_author")
     assert action.permission == "write"
     (line,) = [line for line in action.render(report).splitlines() if line.startswith("- test_case_id=")]
     assert f"dim={FAITHFULNESS_DIM}" in line and f"authored_by={_AUTHOR}" in line

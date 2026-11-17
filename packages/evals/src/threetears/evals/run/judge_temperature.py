@@ -162,7 +162,7 @@ def _disagreed(result: EvalResult, dim: str, stored: int) -> bool:
     return False
 
 
-def borderline_dims(result: EvalResult) -> set[str]:
+def _borderline_dims(result: EvalResult) -> set[str]:
     """The scored dims of ``result`` that are borderline: the cases temperature is expected to move.
 
     A dim is borderline when its stored score sits strictly inside its scale (2, 3 or 4 on 1-5; never on pass/fail,
@@ -195,7 +195,7 @@ def _select(
         if selection == "all":
             planned.append(one)
             continue
-        borderline = borderline_dims(one.result)
+        borderline = _borderline_dims(one.result)
         dims = [dim for dim in one.dims if dim in borderline]
         if not dims:
             skipped.append(
@@ -490,7 +490,7 @@ async def judge_temperature_work(
     :param run_id: The finished run.
     :param scope_id: The scope it lives in.
     :param out_of_run_cap_usd: The most the calls may be priced at together; ``None`` when the host enforces none.
-    :param selection: ``borderline`` (the default: see :func:`borderline_dims`) or ``all`` scored dims.
+    :param selection: ``borderline`` (the default: see :func:`_borderline_dims`) or ``all`` scored dims.
     :param repeats: Calls per dim per setting, at least :data:`~threetears.evals.kernel.MIN_TEMPERATURE_REPEATS`.
     :param result_ids: The results to draw from; ``None`` for every result of the run.
     :return: The admitted work; its record is the comparison.
@@ -676,7 +676,6 @@ __all__ = [
     "JUDGE_TEMPERATURE_JOB",
     "EvalJudgeTemperatureCheck",
     "JudgeTemperatureEstimate",
-    "borderline_dims",
     "estimate_judge_temperature_comparison",
     "judge_temperature_work",
 ]

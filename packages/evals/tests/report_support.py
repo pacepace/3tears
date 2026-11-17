@@ -21,7 +21,6 @@ from typing import Any, Final
 from threetears.evals.analysis import Report, TableBlock, build_code_only_report
 from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import analysis_campaign_bundle, analysis_writer
-from threetears.evals.analysis.style import StyleViolation
 from packages.evals.tests.style_support import lint_page
 from threetears.evals.kernel.declaration import CampaignArm
 from threetears.evals.kernel.campaign import (
@@ -30,7 +29,7 @@ from threetears.evals.kernel.campaign import (
     EvalInsight,
 )
 from threetears.evals.kernel.host import EvalHost
-from threetears.evals.kernel.storage import EvalStorage, save_document
+from threetears.evals.kernel.storage import EvalStorage
 from threetears.evals.schema.store_port import DocumentStore
 from threetears.evals.analysis.style import declared_arm_names
 from packages.evals.tests.fixtures.toyhost.campaign import toyhost_campaign
@@ -47,13 +46,13 @@ __all__ = [
 ]
 
 
-def page_violations(report: Report) -> list[StyleViolation]:
+def page_violations(report: Report) -> list[Any]:
     """Every style rule a report's page breaks outside the data it quotes, its arms' names read as names.
 
     :param report: The report.
     :ptype report: Report
     :return: The violations; empty for a page that passes.
-    :rtype: list[StyleViolation]
+    :rtype: list[Any]
     """
     names = {
         str(row["arm"]).removeprefix("▸ ")
@@ -137,7 +136,7 @@ def stored_plan_document(
     document: dict[str, Any] = dict(_record("plan", campaign)["plan"])
     if plan is not None:
         document["plan"] = plan
-    save_document(store, document)
+    store.upsert(document)
     return document
 
 

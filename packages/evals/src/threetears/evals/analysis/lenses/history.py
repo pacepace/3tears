@@ -104,11 +104,11 @@ log = get_logger(__name__)
 # dimension or one check, so there is no single per-run value to plot, while each axis above is
 # one value per result.
 #: The measures `history` can series; any other is refused rather than answered with an empty series.
-HISTORY_METRICS = frozenset({METRIC_COMPOSITE, METRIC_COST_USD, METRIC_TOTAL_MS, METRIC_TRANSCRIPT, METRIC_OUTCOME})
+_HISTORY_METRICS = frozenset({METRIC_COMPOSITE, METRIC_COST_USD, METRIC_TOTAL_MS, METRIC_TRANSCRIPT, METRIC_OUTCOME})
 
-if set(_METRIC_GLOSS) != PROJECTED_METRICS | HISTORY_METRICS:  # pragma: no cover - import-time invariant
+if set(_METRIC_GLOSS) != PROJECTED_METRICS | _HISTORY_METRICS:  # pragma: no cover - import-time invariant
     raise RuntimeError(
-        f"_METRIC_GLOSS must gloss exactly the accepted metrics: {sorted(set(_METRIC_GLOSS) ^ (PROJECTED_METRICS | HISTORY_METRICS))}"
+        f"_METRIC_GLOSS must gloss exactly the accepted metrics: {sorted(set(_METRIC_GLOSS) ^ (PROJECTED_METRICS | _HISTORY_METRICS))}"
     )
 
 
@@ -138,7 +138,7 @@ def _unknown_history_metric(metric: str) -> HistoryError:
     :param metric: The measure the caller asked to series.
     :return: The refusal, ready to raise.
     """
-    expected = f"expected one of {_metric_vocabulary(HISTORY_METRICS)}"
+    expected = f"expected one of {_metric_vocabulary(_HISTORY_METRICS)}"
     resolved = resolve_measure_name(metric)
     if resolved in SCOPED_METRICS and resolved != METRIC_SCORE:
         scope_field, scope_noun, _row_noun = SCOPED_METRICS[resolved]
@@ -479,7 +479,7 @@ class HistoryResult(EvalBaseModel):
 def _history_value_of(metric: str) -> Callable[[ResultView], float | None]:
     """Pick the per-result value extractor for a history measure.
 
-    :param metric: A measure in :data:`HISTORY_METRICS`.
+    :param metric: A measure in :data:`_HISTORY_METRICS`.
     :return: A callable reading the measure off one result, ``None`` when this result
         did not carry it — a null that the aggregation drops rather than counts as
         zero, so an unmeasured latency never reads as instant.
@@ -700,7 +700,7 @@ def compute_history(
 
     :param runs: The runs supplying subject identity, suite set, and timestamps.
     :param results: The observations to series.
-    :param metric: A measure in :data:`HISTORY_METRICS`, or the registry name of its
+    :param metric: A measure in :data:`_HISTORY_METRICS`, or the registry name of its
         aggregate as ``list_metrics`` publishes it (``mean_composite`` for
         ``composite``, and so on through
         :data:`_AGGREGATE_OF_OBSERVATION`) — see :func:`resolve_measure_name` — or a
@@ -734,8 +734,8 @@ def compute_history(
     # name is the wrong thing to quote back.
     requested = metric
     metric = resolve_measure_name(metric)
-    declared = None if metric in HISTORY_METRICS else profile.measures.get(metric)
-    if metric not in HISTORY_METRICS and declared is None:
+    declared = None if metric in _HISTORY_METRICS else profile.measures.get(metric)
+    if metric not in _HISTORY_METRICS and declared is None:
         raise _unknown_history_metric(requested)
 
     if declared is not None:
@@ -744,7 +744,7 @@ def compute_history(
     else:
         value_of = _history_value_of(metric)
         descriptor = _describe_aggregate(metric, profile=profile)
-    # Every HISTORY_METRICS member is directional, and a host measure without a direction was refused; the guard keeps the type honest without
+    # Every _HISTORY_METRICS member is directional, and a host measure without a direction was refused; the guard keeps the type honest without
     # asserting an impossible None away.
     direction = descriptor.higher_is_better if descriptor.higher_is_better is not None else True
     # Decided from the descriptor once, before any row is read, so a corpus that yields no
@@ -976,7 +976,6 @@ def compute_history(
 
 __all__ = [
     "compute_history",
-    "HISTORY_METRICS",
     "HistoryError",
     "HistoryResult",
     "MeasureSeries",

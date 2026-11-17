@@ -43,7 +43,7 @@ write of the lost holder ever revives it.
 **The one way back is a resume** (:func:`~threetears.evals.ops.resume.job_resume`), asked for and never made on its own. A run's job that was
 lost, cancelled by an operator, or stopped by its budget or its provider account is taken up again as the same run,
 under its lease's next epoch: the cells it has not measured run, and it ends as an uninterrupted run would have
-(:func:`~threetears.evals.run.resume.resume_run`). A sweep's or a launch's job is taken up as a whole, its arms' runs taken up
+(:func:`~threetears.evals.run.resume.take_up_run`). A sweep's or a launch's job is taken up as a whole, its arms' runs taken up
 again and a sweep's never-launched arms launched, its arm schedule kept. A holding a job has passed from writes
 nothing more into it. :func:`~threetears.evals.run.resumable_jobs` lists what a resume would take up, for a host to
 offer at boot.

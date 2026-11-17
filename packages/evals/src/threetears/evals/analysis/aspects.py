@@ -23,7 +23,11 @@ from threetears.evals.kernel.declaration import Aspect, AspectDesign, CampaignAr
 from threetears.evals.kernel.errors import RefusedInput
 from threetears.evals.schema.base import EvalDocumentModel
 
-__all__ = ["AspectDeclaration", "AspectView", "aspect_view", "aspect_views"]
+__all__ = [
+    "AspectDeclaration",
+    "AspectView",
+    "aspect_view",
+]
 
 
 class AspectDeclaration(EvalDocumentModel):
@@ -115,7 +119,7 @@ class AspectView(EvalDocumentModel):
     )
 
 
-def aspect_views(campaign: EvalCampaign) -> list[AspectView]:
+def _aspect_views(campaign: EvalCampaign) -> list[AspectView]:
     """Every aspect of ``campaign``, each as a per-aspect reader reads it, in the campaign's order.
 
     :param campaign: The stored campaign.
@@ -132,7 +136,7 @@ def aspect_view(campaign: EvalCampaign, aspect: str | None = None) -> AspectView
     :return: The aspect's view.
     :raises RefusedInput: ``aspect`` is None and the campaign has more than one aspect, or it names none of them.
     """
-    views = aspect_views(campaign)
+    views = _aspect_views(campaign)
     labels = [view.aspect for view in views]
     if aspect is None:
         if len(views) == 1:

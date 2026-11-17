@@ -60,7 +60,7 @@ These hooks are what a multi-tenant host needs, so no host rebuilds :meth:`Catal
 
 **One call timeout, never one computed from the call.** No action's call waits on a model — work that calls one
 runs as a job the caller polls — so a call is a few store round-trips, and every call is held to one timeout
-(:data:`DEFAULT_CALL_TIMEOUT_S`, or the ``call_timeout_s`` a host mounts with), never one computed from what the
+(:data:`_DEFAULT_CALL_TIMEOUT_S`, or the ``call_timeout_s`` a host mounts with), never one computed from what the
 call might spend. A host may mount with a function in place of the number (:data:`CallTimeout`), read once as
 each call starts, so an operator retunes it from live configuration without remounting. A call that outlives it is
 answered as an error saying so, rather than holding the client. The timeout holds a call up to its action's
@@ -119,7 +119,7 @@ log = get_logger(__name__)
 
 #: How long one call may take, in seconds, unless a host mounts with another: every call, whatever its action. No call
 #: waits on a model, so this bounds store round-trips and a host's own caller resolution, never a model's latency.
-DEFAULT_CALL_TIMEOUT_S = 60.0
+_DEFAULT_CALL_TIMEOUT_S = 60.0
 
 #: How long an ``around`` hook may take, in seconds, past the outcome it was handed — or closing, once a call is
 #: stopped — and, separately, how long the ``annotate`` hook may take over that outcome. The call's own timeout ends
@@ -334,7 +334,7 @@ class ToolBinding:
         caller: CallerResolver,
         around: CallHook | None = None,
         annotate: CallAnnotator | None = None,
-        call_timeout_s: CallTimeout = DEFAULT_CALL_TIMEOUT_S,
+        call_timeout_s: CallTimeout = _DEFAULT_CALL_TIMEOUT_S,
     ) -> None:
         """Bind a mounted tool to the host, caller resolver, hooks and call timeout its calls run under.
 
@@ -662,7 +662,7 @@ class CatalogueTool(Tool):
         caller: CallerResolver,
         around: CallHook | None = None,
         annotate: CallAnnotator | None = None,
-        call_timeout_s: CallTimeout = DEFAULT_CALL_TIMEOUT_S,
+        call_timeout_s: CallTimeout = _DEFAULT_CALL_TIMEOUT_S,
     ) -> CatalogueTool:
         """The FastMCP tool for one mounted tool.
 
@@ -768,7 +768,7 @@ def mount_fastmcp(
     scope: str,
     identity: str = "mcp",
     tools: Sequence[ToolSpec] | None = None,
-    call_timeout_s: CallTimeout = DEFAULT_CALL_TIMEOUT_S,
+    call_timeout_s: CallTimeout = _DEFAULT_CALL_TIMEOUT_S,
 ) -> FastMCP: ...
 
 
@@ -785,7 +785,7 @@ def mount_fastmcp(
     around: CallHook | None = None,
     annotate: CallAnnotator | None = None,
     tools: Sequence[ToolSpec] | None = None,
-    call_timeout_s: CallTimeout = DEFAULT_CALL_TIMEOUT_S,
+    call_timeout_s: CallTimeout = _DEFAULT_CALL_TIMEOUT_S,
 ) -> tuple[str, ...]: ...
 
 
@@ -801,7 +801,7 @@ def mount_fastmcp(
     around: CallHook | None = None,
     annotate: CallAnnotator | None = None,
     tools: Sequence[ToolSpec] | None = None,
-    call_timeout_s: CallTimeout = DEFAULT_CALL_TIMEOUT_S,
+    call_timeout_s: CallTimeout = _DEFAULT_CALL_TIMEOUT_S,
 ) -> FastMCP | tuple[str, ...]:
     """Add the catalogue's tools to a FastMCP server; or, handed a host alone, build the server and return it.
 

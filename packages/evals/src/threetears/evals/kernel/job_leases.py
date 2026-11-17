@@ -30,7 +30,7 @@ did not start a job read a live one as lost, and a cancel there was refused. Her
   and hears a cancel asked of it, as a renewal would have; a lease the store's clock reads lapsed is never revived.
 - **The one way back is a resume, under a new epoch.** No renewal and no write of the holding that lost a job brings
   it back. A run that was lost (or cancelled, or stopped by its budget or its account) is continued only when someone
-  asks (:func:`~threetears.evals.run.resume.resume_run`, the ``job_resume`` action): its record is reopened, conditionally on
+  asks (:func:`~threetears.evals.run.resume.take_up_run`, the ``job_resume`` action): its record is reopened, conditionally on
   the record as read, under a lease at the next ``epoch`` held by the process resuming it, and every holding at an
   earlier epoch is fenced as above. Nothing resumes a job on its own, at boot or otherwise.
 - **A cancel is a field on the record** (``cancel_requested_at``), written by whichever process was asked
@@ -106,7 +106,7 @@ CONTENDED_RENEWAL_RETRIES = 4
 CONTENDED_BACKOFF_S = (0.5, 2.0)
 
 #: The lost cause a graceful shutdown writes on every job its process holds.
-SHUTDOWN_CAUSE = "process shut down"
+_SHUTDOWN_CAUSE = "process shut down"
 
 #: The status a run written lost takes (:data:`RUN_JOB`): what a run that stopped without finishing has always read,
 #: its cause on ``cancellation_reason`` and ``lost``.
@@ -640,7 +640,7 @@ def note_job_fault(store: LeaseStore, kind: LeasedJobKind[Any], record_id: str, 
 #: What one renewal of one held record found: renewed (and nothing asked of it), a cancel asked of it, the job
 #: ended by its own writes, the holder fenced off (its record ended by another, or its lease lapsed), or the
 #: write lost every race (tried again next interval).
-RenewalVerdict = Literal["renewed", "cancel", "ended", "fenced", "contended"]
+_RenewalVerdict = Literal["renewed", "cancel", "ended", "fenced", "contended"]
 
 
 @dataclass(kw_only=True)
@@ -666,7 +666,7 @@ class _Held:
     renewed_at: float = field(default_factory=time.monotonic)
     #: The renewal store call that outlived its deadline and has not yet returned, and when it was issued: while it is
     #: stuck no second renewal of the record is sent (:meth:`JobLeases._renew_one`).
-    stuck_call: Future[tuple[float, RenewalVerdict, str | None]] | None = field(default=None)
+    stuck_call: Future[tuple[float, _RenewalVerdict, str | None]] | None = field(default=None)
     stuck_since: float = field(default=0.0)
 
 
@@ -838,7 +838,7 @@ class JobLeases:
 
         A lease the store's clock reads lapsed is never revived: the record is written lost, as a renewal writes it,
         this process lets it go and stops its job, and nothing is written. Only a resume continues the job, under a
-        new lease at the next epoch (:func:`~threetears.evals.run.resume.resume_run`). A store clock that cannot be read
+        new lease at the next epoch (:func:`~threetears.evals.run.resume.take_up_run`). A store clock that cannot be read
         leaves the lease as stored, logged: the write it was only to extend still lands.
 
         Blocking: call it off the event loop, as every store call is.
@@ -1126,13 +1126,13 @@ class JobLeases:
         for round_ in range(CONTENDED_RENEWAL_RETRIES + 1):
             issued = time.monotonic()
             started = issued
-            verdict: RenewalVerdict | None = None
+            verdict: _RenewalVerdict | None = None
             reason: str | None = None
             # The store call gets only what is left of the lease by this holder's own count: a call that never
             # returns must not keep the record from being expired (_expire), as the check below only runs once it has.
             hung = False
             pool: ThreadPoolExecutor | None = None
-            call: Future[tuple[float, RenewalVerdict, str | None]] | None = None
+            call: Future[tuple[float, _RenewalVerdict, str | None]] | None = None
             left = held.renewed_at + self._lease_s - time.monotonic()
             try:
                 if (
@@ -1411,7 +1411,7 @@ class JobLeases:
             return False
         return await run_blocking(self._pool(), self._end_lost, held, cause)
 
-    def _act_on(self, held: _Held, verdict: RenewalVerdict, reason: str | None, retry_in_s: float) -> None:
+    def _act_on(self, held: _Held, verdict: _RenewalVerdict, reason: str | None, retry_in_s: float) -> None:
         """Do what a renewal found: deliver a cancel once, or release and stop a job fenced off its record.
 
         ``retry_in_s`` is the true wait before a contended renewal is tried again.
@@ -1447,7 +1447,7 @@ class JobLeases:
                 retry_in_s,
             )
 
-    def _renew(self, held: _Held) -> tuple[float, RenewalVerdict, str | None]:
+    def _renew(self, held: _Held) -> tuple[float, _RenewalVerdict, str | None]:
         """Renew one held lease: the blocking half of a renewal, one worker hop.
 
         :return: When the worker started it (:func:`time.monotonic`), the verdict, and the cancel's reason when one was
@@ -1456,7 +1456,7 @@ class JobLeases:
         started = time.monotonic()
         return (started, *self._renewal_round_trips(held))
 
-    def _renewal_round_trips(self, held: _Held) -> tuple[RenewalVerdict, str | None]:
+    def _renewal_round_trips(self, held: _Held) -> tuple[_RenewalVerdict, str | None]:
         """A renewal's reads and conditional writes: the verdict, and the cancel's reason when one was asked."""
         for _ in range(LEASE_WRITE_ATTEMPTS):
             record, etag = self._store.load_job_record(held.kind.model, held.record_id, held.scope_id)
@@ -1488,7 +1488,7 @@ class JobLeases:
 
     async def shut_down(
         self,
-        cause: str = SHUTDOWN_CAUSE,
+        cause: str = _SHUTDOWN_CAUSE,
         *,
         within: float | None = None,
         then: Callable[[], object] | None = None,
@@ -1652,11 +1652,9 @@ __all__ = [
     "ANALYSIS_JOB",
     "LEASE_WRITE_ATTEMPTS",
     "RUN_JOB",
-    "SHUTDOWN_CAUSE",
     "SWEEP_JOB",
     "JobLeases",
     "LeasedJobKind",
-    "RenewalVerdict",
     "lease_lapsed",
     "note_job_fault",
     "read_to_take_up",

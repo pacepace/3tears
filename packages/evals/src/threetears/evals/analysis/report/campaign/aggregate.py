@@ -1,8 +1,7 @@
 """What a campaign's page reads across its aspects, each aspect weighed alike: the scorecard's equal-weight row and
 the cost/quality chart.
 
-Both read the readings' own figures across aspects
-(:func:`~threetears.evals.analysis.campaign_readings.campaign_aggregate`), so the page prints what the JSON states,
+Both read the readings' own figures across aspects (``CampaignReadings.aggregate``), so the page prints what the JSON states,
 weighting included. They are descriptive: nothing here is tested, no figure decides a reading, a floor or a bar, and
 no word says one arm is better.
 

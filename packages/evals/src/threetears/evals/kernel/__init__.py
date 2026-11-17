@@ -345,7 +345,6 @@ from threetears.evals.kernel.surface import (
     TimePosition,
 )
 from threetears.evals.kernel.usage_capture import (
-    ResolvedUsage,
     RoleUsageLedger,
     count_substituted,
     count_substituted_deliveries,
@@ -573,7 +572,6 @@ __all__ = [
     "Recordable",
     "ReplayedDelivery",
     "ResolvedControl",
-    "ResolvedUsage",
     "ResultKey",
     "GoalReading",
     "GoalView",

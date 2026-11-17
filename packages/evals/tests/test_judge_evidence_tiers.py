@@ -11,7 +11,7 @@ assembled bundle and the code-only report, since a tier shown anywhere must be t
 
 Mutations that turn this file red (each made in a scratch copy and the file restored from it, 2026-10-06):
 
-- ``criterion_state``: ``>`` for ``>=`` on the agreement, ``<=`` for ``<`` on the pair floor (both caught by
+- the criterion's state: ``>`` for ``>=`` on the agreement, ``<=`` for ``<`` on the pair floor (both caught by
   the at-boundary ``met`` case);
 - ``tier_of``: returning ``incidental`` where it returns ``undetermined``; checking separation before
   calibration;

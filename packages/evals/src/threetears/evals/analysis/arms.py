@@ -20,7 +20,7 @@ from threetears.evals.schema.base import EvalDocumentModel
 from threetears.evals.kernel.surface import CellFacts
 
 
-class ArmLevel(EvalDocumentModel):
+class _ArmLevel(EvalDocumentModel):
     """One coordinate of an arm — which lever, and the level it carried."""
 
     axis_id: str = Field(min_length=1, description="The lever this level is on, in the host's own vocabulary.")
@@ -161,22 +161,22 @@ def distinguishing_axes(entries: Iterable[VariantIndexEntry]) -> frozenset[str]:
     )
 
 
-def _arm_level(axis: str, level: SweepableValue) -> ArmLevel:
-    return ArmLevel(axis_id=axis, display=level.display, content_hash=level.content_hash)
+def _arm_level(axis: str, level: SweepableValue) -> _ArmLevel:
+    return _ArmLevel(axis_id=axis, display=level.display, content_hash=level.content_hash)
 
 
-def arm_levels(entry: VariantIndexEntry | None, distinguishing: frozenset[str]) -> list[ArmLevel]:
+def arm_levels(entry: VariantIndexEntry | None, distinguishing: frozenset[str]) -> list[_ArmLevel]:
     """The levels that tell an arm apart, axis by axis — its applicable levers on a distinguishing axis.
 
     :param entry: The arm's index entry, or ``None`` for an arm the index does not hold.
     :param distinguishing: The analysis's :func:`distinguishing_axes`, read over its whole variant index so
         one arm is named alike on every surface.
-    :return: One :class:`ArmLevel` per :func:`applicable_levers` pair on a distinguishing axis, in that order.
+    :return: One :class:`_ArmLevel` per :func:`applicable_levers` pair on a distinguishing axis, in that order.
     """
     return [_arm_level(axis, level) for axis, level in applicable_levers(entry) if axis in distinguishing]
 
 
-def naming_levels(entry: VariantIndexEntry | None, distinguishing: frozenset[str]) -> list[ArmLevel]:
+def naming_levels(entry: VariantIndexEntry | None, distinguishing: frozenset[str]) -> list[_ArmLevel]:
     """The levels an arm is NAMED by — what every table row and chart label prints for it.
 
     Its :func:`arm_levels` when it has any. A described arm with none — the only arm of its report, or
@@ -353,7 +353,6 @@ __all__ = [
     "ELISION",
     "LABEL_LEVEL_CHARS",
     "NO_LEVER_MOVED",
-    "ArmLevel",
     "applicable_levers",
     "arm_label",
     "arm_levels",

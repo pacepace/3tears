@@ -17,7 +17,6 @@ import pytest
 from threetears.evals import kernel
 from threetears.evals.gen import RUBRIC_PROPOSAL_CONTRACT, plan_draft
 from threetears.evals.kernel import plan_variation_calls
-from threetears.evals.kernel.authored import PORTABLE_STRICT_KEYWORDS
 from threetears.evals.kernel.provider import withhold_failure_detail
 from threetears.evals.kernel.authored import strict_schema as authored_strict_schema
 from threetears.evals.run.judge import judge_reply_format
@@ -37,6 +36,12 @@ _RESET = "call prompt_reset for the slot"
 
 #: A system prompt written for the draft's output contract, as every stored proposer prompt has to be.
 _SYSTEM = f"SYSTEM TEXT\n{RUBRIC_PROPOSAL_CONTRACT.line}"
+
+
+#: The schema keywords both major providers' strict structured-output modes accept.
+PORTABLE_STRICT_KEYWORDS = frozenset(
+    {"type", "properties", "required", "additionalProperties", "items", "enum", "anyOf", "$ref", "$defs", "description"}
+)
 
 
 def _strict(response_format: dict[str, Any] | None) -> dict[str, Any]:

@@ -1034,14 +1034,9 @@ def _frontier_point(
 
     # cost — production-replicating roles only, meaned over the results that
     # reported one. None when none did; partial when some did and some did not.
-    # Reads the RAW persisted `usage` where the run-summary aggregate reads
-    # `resolve_result_usage`. The resolver returns rows this call cannot distinguish from
-    # the raw field: identical on `captured`, `None` on both sides when nothing was
-    # observed, and an empty list on a cancelled cell, which sums to `None` exactly as the
-    # absent field does. So the two agree here in every case, and reading the raw field is
-    # the shorter way to the same number. Aligning the call sites would be tidying, not a fix.
+    # Reads the persisted `usage`: an empty list on a cancelled cell sums to `None`, exactly as the absent field does.
     #
-    # The substitution disclosure is NOT part of that divergence and is read per result
+    # The substitution disclosure is read per result
     # regardless: a seeded or replayed delivery spent neither inner-agent dollars nor
     # tool credits, so letting it contribute its observed sum here would rank a
     # substituted contestant as cheaper than a live one on a difference in apparatus

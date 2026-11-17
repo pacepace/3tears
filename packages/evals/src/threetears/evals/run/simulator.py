@@ -140,13 +140,13 @@ from threetears.evals.kernel.usage_capture import CallUsage, RoleUsageLedger
 #: **What it does not guarantee.** An effort level bounds nothing in tokens on any model; a model
 #: that takes reasoning as a token budget is sent the closest budget its client chooses, and a model
 #: that does not reason ignores it. The cap below is the only hard stop.
-SIMULATOR_REASONING_EFFORT: KnownReasoningEffort = "low"
+_SIMULATOR_REASONING_EFFORT: KnownReasoningEffort = "low"
 
 #: Room the output cap leaves for the simulated user's private reasoning at
-#: :data:`SIMULATOR_REASONING_EFFORT`. Never sent — the request carries the effort, not a budget —
+#: :data:`_SIMULATOR_REASONING_EFFORT`. Never sent — the request carries the effort, not a budget —
 #: so it bounds nothing; it is what the cap is sized from, so a turn that reasons a little more than
 #: usual still has room to answer.
-SIMULATOR_REASONING_ALLOWANCE_TOKENS = 1024
+_SIMULATOR_REASONING_ALLOWANCE_TOKENS = 1024
 
 #: Output room kept for the simulated user's visible reply: the strict-schema JSON object holding one
 #: utterance or one scheduling pick. That is at most a few hundred tokens, so this is headroom; unused
@@ -155,7 +155,7 @@ SIMULATOR_ANSWER_BUDGET_TOKENS = 4096
 
 #: The simulator's output cap: the reasoning allowance plus the answer budget, derived rather than
 #: chosen. It is the only bound in tokens a simulator call has.
-SIMULATOR_MAX_TOKENS = SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
+SIMULATOR_MAX_TOKENS = _SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_BUDGET_TOKENS
 
 #: The simulator role's request settings as ONE value: what the host's client builder applies to
 #: the simulated user's client, and what a run launched with a simulated user records as
@@ -170,7 +170,7 @@ SIMULATOR_MAX_TOKENS = SIMULATOR_REASONING_ALLOWANCE_TOKENS + SIMULATOR_ANSWER_B
 #: the enforcement the calls already carry.
 SIMULATOR_REQUEST_SETTINGS = ClientRequestSettings(
     max_tokens=SIMULATOR_MAX_TOKENS,
-    reasoning_effort=SIMULATOR_REASONING_EFFORT,
+    reasoning_effort=_SIMULATOR_REASONING_EFFORT,
     strict_output=True,
 )
 
@@ -883,8 +883,6 @@ __all__ = [
     "SIMULATED_USER_RESPONSE_FORMAT",
     "SIMULATOR_ANSWER_BUDGET_TOKENS",
     "SIMULATOR_MAX_TOKENS",
-    "SIMULATOR_REASONING_ALLOWANCE_TOKENS",
-    "SIMULATOR_REASONING_EFFORT",
     "SIMULATOR_REQUEST_SETTINGS",
     "CandidateTurn",
     "NextSpeakerReply",

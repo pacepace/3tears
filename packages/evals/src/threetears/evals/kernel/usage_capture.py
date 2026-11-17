@@ -45,13 +45,11 @@ from __future__ import annotations
 import math
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from threetears.evals.schema.base import EvalBaseModel
 from threetears.evals.schema.external_spend import ExternalSpend
 from threetears.evals.schema.models import (
     USAGE_ROLES,
-    CellTermination,
     ClientRequestSettings,
     KnownSimulatorPurpose,
     KnownUsageRole,
@@ -67,7 +65,7 @@ from threetears.evals.schema.logs import get_logger
 
 if TYPE_CHECKING:
     from threetears.evals.kernel.result_reading import ResultView, UsageView
-    from threetears.evals.schema.models import AsyncDelivery, EvalResult
+    from threetears.evals.schema.models import AsyncDelivery
 
 log = get_logger(__name__)
 
@@ -1021,8 +1019,7 @@ def production_replicating_cost(
     know they are incomplete. A default of "nothing was substituted" would let every
     existing call site keep compiling and keep returning the understated number silently,
     which is the failure being fixed, re-introduced as a convenience.
-    :func:`count_substituted_deliveries` derives it from a result;
-    :attr:`ResolvedUsage.substituted_deliveries` carries it on the resolved view.
+    :func:`count_substituted_deliveries` derives it from a result.
 
     ``candidate_kind`` is **required for the same reason**: the rows cannot say whose spend a judge row is. A
     default of "not a judge campaign" read every judge-kind result's spend as apparatus and reported no cost for
@@ -1066,51 +1063,6 @@ def program_cost(usage: Sequence[UsageView]) -> float | None:
     ``EvalResult.cost_usd`` remains the authoritative blended figure.
     """
     return _sum_costs(list(usage))
-
-
-class ResolvedUsage(EvalBaseModel):
-    """The per-role usage a read surface should show for one result, and how it got there.
-
-    Returned as a value and never assigned back onto the result, for the same reason
-    :class:`~threetears.evals.kernel.identity.DerivedContextIdentity` is: this is a *reading* of the
-    record — it interprets an empty list against the recorded ``termination`` — and writing
-    an interpretation into the field reserved for observations would make the two
-    indistinguishable, turning any later save of that document into a backfill. There is
-    deliberately no code path that persists these rows.
-
-    ``source`` is the field a reader must not skip:
-
-    - ``captured`` — the roles were observed at their own call sites while the cell ran.
-    - ``lost`` — the cell was cut off before it returned: on its deadline, by its run's cancel,
-      or by an apparatus fault (:data:`CUT_SHORT_TERMINATIONS`). ``usage`` holds the rows it had
-      reported up to then (the run loop owns the cell's sink, so they survive the cut), and
-      ``partial`` is ``True`` because the call in flight when it was cut never reported its
-      usage: roles spent more than these rows say. This arm exists because
-      the stored rows cannot carry the distinction — a cell cut off during its only call
-      stores ``[]``, which means "capture ran and attributed nothing" on a candidate-factory
-      failure — so the two are separated by the runner's recorded ``termination`` rather
-      than by the shape of what is left.
-
-    There is no third arm: every result carries ``usage`` (the runner writes a list at every
-    exit and the field is required), so a result never lacks a per-role observation, and
-    nothing reconstructs spend from a result's persisted trace.
-    """
-
-    usage: list[RoleUsage]
-    source: Literal["captured", "lost"]
-    #: A projection of ``source``, not a second signal: it is exactly
-    #: ``source != "captured"`` on both arms. Kept because a reader-facing "do not
-    #: read this as whole" flag is worth stating outright, but never branch on it where
-    #: you mean ``source`` — the two cannot disagree, and code that treats them as
-    #: independent invents a fourth state the model has no arm for.
-    partial: bool
-    #: Async deliveries whose payload a harness supplied instead of a background run
-    #: producing it — a seeded case finding or a replayed capture. Non-zero means the rows
-    #: on this view did not spend what production would have, so
-    #: :func:`production_replicating_cost` declines to report a figure at all. Derived from
-    #: the deliveries themselves on every arm rather than stored beside them, so a new
-    #: substitution source cannot forget to declare itself.
-    substituted_deliveries: int = 0
 
 
 def count_substituted_deliveries(result: ResultView) -> int:
@@ -1172,54 +1124,13 @@ def count_substituted(deliveries: Sequence[AsyncDelivery] | None) -> int:
     return sum(1 for entry in deliveries if entry.substituted)
 
 
-#: The terminations of a cell cut off before it returned, whose usage therefore stops short of the
-#: work in flight when it was cut — read by :func:`resolve_result_usage` to mark them partial.
-CUT_SHORT_TERMINATIONS: frozenset[CellTermination] = frozenset({"cell_timeout", "cancelled", "apparatus_failed"})
-
-
-def resolve_result_usage(result: EvalResult) -> ResolvedUsage:
-    """Return the per-role usage a read surface should show for ``result``.
-
-    The single place a read surface decides what a result's per-role spend *is*, so the
-    surfaces answer identically rather than each inventing a rule. Writes nothing on any
-    path.
-
-    Every surface that shows one result's per-role spend calls it, so that no two surfaces
-    can disagree about whether a figure is whole; a surface that discloses provenance must
-    call this rather than inventing its own rule.
-
-    A cell cut off before it returned is the one case the persisted value cannot answer on its
-    own — by its deadline, by its run's cancel, or by an apparatus fault unwinding the kind
-    (:data:`CUT_SHORT_TERMINATIONS`). Its ``usage`` holds what it had reported up to then —
-    possibly ``[]``, byte-identical to a candidate-factory failure's honest "capture ran and
-    attributed no roles" — and never the call in flight when it was cut, which reported nothing.
-    Reading ``usage`` alone would publish ``source="captured", partial=False`` for such a cell,
-    telling an operator that something which burned past its deadline consumed nothing anywhere.
-    It reads the runner's recorded ``termination``, which is the branch that cut the capture
-    short rather than a consequence of it.
-
-    :param result: The result to resolve.
-    :return: The captured rows — including the empty list, which means capture ran and attributed
-        no roles — or the ``lost`` view (the rows kept, marked partial) for a cut-short cell.
-    """
-    # Substitution is a property of the deliveries, not of how the rows were obtained, so
-    # it is read once here and attached to whichever arm answers — including `captured`,
-    # which is the live-run arm and the one a seeded run takes.
-    substituted = count_substituted_deliveries(result)
-    if result.termination in CUT_SHORT_TERMINATIONS:
-        return ResolvedUsage(usage=list(result.usage), source="lost", partial=True, substituted_deliveries=substituted)
-    return ResolvedUsage(usage=list(result.usage), source="captured", partial=False, substituted_deliveries=substituted)
-
-
 __all__ = [
     "BLENDED_COST_ROLES",
     "CALL_USAGE_ONLY_ATTRIBUTES",
-    "CUT_SHORT_TERMINATIONS",
     "PRODUCTION_REPLICATING_ROLES",
     "CallUsage",
     "ExternalRateTable",
     "ExternalSpend",
-    "ResolvedUsage",
     "RoleUsageLedger",
     "async_delivery_usage",
     "blended_cost",
@@ -1231,6 +1142,5 @@ __all__ = [
     "production_replicating_cost",
     "production_rows",
     "program_cost",
-    "resolve_result_usage",
     "spend_observed",
 ]

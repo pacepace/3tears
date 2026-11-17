@@ -1577,10 +1577,10 @@ def _judge_config_ids(_run: EvalRun, results: Sequence[ResultView]) -> list[str]
     observed = sorted({config_id for result in results for config_id in result.judge_config_ids.values()})
     if observed:
         return observed
-    return NO_JUDGE_CONFIGS if any(served_models_by_score(result) for result in results) else []
+    return NO_JUDGE_CONFIGS if any(_served_models_by_score(result) for result in results) else []
 
 
-def served_models_by_score(result: ResultView) -> list[str | None]:
+def _served_models_by_score(result: ResultView) -> list[str | None]:
     """Who scored each of one result's stored scores, as the provider named it — ``None`` where it did not.
 
     Every stored score counts: the rubric dims and both dual-score axes. The comparison reader
@@ -1627,7 +1627,7 @@ def _judge_served_models(_run: EvalRun, results: Sequence[ResultView]) -> list[s
     """
     served: set[str] = set()
     for result in results:
-        for model in served_models_by_score(result):
+        for model in _served_models_by_score(result):
             if model is None:
                 return None
             served.add(model)
@@ -1637,7 +1637,7 @@ def _judge_served_models(_run: EvalRun, results: Sequence[ResultView]) -> list[s
 def _temperatures_by_score(result: ResultView) -> list[str | None]:
     """The temperature each of one result's stored scores was sent at, as a level — ``None`` where it recorded none.
 
-    Over the same scores :func:`served_models_by_score` reads (the rubric dims, then both dual-score axes),
+    Over the same scores :func:`_served_models_by_score` reads (the rubric dims, then both dual-score axes),
     each as a string level so a number and :data:`~threetears.evals.schema.models.MODEL_DEFAULT_TEMPERATURE`
     sort and compare as one kind of value.
 
@@ -2082,5 +2082,4 @@ __all__ = [
     "SweepableRegistry",
     "SweepableRole",
     "SweepableValue",
-    "served_models_by_score",
 ]

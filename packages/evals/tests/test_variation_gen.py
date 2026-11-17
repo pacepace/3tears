@@ -12,7 +12,6 @@ from threetears.evals.kernel import AdmittedGeneration, EvalStorage, OutOfRunBud
 from threetears.evals.schema import OutOfRunSpend
 from threetears.evals.kernel.errors import ValidationFailedError
 from threetears.evals.schema.models import ActorPolicy, ConversationSpec, EvalTemplate, EvalTestCase, VariationAxis
-from threetears.evals.gen.variation_gen import price_variations
 from threetears.evals.gen.variation_gen import generate_variations
 from threetears.evals.storage import InMemoryDocumentStore
 from packages.evals.tests.off_loop import off_loop
@@ -678,47 +677,6 @@ async def test_a_generation_no_model_writes_ledgers_nothing():
     assert generated.spend == ()
 
 
-async def test_price_variations_quotes_what_a_generation_would_admit_and_calls_nothing():
-    llm = _FakeLLM([], ceilings=[0.4, 0.5])
-    budget = _budget(cap_usd=1.0)
-
-    ceilings = await price_variations(
-        _two_llm_axes(), 1, storage=_FakeStorage(), scope_id="u", llm=llm, budget=budget, blocking_executor=None
-    )
-
-    assert ceilings == [0.4, 0.5]
-    assert llm.calls == [] and budget.committed_usd == 0.0, "a quote commits nothing"
-
-
-async def test_price_variations_refuses_what_the_generation_would_refuse():
-    llm = _FakeLLM([], ceilings=[0.4, 0.7])
-    with pytest.raises(ValidationFailedError, match="above the out-of-run cap"):
-        await price_variations(
-            _two_llm_axes(),
-            1,
-            storage=_FakeStorage(),
-            scope_id="u",
-            llm=llm,
-            budget=_budget(cap_usd=1.0),
-            blocking_executor=None,
-        )
-    assert llm.calls == []
-
-
-async def test_price_variations_refuses_a_template_no_model_writes():
-    template = _template(VariationAxis(name="x", generator="enum", values=["a"]))
-    with pytest.raises(ValueError, match="no llm-generated axis"):
-        await price_variations(
-            template,
-            1,
-            storage=_FakeStorage(),
-            scope_id="u",
-            llm=_FakeLLM([]),
-            budget=_budget(),
-            blocking_executor=None,
-        )
-
-
 # =============================================================================
 # Where the store calls run: off the loop, on the executor named; the model calls on the loop
 # =============================================================================
@@ -813,16 +771,3 @@ async def test_no_store_call_from_a_generation_runs_on_the_loop_thread(named_poo
     assert {ident for name, ident in threads if name == "generate"} == {loop_thread}, "the model call stays on the loop"
     if named_pool:
         assert {ident for _, ident in store_threads} == {pool_thread}, "the executor named is the one used"
-
-
-async def test_pricing_a_generation_reads_its_cases_off_the_loop_thread():
-    threads: list[tuple[str, int]] = []
-    loop_thread = threading.get_ident()
-    storage = _FakeThreadRecordingCaseStore(threads)
-
-    await price_variations(
-        _two_llm_axes(), 1, storage=storage, scope_id="u", llm=_FakeLLM([]), budget=_budget(), blocking_executor=None
-    )
-
-    assert [name for name, _ in threads] == ["query_test_cases"]
-    assert all(ident != loop_thread for _, ident in threads)

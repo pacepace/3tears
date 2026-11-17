@@ -12,7 +12,7 @@ processes gets no serialisation from this module, and none from the campaign sto
 processes amending one campaign silently lose a write. Such a client needs its store to serialise
 campaign writes on its own. The document-store write path does
 carry the mechanism a port could use instead (``DocumentStore.get_with_etag`` paired with the
-``if_match`` of :func:`~threetears.evals.kernel.storage.save_document`, which a host's run writes can use),
+``if_match`` of the document store's save, which a host's run writes can use),
 but the campaign port does not expose it.
 
 It lives in the kernel because the writers live in two packages that may not import each other: the

@@ -55,12 +55,9 @@ from threetears.evals.schema.hashing import canonical_json
 from threetears.evals.kernel.identity import compute_content_hash
 from threetears.evals.schema.models import EvalTemplate, EvalTestCase, VariationAxis, VariationCounts
 from threetears.evals.kernel.offload import run_blocking
-from threetears.evals.kernel.capped_completion import refresh_prices
 from threetears.evals.kernel.out_of_run import (
     AdmittedGeneration,
-    OutOfRunBudget,
     existing_axis_values,
-    plan_variation_calls,
 )
 from threetears.evals.schema.out_of_run_spend import OutOfRunSpend
 from threetears.evals.kernel.provider import extract_json
@@ -70,7 +67,6 @@ if TYPE_CHECKING:
     from concurrent.futures import Executor
 
     from threetears.evals.kernel.storage import EvalStorage
-    from threetears.evals.schema.completion import VariationLLM
 
 log = get_logger(__name__)
 
@@ -274,45 +270,6 @@ async def generate_variations(
     )
 
 
-async def price_variations(
-    template: EvalTemplate,
-    n_variations: int,
-    *,
-    storage: EvalTestCaseStore,
-    scope_id: str,
-    blocking_executor: Executor | None,
-    llm: VariationLLM,
-    budget: OutOfRunBudget,
-) -> list[float | None]:
-    """Price the calls :func:`generate_variations` would make, refusing exactly as it would — and make none.
-
-    What a host's own pre-flight asks before it lets any work start. The engine's battery prices its
-    templates' generations itself, from the same plan
-    (:func:`~threetears.evals.kernel.out_of_run.plan_variation_calls`) through ``budget.quote``.
-    Commits nothing to ``budget``.
-
-    :param template: The template whose ``llm`` axes would be written.
-    :param n_variations: The cases the generation would ask for.
-    :param storage: Where the template's existing cases are read — the values each axis's prompt excludes.
-    :param scope_id: The scope the cases would be generated into.
-    :param blocking_executor: Where the ``storage`` read runs, off the event loop — as
-        :func:`generate_variations` takes it.
-    :param llm: The client the axes would be written with.
-    :param budget: The budget the generation would be admitted under.
-    :return: Each ``llm`` axis's call ceiling, in declaration order.
-    :raises ValueError: ``n_variations`` is non-positive, or the template has no ``llm`` axis.
-    :raises ValidationFailedError: The calls cannot be priced under an enforced cap, or are priced above it.
-    """
-    if n_variations <= 0:
-        raise ValueError(f"n_variations must be positive; got {n_variations}.")
-    existing = await run_blocking(blocking_executor, storage.query_test_cases, scope_id, template_id=template.id)
-    planned = plan_variation_calls(template, n_variations, existing)
-    if not planned:
-        raise ValueError(f"template {template.id!r} has no llm-generated axis, so a generation of it makes no call")
-    await refresh_prices(llm)
-    return budget.quote(llm, "variation", list(planned.values()))
-
-
 # =============================================================================
 # Per-axis generators
 # =============================================================================
@@ -397,5 +354,4 @@ __all__ = [
     "EvalTestCaseStore",
     "GeneratedVariations",
     "generate_variations",
-    "price_variations",
 ]

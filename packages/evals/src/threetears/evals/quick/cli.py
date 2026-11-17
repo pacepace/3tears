@@ -253,7 +253,7 @@ def _load_host_factory(spec: str) -> HostFactory:
     return factory  # type: ignore[no-any-return]
 
 
-def build_parser(
+def _build_parser(
     prog: str = DEFAULT_PROG, *, takes_host: bool = True, commands: Sequence[HostCommand] = ()
 ) -> argparse.ArgumentParser:
     """The command line's parser.
@@ -493,7 +493,7 @@ def run_cli(
         refused before ``argv`` is parsed, since it is the mounting product's code and not the
         user's command line.
     """
-    args = build_parser(prog, takes_host=host_factory is None, commands=commands).parse_args(argv)
+    args = _build_parser(prog, takes_host=host_factory is None, commands=commands).parse_args(argv)
     handlers = {host_command.name: host_command.handler for host_command in commands}
     try:
         factory = host_factory if host_factory is not None else _load_host_factory(args.host)
@@ -712,6 +712,5 @@ __all__ = [
     "EXIT_RUN_DID_NOT_COMPLETE",
     "HostCommand",
     "HostFactory",
-    "build_parser",
     "run_cli",
 ]

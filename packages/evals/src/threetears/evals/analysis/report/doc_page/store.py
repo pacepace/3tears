@@ -66,7 +66,6 @@ from threetears.evals.kernel.report_snapshot import EvalReportSnapshot
 from threetears.evals.kernel.storage import EvalStorage
 
 __all__ = [
-    "ReportDocReads",
     "StoredReportPage",
     "doc_verdicts",
     "doc_verdicts_and_page",
@@ -81,11 +80,10 @@ __all__ = [
 _GENERATION_FORMAT: Final = 2
 
 
-class ReportDocReads(Protocol):
+class _ReportDocReads(Protocol):
     """The two reads a stored report document is read back through: its record, then the snapshot it was written from.
 
-    The consumer's port of :func:`read_report_doc` and :func:`stored_headline`, and of a reader laying out a stored
-    analysis as its document's page (``analysis_report``). Structural, so a host's own storage satisfies it by having
+    The consumer's port of :func:`read_report_doc` and :func:`stored_headline`. Structural, so a host's own storage satisfies it by having
     the methods: :class:`~threetears.evals.kernel.storage.EvalStorage` does. Positional parameters are positional-only.
 
     **Provisional:** this protocol may change before it is declared part of the host contract.
@@ -383,7 +381,7 @@ def _unread(report_doc_id: str, why: str) -> RefusedInput:
 
 
 def read_report_doc(
-    storage: ReportDocReads, report_doc_id: str, scope_id: str, *, campaign_id: str | None = None
+    storage: _ReportDocReads, report_doc_id: str, scope_id: str, *, campaign_id: str | None = None
 ) -> StoredReportPage:
     """A stored report document read back as its page, on its own snapshot (the module docstring's read). Blocking.
 
@@ -435,7 +433,7 @@ def read_report_doc(
     return StoredReportPage(record=record, page=page, snapshot=snapshot, made=made)
 
 
-def stored_headline(storage: ReportDocReads, record: EvalReportDoc) -> str:
+def stored_headline(storage: _ReportDocReads, record: EvalReportDoc) -> str:
     """A stored document's headline as its page prints it, without building the page. Blocking.
 
     Its figure keys are written out on the document's own snapshot by the page's reading rule
@@ -470,5 +468,5 @@ if TYPE_CHECKING:
 
     def _eval_storage_satisfies_the_port(storage: EvalStorage) -> None:
         """Hold the engine's own store to this consumer's port, so a drifted signature fails typecheck."""
-        reads: ReportDocReads = storage
+        reads: _ReportDocReads = storage
         del reads

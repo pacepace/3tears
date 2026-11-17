@@ -4,7 +4,7 @@ A run lost to a reboot, an OOM kill, a deploy or a provider outage longer than i
 to ship a fix, and a run its budget or its account stopped each end with cells of their matrix never measured. A
 new run over the cases left pools with the first in pass^k (a case set is no part of a cell), but it is another run:
 it measures every repeat of each case it covers, so a case the first reached part-way is measured past ``k``, and
-the first stays short on its own record. :func:`resume_run` continues the run itself:
+the first stays short on its own record. :func:`take_up_run` continues the run itself:
 
 - **Only what is missing runs.** A cell with no stored row runs, and so does a cell whose row was cut short by a
   cancel (termination ``cancelled``: the attempt a shutdown or a cancel abandoned), refused by the provider
@@ -822,10 +822,10 @@ async def _run_resumption(
     :param host: The host, whose job manager would hold it.
     :param run_id: The run.
     :param scope_id: Its scope.
-    :param max_cost_usd: The cost cap to take it up under (see :func:`resume_run`); ``None`` keeps the one it recorded.
+    :param max_cost_usd: The cost cap to take it up under (see :func:`take_up_run`); ``None`` keeps the one it recorded.
     :return: What a take-up of it starts from.
     :raises NotFoundError: There is no such run.
-    :raises ValidationFailedError: It cannot be taken up (see :func:`resume_run`).
+    :raises ValidationFailedError: It cannot be taken up (see :func:`take_up_run`).
     """
     eval_host = host.eval_host
     leases = host.job_manager.leases
@@ -955,7 +955,9 @@ class TakeUp:
         return TakenUp(started, admitted.notices)
 
 
-async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_usd: float | None = None) -> EvalRun:
+async def take_up_run(
+    host: LaunchHost, run_id: str, scope_id: str, *, max_cost_usd: float | None = None
+) -> TakenUp[EvalRun]:
     """Take a run up again: the cells it has not measured run, in its own order, and it ends as the same run.
 
     Resumable: a run that was lost (its holder gone, or shut down), one an operator cancelled, one its budget stopped
@@ -971,6 +973,9 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
     the record as read; and started in a group of its own, ordered as it was — by its launch's group when that
     interleaved several arms, else by its own id (:meth:`TakeUp.start`).
 
+    What a transport's resume returns to its caller (``job_resume``) beside the run is what its admission told it: a
+    served-model check skipped because the provider's model list could not be read is said there, not only logged.
+
     :param host: The host, whose launcher wires the run and whose job manager holds it.
     :param run_id: The run.
     :param scope_id: Its scope.
@@ -978,34 +983,13 @@ async def resume_run(host: LaunchHost, run_id: str, scope_id: str, *, max_cost_u
         it recorded, whatever the host's own reads now (a run recorded uncapped inherits the host's). Not part of the
         measurement: each holding records the cap it ran under. A cap above the host's ceiling is refused, as a
         launch's is.
-    :return: The run, reopened and started.
+    :return: The run, reopened and started, and the notices.
     :raises NotFoundError: There is no such run, or its template is gone.
     :raises ValidationFailedError: It cannot be taken up (see above), it would measure otherwise now (every
         difference named), or a launch of it would be refused now.
     :raises ConflictError: Another take-up of it won, or another writer moved it, while this one prepared; nothing was
         started.
     :raises AdmissionRefusedError: The host has no room for another run.
-    """
-    return (await take_up_run(host, run_id, scope_id, max_cost_usd=max_cost_usd)).record
-
-
-async def take_up_run(
-    host: LaunchHost, run_id: str, scope_id: str, *, max_cost_usd: float | None = None
-) -> TakenUp[EvalRun]:
-    """:func:`resume_run`, answering what its admission told the caller beside the run it started.
-
-    What a transport's resume returns to its caller (``job_resume``): a served-model check skipped because the
-    provider's model list could not be read is said there, not only logged.
-
-    :param host: As :func:`resume_run` takes it.
-    :param run_id: As :func:`resume_run` takes it.
-    :param scope_id: As :func:`resume_run` takes it.
-    :param max_cost_usd: As :func:`resume_run` takes it.
-    :return: The run, reopened and started, and the notices.
-    :raises NotFoundError: As :func:`resume_run` raises it.
-    :raises ValidationFailedError: As :func:`resume_run` raises it.
-    :raises ConflictError: As :func:`resume_run` raises it.
-    :raises AdmissionRefusedError: As :func:`resume_run` raises it.
     """
     resuming = await _run_resumption(host, run_id, scope_id, max_cost_usd=max_cost_usd)
     return await TakeUp(host, {run_id: resuming}).start(run_id)
@@ -1186,7 +1170,7 @@ async def resume_launch(
     :param launch_id: The launch.
     :param scope_id: Its scope.
     :param max_cost_usd: The cost cap every run is taken up under; ``None`` keeps each run's own (see
-        :func:`resume_run`). Each run's holding records the cap it ran under.
+        :func:`take_up_run`). Each run's holding records the cap it ran under.
     :return: The launch's record as its job started, and what checking its runs' take-up told the caller beside
         admitting them (a served-model check that could not be made), each once.
     :raises NotFoundError: There is no such launch, or a run's template is gone.
@@ -1261,7 +1245,7 @@ async def resume_launch(
     return TakenUp(started, take_up.notices)
 
 
-#: The statuses a run :func:`resume_run` takes up has ended with: ``cancelled`` (lost, or cancelled by an operator),
+#: The statuses a run :func:`take_up_run` takes up has ended with: ``cancelled`` (lost, or cancelled by an operator),
 #: ``budget_stopped`` and ``exhausted``. ``completed`` and ``failed`` are never taken up, nor a live run.
 _RESUMABLE_RUN_STATUSES: frozenset[EvalRunStatus] = frozenset({"cancelled", "budget_stopped", "exhausted"})
 
@@ -1271,7 +1255,7 @@ ResumableEnding = Literal["lost", "cancelled", "budget_stopped", "exhausted"]
 
 
 class ResumableJob(EvalBaseModel):
-    """One run :func:`resume_run` would take up, as a host offers it: how it ended, how far it got, what it spent."""
+    """One run :func:`take_up_run` would take up, as a host offers it: how it ended, how far it got, what it spent."""
 
     job_id: str = Field(description="The job id job_resume takes: 'run:<run id>'.")
     run_id: str
@@ -1535,7 +1519,6 @@ __all__ = [
     "refused_as_one",
     "resumable_jobs",
     "resume_launch",
-    "resume_run",
     "take_up_arms",
     "take_up_run",
 ]

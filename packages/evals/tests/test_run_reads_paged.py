@@ -50,7 +50,7 @@ from threetears.evals.kernel.host import EvalHost
 from threetears.evals.kernel.run_pages import RUN_RESULTS_PAGE, UnreadableResultKey
 from threetears.evals.ops import OpsHost, history_launch_pricer, lenses, run_job_id
 from threetears.evals.run import resumable_jobs
-from threetears.evals.run.resume import resume_run
+from packages.evals.tests.resume_support import resumed_run
 from threetears.evals.run import resume
 from threetears.evals.run.resume import take_up_arms
 from threetears.evals.schema import EvalResult, EvalRun
@@ -240,7 +240,7 @@ class TestATakeUpPlansFromPages:
         holder, run_id = await _cancelled(monkeypatch, store)
         monkeypatch.setattr(resume, "RUN_RESULTS_PAGE", 1)
 
-        await resume_run(holder.launch, run_id, TOYHOST_SCOPE)
+        await resumed_run(holder.launch, run_id, TOYHOST_SCOPE)
         assert (await settled(holder, run_job_id(run_id))).state == "completed"
 
         rows = off_loop(holder.eval_host.storage.query_eval_results_by_run, run_id, TOYHOST_SCOPE)

@@ -19,7 +19,7 @@ async def job_resume(host: OpsHost, job_id: str, scope_id: str, *, max_cost_usd:
     """Take an interrupted job up again as the same job, and start it: a run's, a sweep's or a launch's.
 
     A run that was lost, cancelled by an operator, or stopped by its budget or its provider account is taken up again
-    (:func:`~threetears.evals.run.resume.resume_run`); its cells not yet measured run as its job, polled by the run's own job
+    (:func:`~threetears.evals.run.resume.take_up_run`); its cells not yet measured run as its job, polled by the run's own job
     id. A sweep (``sweep:<id>``) or a launch (``launch:<id>``) that was lost, cancelled, or stopped by its own time
     budget is taken up as a whole: each arm's unfinished run is taken up again, each arm of a sweep that never
     launched is launched, and the arm schedule is kept — an interleaved sweep's or launch's arms run in one group under

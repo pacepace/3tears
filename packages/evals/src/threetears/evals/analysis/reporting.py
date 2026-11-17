@@ -539,8 +539,7 @@ def unconfirmed_model_identities(
     """Each role whose calls some response named no model for, over the results given (#2025).
 
     The candidate is read off its usage rows (:func:`served_reading`, the rule every served-model reading uses), so a
-    result whose candidate made no call says nothing. The judge is read off every stored score
-    (:func:`~threetears.evals.kernel.host.sweepables.served_models_by_score`), and what a score asked for off its
+    result whose candidate made no call says nothing. The judge is read off every stored score, and what a score asked for off its
     run's recorded attribution (:func:`dim_judge_model`), never the run's pin, which a per-dimension config overrides.
 
     :param runs: The runs the results belong to; a result whose run is absent names no requested judge.
