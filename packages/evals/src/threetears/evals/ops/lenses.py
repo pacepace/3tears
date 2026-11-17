@@ -82,7 +82,8 @@ from threetears.evals.kernel.campaign import ReadingKind
 
 from threetears.evals.kernel.errors import NotFoundError, ValidationFailedError
 
-from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost, pass_threshold_label
+from threetears.evals.kernel.host import DEFAULT_PASS_THRESHOLD, EvalHost
+from threetears.evals.kernel.host.bars import pass_threshold_label
 
 from threetears.evals.kernel.metrics import describe_reported_measure, holds_host_measure, measure_title, reads_as_rate
 
@@ -130,32 +131,21 @@ def scope_pivot(
     """One measure over the scope's observations, aggregated over two coordinates.
 
     :param host: The host whose store and vocabulary are read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param row_factor: The coordinate the rows are.
-    :ptype row_factor: str
     :param column_factor: The coordinate the columns are.
-    :ptype column_factor: str
     :param metric: The measure; ``None`` or blank takes the composite.
-    :ptype metric: str | None
     :param weighting: The aggregation weighting; ``None`` or blank takes the disclosed default.
-    :ptype weighting: str | None
     :param subject_id: Only this subject's observations; required to pivot a judged measure over many.
-    :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` reads every run.
-    :ptype status: str | None
     :param predicted_cost: The estimate made before these runs, whose predictions a cost pivot sets beside
         each planned cell's observed cost: a :class:`LaunchEstimate` (:func:`launch_estimate`'s, each priced
         arm's prediction) or an analysis :class:`~threetears.evals.analysis.lenses.cost_estimate.CostEstimate` — the
         model, or its JSON form as a caller across a wire holds it.
-    :ptype predicted_cost: CostEstimate | LaunchEstimate | Mapping[str, Any] | None
     :param launched_run_ids: The runs the estimated launch made, once it has. Each cell beside a prediction then
         says how many of its observations came from other runs (``PivotCell.n_unplanned``) — the history
         the prediction was drawn from among them. Refused without ``predicted_cost``.
-    :ptype launched_run_ids: Sequence[str]
     :return: The table.
-    :rtype: PivotTable
     :raises ValidationFailedError: The pivot cannot be answered honestly — see
         :func:`~threetears.evals.analysis.pivot` — or ``predicted_cost`` is neither estimate, or the scope is past
         :data:`~threetears.evals.analysis.reads.PIVOT_READ_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
@@ -207,22 +197,14 @@ def scope_history(
     """One measure over time for each contestant in the scope, with its regressions flagged.
 
     :param host: The host whose store and vocabulary are read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param metric: The measure: the composite, spend, latency, a judged axis, or a numeric measure the host
         declares (a quick-path scorer's name); ``None`` or blank takes the composite.
-    :ptype metric: str | None
     :param min_absolute_change: The smallest move a regression flag counts, in the measure's unit.
-    :ptype min_absolute_change: float
     :param min_relative_change: The smallest move relative to the baseline a flag counts, as a fraction.
-    :ptype min_relative_change: float
     :param subject_id: Only this subject's observations.
-    :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` reads every run.
-    :ptype status: str | None
     :return: The series.
-    :rtype: HistoryResult
     :raises ValidationFailedError: The metric cannot be seriesed, or the status is no run's, or the scope is past
         :data:`~threetears.evals.analysis.reads.READING_BUDGET` and ``subject_id`` does not narrow it to runs that fit.
     """
@@ -254,18 +236,12 @@ def scope_frontier(
     files every arm under one subject, so its arms (models among them) are one frontier.
 
     :param host: The host whose store and vocabulary are read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param bar: The pass^k each variant must clear, in ``[0, 1]``; ``None`` or blank ranks without a verdict.
-    :ptype bar: float | str | None
     :param subject_id: Only this subject's variants; what the others count as is
         :func:`~threetears.evals.analysis.frontier`'s ``subject_id`` (filtered out, or, past the read budget, unread).
-    :ptype subject_id: str | None
     :param status: Only runs with this status; ``"all"`` ranks every run.
-    :ptype status: str | None
     :return: The frontier.
-    :rtype: FrontierResult
     :raises ValidationFailedError: The bar is not a number in ``[0, 1]``, or the status is no run's, or the scope is
         past :data:`~threetears.evals.analysis.reads.READING_BUDGET` and ``subject_id`` does not narrow it to runs
         that fit.
@@ -301,23 +277,15 @@ def scope_export(
     ``after_case_id`` (:func:`~threetears.evals.analysis.export_results`).
 
     :param host: The host whose store and vocabulary are read.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param format: ``"csv"`` (the default) or ``"json"``.
-    :ptype format: str | None
     :param status: Only runs with this status; ``"all"`` exports every run.
-    :ptype status: str | None
     :param run_ids: Only these runs — archived ones included, since they were named. Runs whose results would pass
         the ceiling are paged as the scope is, the pages holding them alone; one past it is paged by its cases.
-    :ptype run_ids: list[str] | None
     :param after_run_id: The previous page's ``page.next_after_run_id``; ``None`` reads the first page.
-    :ptype after_run_id: str | None
     :param after_case_id: The previous page's ``page.next_after_case_id``; ``None`` starts at the run after
         ``after_run_id``.
-    :ptype after_case_id: str | None
     :return: The export.
-    :rtype: ScoreExport
     :raises ValidationFailedError: The format is not one there is, the status is no run's, ``after_run_id`` is no run
         in the scope or is given with ``run_ids`` that do not name it, or ``after_case_id`` is given alone or is no
         case of that run.
@@ -381,15 +349,10 @@ def runs_compare(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sc
     same helpers.
 
     :param host: The host whose store is read.
-    :ptype host: EvalHost
     :param baseline_run_id: The run read as the baseline.
-    :ptype baseline_run_id: str
     :param candidate_run_id: The run read against it.
-    :ptype candidate_run_id: str
     :param scope_id: The scope both runs live in.
-    :ptype scope_id: str
     :return: The comparison and its disclosures.
-    :rtype: RunsCompared
     :raises NotFoundError: Either run is not in the scope.
     """
     storage = host.storage
@@ -490,15 +453,10 @@ def runs_bisect(host: EvalHost, baseline_run_id: str, candidate_run_id: str, sco
     """Split two runs' versioned inputs into those that differ, agree and cannot be decided, with each disclosure.
 
     :param host: The host whose store and sweepable declarations are read.
-    :ptype host: EvalHost
     :param baseline_run_id: The run read as the baseline.
-    :ptype baseline_run_id: str
     :param candidate_run_id: The run read against it.
-    :ptype candidate_run_id: str
     :param scope_id: The scope both runs live in.
-    :ptype scope_id: str
     :return: The split and its disclosures.
-    :rtype: RunsBisected
     :raises NotFoundError: Either run is not in the scope.
     """
     split = bisect_runs(host.storage, baseline_run_id, candidate_run_id, scope_id, profile=host.profile)
@@ -717,12 +675,10 @@ class LaunchEstimate(EvalBaseModel):
 
         :param run_ids: The runs the launch made, once it has (the run ids its launch job names, as run_ids); empty
             before, when the cost a pivot sets beside each prediction is history the launch did not make.
-        :ptype run_ids: Sequence[str]
         :return: One :class:`~threetears.evals.analysis.lenses.cost_estimate.PlannedCost` per arm with a model, a plan
             and a prediction; the prediction's point is the pricer's central estimate where it gave a range (the
             band then running from its lower end to its band's own upper end, never to a cap's safety margin above
             it) and its single figure otherwise.
-        :rtype: list[PlannedCost]
         """
         planned: list[PlannedCost] = []
         for arm in self.arms:
@@ -769,16 +725,11 @@ async def launch_estimate(
     by the launch itself (``EvalStorage.query_out_of_run_spend`` reads what they spent).
 
     :param host: The launching host.
-    :ptype host: OpsHost
     :param arguments: What the launch would name.
-    :ptype arguments: LaunchArguments
     :param scope_id: The scope the launch would run in.
-    :ptype scope_id: str
     :param n_test_cases: A case count to price each planned arm at in place of its plan's, for a hypothetical grid;
         ``None`` prices each at its plan, as the launch would.
-    :ptype n_test_cases: int | None
     :return: The estimate.
-    :rtype: LaunchEstimate
     :raises NotFoundError: The template is not in the scope.
     :raises ValidationFailedError: Any refusal the launch makes before pricing an arm, or an ``n_test_cases``
         below one. The template's earlier runs past the read tier's budget refuse no estimate: the planning block
@@ -901,19 +852,12 @@ def detectable_effects(
     no earlier run, or too few repeated cases, the reading says it cannot estimate and why.
 
     :param host: The host whose store holds the earlier runs and whose vocabulary reads them.
-    :ptype host: EvalHost
     :param scope_id: The scope.
-    :ptype scope_id: str
     :param template_id: The template the launch runs.
-    :ptype template_id: str
     :param n_cases: The cases per arm the launch plans; ``None`` when its kind plans none.
-    :ptype n_cases: int | None
     :param k_runs: The repeats per case.
-    :ptype k_runs: int
     :param n_arms: The arms the launch runs.
-    :ptype n_arms: int
     :return: The block.
-    :rtype: DetectableEffects
     :raises ValidationFailedError: The template's earlier runs are estimated past
         :data:`~threetears.evals.analysis.reads.PLANNING_READ_BUDGET` results by their matrices (refused before any result
         is read), or their read returned more than it (refused once the read is walked). A launch estimate reports
@@ -999,13 +943,9 @@ def _counted(
     ``holding``, all :func:`~threetears.evals.analysis.bundle.observations.measure_definition_levels` asks of them.
 
     :param readings: The read's readings, walked once.
-    :ptype readings: Iterable[ResultView]
     :param counts: Where each run's count is added.
-    :ptype counts: dict[str, int]
     :param holding: Where each run's first result holding a host measure is kept, by run id.
-    :ptype holding: dict[str, list[ResultView]]
     :return: The readings, in their order.
-    :rtype: Iterator[ResultView]
     """
     for reading in readings:
         counts[reading.eval_run_id] = counts.get(reading.eval_run_id, 0) + 1
@@ -1085,13 +1025,9 @@ def _arm_estimate(arm: ArmVerdict, k_runs: int, n_variations: int) -> ArmEstimat
     """One arm's verdict, as the estimate reports it.
 
     :param arm: The verdict.
-    :ptype arm: ArmVerdict
     :param k_runs: Repeats per case.
-    :ptype k_runs: int
     :param n_variations: Cases the launch generates; ``0`` for stored cases.
-    :ptype n_variations: int
     :return: The arm.
-    :rtype: ArmEstimate
     """
     plan = arm.plan
     price = arm.price
@@ -1124,15 +1060,10 @@ def _band_from_history(forms: PageForms, low: float, centre: float, high: float)
     sits from the centre, so a reader can judge whether one or two percent matters.
 
     :param forms: The surface's forms.
-    :ptype forms: PageForms
     :param low: The band's lower end.
-    :ptype low: float
     :param centre: The central estimate.
-    :ptype centre: float
     :param high: The band's upper end.
-    :ptype high: float
     :return: The words, after "the band from history".
-    :rtype: str
     """
     if low == high:
         return f"has no width, at {forms.lone(centre, money=True).text}"
@@ -1202,9 +1133,7 @@ def history_launch_pricer(host: EvalHost) -> LaunchPricer:
     reads unpriced, and its basis says what its own history and its siblings each lack.
 
     :param host: The host whose store holds the history and whose vocabulary reads it.
-    :ptype host: EvalHost
     :return: The pricer.
-    :rtype: LaunchPricer
     """
 
     def priced_history(quote: ArmQuote, template_id: str) -> CostEstimateCell:
@@ -1492,11 +1421,8 @@ def _sibling_shape_changes(sibling: EvalTemplate, template: EvalTemplate) -> lis
     sibling's priced results price ``template``'s arm, case for case.
 
     :param sibling: The sibling template.
-    :ptype sibling: EvalTemplate
     :param template: The arm's template.
-    :ptype template: EvalTemplate
     :return: Each difference, by the name a basis gives it.
-    :rtype: list[str]
     """
     changed = _pricing_changes(sibling, template)
     if dict(sibling.kind_spec) != dict(template.kind_spec):
@@ -1510,11 +1436,8 @@ def _sibling_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
     the overlays).
 
     :param run: A run of a sibling template.
-    :ptype run: EvalRun
     :param quote: The arm being priced.
-    :ptype quote: ArmQuote
     :return: Each condition that differs; empty when the run was launched as the arm will be, on its subject.
-    :rtype: list[str]
     """
     differences = _launch_differences(run, quote)
     subject = run.subject_snapshot.subject_id
@@ -1560,13 +1483,10 @@ def _launch_differences(run: EvalRun, quote: ArmQuote) -> list[str]:
     """The launch conditions ``run`` was launched under otherwise than ``quote``'s arm will be, beside its template.
 
     :param run: A run from the scope's history.
-    :ptype run: EvalRun
     :param quote: The arm being priced.
-    :ptype quote: ArmQuote
     :return: Each condition that moves what a run spends and differs, as ``<condition> (<run's> there, <arm's> here)``
         — the judges and the simulator by the models that ran, not by what the launch named. Empty when the run was
         launched as the arm will be.
-    :rtype: list[str]
     """
     judges = dict(quote.judge.effective_judges) if quote.judge is not None else None
     pairs: list[tuple[str, object, object]] = [
@@ -1850,12 +1770,9 @@ def export_text(export: ScoreExport, *, next_call: str | None = None) -> str:
     """An export as text: a line of its row count and what it left out, its page, then the body itself.
 
     :param export: The export.
-    :ptype export: ScoreExport
     :param next_call: How the calling surface spells the call that reads the next page, set under the page's lines;
         ``None`` names none.
-    :ptype next_call: str | None
     :return: The text.
-    :rtype: str
     """
     lines = [f"export ({export.format}, {export.n_records} row(s))"]
     lines += exclusion_lines(export.exclusions)

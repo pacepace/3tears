@@ -28,14 +28,16 @@ from threetears.evals.kernel.declaration import (
 from threetears.evals.kernel.identity import compute_variant_key
 from threetears.evals.schema.values import SweepableValue
 from threetears.evals.kernel.campaign import EvalCampaign
-from threetears.evals.schema.versioning import DURABLE_ADDRESSING_FIELDS, CoreVersionRefused, upgrade_durable_document
+from threetears.evals.schema.versioning import CoreVersionRefused, upgrade_durable_document
 from packages.evals.tests.v15_shapes import V15Design, V15Question, V15Rule
 
 #: The frozen v15 campaign, as the release that shipped the corpus wrote it.
 _FROZEN_V15 = Path(__file__).resolve().parent / "fixtures" / "durable_documents" / "v15" / "eval_campaign.json"
 
 #: The fields the store reads a campaign by, which no step may touch.
-_ADDRESSING = DURABLE_ADDRESSING_FIELDS["eval_campaign"]
+_ADDRESSING = frozenset(
+    {"id", "doc_type", "schema_version", "scope_id", "subject_id", "behavior", "archived", "created_at"}
+)
 
 #: A control's pre-image, and the key it digests to.
 _LEVERS = {"model": SweepableValue.of("glm", display="GLM")}

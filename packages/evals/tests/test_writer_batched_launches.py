@@ -35,12 +35,15 @@ from packages.evals.tests.fixtures.writer_cases.writer_acceptance import (
 from packages.evals.tests.offline_support import Connect, refuse_connects
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import JUDGE, FakeScoringJudge, ScoredReply, lay_recording
-from threetears.evals.analysis import EvalSummary, summarize_run, summarize_runs
+from threetears.evals.analysis import EvalSummary, summarize_run
+from threetears.evals.analysis.summary import summarize_runs
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.stats import bet_order
 from threetears.evals.analysis.report.blocks import Verdict
 from threetears.evals.analysis.service import assemble_campaign_bundle, campaign_verdicts
-from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, WriterResult, read_writer_cases
+from threetears.evals.harness import Writer, WriterEval, WriterResult
+from threetears.evals.harness.writer_cases import WriterCaseFile
+from threetears.evals.harness.writer_cases import read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.errors import StorageError, ValidationFailedError

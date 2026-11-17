@@ -118,13 +118,10 @@ def report_html(report: Report, *, static: bool = False) -> str:
     """Render a report as one standalone HTML page whose one script is the kit's, or, ``static``, with none.
 
     :param report: The report.
-    :ptype report: Report
     :param static: Write the static page: no ``<script>``, no ``<link>``, and every chart drawn as inline SVG above its
         table of values. False (the default) writes the page with the kit's script, byte for byte as before the option
         existed.
-    :ptype static: bool
     :return: The page.
-    :rtype: str
     """
     report = _levels_said(report)
     head = [block for block in report.blocks if block.section in FIRST_SCREEN]
@@ -167,11 +164,8 @@ def campaign_report_html(report: CampaignReport, *, static: bool = False) -> str
     and the glossary they link follow it, closed, as its evidence record, each failed or lost trial's record in them.
 
     :param report: The campaign's page.
-    :ptype report: CampaignReport
     :param static: Write the static page, as :func:`report_html` does: no script, no link, every chart drawn as inline SVG above its table.
-    :ptype static: bool
     :return: The page.
-    :rtype: str
     """
     if report.doc_page is not None:
         if not report.doc_trials:
@@ -811,9 +805,7 @@ def _links_in_sight(page: str) -> str:
     is. A link this cannot redraw keeps the target it was written with, and is recorded; the page always renders.
 
     :param page: The page, as the serializer laid it out.
-    :ptype page: str
     :return: The page, every link landing in sight.
-    :rtype: str
     """
     try:
         outline = _Outline(page)

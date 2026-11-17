@@ -23,7 +23,8 @@ from typing import Any, Self
 
 import pytest
 
-from threetears.evals.analysis import DisclosureBlock, EvalSummary, report_markdown
+from threetears.evals.analysis import DisclosureBlock, EvalSummary
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals import Answer, Eval, Judge, Result
 from threetears.evals.schema import RubricDim, StopReason
 from threetears.evals.quick.one_call import callable_host

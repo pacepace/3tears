@@ -3,7 +3,7 @@ and read it back.
 
 Each is the catalogue's door onto one operation of :mod:`threetears.evals.ops.blind_reads`, which holds the rules
 (who may answer, what a sheet may show, what close writes). The engine's catalogue includes them
-(:func:`~threetears.evals.actions.engine.engine_actions`).
+(:func:`~threetears.evals.actions.engine.eval_catalogue`).
 """
 
 from __future__ import annotations
@@ -219,9 +219,7 @@ def blind_read_actions(workflow: str) -> tuple[Action, ...]:
     """The blind read's seven actions, in the order help lists them.
 
     :param workflow: The help index's group they are listed under.
-    :ptype workflow: str
     :return: The actions.
-    :rtype: tuple[Action, ...]
     """
     read_id = "blind-0193a1b2c3d4"
     return (

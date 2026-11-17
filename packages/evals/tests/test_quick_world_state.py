@@ -19,7 +19,8 @@ from threetears.evals import Eval, World
 from threetears.evals.quick import as_host
 from threetears.evals.quick.world import ToolRefused
 from threetears.evals.schema import RecordedCall
-from threetears.evals.run import get_result_trace, list_results, list_runs, list_templates
+from threetears.evals.run import get_result_trace, list_results, list_runs
+from threetears.evals.run.authoring import list_templates
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.clock_support import frozen_clock
 

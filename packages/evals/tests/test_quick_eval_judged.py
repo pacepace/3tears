@@ -32,15 +32,11 @@ from threetears.evals.quick.one_call import (
     JUDGED_CALLABLE_KIND_CONTRACT,
     callable_host,
 )
-from threetears.evals.analysis import campaign_report, campaign_report_markdown, summarize_run
-from threetears.evals.run import (
-    get_result_trace,
-    get_template,
-    list_results,
-    list_runs,
-    list_templates,
-    update_template,
-)
+from threetears.evals.analysis import campaign_report, summarize_run
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.run import get_result_trace, list_results, list_runs, update_template
+from threetears.evals.run.authoring import get_template
+from threetears.evals.run.authoring import list_templates
 from packages.evals.tests.off_loop import off_loop
 from packages.evals.tests.report_support import page_violations
 from packages.evals.tests.clock_support import frozen_clock

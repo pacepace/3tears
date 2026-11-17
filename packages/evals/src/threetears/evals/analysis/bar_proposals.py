@@ -91,16 +91,11 @@ def propose_bars(
     five cases above zero, which states none (``stats.SKEWED_INTERVAL_WITHHELD`` is the reason given).
 
     :param host: The host whose measures, bars and storage this reads.
-    :ptype host: EvalHost
     :param baseline_campaign_id: The campaign that measured the incumbent configuration.
-    :ptype baseline_campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param aspect: The aspect whose incumbent is read, by label; None reads the campaign's only aspect.
-    :ptype aspect: str | None
     :return: The proposals, each flagged vacuous where nothing could fail it, and the measures nothing
         could be proposed on, with why.
-    :rtype: BaselineBarProposals
     :raises NotFoundError: No such campaign in the scope.
     :raises RefusedInput: ``aspect`` is None and the campaign has several aspects, or it names none of them.
     :raises ValidationFailedError: The campaign measured no cell, or more than one — a baseline is one

@@ -36,11 +36,8 @@ def _measure_described(reading: MeasureReading, reports: Mapping[str, Report]) -
     """A measure's description on its aspect: the bundle's catalog's, else the engine's own.
 
     :param reading: The arm's reading of the measure.
-    :ptype reading: MeasureReading
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :return: The description, or None.
-    :rtype: MetricDescriptor | None
     """
     catalog = reports[reading.aspect].bundle.measure_catalog
     return catalog.get(reading.measure) or METRIC_DESCRIPTORS.get(reading.measure)
@@ -53,13 +50,9 @@ def measure_summary(
     where the arm ran under several setups, whose cells the fold holds apart, or the cell carries no such measure.
 
     :param reading: The arm's reading of the measure.
-    :ptype reading: MeasureReading
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param surfaces: Each aspect's decision surface read so far, by its label, which this fills as it reads.
-    :ptype surfaces: dict[str, DecisionSurface]
     :return: The summary, or None.
-    :rtype: MeasureSummary | None
     """
     surface = surfaces.get(reading.aspect)
     if surface is None:
@@ -81,13 +74,9 @@ def rate_measures(
     (number rule 4).
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param surfaces: Each aspect's decision surface read so far, which this fills as it reads; None for none.
-    :ptype surfaces: dict[str, DecisionSurface] | None
     :return: The rates' keys.
-    :rtype: frozenset[str]
     """
     shares = frozenset(
         reading.measure
@@ -107,13 +96,9 @@ def counted_rates(
     of no trials (a host's share of deliveries) has no such count.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param surfaces: Each aspect's decision surface read so far, which this fills as it reads; None for none.
-    :ptype surfaces: dict[str, DecisionSurface] | None
     :return: The rates' keys.
-    :rtype: frozenset[str]
     """
     held = {} if surfaces is None else surfaces
     return frozenset(
@@ -136,11 +121,8 @@ def money_rulers(readings: CampaignReadings, reports: Mapping[str, Report]) -> d
     measure's figures read on every row.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :return: The rulers, by measure key.
-    :rtype: dict[str, MoneyRuler]
     """
     held: dict[str, list[float]] = {}
     for reading in readings.measures:
@@ -157,9 +139,7 @@ def shown_measures(readings: CampaignReadings) -> list[MeasureReading]:
     accuracy is read on the same aspect and arm, since the two are one figure under two names.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :return: The readings shown, in their order.
-    :rtype: list[MeasureReading]
     """
     accurate = {(reading.aspect, reading.arm) for reading in readings.measures if reading.measure == ACCURACY_MEASURE}
     return [

@@ -63,9 +63,7 @@ def written_arm(written: Any) -> Any:
     result cites an arm as ``arm:<id>``.
 
     :param written: The value the call gave.
-    :ptype written: Any
     :return: The arm's id, where ``written`` is a string; else ``written`` unchanged.
-    :rtype: Any
     """
     if not isinstance(written, str):
         return written

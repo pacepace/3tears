@@ -38,7 +38,6 @@ _LISTED: Final[dict[str, str]] = {
     "analysis/bundle/assemble.py::assemble_context_bundle": "builds the cells, where a split is decided; reads no count",
     "analysis/bundle/trials.py::pass_count": "the census of one arm's trials, ran and graded, no figure pooled across "
     "cells; the pass count's readers ask (verdict_line, measured_figure)",
-    "analysis/campaign_readings.py::_cost_on": "takes exactly one cell's cost error, so an arm of two cells has none",
     "analysis/costs.py::cost_source": "reads the report input's rows, which withhold a split arm's cost",
     "analysis/reads.py::_readings_of": "the read pivot, frontier, history and comparison sets fold; each asks the "
     "check, save frontier dominance and the cheapest pick, which say they pool definitions: issue draft 6",

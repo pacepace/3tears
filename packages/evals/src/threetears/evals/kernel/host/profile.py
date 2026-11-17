@@ -407,9 +407,7 @@ class HostProfile:
         a refusal reads the same whether the host declared the kind's models or not.
 
         :param kind: A kind's name, as a template's ``candidate_kind`` spells it.
-        :ptype kind: str
         :return: The declared contract, or an empty one.
-        :rtype: KindContract
         """
         return next((contract for contract in self.kinds if contract.kind == kind), None) or KindContract(kind)
 
@@ -417,9 +415,7 @@ class HostProfile:
         """Why ``model`` may not write an analysis for this host, or ``None`` when it may.
 
         :param model: The writer model id, as requested or as the host's client resolved its default.
-        :ptype model: str
         :return: The refusal, naming the allowed models; ``None`` when the host declares no list or lists ``model``.
-        :rtype: str | None
         """
         if not self.analysis_writer_models or model in self.analysis_writer_models:
             return None
@@ -437,10 +433,8 @@ class HostProfile:
         :func:`~threetears.evals.kernel.identity.derive_variant_identity`.
 
         :param run: The run, of any kind.
-        :ptype run: EvalRun
         :return: Lever name -> level. A run of a kind other than a contract's sits at that contract's
             "not a run of this kind" level on each of its levers.
-        :rtype: dict[str, SweepableValue]
         """
         levels = {
             CANDIDATE_MODEL_LEVER: SweepableValue.of(run.candidate_model, display=run.candidate_model),
@@ -770,11 +764,8 @@ class HostProfile:
         judged and code-only templates alike, and a per-kind answer is false for one of them.
 
         :param run: The run.
-        :ptype run: EvalRun
         :param dimension: The declared apparatus input name.
-        :ptype dimension: str
         :return: Whether the run's rig had that seat.
-        :rtype: bool
         :raises ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
         self._require_apparatus("seats", dimension)
@@ -786,11 +777,8 @@ class HostProfile:
         """Whether ``kind``'s contract seats ``dimension`` — the declaration alone, before any run narrows it.
 
         :param kind: A kind's name, as a template's ``candidate_kind`` spells it.
-        :ptype kind: str
         :param dimension: The declared apparatus input name.
-        :ptype dimension: str
         :return: True when the kind's contract seats it, or declares no seats and so holds the kind to every dimension.
-        :rtype: bool
         """
         seated = self._seated(kind)
         return seated is None or dimension in seated
@@ -804,13 +792,9 @@ class HostProfile:
         have the seat and recorded nothing in it.
 
         :param run: The run.
-        :ptype run: EvalRun
         :param dimension: The declared apparatus input name.
-        :ptype dimension: str
         :param value: What the run's reader returned for it.
-        :ptype value: Any
         :return: ``value``, or :data:`UNSEATED_LEVEL`.
-        :rtype: Any
         :raises ValueError: ``dimension`` is not an apparatus dimension this host declares.
         """
         self._require_apparatus("apparatus_level", dimension)
@@ -839,14 +823,11 @@ class HostProfile:
           unjudged run) contradicts no declaration, so it is reported without the warning.
 
         :param dimension: The declared apparatus input name.
-        :ptype dimension: str
         :param observed: ``(run, value)`` for every run under consideration. Pass them all: one run that
             seats the dimension keeps it, and one run recording a level refutes the claim, so a
             caller that passes only the first would omit on the strength of the run that agreed.
-        :ptype observed: Iterable[tuple[EvalRun, Any]]
         :return: True when no kind present seats the dimension and nothing contradicts it, which is
             when a surface should behave as though the host never had it.
-        :rtype: bool
         :raises ValueError: No runs were passed. Answering without them is the unvalidated omission this
             method replaces, and it is available to a caller that simply forgets the argument — so
             it is refused rather than defaulted. Or ``dimension`` is not an apparatus dimension
@@ -929,12 +910,10 @@ class HostProfile:
         member while advertising a list that held neither.
 
         :param dimension: The input a campaign wants to sweep.
-        :ptype dimension: str
         :return: ``covered`` when the host's registry admits the name as an axis; ``uncovered``
             carrying the registry's reason otherwise. The registry cannot drift from itself
             because it is the same set of declarations the engine reads to bisect and to build
             variant keys.
-        :rtype: Coverage
         """
         refusal = self.sweepables.refuse_as_axis(dimension)
         return Coverage("covered") if refusal is None else Coverage("uncovered", refusal)
@@ -950,14 +929,12 @@ class HostProfile:
         dimension needs somebody to declare it, a witnessed one needs the scenario rewritten.
 
         :param dimension: The state dimension a scenario presumes.
-        :ptype dimension: str
         :return: ``inapplicable`` when this host instantiates no world at all — a different answer
             from ``uncovered``, and the one a consumer evaluating production traffic deserves;
             ``covered`` when a run can seed the dimension; ``uncovered`` naming the dimension
             otherwise. The reason names the **dimension**, never the area: "this area is
             unevaluable" is a conclusion this map is not entitled to draw, and an author told so
             would abandon a probe that another mechanism could have answered.
-        :rtype: Coverage
         """
         if self.world is None:
             return Coverage("inapplicable", "this host instantiates no simulated world")
@@ -988,14 +965,12 @@ class HostProfile:
         so no cell's end state ever holds it and a check over it can never be established.
 
         :param path: A dotted path into the world, with the language's own root already stripped.
-        :ptype path: str
         :return: ``covered`` when a declared dimension covers the path and declares a ``read`` handle;
             ``uncovered`` naming the path otherwise — including on a host that instantiates no world
             at all, and for a dimension nothing reads back. The goal language
             roots ``state`` at declared dimensions only, so on such a host a state path names
             nothing a run could ever read, and a check over it is a typo or a check written for
             another host, not an inapplicable question.
-        :rtype: Coverage
         """
         if self.world is None:
             return Coverage(
@@ -1029,14 +1004,12 @@ class HostProfile:
         registered.
 
         :param path: A dotted path into the world, with the language's own root already stripped.
-        :ptype path: str
         :return: ``inapplicable`` when this host instantiates no world at all — a scenario on such a
             host presumes nothing this map can speak for; ``covered`` when a run can seed the
             dimension the path addresses; ``uncovered`` naming the path and the remedy otherwise.
             The two ``uncovered`` reasons differ because the remedies do, exactly as
             :meth:`representable`'s do: an unknown path needs the dimension declared or the
             expression corrected, a witnessed one needs the scenario rewritten.
-        :rtype: Coverage
         """
         if self.world is None:
             return Coverage("inapplicable", "this host instantiates no simulated world")

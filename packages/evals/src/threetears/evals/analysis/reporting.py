@@ -172,20 +172,13 @@ PROJECTED_METRICS = frozenset(
 # of one of these is the statistic the
 # registry describes only while the coordinate is pinned by an axis or filter; unpinned, it pools every value
 # of it. Read by the pivot's scope check and POOLED caveat, the pivot's unknown-metric hint, the history
-# refusal, and — through SCOPED_METRICS_HELP — the REST and MCP pivot and export help, so a metric added here is qualified on each of them at once,
+# refusal, so a metric added here is qualified on each of them at once,
 # and a per-row metric NOT added here pools silently, which is the defect this table exists to make
 # impossible to write without deciding.
 SCOPED_METRICS: dict[str, tuple[str, str, str]] = {
     METRIC_SCORE: ("rubric_dim", "judged rubric dimension", "dimension"),
     METRIC_GOAL_STATE: ("goal_check", "goal-state check", "check"),
 }
-
-#: How each scoped metric must be read, in one sentence per metric, for every surface's help text (REST and MCP
-#: alike) — rendered from the table rather than written beside it, so no surface can describe a subset.
-SCOPED_METRICS_HELP = " ".join(
-    f"'{metric}' has one row per {noun}: put '{field}' on an axis, or each cell pools every {noun}."
-    for metric, (field, noun, _row) in SCOPED_METRICS.items()
-)
 
 
 #: The token a served-model coordinate (:attr:`ScoreRecord.served_model`) carries for candidate calls whose
@@ -204,12 +197,9 @@ def served_model_state(served_models: Collection[str], n_unrecorded: int) -> Ser
     """The one rule every served-model reading's state follows (#684).
 
     :param served_models: The distinct models the responses named.
-    :ptype served_models: Collection[str]
     :param n_unrecorded: The results with at least one candidate call whose response named none.
-    :ptype n_unrecorded: int
     :return: ``pooled`` where two or more models were named, ``one`` where exactly one was and every call named it,
         ``unrecorded`` otherwise: whether one model answered cannot be established, and unknown is never one.
-    :rtype: ServedModelState
     """
     if len(served_models) > 1:
         return "pooled"
@@ -242,15 +232,12 @@ def served_reading(result: ResultView) -> ResultServedReading | None:
     the pointer rather than the model behind it.
 
     :param result: The result.
-    :ptype result: ResultView
     A row holding only unanswered calls (:attr:`~threetears.evals.schema.models.RoleUsage.answers_nothing`) is
     read as no answer: no model served it, so it names none and is never a call whose served model went unrecorded.
 
     :param result: The result.
-    :ptype result: ResultView
     :return: The reading, or ``None`` when the candidate left no usage row of an answered call: nothing answered, and
         no claim is made about it.
-    :rtype: ResultServedReading | None
     """
     rows = [row for row in result.usage if row.role == "candidate" and (row.served_model or not row.answers_nothing)]
     if not rows:
@@ -266,10 +253,8 @@ def served_model_coordinate(reading: ResultServedReading | None) -> str | None:
     """One result's served models as the coordinate a pivot groups on and an export carries.
 
     :param reading: The result's reading, from :func:`served_reading`.
-    :ptype reading: ResultServedReading | None
     :return: The named models, sorted and joined with `` + ``, with :data:`SERVED_MODEL_UNRECORDED` among them where
         some call named none (alone where none did). ``None`` where the candidate made no call.
-    :rtype: str | None
     """
     if reading is None:
         return None
@@ -280,13 +265,11 @@ def served_level(reading: ResultServedReading) -> str | None:
     """One result's answering model as the level a campaign's cell is split on, or ``None`` where it cannot say.
 
     :param reading: The result's reading, from :func:`served_reading`.
-    :ptype reading: ResultServedReading
     :return: The named models, sorted and joined with `` + `` (a result answered by two is itself a mixture, and a
         level of its own). ``None`` where some candidate call's response named no model: a silence beside a name
         is still a silence, so the result is not placed with those the name alone describes. Where the run's host
         stated the model that answered those calls (``attested``), that model stands for them: a statement is what
         pooling reads a silence through, and every surface says it was stated.
-    :rtype: str | None
     """
     served, silent = pooled_as(reading)
     if silent or not served:
@@ -298,10 +281,8 @@ def attested_served_models(runs: Iterable[EvalRun]) -> dict[str, str]:
     """The model a run's host stated as having answered the candidate calls that named none, by the result it covers.
 
     :param runs: The runs.
-    :ptype runs: Iterable[EvalRun]
     :return: Result id -> the stated model, for each result a run's statement covers
         (``EvalRun.served_model_attestation.result_ids``); a result written after the statement is not here.
-    :rtype: dict[str, str]
     """
     return {
         result_id: stated.served_model
@@ -319,9 +300,7 @@ def pooled_as(reading: ResultServedReading) -> tuple[frozenset[str], bool]:
     cells (:func:`served_level`) and pass^k read it alike.
 
     :param reading: The result's reading, from :func:`served_reading` (through :func:`through_attestation`).
-    :ptype reading: ResultServedReading
     :return: ``(models, silent)``.
-    :rtype: tuple[frozenset[str], bool]
     """
     if reading.unrecorded and reading.attested:
         return reading.served | {reading.attested}, False
@@ -332,12 +311,9 @@ def through_attestation(reading: ResultServedReading, attested: str | None) -> R
     """One result's reading with its host's statement beside it, where the reading has a silence to read through.
 
     :param reading: The result's reading, from :func:`served_reading`.
-    :ptype reading: ResultServedReading
     :param attested: The model the result's run was stated to have been answered by, or ``None``.
-    :ptype attested: str | None
     :return: The reading, carrying ``attested`` where some call named no model; unchanged where every call named one
         (a statement never stands beside a response's word) or nothing was stated.
-    :rtype: ResultServedReading
     """
     return reading._replace(attested=attested) if reading.unrecorded and attested else reading
 
@@ -399,7 +375,6 @@ class ServedModelReading(EvalBaseModel):
         """The state is the one the served models and the unrecorded count imply, never a second opinion.
 
         :return: The validated reading.
-        :rtype: ServedModelReading
         :raises ValueError: ``state`` disagrees with ``served_models`` and ``n_unrecorded``.
         """
         expected = served_model_state(self.served_models, self.n_unrecorded)
@@ -413,7 +388,6 @@ class ServedModelReading(EvalBaseModel):
         """The reading in words, or ``None`` where one named model answered every call.
 
         :return: A sentence for a pooled or unrecorded reading.
-        :rtype: str | None
         """
         if self.state == "pooled":
             return (
@@ -439,9 +413,7 @@ def pool_served_readings(readings: Iterable[ResultServedReading | None]) -> Serv
     """Pool per-result readings into one, the rule every surface that groups by contestant reads.
 
     :param readings: The pooled results' readings; ``None`` (no candidate call) contributes nothing.
-    :ptype readings: Iterable[ResultServedReading | None]
     :return: The pooled reading, or ``None`` when no result's candidate left a usage row.
-    :rtype: ServedModelReading | None
     """
     own = [reading for reading in readings if reading is not None]
     if not own:
@@ -467,9 +439,7 @@ def pooled_served_models(results: Sequence[ResultView] | Sequence[ScoreRecord]) 
 
     :param results: The results the caller pooled, or the rows a pivot cell pooled — read through
         :attr:`ScoreRecord.served_model`, once per result however many rows it put in the cell.
-    :ptype results: Sequence[ResultView] | Sequence[ScoreRecord]
     :return: The pooled reading, or ``None`` when no pooled result's candidate made a call.
-    :rtype: ServedModelReading | None
     """
     readings: dict[str, ResultServedReading | None] = {}
     for result in results:
@@ -539,7 +509,6 @@ class UnconfirmedModelIdentity(EvalBaseModel):
         """The unconfirmed count is part of the total, never more.
 
         :return: The validated reading.
-        :rtype: UnconfirmedModelIdentity
         :raises ValueError: ``n_unrecorded`` exceeds ``n_total``.
         """
         if self.n_unrecorded > self.n_total:
@@ -550,7 +519,6 @@ class UnconfirmedModelIdentity(EvalBaseModel):
         """The role's half of :func:`model_identity_disclosure`.
 
         :return: One clause: who asked for what, and how many of its results or scores no response named a model for.
-        :rtype: str
         """
         asked = f" (asked for {', '.join(self.requested)})" if self.requested else ""
         named = f" (the responses that named one named {', '.join(self.served_models)})" if self.served_models else ""
@@ -571,17 +539,13 @@ def unconfirmed_model_identities(
     """Each role whose calls some response named no model for, over the results given (#2025).
 
     The candidate is read off its usage rows (:func:`served_reading`, the rule every served-model reading uses), so a
-    result whose candidate made no call says nothing. The judge is read off every stored score
-    (:func:`~threetears.evals.kernel.host.sweepables.served_models_by_score`), and what a score asked for off its
+    result whose candidate made no call says nothing. The judge is read off every stored score, and what a score asked for off its
     run's recorded attribution (:func:`dim_judge_model`), never the run's pin, which a per-dimension config overrides.
 
     :param runs: The runs the results belong to; a result whose run is absent names no requested judge.
-    :ptype runs: Iterable[EvalRun]
     :param results: The results.
-    :ptype results: Iterable[ResultView]
     :return: The candidate's reading then the judge's, each only where some call or score is unconfirmed; empty when
         every response named its model, or nothing was called.
-    :rtype: list[UnconfirmedModelIdentity]
     """
     tally = ModelIdentityTally(runs)
     for result in results:
@@ -597,7 +561,6 @@ class ModelIdentityTally:
         """Start a tally over results of ``runs``.
 
         :param runs: The runs the results belong to; a result whose run is absent names no requested judge.
-        :ptype runs: Iterable[EvalRun]
         """
         self._by_id = {run.id: run for run in runs}
         self._candidate_total = self._candidate_unrecorded = 0
@@ -611,7 +574,6 @@ class ModelIdentityTally:
         """Read one result's candidate calls and judge scores.
 
         :param result: The result.
-        :ptype result: ResultView
         """
         if (reading := served_reading(result)) is not None:
             self._candidate_total += 1
@@ -634,7 +596,6 @@ class ModelIdentityTally:
         """Each role some response named no model for, over every result read so far.
 
         :return: As :func:`unconfirmed_model_identities` returns it.
-        :rtype: list[UnconfirmedModelIdentity]
         """
         readings: list[UnconfirmedModelIdentity] = []
         if self._candidate_unrecorded:
@@ -667,9 +628,7 @@ def served_attestation_disclosure(runs: Iterable[EvalRun]) -> str | None:
     in for them is the host's statement.
 
     :param runs: The runs.
-    :ptype runs: Iterable[EvalRun]
     :return: The sentence, naming each stated model and how many runs it was stated of, or ``None``.
-    :rtype: str | None
     """
     stated: dict[str, int] = {}
     for run in runs:
@@ -691,9 +650,7 @@ def model_identity_disclosure(identities: Sequence[UnconfirmedModelIdentity]) ->
     analysis bundle and the campaign report, so no surface words it its own way.
 
     :param identities: The unconfirmed roles, from :func:`unconfirmed_model_identities`.
-    :ptype identities: Sequence[UnconfirmedModelIdentity]
     :return: The disclosure, or ``None`` when every call's response named the model that answered it.
-    :rtype: str | None
     """
     if not identities:
         return None
@@ -778,7 +735,6 @@ class RequestSettingsReading(EvalBaseModel):
         """No count exceeds the units read.
 
         :return: The validated reading.
-        :rtype: RequestSettingsReading
         :raises ValueError: A count exceeds ``n_total``.
         """
         for name in ("n_unverified", "n_not_as_asked", "n_unenforced"):
@@ -799,7 +755,6 @@ class RequestSettingsReading(EvalBaseModel):
         """The derived "sent" value in words: the one value, the mixture with its counts, or unverified.
 
         :return: ``{...}`` for one value; ``mixed: 3 score(s) with {...}, 1 with {...}``; or ``unverified (...)``.
-        :rtype: str
         """
         unit = _ROLE_UNIT[self.role]
         if self.state == "unverified":
@@ -813,7 +768,6 @@ class RequestSettingsReading(EvalBaseModel):
 
         :return: In order: the role sent more than one way, or other than asked; some of its calls are unverified; some
             were sent without enforcement.
-        :rtype: list[str]
         """
         name = _ROLE_NAME[self.role]
         unit = _ROLE_UNIT[self.role]
@@ -905,12 +859,9 @@ def request_settings_readings(runs: Iterable[EvalRun], results: Iterable[ResultV
     run's ``simulator_asked_settings``. The candidate is never read (:data:`RequestSettingsRole`).
 
     :param runs: The runs the results belong to; a result whose run is absent counts as asking nothing recorded.
-    :ptype runs: Iterable[EvalRun]
     :param results: The results.
-    :ptype results: Iterable[ResultView]
     :return: The judge's reading then the simulated user's, each only where the role made a call; empty when neither
         did.
-    :rtype: list[RequestSettingsReading]
     """
     tally = RequestSettingsTally(runs)
     for result in results:
@@ -926,7 +877,6 @@ class RequestSettingsTally:
         """Start a tally over results of ``runs``.
 
         :param runs: The runs the results belong to; a result whose run is absent counts as asking nothing recorded.
-        :ptype runs: Iterable[EvalRun]
         """
         self._by_id = {run.id: run for run in runs}
         self._judge, self._simulator = _Tally(), _Tally()
@@ -935,7 +885,6 @@ class RequestSettingsTally:
         """Read one result's judge scores and simulator calls.
 
         :param result: The result.
-        :ptype result: ResultView
         """
         run = self._by_id.get(result.eval_run_id)
         axes = (score for score in (result.transcript_score, result.outcome_score) if score is not None)
@@ -964,7 +913,6 @@ class RequestSettingsTally:
         """The judge's reading then the simulated user's, over every result read so far.
 
         :return: As :func:`request_settings_readings` returns it.
-        :rtype: list[RequestSettingsReading]
         """
         readings = (self._judge.reading("judge"), self._simulator.reading("simulator"))
         return [reading for reading in readings if reading is not None]
@@ -980,9 +928,7 @@ def request_settings_disclosure(readings: Sequence[RequestSettingsReading]) -> s
     :func:`model_identity_disclosure`, so no surface words it its own way. Never about the candidate.
 
     :param readings: The roles' readings, from :func:`request_settings_readings`.
-    :ptype readings: Sequence[RequestSettingsReading]
     :return: The disclosure, or ``None`` when every call of both roles reported being sent, enforced, exactly as asked.
-    :rtype: str | None
     """
     clauses = [clause for reading in readings for clause in reading.clauses()]
     if not clauses:
@@ -1184,7 +1130,6 @@ class ScoreRecord(EvalBaseModel):
         how a pooled number with no basis stays constructible while a docstring says it cannot be.
 
         :return: The validated record.
-        :rtype: ScoreRecord
 
 
         **Three states, and the empty list is one of them.** ``None`` is "nobody recorded a
@@ -1263,7 +1208,6 @@ class ScoreRecord(EvalBaseModel):
         """A cost composition qualifies a cost and nothing else.
 
         :return: The validated record.
-        :rtype: ScoreRecord
         :raises ValueError: A non-cost row carries a cost composition.
         """
         if self.metric != METRIC_COST_USD and self.cost_roles is not None:
@@ -1313,7 +1257,6 @@ class ScoreRecord(EvalBaseModel):
         detect that, because each individual value would be right.
 
         :return: The validated record.
-        :rtype: ScoreRecord
         :raises ValueError: A non-composite row carries a host grade.
         """
         if self.metric != METRIC_COMPOSITE and self.host_measures:
@@ -1376,7 +1319,6 @@ class ProjectionExclusions(EvalBaseModel):
             deliberately-filtered classes: the count exists to answer "is this
             scope empty, or did I just not ask for what is in it", and every
             cause makes an empty table non-empty underneath.
-        :rtype: int
         """
         return self.results_without_run + self.results_outside_queried_runs + self.results_from_archived_runs
 
@@ -1424,14 +1366,11 @@ def _subject_id_of(run: EvalRun, result: ResultView | None = None) -> str:
     order is defined in one place instead of at each call site.
 
     :param run: The run supplying the snapshot fallback.
-    :ptype run: EvalRun
     :param result: The result whose attribution is preferred, when available.
-    :ptype result: ResultView | None
     :return: The subject key, never blank. ``SubjectSnapshot`` refuses a blank one, so the fallback
         below always answers — which is what retired the whole family of "excluded: no captured
         identity" counters this function used to feed. A blank subject was never a group of its
         own; it is now not a state.
-    :rtype: str
     """
     attributed = (result.subject_id or "").strip() if result is not None else ""
     if attributed:
@@ -1479,19 +1418,15 @@ def place_results[R: ResultView](
     filtering (a subject restriction, a metric selection) over the placed rows.
 
     :param runs: The runs supplying cell coordinates. Order is irrelevant.
-    :ptype runs: list[EvalRun]
     :param results: The observations to place. Output preserves this order.
-    :ptype results: Sequence[R]
     :param known_run_ids: Every run id that exists in the corpus, including ones a
         caller's own filter kept out of ``runs``. A result whose run is in
         this set but not in ``runs`` was excluded *on request* and is counted
         ``results_outside_queried_runs``; one whose run is in neither is
         genuinely unplaceable and counted ``results_without_run``. ``None``
         asserts ``runs`` is the whole corpus.
-    :ptype known_run_ids: set[str] | None
     :param source: The calling function's name, used only in the skip log line so a
         reader can tell which surface dropped rows.
-    :ptype source: str
     :param archived_run_ids: The corpus run ids the operator has archived. A result
         whose run is in this set is counted ``results_from_archived_runs``
         instead of ``results_outside_queried_runs`` — the two narrowings have
@@ -1502,10 +1437,8 @@ def place_results[R: ResultView](
         that did not make them. Required with no default, here and on the
         three surfaces that forward it, so a caller that never thought about
         archival fails with ``TypeError`` instead of blaming ``status``.
-    :ptype archived_run_ids: set[str] | None
     :return: The placed results in input order — each carrying a non-blank
         ``subject_id`` — plus the exclusion accounting.
-    :rtype: tuple[list[PlacedResult[R]], ProjectionExclusions]
     """
     runs_by_id = {run.id: run for run in runs}
 
@@ -1576,9 +1509,7 @@ def lever_level(value: Any) -> str:
     caller skips it before reaching here — so the null is a level the operator set.
 
     :param value: The resolved value, JSON-safe by the host's contract.
-    :ptype value: Any
     :return: The level.
-    :rtype: str
     """
     if value is None:
         return NULL_LEVEL
@@ -1603,11 +1534,8 @@ def _run_factors(
     again per row would pay for it k × cases times for one answer.
 
     :param placed: The ``(run, result, subject_id)`` triples being projected.
-    :ptype placed: Sequence[tuple[EvalRun, ResultView, str]]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: Run id -> its coordinate map.
-    :rtype: dict[str, dict[str, str]]
     """
     results_by_run: dict[str, list[ResultView]] = {}
     runs: dict[str, EvalRun] = {}
@@ -1649,17 +1577,14 @@ def dim_judge_model(run: EvalRun, rubric_dim: str | None) -> str | None:
     than restating the eligibility rule.
 
     :param run: The run that produced the observation.
-    :ptype run: EvalRun
     :param rubric_dim: The dimension being attributed, or ``None`` for a
         whole-result measure that spans every dim and has none.
-    :ptype rubric_dim: str | None
     :return: The model that scored ``rubric_dim``, or ``None`` when there is no single
         dimension to attribute, when the run recorded no attribution (or only a
         reconstruction), or when its recorded attribution has no entry for this
         dim — a dim the run never committed to a judge for is one nobody can
         name, and falling back to the run pin here is the exact
         misattribution this coordinate exists to end.
-    :rtype: str | None
     """
     if rubric_dim is None:
         return None
@@ -1692,9 +1617,7 @@ def project_score_records(
     simply cannot be grouped.
 
     :param runs: The runs supplying cell coordinates. Order is irrelevant.
-    :ptype runs: list[EvalRun]
     :param results: The observations to project.
-    :ptype results: Sequence[ResultView]
     :param known_run_ids: Every run id that exists in the corpus, including ones a
         caller's own filter kept out of ``runs``. A result whose run is in
         this set but not in ``runs`` was excluded *on request* and is
@@ -1703,14 +1626,11 @@ def project_score_records(
         ``results_without_run``. ``None`` asserts that ``runs`` is the whole
         corpus — correct for an unfiltered caller, and the only case where
         every absent run really is missing.
-    :ptype known_run_ids: set[str] | None
     :param archived_run_ids: The corpus run ids the operator has archived, so an
         archival exclusion is counted as ``results_from_archived_runs``
         rather than under the caller's ``status`` filter. See
         :func:`place_results`.
-    :ptype archived_run_ids: set[str] | None
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A :class:`ScoreProjection` — the rows, plus the exclusion counts and the
         completeness disclosures of every run that contributed a row while having
         measured less than its matrix. Every
@@ -1725,7 +1645,6 @@ def project_score_records(
         the run's judge pin only when the dimension carried no judge config of
         its own — and emits a single dimensionless null row when the judge scored
         none.
-    :rtype: ScoreProjection
     """
     placed, exclusions = place_results(
         runs, results, known_run_ids, source="project_score_records", archived_run_ids=archived_run_ids
@@ -2004,9 +1923,7 @@ def pooled_composite_basis(results: Sequence[ResultView] | Sequence[ScoreRecord]
 
     :param results: The results whose composites the caller pooled, or the composite rows a pivot cell pooled
         (:attr:`ScoreRecord.dimension_basis`). A row that is not a composite row contributes nothing.
-    :ptype results: Sequence[ResultView] | Sequence[ScoreRecord]
     :return: The pooled basis, or None when nothing pooled carried a composite.
-    :rtype: CompositeBasis | None
     """
     return pool_composite_bases(
         (result.dimension_basis if result.metric == METRIC_COMPOSITE else None)
@@ -2037,9 +1954,7 @@ def pooled_cost_compositions(results: Iterable[_CostComposed]) -> list[list[str]
         pooled (:attr:`ScoreRecord.cost_roles`, which carries the result's composition
         verbatim), or the cost observations a pricer kept of them. A row carrying no composition — any row but a
         cost row — contributes none.
-    :ptype results: Iterable[_CostComposed]
     :return: The distinct compositions, sorted.
-    :rtype: list[list[str]]
     """
     return sorted(list(c) for c in {tuple(result.cost_roles) for result in results if result.cost_roles is not None})
 
@@ -2052,11 +1967,8 @@ def self_judging_models(run: EvalRun, results: Iterable[ResultView]) -> list[str
     of an arm whose answers its judge's model produced may favour that arm for that reason alone.
 
     :param run: The run.
-    :ptype run: EvalRun
     :param results: Its results.
-    :ptype results: Iterable[ResultView]
     :return: The shared models.
-    :rtype: list[str]
     """
     tally = SelfJudgingTally(run)
     for result in results:
@@ -2072,7 +1984,6 @@ class SelfJudgingTally:
         """Start a tally over ``run``'s results, from its pins and its candidate model.
 
         :param run: The run.
-        :ptype run: EvalRun
         """
         self._judges = {*(run.effective_judges or {}).values(), *([run.judge_model] if run.judge_model else [])}
         self._candidates = {run.candidate_model}
@@ -2083,7 +1994,6 @@ class SelfJudgingTally:
         a model that answered nothing.
 
         :param result: The result.
-        :ptype result: ResultView
         """
         self._judges |= {score.served_model for score in result.rubric_scores if score.served_model}
         self._candidates |= {
@@ -2098,7 +2008,6 @@ class SelfJudgingTally:
         """The models that both judged and answered, over every result read so far, sorted.
 
         :return: The shared models; empty when none did.
-        :rtype: list[str]
         """
         return sorted(self._judges & self._candidates)
 
@@ -2109,11 +2018,8 @@ def self_judging_text(models: list[str], whose: str) -> str:
     One wording for a run's summary and a campaign's report, so the warning never reads two ways.
 
     :param models: The models that both judged and answered.
-    :ptype models: list[str]
     :param whose: Whose answers they produced (``"the candidate"``, ``"arm candidate=baseline"``).
-    :ptype whose: str
     :return: One sentence.
-    :rtype: str
     """
     return (
         f"self-judging: the judge's model {', '.join(models)} also produced {whose}'s answers, and a model tends "
@@ -2157,7 +2063,6 @@ __all__ = [
     "ProjectionExclusions",
     "SCALAR_LEVEL_TYPES",
     "SCOPED_METRICS",
-    "SCOPED_METRICS_HELP",
     "ScoreProjection",
     "ScoreRecord",
     "self_judging_models",

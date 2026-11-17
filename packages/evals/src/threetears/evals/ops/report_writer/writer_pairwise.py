@@ -1226,10 +1226,8 @@ def resolution_floor(cases: int) -> float | None:
     approximation: 0.7232 at 11 cases and 0.5903 at 25. A preference with any spread across cases needs more.
 
     :param cases: The held-out cases the pass will read.
-    :ptype cases: int
     :return: The share, above 0.5 and at most 1; None when even a candidate preferred outright on every case would
         not separate at this count.
-    :rtype: float | None
     """
     move = smallest_separable_move(cases, value_range=_SHARE_RANGE)
     # The test reads the candidate's share less the control's, one minus it: a share s moves it by 2s - 1.
@@ -1241,16 +1239,12 @@ def resolution_line(cases: int, *, projected: int | None = None, fewest: int | N
     projection the last run on these same cases made, when the caller has one.
 
     :param cases: The held-out cases the pass will read.
-    :ptype cases: int
     :param projected: The held-out cases like these the last run on these cases projected would settle its primary
         (its ``cases_to_settle``); None for none.
-    :ptype projected: int | None
     :param fewest: The fewest cases the caller asks a run to read; a run under it says so in the same line (``At 7
         cases, under the 10 this eval asks for, this run can ...``), and still runs: a floor is a disclosure.
-    :ptype fewest: int | None
     :return: ``At 11 cases this run can separate only a preference of 73% or more, held on every case; the last run
         on these cases projected 43 to settle.``
-    :rtype: str
     """
     floor = resolution_floor(cases)
     forms = PageForms.off_page()
@@ -1299,35 +1293,23 @@ async def _writer_pairwise_work(
     work asks each pair in both orders and returns the :class:`WriterPairwiseReport`.
 
     :param host: The host: the campaign's store, the judge clients, and how a judge call that raised reads.
-    :ptype host: EvalHost
     :param campaign_id: The writer campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param candidate: The candidate arm, by its label or its variant key; never the control.
-    :ptype candidate: str
     :param model_family: The host's reading of a model's family, which holds the judge to another than each writer's.
-    :ptype model_family: ModelFamily
     :param out_of_run_cap_usd: The most the pass's calls may be priced at together; ``None`` when the host enforces no
         out-of-run cap.
-    :ptype out_of_run_cap_usd: float | None
     :param stopping_rule: The rule declared before the first look (:class:`StoppingRule`); ``None`` reads every case,
         the fixed-n reading over them.
-    :ptype stopping_rule: StoppingRule | None
     :param judged: The last pass's report over this campaign's earlier batches: its answers on the same two results
         are kept and not asked again, and its spend comes off ``out_of_run_cap_usd``; ``None`` asks every pair.
-    :ptype judged: WriterPairwiseReport | None
     :param past_the_stop: Read every planned case past the first separation (the module docstring).
-    :ptype past_the_stop: bool
     :param launched: The cases launched so far, for a run launched in batches: a planned case not launched yet is not
         said as not found, and a launched one is; ``None`` when every case launched at once.
-    :ptype launched: Collection[str] | None
     :param out_of_budget: Why the run stopped launching at its spend cap, in one sentence, which the record carries;
         ``None`` when it did not.
-    :ptype out_of_budget: str | None
     :return: The admitted work; its record is an :class:`~threetears.evals.run.EvalActionJob` under
         :data:`WRITER_PAIRWISE_ACTION`.
-    :rtype: JobWork[EvalActionJob]
     :raises NotFoundError: No campaign with that id, or a run, case or template it names is not stored.
     :raises ValidationFailedError: The arms were not scored by one judge on one rubric; the campaign has no control;
         the candidate is none of its arms or is the control; an arm sits under more than one rig or ran a case and
@@ -1397,29 +1379,19 @@ async def writer_pairwise(
     is not known until it does.
 
     :param host: The host: its store, its judge clients, its out-of-run cap and its reading of a model's family.
-    :ptype host: OpsHost
     :param campaign_id: The writer campaign.
-    :ptype campaign_id: str
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param candidate: The candidate arm, by its label or its variant key.
-    :ptype candidate: str
     :param stopping_rule: The rule declared before the first look, which the report records; ``None`` reads every
         case. A rule declared after the arms' first result is read as it stands and disclosed, never refused.
-    :ptype stopping_rule: StoppingRule | None
     :param judged: The last pass's report over this campaign's earlier batches, whose answers on the same two results
         stand and whose spend comes off the cap; ``None`` asks every pair.
-    :ptype judged: WriterPairwiseReport | None
     :param past_the_stop: Read every planned case past the first separation, for a run gone on to its last case.
-    :ptype past_the_stop: bool
     :param launched: The cases launched so far, for a run launched in batches; ``None`` when every case launched at
         once.
-    :ptype launched: Collection[str] | None
     :param out_of_budget: Why the run stopped launching at its spend cap, which the record carries; ``None`` when not.
-    :ptype out_of_budget: str | None
     :return: The pass's one job (``action:<id>``); polled once it completes, its result is the
         :class:`WriterPairwiseReport`.
-    :rtype: JobsStarted
     :raises NotFoundError: No campaign with that id, or a run, case or template it names is not stored.
     :raises ValidationFailedError: The arms were not scored by one judge on one rubric; the campaign has no control;
         the candidate is none of its arms or is the control; an arm sits under more than one rig or ran a case and

@@ -35,7 +35,7 @@ from typing import Any, Final
 
 import pytest
 
-from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.analysis import stats
 from threetears.evals.analysis.bundle.evidence import (
     EvidenceManifest,

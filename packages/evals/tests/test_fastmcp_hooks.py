@@ -60,7 +60,6 @@ from threetears.evals.transports import fastmcp as fastmcp_transport
 from threetears.evals.transports.fastmcp import (
     CallAnnotator,
     CallHook,
-    DEFAULT_CALL_TIMEOUT_S,
     CallTimedOut,
     HostResolution,
     ToolBinding,
@@ -74,6 +73,10 @@ from packages.evals.tests.off_loop import off_loop
 _SPAN: ContextVar[str | None] = ContextVar("_SPAN", default=None)
 
 _LOGGER = "threetears.evals.transports.fastmcp"
+
+
+#: How long a mounted call may take, in seconds, where the host mounts no timeout of its own.
+_DEFAULT_CALL_TIMEOUT_S = 60.0
 
 
 class _Note(EvalBaseModel):
@@ -312,7 +315,7 @@ async def test_the_hook_sees_the_call_and_its_outcome_and_wraps_the_action() -> 
     assert result is not None and result["span"] == "span:note_take", "the hook's context is current in the action"
     (ok_call, ok), (no_call, no), (bad_call, bad) = seen
     assert ok_call == ToolCall(
-        tool="host", action="note_take", caller=CALLER, host=host, timeout_s=DEFAULT_CALL_TIMEOUT_S
+        tool="host", action="note_take", caller=CALLER, host=host, timeout_s=_DEFAULT_CALL_TIMEOUT_S
     )
     assert (ok.structured, ok.refusal, ok.action) == (result, None, "note_take")
     assert no_call.action == "note_take" and no.refusal == Refusal(kind="conflict", status=409)
@@ -705,7 +708,7 @@ async def test_the_tool_call_carries_the_timeout_this_call_read() -> None:
     for _ in range(2):
         await _call(server, {"action": "note_take", "note": "ok"})
     _, _, _ = await _call(off_loop(_served, _Host(), around=around), {"action": "note_take", "note": "ok"})
-    assert seen == [30.0, 30.0, 12.5, 12.5, DEFAULT_CALL_TIMEOUT_S], "the value each call read, to both hooks"
+    assert seen == [30.0, 30.0, 12.5, 12.5, _DEFAULT_CALL_TIMEOUT_S], "the value each call read, to both hooks"
 
 
 async def test_a_call_timed_out_reports_the_timeout_that_call_read() -> None:
@@ -751,7 +754,7 @@ async def test_a_note_is_a_block_after_the_outcome_s_and_changes_nothing_else() 
         assert blocks[1:] == ([] if note == "ok" else ["the pricing catalogue is stale, so every model is unpriced"])
     assert [(call.action, outcome.is_error) for call, outcome in seen] == [("note_take", False), ("note_take", True)]
     assert seen[0][0] == ToolCall(
-        tool="host", action="note_take", caller=CALLER, host=host, timeout_s=DEFAULT_CALL_TIMEOUT_S
+        tool="host", action="note_take", caller=CALLER, host=host, timeout_s=_DEFAULT_CALL_TIMEOUT_S
     )
 
 

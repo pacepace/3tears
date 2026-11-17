@@ -103,15 +103,10 @@ def recording_path(
     the snapshot ``snapshot_id`` (:attr:`ReportWritten.snapshot_id <threetears.evals.actions.report_writing.ReportWritten>`).
 
     :param name: The eval's name.
-    :ptype name: str
     :param model: The writer's model id.
-    :ptype model: str
     :param snapshot_id: The snapshot the report is written over.
-    :ptype snapshot_id: str
     :param recording: The directory the recordings sit under, read as :func:`analyse` reads it.
-    :ptype recording: str | os.PathLike[str]
     :return: ``<recording>/shipped-<skill12>-<model>-default-r<revisions>/<name>-<snapshot12>.jsonl``.
-    :rtype: Path
     :raises ValueError: The model id or the snapshot id is no single path segment.
     """
     return _turns(name, snapshot_id, recording).path(model, None, snapshot_id)
@@ -137,18 +132,13 @@ async def analyse(
     """The report writer's report on ``result``'s campaign, its page written to :func:`analysis_page`.
 
     :param result: The run, filed as a campaign.
-    :ptype result: Filed
     :param model: The writer's model id (``claude-sonnet-5-5``), which a recording is made on.
-    :ptype model: str
     :param budget_usd: The most the report may spend, in US dollars; :data:`TURN_CAP` turns ride on it.
-    :ptype budget_usd: float
     :param recording: The directory the report's recordings sit under (the module docstring); a relative path is read
         beside the eval file being loaded, else in the working directory.
-    :ptype recording: str | os.PathLike[str]
     :return: How the writing ended, the stored document and its page. A stored document is the campaign's analysis
         from then on. With nothing stored there is no page and no analysis, and a page an earlier run wrote is
         removed, so the directory never shows a report this run did not write.
-    :rtype: ReportWritten
     :raises ValueError: A budget that is no finite amount above 0, or a model id that is no single path segment.
     :raises RecordingRefused: No recording over this campaign's snapshot, and ``ANTHROPIC_API_KEY`` is not set to make
         one.

@@ -81,12 +81,9 @@ def format_number(value: float | None, *, prefix: str = "") -> str:
     absent value stays :data:`ABSENT` with no prefix: there is no amount to carry it.
 
     :param value: The number, or ``None`` when there is none.
-    :ptype value: float | None
     :param prefix: Text written on the number itself, after any sign and inside a bound. Empty by default,
         which leaves the text exactly as it is without one.
-    :ptype prefix: str
     :return: Its text under the module's rule; :data:`ABSENT` for ``None``, NaN or an infinity.
-    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return ABSENT
@@ -122,9 +119,7 @@ def group_thousands(text: str) -> str:
 
     :param text: A number as written, optionally signed and optionally with a decimal part (``12000000``,
         ``-7560.00``). Any text that is not digits, after the sign and before a ``.``, comes back unchanged.
-    :ptype text: str
     :return: ``12,000,000`` and ``-7,560.00`` for the examples above.
-    :rtype: str
     """
     sign, body = (text[:1], text[1:]) if text[:1] in "+-" else ("", text)
     whole, point, fraction = body.partition(".")
@@ -142,9 +137,7 @@ def spell_count(count: int) -> str:
     (``2,969``, ``10,000``, ``6,224 of 6,224``), so one count reads one way on every surface.
 
     :param count: The count.
-    :ptype count: int
     :return: Its text.
-    :rtype: str
     """
     return group_thousands(str(int(count)))
 
@@ -161,9 +154,7 @@ def spell_stored_counts(sentence: str) -> str:
     a stored reason.
 
     :param sentence: The sentence as stored.
-    :ptype sentence: str
     :return: The sentence as printed.
-    :rtype: str
     """
     return _STORED_COUNT.sub(lambda count: spell_count(int(count.group())), sentence)
 
@@ -178,9 +169,7 @@ def spell_dollars(amount: float) -> str:
     for an amount no client priced) and a chart's notes read; why each spelling is chosen is said there.
 
     :param amount: Dollars, as stored.
-    :ptype amount: float
     :return: ``$0``, ``$0.50``, ``$1,234.50``, ``$0.012``, ``-$1.20``.
-    :rtype: str
     """
     return money_form([amount]).spell(amount)
 
@@ -199,9 +188,7 @@ def spell_ledger_dollars(amount: float) -> str:
     (:meth:`~threetears.evals.analysis.report.forms.PageForms.money_ledger`) and off one.
 
     :param amount: Dollars, as stored.
-    :ptype amount: float
     :return: ``$0.0012``, ``$12.5000``.
-    :rtype: str
     """
     return f"${amount:.{_LEDGER_PLACES}f}"
 
@@ -212,9 +199,7 @@ def spell_share(value: float | None) -> str:
     (:meth:`~threetears.evals.analysis.report.forms.PageForms.share`) and off one.
 
     :param value: The share; None for none.
-    :ptype value: float | None
     :return: ``37%``, ``95%``; :data:`ABSENT` for an absent or non-finite share.
-    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return ABSENT
@@ -287,9 +272,7 @@ class MoneyForm:
         count is negative where its figures end before the dollar (``-1`` for $123, written ``$120``).
 
         :param amount: Dollars, as stored.
-        :ptype amount: float
         :return: The decimals.
-        :rtype: int
         """
         if self.figures is None or amount == 0 or not math.isfinite(amount):
             return self.decimals
@@ -308,11 +291,8 @@ class MoneyForm:
         more, for this cell alone (owner ruling: "one more only where").
 
         :param amounts: The cell's amounts, in dollars as stored; ``None``, zero and non-finite ones are passed over.
-        :ptype amounts: Iterable[float | None]
         :param ends: The cell's interval, ``(low, high)``; None for none.
-        :ptype ends: tuple[float | None, float | None] | None
         :return: The decimals; the form's own where no amount is stated.
-        :rtype: int
         """
         stated = [amount for amount in amounts if amount is not None and math.isfinite(amount) and amount != 0]
         if not stated:
@@ -327,12 +307,9 @@ class MoneyForm:
         """One member of the set, in the set's form.
 
         :param amount: Dollars, as stored; ``None`` for an amount no client priced.
-        :ptype amount: float | None
         :param signed: Whether a positive amount carries its ``+`` (a change); a zero, or an amount that rounds to
             zero in the form, carries none.
-        :ptype signed: bool
         :return: ``$1.89``, ``-$0.30``, ``+$0.49``, ``$0``; :data:`UNPRICED` for ``None``.
-        :rtype: str
         """
         if amount is None:
             return UNPRICED
@@ -345,13 +322,9 @@ class MoneyForm:
         would otherwise read alike though they differ (``$0.0451`` and ``$0.0454``, never ``$0.045`` twice).
 
         :param low: The low end, in dollars as stored.
-        :ptype low: float
         :param high: The high end, in dollars as stored.
-        :ptype high: float
         :param signed: Whether a positive end carries its ``+`` (a change's interval).
-        :ptype signed: bool
         :return: The two ends' texts.
-        :rtype: tuple[str, str]
         """
         said = (self.spell(low, signed=signed), self.spell(high, signed=signed))
         if said[0] != said[1] or low == high or self.figures is None:
@@ -379,12 +352,9 @@ class MoneyForm:
         keeps cents or whole dollars, never one decimal.
 
         :param changes: The changes, in dollars as stored; ``None`` and non-finite ones are passed over.
-        :ptype changes: Iterable[float | None]
         :param widths: The widths of the intervals they are read with, in dollars as stored; none for no interval,
             which leaves the changes' own precision.
-        :ptype widths: Iterable[float | None]
         :return: The changes' form.
-        :rtype: MoneyForm
         """
         figures = self.figures or MONEY_FIGURES
         stated = [abs(change) for change in changes if change is not None and math.isfinite(change)]
@@ -411,13 +381,9 @@ def money_form(amounts: Iterable[float | None], *, rate: bool = False, reconcile
     tables all read money by this one rule, so one amount reads alike on each.
 
     :param amounts: Every amount the set holds, in dollars as stored, the ends of its intervals included.
-    :ptype amounts: Iterable[float | None]
     :param rate: Whether the set is money per something (a cost per reply, per 1,000); a total by default.
-    :ptype rate: bool
     :param reconciles: Whether a total computed from each member is printed beside it (:class:`MoneyForm`).
-    :ptype reconciles: bool
     :return: The set's form.
-    :rtype: MoneyForm
     """
     stated = [abs(amount) for amount in amounts if amount is not None and math.isfinite(amount) and amount != 0]
     return MoneyForm(
@@ -482,9 +448,7 @@ def spell_multiple(ratio: float) -> str:
     significant figures (``0.48``, ``0.048``). The unit word is the caller's.
 
     :param ratio: The multiple.
-    :ptype ratio: float
     :return: Its digits; :data:`ABSENT` for a non-finite ratio.
-    :rtype: str
     """
     if not math.isfinite(ratio):
         return ABSENT
@@ -528,11 +492,8 @@ def set_places(values: Iterable[float | None], *, figures: int = SET_FIGURES) ->
 
     :param values: The set's figures, as they are drawn; ``None``, non-finite ones and those under :data:`WRITTEN_FROM`
         (zero among them) say nothing of its precision.
-    :ptype values: Iterable[float | None]
     :param figures: The significant figures its least member reads to.
-    :ptype figures: int
     :return: The decimals, at most :data:`WRITTEN_FROM`'s six; none for a set with no figure at or above it.
-    :rtype: int
     """
     # A figure under WRITTEN_FROM reads as the bound it is under (spell_at), so it asks for no decimals: a change of
     # float residue (5.5e-17) never spells the whole column to eighteen places.
@@ -555,13 +516,9 @@ def spell_at(value: float | None, places: int, *, signed: bool = False) -> str:
     sign: ``+0.0`` would claim a direction the digits do not show.
 
     :param value: The figure, as drawn.
-    :ptype value: float | None
     :param places: The set's decimals.
-    :ptype places: int
     :param signed: Whether a positive figure carries its ``+`` (a change).
-    :ptype signed: bool
     :return: Its text.
-    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return ABSENT
@@ -580,13 +537,9 @@ def ends_places(low: float, high: float, places: int) -> int:
     ruling).
 
     :param low: The low end, as drawn.
-    :ptype low: float
     :param high: The high end, as drawn.
-    :ptype high: float
     :param places: The set's decimals.
-    :ptype places: int
     :return: The decimals.
-    :rtype: int
     """
     needed = places
     for end in (low, high):
@@ -614,11 +567,8 @@ def round_half_even(value: float, places: int) -> str:
     do not show.
 
     :param value: The value, finite.
-    :ptype value: float
     :param places: The decimals.
-    :ptype places: int
     :return: Its digits, signed where it is negative and does not round to zero.
-    :rtype: str
     """
     text = f"{value:.{max(0, places)}f}"
     return text.removeprefix("-") if float(text) == 0 else text
@@ -631,9 +581,7 @@ def spell_declared(value: float) -> str:
     :func:`format_number` or a set's places instead.
 
     :param value: The declared value, finite.
-    :ptype value: float
     :return: Its text, as ``%g`` writes it (six significant figures, an exponent for the very large or small).
-    :rtype: str
     """
     return f"{value:g}"
 
@@ -653,9 +601,7 @@ def spell_p(p: float | None) -> str:
     decimals below 0.1 (``0.003``), two from it up (``0.50``, ``1.00``).
 
     :param p: The p-value, or ``None`` when there is none.
-    :ptype p: float | None
     :return: Its text; :data:`ABSENT` for ``None``, NaN or an infinity.
-    :rtype: str
     """
     if p is None or not math.isfinite(p):
         return ABSENT
@@ -669,9 +615,7 @@ def spell_effect(value: float | None) -> str:
     ``0.08``, ``-0.19``.
 
     :param value: The effect, or ``None`` when there is none.
-    :ptype value: float | None
     :return: Its text; :data:`ABSENT` for ``None``, NaN or an infinity.
-    :rtype: str
     """
     if value is None or not math.isfinite(value):
         return ABSENT
@@ -682,11 +626,9 @@ def format_signed(value: float | None) -> str:
     """Spell a change, carrying its sign — the direction is half of what a delta says.
 
     :param value: The change, or ``None`` when there is none.
-    :ptype value: float | None
     :return: :func:`format_number`'s text with a leading ``+`` on a positive value (a positive value below
         :data:`WRITTEN_FROM` reads ``< 0.000001``, which carries its direction already); a negative one carries
         its own ``-``, and zero carries neither.
-    :rtype: str
     """
     text = format_number(value)
     positive = value is not None and math.isfinite(value) and value > 0

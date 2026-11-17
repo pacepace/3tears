@@ -19,13 +19,7 @@ and only the names in ``__all__``.
 from __future__ import annotations
 
 from threetears.evals.actions.catalogue import (
-    ACTION_NAME,
-    DEFAULT_PREFIX,
-    HELP_ACTION,
-    PERMISSION_CLASSES,
     REFUSAL_KINDS,
-    RESERVED_PARAMETERS,
-    TOOL_NAME,
     Action,
     ActionCatalogue,
     ActionHandler,
@@ -42,24 +36,17 @@ from threetears.evals.actions.catalogue import (
     RefusalKind,
     ToolHints,
     ToolSpec,
-    catalogue_primer,
     read_only_tools,
     standard_tools,
 )
-from threetears.evals.actions.analyst import analyst_actions, analyst_tools
+from threetears.evals.actions.analyst import analyst_tools
 from threetears.evals.actions.definitions import definition_drift_actions
-from threetears.evals.actions.engine import engine_actions, eval_catalogue
+from threetears.evals.actions.engine import eval_catalogue
 from threetears.evals.actions.render import render_jobs_started
 from threetears.evals.actions.report_writing import launchable_report_writer_kind
 
 __all__ = [
-    "ACTION_NAME",
-    "DEFAULT_PREFIX",
-    "HELP_ACTION",
-    "PERMISSION_CLASSES",
     "REFUSAL_KINDS",
-    "RESERVED_PARAMETERS",
-    "TOOL_NAME",
     "Action",
     "ActionCatalogue",
     "ActionHandler",
@@ -76,11 +63,8 @@ __all__ = [
     "RefusalKind",
     "ToolHints",
     "ToolSpec",
-    "analyst_actions",
     "analyst_tools",
-    "catalogue_primer",
     "definition_drift_actions",
-    "engine_actions",
     "eval_catalogue",
     "launchable_report_writer_kind",
     "read_only_tools",

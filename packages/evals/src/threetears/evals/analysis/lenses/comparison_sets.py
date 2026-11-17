@@ -2,8 +2,7 @@
 
 :func:`compute_comparison_sets` groups runs by context identity and case set, and badges every group whose
 members differ in a way a reader must see (context, case set, roles, tool config, measurement windows,
-cassette mode). :func:`difference_was_declared_at_launch` is the rule beneath a lever-origin disclosure: a
-difference between arms is a swept axis only when each arm's launch declared it.
+cassette mode).
 """
 
 from __future__ import annotations
@@ -69,35 +68,7 @@ class CaseSetIdentity(EvalBaseModel):
 #:
 #: The vocabulary of origins is a host's; what the engine owns is the RULE beneath it, and the
 #: surface that renders a particular lever's sentence lives with that lever's vocabulary, in the host.
-DECLARED_INPUT_ORIGIN = "chosen"
-
-
-def difference_was_declared_at_launch(origins: Iterable[str | None]) -> bool:
-    """Whether every one of these runs got its value from its own launch declaration.
-
-    **The generic half of a lever-origin disclosure, and the part that stayed.** The rule is
-    not about any one lever: a difference between arms is a *swept axis* when each arm's launch
-    declared the value, and a *confound* when any arm inherited it from a tier the comparison
-    never named. Only the vocabulary (``chosen`` / a subject-carried tier / an inherited
-    default) is a host's; the rule is the same one a campaign's declared design will state
-    formally once it declares one, at which point this reads the declaration instead of
-    the origins. A host calls it to write, for example, the sentence about which model its
-    arms delegated background work to.
-
-    Conservative by construction: one arm that inherited its value is enough to make the
-    whole difference undeclared, because the comparison cannot claim to be sweeping an
-    axis one of its arms was never pointed at.
-
-    :param origins: One origin per compared run, as the run recorded it. ``None`` means the
-        run recorded no origin and therefore declared nothing that can be read.
-    :ptype origins: Iterable[str | None]
-    :return: ``True`` when every origin is :data:`DECLARED_INPUT_ORIGIN`. ``False`` for an
-        empty set — nothing declared anything — so a caller can never read silence as a
-        declaration.
-    :rtype: bool
-    """
-    listed = list(origins)
-    return bool(listed) and all(origin == DECLARED_INPUT_ORIGIN for origin in listed)
+_DECLARED_INPUT_ORIGIN = "chosen"
 
 
 class ComparisonSet(EvalBaseModel):
@@ -260,11 +231,8 @@ def measure_definition_disclosure(
     headline pass^k cell.
 
     :param runs: One comparison group's runs.
-    :ptype runs: Sequence[EvalRun]
     :param results_by_run: Each run's results, by run id; a run absent from it is read as holding no host measure.
-    :ptype results_by_run: Mapping[str, Sequence[ResultView]]
     :return: The reading.
-    :rtype: MeasureDefinitionReading
     """
     recorded = [run for run in runs if run.measure_definitions]
     silent = [
@@ -343,11 +311,8 @@ def _served_model_group_reading(
     results hears of nothing.
 
     :param runs: One comparison group's runs.
-    :ptype runs: Sequence[EvalRun]
     :param results_by_run: Each run's results, by run id.
-    :ptype results_by_run: Mapping[str, Sequence[ResultView]]
     :return: The reading.
-    :rtype: _ServedModelGroupReading
     """
     attested = attested_served_models(runs)
     by_requested: dict[str, dict[str, set[str]]] = {}
@@ -444,7 +409,6 @@ def compute_comparison_sets(
     :func:`project_score_records`.
 
     :param runs: Runs to group. Order is irrelevant; output is sorted for stability.
-    :ptype runs: list[EvalRun]
     :param results: The results those runs produced, in any order and from any run —
         they are indexed by ``eval_run_id`` here. **A caller that omits them
         asks a narrower question**: the measurement-window badge cannot be
@@ -452,13 +416,11 @@ def compute_comparison_sets(
         reads as sharing a clock when nothing checked. Every production caller
         supplies the scope's results; the default exists for callers whose
         question really is only about the run documents.
-    :ptype results: Sequence[ResultView]
     :param full_windows: List every measurement span rather than summarising above
         :data:`MAX_INLINE_MEASUREMENT_WINDOWS`. Off by default because this
         surface groups a whole scope — the group that most needs the
         disclosure is the one with the most runs, and so the one the listing
         form renders unreadable.
-    :ptype full_windows: bool
     :param scope_run_ids: Narrow every group to these runs before badging — the run
         ids of the set actually under analysis, typically a campaign's members
         resolved by the caller. ``None`` groups and badges every supplied run,
@@ -470,9 +432,7 @@ def compute_comparison_sets(
         not here is logged rather than refused: unlike an unknown run *status*,
         which names nothing that can exist, a member absent from the scope
         is a real and reachable state.
-    :ptype scope_run_ids: Iterable[str] | None
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: A :class:`ComparisonSetsResult` — one :class:`ComparisonSet` per
         (subject, template) group, sorted by subject then template, plus the
         count of runs excluded for having no captured subject identity, plus
@@ -483,7 +443,6 @@ def compute_comparison_sets(
         because a group with no in-scope run has nothing to say about the set the
         caller asked about — its members are still named at the result level, so
         the narrowing stays visible rather than becoming a group that vanished.
-    :rtype: ComparisonSetsResult
     """
     results_by_run: dict[str, list[ResultView]] = {}
     for result in results:
@@ -725,6 +684,4 @@ __all__ = [
     "ComparisonSet",
     "ComparisonSetsResult",
     "compute_comparison_sets",
-    "DECLARED_INPUT_ORIGIN",
-    "difference_was_declared_at_launch",
 ]

@@ -90,14 +90,10 @@ def priced_in_part(report_input: ReportInput, arm: str, aspect: str | None = Non
     does not say.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param arm: The arm, by id.
-    :ptype arm: str
     :param aspect: The aspect whose scoreboard says (:func:`~threetears.evals.analysis.report_margins.aspect_board`);
         None for the lead aspect's, the input's own.
-    :ptype aspect: str | None
     :return: The words, or None.
-    :rtype: str | None
     """
     row = aspect_board(report_input, aspect).get(arm)
     pricing = row.pricing if row is not None else None
@@ -159,13 +155,9 @@ class MoneyRuler:
         calls``, never ``1k``); a label that states no count reads as it is there, as does a total.
 
         :param label: The label as the input or the page writes it.
-        :ptype label: str
         :param noun: What the money counts, as a plural noun.
-        :ptype noun: str
         :param own: The count the money's own unit is per (1 for money per reply, 1,000 for a price per 1,000).
-        :ptype own: int
         :return: The label with the drawn count.
-        :rtype: str
         """
         if not self.counted:
             return label
@@ -193,11 +185,8 @@ class MoneyRuler:
         widest interval: :meth:`~threetears.evals.kernel.numbers.MoneyForm.for_changes`).
 
         :param changes: The changes, as stored.
-        :ptype changes: Iterable[float | None]
         :param widths: The widths of their intervals, as stored.
-        :ptype widths: Iterable[float | None]
         :return: The changes' ruler.
-        :rtype: MoneyRuler
         """
         form = self.form.for_changes(
             (change * self.scale if change is not None else None for change in changes),
@@ -229,25 +218,17 @@ def money_ruler(
     (:meth:`~threetears.evals.kernel.numbers.MoneyForm.spell_ends`).
 
     :param amounts: Every amount the set holds, as stored.
-    :ptype amounts: Iterable[float | None]
     :param per: How many of what it counts one stored amount is per: 1 for money per reply, 1,000 or 1,000,000 for a
         price per that many; 0 for a total.
-    :ptype per: int
     :param start: The least count to state it per (a chart states money per reply per 1,000 replies); ``per`` where
         unset.
-    :ptype start: int
     :param rate: Whether the set is money per something, which reads in whole dollars from $10; a total, to cents
         whatever its size. Where unset, a set that counts something (``per`` above 0) is a rate. A figure key spelled
         as a bare amount (``per`` 0) says which it is.
-    :ptype rate: bool | None
     :param reconciles: Whether a total computed from each amount is printed beside it (a cost per 1,000 beside its
         month at a declared volume), so an amount two figures round too far takes a third
         (:class:`~threetears.evals.kernel.numbers.MoneyForm`).
-    :ptype reconciles: bool
-    :param intervals: The intervals the set prints, each ``(low, high)`` as stored; none by default.
-    :ptype intervals: Iterable[tuple[float | None, float | None]]
     :return: The ruler.
-    :rtype: MoneyRuler
     """
     held = [amount for amount in amounts if amount is not None]
     counts = per > 0 if rate is None else rate
@@ -266,10 +247,8 @@ def per_one(noun: str) -> str:
     """The words a cost per one of ``noun`` is printed with: ``per reply``, ``per conversation``.
 
     :param noun: What the cost counts, as a plural noun (:func:`per_noun`); empty where the input does not say.
-    :ptype noun: str
     :return: ``per`` and the noun made singular (``replies`` to ``reply``, ``calls`` to ``call``); ``per`` and
         ``(unit not stated)`` where the noun is empty.
-    :rtype: str
     """
     if not noun:
         return f"per {_UNSTATED}"
@@ -285,10 +264,7 @@ def per_count(noun: str, count: int = 1_000) -> str:
     """The words a cost per ``count`` of ``noun`` is printed with: ``per 1,000 conversations``.
 
     :param noun: What one of the count is, as :func:`per_noun` reads it; empty where the input does not say.
-    :ptype noun: str
     :param count: How many of it the cost is per.
-    :ptype count: int
     :return: The phrase; the count with ``(unit not stated)`` where the noun is empty.
-    :rtype: str
     """
     return _PER_TEMPLATE.format(count=group_thousands(format_number(float(count))), noun=noun or _UNSTATED)

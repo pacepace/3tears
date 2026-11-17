@@ -97,21 +97,14 @@ class ResultSpend:
         writer produces such a row: every result is written by its model's dump, which writes each of them.
 
         :param eval_run_id: The row's ``eval_run_id``.
-        :ptype eval_run_id: Any
         :param cost_usd: The row's ``cost_usd``.
-        :ptype cost_usd: Any
         :param judge_rescores: The row's ``judge_rescores``, each re-judge as stored; only its ``cost_usd`` is kept. An
             absent list is an empty one, as the field's default reads it.
-        :ptype judge_rescores: Any
         :param cost_roles: The row's ``cost_roles``.
-        :ptype cost_roles: Any
         :param schema_version: The row's ``schema_version``; left unread, the version this build writes.
-        :ptype schema_version: Any
         :param schema_minor: The row's ``schema_minor``; left unread (or absent from the row), the minor this build
             writes.
-        :ptype schema_minor: Any
         :return: The figures.
-        :rtype: ResultSpend
         :raises ValidationError: The figures, or the row's version, are ones a stored result's read refuses.
         """
         space = _StoredSpend.version_space
@@ -274,17 +267,14 @@ def compute_program_budget(runs: list[EvalRun], results: Sequence[SpendView]) ->
 
     :param runs: Every run in the scope, all statuses. Order is irrelevant; the
         rows are emitted in ``created_at`` order for the cumulative series.
-    :ptype runs: list[EvalRun]
     :param results: Every result in the scope. A result's ``cost_usd`` and its
         re-judge spend are attributed to its ``eval_run_id``.
-    :ptype results: Sequence[SpendView]
     :return: A :class:`ProgramBudget` — one :class:`BudgetRun` per listed run (zero
         cost for a run with no results), the cumulative series, and the
         incomplete-spend / unattributed-spend accounting that keeps the total
         honest about what it includes. The incomplete spend is reported both
         whole and split into its in-flight and terminally-incomplete halves,
         each with the statuses it was actually made of.
-    :rtype: ProgramBudget
     """
     costs_by_run: dict[str, list[float]] = {}
     # Each run's results and re-judges whose spend went unpriced: in no dollar figure, so counted.

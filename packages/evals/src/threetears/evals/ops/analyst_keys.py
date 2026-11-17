@@ -32,22 +32,14 @@ async def figure_keys_check(
     """What each key reads on a snapshot, or why it reads nothing and what to write instead.
 
     :param host: The host whose store holds the snapshot.
-    :ptype host: OpsHost
     :param scope_id: The scope it lives in.
-    :ptype scope_id: str
     :param snapshot_id: The snapshot, as the freeze named it.
-    :ptype snapshot_id: str
     :param keys: The keys, as a report writes them.
-    :ptype keys: Sequence[str]
     :param limit: The most keys one page holds.
-    :ptype limit: int
     :param offset: The first key the page holds.
-    :ptype offset: int
     :param fits: Whether a page's text is short enough; the page is the largest within ``limit`` that passes, and
         ``None`` takes ``limit`` as it is.
-    :ptype fits: Callable[[KeysChecked], bool] | None
     :return: Each key on the page, read or refused.
-    :rtype: KeysChecked
     :raises NotFoundError: No snapshot with that id in the scope.
     :raises ValidationFailedError: The snapshot does not read; or no key is given, or too many.
     """

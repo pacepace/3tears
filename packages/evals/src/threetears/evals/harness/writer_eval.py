@@ -44,7 +44,7 @@ editor's own model. ``await WriterEval(...).run()``:
    primary reading, on the held-out side only: the dev side is where a change is tuned, so the read refuses it by
    design, and a dev run says so instead of reading it (its pass is still run and printed);
 8. returns a :class:`WriterResult`, each arm's summary read over its batches' runs as one
-   (:func:`~threetears.evals.analysis.summarize_runs`), which prints the campaign's readings and each pass's as tables and writes the
+   (:func:`~threetears.evals.analysis.summary.summarize_runs`), which prints the campaign's readings and each pass's as tables and writes the
    campaign's page, led by the answer: each candidate's promotion reading and the judge's side-by-side preference,
    with the preference drawn against even and the side-by-side tables at the head of its Scorecard.
 
@@ -147,12 +147,12 @@ from threetears.evals.analysis import (
     GateResult,
     add_runs_to_campaign,
     campaign_report,
-    campaign_report_markdown,
     create_campaign,
     gate_verdicts,
     summarize_run,
-    summarize_runs,
 )
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.summary import summarize_runs
 from threetears.evals.analysis.run_ending import stopped_short
 from threetears.evals.analysis.analyst.skill import AnalystSkill, load_skill
 from threetears.evals.analysis.report.blocks import (
@@ -654,9 +654,7 @@ class WriterResult:
         arm's whole summary and the campaign's page.
 
         :param full: Every arm's whole summary and the whole page, as Markdown, after the quiet summary.
-        :ptype full: bool
         :return: The text.
-        :rtype: str
         """
         candidates = " and ".join(arm for arm in self.arms if arm != self.control)
         cases = next(iter(self.arms.values())).n_cases
@@ -762,9 +760,7 @@ class WriterResult:
         """Write the campaign's page as one self-contained file, its Markdown, its JSON and its aspect's bundle.
 
         :param out_dir: The directory; created when missing.
-        :ptype out_dir: Path | str
         :return: Each file written, by role (``html``, ``markdown``, ``json``, ``bundle:<aspect>``).
-        :rtype: dict[str, Path]
         """
         written = self.page.write(out_dir)
         pairwise = Path(out_dir) / "pairwise.md"
@@ -793,7 +789,6 @@ class WriterResult:
         like these that would settle a reading that did not separate, and what the pass spent of its part.
 
         :return: The text, as Markdown.
-        :rtype: str
         """
         lines = [_PAIRWISE_LEAD]
         for block in _side_by_side_blocks(
@@ -829,7 +824,6 @@ class WriterResult:
         """Why :meth:`exit_code` is 4, in one line and the page's words; ``None`` when no gate failed.
 
         :return: ``lead-first's promotion gate failed on ...``, one clause per candidate whose gate failed.
-        :rtype: str | None
         """
         failed = [f"{arm}'s promotion gate {gate.why()}" for arm, gate in self.gates.items() if gate.failed]
         return "; ".join(failed) or None
@@ -873,63 +867,41 @@ class WriterEval:
 
         :param cases_dir: The directory of writer case files (``*.json.gz``); relative, it is read beside the eval file
             being loaded.
-        :ptype cases_dir: str | os.PathLike[str]
         :param arms: The arms, by name; the first is the control. At least two, no two alike in every lever (model,
             skill, effort, revisions, editor's model).
-        :ptype arms: Mapping[str, Writer]
         :param judge: The scoring judge, of another family than the writers, with its recording.
-        :ptype judge: WriterJudge
         :param recordings: The directory every arm's turn recordings sit under, read beside the eval file.
-        :ptype recordings: str | os.PathLike[str]
         :param budget_usd: Each report's dollar cap.
-        :ptype budget_usd: float
         :param max_cost_usd: The most the whole eval may spend, judge and pairwise pass included, split as the module
             docstring says. The run is refused when an arm's reports, each at ``budget_usd``, could pass its part,
             and, for a judge that prices its calls, when they and the judge's calls at their floor could, or a pass's
             calls at their floor could pass its part.
-        :ptype max_cost_usd: float
         :param held_out_fraction: The share of split groups placed on the held-out side when first minted.
-        :ptype held_out_fraction: float
         :param side: The side whose cases the arms run on; a promotion is read on ``held_out`` alone.
-        :ptype side: WriterSide
         :param name: The eval's name, its scope's unless ``scope`` says, and its campaign's.
-        :ptype name: str
         :param question: The question the campaign is filed asking; ``None`` asks whether the candidates write reports
             better than the control.
-        :ptype question: str | None
         :param k: Repeats of each case per arm: 1, the only count a recorded arm can run (the module docstring).
-        :ptype k: int
         :param pairwise_share: The part of ``max_cost_usd`` reserved for the pairwise passes, strictly between 0 and 1.
-        :ptype pairwise_share: float
         :param turns: Each report's turn cap, which bounds how long a cell can run (the module docstring's table).
-        :ptype turns: int
         :param request_s: The ceiling for one request on the writer's client, in seconds.
-        :ptype request_s: float
         :param margin: How far, in points of a 0-100 rate, a candidate may fall below the control before it is shown
             worse: the author's own, a non-inferiority question's. ``None`` declares none, and the question is a
             superiority one, a candidate's drop read against zero.
-        :ptype margin: float | None
         :param writer_provider: The provider every writer (and editor) is built on to record, whose key a recording run
             reads, and which tells a writer's family to the judge's check.
-        :ptype writer_provider: str
         :param store: Where the cases and runs are kept: ``None`` for ``.evals/evals.sqlite``, ``":memory:"``, a file
             or a document store.
-        :ptype store: DocumentStore | str | os.PathLike[str] | None
         :param scope: The scope; ``None`` is ``name``.
-        :ptype scope: str | None
         :param stop_when: The pairwise pass's stopping rule, declared as :meth:`run` starts, before any arm launches,
             over the side's cases: ``separated`` stops the judge at the first case after which the preference
             separates, either way; ``never`` reads every case.
-        :ptype stop_when: StopWhen
         :param prior: An earlier run on these cases, whose projection the resolution line carries when it ran the same
             case files; one over other cases is said and not carried.
-        :ptype prior: WriterPrior | None
         :param batch_size: Under ``separated``, the cases every arm launches at a time, in the bet's order, before the
             pass reads on (4 unless told; a host picks it from its concurrent-cell count and its admitted-runs limit, as the constant beside the class says); ``never`` launches every case at once.
-        :ptype batch_size: int
         :param fewest_cases: The fewest side cases the author asks a run to read; a side with fewer runs, and its
             resolution line says it is under them: a floor is a disclosure, never a refusal. ``None`` asks none.
-        :ptype fewest_cases: int | None
         :raises ValueError: Fewer than two arms, two arms alike in every lever, a name too long for a campaign, a
             blank question, a ``k`` other than 1, a stopping rule that is neither, or a share, budget, turn cap or
             ceiling out of its range.
@@ -999,7 +971,6 @@ class WriterEval:
         """Mint the cases, launch every arm on one side's cases, file the campaign and read the promotion.
 
         :return: The result.
-        :rtype: WriterResult
         :raises ValueError: The case files do not read; a case withholds a note an arm's skill lacks; the side holds
             no case, or its set lists a case the directory no longer holds; a recording is missing with no key to
             make it; or the reports' budgets, or they and the judge's calls at their floor, could pass an arm's part,

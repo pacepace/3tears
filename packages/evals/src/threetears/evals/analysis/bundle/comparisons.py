@@ -155,13 +155,9 @@ def _per_case_values(
     non-faulted results' scores, as :func:`_bar_reading` reads one. A text or categorical measure has none.
 
     :param members: One cell's results, faulted ones included.
-    :ptype members: list[ResultView]
     :param judged_rows: Projected judged-score rows by result id.
-    :ptype judged_rows: dict[str, list[ScoreRecord]]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: ``{(reading, name): {test_case_id: per-case value}}`` for every reading with a per-case value.
-    :rtype: dict[tuple[ReadingKind, str], dict[str, float]]
     """
     by_case: dict[str, list[ResultView]] = defaultdict(list)
     for result in members:
@@ -244,13 +240,9 @@ def planning_readings(
     ``results`` belongs to is read as no earlier run: nothing of it, its launch scales included, is planned from.
 
     :param runs: The earlier runs.
-    :ptype runs: list[EvalRun]
     :param results: Their results, each read once: in any order across runs, and in the store's order within one.
-    :ptype results: Iterable[ResultView]
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :return: One entry per reading with a value, sorted by reading kind and name.
-    :rtype: list[PlanningReading]
     :raises ValueError: A result belongs to none of ``runs``.
     """
     listed = {run.id: run for run in runs}
@@ -361,13 +353,9 @@ def _family_readings(
     on the cost axis.
 
     :param axes: The question's merit axes; empty for an unscoped question.
-    :ptype axes: list[MeritAxis]
     :param catalog: The bundle's measure catalog.
-    :ptype catalog: dict[str, MetricDescriptor]
     :param measures_judged: The bundle's judged measures.
-    :ptype measures_judged: list[JudgedMeasure]
     :return: ``{(reading, name): higher_is_better}``.
-    :rtype: dict[tuple[ComparisonReading, str], bool]
     """
     readings: dict[tuple[ComparisonReading, str], bool] = {}
     for name, descriptor in catalog.items():
@@ -421,13 +409,9 @@ def _trial_pass_counts(
     of its trials passed only because nothing could fail it.
 
     :param members: One cell's results.
-    :ptype members: list[ResultView]
     :param rubric_threshold: The 1–5 level a judged dimension must reach to pass.
-    :ptype rubric_threshold: int
     :param catalog: The bundle's measure catalog, which says which checks a trial is graded on.
-    :ptype catalog: Mapping[str, MetricDescriptor]
     :return: ``{test_case_id: (passed, usable)}`` over the cases with a usable trial.
-    :rtype: dict[str, tuple[int, int]]
     """
     by_case: dict[str, list[bool]] = defaultdict(list)
     graded = False
@@ -452,7 +436,6 @@ def _test_samples(
 
     :return: ``(control sample, contrast sample, paired)``, the two aligned by case when paired
         (:func:`~threetears.evals.analysis.stats.contrast_samples`, the rule the frontier's boundary pillar reads too).
-    :rtype: tuple[list[float], list[float], bool]
     """
     return contrast_samples(control_values, contrast_values)
 
@@ -499,39 +482,28 @@ def _compare(
     margin also runs the paired equivalence test (TOST) against it.
 
     :param reading: The reading's kind and name.
-    :ptype reading: tuple[ComparisonReading, str]
     :param higher_is_better: Which way is better on it.
-    :ptype higher_is_better: bool
     :param control: The control cell and its per-case values.
-    :ptype control: tuple[CellKey, dict[str, float]]
     :param contrast: The contrast cell and its per-case values.
-    :ptype contrast: tuple[CellKey, dict[str, float]]
     :param threshold: The measure's declared materiality threshold, which labels the delta through the one
         predicate every surface uses (:func:`~threetears.evals.kernel.metrics.materiality`) and is the
         equivalence test's margin; None for a measure that declared none and for a judged dimension.
-    :ptype threshold: float | None
     :param margin_source: Where ``threshold`` came from (:func:`_margin_of`), which the comparison records.
-    :ptype margin_source: Literal['measure', 'run'] | None
     :param value_range: The reading's declared inclusive bounds, which the equivalence test reads so its error
         rate holds on coarse values at every n (:func:`~threetears.evals.analysis.stats.paired_equivalence`),
         and which bound the interval on the delta; None where it declares none.
-    :ptype value_range: tuple[float, float] | None
     :param no_turn: Which sides (``"control"``, ``"arm"``) have no turn to read a turn's time or spend over —
         every result there failed with no turn taken — so an untested comparison says that, the reason,
         rather than that too few cases carried the reading.
-    :ptype no_turn: tuple[str, ...]
     :param contended: Which sides of a reading of elapsed time held latency read under concurrency, which the
         bundle withheld (:mod:`~threetears.evals.analysis.contention`) — so an untested comparison says that,
         rather than that too few cases carried the reading.
-    :ptype contended: tuple[str, ...]
     :param places: Each case's place in the complete prefix of the campaign's committed order
         (:func:`~threetears.evals.analysis.bundle.trials.bet_places`), on a quick-path comparison (every result of a
         kind only the quick path launches, read with no plan of looks); None otherwise. Where given, a paired reading on a declared range is read by the mixture bet over its cases in
         that order (:func:`_bet_samples`), its p, its equivalence p and its interval alike.
-    :ptype places: Mapping[str, int] | None
     :return: The comparison with its adjusted p's, interval and verdict still unset, its raw p's (None where no
         test produced one) for the family's correction, and the samples the test read, for the interval.
-    :rtype: _Tested
     """
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
@@ -727,11 +699,8 @@ def redrawn_sentence(cells: int, cut: int) -> str:
     unserved call, turned away before any answer, cannot.
 
     :param cells: The comparison's cells that recorded no answer on some row, over all its runs, each once.
-    :ptype cells: int
     :param cut: How many of them were cut while they ran.
-    :ptype cut: int
     :return: The sentence.
-    :rtype: str
     """
     counted = (
         f"{cells} cell{'s' if cells != 1 else ''} of this comparison recorded no answer (a running total over its "
@@ -757,9 +726,7 @@ def read_by_bet(family: ComparisonFamily) -> bool:
     (:func:`~threetears.evals.analysis.bundle.trials.bet_places`).
 
     :param family: The family.
-    :ptype family: ComparisonFamily
     :return: Whether the bet read it.
-    :rtype: bool
     """
     return family.disclosure.endswith(REREAD_SENTENCE)
 
@@ -864,11 +831,8 @@ def _corrected_family(
     comparison's adjusted p moves; the rule only removes separations, so the family's error stays at α.
 
     :param aspect: The aspect whose question the family serves, or None for the exploratory family.
-    :ptype aspect: str | None
     :param axes: The question's merit axes.
-    :ptype axes: list[MeritAxis]
     :param tested: The family's comparisons, tested and uncorrected.
-    :ptype tested: list[_Tested]
     **On a quick-path comparison** (``rereadable``) a comparison the mixture bet read (``bet_samples``) takes its p, its
     equivalence p and its interval from that bet, at the same ``1 − α/m``, so the interval excludes zero exactly where
     its raw p is at most ``α/m``. Holm stays the correction, and stays valid over every re-read as cases are added:
@@ -884,12 +848,9 @@ def _corrected_family(
         extends sized by the planner from the readings, only where
         :func:`~threetears.evals.analysis.significance.plan_kept` shows it (on the bounded test in the simulated
         setting, not on the t test). None reads at α.
-    :ptype looks: int | None
     :param rereadable: Whether the aspect is a quick-path comparison, read again as cases are appended, so the comparisons the mixture bet read are
         corrected as above and the disclosure says what that lets a reader do (:data:`REREAD_SENTENCE`).
-    :ptype rereadable: bool
     :return: The corrected family.
-    :rtype: ComparisonFamily
     """
     planned = looks if looks is not None and looks > 1 else None
     alpha = looks_alpha(planned)
@@ -1047,56 +1008,38 @@ def multiple_comparisons(
     at its own level, never depends on which readings the question asked about.
 
     :param aspect: The aspect's label, which keys its question's family.
-    :ptype aspect: str
     :param declared: What the campaign declared, as the aspect reads it: its question, its merit axes and its
         margin. A question asked after the first run builds its family as one asked before it.
-    :ptype declared: AspectDeclaration | None
     :param realized: The derived design, for the control arm.
-    :ptype realized: RealizedDesign
     :param results_by_cell: Each cell's results.
-    :ptype results_by_cell: dict[CellKey, list[ResultView]]
     :param records: The assembly's score projection rows, where judged scores live.
-    :ptype records: list[ScoreRecord]
     :param catalog: The bundle's measure catalog — direction and axis per measure.
-    :ptype catalog: dict[str, MetricDescriptor]
     :param measures_judged: The bundle's judged measures.
-    :ptype measures_judged: list[JudgedMeasure]
     :param observations: The campaign's mechanism observations, read for each contrast between two models.
-    :ptype observations: MechanismObservations
     :param served: Which model answered each result's candidate calls, read for every contrast.
-    :ptype served: ServedModels
     :param profile: The host whose vocabulary this reads.
-    :ptype profile: HostProfile
     :param run_margins: The margins every member run declared alike on a core rate measure (:func:`_run_margins`),
         read as that measure's margin, since its descriptor declares none.
-    :ptype run_margins: Mapping[str, float] | None
     :param contended: The cells holding latency read under concurrency, which the bundle withheld — named as the
         reason a comparison or a guardrail on elapsed time could not be read, where it could not.
-    :ptype contended: Collection[CellKey]
     :param rigs: Apparatus class id → the class of its rig alone, for each class split on the answering model
         (:func:`~threetears.evals.analysis.cells.rig_of`); a class absent here is its own rig.
-    :ptype rigs: Mapping[str, str] | None
     :param rubric_threshold: The 1–5 level a judged dimension must reach for a trial to pass, which the overall pass
         rate's per-case shares read (:func:`_trial_pass_counts`), as the scoreboard does.
-    :ptype rubric_threshold: int
     :param planned_looks: The looks the plan in force allows (:func:`aspect_looks`' ``planned``): each verdict is then
         read at α/L (:func:`~threetears.evals.analysis.significance.looks_alpha`) and a guardrail's ``held`` on the
         interval at :func:`~threetears.evals.analysis.significance.looks_confidence`. None reads every look at α.
-    :ptype planned_looks: int | None
     :param reread_order: On a quick-path comparison, each case's place in the complete prefix of its committed
         order (:func:`~threetears.evals.analysis.bundle.trials.bet_places`): every paired comparison on
         a declared range is then read by the mixture bet over its cases in that order, so it keeps its error however
         often cases are added and it is read again (:func:`_corrected_family`). None reads every comparison as before.
-    :ptype reread_order: Mapping[str, int] | None
     :param redrawn: On a quick-path comparison, how many of its cells recorded no answer and run again, and how
         many of those were cut while they ran (:func:`~threetears.evals.analysis.bundle.trials.redrawn_cells`),
         which a family the bet read says (:func:`redrawn_sentence`).
-    :ptype redrawn: tuple[int, int]
     :return: The aspect's question's family; the exploratory family over every reading when no question is
         asked; or none, with the reason, when no control resolved. Beside it, every guardrail decided for each arm
         against the control, and the floors' per-case values; with no control, each pair of arms' pass rate per case
         instead (:func:`_choice_contrasts`), what a choice reads.
-    :rtype: tuple[MultipleComparisons, GuardrailReadings, list[FloorContrast]]
     """
     guardrail_readings = _guardrail_readings(catalog, measures_judged, declared.design if declared else None)
     if realized.control_arm is None:
@@ -1260,7 +1203,6 @@ def _choice_contrasts(
     cells of ONE arm, split on the model that answered it, are no pair: a choice is between arms.
 
     :return: One contrast per pair of cells under one rig with two cases a side, in variant-key order.
-    :rtype: list[FloorContrast]
     """
     counts = {
         key: _trial_pass_counts(members, rubric_threshold=rubric_threshold, catalog=catalog)
@@ -1416,25 +1358,16 @@ def aspect_looks(
     plan with no recorded time cannot be shown to precede it, and is read as late.
 
     :param runs: The aspect's resolved member runs.
-    :ptype runs: Iterable[EvalRun]
     :param results_by_cell: Each cell's results.
-    :ptype results_by_cell: Mapping[CellKey, Iterable[ResultView]]
     :param control: The control arm's variant key; None where no control resolved.
-    :ptype control: str | None
     :param planned: The looks the aspect's design plans (``AspectDesign.planned_looks``); None where none is.
-    :ptype planned: int | None
     :param declared_at: When the aspect's design, and so its plan, was declared; None where no time is recorded.
-    :ptype declared_at: str | None
     :param membership: The aspect's membership record.
-    :ptype membership: Sequence[MembershipChange]
     :param plannable: Whether the campaign was created once looks were counted (``EvalCampaign.looks_rule``).
-    :ptype plannable: bool
     :param unread: Whether a member run is archived or did not resolve, so its evidence is not read here.
-    :ptype unread: bool
     :return: The looks; None where no two arms hold a result, so there is no contrast, or where they say nothing past
         one look with no plan (:func:`_one_look_and_nothing_else`), so a bundle that could only have been read once
         is written as it was before looks were counted.
-    :rtype: Looks | None
     """
     by_id = {run.id: run for run in runs}
     joined: dict[str, str] = {}
@@ -1577,13 +1510,9 @@ def aspect_tests(
     and each floor contrast's (a pass rate on the bounded test, a cost per reply on the t test).
 
     :param families: The aspect's comparison families.
-    :ptype families: Iterable[ComparisonFamily]
     :param guardrails: Its guardrail checks.
-    :ptype guardrails: GuardrailReadings
     :param floor_contrasts: The readings its floors and rows read per case.
-    :ptype floor_contrasts: Iterable[FloorContrast]
     :return: ``bounded``, ``t``, both or neither.
-    :rtype: list[SeparationTest]
     """
     found: set[SeparationTest] = {
         basis

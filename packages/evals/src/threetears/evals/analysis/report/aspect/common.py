@@ -364,9 +364,7 @@ def case_numbers(bundle: AnalysisContextBundle) -> dict[str, int]:
     holds one numbering, and the page says so (:func:`case_numbering_note`).
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :return: Each held case's number.
-    :rtype: dict[str, int]
     """
     places = {trial.case_id: trial.case_place for trial in bundle.trials}
     stored = {case: place for case, place in places.items() if place is not None}
@@ -383,9 +381,7 @@ def case_numbering_note(bundle: AnalysisContextBundle) -> str | None:
     label, so no number is printed.
 
     :param bundle: The aspect's evidence.
-    :ptype bundle: AnalysisContextBundle
     :return: The sentence, or None.
-    :rtype: str | None
     """
     if all(humanize("case", trial.case_label) for trial in bundle.trials):
         return None

@@ -55,11 +55,8 @@ def escaped(text: str, *, attribute: bool = False) -> str:
     entity too, since Markdown would let it escape the entity's own ``&``.
 
     :param text: The words, as written.
-    :ptype text: str
     :param attribute: Whether the words sit in a double-quoted attribute value, whose quotes are escaped as well.
-    :ptype attribute: bool
     :return: The words, escaped. Escape a string once: the result escaped again reads as its own source.
-    :rtype: str
     """
     text = _MARKUP.sub(lambda m: "&#92;" * len(m[1]) + ("&lt;" if m[2] == "<" else "&amp;"), text)
     return text.replace('"', "&quot;") if attribute else text
@@ -127,11 +124,8 @@ def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> lis
     escaped as markup (:func:`escaped`).
 
     :param headers: The column headers.
-    :ptype headers: Sequence[str]
     :param rows: Each row's cells as text, in header order.
-    :ptype rows: Iterable[Sequence[str]]
     :return: The table's lines.
-    :rtype: list[str]
     """
     return pipe_table([escaped(header) for header in headers], [[escaped(text) for text in row] for row in rows])
 
@@ -142,11 +136,8 @@ def pipe_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> list[st
     goes through :func:`markdown_table`, which escapes each cell as markup first.
 
     :param headers: The column headers.
-    :ptype headers: Sequence[str]
     :param rows: Each row's cells as text, in header order.
-    :ptype rows: Iterable[Sequence[str]]
     :return: The table's lines.
-    :rtype: list[str]
     """
     lines = ["| " + " | ".join(_cell(header) for header in headers) + " |", "|" + "---|" * len(headers)]
     lines += ["| " + " | ".join(_cell(text) for text in row) + " |" for row in rows]
@@ -168,9 +159,7 @@ def chart_lines(block: ChartBlock) -> list[str]:
     every number the picture would have shown.
 
     :param block: The chart.
-    :ptype block: ChartBlock
     :return: Its lines.
-    :rtype: list[str]
     """
     headers, rows = block.values_table()
     return [f"**{escaped(one_line(block.title))}**", "", *markdown_table(headers, rows)]

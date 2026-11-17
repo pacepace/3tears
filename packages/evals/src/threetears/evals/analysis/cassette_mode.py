@@ -65,12 +65,10 @@ def cassette_mode_disclosure(modes_by_run: Mapping[str, str]) -> str | None:
     Capture-versus-replay is a legitimate thing to run.
 
     :param modes_by_run: One recorded ``cassette_mode`` per run being compared, keyed by run id.
-    :ptype modes_by_run: Mapping[str, str]
     :return: The disclosure, rendered verbatim by every surface, or ``None`` when fewer than
         two runs were supplied or every run recorded the same mode. Two arms that both
         replayed are uniform and disclose nothing: the substitution is on both sides, so
         the delta between them is honest.
-    :rtype: str | None
     """
     if len(modes_by_run) < 2:
         return None

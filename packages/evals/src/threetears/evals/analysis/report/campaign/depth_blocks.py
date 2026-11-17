@@ -63,17 +63,11 @@ def depth_blocks(
     each a table with one sentence under it where the arms differ, or one sentence where that says all a table would.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it.
-    :ptype readings: CampaignReadings
     :param reports: Each aspect's own page, by its label.
-    :ptype reports: Mapping[str, Report]
     :param names: What the page calls each aspect.
-    :ptype names: AspectNames
     :param forms: The page's forms.
-    :ptype forms: PageForms
     :return: The tables and their sentences; nothing where no arm ran.
-    :rtype: list[ReportBlock]
     """
     labels = readings.arm_labels()
     depths = [
@@ -352,9 +346,7 @@ def depth_provenance_blocks(readings: CampaignReadings) -> list[ReportBlock]:
     the spread between cases, wherever a comparison's between-case share is read, which needs a repeated case.
 
     :param readings: What code read off the campaign.
-    :ptype readings: CampaignReadings
     :return: The one sentence; nothing where no comparison reads a between-case share.
-    :rtype: list[ReportBlock]
     """
     read = [row.precision for row in readings.readings] + [pair.precision for pair in readings.pairs]
     if not any(precision is not None and precision.between_share is not None for precision in read):

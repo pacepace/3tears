@@ -43,7 +43,6 @@ from threetears.evals.quick import run_cli
 from threetears.evals.analysis import JudgeTemperatureComparison, read_judge_temperatures
 from threetears.evals.kernel.judge_temperature import JudgeTemperatureAnswers, TemperatureAnswer, TemperatureCaseAnswers
 from threetears.evals.run import (
-    borderline_dims,
     estimate_judge_repeat,
     EvalJudgeTemperatureCheck,
     estimate_judge_temperature_comparison,
@@ -390,7 +389,8 @@ class TestWhichCasesAreReJudged:
         judge = _Judge()
         host, run_id = await _judged_run(judge)
         (top,) = [result for result in off_loop(_results, host, run_id) if _party(result) == 3]
-        assert borderline_dims(top) == set()
+        before = await compare_judge_temperatures(host, run_id, _SCOPE, out_of_run_cap_usd=None, repeats=2)
+        assert [skip.result_id for skip in before.skipped] == [top.id], "an end-of-scale score alone is no borderline"
         disagreed = top.model_copy(
             update={
                 "judge_repeats": [
@@ -418,7 +418,6 @@ class TestWhichCasesAreReJudged:
                 ]
             }
         )
-        assert borderline_dims(disagreed) == {_DIM}
         _, etag = off_loop(host.storage.load_eval_result_with_etag, top.id, _SCOPE)
         off_loop(host.storage.replace_eval_result, disagreed, if_match=etag)
 

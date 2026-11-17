@@ -29,13 +29,10 @@ from typing import Any
 import pytest
 
 from threetears.evals import Eval
-from threetears.evals.analysis import (
-    assemble_context_bundle,
-    build_campaign_report,
-    build_code_only_report,
-    campaign_report_markdown,
-    report_markdown,
-)
+from threetears.evals.analysis import assemble_context_bundle, build_code_only_report
+from threetears.evals.analysis.report.campaign.page import build_campaign_report
+from threetears.evals.analysis.report.serialize_md import campaign_report_markdown
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.bundle.schema import AnalysisContextBundle
 from threetears.evals.analysis.campaign_readings import campaign_readings
 from threetears.evals.kernel import CandidateKindDefect

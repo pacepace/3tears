@@ -205,11 +205,8 @@ def query_aspect(aspect: str, report_input: ReportInput) -> Aspect | None:
     asked aspect (the only one asked, else the only one).
 
     :param aspect: The query's ``aspect`` field, empty where it names none.
-    :ptype aspect: str
     :param report_input: The report input the query reads.
-    :ptype report_input: ReportInput
     :return: The aspect; None where the name matches no aspect, or none is named and no one aspect is asked.
-    :rtype: Aspect | None
     """
     if aspect:
         return next((held for held in report_input.aspects if held.id == aspect), None)
@@ -224,11 +221,8 @@ def query_rows(query: ChartQuery, report_input: ReportInput) -> list[SourceRow]:
     (strata largest first under a limit).
 
     :param query: The chart's query.
-    :ptype query: ChartQuery
     :param report_input: The report input it reads.
-    :ptype report_input: ReportInput
     :return: The rows; empty where the query selects nothing.
-    :rtype: list[SourceRow]
     """
     return list(_SELECTORS[query.source](query, report_input))
 
@@ -441,9 +435,7 @@ def config_grid(report_input: ReportInput) -> ReportInput:
     states and the arms vary are fewer than two, or do not cross fully (every combination of their values one arm).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The input, its ``factors`` and ``configs`` the grid's.
-    :rtype: ReportInput
     """
     if report_input.configs:
         return report_input
@@ -493,11 +485,8 @@ def _place_of(where: str, report_input: ReportInput) -> str:
 
     :param where: The place as a separation key spells it (``overall``, ``task.<task>``, ``strata.<stratum>``,
         ``cells.<row>.<column>``), or as a lever's place does (a task's or stratum's id, ``<row>.<column>``).
-    :ptype where: str
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The place.
-    :rtype: str
     """
     kind, _dot, named = where.partition(".")
     spelled = {f"{cell.row}.{cell.column}": cell_id for cell_id, cell in report_input.cells.items()}
@@ -633,11 +622,8 @@ def lever_place(query: ChartQuery, report_input: ReportInput) -> str | None:
     """The one place a levers query reads within, as ``lever_effects`` names it; None for overall.
 
     :param query: The query.
-    :ptype query: ChartQuery
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The place; None where the query names none, or names overall.
-    :rtype: str | None
     """
     named = [place for place in query.strata if place != OVERALL]
     if not named:
@@ -650,11 +636,8 @@ def lever_arms(row: EffectRow | InteractionRow, report_input: ReportInput) -> li
     """The arms a lever row reads: an effect's two, or an interaction's four (each move's, found by its effect's key).
 
     :param row: An effect or an interaction, as ``lever_effects`` returns it.
-    :ptype row: EffectRow | InteractionRow
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The arms, by id: from, then to, for each move.
-    :rtype: list[str]
     """
     if isinstance(row, EffectRow):
         return [str(row.from_arm.value), str(row.to_arm.value)]

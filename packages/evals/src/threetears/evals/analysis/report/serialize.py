@@ -23,16 +23,12 @@ def serialize_report(report: Report | CampaignReport, format: ReportFormat, *, s
     """A report in one of its three forms: an aspect's page, or a campaign's.
 
     :param report: The report: one aspect's page, or a campaign's page over its aspects.
-    :ptype report: Report | CampaignReport
     :param format: ``markdown``, ``html`` or ``json``. An aspect's ``json`` is the bundle its page was computed from,
         as ``bundle.json`` holds it; a campaign's is code's readings across its aspects, the person's call and each
         aspect's bundle by its fingerprint and shape (:meth:`CampaignReport.json_document`).
-    :ptype format: ReportFormat
     :param static: For ``html``, the static page (:func:`~threetears.evals.analysis.report.serialize_html.report_html`):
         no script, no link, every chart drawn as inline SVG above its table. It changes neither Markdown nor JSON.
-    :ptype static: bool
     :return: The serialized report.
-    :rtype: str
     """
     if isinstance(report, CampaignReport):
         match format:

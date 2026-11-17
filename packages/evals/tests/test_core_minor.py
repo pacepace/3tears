@@ -44,7 +44,6 @@ from threetears.evals.schema.versioning import (
     CORE_ADDRESSING_FIELDS,
     CORE_SCHEMA_MINOR,
     CORE_SCHEMA_VERSION,
-    DURABLE_ADDRESSING_FIELDS,
     DURABLE_DOC_TYPES,
     DURABLE_SCHEMA_MINOR,
 )
@@ -443,9 +442,7 @@ def test_a_caller_s_value_is_validated_strictly_at_every_depth_whatever_the_stor
 def test_each_core_model_names_its_doc_type() -> None:
     """The control for the parametrised tests above: every core and durable model is a stored model with a doc
     type."""
-    assert {doc_type_of(model) for model in _core_models()} == set(CORE_ADDRESSING_FIELDS) | set(
-        DURABLE_ADDRESSING_FIELDS
-    )
+    assert {doc_type_of(model) for model in _core_models()} == set(CORE_ADDRESSING_FIELDS) | DURABLE_DOC_TYPES
 
 
 # --- open vocabularies: a newer minor's value is read and named, never folded ----------------------

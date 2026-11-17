@@ -161,7 +161,6 @@ def _call_site() -> str:
     library's, the engine itself made the call, and its outermost frame is named instead, as the engine's.
 
     :return: ``module.function (file:line)``, or that prefixed ``the engine's own`` when no frame is outside it.
-    :rtype: str
     """
     frame = inspect.currentframe()
     outermost_engine: str | None = None
@@ -188,11 +187,8 @@ def omit_paths(document: dict[str, Any], paths: Sequence[str]) -> dict[str, Any]
     its backend applies the one definition rather than its own.
 
     :param document: The document. Not mutated.
-    :ptype document: dict[str, Any]
     :param paths: Dotted paths to drop.
-    :ptype paths: Sequence[str]
     :return: A copy, sharing every subtree the paths do not pass through.
-    :rtype: dict[str, Any]
     """
     result = dict(document)
     for path in paths:
@@ -217,11 +213,8 @@ def keep_fields(document: dict[str, Any], fields: Sequence[str]) -> dict[str, An
     reason :func:`omit_paths` is.
 
     :param document: The document. Not mutated.
-    :ptype document: dict[str, Any]
     :param fields: The top-level fields to keep.
-    :ptype fields: Sequence[str]
     :return: A new dict holding only those fields.
-    :rtype: dict[str, Any]
     """
     return {key: document[key] for key in fields if key in document}
 
@@ -239,11 +232,8 @@ def narrow_items(document: dict[str, Any], exclude_in_items: Mapping[str, Sequen
     :meth:`ResultReadings.iter_narrowed` that narrows outside its backend applies this one definition.
 
     :param document: The document. Not mutated.
-    :ptype document: dict[str, Any]
     :param exclude_in_items: List-field path → the dotted paths dropped from each object item of that list.
-    :ptype exclude_in_items: Mapping[str, Sequence[str]]
     :return: A copy, sharing every subtree the narrowing does not pass through.
-    :rtype: dict[str, Any]
     """
     result = dict(document)
     for path, item_paths in exclude_in_items.items():
@@ -270,12 +260,9 @@ def field_in_values(field_in: Mapping[str, Sequence[Any]] | None, field_eq: Mapp
     implementation refuses the same calls and reads the same values, whatever its backend does with them.
 
     :param field_in: :meth:`DocumentStore.by_doc_type`'s membership predicates, or ``None``.
-    :ptype field_in: Mapping[str, Sequence[Any]] | None
     :param field_eq: The same call's equality predicates.
-    :ptype field_eq: Mapping[str, Any]
     :return: Field → its distinct values, in the order first listed; empty for ``None``. A field whose sequence was
         empty maps to ``[]``, which matches nothing.
-    :rtype: dict[str, list[Any]]
     :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
     :raises TypeError: A field's values are a string or bytes rather than a sequence of values, or a value is not a
         scalar (``str``, ``int``, ``float``, ``bool``, ``None``).
@@ -306,11 +293,8 @@ def check_after(after: Any, order_by: str | None) -> tuple[Any, str] | None:
     Defined beside the port for the reason :func:`omit_paths` is: every implementation refuses the same calls.
 
     :param after: The call's ``after``: ``None``, or a pair of the ``order_by`` field's stored value and an ``id``.
-    :ptype after: Any
     :param order_by: The same call's ``order_by``.
-    :ptype order_by: str | None
     :return: ``(value, id)``, or ``None`` when ``after`` is ``None``.
-    :rtype: tuple[Any, str] | None
     :raises ValueError: ``after`` is given with no ``order_by``: a place is a place in an order.
     :raises TypeError: ``after`` is not a pair, its id is not a string, or its value is not a scalar.
     """
@@ -355,17 +339,11 @@ def order_and_page(
     pages through it, and :func:`page_by_doc_type` pages a store written before ``after`` with it.
 
     :param rows: The rows, in any order. Not mutated.
-    :ptype rows: Iterable[dict[str, Any]]
     :param order_by: The field to order by.
-    :ptype order_by: str
     :param descending: The direction, as on :meth:`DocumentStore.by_doc_type`.
-    :ptype descending: bool
     :param after: The place to start past (:func:`check_after`), or ``None`` for the first page.
-    :ptype after: tuple[Any, str] | None
     :param limit: The most rows returned; ``None`` is every row past ``after``.
-    :ptype limit: int | None
     :return: The page.
-    :rtype: list[dict[str, Any]]
     :raises ValueError: As :func:`check_after`.
     :raises TypeError: As :func:`check_after`.
     """
@@ -394,11 +372,8 @@ class DocumentStore(Protocol):
         """Return one document by id within a scope, or ``None`` if absent.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :return: The stored document with storage-injected fields removed, or ``None``.
-        :rtype: dict[str, Any] | None
         """
         ...
 
@@ -410,9 +385,7 @@ class DocumentStore(Protocol):
         wrote in between.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
 
 
         Every store implements conditional writes: a found document always comes
@@ -424,7 +397,6 @@ class DocumentStore(Protocol):
 
         :return: ``(document, etag)``, or ``(None, None)`` when there is no such
             document.
-        :rtype: tuple[dict[str, Any] | None, str | None]
         """
         ...
 
@@ -452,23 +424,17 @@ class DocumentStore(Protocol):
         the same obligation (see :class:`~threetears.evals.run.curation.CurationStore`).
 
         :param doc_type: The discriminator every returned document carries.
-        :ptype doc_type: str
         :param doc_ids: The ids to fetch. An empty sequence returns ``[]`` and asks the
             backend nothing.
-        :ptype doc_ids: Sequence[str]
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param exclude: Dotted paths the store leaves out of every returned document, with
             the meaning :func:`omit_paths` gives them — the batch form of
             :meth:`by_doc_type`'s ``exclude``.
-        :ptype exclude: Sequence[str]
         :param keep: The narrow alternative to ``exclude``: when given, each returned
             document carries only these top-level fields — those it has, with the
             meaning :func:`keep_fields` gives them — for a reader of a few scalars
             off many large documents. Never both.
-        :ptype keep: Sequence[str]
         :return: The matching documents, in no guaranteed order.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: Both ``exclude`` and ``keep`` were given.
         """
         ...
@@ -497,31 +463,24 @@ class DocumentStore(Protocol):
         ``after`` to page in its backend. Whether it does is decided by :func:`takes_after`.
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param order_by: Document field to sort by; ``None`` leaves the order to the
             store. Sorting is by the field's stored type, so a number orders
             numerically and an ISO-8601 timestamp lexicographically. A document
             without the field, or with it null, sorts below every document that
             has it — first ascending, last descending. In a store that declares
             ``after``, ties sort by ``id``, in the same direction.
-        :ptype order_by: str | None
         :param descending: Sort direction when ``order_by`` is given.
-        :ptype descending: bool
         :param limit: Maximum documents to return; ``None`` is unbounded.
-        :ptype limit: int | None
         :param after: A place in the ``order_by`` order, as ``(the field's stored value, id)`` — the last document of
             the page before — and only documents strictly past it in the direction read are returned, with
             :func:`order_and_page`'s meaning. A null value names a place among the documents without the field.
             ``None`` reads from the start. Only with ``order_by``. :func:`check_after` checks a call as every
             implementation must.
-        :ptype after: tuple[Any, str] | None
         :param exclude: Dotted paths the store leaves out of every returned document, with the
             meaning :func:`omit_paths` gives them. For a bulk read whose consumer needs
             the documents but not a heavy value inside them; the store drops it before
             the document is shipped, so the value is never materialised at all.
-        :ptype exclude: Sequence[str]
         :param field_in: Field-membership predicates, ANDed with each other and with ``field_eq``: a document
             matches when the field's stored value equals ANY of the listed values, compared on the stored JSON
             type exactly as a ``field_eq`` predicate is — a number never equals its text, ``True`` never equals
@@ -532,7 +491,6 @@ class DocumentStore(Protocol):
             across several values of one field in one call — the results of a campaign's runs — where a
             ``field_eq`` read per value is a round trip each. :func:`field_in_values` checks a call and reads its
             values as every implementation must.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates over the document's other fields, compared on
             the stored JSON type: a number never equals its text, and ``True`` never equals
             ``1`` (nor ``False`` ``0``), as no JSON column's boolean equals a number. A
@@ -540,9 +498,7 @@ class DocumentStore(Protocol):
             scalars (``str``, ``int``, ``float``, ``bool``, ``None``): a store whose backend
             compares an object or list by its serialised text cannot match one, so it may
             refuse such a value with ``TypeError``, and the engine never passes one.
-        :ptype field_eq: Any
         :return: The matching documents.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: A field is named in both ``field_in`` and ``field_eq``, or ``after`` is given without
             ``order_by``.
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values
@@ -560,11 +516,8 @@ class DocumentStore(Protocol):
         makes a wipe of a large collection expensive.
 
         :param doc_type: The discriminator to sweep.
-        :ptype doc_type: str
         :param scope_id: The scope to sweep.
-        :ptype scope_id: str
         :yield: Document ids suitable for :meth:`delete` in the same scope.
-        :rtype: Iterator[str]
         """
         ...
 
@@ -576,16 +529,13 @@ class DocumentStore(Protocol):
         a write cannot land in a partition the document does not claim.
 
         :param document: The document to store.
-        :ptype document: dict[str, Any]
         :param if_match: A token from :meth:`get_with_etag`. When given, the write
             lands only if the stored document still carries that token; a
             document that is not stored carries none, and refuses it.
-        :ptype if_match: str | None
         :param create_only: When True, the write lands only if no document is stored
             under the document's ``(scope_id, id)`` — of any ``doc_type``. The
             check and the write are one step, so of several racing creates
             exactly one lands. Never together with ``if_match``.
-        :ptype create_only: bool
         :raises StoreConflict: ``if_match`` was given and the stored document no longer
             carries it, or ``create_only`` was set and a document is stored there.
         :raises ValueError: Both ``if_match`` and ``create_only`` were given.
@@ -604,16 +554,12 @@ class DocumentStore(Protocol):
         rather than silently putting the old value back.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in.
-        :ptype scope_id: str
         :param fields: Top-level fields and their new values. Never the fields that
             locate the document — ``id``, ``scope_id`` and ``doc_type`` — nor any
             storage-injected field: a store refuses those.
-        :ptype fields: dict[str, Any]
         :return: ``True`` when the document was written; ``False`` when there is no such
             document — the one way this write reports not landing.
-        :rtype: bool
         :raises ValueError: ``fields`` is empty or names a field that locates the document.
         :raises Exception: Any other backend failure.
         """
@@ -623,13 +569,10 @@ class DocumentStore(Protocol):
         """Delete one document by id within a scope.
 
         :param doc_id: The document's own id.
-        :ptype doc_id: str
         :param scope_id: The scope it lives in. Required — a scope cannot be derived from
             an id, and guessing it wrong deletes nothing while reporting
             success.
-        :ptype scope_id: str
         :return: ``True`` when a document was deleted, ``False`` when there was none.
-        :rtype: bool
         """
         ...
 
@@ -648,7 +591,6 @@ class StoreClock(Protocol):
         """The store's current time.
 
         :return: A timezone-aware datetime.
-        :rtype: datetime
         """
         ...
 
@@ -676,9 +618,7 @@ def copy_json(value: Any) -> Any:
     value.
 
     :param value: The value. Not mutated.
-    :ptype value: Any
     :return: The copy.
-    :rtype: Any
     """
     kind = type(value)
     if kind is dict:
@@ -708,9 +648,7 @@ def check_grouping(by: Sequence[str], measures: Mapping[str, GroupMeasure]) -> N
     grouping of a store without the capability reads a row.
 
     :param by: Dotted paths to group by.
-    :ptype by: Sequence[str]
     :param measures: Measure name → the measure.
-    :ptype measures: Mapping[str, GroupMeasure]
     :raises TypeError: ``by`` is a string rather than a sequence of paths.
     :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
         name is also a ``by`` path.
@@ -803,14 +741,10 @@ def fold_groups(
 
     :param rows: The matching rows, in stored order (the order a group's ``values`` keep). A row is not changed; a
         ``values`` measure hands a copy of each value.
-    :ptype rows: Iterable[dict[str, Any]]
     :param by: Dotted paths to group by.
-    :ptype by: Sequence[str]
     :param measures: Measure name → the measure.
-    :ptype measures: Mapping[str, GroupMeasure]
     :return: One dict per group, in the order each group was first seen: each ``by`` path and its value, then each
         measure by name. No rows give ``[]``.
-    :rtype: list[dict[str, Any]]
     :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, or a measure
         name is also a ``by`` path.
     :raises TypeError: ``by`` is a string; ``sum_int`` met a value that is not a JSON integer; ``min`` or ``max`` met
@@ -850,13 +784,9 @@ def narrow_groups(
     take ``exclude_in_items`` (:func:`grouped_narrowed`).
 
     :param groups: The groups, as :meth:`ResultReadings.grouped` answered them. Not mutated.
-    :ptype groups: list[dict[str, Any]]
     :param measures: The measures they were read with.
-    :ptype measures: Mapping[str, GroupMeasure]
     :param exclude_in_items: List-field path → the dotted paths dropped from each object item of that list.
-    :ptype exclude_in_items: Mapping[str, Sequence[str]]
     :return: The groups, each ``values`` measure narrowed; the same list when there is nothing to narrow.
-    :rtype: list[dict[str, Any]]
     """
     listed = {name: path for name, (kind, path) in measures.items() if kind == "values" and path is not None}
     if not exclude_in_items or not listed:
@@ -891,9 +821,7 @@ def takes_exclude_in_items(grouped: Any) -> bool:
     one that drops it. A callable whose signature cannot be read is read as not taking it.
 
     :param grouped: The store's ``grouped`` method.
-    :ptype grouped: Any
     :return: Whether it declares the parameter.
-    :rtype: bool
     """
     return _declares(grouped, "exclude_in_items")
 
@@ -906,9 +834,7 @@ def takes_after(by_doc_type: Any) -> bool:
     named ``after``, and answers no documents at all.
 
     :param by_doc_type: The store's ``by_doc_type`` method.
-    :ptype by_doc_type: Any
     :return: Whether it declares the parameter.
-    :rtype: bool
     """
     return _declares(by_doc_type, "after")
 
@@ -949,28 +875,17 @@ def page_by_doc_type(
     of reading the whole match, until the store declares ``after``.
 
     :param store: The store.
-    :ptype store: DocumentStore
     :param doc_type: As :meth:`DocumentStore.by_doc_type` takes it.
-    :ptype doc_type: str
     :param scope_id: As :meth:`DocumentStore.by_doc_type` takes it.
-    :ptype scope_id: str
     :param order_by: The field the pages are ordered by; ties by ``id``.
-    :ptype order_by: str
     :param descending: The direction.
-    :ptype descending: bool
     :param limit: The page's size; ``None`` reads every document past ``after``.
-    :ptype limit: int | None
     :param after: Where the page starts (:meth:`DocumentStore.by_doc_type`), or ``None`` for the first page.
-    :ptype after: tuple[Any, str] | None
     :param exclude: As :meth:`DocumentStore.by_doc_type` takes it. Passed to a store written before ``after`` only
         when it names a path, so a store older still, written before ``exclude``, is never handed it as a predicate.
-    :ptype exclude: Sequence[str]
     :param field_in: As :meth:`DocumentStore.by_doc_type` takes it.
-    :ptype field_in: Mapping[str, Sequence[Any]] | None
     :param **field_eq: As :meth:`DocumentStore.by_doc_type` takes them.
-    :ptype field_eq: Any
     :return: The page.
-    :rtype: list[dict[str, Any]]
     :raises ValueError: As :meth:`DocumentStore.by_doc_type`.
     :raises TypeError: As :meth:`DocumentStore.by_doc_type`.
     :raises PageNotPastAfter: The store declares ``after`` and its page's first document is not past it.
@@ -1025,9 +940,7 @@ def grouped_narrowed(
     parameter is never passed.
 
     :param readings: The store.
-    :ptype readings: ResultReadings
     :return: The groups, as :meth:`ResultReadings.grouped` answers them.
-    :rtype: list[dict[str, Any]]
     :raises: What ``grouped`` raises.
     """
     if not exclude_in_items:
@@ -1091,20 +1004,13 @@ class ResultReadings(Protocol):
         many large documents never holds them all.
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param exclude: Dotted paths left out of every row, with :func:`omit_paths`'s meaning.
-        :ptype exclude: Sequence[str]
         :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, with
             :func:`narrow_items`'s meaning.
-        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates, as on :meth:`DocumentStore.by_doc_type`.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates, as on :meth:`DocumentStore.by_doc_type`.
-        :ptype field_eq: Any
         :return: The narrowed rows.
-        :rtype: Iterator[dict[str, Any]]
         :raises ValueError: A field is named in both ``field_in`` and ``field_eq``.
         :raises TypeError: A ``field_in`` entry is a string rather than a sequence of values, or a predicate's value
             is not a scalar.
@@ -1142,26 +1048,18 @@ class ResultReadings(Protocol):
           order, so its answer does not depend on how the store adds.
 
         :param doc_type: The discriminator to select on.
-        :ptype doc_type: str
         :param scope_id: The scope to read.
-        :ptype scope_id: str
         :param by: Dotted paths to group by.
-        :ptype by: Sequence[str]
         :param measures: Measure name → the measure. A name is never one of the ``by`` paths.
-        :ptype measures: Mapping[str, GroupMeasure]
         :param exclude_in_items: List-field path → dotted paths left out of each object item of that list, with
             :func:`narrow_items`'s meaning, in every ``values`` value (:func:`narrow_groups`): for a reader of one
             figure of each item, which need not ship the items' prose. No other measure's answer changes. Provisional,
             and newer than the method: the engine reads a store whose ``grouped`` does not declare it through
             :func:`grouped_narrowed`, which narrows the values itself.
-        :ptype exclude_in_items: Mapping[str, Sequence[str]]
         :param field_in: Field-membership predicates, as on :meth:`DocumentStore.by_doc_type`.
-        :ptype field_in: Mapping[str, Sequence[Any]] | None
         :param **field_eq: Field-equality predicates, as on :meth:`DocumentStore.by_doc_type`.
-        :ptype field_eq: Any
         :return: One dict per group: each ``by`` path and its value, then each measure by name. Groups come in no
             promised order; a reader sorts them. No matching row gives ``[]``.
-        :rtype: list[dict[str, Any]]
         :raises ValueError: A measure's kind is unknown, ``count`` names a path or another kind names none, a measure
             name is also a ``by`` path, or a field is named in both ``field_in`` and ``field_eq``.
         :raises TypeError: ``sum_int`` met a value that is not a JSON integer; ``min`` or ``max`` met a value that is
@@ -1249,7 +1147,6 @@ class AsyncStoreClock(Protocol):
         """The store's current time.
 
         :return: A timezone-aware datetime.
-        :rtype: datetime
         """
         ...
 

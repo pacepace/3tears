@@ -22,14 +22,10 @@ from threetears.evals.analysis.reads import bisect_runs, compare_two_runs
 from threetears.evals.analysis.completeness import completeness_disclosure
 from threetears.evals.kernel.errors import NotFoundError
 from threetears.evals.schema.models import RubricScore, RunCompleteness
-from threetears.evals.ops import (
-    RunsBisected,
-    RunsCompared,
-    runs_bisect,
-    runs_bisected_text,
-    runs_compare,
-    runs_compared_text,
-)
+from threetears.evals.ops import RunsBisected, RunsCompared, runs_compare
+from threetears.evals.ops.lenses import runs_bisect
+from threetears.evals.ops.lenses import runs_bisected_text
+from threetears.evals.ops.lenses import runs_compared_text
 from packages.evals.tests.factories import make_eval_result, make_eval_run
 from packages.evals.tests.ops_support import CALLER, TOYHOST_SCOPE, OpsFixture, ops_fixture
 from packages.evals.tests.off_loop import off_loop

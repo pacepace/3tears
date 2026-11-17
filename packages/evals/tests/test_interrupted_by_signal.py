@@ -31,7 +31,7 @@ from typing import IO, Any
 import pytest
 
 from threetears.evals import Eval
-from threetears.evals.analysis import get_campaign, list_campaigns
+from threetears.evals.analysis.campaigns import get_campaign, list_campaigns
 from threetears.evals.kernel.candidate_kind import QUICK_PATH_FILER
 from threetears.evals.kernel.result_condition import runs_again
 from threetears.evals.quick import as_host

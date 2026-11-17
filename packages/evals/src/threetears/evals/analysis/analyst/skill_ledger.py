@@ -112,9 +112,7 @@ def skill_record(skill: AnalystSkill) -> ShippedSkill:
     """The ledger's entry for a skill: the basis it shipped on.
 
     :param skill: The skill, as a build ships it or as an arm runs it.
-    :ptype skill: AnalystSkill
     :return: Its entry.
-    :rtype: ShippedSkill
     :raises ValidationFailedError: The ledger does not read; it has no entry for the skill; or its entry records
         analyst or editor texts the skill does not give.
     """

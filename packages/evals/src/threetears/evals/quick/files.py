@@ -158,9 +158,7 @@ def load_evals(path: Path) -> list[Runnable]:
     import the modules beside it (see the module docstring).
 
     :param path: The ``.py`` or ``.toml`` file.
-    :ptype path: Path
     :return: The evals, not yet run.
-    :rtype: list[Runnable]
     :raises ValueError: A file that is not there, declares no eval, or that the eval refuses.
     """
     if not path.is_file():
@@ -192,14 +190,10 @@ def run_file(path: Path, *, verbose: bool = False, after: AfterRun | None = None
     An error nothing anticipated is printed whole to stderr with its traceback, and exits 3.
 
     :param path: The ``.py`` or ``.toml`` file.
-    :ptype path: Path
     :param verbose: Print each result whole rather than quietly.
-    :ptype verbose: bool
     :param after: What is done with each result once it is printed and its report written, whose exit code the
         file's is raised to; nothing when ``None``.
-    :ptype after: AfterRun | None
     :return: The worst exit code of the evals' (see the module docstring).
-    :rtype: int
     """
     try:
         return _run_file(path, verbose=verbose, after=after)
@@ -243,9 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """``python -m threetears.evals``: an eval file, or the host command line.
 
     :param argv: The arguments after the program name; ``None`` reads ``sys.argv``.
-    :ptype argv: Sequence[str] | None
     :return: The exit code.
-    :rtype: int
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:

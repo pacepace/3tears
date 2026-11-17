@@ -136,19 +136,13 @@ def _formatted(spec: str, value: float, read_at: str = "", *, finer: bool = Fals
     float's four figures.
 
     :param spec: A kit format (:data:`Fmt`).
-    :ptype spec: str
     :param value: The value, in display units.
-    :ptype value: float
     :param read_at: The unit the block's values are read at, where its format names none; empty for the format's.
-    :ptype read_at: str
     :param finer: Whether money is written to one significant figure more: an interval whose two ends would otherwise
         read alike.
-    :ptype finer: bool
     :param places: The decimals a change in points reads at where its interval needs more than a point's one (an end
         of -0.037 reads ``-0.04``, never a ``0.0`` that hides which side of zero it is on); None for one decimal.
-    :ptype places: int | None
     :return: The value as text.
-    :rtype: str
     :raises ValueError: ``spec`` is not a format the kit names.
     """
     match = _FORMAT_SPEC.fullmatch(spec)
@@ -261,9 +255,7 @@ class _Kind(_KitModel):
         chart, or one panel as drawn (overlaid on its chart's fields). A kind that draws no value comes back as it is.
 
         :param read_at: The unit its values are read at where its format names none (:func:`_formatted`).
-        :ptype read_at: str
         :return: The kind, every value it draws carrying its text.
-        :rtype: Self
         """
         return self
 
@@ -271,7 +263,6 @@ class _Kind(_KitModel):
         """The chart's ``data-chart`` JSON, as the kit's contract names it: unset fields left out.
 
         :return: The JSON object the kit draws.
-        :rtype: dict[str, JsonValue]
         """
         return self.model_dump(mode="json", exclude_none=True, by_alias=True)
 
@@ -328,9 +319,7 @@ class _Drawable(_Kind):
 
         :param read_at: The unit its values are read at where its format names none (:func:`_formatted`); empty for
             the format's own.
-        :ptype read_at: str
         :return: The chart, every value it draws carrying its text.
-        :rtype: Self
         """
         chart = self.with_texts(read_at)
         panels: list[_PanelText] | None = getattr(chart, "panels", None)
@@ -361,9 +350,7 @@ class _Drawable(_Kind):
 
         :param read_at: The unit its values are read at where its format names none (:func:`_formatted`); empty for
             the format's own.
-        :ptype read_at: str
         :return: ``(headers, rows)``, each cell text.
-        :rtype: tuple[list[str], list[list[str]]]
         """
         chart = self.spelled(read_at)
         legend: list[LegendItem] = getattr(chart, "legend", None) or []
@@ -447,9 +434,7 @@ def _even_precision(rows: Sequence[Sequence[str]]) -> list[list[str]]:
     ``1.235`` stays ``12.35``. A cell no other reads like (a label, words) is left as it is.
 
     :param rows: The table's rows of cells.
-    :ptype rows: Sequence[Sequence[str]]
     :return: The rows, each number padded among the cells that read like its own.
-    :rtype: list[list[str]]
     """
     table = _money_by_column([list(row) for row in rows])
     shaped: dict[str, list[tuple[int, int]]] = {}
@@ -471,9 +456,7 @@ def _money_by_column(table: list[list[str]]) -> list[list[str]]:
     keys write money; a bound (``< $0.000001``) is left as it is.
 
     :param table: The table's rows of cell texts; changed in place.
-    :ptype table: list[list[str]]
     :return: The same rows.
-    :rtype: list[list[str]]
     """
     for row in table:
         for column, cell in enumerate(row):
@@ -664,9 +647,7 @@ def level_head(level: str) -> str:
     keeps its gloss last, ``99.7% intervals (95% across 16 comparisons)``.
 
     :param level: The level, as a chart carries it.
-    :ptype level: str
     :return: The head.
-    :rtype: str
     """
     glossed = _GLOSSED_LEVEL.fullmatch(level)
     return f"{glossed[1]} intervals {glossed[2]}" if glossed else f"{level} intervals"
@@ -677,9 +658,7 @@ def drawn_head(chart: object) -> str:
     for nothing), else the level's own head (:func:`level_head`), else nothing.
 
     :param chart: The chart or the panel as drawn: any kind, a kind carrying no level printing nothing.
-    :ptype chart: object
     :return: The head; empty for none.
-    :rtype: str
     """
     said: str | None = getattr(chart, "level_head", None)
     if said is not None:

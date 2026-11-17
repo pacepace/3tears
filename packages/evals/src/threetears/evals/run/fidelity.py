@@ -95,11 +95,8 @@ def contract_for(contracts: tuple[FidelityContract, ...], behavior: str) -> Fide
     data, and this module is the part a second host inherits unchanged.
 
     :param contracts: The host's registry.
-    :ptype contracts: tuple[FidelityContract, ...]
     :param behavior: The contract's ``behavior``.
-    :ptype behavior: str
     :return: The contract.
-    :rtype: FidelityContract
     :raises KeyError: When no contract carries that name.
     """
     for contract in contracts:
@@ -119,9 +116,7 @@ def resolve_constructor(contract: FidelityContract) -> object:
     constructor that is present.
 
     :param contract: The contract.
-    :ptype contract: FidelityContract
     :return: The constructor object.
-    :rtype: object
     :raises ImportError: When no prefix of the path imports as a module, or when a module on the
         path exists and fails to import.
     :raises AttributeError: When the remaining segments are not attributes of it.
@@ -142,10 +137,8 @@ def _split_at_module_boundary(constructor: str) -> tuple[object, list[str]]:
     come to disagree about what a caller must reference.
 
     :param constructor: The contract's dotted constructor path.
-    :ptype constructor: str
     :return: ``(module, attribute_parts)``: the deepest importable module on the path, and the
         segments below it. One part is a module-level function; two is a method on a class.
-    :rtype: tuple[object, list[str]]
     :raises ImportError: When no prefix of the path imports as a module, or when a module on the
         path exists and fails to import.
     """
@@ -185,9 +178,7 @@ def _referenced_names(source: str) -> set[str]:
     name inside a comment or a docstring does not count as reaching it.
 
     :param source: Python source text.
-    :ptype source: str
     :return: The identifiers referenced.
-    :rtype: set[str]
     """
     names: set[str] = set()
     for node in ast.walk(ast.parse(source)):
@@ -218,9 +209,7 @@ def _attribute_chain(node: ast.Attribute) -> str | None:
     a METHOD contract — which is asking a stricter question on purpose — declines it.
 
     :param node: The attribute node.
-    :ptype node: ast.Attribute
     :return: The dotted chain, or ``None`` when the head is not a bare name.
-    :rtype: str | None
     """
     parts = [node.attr]
     current: ast.expr = node.value
@@ -251,11 +240,9 @@ def callers_missing_the_constructor(contract: FidelityContract) -> list[str]:
     receiver the walk cannot identify is not one an AST canary can vouch for.
 
     :param contract: The contract to check.
-    :ptype contract: FidelityContract
     :return: The dotted module paths that fail, in declaration order. Empty when
         every caller still references the constructor. A caller whose source
         cannot be located fails too — an unlocatable caller is not a proven one.
-    :rtype: list[str]
     :raises ImportError: When the constructor's own module path does not import — a contract
         whose constructor is gone is a broken contract, not a set of missing callers.
     """

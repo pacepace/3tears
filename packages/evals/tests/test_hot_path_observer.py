@@ -27,7 +27,7 @@ import time
 
 import pytest
 
-from threetears.evals.analysis import assemble_campaign_bundle
+from threetears.evals.analysis.service import assemble_campaign_bundle
 from threetears.evals.kernel import NotFoundError
 from threetears.evals.kernel.campaign import EvalCampaign
 from threetears.evals.kernel.offload import run_blocking

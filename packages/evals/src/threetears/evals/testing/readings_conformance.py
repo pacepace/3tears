@@ -82,11 +82,9 @@ class ResultReadingsConformanceCase:
         """Run the case against ``store``, which must be fresh, empty, and offer the capability.
 
         :param store: The adapter under test.
-        :ptype store: DocumentStore
         :param install_backend_hook: Takes a callback and makes the store call it once per query it issues (a
             statement executed or a cursor opened, never a page fetched from one), replacing any callback installed
             before. An exception the callback raises is the backend failing.
-        :ptype install_backend_hook: Callable[[Callable[[], None]], None]
         :raises StoreConformanceFailure: The store broke the rule, or does not offer the capability; the message
             names the case, the rule and what was observed. Anything else the store raises propagates unchanged.
         """

@@ -814,7 +814,7 @@ def test_no_step_reads_until_it_separates_and_none_is_taken_by_code() -> None:
         for path in source.rglob("*.py")
         if "RemedyStep" in path.read_text(encoding="utf-8")
     )
-    assert readers == ["analysis/__init__.py", "analysis/caveats.py", "analysis/report_input.py"]
+    assert readers == ["analysis/caveats.py", "analysis/report_input.py"]
 
 
 def test_a_caveat_with_no_reason_takes_its_kind_s_remedy() -> None:

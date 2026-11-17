@@ -23,10 +23,10 @@ from threetears.evals.analysis import (
     UnconfirmedModelIdentity,
     assemble_context_bundle,
     build_code_only_report,
-    report_markdown,
     run_summary,
     summarize_run,
 )
+from threetears.evals.analysis.report.serialize_md import report_markdown
 from threetears.evals.analysis.report.build import analysis_campaign_bundle
 from threetears.evals.analysis.reporting import (
     RequestSettingsReading,

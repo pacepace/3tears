@@ -29,9 +29,7 @@ def arm_settings(report_input: ReportInput) -> dict[str, dict[str, SettingValue]
     input's own rule says; with no control it is unstated (None), which agrees only with another unstated one.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Each arm's settings, by arm id then setting, in the input's orders.
-    :rtype: dict[str, dict[str, SettingValue]]
     """
     control = _control(report_input)
     base: Mapping[str, SettingValue] = control.settings if control is not None else {}
@@ -43,13 +41,9 @@ def lever_of(settings: Mapping[str, Mapping[str, SettingValue]], first: str, sec
     """The one setting two arms differ in, by :func:`arm_settings`; None where they differ in none or in several.
 
     :param settings: Every arm's settings, as :func:`arm_settings` reads them.
-    :ptype settings: Mapping[str, Mapping[str, SettingValue]]
     :param first: One arm's id.
-    :ptype first: str
     :param second: The other's.
-    :ptype second: str
     :return: The setting, or None.
-    :rtype: str | None
     """
     differ = [name for name, value in settings[first].items() if settings[second].get(name) != value]
     return differ[0] if len(differ) == 1 else None

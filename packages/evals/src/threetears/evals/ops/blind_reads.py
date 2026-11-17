@@ -632,27 +632,16 @@ def blind_read_create(
     the judge's own model, whose answers would repeat the judge.
 
     :param host: The host whose store holds the runs.
-    :ptype host: EvalHost
     :param scope_id: The caller's scope.
-    :ptype scope_id: str
     :param created_by: Who drew it.
-    :ptype created_by: str
     :param campaign_id: The campaign whose control (and candidate) the read is over; or None with ``run_ids``.
-    :ptype campaign_id: str | None
     :param run_ids: Runs of one arm, for a read of their outputs alone; or None with ``campaign_id``.
-    :ptype run_ids: Sequence[str] | None
     :param candidate: The candidate arm of the campaign, by label or variant key, for a pair read; None for singles.
-    :ptype candidate: str | None
     :param criteria: The criteria asked, by dimension; None for every criterion of the runs' rubric.
-    :ptype criteria: Sequence[str] | None
     :param planned_items: The items the preference is read over; None for the population, up to 30.
-    :ptype planned_items: int | None
     :param name: What the read is called; None names it after the campaign or the runs.
-    :ptype name: str | None
     :param reviewer: A model to read the sheet as a reference reviewer, by id; None for none.
-    :ptype reviewer: str | None
     :return: The read as stored.
-    :rtype: BlindReadLine
     :raises ValidationFailedError: Neither or both of ``campaign_id`` and ``run_ids``; a candidate without a
         campaign; the arms or criteria cannot be read (see the helpers); no case where every arm has a judged answer
         with stored evidence; the reviewer is the judge's own model.
@@ -730,15 +719,10 @@ def blind_read_sheet(host: EvalHost, read_id: str, scope_id: str, *, rater: str 
     label key, and nothing of what anyone answered but the named rater's own progress.
 
     :param host: The host whose store holds the read.
-    :ptype host: EvalHost
     :param read_id: The read.
-    :ptype read_id: str
     :param scope_id: The caller's scope.
-    :ptype scope_id: str
     :param rater: Whose progress to give (``answered``, ``next``), as their answers name them; None for none.
-    :ptype rater: str | None
     :return: The sheet.
-    :rtype: BlindSheet
     :raises NotFoundError: No such read.
     """
     read, _ = _loaded(host, read_id, scope_id)
@@ -764,28 +748,17 @@ def blind_read_answer(
     earlier answer to the same item is replaced. A model's answer never comes through here (:func:`keep_review`).
 
     :param host: The host whose check attests the person.
-    :ptype host: EvalHost
     :param read_id: The read.
-    :ptype read_id: str
     :param scope_id: The caller's scope.
-    :ptype scope_id: str
     :param collected_by: The calling identity relaying the answer, as the host resolved it.
-    :ptype collected_by: str
     :param person: Whose answer it is, in the caller's spelling.
-    :ptype person: str
     :param item: The item answered, as the sheet names it.
-    :ptype item: str
     :param verdicts: A verdict per criterion per output shown, keyed ``<slot>/<criterion>`` (``A/answer.grounded``),
         each the answer as the sheet's levels word it: pass or fail, or 1 to 5. None for a skip.
-    :ptype verdicts: Mapping[str, str] | None
     :param prefer: Of a pair: the better slot, or tie.
-    :ptype prefer: BlindPreferenceAnswer | None
     :param skipped: The person passed on the item; then no verdict or preference.
-    :ptype skipped: bool
     :param reason: The person's own words for the answer, where given.
-    :ptype reason: str
     :return: The read as stored, with the person's progress; no check, preference or tally while it is open.
-    :rtype: BlindReadLine
     :raises EvalServiceError: Status 403: the host supplies no ``attests_person``, or does not attest this caller for
         this person; nothing is written.
     :raises NotFoundError: No such read.
@@ -876,22 +849,16 @@ def keep_review(
 ) -> BlindRead:
     """Keep a model's answers on the read: only inside the read's own review job, and only the declared reviewer's.
 
-    Called by the job :func:`blind_read_review` starts. The job it runs in (:func:`~threetears.evals.kernel.running_job`)
+    Called by the job :func:`blind_read_review` starts. The job it runs in (:func:`~threetears.evals.kernel.job_context.running_job`)
     must be the one the read recorded when the review was started; anything else is refused and nothing is written,
     so no caller can put a model's answer on a read by any other door.
 
     :param host: The host whose store holds the read.
-    :ptype host: EvalHost
     :param read_id: The read.
-    :ptype read_id: str
     :param scope_id: Its scope.
-    :ptype scope_id: str
     :param answers: The model's answers, each named by the reviewer.
-    :ptype answers: Sequence[BlindAnswer]
     :param review: The reading: its calls, cost and what went unanswered.
-    :ptype review: BlindReview
     :return: The read as stored.
-    :rtype: BlindRead
     :raises EvalServiceError: Status 403: not inside the read's review job, or an answer is not the declared
         reviewer's; nothing is written.
     :raises NotFoundError: No such read.
@@ -947,13 +914,9 @@ async def blind_read_review(host: OpsHost, read_id: str, scope_id: str) -> JobsS
     caller, so a later review can start. ``job_poll`` on the job returns the read's line once it ends.
 
     :param host: The host whose clients and job manager serve the review.
-    :ptype host: OpsHost
     :param read_id: The read.
-    :ptype read_id: str
     :param scope_id: The caller's scope.
-    :ptype scope_id: str
     :return: The started job.
-    :rtype: JobsStarted
     :raises NotFoundError: No such read.
     :raises ConflictError: The read is closed, or its review is already running.
     :raises ValidationFailedError: The read declared no reviewer, the reviewer has answered every item, or the cap
@@ -1128,15 +1091,10 @@ def blind_read_close(host: EvalHost, read_id: str, scope_id: str, *, closed_by: 
     preference is the anytime test's.
 
     :param host: The host whose store holds the read and its results.
-    :ptype host: EvalHost
     :param read_id: The read.
-    :ptype read_id: str
     :param scope_id: The caller's scope.
-    :ptype scope_id: str
     :param closed_by: Who closed it.
-    :ptype closed_by: str
     :return: The closed read, with what it found and the ratings written.
-    :rtype: BlindReadLine
     :raises NotFoundError: No such read.
     :raises ConflictError: It is already closed with every rating stored; or closed, and each rating still missing
         is refused (listed with why, in the message and ``details["not_written"]``); or an answer landed while it was
@@ -1224,13 +1182,9 @@ def blind_read_get(host: EvalHost, read_id: str, scope_id: str) -> BlindReadLine
     """One read's line: what was drawn, who has answered how far, and once closed what it found.
 
     :param host: The host whose store holds the read.
-    :ptype host: EvalHost
     :param read_id: The read.
-    :ptype read_id: str
     :param scope_id: The caller's scope.
-    :ptype scope_id: str
     :return: Its line.
-    :rtype: BlindReadLine
     :raises NotFoundError: No such read.
     """
     read, _ = _loaded(host, read_id, scope_id)
@@ -1241,13 +1195,9 @@ def blind_reads_list(host: EvalHost, scope_id: str, *, campaign_id: str | None =
     """The scope's blind reads, oldest first, optionally those drawn over one campaign.
 
     :param host: The host whose store holds them.
-    :ptype host: EvalHost
     :param scope_id: The caller's scope.
-    :ptype scope_id: str
     :param campaign_id: Only the reads over this campaign; None for every read.
-    :ptype campaign_id: str | None
     :return: Each read's line.
-    :rtype: BlindReadListing
     """
     every = host.storage.query_blind_reads(scope_id)
     shown = [read for read in every if campaign_id is None or read.campaign_id == campaign_id]

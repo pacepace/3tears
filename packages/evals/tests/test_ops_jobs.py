@@ -37,23 +37,22 @@ from threetears.evals.ops import (
     WriterLimits,
     LaunchArguments,
     analyses_list,
-    analysis_archive,
-    analysis_job_id,
     await_job,
-    campaign_archive,
     campaign_create,
     campaigns_list,
     job_cancel,
     job_poll,
-    parse_job_id,
     report_read,
     run_delete,
     run_get,
     run_job_id,
     run_launch,
 )
+from threetears.evals.ops.analysis import analysis_archive
+from threetears.evals.ops.jobs import analysis_job_id
+from threetears.evals.ops.analysis import campaign_archive
+from threetears.evals.ops.jobs import parse_job_id
 from threetears.evals.analysis import judge_agreement
-from threetears.evals.run import LAUNCH_CANCEL_REASON
 from threetears.evals.analysis.summary import budget_stop_line, summarize_runs
 from threetears.evals.schema.models import BudgetStop
 from packages.evals.tests.fixtures.toyhost.corpus import TOYHOST_JUDGED_DIMENSION
@@ -137,7 +136,7 @@ async def test_cancelling_a_launch_stops_every_run_it_started(monkeypatch: pytes
     assert cancelled.detail is not None and "wrong template" in cancelled.detail
     for run_id in cancelled.run_ids:
         run = await settled(fixture.host, run_job_id(run_id))
-        assert run.state == "cancelled" and run.detail == LAUNCH_CANCEL_REASON
+        assert run.state == "cancelled" and run.detail == "its launch was cancelled"
     assert not gate.is_set()
 
 

@@ -37,7 +37,8 @@ from typing import TYPE_CHECKING, Any, Final
 from pydantic import BaseModel
 
 from threetears.evals.schema import GoalStateOutcome
-from threetears.evals.kernel import ResultOutcome, counted_goal_verdicts
+from threetears.evals.kernel import ResultOutcome
+from threetears.evals.kernel.result_condition import counted_goal_verdicts
 from threetears.evals.kernel.errors import EvalServiceError
 from threetears.evals.kernel.numbers import UNPRICED
 from threetears.evals.kernel.text_block import one_line
@@ -52,8 +53,8 @@ from threetears.evals.ops import (
     ResultListing,
     ScoreExport,
     SecondJudgeRead,
-    export_text,
 )
+from threetears.evals.ops.lenses import export_text
 from threetears.evals.ops.analyst import CitedFigure
 from threetears.evals.ops.results import PageForms
 
@@ -137,7 +138,7 @@ def _paged(topic: HelpTopic) -> str:
 
 
 def render_primer(tools: Sequence[MountedTool]) -> str:
-    """The primer :func:`~threetears.evals.actions.catalogue_primer` holds to its budget: help first, then the tools,
+    """The primer :func:`~threetears.evals.actions.catalogue.catalogue_primer` holds to its budget: help first, then the tools,
     then the rules."""
     lines = [
         "Eval tools. Each takes `action`: action='help' lists a tool's actions by workflow, and action='help', "
@@ -314,9 +315,7 @@ def raised(status: int) -> bool:
     every other status is the call turned away.
 
     :param status: The error's HTTP-style status (``status_code``).
-    :ptype status: int
     :return: Whether it raised.
-    :rtype: bool
     """
     return status >= _RAISED_FROM
 
@@ -459,13 +458,9 @@ def _next_page_call(action: str, params: BaseModel, next_offset: int) -> dict[st
     """The call that reads the page after this one: the arguments the caller sent, ``offset`` advanced.
 
     :param action: The paged action.
-    :ptype action: str
     :param params: The call's validated parameters; the ones the caller set are sent again, as validated.
-    :ptype params: BaseModel
     :param next_offset: Where the next page starts.
-    :ptype next_offset: int
     :return: The next call's arguments, ``action`` first and ``offset`` last.
-    :rtype: dict[str, Any]
     """
     sent = params.model_dump(mode="json", include=set(params.model_fields_set) - {"offset"})
     return {
@@ -489,20 +484,14 @@ def render_page(
     """A paged action's text and structured result, each naming the next page's call, or ending on the last page.
 
     :param action: The paged action.
-    :ptype action: str
     :param params: The call's validated parameters.
-    :ptype params: BaseModel
     :param text: The result as its render writes it.
-    :ptype text: str
     :param structured: The result's JSON.
-    :ptype structured: dict[str, Any]
     :param unit: What its ``total`` counts, one and many (:func:`page_unit`): ``("flip", "flips")``.
-    :ptype unit: tuple[str, str]
     :return: The text, with how much of the whole it holds in words (``all 77 options shown``; ``flips 1 to 40 of 77
         shown; 37 follow``; nothing where its total is none), then ``next: …`` as its last line while
         a page follows; the JSON, with ``next`` (the next call's arguments) beside ``next_offset`` while a page
         follows, and neither on the last page.
-    :rtype: tuple[str, dict[str, Any]]
     """
     offset = structured.get(_NEXT_OFFSET)
     shown = _shown_line(structured.get("total"), structured.get("offset"), offset, unit)
@@ -519,9 +508,7 @@ def page_unit(result: BaseModel) -> tuple[str, str]:
     examples block).
 
     :param result: A paged result.
-    :ptype result: BaseModel
     :return: The unit, one and many.
-    :rtype: tuple[str, str]
     :raises TypeError: The result names no ``page_unit`` of two non-empty words.
     """
     unit = getattr(result, "page_unit", None)
@@ -580,13 +567,9 @@ def page_sizing(action: str, params: BaseModel, default: int) -> tuple[int, Call
     returns the largest page that passes it, so a page of long rows is shorter rather than overlong.
 
     :param action: The action, as the next page's call names it.
-    :ptype action: str
     :param params: The call's parameters, ``limit`` among them (``None``: size the page).
-    :ptype params: BaseModel
     :param default: The most rows a sized page holds.
-    :ptype default: int
     :return: The page's most rows, and the test, or ``None`` where the caller named the size.
-    :rtype: tuple[int, Callable[[BaseModel], bool] | None]
     """
     named = getattr(params, "limit", None)
     if named is not None:
@@ -602,11 +585,8 @@ def page_fits(action: str, params: BaseModel) -> Callable[[BaseModel], bool]:
     where they fit and says how many follow where they do not.
 
     :param action: The action, as the next page's call names it.
-    :ptype action: str
     :param params: The call's parameters.
-    :ptype params: BaseModel
     :return: The test.
-    :rtype: Callable[[BaseModel], bool]
     """
 
     def fits(page: BaseModel) -> bool:
@@ -683,12 +663,9 @@ def render_results(listing: ResultListing, *, default_limit: int | None = None) 
     """One page of a run's results, and how to read the next page and one result.
 
     :param listing: The page.
-    :ptype listing: ResultListing
     :param default_limit: The page size the calling surface uses when none is named; the next-page hint names
         ``limit`` whenever this page's differs, so following the hint reads a page of the same size.
-    :ptype default_limit: int | None
     :return: The text.
-    :rtype: str
     """
     narrowed = "" if listing.condition_filter is None else f" {listing.condition_filter.value}"
     end = listing.offset + len(listing.results)
@@ -719,9 +696,7 @@ def render_export(export: ScoreExport) -> str:
     it reads the next page of the same export.
 
     :param export: The export, or one page of it.
-    :ptype export: ScoreExport
     :return: The text.
-    :rtype: str
     """
     page = export.page
     if page is None or page.next_after_run_id is None:
@@ -745,9 +720,7 @@ def render_campaign_export(export: CampaignExport) -> str:
     repeating its documents would carry each twice. The next call repeats the factory the profile names.
 
     :param export: The export, or one page of it.
-    :ptype export: CampaignExport
     :return: The text.
-    :rtype: str
     """
     manifest, page = export.manifest, export.page
     counts = ", ".join(f"{doc_type} {count}" for doc_type, count in sorted(manifest.doc_type_counts.items()) if count)
@@ -787,7 +760,7 @@ def _goal_check_line(outcome: GoalStateOutcome, counted: bool | None, condition:
     """One goal check as evaluated, and as every rate counts it when the two differ.
 
     A candidate failure counts every check failed and a harness fault counts none
-    (:func:`~threetears.evals.kernel.counted_goal_verdicts`), so a check that evaluated True on such a
+    (:func:`~threetears.evals.kernel.result_condition.counted_goal_verdicts`), so a check that evaluated True on such a
     result says both, rather than reading as a pass the listing's count does not hold.
     """
     evaluated = "passed" if outcome.passed else "failed"

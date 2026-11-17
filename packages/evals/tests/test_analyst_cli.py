@@ -40,7 +40,8 @@ from packages.evals.tests.report_writer_support import (
     review,
     submitted,
 )
-from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, catalogue_primer, eval_catalogue
+from threetears.evals.actions import ActionOutcome, MountedTool, analyst_tools, eval_catalogue
+from threetears.evals.actions.catalogue import catalogue_primer
 from threetears.evals.actions.report_writing import ReportNotStored
 from threetears.evals.kernel import StorageError
 from threetears.evals.kernel.report_doc import EvalReportDoc, EvalReportSession

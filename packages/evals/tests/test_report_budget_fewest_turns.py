@@ -51,7 +51,9 @@ from packages.evals.tests.report_writer_support import (
 from packages.evals.tests.writer_case_support import SEED
 from packages.evals.tests.writer_eval_support import FakeScoringJudge, kairo_case
 from threetears.evals.analysis.analyst.skill import load_skill
-from threetears.evals.harness import Writer, WriterCaseFile, WriterEval, read_writer_cases
+from threetears.evals.harness import Writer, WriterEval
+from threetears.evals.harness.writer_cases import WriterCaseFile
+from threetears.evals.harness.writer_cases import read_writer_cases
 from threetears.evals.harness.writer_turns import writer_turns
 from threetears.evals.kernel import EvalStorage
 from threetears.evals.kernel.capped_completion import prompt_token_bound

@@ -115,7 +115,7 @@ async def test_a_job_cancelled_while_queued_records_that_it_delivered_nothing() 
 
     A job waits for a semaphore slot before its work function is called, and a
     sweep of ten arms parks eight there in ``pending``. Cancelling one — which
-    ``cancel_run`` explicitly permits for a pending run — raises at the
+    a cancel explicitly permits for a pending run — raises at the
     semaphore, so the work function's own record never happens and the reclaim
     path never sees the run (it has a live task). Without this the run went
     terminal carrying no completeness at all, which every read surface is

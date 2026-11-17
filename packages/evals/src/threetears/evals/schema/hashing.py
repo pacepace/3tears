@@ -39,9 +39,7 @@ def canonical_json(payload: Any) -> str:
     that caller; raising sends it to the caller, which is where a fix belongs rather than a fallback.
 
     :param payload: Any JSON-encodable structure.
-    :ptype payload: Any
     :return: The canonical JSON encoding.
-    :rtype: str
     :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
     """
     try:
@@ -62,9 +60,7 @@ def canonical_digest(payload: Any) -> str:
     nothing, and collision headroom matters more than display brevity.
 
     :param payload: Any JSON-encodable structure.
-    :ptype payload: Any
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     """
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
@@ -89,9 +85,7 @@ def round_figures(value: float) -> float:
     ``-Infinity``), so they are already deterministic.
 
     :param value: The float.
-    :ptype value: float
     :return: The float to twelve significant figures.
-    :rtype: float
     """
     rounded = float(f"{value:.{IDENTITY_FIGURES}g}")
     return 0.0 if rounded == 0 else rounded
@@ -106,9 +100,7 @@ def round_floats(payload: Any) -> Any:
     writes it.
 
     :param payload: Any JSON-able structure.
-    :ptype payload: Any
     :return: A copy with every float rounded; nothing is changed in place.
-    :rtype: Any
     """
     if isinstance(payload, float):
         return round_figures(payload)
@@ -129,9 +121,7 @@ def identity_json(payload: Any) -> str:
     pre-image of an identity, and the document itself keeps what it holds.
 
     :param payload: Any JSON-encodable structure.
-    :ptype payload: Any
     :return: The canonical JSON encoding, floats rounded.
-    :rtype: str
     :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
     """
     return canonical_json(round_floats(payload))
@@ -141,9 +131,7 @@ def identity_digest(payload: Any) -> str:
     """Return the full sha256 hex digest of ``payload``'s :func:`identity_json`.
 
     :param payload: Any JSON-encodable structure.
-    :ptype payload: Any
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
     """
     return hashlib.sha256(identity_json(payload).encode("utf-8")).hexdigest()
@@ -193,9 +181,7 @@ def input_json(payload: Any) -> str:
     :func:`identity_json` rounds away; this function is for values nothing computed.
 
     :param payload: Any JSON-encodable structure of stored values.
-    :ptype payload: Any
     :return: The canonical JSON encoding.
-    :rtype: str
     :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
     """
     return canonical_json(_canonical_input(payload))
@@ -205,9 +191,7 @@ def input_digest(payload: Any) -> str:
     """Return the full sha256 hex digest of ``payload``'s :func:`input_json`.
 
     :param payload: Any JSON-encodable structure of stored values.
-    :ptype payload: Any
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     :raises UnhashableContentError: ``payload`` holds something JSON cannot encode.
     """
     return hashlib.sha256(input_json(payload).encode("utf-8")).hexdigest()
@@ -221,9 +205,7 @@ def bytes_digest(payload: bytes) -> str:
     and running it through JSON would address the *encoding* of the blob rather than the blob.
 
     :param payload: The raw bytes.
-    :ptype payload: bytes
     :return: A 64-character lowercase hex digest.
-    :rtype: str
     """
     return hashlib.sha256(payload).hexdigest()
 

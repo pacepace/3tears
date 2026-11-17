@@ -402,9 +402,7 @@ def late_id(late: LateCriterion) -> str:
     """A late criterion's caveat id: ``late:<criterion>``, or ``late:<criterion>:<name>`` for a named one.
 
     :param late: The late criterion.
-    :ptype late: LateCriterion
     :return: Its id.
-    :rtype: str
     """
     return f"late:{late.criterion}" if late.name is None else f"late:{late.criterion}:{late.name}"
 
@@ -418,11 +416,8 @@ def late_subject(report_input: ReportInput, late: LateCriterion) -> tuple[str | 
     reading.
 
     :param report_input: The input the criterion is in, whose floors' reads name an older floor's aspect.
-    :ptype report_input: ReportInput
     :param late: The criterion.
-    :ptype late: LateCriterion
     :return: The aspect and the measure it names, each None where it names none; both None for an unnamed criterion.
-    :rtype: tuple[str | None, str | None]
     """
     if not late.name:
         return None, None
@@ -493,10 +488,8 @@ def from_legacy(report_input: ReportInput) -> list[CaveatEntry]:
     What a stored input with no list is given on read, and the first part of every list: nothing is written back.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: Late criteria, the judge, confounds, apparatus confounds, short runs, unsettled aspects, latency, then
         unreported observations, each in the input's order.
-    :rtype: list[CaveatEntry]
     """
     caveats = report_input.caveats
     found: dict[str, CaveatEntry] = {}
@@ -626,9 +619,7 @@ def unstated_judges(report_input: ReportInput) -> tuple[str, ...]:
     """The judged dimensions whose judge the input does not describe: no model, no tier, no calibration state.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The dimensions, by key, in the input's order.
-    :rtype: tuple[str, ...]
     """
     return tuple(
         dimension for dimension in judged_dimensions(report_input) if not judge_described(report_input, dimension)
@@ -639,9 +630,7 @@ def uncalibrated_judges(report_input: ReportInput) -> tuple[str, ...]:
     """The judged dimensions whose judge the input states uncalibrated.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The dimensions, by key, in the input's order.
-    :rtype: tuple[str, ...]
     """
     return tuple(
         dimension for dimension in judged_dimensions(report_input) if stated_uncalibrated(report_input, dimension)
@@ -653,11 +642,8 @@ def cleared_on_point_estimate(report_input: ReportInput, criterion_id: str) -> t
     stated, and none derived from its cells.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion_id: The gate or guardrail, by id.
-    :ptype criterion_id: str
     :return: Each ``(arm, task, cell)``, in the survivors' and the criterion's places' order.
-    :rtype: tuple[Place, ...]
     """
     criterion = next(held for held in report_input.criteria if held.id == criterion_id)
     return tuple(
@@ -675,11 +661,8 @@ def cleared_borderline(report_input: ReportInput, criterion_id: str) -> tuple[Pl
     there reaches the wrong side of the line: the gate's borderline, which the decision counts as passing.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param criterion_id: The gate or guardrail, by id.
-    :ptype criterion_id: str
     :return: Each ``(arm, task, cell)``, in the survivors' and the criterion's places' order.
-    :rtype: tuple[Place, ...]
     """
     return tuple(
         (arm, read.task, read.cell)
@@ -707,12 +690,9 @@ def implied(report_input: ReportInput, stated: Iterable[CaveatEntry] = ()) -> li
     """The caveats what the report input holds implies, beyond the ones it states.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param stated: The caveats it states (:func:`from_legacy`), which one implied caveat defers to.
-    :ptype stated: Iterable[CaveatEntry]
     :return: The judge's, then no control, nothing declared, each gate cleared on a point estimate, each gate cleared
         on a borderline figure, then a pick among many; each once, in that order.
-    :rtype: list[CaveatEntry]
     """
     found: list[CaveatEntry] = []
     unstated = unstated_judges(report_input)
@@ -962,14 +942,10 @@ def unkept_plan(
     recorded where the stored evidence changed at most once. It decides what is said, never how a reading was read.
 
     :param looks: The aspect's looks.
-    :ptype looks: Looks
     :param tests: The tests the readings in question use; None for ``Looks.tests``.
-    :ptype tests: Iterable[SeparationTest] | None
     :param planned: The plan the readings were read under where not the aspect's own
         (``CampaignReadings.planned_looks``); None for the aspect's.
-    :ptype planned: int | None
     :return: Why the level is not shown; None where it is.
-    :rtype: UnkeptPlan | None
     """
     plan = planned if planned is not None else looks.planned
     used = tuple(looks.tests if tests is None else sorted(set(tests)))
@@ -1067,11 +1043,8 @@ def from_states(report_input: ReportInput, bundle: CampaignBundle | None = None)
     for it, and per aspect looked at more often than it planned.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param bundle: The bundle it was built from, where the builder holds it; None for a stored input.
-    :ptype bundle: CampaignBundle | None
     :return: The caveats, each holder's in the input's order then the bundle's, then the checks', then the looks'.
-    :rtype: list[CaveatEntry]
     """
     facts = [*_input_facts(report_input), *(_bundle_facts(bundle) if bundle is not None else ())]
     return [*_from_facts(report_input, facts), *_checks(report_input), *_looks(report_input)]
@@ -1099,11 +1072,8 @@ def from_bundle(bundle: CampaignBundle, report_input: ReportInput) -> list[Cavea
     with no ordered time, and request settings not confirmed as sent.
 
     :param bundle: The campaign's bundle.
-    :ptype bundle: CampaignBundle
     :param report_input: The input built from it, which the caveats are scoped by.
-    :ptype report_input: ReportInput
     :return: The caveats.
-    :rtype: list[CaveatEntry]
     """
     found: list[CaveatEntry] = []
     if untimed := [aspect.aspect for aspect in bundle.aspects if aspect.reading_scope.untimed_results]:
@@ -1119,11 +1089,8 @@ def raise_caveats(report_input: ReportInput, bundle: CampaignBundle | None = Non
     """Every caveat on a report input, each once: stated, implied, typed, then the bundle's (this module's raisers).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param bundle: The bundle it was built from, where the builder holds it; None for a stored input.
-    :ptype bundle: CampaignBundle | None
     :return: The list.
-    :rtype: list[CaveatEntry]
     :raises ValueError: Two raisers raise different caveats under one id.
     """
     stated = from_legacy(report_input)
@@ -1143,9 +1110,7 @@ def caveat_list(report_input: ReportInput) -> list[CaveatEntry]:
     """The input's one caveat list: the one it carries, else the one its stored parts give on read.
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :return: The list.
-    :rtype: list[CaveatEntry]
     """
     if report_input.caveat_list is not None:
         return list(report_input.caveat_list)
@@ -1160,9 +1125,7 @@ def gate_of(bundle: CampaignBundle) -> Gate | None:
     (every aspect where none is asked), with the runs it names; None when the campaign can be read.
 
     :param bundle: The campaign's bundle.
-    :ptype bundle: CampaignBundle
     :return: The gate, or None.
-    :rtype: Gate | None
     """
     asked = [aspect for aspect in bundle.aspects if aspect.question_declared] or list(bundle.aspects)
     rules: list[tuple[AnalysisContextBundle, GateRule]] = []
@@ -1192,11 +1155,8 @@ def call_read(call: CampaignCall, bundle: CampaignBundle) -> CallRead:
     """A recorded call as the first screen reads it: the arm, who made it, and what has moved since.
 
     :param call: The call.
-    :ptype call: CampaignCall
     :param bundle: The campaign's bundle as it stands now.
-    :ptype bundle: CampaignBundle
     :return: The call's read.
-    :rtype: CallRead
     """
     joined = len(set(bundle.run_ids) - set(call.run_ids)) if call.run_ids else None
     changed = None if call.evidence_fingerprint is None else call.evidence_fingerprint != bundle.fingerprint()
@@ -1217,9 +1177,7 @@ def remedy(caveat: CaveatEntry) -> Remedy:
     """The one act that would close ``caveat``: its reason's, else its kind's, else ``no_action``.
 
     :param caveat: The caveat.
-    :ptype caveat: CaveatEntry
     :return: The act.
-    :rtype: Remedy
     """
     if caveat.reason is not None:
         return REMEDY_OF_REASON[caveat.reason]
@@ -1446,11 +1404,8 @@ def plan_of(report_input: ReportInput, caveat: CaveatEntry) -> Plan | None:
     is more evidence is planned); None where it is not.
 
     :param report_input: The input the caveat was raised on, which holds the figures it names.
-    :ptype report_input: ReportInput
     :param caveat: The caveat.
-    :ptype caveat: CaveatEntry
     :return: The plan, or None.
-    :rtype: Plan | None
     """
     remedied = remedy(caveat)
     if not STEP_OF_REMEDY[remedied].adds_evidence:
@@ -1721,35 +1676,21 @@ def next_step(
     cases, so pairing does not apply to its step.
 
     :param remedied: The remedy.
-    :ptype remedied: Remedy
     :param closes: The caveat it closes, by id; None for the gate's.
-    :ptype closes: str | None
     :param arms: The arms the caveat touches.
-    :ptype arms: Sequence[str]
     :param runs: The runs it names.
-    :ptype runs: Sequence[str]
     :param readings: The readings it names, whose aspect a launch's runs are of.
-    :ptype readings: Sequence[str]
     :param coordinate: The coordinate it is about.
-    :ptype coordinate: Coordinate | None
     :param plan: For more evidence, its size or why it has none (:func:`plan_of`); None reads nothing to settle. A
         step that adds cases passes the size as its count of new cases; one with no size makes no call.
-    :ptype plan: Plan | None
     :param results_needed: For a check: the results it needs before it decides.
-    :ptype results_needed: int | None
     :param recording: What recording an unrecorded coordinate would pool.
-    :ptype recording: Sequence[NextExperiment]
     :param no_action: For ``no_action``: why nothing closes it.
-    :ptype no_action: NoActionReason | None
     :param setup: What a launch can fill from the reading; none for a step read off nothing but the caveat.
-    :ptype setup: Setup
     :param alike: For a re-run that balances a confound: the apparatus dimensions it holds at one value.
-    :ptype alike: Sequence[str]
     :param contrast: Whether the rule that lifts the caveat reads a contrast against the control on this report,
         which pairs only the cases both sides ran.
-    :ptype contrast: bool
     :return: The step.
-    :rtype: RemedyStep
     """
     rule = STEP_OF_REMEDY[remedied]
     if rule.balances:
@@ -1837,17 +1778,11 @@ def caveat_step(
     no added case closes it on this input.
 
     :param caveat: The caveat.
-    :ptype caveat: CaveatEntry
     :param plan: For more evidence, its size read off the input (:func:`plan_of`).
-    :ptype plan: Plan | None
     :param results_needed: For a check against people: the results it needs, where the bundle says.
-    :ptype results_needed: int | None
     :param recording: What recording its coordinate would pool, where the bundle says.
-    :ptype recording: Sequence[NextExperiment]
     :param setup: What a launch can fill from the reading.
-    :ptype setup: Setup
     :return: The step.
-    :rtype: RemedyStep
     """
     remedied = remedy(caveat)
     if plan is not None and plan.no_action is not None:
@@ -1874,11 +1809,8 @@ def gate_step(gate: Gate, setup: Setup = Setup()) -> RemedyStep:
     floor where an interval is first stated from the fewest an arm holds.
 
     :param gate: The gate.
-    :ptype gate: Gate
     :param setup: What a launch can fill from the reading.
-    :ptype setup: Setup
     :return: The step.
-    :rtype: RemedyStep
     """
     reason = REASON_OF_GATE[gate.rule]
     plan = _to_the_floor(gate.fewest_cases) if reason == "too_few" else None
@@ -1912,10 +1844,8 @@ def evidence_of(bundle: CampaignBundle) -> Evidence:
     """What a campaign's bundle says about how far each step would go, and what each arm's runs were launched with.
 
     :param bundle: The campaign's bundle.
-    :ptype bundle: CampaignBundle
     :return: The results its judges' checks need, what recording would pool, by arm, and the subject, each aspect's
         template and each arm's runs there.
-    :rtype: Evidence
     """
     needed = [
         held
@@ -1965,18 +1895,12 @@ def screen(
     the step that lifts it).
 
     :param report_input: The report input.
-    :ptype report_input: ReportInput
     :param caveats: Its caveat list.
-    :ptype caveats: Sequence[CaveatEntry]
     :param gate: What stops the campaign being read, or None.
-    :ptype gate: Gate | None
     :param call: The call, where one was made.
-    :ptype call: CallRead | None
     :param evidence: What the bundle says about how far a step would go and what a launch repeats; none for a stored
         input.
-    :ptype evidence: Evidence
     :return: The first screen's value.
-    :rtype: FirstScreen
     """
     value = first_screen(caveats, gate=gate, called_arms=decision_at(report_input).dominant, call=call)
     setup = Setup(

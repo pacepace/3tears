@@ -25,15 +25,11 @@ def under(text: str, indent: str, *, first: str | None = None) -> list[str]:
     where a reader expects the next item.
 
     :param text: The text, of any number of lines.
-    :ptype text: str
     :param indent: What every line starts with.
-    :ptype indent: str
     :param first: What the first line starts with in place of ``indent``: the item's marker and heading
         (``"- kind: "``).
-    :ptype first: str | None
     :return: The lines; for a text with nothing in it, ``first`` alone (trimmed) when given, so the item is
         still shown, else ``[]``.
-    :rtype: list[str]
     """
     lines = [line.rstrip() for line in textwrap.dedent(text.expandtabs(4)).splitlines() if line.strip()]
     if not lines:
@@ -48,9 +44,7 @@ def one_line(text: str) -> str:
     heading or a bold lead: a title, a summary, an error. Spacing inside a line is kept.
 
     :param text: The text.
-    :ptype text: str
     :return: It, on one line.
-    :rtype: str
     """
     return " ".join(line.strip() for line in text.splitlines() if line.strip())
 

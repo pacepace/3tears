@@ -302,15 +302,11 @@ def doc_page_html(page: DocPage, *, static: bool = False, record: Sequence[str] 
     """Write a report document's page as one standalone HTML page (this module's account).
 
     :param page: The page.
-    :ptype page: DocPage
     :param static: Write the static page: no ``<script>``, no ``<link>``, every chart drawn as inline SVG above its
         table of values.
-    :ptype static: bool
     :param record: Markup this package wrote (the campaign's folds, each failed or lost trial's record in them), laid
         out closed after the document, which it leaves as it is; none by default.
-    :ptype record: Sequence[str]
     :return: The page.
-    :rtype: str
     """
     highlighted = page.recommended_rows
     headline = one_line(page.headline)

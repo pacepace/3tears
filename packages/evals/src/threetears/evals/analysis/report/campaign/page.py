@@ -113,30 +113,22 @@ def build_campaign_report(
     person's call; then the Scorecard, Design & provenance, then one fold per aspect.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it (:func:`~threetears.evals.analysis.campaign_readings.campaign_readings`).
-    :ptype readings: CampaignReadings
     :param aspect_reports: Each aspect's own page, keyed by its label: one per aspect, each built over the bundle its
         readings were read from (:func:`~threetears.evals.analysis.report.build.build_code_only_report`).
-    :ptype aspect_reports: Mapping[str, Report]
     :param call: The person's call; None while none is recorded.
-    :ptype call: CampaignCall | None
     :param unread_analysis_id: The campaign's analysis this version no longer reads, which this code-only page stands in
         for: the first screen says so in the one regenerate line
         (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`), and the page names it
         (``CampaignReport.unread_analysis_id``); None for any other page.
-    :ptype unread_analysis_id: str | None
     :param unread_report_doc_id: The report document, read by its id, this version no longer reads, which this
         code-only page stands in for: the first screen says so in the same line
         (:data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`); None for any other page.
-    :ptype unread_report_doc_id: str | None
     :param unread_line: What ``unread_analysis_id`` was, as its line says:
         :data:`~threetears.evals.analysis.report.campaign.answer_blocks.NO_LONGER_READS`, or the line of the retired
         writer that wrote it (:func:`~threetears.evals.analysis.report.campaign.answer_blocks.retired_generation`).
-    :ptype unread_line: str
     :param arms: The campaign's arms as a reader reads them (``CampaignBundle.arms``: the control first, then the derived
         candidates), which the arms line under the heading names; None names the arms its readings label.
-    :ptype arms: Sequence[CampaignArm] | None
     :param lead: The page's answer where its caller states its own, in place of the lead code writes from the
         readings: the way a harness whose eval reads a figure of its own (a judge's preference, a promotion's
         reading) states its answer on the page, as its own blocks with their own tone. They replace code's lead
@@ -145,13 +137,10 @@ def build_campaign_report(
         what warns. Each is in
         the ``answer`` section. None for code's lead; an empty sequence is refused. Nothing else on the page changes
         with it.
-    :ptype lead: Sequence[ReportBlock] | None
     :param folds_alone: Whether the folds are laid out without the page's own blocks, as a report document's evidence
         record is (:func:`~.provenance.for_the_campaign`, ``alone``): each fold then keeps its judge's calibration
         line, which the page's own Design & provenance would otherwise state once.
-    :ptype folds_alone: bool
     :return: The page, ``basis="code_only"``.
-    :rtype: CampaignReport
     :raises RefusedInput: An aspect has no page, a page is keyed by a label the campaign does not hold, the readings
         are of another campaign, or a given lead is empty or holds a block outside the ``answer`` section.
     """
@@ -190,32 +179,20 @@ def build_campaign_report_in_aspect_forms(
     forms are the engine's own.
 
     :param campaign: The campaign.
-    :ptype campaign: EvalCampaign
     :param readings: What code read off it, as :func:`build_campaign_report` reads them.
-    :ptype readings: CampaignReadings
     :param aspect_reports: Each aspect's own page, keyed by its label, as :func:`build_campaign_report` reads them.
-    :ptype aspect_reports: Mapping[str, Report]
     :param call: As :func:`build_campaign_report` reads it.
-    :ptype call: CampaignCall | None
     :param unread_analysis_id: As :func:`build_campaign_report` reads it.
-    :ptype unread_analysis_id: str | None
     :param unread_report_doc_id: As :func:`build_campaign_report` reads it.
-    :ptype unread_report_doc_id: str | None
     :param unread_line: As :func:`build_campaign_report` reads it.
-    :ptype unread_line: str
     :param arms: As :func:`build_campaign_report` reads them.
-    :ptype arms: Sequence[CampaignArm] | None
     :param lead: As :func:`build_campaign_report` reads it.
-    :ptype lead: Sequence[ReportBlock] | None
     :param folds_alone: As :func:`build_campaign_report` reads it.
-    :ptype folds_alone: bool
     :param aspect_forms: The forms each aspect's own page was built in, by its label
         (:meth:`~threetears.evals.analysis.report.forms.PageForms.of_bundle`), which the lead's figures read as that
         page's verdict line does; an aspect left out has its forms built here, from its page's bundle. They stay the
         aspects' own: the page's own figures read the campaign's forms.
-    :ptype aspect_forms: Mapping[str, PageForms]
     :return: The page, ``basis="code_only"``.
-    :rtype: CampaignReport
     :raises RefusedInput: As :func:`build_campaign_report` refuses.
     """
     reports = _checked_reports(campaign, readings, aspect_reports)
