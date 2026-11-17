@@ -1,39 +1,16 @@
 // The example app in headless Chromium, with the real shell worker: what it caches and never
 // caches, working offline, and an update that waits for the person's click.
-//
-// A machine without Chromium skips with the launch error; where THREETEARS_REQUIRE_CHROMIUM=1 (CI,
-// the testament pool) a launch that fails fails instead, so a missing browser never reads as a pass.
-import test, { after, before } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
-import { startExample } from "../server.js";
+import { useChromium } from "./chromium.js";
 
-/** @type {Awaited<ReturnType<typeof startExample>>} */
-let app;
-/** @type {import("playwright").Browser | null} */
-let browser = null;
-let skip = "";
-
-before(async () => {
-  app = await startExample();
-  try {
-    browser = await chromium.launch({ args: ["--disable-dev-shm-usage"] });
-  } catch (e) {
-    if (process.env.THREETEARS_REQUIRE_CHROMIUM === "1") throw e;
-    skip = `headless Chromium cannot launch: ${String(e).split("\n")[0]}`;
-  }
-});
-
-after(async () => {
-  await browser?.close();
-  await app?.close();
-});
+const env = useChromium();
 
 /** A fresh profile on the example, its worker installed and in control. */
 async function openApp() {
-  const context = await /** @type {import("playwright").Browser} */ (browser).newContext();
+  const context = await env.browser.newContext();
   const page = await context.newPage();
-  await page.goto(`${app.url}/app/`);
+  await page.goto(`${env.app.url}/app/`);
   await page.evaluate(() => window.exampleWorker.then(() => true));
   await page.evaluate(() => navigator.serviceWorker.ready);
   if (!(await page.evaluate(() => Boolean(navigator.serviceWorker.controller)))) {
@@ -55,8 +32,8 @@ function cachedPaths(page) {
 }
 
 test("the shell is cached, the API and sign-in never are", async (t) => {
-  if (skip) return t.skip(skip);
-  app.setVersion("1");
+  if (env.skip) return t.skip(env.skip);
+  env.app.setVersion("1");
   const { context, page } = await openApp();
   const { names, paths } = await cachedPaths(page);
   assert.deepEqual(names.filter((n) => n.startsWith("example-")), ["example-1"]);
@@ -72,13 +49,13 @@ test("the shell is cached, the API and sign-in never are", async (t) => {
 });
 
 test("online, every load is the server's current file; offline, the shell answers", async (t) => {
-  if (skip) return t.skip(skip);
-  app.setVersion("1");
+  if (env.skip) return t.skip(env.skip);
+  env.app.setVersion("1");
   const { context, page } = await openApp();
-  const before = app.hits.get("/app/app.js") ?? 0;
+  const before = env.app.hits.get("/app/app.js") ?? 0;
   await page.reload();
   await page.waitForFunction(() => document.getElementById("version").textContent === "version 1");
-  assert.ok((app.hits.get("/app/app.js") ?? 0) > before, "app.js came from the network while online");
+  assert.ok((env.app.hits.get("/app/app.js") ?? 0) > before, "app.js came from the network while online");
   await context.setOffline(true);
   await page.reload();
   await page.waitForFunction(() => document.getElementById("version").textContent === "version 1");
@@ -87,8 +64,8 @@ test("online, every load is the server's current file; offline, the shell answer
 });
 
 test("opening the app offline after the browser stopped its worker still finds the shell", async (t) => {
-  if (skip) return t.skip(skip);
-  app.setVersion("1");
+  if (env.skip) return t.skip(env.skip);
+  env.app.setVersion("1");
   const { context, page } = await openApp();
   const cdp = await context.newCDPSession(page);
   await cdp.send("ServiceWorker.enable");
@@ -97,16 +74,16 @@ test("opening the app offline after the browser stopped its worker still finds t
   // a new window, as a launch from the home screen is (reloading the page the DevTools session is
   // attached to closes it in headless Chromium)
   const launch = await context.newPage();
-  await launch.goto(`${app.url}/app/`);
+  await launch.goto(`${env.app.url}/app/`);
   await launch.waitForFunction(() => document.getElementById("version").textContent === "version 1");
   await context.close();
 });
 
 test("a new version waits for the person, then the page reloads into it", async (t) => {
-  if (skip) return t.skip(skip);
-  app.setVersion("1");
+  if (env.skip) return t.skip(env.skip);
+  env.app.setVersion("1");
   const { context, page } = await openApp();
-  app.setVersion("2"); // a deploy: only the config the worker imports changes, never the worker file
+  env.app.setVersion("2"); // a deploy: only the config the worker imports changes, never the worker file
   await page.evaluate(() => window.exampleWorker.then((w) => w.registration.update()));
   await page.waitForFunction(() => !document.getElementById("update").hidden);
   // still the old version: nothing replaced the running page
@@ -121,12 +98,12 @@ test("a new version waits for the person, then the page reloads into it", async 
 });
 
 test("an open page learns of a deploy without navigating: on return to view, and when the app asks", async (t) => {
-  if (skip) return t.skip(skip);
+  if (env.skip) return t.skip(env.skip);
   for (const how of ["visible", "check"]) {
-    app.setVersion("1");
+    env.app.setVersion("1");
     const { context, page } = await openApp();
     await page.evaluate(() => { window.sameDocument = true; });
-    app.setVersion(how === "visible" ? "2" : "3"); // a deploy; the page has no reason to navigate
+    env.app.setVersion(how === "visible" ? "2" : "3"); // a deploy; the page has no reason to navigate
     await page.waitForTimeout(1500);
     assert.equal(await page.evaluate(() => document.getElementById("update").hidden), true, `${how}: nothing looked yet`);
     if (how === "visible") {
@@ -144,24 +121,24 @@ test("an open page learns of a deploy without navigating: on return to view, and
 });
 
 test("the lock screen gets the app's now playing, and the page its display mode", async (t) => {
-  if (skip) return t.skip(skip);
+  if (env.skip) return t.skip(env.skip);
   const { context, page } = await openApp();
   const state = await page.evaluate(() => ({
     title: navigator.mediaSession.metadata?.title,
     art: navigator.mediaSession.metadata?.artwork[0]?.src,
     mode: document.documentElement.dataset.displayMode,
   }));
-  assert.deepEqual(state, { title: "Example", art: `${app.url}/app/icon-512.png`, mode: "browser" });
+  assert.deepEqual(state, { title: "Example", art: `${env.app.url}/app/icon-512.png`, mode: "browser" });
   await page.click("#play");
   assert.equal(await page.evaluate(() => navigator.mediaSession.playbackState), "playing");
   await context.close();
 });
 
 test("with no config the worker caches nothing and passes everything through", async (t) => {
-  if (skip) return t.skip(skip);
-  const context = await /** @type {import("playwright").Browser} */ (browser).newContext();
+  if (env.skip) return t.skip(env.skip);
+  const context = await env.browser.newContext();
   const page = await context.newPage();
-  await page.goto(`${app.url}/app/api/blank`);
+  await page.goto(`${env.app.url}/app/api/blank`);
   const result = await page.evaluate(async () => {
     const reg = await navigator.serviceWorker.register("/app/pwa/shell-worker.js?update=immediate", { scope: "/app/api/" });
     await navigator.serviceWorker.ready;

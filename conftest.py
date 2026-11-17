@@ -26,11 +26,22 @@ when langchain-core flips the default in a future release.
 
 from __future__ import annotations
 
+import os
 import sys
 import warnings
 from collections.abc import Iterator
 
 import pytest
+
+# No test reaches the Hugging Face Hub. ``huggingface_hub`` (loaded through ``voyageai`` and ``tokenizers``) fetches
+# its agent-harness registry from huggingface.co the first time ``huggingface_hub.cli`` is imported, unless a copy
+# under a day old is cached in HF_HOME. Nothing here imports that module, but freezegun's ``start()`` reads every
+# attribute of every loaded module, and reading the package's lazy ``cli`` attribute imports it. So a test that froze
+# the clock behind the offline guard (``packages/evals/tests/offline_support.py``) failed on a connect to huggingface.co
+# whenever its process was the first to walk that package on a runner whose cache had aged past a day. The package
+# reads this variable once, at its own import, so it is set here, before anything below can import it; it is set
+# outright rather than defaulted, since no test downloads from the Hub.
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 # Importing langchain_core re-enables LangChain's own deprecation warnings: its
 # ``__init__`` calls ``surface_langchain_deprecation_warnings()``, which prepends a
