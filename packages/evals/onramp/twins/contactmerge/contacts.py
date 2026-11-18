@@ -80,14 +80,21 @@ def phone_key(phone: str) -> str:
     return digits
 
 
-def keys(contact: Contact) -> set[str]:
+#: Each row's match keys, worked out once: merging the full exports asks for the same row's keys many times over.
+_KEYS: dict[object, frozenset[str]] = {}
+
+
+def keys(contact: Contact) -> frozenset[str]:
     """What a contact can be matched on: its email address and its phone number, each where it has one."""
-    found = set()
-    if contact.email.strip():
-        found.add("email:" + email_key(contact.email))
-    if phone_key(contact.phone):
-        found.add("phone:" + phone_key(contact.phone))
-    return found
+    cache_key = contact
+    if cache_key not in _KEYS:
+        found = set()
+        if contact.email.strip():
+            found.add("email:" + email_key(contact.email))
+        if phone_key(contact.phone):
+            found.add("phone:" + phone_key(contact.phone))
+        _KEYS[cache_key] = frozenset(found)
+    return _KEYS[cache_key]
 
 
 def same_person(a: Contact, b: Contact) -> bool:

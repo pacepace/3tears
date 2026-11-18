@@ -34,7 +34,7 @@ another family, or of the same family, whose slip or setting an eval would see a
 |---|---|---|---|
 | recipes | development | the wrong unit (a teaspoon-to-tablespoon constant) | shipeta |
 | glossator | development | text normalisation (accented letters dropped from a slug) | docnames, mdtable |
-| holds | development | to be filled by the coordinator | |
+| holds | development | a wrong constant (a seven-day grace before a hold reads as expired, where the desk's rule grants none) | statements (a wrong default) |
 | parcelrate | held out | boundary (`<` for `<=`) | loyalty; shipeta shares its courier setting |
 | loyalty | held out | boundary (an inverted comparison on one branch) | parcelrate |
 | weatherboard | held out | rounding (negatives truncated toward zero) | proration |
@@ -45,20 +45,20 @@ another family, or of the same family, whose slip or setting an eval would see a
 | mdtable | held out | text normalisation (width counted in code points, not after composing) | glossator, docnames |
 | faqrank | held out | tokenisation (query and index split differently) | docnames |
 | digest | held out | regex (a sentence pattern too loose) | postal, logtally |
-| postal | held out | regex (a greedy `(.+)` where `(.+?)` was meant) | plurals (the same fix), digest |
+| postal | held out | regex (a greedy `(.+)` where `(.+?)` was meant) | digest |
 | logtally | held out | empty input (a `-` field refused by too narrow a pattern) | gradecurve; regex: digest, postal |
 | gradecurve | held out | empty input (a blank score counted as zero) | logtally |
 | statements | held out | locale parsing (day-first dates read month first) | shelfprice |
 | shelfprice | held out | locale parsing (a decimal comma read as a thousands separator) | statements |
-| standups | held out | time and daylight saving (a series stepped in UTC) | slotfinder (scheduling, an hour out) |
-| passcheck | held out | case (matched without lowering one side) | contactmerge (the same `.lower()` fix) |
+| standups | held out | time and daylight saving (a series stepped in UTC) | slotfinder (scheduling) |
+| passcheck | held out | case (matched without lowering one side) | |
 | previews | held out | off-by-one (a cut that forgets the ellipsis's length) | |
 | tickets | held out | a dropped case (a missing state-machine transition) | |
 | standings | held out | ordering (a wrong tie-break) | |
 | moodscore | held out | a counter reset at the wrong time (a negation window left open) | |
-| contactmerge | held out | to be filled by its builder (being changed) | |
-| plurals | held out | to be filled by its builder (being changed) | |
-| slotfinder | held out | to be filled by its builder (being changed) | |
+| contactmerge | held out | state across calls (a cache keyed by name, so a namesake takes an earlier row's keys) | moodscore (state kept too long) |
+| plurals | held out | a formatting step skipped on one path (`str` where the number formatter was meant) | previews (text a reader sees) |
+| slotfinder | held out | float accumulation (a float step truncated to whole minutes) | standups (scheduling); weatherboard (truncation) |
 
 ## Shares near the ceiling
 
@@ -304,35 +304,39 @@ against the labels reads the twin better, so on these two apps the `measures_the
   +        return BRONZE_BONUS if spend >= BRONZE_BONUS_FROM else 0
   ```
 
-## contactmerge: de-duplication, case-sensitive matching
+## contactmerge: de-duplication, state kept across calls under the wrong key
 
-- **Defect.** `contacts.email_key` strips an address but keeps its case, so `Jo.Bloggs@Example.com` and
-  `jo.bloggs@example.com` are two keys. The docstring and README say an address matches whatever its case. A pair
-  that also shares a phone number is still joined by the phone, so only pairs linked by a differently cased address
-  alone come apart.
-- **Where.** `apps/contactmerge/contacts.py`, `email_key`.
+- **Defect.** `contacts.keys` remembers each row's match keys in a module-level cache, so a merge asks for them once,
+  but it files them under the row's name. The second row with a name already seen, in the same call or any later one,
+  gets the first row's email and phone. Two different people who share a name (the README: a shared name alone never
+  makes two rows one person) are then joined, and a row named only by a first name can take an earlier namesake's
+  keys. Rows with names not seen before are right.
+- **Where.** `apps/contactmerge/contacts.py`, `keys`, its first line.
 - **Share.** 12 of 44 reviewed pairs (27%) are decided otherwise than Priya's review (`data/reviewed_pairs.jsonl`,
-  `same`); 5 of its first 20.
+  `same`): the 11 namesake pairs, and one pair whose first-name-only row met an earlier row of that name; 8 of its
+  first 20 and 2 of its first 5. The share is measured on a fresh import, pairs in file order.
 - **Twin diff.**
   ```diff
-  -    return email.strip()
-  +    return email.strip().lower()
+  -    cache_key = contact.name
+  +    cache_key = contact
   ```
 
-## slotfinder: time zones, southern-hemisphere daylight saving
+## slotfinder: meeting slots, float accumulation
 
-- **Defect.** `slots.in_summer_time` tests `starts <= day < ends`, which holds for a northern city whose summer starts
-  and ends in one calendar year. Sydney's starts in October and ends in April, so the test is never true there: from
-  October to April the app reads Sydney an hour behind its clocks, and every window Sydney's hours bound moves.
-- **Where.** `apps/slotfinder/slots.py`, `in_summer_time`, its last line.
+- **Defect.** `slots.free_slots` steps through the UTC day by adding `step / 60` hours to a float and truncates each
+  start to whole minutes. With a step of 30 or 15 minutes the sum is exact; with 20 or 10 minutes (a third or a sixth
+  of an hour) it drifts just under the true time, so many starts come out a minute early (`01:39` for `01:40`), and
+  the free check is made at that minute. Requests on the half hour or the quarter hour are right. Daylight saving and
+  the time zones are handled correctly in both the app and the twin.
+- **Where.** `apps/slotfinder/slots.py`, `free_slots`, the line that makes each start.
 - **Share.** 13 of 46 logged requests (28%) get free slots other than the ones offered (`data/requests.jsonl`,
-  `offered`); 7 of its first 20. The log runs through 2026 in date order, so the affected requests (a Sydney attendee
-  in its summer) sit at both ends of it. The requests were drawn from a larger random set to hold the share near
-  a quarter.
+  `offered`); 5 of its first 20 and 1 of its first 5. The requests are a plain random draw (each team's step drawn
+  from 30, 30, 15, 20, 10, 10 minutes), with no selection on the outcome. 23 of them use a 20 or 10-minute step; the
+  other 10 of those come out the same on both, since none of their free windows meets a drifted start.
 - **Twin diff.**
   ```diff
-  -    return starts <= day < ends
-  +    return starts <= day < ends if starts < ends else not ends <= day < starts
+  -        start = midnight + timedelta(minutes=int(hour * 60))
+  +        start = midnight + timedelta(minutes=round(hour * 60))
   ```
 
 ## shipeta: an estimate, the wrong unit (graded, with a tolerance)
@@ -373,7 +377,9 @@ against the labels reads the twin better, so on these two apps the `measures_the
   arrives precomposed is right.
 - **Where.** `apps/mdtable/mdtable.py`, `display_width`.
 - **Share.** 12 of 42 handbook tables (29%) are written otherwise than the signed-off Markdown
-  (`data/tables.jsonl`, `expected`); 5 of its first 20.
+  (`data/tables.jsonl`, `expected`); 5 of its first 20. In the data file every combining mark (and every zero-width
+  format character) is written as a JSON escape (`Montre\u0301al`), so it stays visible to whoever copies a case by
+  hand; `json.loads` gives the same strings as before.
 - **Twin diff.**
   ```diff
   -    return len(text)
@@ -394,19 +400,18 @@ against the labels reads the twin better, so on these two apps the `measures_the
   +    return sum(s for s in scores if s is not None) / sum(s is not None for s in scores)
   ```
 
-## plurals: message templates, a greedy pattern
+## plurals: message templates, a formatting step skipped on one path
 
-- **Defect.** `messages._FIELD` is `\{(.+)\}`, which runs from a template's first `{` to its last `}`. A template
-  with one field is right; one with two or more fields is read as one field, and comes out unfilled (its first name
-  is not a value), half-filled (`Moved 3 files} to {folder`), or refused with `TemplateError` (two plural fields read
-  as one field with four forms).
-- **Where.** `apps/plurals/messages.py`, `_FIELD`.
-- **Share.** 14 of 46 review-sheet strings (30%) render otherwise than the approved text (`data/strings.jsonl`,
-  `approved`), 2 of them refused; 6 of its first 20.
+- **Defect.** A plain field writes its number through `messages.number` (thousands commas: `1,204`), but the `#` in a
+  plural form is replaced with `str(value)`, so a plural field over 999 reads `1204 files` where the docstring says
+  `1,204 files`. Numbers below 1,000, and every plain field, are right.
+- **Where.** `apps/plurals/messages.py`, `render`, the last line of `field`.
+- **Share.** 11 of 46 review-sheet strings (24%) render otherwise than the approved text (`data/strings.jsonl`,
+  `approved`); 6 of its first 20 and 3 of its first 5.
 - **Twin diff.**
   ```diff
-  -_FIELD = re.compile(r"\{(.+)\}")
-  +_FIELD = re.compile(r"\{(.+?)\}")
+  -        return choose(values[name], forms).replace("#", str(values[name]))
+  +        return choose(values[name], forms).replace("#", number(values[name]))
   ```
 
 ## proration: billing, integer division
@@ -415,8 +420,10 @@ against the labels reads the twin better, so on these two apps the `measures_the
   a penny up. A line whose exact amount has a fraction of a half penny or more comes out one penny short.
 - **Where.** `apps/proration/proration.py`, `share`.
 - **Share.** 15 of 46 plan changes (33%) get invoice lines other than the provider's (`data/invoices.jsonl`,
-  `credit_pence` and `charge_pence`); 6 of its first 20. The invoices were chosen from a larger draw to hold the share
-  near a third: on uniformly drawn changes nearly three in four have a line with such a fraction.
+  `credit_pence` and `charge_pence`); 7 of its first 20 and 3 of its first 5. The file lists the invoices newest
+  first, as the provider's export does, and the README calls it a sample. The invoices were chosen from a larger
+  draw to hold the share near a third: on uniformly drawn changes nearly three in four have a line with such a
+  fraction.
 - **Twin diff.**
   ```diff
   -    return pence * days // of_days

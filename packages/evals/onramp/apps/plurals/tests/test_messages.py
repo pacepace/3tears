@@ -23,12 +23,18 @@ class PartsTests(unittest.TestCase):
 class RenderTests(unittest.TestCase):
     def test_a_plain_field(self):
         self.assertEqual(render("Hello {name}!", {"name": "Priya"}), "Hello Priya!")
+        self.assertEqual(render("{n} views", {"n": 20481}), "20,481 views")
+
+    def test_two_fields(self):
+        self.assertEqual(
+            render("{owner} shared {count|a file|# files}", {"owner": "Tom", "count": 1}), "Tom shared a file"
+        )
 
     def test_plural_fields(self):
         template = "{count|no messages|one message|# messages}"
         self.assertEqual(
-            [render(template, {"count": n}) for n in (0, 1, 2, 1500)],
-            ["no messages", "one message", "2 messages", "1,500 messages"],
+            [render(template, {"count": n}) for n in (0, 1, 2, 15)],
+            ["no messages", "one message", "2 messages", "15 messages"],
         )
 
     def test_a_plural_in_a_sentence(self):

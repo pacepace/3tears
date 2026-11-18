@@ -44,6 +44,16 @@ class SlotTests(unittest.TestCase):
         slots = free_slots(date(2026, 7, 8), people, 30)
         self.assertEqual((slots[0], slots[-1]), (utc("2026-07-08T01:00"), utc("2026-07-08T07:00")))
 
+    def test_quarter_hour_steps(self):
+        people = [Attendee("Callum", "London", "08:30-17:30"), Attendee("Marisol", "New York", "08:00-17:00")]
+        slots = free_slots(date(2026, 1, 14), people, 30, step=15)
+        self.assertEqual(slots[:3], [utc("2026-01-14T13:00"), utc("2026-01-14T13:15"), utc("2026-01-14T13:30")])
+        self.assertEqual(slots[-1], utc("2026-01-14T17:00"))
+
+    def test_a_step_must_divide_the_day(self):
+        with self.assertRaises(ValueError):
+            free_slots(date(2026, 1, 14), [Attendee("Callum", "London")], step=25)
+
     def test_no_overlap_gives_nothing(self):
         people = [Attendee("Beatriz", "Sao Paulo", "09:00-12:00"), Attendee("Wei Ling", "Singapore", "09:00-18:00")]
         self.assertEqual(free_slots(date(2026, 2, 3), people), [])
