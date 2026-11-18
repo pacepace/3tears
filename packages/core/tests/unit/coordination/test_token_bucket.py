@@ -30,7 +30,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from threetears.core.coordination import TokenBucket, TokenBucketConflict
+from threetears.core.coordination import TokenBucket, TokenBucketConflict, TokenBucketLike
 
 from threetears.core.testing.kv import FakeNatsClient
 
@@ -542,3 +542,10 @@ class TestStoredForm:
 
         with pytest.raises(ValueError, match="stored bucket state|Expecting|Invalid isoformat|codec"):
             await _bucket(client, clock, refill_rate=1.0, capacity=5.0).claim("k")
+
+
+class TestTokenBucketLike:
+    def test_the_bucket_is_what_a_caller_types_its_pacer_as(self, client: FakeNatsClient, clock: _DrivenClock) -> None:
+        """A parameter typed ``TokenBucketLike`` takes the real bucket, statically and at runtime."""
+        bucket: TokenBucketLike = _bucket(client, clock, refill_rate=1.0, capacity=1.0)
+        assert isinstance(bucket, TokenBucketLike)

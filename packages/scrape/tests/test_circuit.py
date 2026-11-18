@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
+from threetears.core.entities.base import BaseEntity
 from threetears.core.coordination.windowed_counter import WindowState
-from threetears.core.coordination.token_bucket import TokenBucketConflict
+from threetears.core.coordination.token_bucket import TokenBucketConflict, TokenClaimResult
 from threetears.core.exceptions import ConcurrentModificationError, DataLayerUnavailableError
 from threetears.models.circuit_breaker import (
     CircuitBreaker,
@@ -253,12 +255,12 @@ async def test_a_healthy_target_with_a_row_is_not_rewritten_on_every_poll(
     writes: list[str] = []
     original = health.save_entity
 
-    async def counting_save(entity: object, **kwargs: object) -> object:
+    async def counting_save(entity: BaseEntity, *, conn: Any = None) -> None:
         writes.append("write")
-        return await original(entity, **kwargs)  # type: ignore[arg-type]
+        await original(entity, conn=conn)
 
-    health.save_entity = counting_save  # type: ignore[method-assign, assignment]
-    await TargetCircuit(health).record_reachable(_T, now=_NOW)
+    with patch.object(health, "save_entity", counting_save):
+        await TargetCircuit(health).record_reachable(_T, now=_NOW)
     assert writes == []
 
 
@@ -391,7 +393,9 @@ class _FakeProbePacer:
         self._explode = explode
         self._raises = raises
 
-    async def claim(self, key: str = "default", **_kwargs: object) -> object:
+    async def claim(
+        self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0
+    ) -> TokenClaimResult:
         del key
         self.claims += 1
         if self._raises is not None:
@@ -400,10 +404,10 @@ class _FakeProbePacer:
             raise KvError("token bucket KV is unreachable")
         if self.tokens > 0:
             self.tokens -= 1
-            return _Claim(claimed=True, retry_after_seconds=0.0)
-        return _Claim(claimed=False, retry_after_seconds=45.0)
+            return TokenClaimResult(claimed=True, tokens_remaining=0.0, retry_after_seconds=0.0)
+        return TokenClaimResult(claimed=False, tokens_remaining=0.0, retry_after_seconds=45.0)
 
-    async def refund(self, key: str = "default", **_kwargs: object) -> float:
+    async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
         """Give a claimed probe slot back.
 
         The circuit does not call this today -- a probe is resolved by its outcome, not
@@ -414,14 +418,6 @@ class _FakeProbePacer:
         self.tokens += 1
         self.refunds += 1
         return float(self.tokens)
-
-
-# parity-with: threetears.core.coordination.token_bucket.TokenClaimResult
-class _Claim:
-    def __init__(self, *, claimed: bool, retry_after_seconds: float) -> None:
-        self.claimed = claimed
-        self.tokens_remaining = 0.0
-        self.retry_after_seconds = retry_after_seconds
 
 
 # parity-with: threetears.scrape.circuit.ReprobeScheduler
@@ -1074,6 +1070,15 @@ async def test_a_stuck_half_open_row_still_decays_when_a_probe_pacer_is_configur
     assert (await circuit.check(_T, now=probe_at + timedelta(seconds=61))).is_probe
 
 
+def _state_of(breaker: CircuitBreaker) -> CircuitState:
+    """The breaker's state as it stands now: a call, so a check that moved it reads afresh.
+
+    ``assert breaker.state is X`` narrows the property to ``X`` for the rest of the test, and the
+    check that promotes the breaker happens behind a call the type checker cannot see into.
+    """
+    return breaker.state
+
+
 @pytest.mark.asyncio
 async def test_an_abandoned_probe_can_be_released_by_the_caller_that_abandoned_it(
     health: ScrapeTargetHealthCollection, policy: BackoffPolicy
@@ -1097,7 +1102,7 @@ async def test_an_abandoned_probe_can_be_released_by_the_caller_that_abandoned_i
     # A permitted fetch: the durable circuit is closed, and the in-process breaker promotes
     # itself to HALF_OPEN on the way through, taking its own probe slot.
     assert (await circuit.check(_T, now=_NOW)).permitted
-    assert breaker.state is CircuitState.HALF_OPEN
+    assert _state_of(breaker) is CircuitState.HALF_OPEN
 
     # The caller raises before reporting any outcome, and says so.
     circuit.release_probe(_T)
@@ -1526,7 +1531,9 @@ async def test_the_fresh_window_for_an_unreadable_one_books_its_reprobe(
 
     await TargetCircuit(health, policy=policy, reprobe_scheduler=scheduler).check(_T, now=_NOW)
 
-    assert scheduler.booked == [(_T, pytest.approx(60.0))]
+    ((booked_target, booked_delay),) = scheduler.booked
+    assert booked_target == _T
+    assert booked_delay == pytest.approx(60.0)
 
 
 @pytest.mark.asyncio

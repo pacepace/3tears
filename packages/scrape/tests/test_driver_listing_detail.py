@@ -8,6 +8,8 @@ the consuming application's own live suite (faidh repo).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
@@ -41,7 +43,7 @@ def _detail_html(*, notice_date: str = "", affected_count: str = "") -> str:
     )
 
 
-def _driver(handler, **kwargs) -> ListingDetailDriver:
+def _driver(handler: Callable[[httpx.Request], httpx.Response], **kwargs: Any) -> ListingDetailDriver:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return ListingDetailDriver(
         row_selector="table tr",
@@ -296,7 +298,7 @@ class TestListingDetailDriver:
         detail_fetch_count = 0
         original_get = client.get
 
-        async def counting_get(*args, **kwargs):
+        async def counting_get(*args: Any, **kwargs: Any) -> httpx.Response:
             nonlocal detail_fetch_count
             detail_fetch_count += 1
             return await original_get(*args, **kwargs)
@@ -353,7 +355,7 @@ class TestListingDetailDriver:
 
         assert detail_fetch_count == 2
 
-    async def test_pace_delay_is_awaited_between_detail_fetches(self) -> None:
+    async def test_pace_delay_is_awaited_between_detail_fetches(self, monkeypatch: pytest.MonkeyPatch) -> None:
         listing = _listing_html(
             [
                 ("Acme Corp", "/notices/1", "City", "Jun 1, 2026"),
@@ -376,21 +378,18 @@ class TestListingDetailDriver:
             pace_delay_seconds=1.0,
         )
         sleep_mock = AsyncMock()
-        import threetears.scrape.drivers.listing_detail as listing_detail_module
-
-        original_sleep = listing_detail_module.asyncio.sleep
-        listing_detail_module.asyncio.sleep = sleep_mock
-        try:
-            await driver.render("https://example.gov/warn")
-        finally:
-            listing_detail_module.asyncio.sleep = original_sleep
+        monkeypatch.setattr("threetears.scrape.drivers.listing_detail.asyncio.sleep", sleep_mock)
+        await driver.render("https://example.gov/warn")
 
         # 2 rows -> only 1 delay (no trailing pace-wait after the LAST row -- nothing
         # left to protect a server from once every detail fetch has already happened)
         assert sleep_mock.await_count == 1
+        assert sleep_mock.await_args is not None
         assert sleep_mock.await_args.args == (1.0,)
 
-    async def test_a_429_detail_response_backs_off_with_extra_delay_and_falls_back_to_listing_fields(self) -> None:
+    async def test_a_429_detail_response_backs_off_with_extra_delay_and_falls_back_to_listing_fields(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Live-found: the real Arizona/Delaware/
         Kansas/Vermont/Maine servers returned intermittent 429s at a 0.1s
         pace -- a 429 is the server's own explicit "slow down" signal, not
@@ -422,14 +421,8 @@ class TestListingDetailDriver:
             pace_delay_seconds=0.5,
         )
         sleep_mock = AsyncMock()
-        import threetears.scrape.drivers.listing_detail as listing_detail_module
-
-        original_sleep = listing_detail_module.asyncio.sleep
-        listing_detail_module.asyncio.sleep = sleep_mock
-        try:
-            page = await driver.render("https://example.gov/warn")
-        finally:
-            listing_detail_module.asyncio.sleep = original_sleep
+        monkeypatch.setattr("threetears.scrape.drivers.listing_detail.asyncio.sleep", sleep_mock)
+        page = await driver.render("https://example.gov/warn")
 
         # normal pace (0.5) plus the exact extra rate-limited backoff (2.0), pinned precisely
         assert sleep_mock.await_args_list[0].args == (2.5,)
@@ -481,12 +474,11 @@ class TestListingDetailDriver:
             client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         )
         sleep_mock = AsyncMock()
-        import threetears.scrape.drivers.listing_detail as listing_detail_module
-
-        monkeypatch.setattr(listing_detail_module.asyncio, "sleep", sleep_mock)
+        monkeypatch.setattr("threetears.scrape.drivers.listing_detail.asyncio.sleep", sleep_mock)
         await driver.render("https://example.gov/warn")
 
         assert sleep_mock.await_count == 1
+        assert sleep_mock.await_args is not None
         assert sleep_mock.await_args.args[0] > 0
 
 

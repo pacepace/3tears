@@ -20,8 +20,7 @@ so here, and only here, a drifted `claim(self, key)` passes clean.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
+from threetears.core.coordination.token_bucket import TokenClaimResult
 
 __all__ = ["FakeDelayPacer"]
 
@@ -36,9 +35,11 @@ class FakeDelayPacer:
         self.keys: list[str] = []
         self.refunded: list[str] = []
 
-    async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
+    async def claim(
+        self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0
+    ) -> TokenClaimResult:
         self.keys.append(key)
-        return SimpleNamespace(claimed=self._claimed, retry_after_seconds=self._retry_after, tokens_remaining=0.0)
+        return TokenClaimResult(claimed=self._claimed, tokens_remaining=0.0, retry_after_seconds=self._retry_after)
 
     async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
         self.refunded.append(key)

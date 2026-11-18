@@ -566,18 +566,18 @@ class TestCamoufoxDriverNavSteps:
 
 class TestCamoufoxDriverLazyLaunch:
     async def test_browser_launched_once_and_reused_across_render_calls(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        launched: list[dict] = []
+        launched: list[dict[str, object]] = []
 
         # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
         class _FakeAsyncCamoufox:
-            def __init__(self, **kwargs) -> None:
+            def __init__(self, **kwargs: object) -> None:
                 launched.append(kwargs)
                 self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
 
-            async def __aenter__(self):
+            async def __aenter__(self) -> FakeCamoufoxBrowser:
                 return self._browser
 
-            async def __aexit__(self, *exc_info):
+            async def __aexit__(self, *exc_info: object) -> None:
                 return None
 
         monkeypatch.setattr("threetears.scrape.drivers.camoufox.AsyncCamoufox", _FakeAsyncCamoufox)
@@ -600,13 +600,13 @@ class TestCamoufoxDriverLazyLaunch:
 
         # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
         class _FakeAsyncCamoufox:
-            def __init__(self, **kwargs) -> None:
+            def __init__(self, **kwargs: object) -> None:
                 self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
 
-            async def __aenter__(self):
+            async def __aenter__(self) -> FakeCamoufoxBrowser:
                 return self._browser
 
-            async def __aexit__(self, *exc_info) -> None:
+            async def __aexit__(self, *exc_info: object) -> None:
                 exited.append(True)
 
         monkeypatch.setattr("threetears.scrape.drivers.camoufox.AsyncCamoufox", _FakeAsyncCamoufox)
@@ -618,24 +618,24 @@ class TestCamoufoxDriverLazyLaunch:
         assert exited == [True]
 
 
-async def _launch_options(driver: CamoufoxDriver, monkeypatch: pytest.MonkeyPatch) -> dict:
+async def _launch_options(driver: CamoufoxDriver, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     """Render once through *driver* and return the options its browser was launched with.
 
     Camoufox is replaced at its import site by a stub that records its constructor
     arguments, so this is what a real launch would have been handed.
     """
-    launched: list[dict] = []
+    launched: list[dict[str, object]] = []
 
     # parity-exempt: hand-rolled subset stub of camoufox's third-party AsyncCamoufox (only the async-context-manager surface CamoufoxDriver._ensure_browser calls)
     class _RecordingAsyncCamoufox:
-        def __init__(self, **kwargs) -> None:
+        def __init__(self, **kwargs: object) -> None:
             launched.append(kwargs)
             self._browser = FakeCamoufoxBrowser(FakeCamoufoxPage(goto_result=FakeCamoufoxResponse(200)))
 
-        async def __aenter__(self):
+        async def __aenter__(self) -> FakeCamoufoxBrowser:
             return self._browser
 
-        async def __aexit__(self, *exc_info):
+        async def __aexit__(self, *exc_info: object) -> None:
             return None
 
     monkeypatch.setattr("threetears.scrape.drivers.camoufox.AsyncCamoufox", _RecordingAsyncCamoufox)

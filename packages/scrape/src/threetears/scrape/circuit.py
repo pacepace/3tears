@@ -90,8 +90,8 @@ if TYPE_CHECKING:
     # Type-only: both are constructed from a NATS client the caller already holds, and
     # importing them at runtime would make 3tears-nats a hard dependency of this package
     # for a capability that is optional in it.
-    from threetears.core.coordination.token_bucket import TokenBucket
-    from threetears.core.coordination.windowed_counter import WindowedCounter
+    from threetears.core.coordination.token_bucket import TokenBucketLike
+    from threetears.core.coordination.windowed_counter import WindowedCounterLike
 
 __all__ = [
     "BackoffPolicy",
@@ -327,9 +327,9 @@ class TargetCircuit:
         *,
         policy: BackoffPolicy | None = None,
         breaker_for: Callable[[str], ProbeObservableBreaker] | None = None,
-        blocked_attempts: WindowedCounter | None = None,
+        blocked_attempts: WindowedCounterLike | None = None,
         egress_name: str | None = None,
-        probe_pacer: TokenBucket | None = None,
+        probe_pacer: TokenBucketLike | None = None,
         reprobe_scheduler: ReprobeScheduler | None = None,
     ) -> None:
         """
@@ -345,7 +345,7 @@ class TargetCircuit:
             module cannot see admitted is a probe it cannot resolve
         :ptype breaker_for: Callable[[str], ProbeObservableBreaker] | None
         :param blocked_attempts: optional cross-pod counter of blocked observations
-        :ptype blocked_attempts: WindowedCounter | None
+        :ptype blocked_attempts: WindowedCounterLike | None
         :param egress_name: which exit this circuit's observations left by, e.g. ``"tor"``.
             Stamped on every write, so a walled target can be told apart from a target walled
             FROM THIS EXIT -- without which one blocked route makes a target look permanently
@@ -354,7 +354,7 @@ class TargetCircuit:
             recording ``"direct"`` on its behalf would assert something nobody said
         :ptype egress_name: str | None
         :param probe_pacer: optional capacity-one bucket admitting one probe per fleet
-        :ptype probe_pacer: TokenBucket | None
+        :ptype probe_pacer: TokenBucketLike | None
         :param reprobe_scheduler: optional booking of the next probe as a scheduled job
         :ptype reprobe_scheduler: ReprobeScheduler | None
         """

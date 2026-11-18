@@ -11,6 +11,8 @@ worse, leaked a live one.
 from __future__ import annotations
 
 import json
+from contextlib import AbstractContextManager
+from typing import Any
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -19,7 +21,10 @@ from pydantic import SecretStr
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import DefaultCoreConfig
 from threetears.core.exceptions import DataLayerUnavailableError
+from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
 from threetears.scrape.health import ScrapeTargetHealthCollection
+from threetears.scrape.tool import ScrapeTool
 from unittest.mock import patch
 
 from threetears.scrape.session_state import (
@@ -238,14 +243,11 @@ async def test_a_wrong_key_against_a_stored_state_asks_for_a_human(health: Scrap
 # ---------------------------------------------------------------------------
 
 
-class _StateCapturingDriver:
-    """A ScrapeDriver stand-in that records the session_state it was handed.
-
-    # parity-with: threetears.scrape.driver.ScrapeDriver
-    """
+class _StateCapturingDriver(ScrapeDriver):
+    """A ScrapeDriver stand-in that records the session_state it was handed."""
 
     def __init__(self) -> None:
-        self.session_states: list[dict | None] = []
+        self.session_states: list[dict[str, Any] | None] = []
 
     @property
     def name(self) -> str:
@@ -258,11 +260,13 @@ class _StateCapturingDriver:
         timeout: float = 30.0,
         wait_for: str | None = None,
         capture_network: bool = False,
-        nav_steps: list | None = None,
-        session_state: dict | None = None,
-    ):
-        from threetears.scrape.driver import RenderedPage
-
+        nav_steps: list[NavStep] | None = None,
+        results_path: str | None = None,
+        fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
+    ) -> RenderedPage:
         self.session_states.append(session_state)
         # The same html/strategy/schema triple test_tool.py already proves extracts cleanly.
         # Reused rather than invented: a near-miss makes extraction fail, which sends the eval
@@ -272,7 +276,7 @@ class _StateCapturingDriver:
         return RenderedPage(html=_EXTRACTABLE_HTML, status=200, final_url=url, timing_ms=1.0)
 
 
-def _no_llm():
+def _no_llm() -> AbstractContextManager[object]:
     """Stub the classifier itself, not the model factory underneath it.
 
     These tests are about which cookies reach the driver, and supplying a health collection
@@ -289,7 +293,9 @@ def _no_llm():
     return patch("threetears.scrape.eval_loop.classify_failed_page", return_value=None)
 
 
-async def _tool(driver, health, key, *, target_id: str):
+async def _tool(
+    driver: ScrapeDriver, health: ScrapeTargetHealthCollection, key: SecretStr | None, *, target_id: str
+) -> ScrapeTool:
     """A tool whose recipe already wins, so no test here reaches an LLM.
 
     Seeding the recipe is not incidental tidiness. Without it the eval loop treats every
@@ -298,11 +304,6 @@ async def _tool(driver, health, key, *, target_id: str):
     measured, for tests that are about which cookies reach the driver and have nothing to do
     with extraction at all.
     """
-    from threetears.core.collections.registry import CollectionRegistry
-    from threetears.core.config import DefaultCoreConfig
-    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-    from threetears.scrape.tool import ScrapeTool
-
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
     recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
     await recipes.save_entity(

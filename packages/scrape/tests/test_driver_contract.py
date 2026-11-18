@@ -25,6 +25,7 @@ from typing import Any
 
 import httpx
 import pytest
+from threetears.core.egress import EgressDriver
 from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
 from threetears.scrape.drivers.api import ApiDriver, ApiDriverError
 from threetears.scrape.drivers.camoufox import CamoufoxDriver
@@ -298,14 +299,14 @@ def test_every_render_implementation_declares_session_state() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _render_api_driver(egress):
+async def _render_api_driver(egress: EgressDriver | None) -> RenderedPage:
     return await ApiDriver(
         client=httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(200, json=[{"a": 1}]))),
         egress=egress,
     ).render("https://example.gov/api", results_path="")
 
 
-async def _render_sidecar_driver(egress):
+async def _render_sidecar_driver(egress: EgressDriver | None) -> RenderedPage:
     def _handler(_request: httpx.Request) -> httpx.Response:
         # The sidecar reports the exit itself, so a driver test that invented the value would
         # assert its own arithmetic. This echoes what a sidecar honouring the request would say.
@@ -326,7 +327,7 @@ async def _render_sidecar_driver(egress):
     ).render("https://example.gov/x")
 
 
-async def _render_document_driver(egress):
+async def _render_document_driver(egress: EgressDriver | None) -> RenderedPage:
     return await DocumentDriver(
         client=httpx.AsyncClient(
             transport=httpx.MockTransport(
@@ -337,7 +338,7 @@ async def _render_document_driver(egress):
     ).render("https://example.gov/notice.txt")
 
 
-async def _render_listing_detail_driver(egress):
+async def _render_listing_detail_driver(egress: EgressDriver | None) -> RenderedPage:
     def _handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/listing"):
             body = (
@@ -358,13 +359,13 @@ async def _render_listing_detail_driver(egress):
     ).render("https://example.gov/listing")
 
 
-async def _render_multi_document_driver(egress):
+async def _render_multi_document_driver(egress: EgressDriver | None) -> RenderedPage:
     # BOTH halves get the same exit. The wrapper reports one only when the listing fetch and the
     # documents agree, so handing it to one side alone would assert the split case here instead
     # of the round trip this contract is about -- `test_driver_multi_document.py` owns the split.
     class _InnerDocumentDriver(DocumentDriver):
         @property
-        def egress(self):
+        def egress(self) -> EgressDriver | None:
             return egress
 
     return await MultiDocumentDriver(
@@ -376,7 +377,7 @@ async def _render_multi_document_driver(egress):
     ).render("https://example.gov/listing", link_selector="a")
 
 
-async def _render_camoufox_driver(egress):
+async def _render_camoufox_driver(egress: EgressDriver | None) -> RenderedPage:
     # An INJECTED browser, because launching a real Camoufox here would be a browser download
     # in a unit suite. That is honest for this contract: the round trip under test is
     # "an exit given to the driver comes back on the RenderedPage", which does not depend on
@@ -526,7 +527,11 @@ class TestADroppedSolveIsNeverSilent:
 
     @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
     async def test_it_warns_when_a_solve_is_dropped(
-        self, caplog: pytest.LogCaptureFixture, make_driver, module: str, error
+        self,
+        caplog: pytest.LogCaptureFixture,
+        make_driver: Callable[[], ScrapeDriver],
+        module: str,
+        error: type[Exception] | None,
     ) -> None:
         """Asserted on the emitted record, so deleting the call fails this.
 
@@ -544,7 +549,11 @@ class TestADroppedSolveIsNeverSilent:
 
     @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
     async def test_one_origin_is_reported_once_however_many_documents_it_has(
-        self, caplog: pytest.LogCaptureFixture, make_driver, module: str, error
+        self,
+        caplog: pytest.LogCaptureFixture,
+        make_driver: Callable[[], ScrapeDriver],
+        module: str,
+        error: type[Exception] | None,
     ) -> None:
         """Per render is a storm: `MultiDocumentDriver` forwards a solve once per document, so
         one listing emitted a warning per document up to the cap, and a warning that repeats
@@ -567,7 +576,11 @@ class TestADroppedSolveIsNeverSilent:
 
     @pytest.mark.parametrize(("make_driver", "module", "error"), _DROPS_THE_SOLVE)
     async def test_a_second_site_is_still_reported(
-        self, caplog: pytest.LogCaptureFixture, make_driver, module: str, error
+        self,
+        caplog: pytest.LogCaptureFixture,
+        make_driver: Callable[[], ScrapeDriver],
+        module: str,
+        error: type[Exception] | None,
     ) -> None:
         """The opposite failure, and the one that is silent rather than noisy.
 

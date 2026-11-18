@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import ssl
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
@@ -105,7 +105,7 @@ def _refused(cls_: str = "rate-limited", message: str = "slow down") -> ToolMess
     )
 
 
-def _client_for(handler) -> httpx.AsyncClient:
+def _client_for(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
@@ -146,7 +146,7 @@ def _executor_that_deposits(
     output: str,
     error: str | None = None,
     tool_calls_made: list[dict[str, Any]] | None = None,
-):
+) -> Callable[[object, list[Any], object], Awaitable[SimpleNamespace]]:
     """A ToolExecutor stand-in that mutates `messages` in place, as the real one does.
 
     ToolExecutor appends each tool's ToolMessage (artifact intact, §4.7) to the
@@ -156,7 +156,7 @@ def _executor_that_deposits(
     """
     calls = tool_calls_made if tool_calls_made is not None else [{"name": _SEARCH_TOOL, "args": {"query": "Ohio WARN"}}]
 
-    async def invoke_with_tools(chat_model, messages, service_tools):
+    async def invoke_with_tools(chat_model: object, messages: list[Any], service_tools: object) -> SimpleNamespace:
         messages.extend(tool_messages)
         return SimpleNamespace(output=output, rounds_used=2, tool_calls_made=calls, error=error)
 
@@ -394,7 +394,7 @@ class TestExtractSearchQueries:
 # ===========================================================================
 
 
-def _fake_tool_chat_model(response):
+def _fake_tool_chat_model(response: SimpleNamespace) -> tuple[SimpleNamespace, AsyncMock]:
     """A fake chat model supporting .bind_tools(...).ainvoke(...) for ToolExecutor."""
     ainvoke_mock = AsyncMock(return_value=response)
     bound = SimpleNamespace(ainvoke=ainvoke_mock)
@@ -665,7 +665,7 @@ def _searxng_body(*urls: str) -> bytes:
     ).encode()
 
 
-def _chat_model_calling_search_once(tool_name: str):
+def _chat_model_calling_search_once(tool_name: str) -> SimpleNamespace:
     """A chat model that calls the search tool on round 1, then answers in prose."""
     responses = [
         SimpleNamespace(

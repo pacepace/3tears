@@ -13,16 +13,20 @@ is "on" while nothing waits is worse than one that is off, because it is believe
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import httpx
 import pytest
-from threetears.core.coordination.token_bucket import TokenBucketConflict
+from threetears.core.coordination.token_bucket import TokenBucketConflict, TokenClaimResult
+from threetears.core.collections.registry import CollectionRegistry
+from threetears.core.config import DefaultCoreConfig
 from threetears.core.exceptions import DataLayerUnavailableError
 from threetears.nats.errors import KvError
+from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
+from threetears.scrape.driver import NavStep, RenderedPage, ScrapeDriver
 from threetears.scrape.robots import DEFAULT_USER_AGENT, RobotsGate, RobotsPolicy
+from threetears.scrape.tool import ScrapeTool
 
 from packages.scrape.tests.egress_fakes import FakeEgress
 from packages.scrape.tests.pacer_fakes import FakeDelayPacer
@@ -33,15 +37,21 @@ _ROBOTS_DELAY = "User-agent: *\nCrawl-delay: 10\n"
 _ROBOTS_BOTH = "User-agent: *\nCrawl-delay: 5\nDisallow: /private\n"
 
 
-def _fetcher(body: str, status: int = 200):
-    calls: list[str] = []
+class _RobotsFile:
+    """A robots.txt fetcher answering *body* with *status*, recording every URL it was asked for."""
 
-    async def _fetch(url: str) -> tuple[int, str]:
-        calls.append(url)
-        return status, body
+    def __init__(self, body: str, status: int) -> None:
+        self.body = body
+        self.status = status
+        self.calls: list[str] = []
 
-    _fetch.calls = calls  # type: ignore[attr-defined]
-    return _fetch
+    async def __call__(self, url: str) -> tuple[int, str]:
+        self.calls.append(url)
+        return self.status, self.body
+
+
+def _fetcher(body: str, status: int = 200) -> _RobotsFile:
+    return _RobotsFile(body, status)
 
 
 async def test_a_disallowed_path_is_not_fetched_and_asks_for_a_human() -> None:
@@ -397,8 +407,8 @@ async def test_a_non_http_url_has_no_robots_to_consult() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _RecordingDriver:
-    """# parity-with: threetears.scrape.driver.ScrapeDriver"""
+class _RecordingDriver(ScrapeDriver):
+    """Records every URL it was asked to render."""
 
     def __init__(self) -> None:
         self.fetched: list[str] = []
@@ -414,11 +424,13 @@ class _RecordingDriver:
         timeout: float = 30.0,
         wait_for: str | None = None,
         capture_network: bool = False,
-        nav_steps: list | None = None,
-        session_state: dict | None = None,
-    ):
-        from threetears.scrape.driver import RenderedPage
-
+        nav_steps: list[NavStep] | None = None,
+        results_path: str | None = None,
+        fragment_field: str | None = None,
+        link_selector: str | None = None,
+        seen_urls: set[str] | None = None,
+        session_state: dict[str, Any] | None = None,
+    ) -> RenderedPage:
         self.fetched.append(url)
         return RenderedPage(
             html="<html><body><table><tr><td>Acme Corp</td><td>42</td></tr></table></body></html>",
@@ -428,12 +440,7 @@ class _RecordingDriver:
         )
 
 
-async def _tool_with_robots(driver, gate, *, target_id: str):
-    from threetears.core.collections.registry import CollectionRegistry
-    from threetears.core.config import DefaultCoreConfig
-    from threetears.scrape.collections import ScrapeExtractionCollection, ScrapeRecipeCollection
-    from threetears.scrape.tool import ScrapeTool
-
+async def _tool_with_robots(driver: ScrapeDriver, gate: RobotsGate | None, *, target_id: str) -> ScrapeTool:
     reg, cfg = CollectionRegistry(), DefaultCoreConfig(collection_flush="ALWAYS")
     recipes = ScrapeRecipeCollection(reg, cfg, nats_client=None)
     await recipes.save_entity(
@@ -476,6 +483,7 @@ async def test_a_disallowed_target_is_never_fetched_and_asks_for_a_human() -> No
 
     assert driver.fetched == [], "a disallowed target was fetched anyway"
     assert result.success is False
+    assert result.metadata is not None
     assert result.metadata["needs_human"] is True
     assert result.metadata["reason"] == "robots_disallow"
 
@@ -514,6 +522,7 @@ async def test_a_target_whose_robots_file_is_unreachable_is_not_fetched_and_not_
     queued.assert_not_called()
     assert driver.fetched == [], "a target whose robots.txt could not be read was fetched anyway"
     assert result.success is False
+    assert result.metadata is not None
     assert result.metadata["needs_human"] is False
     assert result.metadata["validation_status"] == ROBOTS_UNREACHABLE_STATUS
     assert result.metadata["reason"] == "robots_unreachable"
@@ -559,7 +568,8 @@ async def test_a_crawl_delay_actually_delays_a_second_fetch() -> None:
         assert slept.await_count == 1, "the site asked for 10s between requests and none was waited"
         # The docstring claimed this asserted "for how long" while asserting only "> 0".
         # Ten seconds requested, one fetch ago, so the remainder is the whole delay.
-        assert slept.await_args[0][0] == pytest.approx(10.0, abs=1.0)
+        assert slept.await_args is not None
+        assert slept.await_args.args[0] == pytest.approx(10.0, abs=1.0)
 
     assert driver.fetched == [url, url]
 
@@ -635,6 +645,7 @@ async def test_a_tool_built_without_mentioning_robots_still_consults_one() -> No
 
     assert [str(r.url) for r in exit_.requests] == ["https://example.gov/robots.txt"]
     assert driver.fetched == [], "a tool that never mentioned robots fetched a disallowed path"
+    assert result.metadata is not None
     assert result.metadata["needs_human"] is True
 
 
@@ -949,7 +960,9 @@ async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
     """A KV outage costs fleet-wide precision, never politeness and never the scrape."""
 
     class _BrokenPacer(FakeDelayPacer):
-        async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
+        async def claim(
+            self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0
+        ) -> TokenClaimResult:
             raise KvError("kv unavailable")
 
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_BrokenPacer())
@@ -970,7 +983,9 @@ async def test_a_pacer_outage_falls_back_to_this_pod_s_own_clock() -> None:
 )
 async def test_every_documented_pacer_failure_falls_back_to_this_pod_s_own_clock(failure: BaseException) -> None:
     class _FailingPacer(FakeDelayPacer):
-        async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
+        async def claim(
+            self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0
+        ) -> TokenClaimResult:
             raise failure
 
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_FailingPacer())
@@ -981,7 +996,9 @@ async def test_every_documented_pacer_failure_falls_back_to_this_pod_s_own_clock
 
 async def test_a_bug_in_the_pacer_propagates_rather_than_reading_as_an_outage() -> None:
     class _BuggyPacer(FakeDelayPacer):
-        async def claim(self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0) -> Any:
+        async def claim(
+            self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0
+        ) -> TokenClaimResult:
             raise AttributeError("a bug, not the KV")
 
     gate = RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_BuggyPacer())
@@ -1431,14 +1448,16 @@ async def test_a_pacer_without_a_refund_operation_is_not_an_error() -> None:
     self-healing throughput dip with a lost original error.
     """
 
-    class _NoRefund:
-        async def claim(self, key: str = "default", **_kw: Any) -> Any:
-            return SimpleNamespace(claimed=True, retry_after_seconds=0.0, tokens_remaining=0.0)
+    class _NoRefund(FakeDelayPacer):
+        """A stand-in that never grew a refund: asking it for one is an ``AttributeError``."""
+
+        async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
+            raise AttributeError(f"{type(self).__name__!r} object has no attribute 'refund'")
 
     await RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_NoRefund()).refund_fleet_turn("https://x.gov/a")
 
     class _BrokenRefund(FakeDelayPacer):
-        async def refund(self, key: str = "default", **_kw: Any) -> float:
+        async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
             raise RuntimeError("kv is down")
 
     await RobotsGate(fetch=_fetcher(_ROBOTS_DELAY), delay_pacer=_BrokenRefund()).refund_fleet_turn("https://x.gov/a")

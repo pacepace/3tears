@@ -39,7 +39,7 @@ import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 
 from threetears.core.serialization import json_datetime, serialize_to_json
 from threetears.observe import contain, get_logger
@@ -56,6 +56,7 @@ __all__ = [
     "TokenClaimResult",
     "TokenBucket",
     "TokenBucketConflict",
+    "TokenBucketLike",
 ]
 
 log = get_logger(__name__)
@@ -187,6 +188,25 @@ def _decode_state(data: bytes) -> _BucketState:
         # against the aware clock in the refill arithmetic
         raise ValueError(f"stored bucket state has a naive last_refill: {stamp!r}")
     return _BucketState(tokens=float(tokens), last_refill=last_refill)
+
+
+@runtime_checkable
+class TokenBucketLike(Protocol):
+    """what a caller uses of a :class:`TokenBucket`: claim tokens, and give them back.
+
+    a parameter typed by it takes the bucket or a double of it, so a test's pacer is checked
+    against the two operations a caller reaches rather than against the bucket's KV plumbing.
+    """
+
+    async def claim(
+        self, key: str = "default", *, tokens: float = 1.0, max_wait_seconds: float = 0.0
+    ) -> TokenClaimResult:
+        """attempt to claim ``tokens`` from bucket ``key`` (see :meth:`TokenBucket.claim`)."""
+        ...
+
+    async def refund(self, key: str = "default", *, tokens: float = 1.0) -> float:
+        """give ``tokens`` back to bucket ``key`` (see :meth:`TokenBucket.refund`)."""
+        ...
 
 
 class TokenBucket:

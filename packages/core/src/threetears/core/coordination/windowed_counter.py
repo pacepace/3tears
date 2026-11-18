@@ -36,7 +36,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, Protocol, runtime_checkable
 
 from threetears.core.collections.registry import CollectionRegistry
 from threetears.core.config import CoreConfig
@@ -48,7 +48,7 @@ from threetears.core.coordination.tables import (
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.observe import get_logger
 
-__all__ = ["WindowState", "WindowedCounter"]
+__all__ = ["WindowState", "WindowedCounter", "WindowedCounterLike"]
 
 log = get_logger(__name__)
 
@@ -81,6 +81,35 @@ class WindowState:
 
     count: int
     window_start: float
+
+
+@runtime_checkable
+class WindowedCounterLike(Protocol):
+    """what a caller uses of a :class:`WindowedCounter`: record, read and clear a key's window.
+
+    a parameter typed by it takes the counter or a double of it, so a test's counter is checked
+    against the operations a caller reaches rather than against the counter's KV plumbing.
+    """
+
+    async def record_attempt(self, key: str) -> int:
+        """record one attempt for ``key``; return its count within the live window."""
+        ...
+
+    async def count(self, key: str) -> int:
+        """``key``'s live count, recording nothing."""
+        ...
+
+    async def state(self, key: str) -> WindowState | None:
+        """``key``'s live window, or ``None`` when it has none."""
+        ...
+
+    async def clear(self, key: str) -> None:
+        """reset ``key``'s window."""
+        ...
+
+    async def is_over_threshold(self, key: str, *, threshold: int) -> bool:
+        """whether ``key``'s live count is at or above ``threshold``, recording nothing."""
+        ...
 
 
 class WindowedCounter:

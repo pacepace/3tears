@@ -34,7 +34,7 @@ from pydantic import BaseModel
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.l2_order import l2_order_of
 from threetears.core.collections.registry import CollectionRegistry
-from threetears.core.coordination import WindowedCounter
+from threetears.core.coordination import WindowedCounter, WindowedCounterLike
 from threetears.core.coordination.tables import CoordinationCountersCollection, coordination_collection
 from threetears.core.exceptions import ConcurrentModificationError
 from threetears.core.testing.kv import FakeNatsClient
@@ -428,3 +428,9 @@ class TestWindowedCounter:
         # the window opened 10s ago, so a caller reports 50s of a 60s window left, not 60.
         assert state.window_start == pytest.approx(opened, abs=1.0)
         assert clock[0] - state.window_start == pytest.approx(10.0, abs=1.0)
+
+
+def test_the_counter_is_what_a_caller_types_its_counter_as() -> None:
+    """A parameter typed ``WindowedCounterLike`` takes the real counter, statically and at runtime."""
+    counter: WindowedCounterLike = _counter(_registry(_Nats()))
+    assert isinstance(counter, WindowedCounterLike)

@@ -6,6 +6,14 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: `TokenBucketLike` and `WindowedCounterLike`; scrape's circuit and robots gate take them
+
+`threetears.core.coordination.TokenBucketLike` (`claim`, `refund`) and `WindowedCounterLike` (`record_attempt`,
+`count`, `state`, `clear`, `is_over_threshold`) are what a caller uses of a `TokenBucket` or a `WindowedCounter`.
+Both classes satisfy them. `TargetCircuit(probe_pacer=, blocked_attempts=)` and `RobotsGate(delay_pacer=)` are typed
+by them instead of the concrete classes, so a test's pacer or counter type-checks with no cast or ignore. Nothing
+changes at run time.
+
 ### core: a registry and a collection's `l3_pool` say what they accept: `L3PoolLike`
 
 `CollectionRegistry.configure`, `register` and `bind_table` and a collection's `l3_pool` take

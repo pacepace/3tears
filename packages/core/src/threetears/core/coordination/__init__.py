@@ -35,12 +35,14 @@ public surface:
 - :class:`WindowedCounter` — generic windowed attempt counter/rate-limiter (fail-open or
   fail-closed, caller's choice), for the "how many times in the last N seconds" shape a bare
   presence test can't express
+- :class:`WindowedCounterLike` — what a caller uses of a :class:`WindowedCounter` (it or a double)
 - :class:`IdempotencyKeyStore` — claim-once-with-TTL primitive, stores operation result/error
 - :class:`IdempotencyRecord` — one idempotency key's current state
 - :class:`ClaimResult` — outcome of :meth:`IdempotencyKeyStore.claim`
 - :class:`IdempotencyKeyNotFound` — raised by complete()/fail() on an unclaimed key
 - :class:`IdempotencyConflict` — raised when a complete()/fail() CAS retry budget is exhausted
 - :class:`TokenBucket` — distributed token-bucket rate limiter
+- :class:`TokenBucketLike` — what a caller uses of a :class:`TokenBucket` (it or a double)
 - :class:`TokenClaimResult` — outcome of :meth:`TokenBucket.claim`
 - :class:`TokenBucketConflict` — raised when a claim()'s CAS retry budget is exhausted
 - :mod:`threetears.core.coordination.source_token` -- a fence on a producer's "my data is ready"
@@ -87,9 +89,10 @@ from threetears.core.coordination.revocation import RedemptionLedger, Revocation
 from threetears.core.coordination.token_bucket import (
     TokenBucket,
     TokenBucketConflict,
+    TokenBucketLike,
     TokenClaimResult,
 )
-from threetears.core.coordination.windowed_counter import WindowedCounter, WindowState
+from threetears.core.coordination.windowed_counter import WindowedCounter, WindowedCounterLike, WindowState
 
 __all__ = [
     "ClaimResult",
@@ -120,7 +123,9 @@ __all__ = [
     "RevocationGuard",
     "TokenBucket",
     "TokenBucketConflict",
+    "TokenBucketLike",
     "TokenClaimResult",
     "WindowState",
     "WindowedCounter",
+    "WindowedCounterLike",
 ]

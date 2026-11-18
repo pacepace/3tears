@@ -69,7 +69,7 @@ from threetears.observe import contain, get_logger
 from ._private_hosts import refuse_private_hosts
 
 if TYPE_CHECKING:
-    from threetears.core.coordination.token_bucket import TokenBucket
+    from threetears.core.coordination.token_bucket import TokenBucketLike
     from threetears.core.egress import EgressDriver
 
 __all__ = [
@@ -211,7 +211,7 @@ class RobotsGate:
         honoured PER PROCESS, which is a lie in a fleet: five pods each waiting ten seconds
         present a request every two. The same reuse and the same reasoning as the circuit's
         probe pacer
-    :ptype delay_pacer: TokenBucket | None
+    :ptype delay_pacer: TokenBucketLike | None
     :param cache_seconds: how long a parsed file is trusted
     :ptype cache_seconds: float
     :param max_origins: how many origins to retain before evicting the least recently used.
@@ -226,7 +226,7 @@ class RobotsGate:
         *,
         fetch: Any = None,
         egress: EgressDriver | None = None,
-        delay_pacer: TokenBucket | None = None,
+        delay_pacer: TokenBucketLike | None = None,
         cache_seconds: float = _DEFAULT_CACHE_SECONDS,
         max_origins: int = _DEFAULT_MAX_ORIGINS,
     ) -> None:
@@ -435,7 +435,7 @@ class RobotsGate:
             return
         try:
             # Called directly rather than through a `getattr` guard. The field is typed
-            # `TokenBucket`, which declares `refund`, so making the call conditional would be
+            # `TokenBucketLike`, which declares `refund`, so making the call conditional would be
             # weakening production behaviour to accommodate a stand-in the type already
             # excludes -- the opposite of what the fake-parity rule is for. A structural
             # stand-in that lacks it raises `AttributeError`, which lands in the same handler
