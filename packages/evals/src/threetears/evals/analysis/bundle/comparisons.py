@@ -8,7 +8,7 @@ family by Holm's method (:func:`_corrected_family`) and decides every guardrail 
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
 from datetime import datetime
 from itertools import batched
 from typing import TYPE_CHECKING, Literal, NamedTuple
@@ -28,6 +28,7 @@ from threetears.evals.analysis.stats import (
     GuardrailVerdict,
     bet_decided_at,
     bet_evidence,
+    bet_order,
     bounded_difference_interval,
     bounded_separation_p,
     composite_significance,
@@ -44,6 +45,7 @@ from threetears.evals.analysis.stats import (
     no_spread_p,
     paired_equivalence,
     pairing_correlation,
+    SeparationTest as SeparationReading,
     separation_test,
 )
 from threetears.evals.kernel.campaign import ReadingKind
@@ -481,11 +483,12 @@ def _compare(
     """Test one contrast against the control on one reading, before correction.
 
     Paired over the cases both cells ran when they share at least two — far more powerful, and the
-    design a fixed case set exists for — else the unpaired test over each side's per-case values
-    (:func:`~threetears.evals.analysis.stats.composite_significance`), and where the values have no spread
-    the bounded test on the declared range every other surface reads that gap by
-    (:func:`~threetears.evals.analysis.stats.separation_test`), so one concept has one answer. With no range
-    such a gap is ``not_separated``, with ``not_separated_reason`` naming the remedy. The means, the counts and the
+    design a fixed case set exists for — else unpaired over each side's per-case values. **A reading on a declared
+    range is read by the bounded test by betting, whatever its spread** (:func:`_fixed_count_test`), which holds α
+    at every n for every distribution on the range: a t-test on coarse values does not (on fair coin pairs at 40
+    cases it separated 5.28% of the time at α). **A reading with no declared range keeps the t-test**
+    (:func:`~threetears.evals.analysis.stats.composite_significance`), and where its values have no spread no test
+    of the mean can run: such a gap is ``not_separated``, with ``not_separated_reason`` naming the remedy. The means, the counts and the
     delta are all over the cases the test read, and each side says how many of its own it left out, so the
     figures a reader sees are the figures the test saw. A paired comparison on a measure with a declared
     margin also runs the paired equivalence test (TOST) against it.
@@ -517,13 +520,12 @@ def _compare(
     (control_key, control_values), (contrast_key, contrast_values) = control, contrast
     a, b, paired = _test_samples(control_values, contrast_values)
     bet = _bet_samples(control_values, contrast_values, value_range, places) if paired else None
-    # The separation test every surface reads a gap by (:func:`separation_test`): the t-test's where the values
-    # have spread, and where they have none — every shared case moved by one amount, or each side constant — the
-    # bounded test on the reading's declared range, decided on exact values. With no range a gap with no spread
-    # is not separated, and says why: the exact sign-flip p tests symmetry, not the mean (#597). On a quick-path
-    # comparison the mixture bet reads a paired reading on its range whatever its spread, in its committed order.
+    # On a declared range the bounded test reads the gap whatever its spread (:func:`_fixed_count_test`): on a quick-path
+    # comparison the mixture bet in its committed order, and on any other the same bet read once at the count it has.
+    # With no range, the t-test where the values have spread; a gap with none is not separated, and says why: the
+    # exact sign-flip p tests symmetry, not the mean (#597).
     separation = (
-        separation_test(a, b, paired=paired, value_range=value_range)
+        _fixed_count_test(a, b, paired=paired, value_range=value_range)
         if bet is None
         else separation_test(*bet, paired=True, value_range=value_range, mixture=True)
     )
@@ -641,6 +643,42 @@ _TOO_FEW_COMPLETE = (
     "fewer than two cases at the head of its order have every arm and repeat recorded, and the bet reads them in that "
     "order, so there is nothing to read yet"
 )
+
+
+def _fixed_count_test(
+    a: Sequence[float], b: Sequence[float], *, paired: bool, value_range: tuple[float, float] | None
+) -> SeparationReading:
+    """The test a contrast is read by at the count it has, where no committed order lets a bet be read again as cases
+    are added: an engine campaign's, at a fixed count or at each look of a plan.
+
+    **On a declared range every value lies in, the bounded test by betting, whatever the spread.** Paired, the
+    mixture bet the quick path reads (:func:`~threetears.evals.analysis.stats.separation_test` with ``mixture``), over
+    the pairs in the order fixed by their count alone (:func:`~threetears.evals.analysis.stats.bet_order`), never the
+    order the case ids sort in, which a host's listing can tie to the values. Its capital is a nonnegative
+    martingale under the null, so its p holds α at every n for every distribution on the range: on pass/fail pairs
+    it holds where the paired t-test erred above α (5.28% on fair coin pairs at 40 cases), which
+    ``tests/test_engine_fixed_count_bounded.py`` computes exactly from 10 to 100 cases. Unpaired, the bounded test at
+    a cut between the two means (:func:`~threetears.evals.analysis.stats.bounded_separation_p`).
+
+    **With no declared range, or a value outside it** (the range is contradicted, so it bounds nothing), the
+    separation test every other surface reads such a gap by
+    (:func:`~threetears.evals.analysis.stats.separation_test`): the t-test where the values have spread.
+    """
+    if value_range is None:
+        return separation_test(a, b, paired=paired)
+    low, high = exact_decimal(value_range[0]), exact_decimal(value_range[1])
+    if high <= low or any(not low <= exact_decimal(v) <= high for v in (*a, *b)):
+        return separation_test(a, b, paired=paired, value_range=value_range)
+    if paired:
+        order = bet_order(len(a))
+        return separation_test(
+            [a[i] for i in order], [b[i] for i in order], paired=True, value_range=value_range, mixture=True
+        )
+    tested = separation_test(a, b, paired=False, value_range=value_range)
+    if tested.basis != "t":
+        return tested
+    p = bounded_separation_p(a, b, paired=False, value_range=value_range)
+    return tested if p is None else tested._replace(p=p, basis="bounded")
 
 
 def _bet_samples(
@@ -1150,8 +1188,9 @@ def _corrected_family(
     **A rate is drawn on its bounded interval** (:func:`_is_rate`): its ``interval`` is its ``bounded_interval``, and
     a separation needs that interval to exclude zero. A rate is read by one method everywhere: a campaign's reading of
     the pass rate and a floor are the bounded test's on the same per-case shares, so at a looser level either nests
-    inside the contrast's, and the two part only by level, never by method. The p's stay the t test's, so no other
-    comparison's adjusted p moves; the rule only removes separations, so the family's error stays at α.
+    inside the contrast's, and the two part only by level, never by method. Its p is the bounded test's, as every
+    reading on a declared range is (:func:`_fixed_count_test`); the interval rule only removes separations, so the
+    family's error stays at α.
 
     :param aspect: The aspect whose question the family serves, or None for the exploratory family.
     :param axes: The question's merit axes.
@@ -1251,7 +1290,7 @@ def _corrected_family(
                     value_range=one.value_range,
                 )
             )
-            # A rate's separation needs its bounded interval to exist and exclude zero; its p stays the t test's. A bet's
+            # A rate's separation needs its bounded interval to exist and exclude zero, as well as its p. A bet's
             # separation is checked against the bet's running reading, which stays where it once excluded zero.
             checked = running if one.bet_samples is not None else interval
             permits = interval_permits_separation(checked) and (checked is not None or not one.rate)
@@ -1340,16 +1379,21 @@ def _repeats_a_reading(
     values: Mapping[CellKey, Mapping[tuple[ComparisonReading, str], Mapping[str, float]]],
     pair: tuple[CellKey, CellKey],
     sides: tuple[Mapping[str, float], Mapping[str, float]],
+    range_of: Callable[[tuple[ComparisonReading, str]], tuple[float, float] | None],
 ) -> bool:
-    """Whether another reading of the family holds exactly these per-case values on both sides of ``pair``: the
-    overall pass rate of an eval whose one check is its pass rate, which tested again would be one hypothesis counted
-    twice."""
+    """Whether another reading of the family is the overall pass rate's test over again on ``pair``: it holds exactly
+    these per-case values on both sides, on the pass rate's range, higher better. The pass rate of an eval whose one
+    check is its pass rate is that check case for case, and tested again it would be one hypothesis counted twice,
+    which halves the level of each under Holm. Where the values only coincide on another range or the other way up,
+    the two are different tests, and both are read."""
     control_key, contrast_key = pair
     return any(
         reading[0] != "trial"
+        and better
+        and range_of(reading) == _TRIAL_PASS_RANGE
         and values[control_key].get(reading) == sides[0]
         and values[contrast_key].get(reading) == sides[1]
-        for reading in readings
+        for reading, better in readings.items()
     )
 
 
@@ -1392,7 +1436,9 @@ def multiple_comparisons(
     **The overall pass rate joins the question's family whenever a question is asked**, with a margin (how far the
     pass rate may fall) or with none (a superiority question, its drop read against zero): either way the pass rate is
     a hypothesis the question asks and its family grows by one, every adjusted p in it moving with it, so a gate and a
-    campaign's verdicts read the question's pass rate as its page does. It never joins the exploratory family, whose
+    campaign's verdicts read the question's pass rate as its page does. Where a check in the family is that pass rate
+    case for case (an eval of one check), the two are one hypothesis, and the check carries it: the pass rate is not
+    tested again on that pair (:func:`_repeats_a_reading`). It never joins the exploratory family, whose
     size it would move over unchanged runs. Each case's value is the share of its usable trials that passed
     (:func:`_trial_pass_counts`), tested and bounded as a check's pass rate is, on its 0-1 range.
 
@@ -1491,6 +1537,14 @@ def multiple_comparisons(
     }
     # A judged dimension's scale bounds the interval on its delta; it declares no margin, so no equivalence reads it.
     judged_ranges = {judged.name: judged.value_range for judged in measures_judged if judged.value_range is not None}
+
+    def range_of(reading: tuple[ComparisonReading, str]) -> tuple[float, float] | None:
+        """The range a family reading's per-case values lie on."""
+        kind, name = reading
+        if kind == "measure":
+            return _measure_range(catalog[name])
+        return _TRIAL_PASS_RANGE if kind == "trial" else judged_ranges.get(name)
+
     families = []
     for family_aspect, axes in scopes:
         readings = _family_readings(axes, catalog, measures_judged)
@@ -1506,14 +1560,11 @@ def multiple_comparisons(
                 if reading[0] == "trial" and not (control_values and contrast_values):
                     # A side with no usable graded trial has no pass rate; the scoreboard says why, not a contrast.
                     continue
-                if (
-                    reading[0] == "trial"
-                    and reread_order is not None
-                    and _repeats_a_reading(
-                        readings, values, (control_key, contrast_key), (control_values, contrast_values)
-                    )
+                if reading[0] == "trial" and _repeats_a_reading(
+                    readings, values, (control_key, contrast_key), (control_values, contrast_values), range_of
                 ):
-                    # The pass rate of an eval with one check is that check, case for case: one hypothesis, read once.
+                    # The pass rate of an eval with one check is that check, case for case: one hypothesis, read once,
+                    # on the quick path and the engine alike.
                     continue
                 threshold, margin_source = _margin_of(reading, catalog, run_margins or {})
                 one = _compare(
@@ -1523,13 +1574,7 @@ def multiple_comparisons(
                     (contrast_key, contrast_values),
                     threshold=threshold,
                     margin_source=margin_source,
-                    value_range=(
-                        _measure_range(catalog[reading[1]])
-                        if reading[0] == "measure"
-                        else _TRIAL_PASS_RANGE
-                        if reading[0] == "trial"
-                        else judged_ranges.get(reading[1])
-                    ),
+                    value_range=range_of(reading),
                     no_turn=tuple(
                         side
                         for side, key in (("control", control_key), ("arm", contrast_key))
