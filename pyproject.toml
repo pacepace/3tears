@@ -691,6 +691,7 @@ module = [
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_pieces",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_publish_cost",
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_status",
+    "packages.core.tests.unit.test_arrow_keys",
     "packages.core.tests.unit.test_keyed_changed",
     "packages.core.tests.unit.test_keyed_helpers",
     "packages.datasources.tests.unit.test_counted_partitioned_export",
