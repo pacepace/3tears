@@ -215,7 +215,7 @@ async def _replica(bus: FakeNatsClient, store: _Store, *, token: str = "inc:0") 
         actors=actors,
         dependencies=dependencies,
     )
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     _sighted(registry, token)
     # the access cache is bound and followed first, as a host follows it, so a row reaches it first
     bind_acl_cache_to_access_tables(registry, acl)
@@ -259,7 +259,7 @@ async def _ask(
 
 
 def _row(
-    table: str, *, generation: str | None, ids: list[str] | None = None, **columns: str
+    table: str, *, generation: str | None, ids: list[str] | None = None, **columns: str | None
 ) -> CacheInvalidationMessage:
     ids = ids if ids is not None else [f"{_fresh_id()}"]
     return CacheInvalidationMessage(

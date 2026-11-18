@@ -22,7 +22,7 @@ async def _listening_registry() -> CollectionRegistry:
     bus = FakeNatsClient()
     registry = CollectionRegistry()
     registry.configure(l2_client=bus, kv_key_scope="hub")
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     return registry
 
 

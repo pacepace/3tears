@@ -143,7 +143,7 @@ class _Replica:
         )
 
     async def start(self) -> None:
-        await self.registry.start_invalidation_listener(self.bus)  # type: ignore[arg-type]
+        await self.registry.start_invalidation_listener(self.bus)
         for table in ACCESS_TABLES:
             self.registry.follow_generation(table)
         await generation_catchup_tick(self.registry, EpochGenerationReader(self.bus))

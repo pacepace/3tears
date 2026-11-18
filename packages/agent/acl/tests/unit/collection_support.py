@@ -8,7 +8,7 @@ instead of importing a private helper out of a sibling test module.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from threetears.core.collections.scan_cache import ScanCache
 
@@ -18,14 +18,14 @@ __all__ = ["make_collection"]
 def make_collection(
     cls: type,
     *,
-    l3_pool: AsyncMock | None = None,
+    l3_pool: object = None,
 ) -> Any:
     """build a Collection instance with mocked registry + config.
 
     :param cls: Collection class to instantiate
     :ptype cls: type
-    :param l3_pool: optional mocked pool
-    :ptype l3_pool: AsyncMock | None
+    :param l3_pool: the pool the registry hands out: a mock, a store double, or a real in-process store
+    :ptype l3_pool: object
     :return: Collection instance with mocks wired in
     :rtype: Any
     """

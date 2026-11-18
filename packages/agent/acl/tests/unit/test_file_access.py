@@ -11,7 +11,7 @@ the file path via :meth:`pathlib.PurePosixPath.full_match`.
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -66,7 +66,7 @@ def _role_with_actions(actions: list[str]) -> Role:
 def _grant(
     namespace: Namespace,
     role: Role,
-    user_id,
+    user_id: UUID,
 ) -> tuple[Group, GroupMembership, RoleAssignment]:
     """build a one-group one-membership one-assignment chain for ``user_id``.
 
@@ -101,7 +101,7 @@ def _grant_member(
     namespace: Namespace,
     role: Role,
     member_type: MemberType,
-    member_id,
+    member_id: UUID,
 ) -> tuple[Group, GroupMembership, RoleAssignment]:
     """build a one-group one-membership one-assignment chain for any member.
 

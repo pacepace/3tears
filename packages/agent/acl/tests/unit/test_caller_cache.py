@@ -147,7 +147,7 @@ async def test_following_binds_and_follows_every_access_table_and_stop_undoes_bo
     cache: CallerAccessCache[Any] = CallerAccessCache()
     with pytest.raises(RuntimeError, match="invalidation listener"):
         follow_caller_access_cache(registry, cache, _Pushing())
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     following = follow_caller_access_cache(registry, cache, _Pushing())
     try:
         for _ in range(100):

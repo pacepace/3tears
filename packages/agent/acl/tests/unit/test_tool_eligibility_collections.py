@@ -18,7 +18,7 @@ from uuid import UUID, uuid7
 
 import pytest
 
-from threetears.agent.acl import NamespaceCollection
+from threetears.agent.acl import AclCache, EvaluationContext, NamespaceCollection
 
 
 def _make_collection(
@@ -126,8 +126,9 @@ class TestListToolNamespacesForActor:
         pool.fetch.return_value = [permitted_row, denied_row]
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
 
-        async def _decisions(ctx: Any, *, cache: Any) -> bool:
-            return ctx.namespace.id == permitted_row["namespace_id"]
+        async def _decisions(ctx: EvaluationContext, *, cache: AclCache) -> bool:
+            permitted: UUID = permitted_row["namespace_id"]
+            return ctx.namespace.id == permitted
 
         with patch(
             "threetears.agent.acl.collections.evaluate_decision",
@@ -213,8 +214,9 @@ class TestListSkillEligibleToolNamespaces:
         pool.fetch.return_value = [permitted_row, denied_row]
         coll = _make_collection(NamespaceCollection, l3_pool=pool)
 
-        async def _decisions(ctx: Any, *, cache: Any) -> bool:
-            return ctx.namespace.id == permitted_row["namespace_id"]
+        async def _decisions(ctx: EvaluationContext, *, cache: AclCache) -> bool:
+            permitted: UUID = permitted_row["namespace_id"]
+            return ctx.namespace.id == permitted
 
         with patch(
             "threetears.agent.acl.collections.evaluate_decision",

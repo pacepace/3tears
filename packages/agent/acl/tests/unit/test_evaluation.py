@@ -56,15 +56,15 @@ from .fake_loaders import FakeBatchingStore, FakeStore, make_cache
 def _ns(
     *,
     customer_id: UUID,
-    owner_agent_id: UUID,
+    owner_agent_id: UUID | None,
     namespace_type: str = "workspace",
 ) -> Namespace:
     """build a :class:`Namespace` with a fresh id.
 
     :param customer_id: customer UUID
     :ptype customer_id: UUID
-    :param owner_agent_id: owning agent UUID
-    :ptype owner_agent_id: UUID
+    :param owner_agent_id: owning agent UUID, or None for a namespace no agent owns
+    :ptype owner_agent_id: UUID | None
     :param namespace_type: type discriminator
     :ptype namespace_type: str
     :return: namespace record
@@ -79,7 +79,7 @@ def _ns(
         # and for an agent-owned row that is the agent's own namespace.
         # the fixture writes both columns so the assertions below keep
         # asking the question they always asked.
-        owner_namespace=build_agent_namespace_name(owner_agent_id),
+        owner_namespace=None if owner_agent_id is None else build_agent_namespace_name(owner_agent_id),
     )
 
 

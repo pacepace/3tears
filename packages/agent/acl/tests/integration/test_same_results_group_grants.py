@@ -85,7 +85,7 @@ async def conn(db_container: str) -> AsyncIterator[asyncpg.Connection]:
         runner = MigrationRunner()
         register_acl(runner)
         register_tools_platform(runner, depends_on=("agent_acl",))
-        await runner.apply_for_platform_schema(_Store(connection))  # type: ignore[arg-type]
+        await runner.apply_for_platform_schema(_Store(connection))
         await connection.executemany(
             "INSERT INTO groups (row_scope, group_id, customer_id, name) VALUES ('platform', $1, NULL, $2)",
             [(group, f"g{n}") for n, group in enumerate(_GROUPS)],

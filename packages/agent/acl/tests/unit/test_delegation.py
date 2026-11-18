@@ -598,4 +598,4 @@ def test_enforcement_passes_silently_when_within_the_ceiling() -> None:
         trails=(),
         namespace_count=3,
     )
-    assert enforce_within_held_permissions({"workspace": ["read"]}, held) is None
+    enforce_within_held_permissions({"workspace": ["read"]}, held)

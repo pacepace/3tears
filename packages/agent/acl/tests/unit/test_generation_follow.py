@@ -24,7 +24,7 @@ async def _listening_registry() -> CollectionRegistry:
     bus = FakeNatsClient()
     registry = CollectionRegistry()
     registry.configure(l2_client=bus, kv_key_scope="pod")
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     return registry
 
 
@@ -49,7 +49,7 @@ async def test_a_watch_that_is_pushed_a_value_is_healthy() -> None:
     cache = AclCache(membership_loader=loader, grant_loader=loader)
     with pytest.raises(RuntimeError, match="invalidation listener"):
         follow_access_tables(registry, cache, _Pushing())
-    await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(bus)
     following = follow_access_tables(registry, cache, _Pushing())
     try:
         for _ in range(100):

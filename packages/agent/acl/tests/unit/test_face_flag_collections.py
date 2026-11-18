@@ -12,7 +12,7 @@ rows read as "platform-tool only" without a backfill.
 
 from __future__ import annotations
 
-from threetears.core.collections.schema_backed import BOOL_TYPE
+from threetears.core.collections.schema_backed import BOOL_TYPE, Column
 from threetears.agent.acl import NamespaceCollection
 
 _FACE_COLUMNS = {
@@ -22,11 +22,11 @@ _FACE_COLUMNS = {
 }
 
 
-def _columns_by_name() -> dict[str, object]:
+def _columns_by_name() -> dict[str, Column]:
     """map every ``namespaces`` schema column by name.
 
     :return: column-name -> Column descriptor
-    :rtype: dict[str, object]
+    :rtype: dict[str, Column]
     """
     return {col.name: col for col in NamespaceCollection.schema.columns}
 

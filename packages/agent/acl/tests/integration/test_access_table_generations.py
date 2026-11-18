@@ -25,6 +25,7 @@ from typing import Any
 
 import asyncpg
 import pytest
+from pydantic import BaseModel
 
 from threetears.agent.acl import (
     ActorMembershipKey,
@@ -91,10 +92,12 @@ class _Lossy(FakeNatsClient):
         super().__init__()
         self.deaf = False
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         if self.deaf:
             return
-        await super().publish(subject=subject, message=message, reply_to=reply_to)
+        await super().publish(*args, subject=subject, message=message, reply_to=reply_to)
 
 
 def _config() -> DefaultCoreConfig:
@@ -142,7 +145,7 @@ class _Follower:
         self.unbind = bind_acl_cache_to_access_tables(self.registry, self.cache)
 
     async def start(self) -> None:
-        await self.registry.start_invalidation_listener(self.bus)  # type: ignore[arg-type]
+        await self.registry.start_invalidation_listener(self.bus)
         for table in ACCESS_TABLES:
             self.registry.follow_generation(table)
         await generation_catchup_tick(self.registry, self.reader)
@@ -399,7 +402,7 @@ class TestOneCallBindsAndFollows:
             await writer.registry.generation_source.advance(table)  # type: ignore[union-attr]
         registry = CollectionRegistry()
         registry.configure(l2_client=bus, kv_key_scope="pod")
-        await registry.start_invalidation_listener(bus)  # type: ignore[arg-type]
+        await registry.start_invalidation_listener(bus)
         loader: Any = object()
         cache = AclCache(membership_loader=loader, grant_loader=loader)
         following = follow_access_tables(registry, cache, EpochGenerationReader(bus), grace=timedelta(milliseconds=50))

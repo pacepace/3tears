@@ -29,6 +29,7 @@ from threetears.agent.acl import (
     GroupMembership,
     GroupNamespaceKey,
     GroupTypeCustomerKey,
+    MemberType,
     Namespace,
     Role,
     RoleAssignment,
@@ -132,6 +133,21 @@ class _NoopGrantLoader:
         return {}
 
 
+def _membership(group_id: UUID, member_type: MemberType, member_id: UUID) -> GroupMembership:
+    """one membership of ``member_id`` in ``group_id``, under a fresh customer.
+
+    :param group_id: the group
+    :ptype group_id: UUID
+    :param member_type: user or agent
+    :ptype member_type: MemberType
+    :param member_id: the member
+    :ptype member_id: UUID
+    :return: the membership
+    :rtype: GroupMembership
+    """
+    return GroupMembership(group_id=group_id, member_type=member_type, member_id=member_id, customer_id=uuid4())
+
+
 def _make_cache() -> AclCache:
     """
     construct an :class:`AclCache` wired with noop loaders for unit tests.
@@ -155,8 +171,6 @@ class TestMembershipLayer:
 
     def test_put_then_get_returns_entry(self) -> None:
         """entry is round-tripped intact."""
-        from threetears.agent.acl import MemberType
-
         cache = _make_cache()
         user = uuid4()
         customer = uuid4()
@@ -209,8 +223,8 @@ class TestMembershipLayer:
         actor_id = uuid4()
         user_key = ActorMembershipKey(actor_kind="user", actor_id=actor_id)
         agent_key = ActorMembershipKey(actor_kind="agent", actor_id=actor_id)
-        cache.put_membership(user_key, (uuid4(),))
-        cache.put_membership(agent_key, (uuid4(),))
+        cache.put_membership(user_key, (_membership(uuid4(), MemberType.USER, actor_id),))
+        cache.put_membership(agent_key, (_membership(uuid4(), MemberType.AGENT, actor_id),))
         assert cache.get_membership(user_key) is not None
         assert cache.get_membership(agent_key) is not None
         cache.invalidate_membership(user_key)
@@ -375,7 +389,7 @@ class TestGroupFanOutInvalidation:
         actor = uuid4()
         group = uuid4()
         m_key = ActorMembershipKey(actor_kind="user", actor_id=actor)
-        cache.put_membership(m_key, (group,))
+        cache.put_membership(m_key, (_membership(group, MemberType.USER, actor),))
         cache.invalidate_group(group)
         # membership layer is the caller's job to invalidate separately
         assert cache.get_membership(m_key) is not None

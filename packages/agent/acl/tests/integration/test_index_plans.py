@@ -21,6 +21,7 @@ import pytest
 
 from threetears.agent.acl import collections as acl
 from threetears.agent.acl.migrations import register as register_acl
+from threetears.agent.acl import NamespaceEntity
 from threetears.agent.acl.types import ScopeType
 from threetears.agent.tools.platform_migrations import register as register_tools_platform
 from threetears.core.collections.delete_cascade import read_delete_cascade
@@ -196,13 +197,13 @@ async def test_assignments_group_scope(conn: asyncpg.Connection) -> None:
     )
     await conn.execute("ANALYZE role_assignments")
     for scope, namespace in (("namespace", held_on), ("all", None)):
-        plan = await _first_planned(
-            conn,
-            acl.RoleAssignmentCollection,
-            lambda held, scope=scope, namespace=namespace: held.ensure_group_role_assignment(
-                group_id=group, role_id=role, scope_type=scope, scope_id=namespace
-            ),
-        )
+
+        def ensure(
+            held: acl.RoleAssignmentCollection, scope: str = scope, namespace: uuid.UUID | None = namespace
+        ) -> Awaitable[tuple[uuid.UUID, bool]]:
+            return held.ensure_group_role_assignment(group_id=group, role_id=role, scope_type=scope, scope_id=namespace)
+
+        plan = await _first_planned(conn, acl.RoleAssignmentCollection, ensure)
         if scope == "namespace":
             assert plan_uses_index(plan, "idx_role_assignments_group_scope") or plan_uses_index(
                 plan, "uq_role_assignments_namespace_grant"
@@ -340,14 +341,16 @@ async def test_namespaces_tool_flags(conn: asyncpg.Connection) -> None:
     await conn.execute("ANALYZE namespaces")
     # each flag's listing as the collection sends it, its first statement (the evaluator's decisions come after)
     for flag in ("tool_eligible", "skill_eligible"):
-        plan = await _first_planned(
-            conn,
-            acl.NamespaceCollection,
-            lambda namespaces, flag=flag: getattr(
-                namespaces,
-                "list_tool_namespaces_for_actor" if flag == "tool_eligible" else "list_skill_eligible_tool_namespaces",
-            )(actor_user_id=uuid.uuid4(), actor_agent_id=uuid.uuid4(), cache=None),
-        )
+
+        def listing(namespaces: acl.NamespaceCollection, flag: str = flag) -> Awaitable[list[NamespaceEntity]]:
+            read = (
+                namespaces.list_tool_namespaces_for_actor
+                if flag == "tool_eligible"
+                else namespaces.list_skill_eligible_tool_namespaces
+            )
+            return read(actor_user_id=uuid.uuid4(), actor_agent_id=uuid.uuid4(), cache=None)
+
+        plan = await _first_planned(conn, acl.NamespaceCollection, listing)
         assert plan_uses_index(plan, "idx_namespaces_tool_flags"), (flag, plan.plan)
         # the flagged tools alone (100 or 150 of 300), never the 20,000 agents and workspaces
         assert plan.rows_scanned <= 300, (flag, plan)
@@ -367,15 +370,17 @@ async def test_namespaces_customer_type(conn: asyncpg.Connection) -> None:
         assert plan_uses_index(plan, "idx_namespaces_customer_type"), plan.plan
     # a customer's ownerless namespace of a type, and the platform's, as get_by_owner_and_customer sends them
     for owner_customer, namespace_type in ((customer, "workspace"), (None, "shared")):
-        plan = await _planned(
-            conn,
-            acl.NamespaceCollection,
-            lambda namespaces, owner_customer=owner_customer, namespace_type=namespace_type: (
-                namespaces.get_by_owner_and_customer(
-                    namespace_type=namespace_type, owner_agent_id=None, customer_id=owner_customer
-                )
-            ),
-        )
+
+        def ownerless(
+            namespaces: acl.NamespaceCollection,
+            owner_customer: uuid.UUID | None = owner_customer,
+            namespace_type: str = namespace_type,
+        ) -> Awaitable[NamespaceEntity | None]:
+            return namespaces.get_by_owner_and_customer(
+                namespace_type=namespace_type, owner_agent_id=None, customer_id=owner_customer
+            )
+
+        plan = await _planned(conn, acl.NamespaceCollection, ownerless)
         # the platform's ownerless namespace of a type is keyed by the type's index too (idx_namespaces_type, v004):
         # PostgreSQL reads it there when the type holds no rows, as "shared" does in this seed
         by_type = owner_customer is None and plan_uses_index(plan, "idx_namespaces_type")

@@ -13,6 +13,8 @@ makes the regression legible if it ever recurs.
 
 from __future__ import annotations
 
+from typing import Any
+
 import sqlalchemy as sa
 from threetears.core.collections.schema_backed import SchemaBackedCollection
 
@@ -47,7 +49,7 @@ def test_the_five_rbac_tables_register() -> None:
 
 
 @pytest.mark.parametrize("collection_cls", RBAC_L1_COLLECTIONS, ids=lambda cls: cls.__name__)
-def test_every_canonical_column_is_present(collection_cls: type[SchemaBackedCollection]) -> None:
+def test_every_canonical_column_is_present(collection_cls: type[SchemaBackedCollection[Any]]) -> None:
     """the mirror carries every column the canonical TableSchema declares.
 
     a missing column is not a cache miss: ``BaseCollection.write_to_cache_sync`` raises
@@ -63,7 +65,7 @@ def test_every_canonical_column_is_present(collection_cls: type[SchemaBackedColl
 
 @pytest.mark.parametrize("collection_cls", RBAC_L1_COLLECTIONS, ids=lambda cls: cls.__name__)
 def test_primary_key_matches_the_canonical_schema(
-    collection_cls: type[SchemaBackedCollection],
+    collection_cls: type[SchemaBackedCollection[Any]],
 ) -> None:
     """SQLite's UPSERT needs the ``ON CONFLICT`` columns to be a real PK.
 

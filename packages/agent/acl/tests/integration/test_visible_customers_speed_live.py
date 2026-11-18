@@ -91,7 +91,7 @@ async def world(db_container: str) -> AsyncIterator[tuple[str, uuid.UUID]]:
         runner = MigrationRunner()
         register_acl(runner)
         register_tools_platform(runner, depends_on=("agent_acl",))
-        await runner.apply_for_platform_schema(_Store(held))  # type: ignore[arg-type]
+        await runner.apply_for_platform_schema(_Store(held))
         # the hub's platform schema takes group-in-group members; acl v001's check names users and agents only
         await held.execute("ALTER TABLE group_members DROP CONSTRAINT group_members_member_type_check")
         role = uuid.uuid4()

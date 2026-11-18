@@ -340,7 +340,7 @@ class TestEnforceDeclaredPermissions:
 
     def test_a_declared_map_passes_silently(self) -> None:
         """no exception, no return value."""
-        assert enforce_declared_permissions({"survey": ["survey.create"]}, _survey_catalog()) is None
+        enforce_declared_permissions({"survey": ["survey.create"]}, _survey_catalog())
 
     def test_an_undeclared_pair_raises_with_its_violations_attached(self) -> None:
         """the caller can render the same detail the non-raising form returns."""

@@ -29,6 +29,7 @@ from threetears.agent.acl import (
     Group,
     GroupMembership,
     MemberType,
+    Namespace,
     NamespaceNotFound,
     Role,
     RoleAssignment,
@@ -130,7 +131,7 @@ class _CountingFakeStore(FakeStore):
     async def load_assignments_for_groups(
         self,
         group_ids: tuple[UUID, ...],
-        namespace,
+        namespace: Namespace,
     ) -> tuple[RoleAssignment, ...]:
         """count + delegate.
 
