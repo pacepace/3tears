@@ -1,0 +1,107 @@
+[
+  {
+    "origin": "MAN",
+    "destination": "LDN",
+    "km": 335,
+    "hubs": 0,
+    "customs_days": 0
+  },
+  {
+    "origin": "LDN",
+    "destination": "MAN",
+    "km": 335,
+    "hubs": 0,
+    "customs_days": 0
+  },
+  {
+    "origin": "LDN",
+    "destination": "GLA",
+    "km": 665,
+    "hubs": 1,
+    "customs_days": 0
+  },
+  {
+    "origin": "GLA",
+    "destination": "LDN",
+    "km": 665,
+    "hubs": 1,
+    "customs_days": 0
+  },
+  {
+    "origin": "BHM",
+    "destination": "LDS",
+    "km": 190,
+    "hubs": 0,
+    "customs_days": 0
+  },
+  {
+    "origin": "LDS",
+    "destination": "BRS",
+    "km": 350,
+    "hubs": 1,
+    "customs_days": 0
+  },
+  {
+    "origin": "BRS",
+    "destination": "MAN",
+    "km": 270,
+    "hubs": 0,
+    "customs_days": 0
+  },
+  {
+    "origin": "MAN",
+    "destination": "GLA",
+    "km": 350,
+    "hubs": 0,
+    "customs_days": 0
+  },
+  {
+    "origin": "BHM",
+    "destination": "LDN",
+    "km": 190,
+    "hubs": 0,
+    "customs_days": 0
+  },
+  {
+    "origin": "LDN",
+    "destination": "BRS",
+    "km": 190,
+    "hubs": 0,
+    "customs_days": 0
+  },
+  {
+    "origin": "LDN",
+    "destination": "DUB",
+    "km": 740,
+    "hubs": 1,
+    "customs_days": 1
+  },
+  {
+    "origin": "MAN",
+    "destination": "DUB",
+    "km": 420,
+    "hubs": 1,
+    "customs_days": 1
+  },
+  {
+    "origin": "LDN",
+    "destination": "PAR",
+    "km": 470,
+    "hubs": 1,
+    "customs_days": 1
+  },
+  {
+    "origin": "BHM",
+    "destination": "AMS",
+    "km": 640,
+    "hubs": 2,
+    "customs_days": 2
+  },
+  {
+    "origin": "LDN",
+    "destination": "BRU",
+    "km": 380,
+    "hubs": 1,
+    "customs_days": 1
+  }
+]

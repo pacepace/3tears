@@ -6,8 +6,9 @@ returns a :class:`Reach`:
 
 - ``reached``: the cases where the shipped app's answer is wrong by the data's labels (for the graded apps, where the
   twin's graded reading is better than the app's);
-- ``twin_off``: the cases where the twin's answer is wrong by the same labels (for faqrank and digest, whose labels
-  grade rather than decide, where the app's reading is better than the twin's). A sound held-out app has none.
+- ``twin_off``: the cases where the twin's answer is wrong by the same labels (for faqrank, digest and standings,
+  whose labels grade rather than decide, where the app's reading is better than the twin's). A sound held-out app has
+  none.
 
 ``packages/evals/tests/test_onramp_held_out.py`` holds every app in ``held-out.jsonl`` to these, and
 ``held-out-defects.md`` records the shares this prints. Standard library only, no network, and nothing here is copied
@@ -24,6 +25,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -37,6 +39,8 @@ TOLERANCE_C = 0.5
 TOLERANCE_MOOD = 0.25
 #: passcheck's bands, weakest first.
 BANDS = ("weak", "fair", "good", "strong")
+#: How close shipeta's estimate must be to the delivery scan, in hours, as its README states.
+TOLERANCE_ETA_H = 3.0
 
 
 @dataclass(frozen=True)
@@ -318,6 +322,125 @@ def loyalty(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
     return Reach(off(app), len(rows), off(twin), "October baskets awarded other points than the old till's")
 
 
+def contactmerge(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "reviewed_pairs.jsonl")
+
+    def decided(module: ModuleType, row: dict[str, Any]) -> bool:  # Any: a reviewed pair
+        left = module.Contact.from_row(row["left"], row["left_source"])
+        return bool(module.same_person(left, module.Contact.from_row(row["right"], row["right_source"])))
+
+    def off(module: ModuleType) -> int:
+        return sum(decided(module, r) != r["same"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "reviewed pairs the merge decides otherwise than the review")
+
+
+def slotfinder(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "requests.jsonl")
+
+    def off(module: ModuleType) -> int:
+        found = ([s.strftime("%H:%M") for s in module.free_slots(*module.from_request(r))] for r in rows)
+        return sum(slots != r["offered"] for slots, r in zip(found, rows, strict=True))
+
+    return Reach(off(app), len(rows), off(twin), "requests whose free slots are not the ones offered")
+
+
+def shipeta(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "delivered.jsonl")
+
+    def miss(module: ModuleType, row: dict[str, Any]) -> float:  # Any: a delivered shipment
+        estimate = module.estimate(datetime.fromisoformat(row["booked_at"]), row["origin"], row["destination"])
+        return float(module.hours_between(estimate, datetime.fromisoformat(row["delivered_at"])))
+
+    def off(module: ModuleType) -> int:
+        return sum(miss(module, r) > TOLERANCE_ETA_H + 1e-9 for r in rows)
+
+    mean = [sum(miss(m, r) for r in rows) / len(rows) for m in (app, twin)]
+    return Reach(
+        off(app),
+        len(rows),
+        off(twin),
+        f"shipments delivered more than 3 hours from the estimate (mean miss {mean[0]:.1f} h against {mean[1]:.1f} h)",
+    )
+
+
+def standings(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    nights = _rows(root / "data" / "nights.jsonl")
+
+    def placed(module: ModuleType, night: dict[str, Any]) -> float:  # Any: one quiz night
+        published = {p["team"]: p["place"] for p in night["published"]}
+        table = module.table([module.Entry.from_row(e) for e in night["entries"]])
+        return sum(published[p.team] == p.place for p in table) / len(published)
+
+    worse = sum(placed(twin, n) > placed(app, n) for n in nights)
+    better = sum(placed(app, n) > placed(twin, n) for n in nights)
+    means = [sum(placed(m, n) for n in nights) / len(nights) for m in (app, twin)]
+    return Reach(
+        worse,
+        len(nights),
+        better,
+        f"nights with fewer teams in their published place than the twin's (mean share {means[0]:.3f} against "
+        f"{means[1]:.3f})",
+    )
+
+
+def mdtable(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "tables.jsonl")
+
+    def off(module: ModuleType) -> int:
+        return sum(module.format_table(r["header"], r["rows"], r.get("align")) != r["expected"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "handbook tables written otherwise than the signed-off Markdown")
+
+
+def gradecurve(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "registrar.jsonl")
+    sections = sorted({r["section"] for r in rows})
+
+    def off(module: ModuleType) -> int:
+        letters = {
+            result.student: result.letter
+            for section in sections
+            for result in module.curve_file(root / "data" / "marks" / f"section-{section}.csv")
+        }
+        return sum(letters.get(r["student"]) != r["letter"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "students whose letter is not the registrar's")
+
+
+def plurals(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "strings.jsonl")
+
+    def rendered(module: ModuleType, row: dict[str, Any]) -> str | None:  # Any: a review-sheet line
+        try:
+            return str(module.render(row["template"], row["values"]))
+        except module.TemplateError:
+            return None
+
+    def off(module: ModuleType) -> int:
+        return sum(rendered(module, r) != r["approved"] for r in rows)
+
+    refused = sum(rendered(app, r) is None for r in rows)
+    return Reach(
+        off(app), len(rows), off(twin), f"strings rendered otherwise than the approved text ({refused} refused)"
+    )
+
+
+def proration(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "invoices.jsonl")
+
+    def lines(module: ModuleType, row: dict[str, Any]) -> tuple[int, int]:  # Any: an invoice row
+        adjustment = module.prorate(
+            row["old_plan"], row["new_plan"], row["anchor_day"], date.fromisoformat(row["changed_on"])
+        )
+        return adjustment.credit_pence, adjustment.charge_pence
+
+    def off(module: ModuleType) -> int:
+        return sum(lines(module, r) != (r["credit_pence"], r["charge_pence"]) for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "plan changes whose invoice lines are not the provider's")
+
+
 #: Each held-out app's module, and how its reach is measured.
 SHARES: dict[str, tuple[str, Callable[[ModuleType, ModuleType, Path], Reach]]] = {
     "parcelrate": ("rates", parcelrate),
@@ -336,6 +459,14 @@ SHARES: dict[str, tuple[str, Callable[[ModuleType, ModuleType, Path], Reach]]] =
     "logtally": ("tally", logtally),
     "shelfprice": ("unitprice", shelfprice),
     "loyalty": ("points", loyalty),
+    "contactmerge": ("contacts", contactmerge),
+    "slotfinder": ("slots", slotfinder),
+    "shipeta": ("eta", shipeta),
+    "standings": ("standings", standings),
+    "mdtable": ("mdtable", mdtable),
+    "gradecurve": ("curve", gradecurve),
+    "plurals": ("messages", plurals),
+    "proration": ("proration", proration),
 }
 
 

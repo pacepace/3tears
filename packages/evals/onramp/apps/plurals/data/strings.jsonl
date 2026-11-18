@@ -1,0 +1,46 @@
+{"key": "streak", "template": "You're on a {days|one-day|#-day} streak!", "values": {"days": 1}, "approved": "You're on a one-day streak!"}
+{"key": "upload.progress", "template": "Uploading {done} of {total|one file|# files}", "values": {"done": 115, "total": 1204}, "approved": "Uploading 115 of 1,204 files"}
+{"key": "team.joined", "template": "{name} joined {team}", "values": {"name": "Tom", "team": "the Leeds office"}, "approved": "Tom joined the Leeds office"}
+{"key": "trash.emptied", "template": "{count|Nothing to delete|1 item deleted|# items deleted}", "values": {"count": 1}, "approved": "1 item deleted"}
+{"key": "trash.emptied", "template": "{count|Nothing to delete|1 item deleted|# items deleted}", "values": {"count": 12}, "approved": "12 items deleted"}
+{"key": "comments.new", "template": "{count|one new comment|# new comments} on your post", "values": {"count": 1}, "approved": "one new comment on your post"}
+{"key": "sync.done", "template": "Sync finished: {count|one file|# files} updated", "values": {"count": 1}, "approved": "Sync finished: one file updated"}
+{"key": "storage.used", "template": "You've used {used} GB of your plan", "values": {"used": 2}, "approved": "You've used 2 GB of your plan"}
+{"key": "share.folder", "template": "{owner} shared {count|a file|# files} with you", "values": {"owner": "Tom", "count": 3}, "approved": "Tom shared 3 files with you"}
+{"key": "digest.week", "template": "This week: {posts|one post|# posts} and {likes|one like|# likes}", "values": {"posts": 1, "likes": 1}, "approved": "This week: one post and one like"}
+{"key": "storage.used", "template": "You've used {used} GB of your plan", "values": {"used": 1.5}, "approved": "You've used 1.5 GB of your plan"}
+{"key": "move.done", "template": "Moved {count|one file|# files} to {folder}", "values": {"count": 1, "folder": "Holiday photos"}, "approved": "Moved one file to Holiday photos"}
+{"key": "storage.used", "template": "You've used {used} GB of your plan", "values": {"used": 120}, "approved": "You've used 120 GB of your plan"}
+{"key": "backup.age", "template": "Last backup {hours|less than an hour|an hour|# hours} ago", "values": {"hours": 7}, "approved": "Last backup 7 hours ago"}
+{"key": "share.folder", "template": "{owner} shared {count|a file|# files} with you", "values": {"owner": "Zoë", "count": 2}, "approved": "Zoë shared 2 files with you"}
+{"key": "invite.pending", "template": "{count|One invitation is|# invitations are} waiting for a reply", "values": {"count": 3}, "approved": "3 invitations are waiting for a reply"}
+{"key": "trash.emptied", "template": "{count|Nothing to delete|1 item deleted|# items deleted}", "values": {"count": 1}, "approved": "1 item deleted"}
+{"key": "trial.ends", "template": "Your trial ends in {days|less than a day|one day|# days}", "values": {"days": 7}, "approved": "Your trial ends in 7 days"}
+{"key": "trial.ends", "template": "Your trial ends in {days|less than a day|one day|# days}", "values": {"days": 1}, "approved": "Your trial ends in one day"}
+{"key": "storage.used", "template": "You've used {used} GB of your plan", "values": {"used": 2}, "approved": "You've used 2 GB of your plan"}
+{"key": "team.joined", "template": "{name} joined {team}", "values": {"name": "Marek", "team": "Support"}, "approved": "Marek joined Support"}
+{"key": "share.folder", "template": "{owner} shared {count|a file|# files} with you", "values": {"owner": "Priya", "count": 0}, "approved": "Priya shared 0 files with you"}
+{"key": "trial.ends", "template": "Your trial ends in {days|less than a day|one day|# days}", "values": {"days": 7}, "approved": "Your trial ends in 7 days"}
+{"key": "export.ready", "template": "Your export of {count|one photo|# photos} is ready to download", "values": {"count": 2}, "approved": "Your export of 2 photos is ready to download"}
+{"key": "comments.new", "template": "{count|one new comment|# new comments} on your post", "values": {"count": 12}, "approved": "12 new comments on your post"}
+{"key": "team.joined", "template": "{name} joined {team}", "values": {"name": "Zoë", "team": "Support"}, "approved": "Zoë joined Support"}
+{"key": "comments.new", "template": "{count|one new comment|# new comments} on your post", "values": {"count": 12}, "approved": "12 new comments on your post"}
+{"key": "share.folder", "template": "{owner} shared {count|a file|# files} with you", "values": {"owner": "Zoë", "count": 12}, "approved": "Zoë shared 12 files with you"}
+{"key": "storage.used", "template": "You've used {used} GB of your plan", "values": {"used": 48}, "approved": "You've used 48 GB of your plan"}
+{"key": "export.ready", "template": "Your export of {count|one photo|# photos} is ready to download", "values": {"count": 25000}, "approved": "Your export of 25,000 photos is ready to download"}
+{"key": "trial.ends", "template": "Your trial ends in {days|less than a day|one day|# days}", "values": {"days": 1}, "approved": "Your trial ends in one day"}
+{"key": "reminder.braces", "template": "Use {{name}} in a template to greet {who}", "values": {"who": "customers"}, "approved": "Use {name} in a template to greet customers"}
+{"key": "backup.age", "template": "Last backup {hours|less than an hour|an hour|# hours} ago", "values": {"hours": 0}, "approved": "Last backup less than an hour ago"}
+{"key": "comments.new", "template": "{count|one new comment|# new comments} on your post", "values": {"count": 7}, "approved": "7 new comments on your post"}
+{"key": "reminder.braces", "template": "Use {{name}} in a template to greet {who}", "values": {"who": "new members"}, "approved": "Use {name} in a template to greet new members"}
+{"key": "sync.done", "template": "Sync finished: {count|one file|# files} updated", "values": {"count": 1204}, "approved": "Sync finished: 1,204 files updated"}
+{"key": "streak", "template": "You're on a {days|one-day|#-day} streak!", "values": {"days": 2}, "approved": "You're on a 2-day streak!"}
+{"key": "trial.ends", "template": "Your trial ends in {days|less than a day|one day|# days}", "values": {"days": 3}, "approved": "Your trial ends in 3 days"}
+{"key": "quota.warn", "template": "{name}, you have {left|no space|1 GB|# GB} left", "values": {"name": "Hannah", "left": 2}, "approved": "Hannah, you have 2 GB left"}
+{"key": "upload.progress", "template": "Uploading {done} of {total|one file|# files}", "values": {"done": 1, "total": 1}, "approved": "Uploading 1 of one file"}
+{"key": "backup.age", "template": "Last backup {hours|less than an hour|an hour|# hours} ago", "values": {"hours": 2}, "approved": "Last backup 2 hours ago"}
+{"key": "digest.week", "template": "This week: {posts|one post|# posts} and {likes|one like|# likes}", "values": {"posts": 2, "likes": 12}, "approved": "This week: 2 posts and 12 likes"}
+{"key": "trash.emptied", "template": "{count|Nothing to delete|1 item deleted|# items deleted}", "values": {"count": 3}, "approved": "3 items deleted"}
+{"key": "storage.used", "template": "You've used {used} GB of your plan", "values": {"used": 1.5}, "approved": "You've used 1.5 GB of your plan"}
+{"key": "quota.warn", "template": "{name}, you have {left|no space|1 GB|# GB} left", "values": {"name": "Priya", "left": 1204}, "approved": "Priya, you have 1,204 GB left"}
+{"key": "comments.new", "template": "{count|one new comment|# new comments} on your post", "values": {"count": 12}, "approved": "12 new comments on your post"}
