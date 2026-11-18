@@ -12,12 +12,12 @@ that replaces the original's hard-wired identity audit call.
 
 from __future__ import annotations
 
+import smtplib
 from collections.abc import Mapping
 from typing import Any
 
 import pytest
 
-from threetears.channels.mail import smtp as smtp_module
 from threetears.channels.mail.message import EmailMessage, EmailSendError
 from threetears.channels.mail.settings import (
     EmailSettingsNotConfiguredError,
@@ -105,7 +105,7 @@ class _RecordedFailures:
 @pytest.fixture(autouse=True)
 def _recording_smtp(monkeypatch: pytest.MonkeyPatch) -> None:
     _RecordingSmtp.instances = []
-    monkeypatch.setattr(smtp_module.smtplib, "SMTP", _RecordingSmtp)
+    monkeypatch.setattr(smtplib, "SMTP", _RecordingSmtp)
 
 
 def _raising_smtp(monkeypatch: pytest.MonkeyPatch, failure: Exception) -> None:
@@ -124,7 +124,7 @@ def _raising_smtp(monkeypatch: pytest.MonkeyPatch, failure: Exception) -> None:
             raise failure
 
     _RecordingSmtp.instances = []
-    monkeypatch.setattr(smtp_module.smtplib, "SMTP", _Raising)
+    monkeypatch.setattr(smtplib, "SMTP", _Raising)
 
 
 def _transport(*answers: ResolvedEmailSettings | Exception, on_failure: Any = None) -> SmtpEmailTransport:

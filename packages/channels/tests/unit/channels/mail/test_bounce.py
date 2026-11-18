@@ -145,7 +145,7 @@ class TestAVerifiedCallbackBecomesDeliveryEvents:
     def test_hard_and_soft_bounces_are_distinct_values(self) -> None:
         """A consumer suppresses on a hard bounce immediately and retries a soft one.
         Collapsing them into one `bounced` value makes that policy unexpressible."""
-        assert DeliveryEventType.BOUNCED_HARD is not DeliveryEventType.BOUNCED_SOFT
+        assert len({DeliveryEventType.BOUNCED_HARD.value, DeliveryEventType.BOUNCED_SOFT.value}) == 2
         assert {member.value for member in DeliveryEventType} >= {
             "delivered",
             "bounced_hard",

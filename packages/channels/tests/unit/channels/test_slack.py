@@ -51,7 +51,9 @@ class _Resp:
 def _api_error(code: str, headers: dict[str, str] | None = None) -> Exception:
     from slack_sdk.errors import SlackApiError
 
-    return SlackApiError(code, _Resp({"error": code}, headers))
+    # slack_sdk leaves the error's constructor unannotated; the call goes through the typed Exception it is one of
+    error_class: type[Exception] = SlackApiError
+    return error_class(code, _Resp({"error": code}, headers))
 
 
 def _ok_profile(name: str) -> dict[str, Any]:
@@ -872,6 +874,7 @@ class TestSlackAdapterThreading:
         say = AsyncMock()
         await adapter.handle_message_event(event=event, say=say)
         say.assert_awaited_once()
+        assert say.await_args is not None
         kwargs = say.await_args.kwargs
         assert kwargs["text"] == "threaded reply"
         assert kwargs["thread_ts"] == "1234567890.000001"
@@ -903,6 +906,7 @@ class TestSlackAdapterThreading:
         say = AsyncMock()
         await adapter.handle_message_event(event=event, say=say)
         say.assert_awaited_once()
+        assert say.await_args is not None
         kwargs = say.await_args.kwargs
         assert kwargs["text"] == "new thread reply"
         assert kwargs["thread_ts"] == "1234567890.123456"
@@ -934,6 +938,7 @@ class TestSlackAdapterThreading:
         say = AsyncMock()
         await adapter.handle_message_event(event=event, say=say)
         say.assert_awaited_once()
+        assert say.await_args is not None
         kwargs = say.await_args.kwargs
         assert kwargs["text"] == "dm reply"
         assert "thread_ts" not in kwargs
@@ -1131,6 +1136,7 @@ class TestSlackAdapterRichFormatting:
         await adapter.handle_message_event(event=event, say=say)
 
         say.assert_awaited_once()
+        assert say.await_args is not None
         call_kwargs = say.await_args.kwargs
         assert "blocks" in call_kwargs
         assert isinstance(call_kwargs["blocks"], list)
@@ -1170,6 +1176,7 @@ class TestSlackAdapterRichFormatting:
         await adapter.handle_message_event(event=event, say=say)
 
         say.assert_awaited_once()
+        assert say.await_args is not None
         call_kwargs = say.await_args.kwargs
         assert call_kwargs.get("text") == "plain reply"
         assert call_kwargs["blocks"] == [
@@ -1207,6 +1214,7 @@ class TestSlackAdapterRichFormatting:
         await adapter.handle_message_event(event=event, say=say)
 
         say.assert_awaited_once()
+        assert say.await_args is not None
         call_kwargs = say.await_args.kwargs
         assert "text" in call_kwargs
         assert "blocks" in call_kwargs

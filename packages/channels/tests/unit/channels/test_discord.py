@@ -124,7 +124,7 @@ def _make_mock_channel(
     channel.send = AsyncMock()
 
     if is_thread:
-        channel.__class__ = _FakeThread
+        channel.configure_mock(__class__=_FakeThread)
 
     return channel
 
@@ -143,7 +143,7 @@ def _make_mock_dm_channel(*, channel_id: int = 555666777) -> MagicMock:
     channel = MagicMock()
     channel.id = channel_id
     channel.send = AsyncMock()
-    channel.__class__ = _FakeDMChannel
+    channel.configure_mock(__class__=_FakeDMChannel)
     return channel
 
 
@@ -1361,7 +1361,9 @@ class TestDiscordProxy:
     """
 
     @staticmethod
-    def _proxy_given(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], config: dict | None = None) -> object:
+    def _proxy_given(
+        monkeypatch: pytest.MonkeyPatch, env: dict[str, str], config: dict[str, Any] | None = None
+    ) -> object:
         from threetears.channels.discord import DiscordAdapter
 
         for name in _PROXY_VARS:

@@ -4,21 +4,24 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from threetears.channels import ChannelDeliveryMessage
 
 
-def _delivery(**overrides):
-    fields = {
-        "correlation_id": uuid4(),
-        "conversation_id": uuid4(),
-        "agent_id": uuid4(),
-        "channel_type": "slack",
-        "content": "the answer",
-    }
-    fields.update(overrides)
-    return ChannelDeliveryMessage(**fields)
+def _delivery(
+    *, correlation_id: UUID | None = None, conversation_id: UUID | None = None, turn_id: str | None = None
+) -> ChannelDeliveryMessage:
+    return ChannelDeliveryMessage.model_validate(
+        {
+            "correlation_id": correlation_id or uuid4(),
+            "conversation_id": conversation_id or uuid4(),
+            "agent_id": uuid4(),
+            "channel_type": "slack",
+            "content": "the answer",
+            **({} if turn_id is None else {"turn_id": turn_id}),
+        }
+    )
 
 
 def test_an_answer_with_a_turn_id_dedups_on_it_not_the_correlation_id() -> None:

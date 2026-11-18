@@ -53,25 +53,24 @@ def cid() -> Callable[[str], str]:
     return _build
 
 
-async def _await_until(
-    predicate: Callable[[], Awaitable[object]],
+async def _await_until[T](
+    predicate: Callable[[], Awaitable[T]],
     *,
     attempts: int = 50,
     delay: float = 0.05,
-) -> object:
+) -> T:
     """poll an async predicate until truthy (bounded), for cross-pod settle.
 
     cross-pod coherence is eventual: the invalidation envelope must
     round-trip the broker before pod B's stale L1 is evicted. poll
     rather than sleep-a-fixed-time so the test is both fast and robust.
     """
-    last: object = None
-    for _ in range(attempts):
+    for _ in range(attempts - 1):
         last = await predicate()
         if last:
             return last
         await asyncio.sleep(delay)
-    return last
+    return await predicate()
 
 
 # ---------------------------------------------------------------------------
@@ -94,8 +93,8 @@ async def test_join_on_a_visible_on_b(
     members = await _await_until(lambda: pod_b.state.members(room))
     assert members, "pod B never saw the member from pod A"
     assert [m.connection_id for m in members] == [conn]
-    assert members[0].pod_id == "pod-a"  # type: ignore[index]
-    assert members[0].user_id == "user-1"  # type: ignore[index]
+    assert members[0].pod_id == "pod-a"
+    assert members[0].user_id == "user-1"
 
 
 async def test_leave_on_a_clears_on_b(

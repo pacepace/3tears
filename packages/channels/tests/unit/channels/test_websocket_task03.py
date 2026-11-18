@@ -29,12 +29,15 @@ import ast
 import inspect
 import json
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 
-from threetears.agent.acl import AccessDenied
-from threetears.channels.frames import Frame, OpResult
+from threetears.agent.acl import AccessDenied, AclCache
+from threetears.channels.frames import Frame, OpHandler, OpResult
+from threetears.channels.presence.fanout import RoomFanout
+from threetears.channels.presence.room_state import RoomState
 from threetears.channels.protocol import ChannelMessage, ChannelResponse
 from threetears.channels.websocket import UNAUTHENTICATED, WebSocketAuthRefused
 from threetears.nats.errors import KvError
@@ -45,9 +48,8 @@ from .websocket_support import EchoRouter, MockWebSocket, valid_auth
 # -- fakes for the injected seams ------------------------------------------
 
 
-# parity-exempt: RoomState stand-in recording register/unregister + rooms-left without a real collection; intentional subset
-class _FakeRoomState:
-    """records register/unregister + the rooms left, no real collection."""
+class _FakeRoomState(RoomState):
+    """a RoomState with no collection behind it: records register/unregister, the only calls the handler makes."""
 
     def __init__(self) -> None:
         self.registered: list[tuple[str, Any]] = []
@@ -60,9 +62,8 @@ class _FakeRoomState:
         self.unregistered.append(connection_id)
 
 
-# parity-exempt: fanout stand-in recording join/leave/broadcast for dispatch assertions; intentional subset
-class _FakeFanout:
-    """records join/leave/broadcast calls so dispatch can be asserted."""
+class _FakeFanout(RoomFanout):
+    """a RoomFanout with no state or bus behind it: records join/leave/broadcast so dispatch can be asserted."""
 
     def __init__(self) -> None:
         self.joined: list[tuple[str, str, str, str]] = []
@@ -129,7 +130,7 @@ def _capture_authz(monkeypatch: pytest.MonkeyPatch, *, deny_actions: set[str] | 
 
     async def _fake(
         *, ns_entity: Any, action: str, user_id: Any, agent_id: Any, cache: Any, namespace_name: Any = None
-    ):  # noqa: ANN202
+    ) -> object:
         recorded.append((action, user_id))
         if action in deny:
             raise AccessDenied("denied", action=action)
@@ -145,7 +146,7 @@ def _room_seam_handler(
     monkeypatch: pytest.MonkeyPatch,
     *,
     deny_actions: set[str] | None = None,
-    op_handler: _FakeOpHandler | None = None,
+    op_handler: OpHandler | None = None,
     auth_validator: Any = valid_auth,
 ) -> tuple[Any, _FakeRoomState, _FakeFanout, list[tuple[str, Any]]]:
     """build a WebSocketHandler with all room seams injected + patched authz.
@@ -164,7 +165,7 @@ def _room_seam_handler(
         auth_validator=auth_validator,
         room_state=state,
         room_fanout=fanout,
-        acl_cache=object(),
+        acl_cache=MagicMock(spec=AclCache),  # authorize_on_entity is patched: the cache is never read
         ns_resolver=_AllowAuthorizer(),
         op_handler=op_handler,
     )
@@ -482,7 +483,7 @@ class TestDisconnectCleanupSurvivesARefusedLeave:
             auth_validator=_auth_with_customer("valid-token"),
             room_state=state,
             room_fanout=fanout,
-            acl_cache=object(),
+            acl_cache=MagicMock(spec=AclCache),  # authorize_on_entity is patched: the cache is never read
             ns_resolver=_AllowAuthorizer(),
         )
         rooms = ["cust:story:main:a.md", "cust:story:main:b.md"]
