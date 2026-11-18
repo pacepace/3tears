@@ -328,7 +328,11 @@ class TestPredicate:
             }
         )
         assert predicate.all_of is not None
-        assert [arm.compare.left.ref for arm in predicate.all_of if arm.compare is not None] == [
+        assert [
+            arm.compare.left.ref
+            for arm in predicate.all_of
+            if arm.compare is not None and isinstance(arm.compare.left, Reference)
+        ] == [
             "rel.old_knowwho.pid",
             "source.orgname",
         ]
@@ -423,10 +427,8 @@ class TestArithmeticExpressionIsOpenByDesign:
         :rtype: None
         """
         predicate = Predicate(
-            compare=Comparison(
-                left=ArithmeticExpression(arith=text),
-                op=ComparisonOperator.EQUAL,
-                right={"literal": 1},
+            compare=Comparison.model_validate(
+                {"left": ArithmeticExpression(arith=text), "op": ComparisonOperator.EQUAL, "right": {"literal": 1}}
             )
         )
         assert predicate.is_escape_hatch is False, deliverable

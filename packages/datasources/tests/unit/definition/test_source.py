@@ -59,7 +59,7 @@ def _provenance() -> ProvenanceSpec:
     """
     return ProvenanceSpec(
         grain=["voterbase_id"],
-        columns=[ProvenanceColumn(name="unit", expression={"literal": "academy_members"})],
+        columns=[ProvenanceColumn.model_validate({"name": "unit", "expression": {"literal": "academy_members"}})],
     )
 
 
@@ -77,7 +77,7 @@ class TestFactSource:
         )
 
     def test_carries_a_per_run_schema_expression(self) -> None:
-        source = FactSource(relation="employment_facts", schema_expr="param.release_schema")
+        source = FactSource.model_validate({"relation": "employment_facts", "schema_expr": "param.release_schema"})
         assert source.schema_expr is not None
         assert source.references[0].ref == "param.release_schema"
 
@@ -309,7 +309,9 @@ class TestArtifactRef:
             )
 
     def test_external_scope_names_a_table_and_a_per_run_schema(self) -> None:
-        ref = ArtifactRef(scope=ArtifactScope.EXTERNAL, table="source_archetypes", schema_expr="param.release_schema")
+        ref = ArtifactRef.model_validate(
+            {"scope": ArtifactScope.EXTERNAL, "table": "source_archetypes", "schema_expr": "param.release_schema"}
+        )
         assert ref.table == "source_archetypes"
         assert ref.references[0].ref == "param.release_schema"
 
@@ -337,10 +339,12 @@ class TestArtifactRef:
             dataset="universal_2026_core",
             artifact=ArtifactKind.PROVENANCE,
             run=UpstreamPin(policy=UpstreamPolicy.NAMED_RELEASE, release="2026-01"),
-            projection=ArtifactProjection(
-                columns=[{"expression": "resolved.employer", "alias": "employer"}],
-                group_by=["resolved.employer"],
-                having={"compare": {"left": {"arith": "COUNT(*)"}, "op": ">=", "right": {"literal": 25}}},
+            projection=ArtifactProjection.model_validate(
+                {
+                    "columns": [{"expression": "resolved.employer", "alias": "employer"}],
+                    "group_by": ["resolved.employer"],
+                    "having": {"compare": {"left": {"arith": "COUNT(*)"}, "op": ">=", "right": {"literal": 25}}},
+                }
             ),
         )
         assert ref.projection is not None
@@ -360,11 +364,15 @@ class TestArtifactProjection:
 
     def test_a_positional_group_ordinal_must_be_in_range(self) -> None:
         with pytest.raises(ValidationError) as excinfo:
-            ArtifactProjection(columns=[{"expression": "resolved.unit"}], group_by=[{"literal": 2}])
+            ArtifactProjection.model_validate(
+                {"columns": [{"expression": "resolved.unit"}], "group_by": [{"literal": 2}]}
+            )
         assert "projects" in str(excinfo.value)
 
     def test_a_positional_group_ordinal_in_range_is_accepted(self) -> None:
-        projection = ArtifactProjection(columns=[{"expression": "resolved.unit"}], group_by=[{"literal": 1}])
+        projection = ArtifactProjection.model_validate(
+            {"columns": [{"expression": "resolved.unit"}], "group_by": [{"literal": 1}]}
+        )
         assert len(projection.group_by) == 1
 
 
@@ -372,20 +380,24 @@ class TestSourceRefUsability:
     """DSM-01D-01: a source, a relation target, and a predicate subquery."""
 
     def test_usable_as_a_relation_target(self) -> None:
-        relation = RelationRef(
-            relation=ArtifactRef(scope=ArtifactScope.EXTERNAL, table="source_archetypes"),
-            alias="sa",
-            join="left",
+        relation = RelationRef.model_validate(
+            {
+                "relation": ArtifactRef(scope=ArtifactScope.EXTERNAL, table="source_archetypes"),
+                "alias": "sa",
+                "join": "left",
+            }
         )
         assert isinstance(relation.relation, ArtifactRef)
 
     def test_usable_inside_a_predicate_subquery(self) -> None:
         predicate = Predicate(
-            membership=Membership(
-                expression="resolved.voterbase_id",
-                source=ArtifactRef(
-                    scope=ArtifactScope.DATASET, dataset="amz_universe_2024", artifact=ArtifactKind.WIDE
-                ),
+            membership=Membership.model_validate(
+                {
+                    "expression": "resolved.voterbase_id",
+                    "source": ArtifactRef(
+                        scope=ArtifactScope.DATASET, dataset="amz_universe_2024", artifact=ArtifactKind.WIDE
+                    ),
+                }
             )
         )
         assert predicate.membership is not None
@@ -403,10 +415,12 @@ class TestSourceRefUsability:
     def test_a_membership_over_a_literal_value_list(self) -> None:
         # industries NOT IN ('a', 'b') -- the corpus's authored operator.
         predicate = Predicate(
-            membership=Membership(
-                expression="rel.li.industries",
-                negate=True,
-                values=[{"literal": "Retail"}, {"literal": "Wholesale"}],
+            membership=Membership.model_validate(
+                {
+                    "expression": "rel.li.industries",
+                    "negate": True,
+                    "values": [{"literal": "Retail"}, {"literal": "Wholesale"}],
+                }
             )
         )
         assert predicate.membership is not None
@@ -414,20 +428,21 @@ class TestSourceRefUsability:
 
     def test_a_membership_naming_neither_values_nor_source_is_refused(self) -> None:
         with pytest.raises(ValidationError):
-            Membership(expression="rel.li.industries")
+            Membership.model_validate({"expression": "rel.li.industries"})
 
     def test_a_membership_naming_both_values_and_source_is_refused(self) -> None:
         with pytest.raises(ValidationError):
-            Membership(
-                expression="rel.li.industries",
-                values=[{"literal": "Retail"}],
-                source=LiteralEntities(entity_ids=["NY-1"]),
+            Membership.model_validate(
+                {
+                    "expression": "rel.li.industries",
+                    "values": [{"literal": "Retail"}],
+                    "source": LiteralEntities(entity_ids=["NY-1"]),
+                }
             )
 
     def test_a_membership_over_a_literal_entity_set(self) -> None:
-        membership = Membership(
-            expression="resolved.voterbase_id",
-            source=LiteralEntities(entity_ids=[" NY-18677111"]),
+        membership = Membership.model_validate(
+            {"expression": "resolved.voterbase_id", "source": LiteralEntities(entity_ids=[" NY-18677111"])}
         )
         assert isinstance(membership.source, LiteralEntities)
 
@@ -455,18 +470,21 @@ class TestSubqueryProjectionIsItsOwnScope:
             dataset="universal_2026_core",
             artifact=ArtifactKind.QUALIFIED,
             run=UpstreamPin(policy=UpstreamPolicy.LATEST_RELEASE),
-            projection=ArtifactProjection(
-                columns=[{"expression": "resolved.voterbase_id"}],
-                distinct=True,
+            projection=ArtifactProjection.model_validate(
+                {"columns": [{"expression": "resolved.voterbase_id"}], "distinct": True}
             ),
         )
 
     def test_references_are_the_enclosing_scope_only(self) -> None:
-        ref = ArtifactRef(
-            scope=ArtifactScope.EXTERNAL,
-            table="universal_2026_core_final",
-            schema_expr="param.release_schema",
-            projection=ArtifactProjection(columns=[{"expression": "resolved.voterbase_id"}], distinct=True),
+        ref = ArtifactRef.model_validate(
+            {
+                "scope": ArtifactScope.EXTERNAL,
+                "table": "universal_2026_core_final",
+                "schema_expr": "param.release_schema",
+                "projection": ArtifactProjection.model_validate(
+                    {"columns": [{"expression": "resolved.voterbase_id"}], "distinct": True}
+                ),
+            }
         )
         assert [reference.ref for reference in ref.references] == ["param.release_schema"]
 
@@ -479,10 +497,8 @@ class TestSubqueryProjectionIsItsOwnScope:
         assert ref.projection_references == ()
 
     def test_a_membership_does_not_leak_the_subquery_projection(self) -> None:
-        membership = Membership(
-            expression="source.voterbase_id",
-            negate=True,
-            source=self._upstream_subquery(),
+        membership = Membership.model_validate(
+            {"expression": "source.voterbase_id", "negate": True, "source": self._upstream_subquery()}
         )
         assert [reference.ref for reference in membership.references] == ["source.voterbase_id"]
 
@@ -492,10 +508,8 @@ class TestSubqueryProjectionIsItsOwnScope:
         resolution = Resolution(
             source=FactSource(relation="linkedin_facts"),
             predicate=Predicate(
-                membership=Membership(
-                    expression="source.voterbase_id",
-                    negate=True,
-                    source=self._upstream_subquery(),
+                membership=Membership.model_validate(
+                    {"expression": "source.voterbase_id", "negate": True, "source": self._upstream_subquery()}
                 )
             ),
         )
@@ -534,7 +548,7 @@ class TestTheEmptyMembershipListIsRefused:
         :rtype: None
         """
         with pytest.raises(ValidationError):
-            Membership(expression="rel.li.industries", negate=True, values=[])
+            Membership.model_validate({"expression": "rel.li.industries", "negate": True, "values": []})
 
     def test_the_refusal_names_the_consequence_rather_than_the_field(self) -> None:
         """an author who reads "values is empty" learns nothing.
@@ -546,7 +560,7 @@ class TestTheEmptyMembershipListIsRefused:
         :rtype: None
         """
         with pytest.raises(ValidationError) as excinfo:
-            Membership(expression="rel.li.industries", negate=True, values=[])
+            Membership.model_validate({"expression": "rel.li.industries", "negate": True, "values": []})
         message = str(excinfo.value)
         assert "NOT IN ('')" in message
         assert "three-valued logic" in message

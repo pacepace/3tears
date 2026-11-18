@@ -18,7 +18,7 @@ from uuid import UUID, uuid7
 
 import pyarrow as pa
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from threetears.datasources.query_client import (
     BUSY_BACKOFF_SECONDS,
@@ -150,8 +150,8 @@ class TestRequestShape:
         cid = uuid7()
         request = DatasourceQueryRequest(
             correlation_id=cid,
-            identity_token=_TOKEN,
-            user_identity_token="user.assertion",
+            identity_token=SecretStr(_TOKEN),
+            user_identity_token=SecretStr("user.assertion"),
             query="SELECT $1",
             params=[7],
         )
@@ -172,8 +172,8 @@ class TestRequestShape:
         user_secret = "eyJ.user.assertion"
         request = DatasourceQueryRequest(
             correlation_id=uuid7(),
-            identity_token=secret,
-            user_identity_token=user_secret,
+            identity_token=SecretStr(secret),
+            user_identity_token=SecretStr(user_secret),
             query="SELECT 1",
         )
 
@@ -441,7 +441,7 @@ class TestABusyHubIsAskedAgain:
 
     async def test_a_fingerprint_refused_busy_is_asked_again(self, waits: list[float]) -> None:
         reply = DatasourceQueryResponse(
-            success=True, fingerprint={"row_count": 3, "digest": "9"}, correlation_id=uuid7()
+            success=True, fingerprint=RelationFingerprintResult(row_count=3, digest="9"), correlation_id=uuid7()
         )
         fake = _BusyThen(1, reply)
 
@@ -725,7 +725,7 @@ class TestAnExportWaitsForItsOwnDeadline:
 
     async def test_a_fingerprint_keeps_the_general_timeout_beside_an_export_timeout(self) -> None:
         reply = DatasourceQueryResponse(
-            success=True, fingerprint={"row_count": 3, "digest": "9"}, correlation_id=uuid7()
+            success=True, fingerprint=RelationFingerprintResult(row_count=3, digest="9"), correlation_id=uuid7()
         )
         fake = _FakeNatsClient(reply=reply)
         client = DatasourceQueryClient(

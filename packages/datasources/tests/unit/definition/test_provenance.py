@@ -57,24 +57,28 @@ def _columns(names: tuple[str, ...]) -> list[ProvenanceColumn]:
     :returns: provenance columns in the same order
     :rtype: list[ProvenanceColumn]
     """
-    return [ProvenanceColumn(name=name, expression={"ref": f"resolved.{name}"}) for name in names]
+    return [
+        ProvenanceColumn.model_validate({"name": name, "expression": {"ref": f"resolved.{name}"}}) for name in names
+    ]
 
 
 class TestProvenanceColumn:
     """one column of the pinned contract."""
 
     def test_carries_an_expression_and_an_optional_sql_type(self) -> None:
-        column = ProvenanceColumn(name="type", expression={"literal": "employment"}, sql_type="VARCHAR(50)")
+        column = ProvenanceColumn.model_validate(
+            {"name": "type", "expression": {"literal": "employment"}, "sql_type": "VARCHAR(50)"}
+        )
         assert column.name == "type"
         assert column.sql_type == "VARCHAR(50)"
 
     def test_a_bare_string_expression_is_a_reference(self) -> None:
-        column = ProvenanceColumn(name="job_title", expression="source.job_title")
+        column = ProvenanceColumn.model_validate({"name": "job_title", "expression": "source.job_title"})
         assert column.references[0].ref == "source.job_title"
 
     def test_rejects_a_blank_name(self) -> None:
         with pytest.raises(ValidationError):
-            ProvenanceColumn(name="   ", expression={"literal": 1})
+            ProvenanceColumn.model_validate({"name": "   ", "expression": {"literal": 1}})
 
     def test_rejects_extra_fields(self) -> None:
         with pytest.raises(ValidationError):
@@ -117,7 +121,7 @@ class TestProvenanceSpec:
         spec = ProvenanceSpec(
             grain=["voterbase_id"],
             columns=_columns(("unit",)),
-            relations=[RelationRef(relation="source_archetypes", alias="sa", join="left")],
+            relations=[RelationRef.model_validate({"relation": "source_archetypes", "alias": "sa", "join": "left"})],
         )
         assert [relation.alias for relation in spec.relations] == ["sa"]
 
@@ -126,11 +130,13 @@ class TestProvenanceSpec:
             grain=["voterbase_id"],
             columns=_columns(("unit",)),
             measures=[
-                Measure(
-                    name="contribution_sum",
-                    expression="SUM(source.contribution_amt)",
-                    grain=["voterbase_id", "list_id"],
-                    scope=MeasureScope.RESOLUTION,
+                Measure.model_validate(
+                    {
+                        "name": "contribution_sum",
+                        "expression": "SUM(source.contribution_amt)",
+                        "grain": ["voterbase_id", "list_id"],
+                        "scope": MeasureScope.RESOLUTION,
+                    }
                 )
             ],
         )

@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 from urllib.parse import unquote
@@ -196,7 +196,7 @@ async def export_partitions(
     bucket: str,
     parts: Sequence[str] | None = None,
     file_concurrency: int = _DEFAULT_FILE_CONCURRENCY,
-) -> AsyncIterator[tuple[str | None, list[dict[str, Any]]]]:
+) -> AsyncGenerator[tuple[str | None, list[dict[str, Any]]], None]:
     """every part of a relation (or the ``parts`` asked for), through one export, proven, one part at a time.
 
     :param client: the caller's datasource client
@@ -221,8 +221,8 @@ async def export_partitions(
     :param file_concurrency: one part's files read at once
     :ptype file_concurrency: int
     :return: each part's value and rows, in the parts' sorted order (NULL first); a part asked for
-        that holds no rows comes back empty
-    :rtype: AsyncIterator[tuple[str | None, list[dict[str, Any]]]]
+        that holds no rows comes back empty; closing it early deletes the export
+    :rtype: AsyncGenerator[tuple[str | None, list[dict[str, Any]]], None]
     :raises ValueError: when ``partition_by`` is not among ``columns``
     :raises IncompleteExportError: when a part moved during the export, or the export does not hold
         exactly the parts' rows

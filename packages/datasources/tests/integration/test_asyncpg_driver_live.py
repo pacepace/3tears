@@ -222,6 +222,7 @@ class TestHappyPath:
         try:
             built = await driver.execute(f'CREATE TABLE "{schema}"."copied" AS SELECT * FROM "{schema}"."widgets"')
             held = await driver.fetch(f'SELECT count(*) AS n FROM "{schema}"."copied"')
+            assert built is not None
             assert built == held[0]["n"] and built > 0
             assert await driver.execute(f'CREATE TABLE "{schema}"."plain" (a int)') is None
             transaction = await driver.begin()

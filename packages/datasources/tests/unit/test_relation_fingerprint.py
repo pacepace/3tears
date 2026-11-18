@@ -28,6 +28,7 @@ import pytest
 from pydantic import ValidationError
 
 from threetears.core.fingerprint import relation_key_expression as build_relation_key_expression
+from threetears.datasources.entities import DataSourceType
 from threetears.datasources.query_client import RelationFingerprintRequest
 
 
@@ -96,7 +97,7 @@ class TestTheUnbuiltDriversRefuseByName:
 
         driver = SnowflakeDriver(
             SnowflakeConnectionConfig(
-                datasource_type="snowflake",
+                datasource_type=DataSourceType.SNOWFLAKE,
                 account="acct",
                 warehouse="wh",
                 user="u",

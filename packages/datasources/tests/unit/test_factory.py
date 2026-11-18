@@ -37,6 +37,9 @@ from threetears.datasources.config import (
     SnowflakeConnectionConfig,
     YugabyteConnectionConfig,
 )
+from collections.abc import Mapping
+from threetears.core.sql_fragments import FilterValue
+from threetears.datasources.drivers.base import RelationFingerprint
 from threetears.datasources.drivers import factory
 from threetears.datasources.drivers.base import Driver
 from threetears.datasources.drivers.factory import create_driver
@@ -91,14 +94,16 @@ class _StubDriver(Driver):
     async def list_columns(self, schemas: list[str]) -> list[Any]:
         return []
 
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> Any:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, FilterValue] | None = None
+    ) -> RelationFingerprint:
         """stub fingerprint; the ABC requires the method.
 
         These tests assert which class a config dispatched to and what reached its
         constructor, so a real answer here would be a fixture nothing reads.
 
         :return: never returns
-        :rtype: Any
+        :rtype: RelationFingerprint
         :raises NotImplementedError: this stub has no relation to fingerprint
         """
         raise NotImplementedError("stub driver has no relation to fingerprint")

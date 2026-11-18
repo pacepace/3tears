@@ -18,6 +18,7 @@ The definition-level invariants, each closing a hole the corpus carries:
 from __future__ import annotations
 
 import json
+from typing import Any
 from pathlib import Path
 
 import pytest
@@ -38,14 +39,14 @@ from threetears.datasources.definition import (
 _FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "definition_minimal.json"
 
 
-def _payload() -> dict[str, object]:
+def _payload() -> dict[str, Any]:
     """load the committed minimal definition fixture.
 
     :returns: raw fixture payload
-    :rtype: dict[str, object]
+    :rtype: dict[str, Any]
     """
     with _FIXTURE.open(encoding="utf-8") as handle:
-        loaded: dict[str, object] = json.load(handle)
+        loaded: dict[str, Any] = json.load(handle)
     return loaded
 
 
@@ -65,7 +66,7 @@ class TestExpansion:
     def test_carries_an_edge_and_a_scope(self) -> None:
         expansion = Expansion(
             name="householders",
-            edge=RelationRef(relation="household", alias="hh", join="inner"),
+            edge=RelationRef.model_validate({"relation": "household", "alias": "hh", "join": "inner"}),
             member_column="householder_voterbase_id",
             applies_to=["knowwho_all", "executive_coworkers_of_linkedin_execs"],
         )
@@ -74,7 +75,7 @@ class TestExpansion:
     def test_an_empty_applies_to_covers_every_unit(self) -> None:
         expansion = Expansion(
             name="spouses",
-            edge=RelationRef(relation="household", alias="hh", join="inner"),
+            edge=RelationRef.model_validate({"relation": "household", "alias": "hh", "join": "inner"}),
             member_column="householder_voterbase_id",
         )
         assert expansion.applies_to == []
@@ -83,7 +84,7 @@ class TestExpansion:
     def test_a_scoped_expansion_covers_only_its_units(self) -> None:
         expansion = Expansion(
             name="householders",
-            edge=RelationRef(relation="household", alias="hh", join="inner"),
+            edge=RelationRef.model_validate({"relation": "household", "alias": "hh", "join": "inner"}),
             member_column="householder_voterbase_id",
             applies_to=["knowwho_all"],
         )
@@ -93,13 +94,15 @@ class TestExpansion:
     def test_carries_the_expansion_provenance(self) -> None:
         expansion = Expansion(
             name="householders",
-            edge=RelationRef(relation="household", alias="hh", join="inner"),
+            edge=RelationRef.model_validate({"relation": "household", "alias": "hh", "join": "inner"}),
             member_column="householder_voterbase_id",
             provenance=ProvenanceSpec(
                 grain=["voterbase_id"],
                 columns=[
-                    ProvenanceColumn(name="fact", expression="rel.hh.influencer_voterbase_id"),
-                    ProvenanceColumn(name="fact_type", expression={"literal": "householders of"}),
+                    ProvenanceColumn.model_validate({"name": "fact", "expression": "rel.hh.influencer_voterbase_id"}),
+                    ProvenanceColumn.model_validate(
+                        {"name": "fact_type", "expression": {"literal": "householders of"}}
+                    ),
                 ],
             ),
         )
@@ -110,7 +113,7 @@ class TestExpansion:
         with pytest.raises(ValidationError):
             Expansion(
                 name="householders",
-                edge=RelationRef(relation="household", alias="hh", join="inner"),
+                edge=RelationRef.model_validate({"relation": "household", "alias": "hh", "join": "inner"}),
                 member_column="householder_voterbase_id",
                 applies_to=["knowwho_all", "knowwho_all"],
             )
@@ -119,7 +122,7 @@ class TestExpansion:
         with pytest.raises(ValidationError):
             Expansion(
                 name="  ",
-                edge=RelationRef(relation="household", alias="hh", join="inner"),
+                edge=RelationRef.model_validate({"relation": "household", "alias": "hh", "join": "inner"}),
                 member_column="householder_voterbase_id",
             )
 
@@ -127,17 +130,19 @@ class TestExpansion:
         with pytest.raises(ValidationError, match="member_column"):
             Expansion(
                 name="householders",
-                edge=RelationRef(
-                    relation="household",
-                    alias="hh",
-                    join="inner",
-                    on={
-                        "compare": {
-                            "left": "rel.hh.influencer_voterbase_id",
-                            "op": "=",
-                            "right": "resolved.voterbase_id",
-                        }
-                    },
+                edge=RelationRef.model_validate(
+                    {
+                        "relation": "household",
+                        "alias": "hh",
+                        "join": "inner",
+                        "on": {
+                            "compare": {
+                                "left": "rel.hh.influencer_voterbase_id",
+                                "op": "=",
+                                "right": "resolved.voterbase_id",
+                            }
+                        },
+                    }
                 ),
                 member_column="influencer_voterbase_id",
             )
@@ -380,7 +385,7 @@ class TestSentinelBindings:
 _HELPER_UNIT = "uhg_staff"
 
 
-def _payload_with_a_subtrahend_only_unit() -> dict[str, object]:
+def _payload_with_a_subtrahend_only_unit() -> dict[str, Any]:
     """author the corpus's helper set exactly as the definition copes.
 
     Declared as a unit, because the model's only subtraction operators
@@ -391,7 +396,7 @@ def _payload_with_a_subtrahend_only_unit() -> dict[str, object]:
     no predicate so it survives the stage it exists to feed.
 
     :returns: raw definition payload carrying the helper unit
-    :rtype: dict[str, object]
+    :rtype: dict[str, Any]
     """
     payload = _payload()
     units: list[dict[str, object]] = list(payload["units"])

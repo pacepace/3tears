@@ -686,6 +686,12 @@ module = [
     "packages.core.tests.unit.shared_arrow.test_shared_arrow_status",
     "packages.core.tests.unit.test_keyed_changed",
     "packages.core.tests.unit.test_keyed_helpers",
+    "packages.datasources.tests.unit.test_counted_partitioned_export",
+    "packages.datasources.tests.unit.test_export_read",
+    "packages.datasources.tests.unit.test_pagers_under_a_byte_cap",
+    "packages.datasources.tests.unit.test_partitioned_export",
+    "packages.datasources.tests.unit.test_query_arrow",
+    "packages.datasources.tests.unit.test_query_client",
 ]
 disable_error_code = ["import-untyped"]
 

@@ -25,9 +25,11 @@ deliberately NOT in the public API: only the test suite imports it.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from threetears.core.sql_fragments import FilterValue
+from threetears.datasources.drivers.base import RelationFingerprint
 from threetears.datasources.drivers.base import (
     CallbackTransaction,
     ColumnRow,
@@ -178,15 +180,19 @@ class FakeDriver(Driver):
             raise RuntimeError("FakeDriver is closed")
         return list(self._column_rows)
 
-    async def relation_fingerprint(self, relation: str, key: list[str]) -> Any:
+    async def relation_fingerprint(
+        self, relation: str, key: list[str], where: Mapping[str, FilterValue] | None = None
+    ) -> RelationFingerprint:
         """stub fingerprint; the ABC requires the method.
 
         :param relation: the relation to fingerprint
         :ptype relation: str
         :param key: the ordering columns
         :ptype key: list[str]
+        :param where: equality filters on the relation
+        :ptype where: Mapping[str, FilterValue] | None
         :return: never returns
-        :rtype: Any
+        :rtype: RelationFingerprint
         :raises NotImplementedError: this double has no relation to fingerprint
         """
         raise NotImplementedError("this driver double has no relation to fingerprint")
@@ -205,12 +211,12 @@ class FakeDriver(Driver):
     async def close(self) -> None:
         self._closed = True
 
-    async def run_with_cancellation(
+    async def run_with_cancellation[T](
         self,
-        coro_fn: Callable[[], Any],
+        coro_fn: Callable[[], Awaitable[T]],
         *,
         cancel_callback: Callable[[], Any],
-    ) -> Any:
+    ) -> T:
         """public test seam around :meth:`Driver._with_cancellation`.
 
         the helper is intentionally private on the ABC (concrete
@@ -225,6 +231,7 @@ class FakeDriver(Driver):
         :param cancel_callback: see :meth:`Driver._with_cancellation`
         :ptype cancel_callback: Callable[[], Any]
         :return: the wrapped coroutine's result
-        :rtype: Any
+        :rtype: T
         """
-        return await self._with_cancellation(coro_fn, cancel_callback=cancel_callback)
+        result: T = await self._with_cancellation(coro_fn, cancel_callback=cancel_callback)
+        return result

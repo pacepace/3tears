@@ -981,4 +981,5 @@ class TestATemplateDeleteAnnouncesTheTablesItUnbinds:
         assert read_ids == [template_id]
         assert pool.fetch.await_count == 2
         tables.invalidate_cache_many.assert_awaited_once()
+        assert tables.invalidate_cache_many.await_args is not None
         assert tables.invalidate_cache_many.await_args.args[0] == bound

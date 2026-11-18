@@ -6,6 +6,13 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### datasources: `export_partitions` is typed as the generator it is; the column hash takes any column rows
+
+`threetears.datasources.partitioned_export.export_partitions` is annotated `AsyncGenerator` (was `AsyncIterator`), so a
+caller can `aclose()` it, which deletes the export, without a cast. `introspection.compute_column_hash` and
+`column_hash_payload` take `Sequence[Mapping[str, Any]]`, so a driver's `ColumnRow` list is accepted as it is. Nothing
+changes at run time.
+
 ### core: `NatsProxyL3Backend` takes a `BoundedRequester`, the two things it uses of its client
 
 `threetears.nats.BoundedRequester` is a `RawRequester` (`request_raw`) with the client's `max_payload`: the two things

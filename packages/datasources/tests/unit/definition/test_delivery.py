@@ -157,25 +157,33 @@ class TestDerivedColumn:
     """delivered columns, with an OPEN expression and a declared width."""
 
     def test_ordered_string_aggregation(self) -> None:
-        column = DerivedColumn(
-            name="source_records",
-            sql_type="character varying(65535)",
-            expression={"arith": "LISTAGG(DISTINCT source.list_id, ', ') WITHIN GROUP (ORDER BY source.list_id)"},
+        column = DerivedColumn.model_validate(
+            {
+                "name": "source_records",
+                "sql_type": "character varying(65535)",
+                "expression": {
+                    "arith": "LISTAGG(DISTINCT source.list_id, ', ') WITHIN GROUP (ORDER BY source.list_id)"
+                },
+            }
         )
         assert "WITHIN GROUP" in str(column.expression)
 
     def test_a_conditional_aggregate_flag(self) -> None:
-        column = DerivedColumn(
-            name="is_unique_match",
-            expression={"arith": "MAX(CASE WHEN resolved.candidate_count = 1 THEN 1 ELSE 0 END)"},
+        column = DerivedColumn.model_validate(
+            {
+                "name": "is_unique_match",
+                "expression": {"arith": "MAX(CASE WHEN resolved.candidate_count = 1 THEN 1 ELSE 0 END)"},
+            }
         )
         assert column.name == "is_unique_match"
 
     def test_a_ranked_category_over_a_window_function(self) -> None:
-        column = DerivedColumn(
-            name="category",
-            sql_type="character varying(7)",
-            expression={"arith": "ROW_NUMBER() OVER (PARTITION BY resolved.voterbase_id ORDER BY CASE ... END)"},
+        column = DerivedColumn.model_validate(
+            {
+                "name": "category",
+                "sql_type": "character varying(7)",
+                "expression": {"arith": "ROW_NUMBER() OVER (PARTITION BY resolved.voterbase_id ORDER BY CASE ... END)"},
+            }
         )
         assert column.sql_type == "character varying(7)"
 
@@ -183,27 +191,31 @@ class TestDerivedColumn:
         # full_uhg_audience.sql -- labels are concatenated then TRIMmed, and a
         # second deliverable classifies on the exact value of that
         # concatenation. no closed kind union expresses that.
-        column = DerivedColumn(
-            name="audience",
-            sql_type="character varying(14)",
-            expression={"arith": "TRIM(BOTH ', ' FROM rollup_a || ', ' || rollup_b)"},
+        column = DerivedColumn.model_validate(
+            {
+                "name": "audience",
+                "sql_type": "character varying(14)",
+                "expression": {"arith": "TRIM(BOTH ', ' FROM rollup_a || ', ' || rollup_b)"},
+            }
         )
         assert column.name == "audience"
 
     def test_delivered_width_is_part_of_the_contract(self) -> None:
-        assert DerivedColumn(name="audience", expression={"literal": "x"}).sql_type is None
+        assert DerivedColumn.model_validate({"name": "audience", "expression": {"literal": "x"}}).sql_type is None
 
     def test_carries_the_artifact_it_is_computed_over(self) -> None:
-        column = DerivedColumn(
-            name="is_unique_match",
-            expression={"arith": "MAX(CASE WHEN resolved.candidate_count = 1 THEN 1 ELSE 0 END)"},
-            over=ArtifactRef(scope=ArtifactScope.THIS_DEFINITION, artifact=ArtifactKind.LONG),
+        column = DerivedColumn.model_validate(
+            {
+                "name": "is_unique_match",
+                "expression": {"arith": "MAX(CASE WHEN resolved.candidate_count = 1 THEN 1 ELSE 0 END)"},
+                "over": ArtifactRef(scope=ArtifactScope.THIS_DEFINITION, artifact=ArtifactKind.LONG),
+            }
         )
         assert column.over is not None
 
     def test_rejects_a_blank_name(self) -> None:
         with pytest.raises(ValidationError):
-            DerivedColumn(name="  ", expression={"literal": 1})
+            DerivedColumn.model_validate({"name": "  ", "expression": {"literal": 1}})
 
     def test_rejects_extra_fields(self) -> None:
         with pytest.raises(ValidationError):
@@ -252,15 +264,17 @@ class TestDeliverySpec:
     """derived columns, warehouse grants, and the delivered layout."""
 
     def test_carries_derived_columns(self) -> None:
-        delivery = DeliverySpec(columns=[DerivedColumn(name="influencer", expression={"literal": 1})])
+        delivery = DeliverySpec(
+            columns=[DerivedColumn.model_validate({"name": "influencer", "expression": {"literal": 1}})]
+        )
         assert delivery.columns[0].name == "influencer"
 
     def test_rejects_a_repeated_delivered_column_name(self) -> None:
         with pytest.raises(ValidationError):
             DeliverySpec(
                 columns=[
-                    DerivedColumn(name="audience", expression={"literal": "a"}),
-                    DerivedColumn(name="audience", expression={"literal": "b"}),
+                    DerivedColumn.model_validate({"name": "audience", "expression": {"literal": "a"}}),
+                    DerivedColumn.model_validate({"name": "audience", "expression": {"literal": "b"}}),
                 ]
             )
 

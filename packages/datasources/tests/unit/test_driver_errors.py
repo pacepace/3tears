@@ -14,7 +14,7 @@ from typing import Any
 
 import asyncpg
 import pytest
-import redshift_connector
+from redshift_connector.error import InterfaceError, ProgrammingError
 from pydantic import SecretStr
 
 from threetears.datasources.drivers import (
@@ -46,7 +46,7 @@ def _redshift_server_error(code: str, message: str) -> Exception:
     :rtype: Exception
     """
     fields = {"S": "FATAL", "C": code, "M": message}
-    error_type = redshift_connector.InterfaceError if code == "28000" else redshift_connector.ProgrammingError
+    error_type = InterfaceError if code == "28000" else ProgrammingError
     return error_type(fields)
 
 

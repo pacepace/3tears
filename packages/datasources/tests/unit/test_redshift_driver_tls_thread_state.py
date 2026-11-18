@@ -37,7 +37,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-import redshift_connector
+from redshift_connector.error import InterfaceError
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -190,7 +190,7 @@ class _TlsConnection:
                 self.send(_TERMINATE)
                 self._stream.close()
         except AttributeError, ValueError:
-            raise redshift_connector.InterfaceError("connection is closed") from None
+            raise InterfaceError("connection is closed") from None
         finally:
             self._usock.close()
             # the library drops its stream here too, so the stream's last retry of a failed

@@ -34,9 +34,10 @@ from uuid import uuid7
 
 import pytest
 
-from threetears.datasources.drivers.sql_fragments import translate_placeholders
+from threetears.datasources.drivers.sql_fragments import PlaceholderStyle, translate_placeholders
 from threetears.datasources.query_client import (
     RESULT_TOO_LARGE,
+    DatasourceQueryClient,
     DatasourceQueryError,
     DatasourceQueryResult,
     IncompleteReadError,
@@ -545,7 +546,8 @@ class TestThePredicateIsPortableAndBound:
 
         predicate = warehouse.pages[1]
         expected = len(warehouse.page_params[1])
-        for style, marker in (("pyformat", "%s"), ("numeric", ":"), ("named-at", "@p")):
+        styles: tuple[tuple[PlaceholderStyle, str], ...] = (("pyformat", "%s"), ("numeric", ":"), ("named-at", "@p"))
+        for style, marker in styles:
             translated = translate_placeholders(predicate, style)
             assert "$" not in translated, f"{style} left an untranslated placeholder: {translated}"
             assert translated.count(marker) == expected, (
@@ -722,8 +724,7 @@ class TestTheContractHoldsAcrossEveryShape:
         assert len(rows) == len(dataset)
 
 
-# parity-with: threetears.datasources.query_client.DatasourceQueryClient
-class _WarehouseWithNullKeys:
+class _WarehouseWithNullKeys(DatasourceQueryClient):
     """a warehouse holding rows a keyset predicate can never reach.
 
     Models SQL's three-valued logic faithfully, because that is the whole defect:
@@ -757,7 +758,6 @@ class _WarehouseWithNullKeys:
         self,
         datasource_name: str,
         query: str,
-        *,
         params: list[Any] | None = None,
         **_: Any,
     ) -> DatasourceQueryResult:

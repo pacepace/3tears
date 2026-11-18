@@ -142,7 +142,7 @@ def test_a_result_that_fits_is_whole_and_not_truncated() -> None:
 
 
 def test_a_row_wider_than_the_cap_comes_back_alone_and_says_so() -> None:
-    rows = [{"wide": "y" * 500}, {"n": 1}]
+    rows: list[dict[str, Any]] = [{"wide": "y" * 500}, {"n": 1}]
     budget = RowBudget(64, _encode, None)
     budget.take(rows)
     result = budget.result()

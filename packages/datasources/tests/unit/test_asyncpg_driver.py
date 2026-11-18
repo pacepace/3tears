@@ -254,6 +254,7 @@ class TestPoolStartBounds:
         driver = AsyncpgDriver(config)
         await driver.fetch("SELECT 1")
         start.assert_awaited_once()
+        assert start.await_args is not None
         assert start.await_args.kwargs["connect_timeout"] == connect
         assert start.await_args.kwargs["startup_timeout"] == budget
         await driver.close()
@@ -280,6 +281,7 @@ class TestConstruction:
         # not closed at construction: the first query creates the pool from the config.
         await driver.fetch("SELECT 1")
         create_pool.assert_awaited_once()
+        assert create_pool.await_args is not None
         assert create_pool.await_args.kwargs["host"] == postgres_config.host
         assert create_pool.await_args.kwargs["database"] == postgres_config.database
         # the driver owns that pool, so its close closes it.
@@ -549,11 +551,12 @@ class TestIntrospectionCatalogsOnlySelectableTables:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        records = [
+        records: list[dict[str, Any]] = [
             {"table_schema": "s1", "table_name": "granted", "selectable": True},
             # a relation dropped while the query ran: its OID answers NULL, and it is simply gone
             {"table_schema": "s1", "table_name": "vanished", "selectable": None},
-        ] + [{"table_schema": "s1", "table_name": f"ungranted_{i}", "selectable": False} for i in range(7)]
+            *({"table_schema": "s1", "table_name": f"ungranted_{i}", "selectable": False} for i in range(7)),
+        ]
         pool = _build_mock_pool(fetch_records=records)
         driver = _driver_owning(pool, postgres_config, monkeypatch)
         with caplog.at_level("INFO", logger=_LOGGER):
@@ -596,7 +599,7 @@ class TestIntrospectionCatalogsOnlySelectableTables:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        records = [
+        records: list[dict[str, Any]] = [
             {"table_schema": "s1", "table_name": "granted", "column_hash": "h1", "selectable": True},
             {"table_schema": "s1", "table_name": "ungranted", "column_hash": "h2", "selectable": False},
             {"table_schema": "s1", "table_name": "vanished", "column_hash": "h3", "selectable": None},
@@ -1018,6 +1021,7 @@ class TestServerSettingsSearchPath:
         )
         driver = AsyncpgDriver(cfg)
         await driver.fetch("SELECT 1")
+        assert create_pool_mock.await_args is not None
         server_settings = create_pool_mock.await_args.kwargs["server_settings"]
         assert server_settings == {"search_path": '"my""schema"'}
 
@@ -1041,6 +1045,7 @@ class TestServerSettingsSearchPath:
         )
         driver = AsyncpgDriver(cfg)
         await driver.fetch("SELECT 1")
+        assert create_pool_mock.await_args is not None
         server_settings = create_pool_mock.await_args.kwargs["server_settings"]
         assert server_settings == {"search_path": '"app"'}
 

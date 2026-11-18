@@ -49,8 +49,10 @@ class TestDataSourceTypeEnum:
 
     def test_str_equivalence(self) -> None:
         # StrEnum: members compare equal to their string values
-        assert DataSourceType.REDSHIFT == "redshift"
-        assert DataSourceType.AGENT_INTERNAL == "agent_internal"
+        redshift: str = DataSourceType.REDSHIFT
+        assert redshift == "redshift"
+        agent_internal: str = DataSourceType.AGENT_INTERNAL
+        assert agent_internal == "agent_internal"
 
 
 class TestDataSourceAccessModeEnum:
@@ -96,7 +98,8 @@ class TestDataSourceAccessModeEnum:
 
     def test_str_equivalence(self) -> None:
         # StrEnum: members compare equal to their string values
-        assert DataSourceAccessMode.BUILD == "build"
+        build: str = DataSourceAccessMode.BUILD
+        assert build == "build"
 
 
 class TestAccessModeAuthorityParity:

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid7
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from threetears.datasources.config import BigQueryConnectionConfig, RedshiftConnectionConfig
 from threetears.datasources.drivers.bigquery_driver import BigQueryDriver
@@ -168,10 +168,10 @@ class TestUnloadStatement:
 class TestWire:
     def test_a_query_request_carries_no_export_field(self) -> None:
         """an older hub forbids unknown fields; a query must reach it as it always did."""
-        query = DatasourceQueryRequest(correlation_id=uuid7(), identity_token="t", query="SELECT 1")
+        query = DatasourceQueryRequest(correlation_id=uuid7(), identity_token=SecretStr("t"), query="SELECT 1")
         fingerprint = DatasourceQueryRequest(
             correlation_id=uuid7(),
-            identity_token="t",
+            identity_token=SecretStr("t"),
             fingerprint=RelationFingerprintRequest(relation="s.t", key_columns=["a"]),
         )
         assert "export" not in json.loads(query.model_dump_json())
@@ -180,7 +180,7 @@ class TestWire:
     def test_an_export_request_round_trips(self) -> None:
         request = DatasourceQueryRequest(
             correlation_id=uuid7(),
-            identity_token="t",
+            identity_token=SecretStr("t"),
             export=DatasourceExportRequest(select="SELECT 1", destination="enr/x"),
         )
         wire = json.loads(request.model_dump_json())
@@ -189,10 +189,12 @@ class TestWire:
         assert DatasourceQueryRequest.model_validate_json(request.model_dump_json()).export == request.export
 
     def test_a_query_request_carries_no_export_delete_field_and_a_delete_round_trips(self) -> None:
-        query = DatasourceQueryRequest(correlation_id=uuid7(), identity_token="t", query="SELECT 1")
+        query = DatasourceQueryRequest(correlation_id=uuid7(), identity_token=SecretStr("t"), query="SELECT 1")
         assert "export_delete" not in json.loads(query.model_dump_json())
         delete = DatasourceQueryRequest(
-            correlation_id=uuid7(), identity_token="t", export_delete=DatasourceExportDeleteRequest(destination="enr/x")
+            correlation_id=uuid7(),
+            identity_token=SecretStr("t"),
+            export_delete=DatasourceExportDeleteRequest(destination="enr/x"),
         )
         assert json.loads(delete.model_dump_json())["export_delete"] == {"destination": "enr/x"}
         with pytest.raises(ValidationError):
@@ -202,7 +204,7 @@ class TestWire:
         with pytest.raises(ValidationError):
             DatasourceQueryRequest(
                 correlation_id=uuid7(),
-                identity_token="t",
+                identity_token=SecretStr("t"),
                 query="SELECT 1",
                 export=DatasourceExportRequest(select="SELECT 1", destination="x"),
             )
@@ -211,7 +213,7 @@ class TestWire:
         with pytest.raises(ValidationError):
             DatasourceQueryRequest(
                 correlation_id=uuid7(),
-                identity_token="t",
+                identity_token=SecretStr("t"),
                 params=["VA"],
                 export=DatasourceExportRequest(select="SELECT 1 WHERE s = $1", destination="x"),
             )
@@ -289,7 +291,7 @@ class TestTheExportRequestsAreTolerantReaders:
             (DatasourceExportListRequest, {}),
         ],
     )
-    def test_a_field_a_newer_pod_adds_is_ignored(self, model: type, body: dict[str, str]) -> None:
+    def test_a_field_a_newer_pod_adds_is_ignored(self, model: type[BaseModel], body: dict[str, str]) -> None:
         model.model_validate({**body, "a_later_field": "x"})
 
     def test_a_destination_leaving_the_prefix_is_still_refused(self) -> None:

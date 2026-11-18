@@ -91,7 +91,7 @@ def _result(row_count: int) -> DatasourceExportResult:
     )
 
 
-_ROWS = [
+_ROWS: list[dict[str, Any]] = [
     {"race": "s1", "votes": Decimal("10.500000000000"), "at": datetime(2026, 11, 3, 12, tzinfo=UTC)},
     {"race": "s2", "votes": None, "at": datetime(2026, 11, 3, 13, tzinfo=UTC)},
     {"race": "s3", "votes": Decimal("0E-12"), "at": None},

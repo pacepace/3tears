@@ -92,14 +92,14 @@ class TestLiteralTypeIsCarried:
     """the hash-instability hazard, closed at its source."""
 
     def test_a_text_literal_round_trips_as_text(self) -> None:
-        literal = LiteralExpression(literal="5")
+        literal = LiteralExpression.model_validate({"literal": "5"})
         restored = LiteralExpression.model_validate(json.loads(json.dumps(literal.model_dump(mode="json"))))
         assert restored == literal
         assert restored.literal_type is LiteralType.TEXT
         assert isinstance(restored.literal, str)
 
     def test_a_decimal_literal_round_trips_as_a_decimal(self) -> None:
-        literal = LiteralExpression(literal=Decimal("5"))
+        literal = LiteralExpression.model_validate({"literal": Decimal("5")})
         restored = LiteralExpression.model_validate(json.loads(json.dumps(literal.model_dump(mode="json"))))
         assert restored == literal
         assert restored.literal_type is LiteralType.DECIMAL
@@ -109,8 +109,10 @@ class TestLiteralTypeIsCarried:
         # a real definition contains `entertainment = '1.0'` -- a string
         # compared to a numeric column. losing the type tag made those two
         # hash identically, which is the correctness bug.
-        text = Comparison(left="entity.entertainment", op="=", right={"literal": "1.0"})
-        number = Comparison(left="entity.entertainment", op="=", right={"literal": Decimal("1.0")})
+        text = Comparison.model_validate({"left": "entity.entertainment", "op": "=", "right": {"literal": "1.0"}})
+        number = Comparison.model_validate(
+            {"left": "entity.entertainment", "op": "=", "right": {"literal": Decimal("1.0")}}
+        )
         assert content_hash(text) != content_hash(number)
 
     def test_every_scalar_kind_round_trips(self) -> None:
@@ -121,7 +123,7 @@ class TestLiteralTypeIsCarried:
             ("abc", LiteralType.TEXT),
             (None, LiteralType.NULL),
         ):
-            literal = LiteralExpression(literal=value)
+            literal = LiteralExpression.model_validate({"literal": value})
             restored = LiteralExpression.model_validate(json.loads(json.dumps(literal.model_dump(mode="json"))))
             assert restored.literal_type is expected
             assert restored == literal
@@ -250,7 +252,7 @@ class TestHashMovesOnASemanticEdit:
 
     def test_changing_a_delivered_column_expression_changes_it(self, definition: DatasetDefinition) -> None:
         columns = [
-            DerivedColumn(name="influencer", expression={"literal": 0}),
+            DerivedColumn.model_validate({"name": "influencer", "expression": {"literal": 0}}),
             *definition.delivery.columns[1:],
         ]
         delivery = definition.delivery.model_copy(update={"columns": columns})
@@ -451,12 +453,14 @@ class TestTheFourClosedModelGapsAreSemantic:
         assert content_hash(unioned) != content_hash(de_duplicated)
 
     def test_the_subquery_projection_split_is_a_property_and_never_hashed(self) -> None:
-        ref = ArtifactRef(
-            scope=ArtifactScope.DATASET,
-            dataset="universal_2026_core",
-            artifact=ArtifactKind.QUALIFIED,
-            run=UpstreamPin(policy=UpstreamPolicy.LATEST_RELEASE),
-            projection={"columns": [{"expression": "resolved.voterbase_id"}], "distinct": True},
+        ref = ArtifactRef.model_validate(
+            {
+                "scope": ArtifactScope.DATASET,
+                "dataset": "universal_2026_core",
+                "artifact": ArtifactKind.QUALIFIED,
+                "run": UpstreamPin(policy=UpstreamPolicy.LATEST_RELEASE),
+                "projection": {"columns": [{"expression": "resolved.voterbase_id"}], "distinct": True},
+            }
         )
         canonical = canonical_content(ref)
         assert isinstance(canonical, dict)

@@ -24,6 +24,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from threetears.datasources.definition import LiteralExpression
 from threetears.datasources.definition.setexpr import (
     COMPOSITION_FILTERED_ARTIFACTS,
     CategoryPosition,
@@ -169,10 +170,12 @@ class TestPerTermProjection:
 
     def test_a_null_projection_is_expressible(self) -> None:
         column = TermColumn.model_validate({"name": "state_level", "value": {"literal": None}})
+        assert isinstance(column.value, LiteralExpression)
         assert column.value.literal is None
 
     def test_a_per_term_literal_discriminator_is_expressible(self) -> None:
         column = TermColumn.model_validate({"name": "type", "value": {"literal": "core"}})
+        assert isinstance(column.value, LiteralExpression)
         assert column.value.literal == "core"
 
     def test_a_term_may_project_nothing(self) -> None:
@@ -273,7 +276,7 @@ class TestIntersectInTwoPositions:
     """composition and resolution are different plans, so different nodes."""
 
     def test_a_resolution_intersect_is_a_distinct_type(self) -> None:
-        assert ResolutionIntersect is not SetExpr
+        assert not issubclass(SetExpr, ResolutionIntersect)
 
     def test_a_resolution_intersect_names_another_units_resolved_rows(self) -> None:
         node = ResolutionIntersect.model_validate(
@@ -285,6 +288,7 @@ class TestIntersectInTwoPositions:
             }
         )
         assert node.against.unit == "linkedin_job_titles"
+        assert node.against.stage is not None
         assert node.against.stage.value == "resolved"
 
     def test_a_resolution_intersect_carries_payload_from_the_other_side(self) -> None:
@@ -494,7 +498,9 @@ class TestRoundTrip:
         payload = {"op": "union", "terms": [_PM_TERM, _OE_TERM]}
         rebuilt = SetExpr.model_validate(SetExpr.model_validate(payload).model_dump())
         assert [term.name for term in rebuilt.terms] == ["pm", "oe"]
-        assert rebuilt.terms[1].projection[0].value.literal is None
+        value = rebuilt.terms[1].projection[0].value
+        assert isinstance(value, LiteralExpression)
+        assert value.literal is None
 
     def test_ranked_precedence_round_trips(self) -> None:
         rebuilt = SetExpr.model_validate(SetExpr.model_validate(_RANKED).model_dump())
