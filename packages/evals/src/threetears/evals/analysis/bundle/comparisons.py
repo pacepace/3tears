@@ -68,6 +68,7 @@ from threetears.evals.kernel.declaration import (
 )
 from threetears.evals.kernel.host.profile import HostProfile
 from threetears.evals.kernel.metrics import (
+    ACCURACY_MEASURE,
     MATCH_MEASURE,
     MeritAxis,
     MetricDescriptor,
@@ -1380,10 +1381,9 @@ def _question_lean(
 
 
 def _one_check(members: Iterable[ResultView], catalog: Mapping[str, MetricDescriptor]) -> str | None:
-    """The one check every trial of ``members`` is graded on, by the measure its pass rate is read under; None where any
-    trial is graded on anything beside or instead of it (another check, a label, a judged dimension or a judge), or on
-    nothing at all. A classifier's label is read as its accuracy, under another name, so a pass rate decided by a label
-    alone is not found here and stays in its family beside the accuracy.
+    """The one check every trial of ``members`` is graded on, by the measure its pass rate is read under (a classifier's
+    label by its accuracy, which reads the label's matches one for one); None where any trial is graded on anything
+    beside or instead of it (another check, a judged dimension or a judge), or on nothing at all.
 
     Read off what each trial is graded on, as :func:`~threetears.evals.kernel.scoring.failed_checks` and
     :func:`~threetears.evals.kernel.scoring.has_pass_criterion` read it, never off how any trial came out: whether the
@@ -1406,7 +1406,10 @@ def _one_check(members: Iterable[ResultView], catalog: Mapping[str, MetricDescri
         )
         if len(names) > 1:
             return None
-    return next(iter(names)) if names else None
+    if not names:
+        return None
+    (name,) = names
+    return ACCURACY_MEASURE if name == MATCH_MEASURE else name
 
 
 def _repeats_a_reading(

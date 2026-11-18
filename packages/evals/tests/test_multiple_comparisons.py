@@ -427,8 +427,10 @@ class TestWhatAFamilyCovers:
         assert [c.name for c in measured] == ["accuracy"]
         (accuracy,) = measured
         assert (accuracy.control.mean, accuracy.contrast.mean) == (0.5, pytest.approx(11 / 12))
-        # The classifier's verdict is the trial's pass/fail here, so the question's pass rate reads the same shares.
-        assert family.family_size == 2 and _pass_rate(family).p_raw == pytest.approx(accuracy.p_raw)
+        # The classifier's verdict is the trial's pass/fail here, so the question's pass rate is the accuracy case for
+        # case: one hypothesis, read once, as the accuracy.
+        assert family.family_size == 1
+        assert not [c for c in family.comparisons if c.reading == "trial"]
 
         cost = _family(_bundle([], matched=(control, contrast), merit_axes=["cost"]))
         assert not [c for c in cost.comparisons if c.name == "accuracy"], "it sits on quality, not on every axis"

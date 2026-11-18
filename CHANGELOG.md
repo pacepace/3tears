@@ -19,10 +19,12 @@ The bounded test separates such pairs at 2.85% at 40 cases, at most α at every 
 null simulations at α, interrupted or not. A reading on any other range (a 1-5 judged scale) or on none (cost,
 latency, a count) keeps the t test where its values have spread.
 
-**Changed:** where every trial of a contrast is graded on one check alone and that check is in the family, the overall
-pass rate is that check case for case, so the family holds it once, as the check: the pass rate is no longer tested
-beside it, on the engine as on the quick path. Holm reads that check at α where it read the two at α/2 each. An eval
-graded on several checks, a judged dimension or a label keeps its pass rate in the family.
+**Changed:** where every trial of a contrast is graded on one check alone (a classifier's one label included, read as
+its accuracy) and that check is in the family, the overall pass rate is that check case for case, so the family holds
+it once, as the check: the pass rate is no longer tested beside it, on the engine as on the quick path. Holm reads that
+check at α where it read the two at α/2 each. Whether a trial is graded on one check is read off what it was graded
+on, never off how it came out. An eval graded on several checks or on a judged dimension keeps its pass rate in the
+family.
 
 **For hosts:** engine campaigns over pass/fail measures, and over grades on 0 to 1, now read by the bounded test.
 Readings shift when a campaign is read again, with no run changed: a p on such a reading is the bounded test's, its
@@ -32,8 +34,10 @@ where the t test read 0.019; a continuous 0-1 score moved two points over twelve
 separations an engine campaign showed read `not_separated` now. An eval of one check loses its separate pass-rate row
 and reads the check at the family's full level, which can separate a check that the halved level did not; a margin's
 worst case on such an eval is read on the reading's own interval, there being no pass-rate contrast to read. No stored
-shape changes: a bundle is assembled from the runs when read, and its fingerprint hashes the evidence alone, so a
-stored written analysis is not marked stale by this build. Discodon's recorded decision "Keep 1017" on campaign
+shape changes: a bundle is assembled from the runs when read. A written analysis recorded over a `v3:` aspect or `v4:`
+campaign fingerprint, which hash the evidence alone, still reproduces its generation; one recorded under an older
+fingerprint (`v2:` aspect, `v3:` campaign), which hashes the readings, reads as not reproducing it (`evidence`), as
+after any change to a statistic. Discodon's recorded decision "Keep 1017" on campaign
 01a1dc0f is a person's call and stays recorded as made; re-read under this build, its comparisons could read
 differently only where it holds a 0-1 reading or an eval of one check, and a local enumeration of pass/fail pairs (8 to
 60 cases) found the change separates where the old reading did not in about 3% of one-check configurations (almost all
