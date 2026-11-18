@@ -1,8 +1,10 @@
 """CPU work in worker processes, plain data in and out: the one helper every serving process's CPU half goes through.
 
 **Why.** CPU work in a serving process belongs in worker processes, never on threads: a thread running Python holds
-the interpreter lock and the event loop waits behind it. The loop keeps the I/O; a job's CPU runs in a spawned
-process (spawned, never forked: a serving process runs threads, whose locks a fork copies mid-hold).
+the interpreter lock and the event loop waits behind it. The loop keeps the I/O; a job's CPU runs in a worker
+process forked by multiprocessing's fork server (:func:`~threetears.core.processes.start_worker_server`), never by the
+serving process: a serving process runs threads, whose locks a fork copies mid-hold, and a spawn is a ``fork_exec`` of
+the whole serving process under the interpreter lock.
 
 **Plain data across, checked.** A job's arguments and its answer are plain data -- bytes, text, numbers, booleans,
 ``None``, and tuples, lists and frozensets of them (an Arrow IPC stream is bytes) -- or a class, which pickles as
@@ -16,7 +18,8 @@ round trip to a worker costs the loop more than the work: the same job runs on t
 decides by a measured bound, never a guess.
 
 **One pool per kind of work, made at first use.** A :class:`ProcessWorkers` makes its pool at the first job that is
-not inline -- on a thread, since a fresh pool spawns its processes on submission -- and keeps it. A worker that dies
+not inline -- on a thread, since a fresh pool starts its processes on submission, and the first one in a process
+starts the fork server -- and keeps it. A worker that dies
 fails the jobs it held (``BrokenProcessPool``) and the pool is replaced at the next job. :meth:`ProcessWorkers.close`
 shuts it down; at interpreter exit ``concurrent.futures`` joins it anyway. Each worker starts below the serving
 process's priority, and exits when the serving process dies.
@@ -25,7 +28,6 @@ process's priority, and exits when the serving process dies.
 from __future__ import annotations
 
 import asyncio
-import multiprocessing
 import os
 import threading
 from collections.abc import Callable, Sequence
@@ -33,7 +35,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 
-from threetears.core.processes import exit_with_parent
+from threetears.core.processes import exit_with_parent, start_worker_server
 from threetears.observe import get_logger
 
 __all__ = ["ProcessWorkers"]
@@ -88,18 +90,21 @@ def _plain_call(job: Callable[..., Any], args: tuple[Any, ...]) -> Any:
     return answer
 
 
-def _below_the_server() -> None:
+def _below_the_server(serving: int) -> None:
     """a worker's start: it exits when the serving process dies (:func:`~threetears.core.processes.exit_with_parent`,
-    never an orphan waiting on its queue), and is scheduled below it, so the server stays responsive.
+    never an orphan waiting on its queue: its parent is the fork server, which outlives a killed serving process while
+    any worker lives), and is scheduled below it, so the server stays responsive.
 
     A process already at the lowest priority cannot go lower: macOS refuses ``nice`` past it with ``EPERM`` (Linux
     clamps). The worker then keeps the priority it has and says so once, at its start; raising there would fail the
     initializer and with it every worker of the pool (``BrokenProcessPool``).
 
+    :param serving: the serving process's pid
+    :ptype serving: int
     :return: nothing
     :rtype: None
     """
-    exit_with_parent()
+    exit_with_parent(serving=serving)
     try:
         os.nice(5)
     except OSError as error:
@@ -110,7 +115,7 @@ def _below_the_server() -> None:
 
 
 class ProcessWorkers:
-    """a pool of spawned worker processes for one kind of CPU work, made at its first job.
+    """a pool of worker processes for one kind of CPU work, made at its first job.
 
     :param workers: the most processes, side by side
     :ptype workers: int
@@ -204,8 +209,9 @@ class ProcessWorkers:
             if self._pool is None:
                 self._pool = ProcessPoolExecutor(
                     max_workers=self._workers,
-                    mp_context=multiprocessing.get_context("spawn"),
+                    mp_context=start_worker_server(),
                     initializer=_below_the_server,
+                    initargs=(os.getpid(),),
                 )
                 self._broken = False
             pool = self._pool

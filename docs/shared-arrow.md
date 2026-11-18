@@ -264,12 +264,19 @@ async def main() -> None:
         await pool.close()
 ```
 
-- Workers are spawned (never forked) once and kept. One whose private memory passes `private_bytes` after a job is
-  replaced, so what it allocated goes back to the system. Pass `initializer=` to size its thread pools to its CPU
-  share.
-- `run` leases the version current at submission (or `read="v1"` for a named one, `read=False` for none) and holds it
-  until the worker is done with it, even if the caller stops waiting. A newer version published meanwhile does not
-  disturb the job.
+- Workers are forked by multiprocessing's fork server, never by the serving process, and kept. The pool starts the
+  server as it is made (`threetears.core.processes.start_worker_server`), so make the pool as the pod starts or on a
+  thread: that start is the one `fork_exec` of the serving process. Pass `preload=["my_app.jobs"]` to have the server
+  import the jobs' modules once, so a worker starts without imports; only the first server start in a process reads
+  it. One whose private memory passes `private_bytes` after a job is replaced, so what it allocated goes back to the
+  system. Pass `initializer=` to size its thread pools to its CPU share.
+- Each worker exits within a second or so of the serving process dying (a SIGKILL, an OOM kill), and the server after
+  its last worker.
+- At most `workers` jobs run at once; the rest wait their turn. `run(..., reader=True)` marks a job a client waits
+  on: it takes the next free worker ahead of every background job waiting, first come first served within each.
+- `run` leases the version current when a worker is free for the job (or `read="v1"` for a named one, `read=False`
+  for none) and holds it until the worker is done with it, even if the caller stops waiting. A newer version
+  published meanwhile does not disturb the job.
 - `context.version.tables` gives the mapped `pyarrow.Table`s; `context.version.connect(schema=...)` gives a DuckDB
   connection with each table as a view, no row copied.
 - A worker keeps its last version mapped between jobs and lets it go after a job that finds a newer one current.

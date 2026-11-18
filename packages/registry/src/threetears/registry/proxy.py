@@ -1517,11 +1517,13 @@ class CallProxy:
                         }
                     },
                 )
-                # TOOL_NOT_READY, not TOOL_UNAVAILABLE: the tool exists and has an endpoint, which
+                # TOOL_RESTARTING, not TOOL_UNAVAILABLE: the tool exists and has an endpoint, which
                 # did not take this call -- a pod restarting, or too busy to acknowledge inside the
                 # accept window. The call never started, so retrying it is safe, and the caller
                 # must be told to retry rather than that the tool does not exist (the hub answers
-                # TOOL_UNAVAILABLE with 404, and TOOL_NOT_READY with 503).
+                # TOOL_UNAVAILABLE with 404, and TOOL_RESTARTING with 503). A code of its own, not
+                # TOOL_NOT_READY (a tool still loading, for minutes): a timed caller retries this in
+                # seconds and waits out that (the hub's scheduled tool calls, RETRIED_CODES).
                 response = ProxyCallResponse(
                     success=False,
                     content="",
@@ -1529,7 +1531,7 @@ class CallProxy:
                         f"tool {full_name} did not take the call and no other endpoint can; "
                         f"the call did not run, retry shortly: {response.error}"
                     ),
-                    error_code="TOOL_NOT_READY",
+                    error_code="TOOL_RESTARTING",
                     context=request.context,
                 )
                 break

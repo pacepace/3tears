@@ -21,21 +21,28 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 
 from threetears.core.testing.loop_lateness import HostTicker, Tick, trusted
 
 __all__ = [
+    "BEST_OF_RUNS",
+    "CpuStopwatch",
+    "best_cpu_seconds",
     "best_seconds_interleaved",
     "budget_problem",
     "plain_copy_seconds",
     "plain_keyed_delete_seconds",
+    "cpu_seconds",
+    "thread_cpu_seconds",
 ]
 
 #: how many times its calibrated baseline a path may take
@@ -122,6 +129,125 @@ async def best_seconds_interleaved(
         measure, lambda taken: (taken[1], taken[2]), host_may_be_late=host_may_be_late, threads=threads
     )
     return measured
+
+
+# -- the CPU clock: what a test of an operation's own cost bounds (moved from survey's tests/support/cpu_budget.py,
+# d93c8691, beside the wall-clock helpers above)
+#
+# A unit test that bounds wall-clock time bounds how busy the machine is. Measured 2026-09-26 in survey, three ways
+# with one result: stalled iterations spent 0.14-5 ms of CPU across ALL the process's threads while 101-201 ms of wall
+# clock passed at load averages of 100-185 on 10 cores; 3000 production config parses beside 120 CPU burners went 82
+# over a 50 ms wall bound, the worst at 244 ms of wall clock and 0.505 ms of CPU; five middleware requests took
+# 37-184 ms of wall clock and the same in CPU alone, and 2.9-4.3 s of wall clock on 226-275 ms of CPU beside 120
+# burners. The process was waiting for a CPU, not doing work, and under ``pytest -n auto`` the suite itself is the
+# load. So a bound production needs ("this operation costs under N ms") is a bound on CPU: ``time.process_time``
+# counts every thread of the process (a ``TestClient`` runs the app on a worker thread) and garbage collection, and
+# does not advance while the process waits to be scheduled. It cannot measure work in ANOTHER process (a database, a
+# broker) or time waiting on I/O: a test about either is about latency, and wall clock is right for it.
+#
+# One measurement of process CPU is still not the code's cost. A cyclic collection the block's allocations trigger
+# walks the WHOLE heap (late in a pytest worker, every earlier test's leftovers), any other thread of the process adds
+# its CPU, and a process moved to an efficiency core spends more on the same instructions. Measured 2026-11-17: one
+# config validation read 149 ms of CPU inside a full run beside another builder, against 0.38 ms warm and 1.26 ms cold
+# alone. Each adds to a run and none takes from it, so the cost is the FASTEST of a few runs, each from a collected
+# heap (:func:`best_cpu_seconds`); an operation wholly on the calling thread is timed on that thread's own clock
+# (:func:`thread_cpu_seconds`), which no other thread can add to.
+
+#: runs :func:`best_cpu_seconds` takes by default: enough that one collection or one stalled slice cannot be the best,
+#: few enough that a millisecond operation stays a fast test
+BEST_OF_RUNS = 5
+
+
+def cpu_seconds() -> float:
+    """the CPU this process has spent, across all its threads, in seconds.
+
+    :return: process CPU seconds since an arbitrary fixed point
+    :rtype: float
+    """
+    return time.process_time()
+
+
+def thread_cpu_seconds() -> float:
+    """the CPU the calling thread alone has spent, in seconds.
+
+    For an operation that runs wholly on the caller's thread: nothing another thread of the process does is counted.
+    An operation that hands work to another thread is under-counted by it; time that with :func:`cpu_seconds`.
+
+    :return: this thread's CPU seconds since an arbitrary fixed point
+    :rtype: float
+    """
+    return time.thread_time()
+
+
+class CpuStopwatch:
+    """the process CPU spent inside a ``with`` block, in seconds and in milliseconds.
+
+    .. code-block:: python
+
+        with CpuStopwatch() as spent:
+            do_the_work()
+        assert spent.ms < 50
+    """
+
+    def __init__(self) -> None:
+        self._start = 0.0
+        self.seconds = 0.0
+
+    @property
+    def ms(self) -> float:
+        """the CPU spent, in milliseconds.
+
+        :return: milliseconds of CPU
+        :rtype: float
+        """
+        return self.seconds * 1000
+
+    def __enter__(self) -> Self:
+        self._start = cpu_seconds()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.seconds = cpu_seconds() - self._start
+
+
+async def best_cpu_seconds(
+    operation: Callable[[], Awaitable[object]],
+    runs: int = BEST_OF_RUNS,
+    clock: Callable[[], float] = cpu_seconds,
+) -> float:
+    """the CPU the fastest of ``runs`` awaits of ``operation()`` spent, each from a collected heap.
+
+    The first await is run and discarded before the timed ones: a cold call's one-time costs (lazy imports, schema
+    builds, first-use caches) are the process's start-up, not the operation's per-call cost. ``gc.collect()`` before
+    each timed run means a collection the run itself triggers walks only what is live, the same in every worker,
+    rather than whatever earlier tests left behind.
+
+    :param operation: makes the operation's awaitable, once a run
+    :ptype operation: Callable[[], Awaitable[object]]
+    :param runs: how many timed runs
+    :ptype runs: int
+    :param clock: the CPU clock: :func:`cpu_seconds` (every thread of the process, the default) or
+        :func:`thread_cpu_seconds` (the calling thread only)
+    :ptype clock: Callable[[], float]
+    :return: the fastest run's CPU seconds on ``clock``
+    :rtype: float
+    :raises ValueError: when ``runs`` is below one
+    """
+    if runs < 1:
+        raise ValueError(f"runs must be at least 1, got {runs}")
+    await operation()
+    best = float("inf")
+    for _ in range(runs):
+        gc.collect()
+        began = clock()
+        await operation()
+        best = min(best, clock() - began)
+    return best
 
 
 def _plain_name() -> str:

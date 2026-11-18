@@ -26,6 +26,51 @@ changes at run time.
 bumps) and `EpochListener(nats_client, epoch_client)` a `threetears.nats.TypedSubscriber` (it subscribes typed
 callbacks), instead of the whole `NatsClient`, which satisfies both. The in-memory `FakeNatsClient` now type-checks
 as either with no ignore. Nothing changes at run time.
+### core: pool workers forked by a fork server, exiting with the serving process; readers first
+
+**Added:** `threetears.core.processes.start_worker_server(preload=())` starts multiprocessing's fork server and the
+resource tracker once and returns the `forkserver` context; `exit_with_parent(interval, serving=None)` also watches
+the serving process's pid. `SharedArrowPool(..., preload=())` and `SharedArrowPool.run(..., reader=False)`.
+**Changed:** `SharedArrowPool` starts the fork server as it is made, and every worker, first and replacement, is
+forked by it, never by the serving process (a spawn was a `fork_exec` of the whole process under the interpreter
+lock: 40-77 ms loop stalls mid-load, reports FR3). Each worker exits when the serving process dies, and the server
+after its last worker. At most `workers` jobs are given to the workers at once; a `reader=True` job takes the next free
+worker ahead of every background job waiting, first come first served within each, and `read=True` now leases the
+version current when the job gets its worker, not at submission. `ProcessWorkers` starts its workers through the same
+server and each exits with the serving process.
+**Consumers:** make a `SharedArrowPool` as the pod starts or on a thread (its first make starts the server); mark the
+jobs a client waits on `reader=True`. Reports can drop its own fork-server start (`pod/workers.WORKER_START`,
+`start_worker_server`, `cpu_limit.size_worker(serving=)`) for these.
+
+### registry: a call no endpoint took answers `TOOL_RESTARTING`, a code of its own
+
+**Changed:** when every endpoint the caller may use failed to take a call (a pod restarting: no responders, the
+connection closed, the durable result waiter could not open, no acknowledgement inside the accept window) the
+registry answers `TOOL_RESTARTING` instead of `TOOL_NOT_READY`. The call never ran, so a retry is safe, as before;
+the hub serves it as 503 with `Retry-After`. Its own code lets a timed caller retry it in seconds (the hub's
+scheduled tool calls) while still waiting out `TOOL_NOT_READY`, a tool that is loading for minutes. A pending
+endpoint still answers `TOOL_NOT_READY`; a tool with nothing to route to still answers `TOOL_UNAVAILABLE`.
+**Consumers:** a caller that branched on `TOOL_NOT_READY` for this case must take `TOOL_RESTARTING` too, and the
+hub needs its face for it (`error_faces`) before this registry runs.
+
+### models: the live Claude CLI test judges each `<q>...</q>` on its own
+
+The pool test's quote reader (`packages/models/tests/live/quotes.py`, unit-tested without the CLI) reads every
+quote alone, so commentary between two empty quotes is no longer failed as a leak (release run 41441569060).
+
+### core: CPU-clock timing helpers in `threetears.core.testing.calibrate`
+
+**Added:** `cpu_seconds`, `thread_cpu_seconds`, `CpuStopwatch` and `best_cpu_seconds` (the fastest of
+`BEST_OF_RUNS` awaits, each from a collected heap, the warm-up discarded), beside the wall-clock
+`best_seconds_interleaved`: a bound on an operation's own cost is a bound on CPU, not on how busy the machine is.
+Moved from survey's `tests/support/cpu_budget.py`.
+
+### datasources: `read_partitions` reads a batch again when a page holds more rows than it asked for
+
+A page of a part that comes back over-full (rows written between the batch's page starts and its pages) no longer
+fails the read at once: its batch is read again from fresh page starts, up to `CHANGED_READ_ATTEMPTS` reads, with or
+without `prove` (the loop a moved fingerprint already took). Still over-full on the last read, it raises
+`IncompleteReadError` as before. Callers that retried a part themselves on that message can drop the retry.
 
 ### nats: the hub requests take a `RawRequester`
 

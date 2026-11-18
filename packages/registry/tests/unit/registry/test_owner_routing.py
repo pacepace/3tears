@@ -301,7 +301,7 @@ class TestFailoverStaysWithTheOwner:
 
         assert answer.success is False
         # the owner's replica did not take the call, which never ran: retry shortly
-        assert answer.error_code == "TOOL_NOT_READY"
+        assert answer.error_code == "TOOL_RESTARTING"
         assert _forwarded(nc) == [a_dead]
 
 

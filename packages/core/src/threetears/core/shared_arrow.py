@@ -55,13 +55,17 @@ hand-off that would pass the bound, after a sweep, is refused
 with :class:`SharedArrowFullError` and leaves nothing behind, and a worker's write that would pass its slot's bytes
 is refused in the worker.
 
-**Worker processes.** :class:`SharedArrowPool` runs jobs ``job(context, *args)`` in spawned, long-lived workers
-(spawned, never forked: a serving process runs threads, whose locks a fork copies mid-hold). Each job may read a
-version, leased for the job's whole run, may be handed tables (``tables=``, mapped as ``context.tables``), and may
-write a result, claimed back as a :class:`MappedSegment`. A worker
-keeps the version it read last mapped between jobs and lets it go after any job that finds a newer one current. A
-worker whose private memory (its anonymous pages: the mapped files are shared and not its own) passes the pool's
-bound after a job has its pool replaced, so what it allocated goes back to the system.
+**Worker processes.** :class:`SharedArrowPool` runs jobs ``job(context, *args)`` in long-lived workers forked by
+multiprocessing's fork server (:func:`threetears.core.processes.start_worker_server`, started as the pool is made),
+never by the serving process: a serving process runs threads, whose locks a fork copies mid-hold, and a spawn is a
+``fork_exec`` of the whole serving process under the interpreter lock, a loop stall as long as the process is large.
+Each worker exits when the serving process dies. Each job may read a version, leased for the job's whole run, may be
+handed tables (``tables=``, mapped as ``context.tables``), and may write a result, claimed back as a
+:class:`MappedSegment`. A worker keeps the version it read last mapped between jobs and lets it go after any job that
+finds a newer one current. A worker whose private memory (its anonymous pages: the mapped files are shared and not its
+own) passes the pool's bound after a job has its pool replaced, so what it allocated goes back to the system. A
+reader's job (``reader=True``) is given the next free worker ahead of every background job waiting, first come first
+served within each.
 
 Guide: ``docs/shared-arrow.md``.
 """
@@ -111,6 +115,7 @@ from threetears.core.eviction import (
     policy_declare,
     policy_lookup,
 )
+from threetears.core.processes import exit_with_parent, start_worker_server
 from threetears.core.utils.cpu_quota import effective_cpu_count
 from threetears.observe import contain, get_logger, remove_tree
 from threetears.observe.metrics import counter, gauge
@@ -4880,12 +4885,90 @@ def _run_job(
 
 
 def _spawned() -> int:
-    """a fresh worker's first task, which makes the pool spawn it before any job: its process id.
+    """a fresh worker's first task, which makes the pool start it before any job: its process id.
 
     :return: the process id
     :rtype: int
     """
     return os.getpid()
+
+
+def _worker_start(serving: int, initializer: Callable[..., object] | None, initargs: tuple[Any, ...]) -> None:
+    """a pool worker's start: it exits when the serving process dies (its parent is the fork server, which outlives
+    a killed serving process while any worker lives), then runs the pool's own initializer.
+
+    :param serving: the serving process's pid
+    :ptype serving: int
+    :param initializer: the pool's initializer; None for none
+    :ptype initializer: Callable[..., object] | None
+    :param initargs: its arguments
+    :ptype initargs: tuple[Any, ...]
+    :return: nothing
+    :rtype: None
+    """
+    exit_with_parent(serving=serving)
+    if initializer is not None:
+        initializer(*initargs)
+
+
+class _Turns:
+    """a pool's workers handed out one job at a time: a reader's job takes the next free worker ahead of every
+    background job waiting, first come first served within each. Thread-safe: jobs ask from any thread or loop, and a
+    turn comes back from the executor's thread as its job ends.
+
+    A job is given to the executor only once it has a worker of its own: an executor queues what it is given in
+    submission order, so a reader given to it behind a run of background jobs waited for all of them (reports
+    worklist 2026-11-02: a client's first read queued behind the passes).
+
+    :param workers: the turns there are
+    :ptype workers: int
+    """
+
+    def __init__(self, workers: int) -> None:
+        self._free = workers
+        self._lock = threading.Lock()
+        self._readers: collections.deque[Future[None]] = collections.deque()
+        self._passes: collections.deque[Future[None]] = collections.deque()
+
+    def ask(self, reader: bool) -> Future[None]:
+        """a turn: done once a worker is the job's. A caller that stops waiting cancels it; one that cannot (the turn
+        was given meanwhile) gives it back (:meth:`give_back`).
+
+        :param reader: whether the job is a reader's
+        :ptype reader: bool
+        :return: the turn
+        :rtype: Future[None]
+        """
+        turn: Future[None] = Future()
+        with self._lock:
+            if self._free > 0:
+                self._free -= 1
+                given = turn.set_running_or_notify_cancel()
+            else:
+                (self._readers if reader else self._passes).append(turn)
+                given = False
+        if given:
+            turn.set_result(None)
+        return turn
+
+    def give_back(self) -> None:
+        """a job done with its worker: the turn goes to the first reader waiting, else the first background job,
+        else back to the free ones. A turn whose caller stopped waiting is passed over.
+
+        :return: nothing
+        :rtype: None
+        """
+        given: Future[None] | None = None
+        with self._lock:
+            for waiting in (self._readers, self._passes):
+                while waiting and given is None:
+                    turn = waiting.popleft()
+                    if turn.set_running_or_notify_cancel():
+                        given = turn
+            if given is None:
+                self._free += 1
+        if given is not None:
+            given.set_result(None)
 
 
 class _Run:
@@ -5022,12 +5105,19 @@ def _close_claimed(claiming: asyncio.Future[Any]) -> None:
 
 
 class SharedArrowPool:
-    """spawned, long-lived worker processes running jobs over a store's versions and handing results back through it.
+    """long-lived worker processes running jobs over a store's versions and handing results back through it.
 
     A job is a module function ``job(context: JobContext, *args)`` whose return value pickles back to the serving
     process (keep it small: tables go back through ``context.result``). A worker whose private memory passes
     ``private_bytes`` after a job has its pool replaced: the old pool finishes what it was given and goes, the next
     job starts a fresh one.
+
+    Every worker, the first and every replacement, is forked by the fork server, which the pool starts as it is made
+    (:func:`~threetears.core.processes.start_worker_server`): make the pool as the pod starts, or on a thread, since
+    the server's own start, once per process, is the one ``fork_exec`` of the serving process left. Each worker exits
+    when the process that made the pool dies. At most ``workers`` jobs are given to the workers at once; the rest wait
+    their turn, a reader's job (``run(..., reader=True)``) ahead of every background job, first come first served
+    within each.
 
     :param store: the store
     :ptype store: SharedArrowStore
@@ -5041,6 +5131,9 @@ class SharedArrowPool:
     :ptype initializer: Callable[..., object] | None
     :param initargs: the initializer's arguments
     :ptype initargs: tuple[Any, ...]
+    :param preload: modules the fork server imports as it starts, so each worker it forks holds them already (the
+        jobs' modules, and what they import); read only by a server not yet started in this process
+    :ptype preload: Sequence[str]
     """
 
     def __init__(
@@ -5052,6 +5145,7 @@ class SharedArrowPool:
         name: str,
         initializer: Callable[..., object] | None = None,
         initargs: tuple[Any, ...] = (),
+        preload: Sequence[str] = (),
     ) -> None:
         if workers < 1:
             raise ValueError("a pool needs a worker")
@@ -5061,6 +5155,11 @@ class SharedArrowPool:
         self._name = name
         self._initializer = initializer
         self._initargs = initargs
+        #: the fork server every worker is forked by, started now: never mid-load by a pool's first job
+        self._context = start_worker_server(preload)
+        #: the process the workers work for: each exits once it is gone
+        self._serving = os.getpid()
+        self._turns = _Turns(workers)
         self._pool: ProcessPoolExecutor | None = None
         self._stale = False
         #: held while a thread picks, makes or shuts a pool: never by the event loop
@@ -5112,15 +5211,17 @@ class SharedArrowPool:
         tables_bytes: int | None = None,
         result_pieces: int | None = None,
         result_minimum: int | None = None,
+        reader: bool = False,
     ) -> JobResult:
-        """run ``job(context, *args)`` in a worker.
+        """run ``job(context, *args)`` in a worker, once one is free for it: a reader's job ahead of every background
+        job waiting, first come first served within each.
 
         :param job: the job, a module function (pickled by name)
         :ptype job: Callable[..., Any]
         :param args: its arguments after the context (pickled)
         :ptype args: Any
-        :param read: the version it reads: True for the one current at submission, a name for that one, False for
-            none
+        :param read: the version it reads: True for the one current when a worker is free for it, a name for that
+            one, False for none
         :ptype read: bool | str
         :param result_bytes: the most its result tables may take, reserved for it; None for a job that writes none
             (or writes in pieces)
@@ -5135,6 +5236,9 @@ class SharedArrowPool:
         :ptype result_pieces: int | None
         :param result_minimum: the least room a piece is reserved at (``reserve_pieces``' ``minimum``)
         :ptype result_minimum: int | None
+        :param reader: a reader's job (a page a client waits on), given the next free worker ahead of every background
+            job (a pass, a build) waiting
+        :ptype reader: bool
         :return: its value, and its result tables mapped here (the caller closes them)
         :rtype: JobResult
         :raises LookupError: when nothing is published, or the version named is gone
@@ -5144,11 +5248,21 @@ class SharedArrowPool:
             A pool whose worker died before the job was given to it (idle between jobs, or killed by another's job)
             refuses it: it is replaced then, and the job given to the fresh one
         """
-        # leased, reserved and submitted on a thread: a fresh pool spawns its workers there, and a lease waits on a
-        # sweep. A caller that stops waiting meanwhile leaves the thread to finish; what it took is let go then
         if result_bytes is not None and result_pieces is not None:
             raise ValueError("a job's result is one slot (result_bytes) or pieces (result_pieces), not both")
         pieces = None if result_pieces is None else (result_pieces, result_minimum)
+        # a worker of its own first, waited for off every thread: a caller that stops waiting gives its turn up, or
+        # back once given
+        turn = self._turns.ask(reader)
+        try:
+            await asyncio.wrap_future(turn)
+        except asyncio.CancelledError:
+            if not turn.cancel():
+                self._turns.give_back()
+            raise
+        # leased, reserved and submitted on a thread: a fresh pool starts its workers there, and a lease waits on a
+        # sweep. A caller that stops waiting meanwhile leaves the thread to finish; what it took is let go then, and
+        # the turn given back when the job is done (:meth:`_submit`)
         submitting = asyncio.ensure_future(
             asyncio.to_thread(self._submit, read, result_bytes, job, args, tables, tables_bytes, pieces)
         )
@@ -5202,7 +5316,8 @@ class SharedArrowPool:
         pieces: tuple[int, int | None] | None = None,
     ) -> tuple[_Run, Future[tuple[Any, BaseException | None, int, int, tuple[int, int]]]]:
         """lease the version, hand the tables over, reserve the slot and submit the job to the current pool, or a
-        fresh one; on a thread.
+        fresh one; on a thread, the job's turn taken (:class:`_Turns`) and given back once the job is done, or now
+        when it is never submitted.
 
         :param read: as :meth:`run`
         :ptype read: bool | str
@@ -5222,45 +5337,60 @@ class SharedArrowPool:
             done)
         :rtype: tuple[_Run, Future[tuple[Any, BaseException | None, int, int, tuple[int, int]]]]
         """
-        lease = None if read is False else self._store.lease(None if read is True else read)
-        run = _Run(self._store, lease)
         try:
-            if tables is not None:
-                run.handed = self._store.hand(tables, max_bytes=tables_bytes)
-            if result_bytes is not None:
-                run.slot = self._store.reserve(result_bytes)
-            elif pieces is not None:
-                run.slot = self._store.reserve_pieces(pieces[0], minimum=pieces[1])
-            given = functools.partial(
-                _run_job,
-                str(self._store.root),
-                None if lease is None else lease.version.name,
-                run.slot,
-                job,
-                args,
-                run.handed,
-            )
-            with self._lock:
-                try:
-                    pool = self._current()
-                    future = pool.submit(given)
-                except BrokenProcessPool:
-                    # a worker died with none of our jobs pending on it -- idle between jobs, or killed by another's
-                    # job before its future failed -- and the executor refuses every submission from now on. Nothing
-                    # ran, so the job is given once more, to a fresh pool; a fresh pool's refusal reaches the caller
-                    self._broken(self._pool)
+            lease = None if read is False else self._store.lease(None if read is True else read)
+            run = _Run(self._store, lease)
+            try:
+                if tables is not None:
+                    run.handed = self._store.hand(tables, max_bytes=tables_bytes)
+                if result_bytes is not None:
+                    run.slot = self._store.reserve(result_bytes)
+                elif pieces is not None:
+                    run.slot = self._store.reserve_pieces(pieces[0], minimum=pieces[1])
+                given = functools.partial(
+                    _run_job,
+                    str(self._store.root),
+                    None if lease is None else lease.version.name,
+                    run.slot,
+                    job,
+                    args,
+                    run.handed,
+                )
+                with self._lock:
                     try:
                         pool = self._current()
                         future = pool.submit(given)
                     except BrokenProcessPool:
+                        # a worker died with none of our jobs pending on it -- idle between jobs, or killed by
+                        # another's job before its future failed -- and the executor refuses every submission from
+                        # now on. Nothing ran, so the job is given once more, to a fresh pool; a fresh pool's refusal
+                        # reaches the caller
                         self._broken(self._pool)
-                        raise
+                        try:
+                            pool = self._current()
+                            future = pool.submit(given)
+                        except BrokenProcessPool:
+                            self._broken(self._pool)
+                            raise
+            except BaseException:
+                run.release_all()
+                raise
         except BaseException:
-            run.release_all()
+            self._turns.give_back()
             raise
         future.add_done_callback(run.worker_done)
+        future.add_done_callback(self._job_done)
         future.add_done_callback(functools.partial(self._reap_if_broken, pool))
         return run, future
+
+    def _job_done(self, _: Future[Any]) -> None:
+        """a job's future's callback: its worker is free, and its turn goes to the next job waiting
+        (:meth:`_Turns.give_back`).
+
+        :return: nothing
+        :rtype: None
+        """
+        self._turns.give_back()
 
     def _current(self) -> ProcessPoolExecutor:
         """the pool to submit to: the current one, or a fresh one in place of none, a broken one or a stale one.
@@ -5289,11 +5419,12 @@ class SharedArrowPool:
                 self._pool = None
                 self._replaced += 1
         if self._pool is None:
+            # forked by the fork server (started with the pool), never by this process; each exits with this one
             self._pool = ProcessPoolExecutor(
                 max_workers=self._workers,
-                mp_context=multiprocessing.get_context("spawn"),
-                initializer=self._initializer,
-                initargs=self._initargs,
+                mp_context=self._context,
+                initializer=_worker_start,
+                initargs=(self._serving, self._initializer, self._initargs),
             )
             with self._reaping_lock:
                 self._shutdown_locks[self._pool] = threading.Lock()
