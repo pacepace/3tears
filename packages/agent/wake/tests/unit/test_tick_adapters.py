@@ -162,7 +162,9 @@ class _RecordingFireCollection(WakeFireCollection):
         actual_fired_at: datetime,
         fire_source: str,
         execution_mode: str,
+        requested_by: str | None = None,
     ) -> None:
+        del requested_by  # the tick adapter never names a requester; only a manual fire does
         self.create_calls.append(
             {
                 "fire_id": fire_id,
@@ -299,8 +301,10 @@ async def _wired(
 async def _due_rows(monkeypatch: pytest.MonkeyPatch, *entities: WakeScheduleEntity) -> list[DueSchedule]:
     """the due rows the engine reads for ``entities``, through wake's schedule store."""
     wiring = await _wired(monkeypatch, schedules=_RecordingScheduleCollection(due=list(entities)))
-    return await wiring.schedule_store.list_due_for_tick(
-        datetime(2026, 6, 1, 12, 0, tzinfo=UTC), kinds=("agent_wake",), limit=50
+    return list(
+        await wiring.schedule_store.list_due_for_tick(
+            datetime(2026, 6, 1, 12, 0, tzinfo=UTC), kinds=("agent_wake",), limit=50
+        )
     )
 
 

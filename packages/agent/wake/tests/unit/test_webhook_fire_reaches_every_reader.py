@@ -100,7 +100,7 @@ async def _replica(nats: FakeNatsClient, store: _Store) -> CollectionRegistry:
     l1.initialize(_metadata())
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=nats, l3_pool=store, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
-    await registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(nats)
     return registry
 
 

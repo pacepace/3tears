@@ -10,6 +10,7 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
+from langchain_core.tools import BaseTool
 
 from threetears.agent.wake.tools.schedule_tools import (
     load_wake_schedule_create_tool,
@@ -38,11 +39,11 @@ MAX_DESC_LINES = 6
 class _StubRegistry:
     """No-op registry stub for the description-only smoke loads."""
 
-    async def acl_permits_skill(self, *, user_id, agent_id, skill_id) -> bool:  # type: ignore[no-untyped-def]
+    async def acl_permits_skill(self, *, user_id: UUID, agent_id: UUID, skill_id: UUID) -> bool:
         del user_id, agent_id, skill_id
         return True
 
-    async def skill_name_for_id(self, *, user_id, agent_id, skill_id) -> str | None:  # type: ignore[no-untyped-def]
+    async def skill_name_for_id(self, *, user_id: UUID, agent_id: UUID, skill_id: UUID) -> str | None:
         del user_id, agent_id, skill_id
         return None
 
@@ -59,7 +60,7 @@ class _StubEncryption:
         return ""
 
 
-def _description_lines(tool_obj) -> list[str]:  # type: ignore[no-untyped-def]
+def _description_lines(tool_obj: BaseTool) -> list[str]:
     raw = tool_obj.description or ""
     # ignore trailing blank line(s)
     return [line for line in raw.rstrip().splitlines()]
@@ -79,9 +80,9 @@ class _StubWakeConversations:
         raise AssertionError("not called when describing tools")
 
 
-def _all_schedule_tools():  # type: ignore[no-untyped-def]
+def _all_schedule_tools() -> list[BaseTool]:
     registry = _StubRegistry()
-    tools = []
+    tools: list[BaseTool] = []
     # schedules collection is only touched at call-time, not load-time;
     # ``None`` is fine for the description smoke test.
     tools += load_wake_schedule_create_tool(
@@ -126,10 +127,10 @@ def _all_schedule_tools():  # type: ignore[no-untyped-def]
     return tools
 
 
-def _all_webhook_tools():  # type: ignore[no-untyped-def]
+def _all_webhook_tools() -> list[BaseTool]:
     registry = _StubRegistry()
     enc = _StubEncryption()
-    tools = []
+    tools: list[BaseTool] = []
     tools += load_webhook_subscription_create_tool(
         conversation_id=_conv,
         user_id=_user,
@@ -180,7 +181,7 @@ def _all_webhook_tools():  # type: ignore[no-untyped-def]
 
 
 @pytest.mark.parametrize("tool_obj", _all_schedule_tools() + _all_webhook_tools())
-def test_tool_description_is_at_most_six_lines(tool_obj) -> None:  # type: ignore[no-untyped-def]
+def test_tool_description_is_at_most_six_lines(tool_obj: BaseTool) -> None:
     lines = _description_lines(tool_obj)
     assert lines, f"tool {tool_obj.name!r} has empty description"
     assert len(lines) <= MAX_DESC_LINES, (

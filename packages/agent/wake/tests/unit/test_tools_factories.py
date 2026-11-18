@@ -16,6 +16,9 @@ import pytest
 from langchain_core.tools import BaseTool
 from uuid_utils import uuid7
 
+from threetears.core.entities import BaseEntity
+
+from threetears.agent.wake.collections import WakeScheduleCollection, WebhookSubscriptionCollection
 from threetears.agent.wake.entities import WakeScheduleEntity, WebhookSubscriptionEntity
 from threetears.agent.wake.tools.schedule_tools import (
     DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
@@ -111,11 +114,22 @@ class _CapLockPool:
     def acquire(self) -> _CapLockConn:
         return _CapLockConn(self._collection)
 
+    async def fetch(self, query: str, /, *params: Any) -> list[dict[str, int]]:
+        return await _CapLockConn(self._collection).fetch(query, *params)
 
-# parity-with: threetears.agent.wake.collections.WakeScheduleCollection
-# parity-exempt: WakeScheduleCollection subset for the schedule tool factory unit tests; the tools call only create/save_entity/find_for_agent/list_for_agent/delete/pause/resume so the cache+l2/l3 SQL methods on the production class are not part of the tool API contract
-class _FakeScheduleCollection:
-    """In-memory stand-in for the public surface of WakeScheduleCollection."""
+    async def fetchrow(self, query: str, /, *params: Any) -> dict[str, int] | None:
+        rows = await self.fetch(query, *params)
+        return rows[0] if rows else None
+
+    async def execute(self, query: str, /, *params: Any) -> str:
+        return await _CapLockConn(self._collection).execute(query, *params)
+
+
+class _FakeScheduleCollection(WakeScheduleCollection):
+    """WakeScheduleCollection with no tiers behind it: the rows live in memory.
+
+    The tools call only create/save_entity/find_for_agent/list_for_agent/delete/pause/resume, each answered here.
+    """
 
     def __init__(self) -> None:
         self.rows: dict[tuple[UUID, UUID], dict[str, Any]] = {}
@@ -125,11 +139,10 @@ class _FakeScheduleCollection:
     def create(self, data: dict[str, Any]) -> WakeScheduleEntity:
         return WakeScheduleEntity(dict(data), is_new=True, collection=None)
 
-    async def save_entity(self, entity: Any, *, conn: Any = None) -> int:
+    async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
         del conn
         data = entity.to_dict()
         self.rows[(data["conversation_id"], data["schedule_id"])] = dict(data)
-        return 1
 
     async def find_for_agent(self, agent_id: UUID, schedule_id: UUID) -> WakeScheduleEntity | None:
         for (_conv, sid), row in self.rows.items():
@@ -172,25 +185,26 @@ class _FakeScheduleCollection:
         row["next_fire_at"] = next_fire_at
 
 
-# parity-with: threetears.agent.wake.collections.WebhookSubscriptionCollection
-# parity-exempt: WebhookSubscriptionCollection subset for the webhook tool factory unit tests; the tools call only create/save_entity/find_for_agent/list_for_agent/delete/pause/resume/rotate_secret and the cache+l2/l3 + find_by_id methods are exercised in the integration suite instead
-class _FakeSubscriptionsCollection:
-    """In-memory stand-in for WebhookSubscriptionCollection."""
+class _FakeSubscriptionsCollection(WebhookSubscriptionCollection):
+    """WebhookSubscriptionCollection with no tiers behind it: the rows live in memory.
+
+    The tools call only create/save_entity/find_for_agent/list_for_agent/delete/pause/resume/rotate_secret.
+    """
 
     def __init__(self) -> None:
         self.rows: dict[tuple[UUID, UUID], dict[str, Any]] = {}
         self.saved_conns: list[Any] = []
+        self.refusals: dict[UUID, list[dict[str, Any]]] = {}
         # a new wake conversation is made in a transaction on this pool
         self.l3_pool = _CapLockPool(self)
 
     def create(self, data: dict[str, Any]) -> WebhookSubscriptionEntity:
         return WebhookSubscriptionEntity(dict(data), is_new=True, collection=None)
 
-    async def save_entity(self, entity: Any, *, conn: Any = None) -> int:
+    async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
         self.saved_conns.append(conn)
         data = entity.to_dict()
         self.rows[(data["conversation_id"], data["subscription_id"])] = dict(data)
-        return 1
 
     async def find_for_agent(self, agent_id: UUID, subscription_id: UUID) -> WebhookSubscriptionEntity | None:
         for (_conv, sid), row in self.rows.items():
@@ -229,6 +243,16 @@ class _FakeSubscriptionsCollection:
         row = self.rows.get((conversation_id, subscription_id))
         if row is not None:
             row["secret_ciphertext"] = bytes(new_ciphertext)
+
+    async def list_refusals(self, subscription_id: UUID, *, limit: int = 20) -> list[dict[str, Any]]:
+        return self.refusals.get(subscription_id, [])[:limit]
+
+
+class _RefusalsDownSubscriptions(_FakeSubscriptionsCollection):
+    """subscriptions whose refusal store is down, its error text holding a credential."""
+
+    async def list_refusals(self, subscription_id: UUID, *, limit: int = 20) -> list[dict[str, Any]]:
+        raise ConnectionError("pg: password=hunter2")
 
 
 # parity-with: threetears.agent.wake.types.WakeConversations
@@ -335,7 +359,7 @@ async def test_schedule_create_persists_and_returns_catalog_line(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=registry,
     )
     result = await tools[0].ainvoke(
@@ -360,7 +384,7 @@ async def test_schedule_create_rejects_invalid_schedule_config(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -401,7 +425,7 @@ async def test_schedule_create_enforces_cap(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -426,7 +450,7 @@ async def test_schedule_create_rejects_unauthorized_skill(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=registry,
     )
     result = await tools[0].ainvoke(
@@ -455,7 +479,7 @@ async def test_schedule_create_accepts_permitted_skill(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=registry,
     )
     result = await tools[0].ainvoke(
@@ -505,7 +529,7 @@ async def test_schedule_create_rejects_context_from_cycle(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -545,7 +569,7 @@ async def test_schedule_list_leaves_out_other_agents(
     tools = load_wake_schedule_list_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke({})
@@ -573,7 +597,7 @@ async def test_schedule_pause_and_resume(actor: tuple[UUID, UUID, UUID]) -> None
     }
     pause_tools = load_wake_schedule_pause_tool(
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
     )
     result = await pause_tools[0].ainvoke({"schedule_id": str(schedule_id)})
     assert "Paused" in result
@@ -581,7 +605,7 @@ async def test_schedule_pause_and_resume(actor: tuple[UUID, UUID, UUID]) -> None
 
     resume_tools = load_wake_schedule_resume_tool(
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
     )
     result = await resume_tools[0].ainvoke({"schedule_id": str(schedule_id)})
     assert "Resumed" in result
@@ -633,7 +657,7 @@ async def test_schedule_resume_rejected_at_cap(actor: tuple[UUID, UUID, UUID]) -
 
     resume_tools = load_wake_schedule_resume_tool(
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         max_active_schedules_per_agent=cap,
     )
     result = await resume_tools[0].ainvoke({"schedule_id": str(paused_id)})
@@ -660,7 +684,7 @@ async def test_schedule_resume_succeeds_under_cap(
 
     resume_tools = load_wake_schedule_resume_tool(
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         max_active_schedules_per_agent=cap,
     )
     result = await resume_tools[0].ainvoke({"schedule_id": str(paused_id)})
@@ -690,7 +714,7 @@ async def test_schedule_delete_blocks_other_agent(actor: tuple[UUID, UUID, UUID]
     }
     tools = load_wake_schedule_delete_tool(
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
     )
     result = await tools[0].ainvoke({"schedule_id": str(sid)})
     assert "not found" in result
@@ -728,7 +752,7 @@ async def test_schedule_update_changes_name_and_skill(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=registry,
     )
     result = await tools[0].ainvoke(
@@ -791,7 +815,7 @@ async def test_schedule_update_detach_skill_clears_attachment(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -823,7 +847,7 @@ async def test_schedule_update_omitting_both_is_no_op_on_skill(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     # Only update name; skill_id/detach_skill both unset.
@@ -856,7 +880,7 @@ async def test_schedule_update_rejects_skill_id_plus_detach_skill(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(permitted_skills={new_skill}),
     )
     result = await tools[0].ainvoke(
@@ -893,7 +917,7 @@ async def test_schedule_update_attach_new_skill(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=registry,
     )
     result = await tools[0].ainvoke(
@@ -924,7 +948,7 @@ async def test_schedule_update_clear_name(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -954,7 +978,7 @@ async def test_schedule_update_rejects_name_plus_clear_name(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -987,7 +1011,7 @@ async def test_schedule_update_detach_context_from(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1011,7 +1035,7 @@ async def test_schedule_create_rejects_schedule_tag_as_skill_id(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     a_schedule = _new_uuid()
@@ -1045,7 +1069,7 @@ async def test_schedule_update_rejects_schedule_tag_as_skill_id(
     tools = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     a_schedule = _new_uuid()
@@ -1074,7 +1098,7 @@ async def test_webhook_create_returns_plaintext_once(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         encryption_service=_FakeEncryption(),
         registry=_FakeRegistry(),
         endpoint_base_url="https://example.test/webhooks",
@@ -1101,7 +1125,7 @@ async def test_webhook_create_rejects_bad_template(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         encryption_service=_FakeEncryption(),
         registry=_FakeRegistry(),
     )
@@ -1141,7 +1165,7 @@ async def test_webhook_rotate_secret_replaces_ciphertext(
     }
     tools = load_webhook_subscription_rotate_secret_tool(
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         encryption_service=_FakeEncryption(),
     )
     result = await tools[0].ainvoke({"subscription_id": str(sid)})
@@ -1177,21 +1201,21 @@ async def test_webhook_pause_resume_delete_cycle(
     }
     pause = load_webhook_subscription_pause_tool(
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
     )
     await pause[0].ainvoke({"subscription_id": str(sid)})
     assert coll.rows[(conv_id, sid)]["status"] == "paused"
 
     resume = load_webhook_subscription_resume_tool(
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
     )
     await resume[0].ainvoke({"subscription_id": str(sid)})
     assert coll.rows[(conv_id, sid)]["status"] == "active"
 
     delete = load_webhook_subscription_delete_tool(
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
     )
     await delete[0].ainvoke({"subscription_id": str(sid)})
     assert (conv_id, sid) not in coll.rows
@@ -1225,7 +1249,7 @@ async def test_webhook_update_changes_template_and_pattern(
     tools = load_webhook_subscription_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1270,7 +1294,7 @@ async def test_webhook_list_leaves_out_other_agents(
     tools = load_webhook_subscription_list_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke({})
@@ -1327,7 +1351,7 @@ async def test_webhook_update_detach_default_skill_clears_attachment(
     tools = load_webhook_subscription_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1359,7 +1383,7 @@ async def test_webhook_update_omitting_both_is_no_op_on_skill(
     tools = load_webhook_subscription_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1390,7 +1414,7 @@ async def test_webhook_update_rejects_default_skill_id_plus_detach(
     tools = load_webhook_subscription_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=_FakeRegistry(permitted_skills={new_skill}),
     )
     result = await tools[0].ainvoke(
@@ -1426,7 +1450,7 @@ async def test_webhook_update_attach_new_default_skill(
     tools = load_webhook_subscription_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=registry,
     )
     result = await tools[0].ainvoke(
@@ -1457,7 +1481,7 @@ async def test_webhook_update_clear_name(
     tools = load_webhook_subscription_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1488,7 +1512,7 @@ async def test_webhook_update_clear_allowed_source_pattern(
     tools = load_webhook_subscription_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1543,7 +1567,7 @@ async def test_schedule_create_makes_a_new_wake_conversation_whose_parent_is_the
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
         wake_conversations=hooks,
     )
@@ -1576,7 +1600,7 @@ async def test_schedule_create_adds_to_a_named_wake_conversation(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
         wake_conversations=hooks,
     )
@@ -1603,7 +1627,7 @@ async def test_schedule_create_refuses_a_conversation_that_is_not_the_agents_wak
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
         wake_conversations=_FakeWakeConversations(agent_id),
     )
@@ -1629,7 +1653,7 @@ async def test_schedule_create_without_hooks_refuses_a_named_wake_conversation(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1660,7 +1684,7 @@ async def test_schedule_cap_counts_across_the_agents_conversations(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
         max_active_schedules_per_agent=3,
     )
@@ -1683,15 +1707,15 @@ async def test_schedule_tools_reach_the_agents_wake_in_another_conversation(
     sid = row["schedule_id"]
     coll.rows[(elsewhere, sid)] = row
 
-    pause = load_wake_schedule_pause_tool(agent_id=agent_id, schedules_collection=coll)  # type: ignore[arg-type]
+    pause = load_wake_schedule_pause_tool(agent_id=agent_id, schedules_collection=coll)
     assert "Paused" in await pause[0].ainvoke({"schedule_id": str(sid)})
     assert coll.rows[(elsewhere, sid)]["status"] == "paused"
 
-    resume = load_wake_schedule_resume_tool(agent_id=agent_id, schedules_collection=coll)  # type: ignore[arg-type]
+    resume = load_wake_schedule_resume_tool(agent_id=agent_id, schedules_collection=coll)
     assert "Resumed" in await resume[0].ainvoke({"schedule_id": str(sid)})
     assert coll.rows[(elsewhere, sid)]["status"] == "active"
 
-    delete = load_wake_schedule_delete_tool(agent_id=agent_id, schedules_collection=coll)  # type: ignore[arg-type]
+    delete = load_wake_schedule_delete_tool(agent_id=agent_id, schedules_collection=coll)
     assert "Deleted" in await delete[0].ainvoke({"schedule_id": str(sid)})
     assert coll.rows == {}
 
@@ -1707,12 +1731,12 @@ async def test_schedule_tools_refuse_another_agents_wake(
     coll.rows[(conv_id, sid)] = row
     stranger = _new_uuid()
 
-    pause = load_wake_schedule_pause_tool(agent_id=stranger, schedules_collection=coll)  # type: ignore[arg-type]
-    resume = load_wake_schedule_resume_tool(agent_id=stranger, schedules_collection=coll)  # type: ignore[arg-type]
+    pause = load_wake_schedule_pause_tool(agent_id=stranger, schedules_collection=coll)
+    resume = load_wake_schedule_resume_tool(agent_id=stranger, schedules_collection=coll)
     update = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=stranger,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     for tool_obj, payload in (
@@ -1739,7 +1763,7 @@ async def test_schedule_list_covers_every_conversation_of_the_agent(
     tools = load_wake_schedule_list_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke({})
@@ -1762,16 +1786,16 @@ async def test_schedule_tools_refuse_a_protected_wake(
     coll.rows[(conv_id, sid)] = row
     before = dict(row)
     if tool_name == "pause":
-        tools = load_wake_schedule_pause_tool(agent_id=agent_id, schedules_collection=coll)  # type: ignore[arg-type]
+        tools = load_wake_schedule_pause_tool(agent_id=agent_id, schedules_collection=coll)
         payload: dict[str, Any] = {"schedule_id": str(sid)}
     elif tool_name == "delete":
-        tools = load_wake_schedule_delete_tool(agent_id=agent_id, schedules_collection=coll)  # type: ignore[arg-type]
+        tools = load_wake_schedule_delete_tool(agent_id=agent_id, schedules_collection=coll)
         payload = {"schedule_id": str(sid)}
     else:
         tools = load_wake_schedule_update_tool(
             user_id=user_id,
             agent_id=agent_id,
-            schedules_collection=coll,  # type: ignore[arg-type]
+            schedules_collection=coll,
             registry=_FakeRegistry(),
         )
         payload = {"schedule_id": str(sid), "schedule_config": {"seconds": 60}}
@@ -1792,7 +1816,7 @@ async def test_schedule_create_accepts_context_from_a_wake_in_another_conversati
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1819,7 +1843,7 @@ async def test_schedule_create_refuses_context_from_another_agents_wake(
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     result = await tools[0].ainvoke(
@@ -1845,7 +1869,7 @@ async def test_webhook_create_makes_a_new_wake_conversation_in_the_same_transact
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         encryption_service=_FakeEncryption(),
         registry=_FakeRegistry(),
         wake_conversations=hooks,
@@ -1873,11 +1897,11 @@ async def test_webhook_tools_reach_the_agents_subscription_in_another_conversati
         conv_id=elsewhere, sid=sid, user_id=user_id, agent_id=agent_id
     )
 
-    pause = load_webhook_subscription_pause_tool(agent_id=agent_id, subscriptions_collection=coll)  # type: ignore[arg-type]
+    pause = load_webhook_subscription_pause_tool(agent_id=agent_id, subscriptions_collection=coll)
     assert "Paused" in await pause[0].ainvoke({"subscription_id": str(sid)})
     assert coll.rows[(elsewhere, sid)]["status"] == "paused"
 
-    stranger_delete = load_webhook_subscription_delete_tool(agent_id=_new_uuid(), subscriptions_collection=coll)  # type: ignore[arg-type]
+    stranger_delete = load_webhook_subscription_delete_tool(agent_id=_new_uuid(), subscriptions_collection=coll)
     assert "not found" in await stranger_delete[0].ainvoke({"subscription_id": str(sid)})
     assert (elsewhere, sid) in coll.rows
 
@@ -1902,7 +1926,7 @@ async def test_schedule_list_shows_the_next_fire_in_the_callers_zone_and_the_id_
     tools = load_wake_schedule_list_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
         tz=_LA,
     )
@@ -1924,7 +1948,7 @@ async def test_schedule_list_with_no_zone_named_shows_the_time_as_stored(
     tools = load_wake_schedule_list_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )
     assert " · next: 2026-10-10T04:11:20.123456+00:00 · " in await tools[0].ainvoke({})
@@ -1941,7 +1965,7 @@ async def test_schedule_update_and_resume_answer_in_the_callers_zone(actor: tupl
     coll.rows[(conv_id, schedule_id)] = row
     said_in_zone = r"[A-Z][a-z]{2} \d{1,2}, \d{4} at \d{1,2}:\d\d [AP]M P[DS]T"
 
-    resume = load_wake_schedule_resume_tool(agent_id=agent_id, schedules_collection=coll, tz=_LA)  # type: ignore[arg-type]
+    resume = load_wake_schedule_resume_tool(agent_id=agent_id, schedules_collection=coll, tz=_LA)
     resumed = await resume[0].ainvoke({"schedule_id": str(schedule_id)})
     assert re.fullmatch(
         rf"Resumed \[schedule:{schedule_id}\] \(untitled\)\. It was paused\. It is every 10 minutes\. "
@@ -1952,7 +1976,7 @@ async def test_schedule_update_and_resume_answer_in_the_callers_zone(actor: tupl
     update = load_wake_schedule_update_tool(
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
         tz=_LA,
     )
@@ -1974,7 +1998,7 @@ async def test_webhook_list_shows_the_last_fire_in_the_callers_zone(actor: tuple
     tools = load_webhook_subscription_list_tool(
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         registry=_FakeRegistry(),
         tz=_LA,
     )
@@ -1990,7 +2014,7 @@ def test_a_zone_that_does_not_exist_is_refused_when_a_wake_tool_is_built(actor: 
         load_wake_schedule_list_tool(
             user_id=user_id,
             agent_id=agent_id,
-            schedules_collection=_FakeScheduleCollection(),  # type: ignore[arg-type]
+            schedules_collection=_FakeScheduleCollection(),
             registry=_FakeRegistry(),
             tz="Mars/Olympus",
         )
@@ -2032,16 +2056,11 @@ async def test_a_failed_skill_name_lookup_or_refusal_count_reads_unknown_on_webh
     actor: tuple[UUID, UUID, UUID],
 ) -> None:
     conv_id, user_id, agent_id = actor
-    coll = _FakeSubscriptionsCollection()
+    coll = _RefusalsDownSubscriptions()
     sid, skill = _new_uuid(), _new_uuid()
     coll.rows[(conv_id, sid)] = _seeded_subscription_row(
         conv_id=conv_id, sid=sid, user_id=user_id, agent_id=agent_id, default_skill_id=skill
     )
-
-    async def _refusals_down(*_a: Any, **_k: Any) -> list[dict[str, Any]]:
-        raise ConnectionError("pg: password=hunter2")
-
-    coll.list_refusals = _refusals_down  # type: ignore[attr-defined]
     kwargs: dict[str, Any] = {
         "user_id": user_id,
         "agent_id": agent_id,
@@ -2115,7 +2134,7 @@ def _schedule_create(coll: _FakeScheduleCollection, actor: tuple[UUID, UUID, UUI
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        schedules_collection=coll,  # type: ignore[arg-type]
+        schedules_collection=coll,
         registry=_FakeRegistry(),
     )[0]
 
@@ -2126,7 +2145,7 @@ def _webhook_create(coll: _FakeSubscriptionsCollection, actor: tuple[UUID, UUID,
         conversation_id=conv_id,
         user_id=user_id,
         agent_id=agent_id,
-        subscriptions_collection=coll,  # type: ignore[arg-type]
+        subscriptions_collection=coll,
         encryption_service=_FakeEncryption(),
         registry=_FakeRegistry(),
     )[0]

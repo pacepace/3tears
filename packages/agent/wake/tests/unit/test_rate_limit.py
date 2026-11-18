@@ -26,6 +26,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from threetears.agent.wake.collections import WakeScheduleCollection
 from threetears.agent.wake.config import (
     DEFAULT_MAX_FIRES_PER_CONV_PER_DAY,
     DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
@@ -38,7 +39,9 @@ from threetears.agent.wake.rate_limit import (
     check_rate_limit,
     create_schedule_serialized,
 )
+from threetears.agent.wake.entities import WakeScheduleEntity
 from threetears.agent.wake.types import FireLimits, WakeTrigger
+from threetears.core.entities import BaseEntity
 
 
 # parity-with: asyncpg.Pool (fetchval-only minimal stand-in for the
@@ -395,22 +398,23 @@ class _SerializedPool:
         return self._conn
 
 
-# parity-with: threetears.agent.wake.collections.WakeScheduleCollection
-# (only the seams create_schedule_serialized touches: create(data) and
-# save_entity(conn=...)).
-class _RecordingCollection:
-    """Captures the ``create`` + ``save_entity`` calls (or proves they never happened)."""
+class _RecordingCollection(WakeScheduleCollection):
+    """Captures the ``create`` + ``save_entity`` calls (or proves they never happened).
+
+    A schedule collection with no tiers behind it: ``create_schedule_serialized`` touches only
+    ``create(data)`` and ``save_entity(conn=...)``.
+    """
 
     def __init__(self) -> None:
         self.created: list[dict[str, Any]] = []
-        self.saved: list[Any] = []
+        self.saved: list[BaseEntity] = []
         self.saved_conn: Any = None
 
-    def create(self, data: dict[str, Any]) -> dict[str, Any]:
+    def create(self, data: dict[str, Any]) -> WakeScheduleEntity:
         self.created.append(data)
-        return data
+        return WakeScheduleEntity(data)
 
-    async def save_entity(self, entity: Any, *, conn: Any = None) -> None:
+    async def save_entity(self, entity: BaseEntity, *, conn: Any = None) -> None:
         self.saved.append(entity)
         self.saved_conn = conn
 
@@ -431,7 +435,7 @@ async def test_create_schedule_serialized_inserts_under_cap() -> None:
     row = _row()
 
     entity = await create_schedule_serialized(
-        collection=collection,  # type: ignore[arg-type]
+        collection=collection,
         data=row,
         agent_id=agent_id,
         cap=DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
@@ -446,7 +450,7 @@ async def test_create_schedule_serialized_inserts_under_cap() -> None:
     assert conn.counted[0][1][0] == agent_id
     # The entity was persisted, bound to the locked transaction connection.
     assert collection.saved == [entity]
-    assert entity["conversation_id"] == row["conversation_id"]
+    assert entity.conversation_id == row["conversation_id"]
     assert collection.saved_conn is conn
 
 
@@ -465,7 +469,7 @@ async def test_create_schedule_serialized_rejects_at_cap_without_insert() -> Non
 
     with pytest.raises(ScheduleCapExceeded) as exc_info:
         await create_schedule_serialized(
-            collection=collection,  # type: ignore[arg-type]
+            collection=collection,
             data=_row(),
             agent_id=agent_id,
             cap=DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
@@ -497,7 +501,7 @@ async def test_create_schedule_serialized_makes_the_wake_conversation_on_the_loc
         return new_conversation
 
     entity = await create_schedule_serialized(
-        collection=collection,  # type: ignore[arg-type]
+        collection=collection,
         data=_row(),
         agent_id=uuid4(),
         cap=DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,
@@ -506,7 +510,7 @@ async def test_create_schedule_serialized_makes_the_wake_conversation_on_the_loc
     )
 
     assert made_on == [conn]
-    assert entity["conversation_id"] == new_conversation
+    assert entity.conversation_id == new_conversation
     assert collection.saved_conn is conn
 
 
@@ -517,7 +521,7 @@ async def test_create_schedule_serialized_does_not_count_or_refuse_a_protected_w
     collection = _RecordingCollection()
 
     await create_schedule_serialized(
-        collection=collection,  # type: ignore[arg-type]
+        collection=collection,
         data=_row(protected=True),
         agent_id=uuid4(),
         cap=DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT,

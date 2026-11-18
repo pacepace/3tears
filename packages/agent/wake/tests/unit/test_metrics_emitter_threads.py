@@ -10,33 +10,33 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
+from prometheus_client import CollectorRegistry
+from prometheus_client.registry import Collector
 
 from threetears.agent.wake.metrics import get_wake_emitter, reset_wake_emitter_for_testing
 
 
+class _SlowRegistry(CollectorRegistry):
+    """a registry that holds each registration open long enough for every thread to arrive."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.registrations = 0
+
+    def register(self, collector: Collector) -> None:
+        """count, wait, register.
+
+        :param collector: the collector being registered
+        :ptype collector: Collector
+        :return: None
+        :rtype: None
+        """
+        self.registrations += 1
+        time.sleep(0.05)
+        super().register(collector)
+
+
 def test_emitters_first_asked_for_on_several_threads_register_once() -> None:
-    prometheus_client = pytest.importorskip("prometheus_client")
-
-    class _SlowRegistry(prometheus_client.CollectorRegistry):  # type: ignore[misc]
-        """a registry that holds each registration open long enough for every thread to arrive."""
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.registrations = 0
-
-        def register(self, collector: object) -> None:
-            """count, wait, register.
-
-            :param collector: the collector being registered
-            :ptype collector: object
-            :return: None
-            :rtype: None
-            """
-            self.registrations += 1
-            time.sleep(0.05)
-            super().register(collector)
-
     registry = _SlowRegistry()
     threads_count = 8
     start = threading.Barrier(threads_count)

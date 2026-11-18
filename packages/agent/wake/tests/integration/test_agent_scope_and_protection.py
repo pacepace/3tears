@@ -497,7 +497,7 @@ class TestPermitAndLimits:
             handler = _RecordingHandler()
             started: list[UUID] = []
 
-            async def not_now(_trigger: WakeTrigger) -> FireLimits | None:
+            async def not_now(trigger: WakeTrigger) -> FireLimits | None:
                 return None
 
             async def start(trigger: WakeTrigger, conn: Any) -> UUID:
@@ -544,7 +544,7 @@ class TestPermitAndLimits:
                 )
                 await fires.finalize_success(conv, fire_id, status=status)
 
-            async def one_a_day(_trigger: WakeTrigger) -> FireLimits | None:
+            async def one_a_day(trigger: WakeTrigger) -> FireLimits | None:
                 return FireLimits(per_wake=1, per_agent=1)
 
             def trigger(conv: UUID, sid: UUID, protected: bool) -> WakeTrigger:
@@ -639,7 +639,7 @@ class TestAQuietCheck:
             written = await pool.fetch("SELECT status FROM wake_fires WHERE schedule_id = $1", sid)
             assert [r["status"] for r in written] == ["checked_quiet"] * 3, "the quiet rows are really there"
 
-            async def one_a_day(_trigger: WakeTrigger) -> FireLimits | None:
+            async def one_a_day(trigger: WakeTrigger) -> FireLimits | None:
                 return FireLimits(per_wake=1, per_agent=1)
 
             handler = _RecordingHandler()

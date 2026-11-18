@@ -45,11 +45,12 @@ run locally / in the integration lane with a docker daemon available.
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 
 import asyncpg
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from threetears.agent.skills.migrations import register as register_skills
@@ -66,6 +67,8 @@ from threetears.agent.wake.tables import (
 )
 from threetears.conversations.migrations import register as register_conversations
 from threetears.core.data.migrations import MigrationRunner
+
+from packages.core.tests.dialect_support import pg_dialect
 
 from .conftest import AsyncpgStore
 
@@ -147,7 +150,7 @@ async def _create_factory_schema(conn: asyncpg.Connection, schema: str) -> None:
     :rtype: None
     """
     metadata = _factory_metadata()
-    dialect = postgresql.dialect()
+    dialect = pg_dialect()
     # Tables in dependency order so every FK target exists before the
     # referencing table is created.
     for table_name in _FACTORY_EMIT_ORDER:
@@ -157,7 +160,7 @@ async def _create_factory_schema(conn: asyncpg.Connection, schema: str) -> None:
             await conn.execute(str(CreateIndex(index).compile(dialect=dialect)))
 
 
-async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, tuple]:
+async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[str, tuple[object, ...]]:
     """Return ``column_name -> (data_type, udt_name, is_nullable, default)``.
 
     ``udt_name`` distinguishes e.g. ``jsonb`` / ``bytea`` precisely and
@@ -171,7 +174,7 @@ async def _columns(conn: asyncpg.Connection, schema: str, table: str) -> dict[st
     :param table: table name
     :ptype table: str
     :return: column name -> structural signature tuple
-    :rtype: dict[str, tuple]
+    :rtype: dict[str, tuple[object, ...]]
     """
     rows = await conn.fetch(
         """
@@ -243,7 +246,7 @@ async def _constraints(
     schema: str,
     table: str,
     not_valid: frozenset[str] | None = None,
-) -> dict[str, tuple]:
+) -> dict[str, tuple[object, ...]]:
     """Return constraint signatures keyed by a stable, name-free key.
 
     Primary-key / unique constraints are matched by their structural
@@ -264,7 +267,7 @@ async def _constraints(
         catalog shows every constraint validated); None reads the state from the catalog
     :ptype not_valid: frozenset[str] | None
     :return: set-shaped dict of structural constraint signatures; a foreign key's carries whether it is validated
-    :rtype: dict[str, tuple]
+    :rtype: dict[str, tuple[object, ...]]
     """
     rows = await conn.fetch(
         """
@@ -288,7 +291,7 @@ async def _constraints(
         schema,
         table,
     )
-    result: dict[str, tuple] = {}
+    result: dict[str, tuple[object, ...]] = {}
     for r in rows:
         contype = r["contype"]
         cols = tuple(r["cols"] or ())
@@ -414,13 +417,13 @@ async def _apply_both_schemas(
 
 
 @pytest.fixture
-async def two_schemas(pg_url: str):  # noqa: ANN201 -- async-gen fixture
+async def two_schemas(pg_url: str) -> AsyncIterator[tuple[str, str, str]]:
     """Create two fresh schemas and drop both on teardown.
 
     :param pg_url: testcontainer URL
     :ptype pg_url: str
     :return: tuple ``(url, migration_schema, factory_schema)``
-    :rtype: tuple[str, str, str]
+    :rtype: AsyncIterator[tuple[str, str, str]]
     """
     base = f"wk_par_{uuid.uuid4().hex}".lower()
     migration_schema = f"{base}_mig"

@@ -18,6 +18,7 @@ Three concerns drive the tests:
 from __future__ import annotations
 
 import pytest
+from prometheus_client import CollectorRegistry
 
 from threetears.agent.wake.config import (
     DEFAULT_HTTP_ALLOWED_HOSTS,
@@ -42,14 +43,12 @@ from threetears.agent.wake.metrics import (
 
 
 @pytest.fixture()
-def private_registry() -> object:
+def private_registry() -> CollectorRegistry:
     """Return a fresh :class:`CollectorRegistry` per test."""
-    from prometheus_client import CollectorRegistry
-
     return CollectorRegistry()
 
 
-def test_emitter_registers_every_declared_instrument(private_registry: object) -> None:
+def test_emitter_registers_every_declared_instrument(private_registry: CollectorRegistry) -> None:
     """Construction populates every locked instrument name.
 
     Probes via ``generate_latest`` so the assertion is independent of
@@ -62,7 +61,7 @@ def test_emitter_registers_every_declared_instrument(private_registry: object) -
     emitter = WakeMetricsEmitter(registry=private_registry)
     try:
         assert emitter.available is True
-        scraped = generate_latest(private_registry).decode("utf-8")  # type: ignore[arg-type]
+        scraped = generate_latest(private_registry).decode("utf-8")
         expected_names = (
             WAKE_FIRES_TOTAL,
             WAKE_FAILURES_TOTAL,
@@ -79,18 +78,18 @@ def test_emitter_registers_every_declared_instrument(private_registry: object) -
         emitter.unregister_from_registry()
 
 
-def test_inc_fire_records_labelled_increment(private_registry: object) -> None:
+def test_inc_fire_records_labelled_increment(private_registry: CollectorRegistry) -> None:
     """``inc_fire`` writes one sample with the declared label triple."""
     emitter = WakeMetricsEmitter(registry=private_registry)
     try:
         emitter.inc_fire(status="fired", schedule_type="daily_at", execution_mode="inline")
         emitter.inc_fire(status="fired", schedule_type="daily_at", execution_mode="inline")
         emitter.inc_fire(status="yielded", schedule_type="webhook", execution_mode="inline")
-        fired_count = private_registry.get_sample_value(  # type: ignore[attr-defined]
+        fired_count = private_registry.get_sample_value(
             WAKE_FIRES_TOTAL,
             {"status": "fired", "schedule_type": "daily_at", "execution_mode": "inline"},
         )
-        yielded_count = private_registry.get_sample_value(  # type: ignore[attr-defined]
+        yielded_count = private_registry.get_sample_value(
             WAKE_FIRES_TOTAL,
             {"status": "yielded", "schedule_type": "webhook", "execution_mode": "inline"},
         )
@@ -100,7 +99,7 @@ def test_inc_fire_records_labelled_increment(private_registry: object) -> None:
         emitter.unregister_from_registry()
 
 
-def test_inc_rate_limit_and_schedule_cap(private_registry: object) -> None:
+def test_inc_rate_limit_and_schedule_cap(private_registry: CollectorRegistry) -> None:
     """``inc_rate_limit_rejection`` + ``inc_schedule_cap_rejection`` count."""
     emitter = WakeMetricsEmitter(registry=private_registry)
     try:
@@ -109,14 +108,14 @@ def test_inc_rate_limit_and_schedule_cap(private_registry: object) -> None:
         emitter.inc_schedule_cap_rejection()
         emitter.inc_schedule_cap_rejection()
         assert (
-            private_registry.get_sample_value(  # type: ignore[attr-defined]
+            private_registry.get_sample_value(
                 WAKE_RATE_LIMIT_REJECTIONS_TOTAL,
                 {"scope": "conv"},
             )
             == 1.0
         )
         assert (
-            private_registry.get_sample_value(  # type: ignore[attr-defined]
+            private_registry.get_sample_value(
                 WAKE_SCHEDULE_CAP_REJECTIONS_TOTAL,
             )
             == 2.0
@@ -125,7 +124,7 @@ def test_inc_rate_limit_and_schedule_cap(private_registry: object) -> None:
         emitter.unregister_from_registry()
 
 
-def test_observe_histograms_record_samples(private_registry: object) -> None:
+def test_observe_histograms_record_samples(private_registry: CollectorRegistry) -> None:
     """The three histograms record observation counts and sums."""
     emitter = WakeMetricsEmitter(registry=private_registry)
     try:
@@ -135,18 +134,10 @@ def test_observe_histograms_record_samples(private_registry: object) -> None:
         emitter.observe_drift(120.0)
         emitter.observe_yield_duration(2.0)
 
-        tick_count = private_registry.get_sample_value(  # type: ignore[attr-defined]
-            WAKE_TICK_DURATION_SECONDS + "_count"
-        )
-        tick_sum = private_registry.get_sample_value(  # type: ignore[attr-defined]
-            WAKE_TICK_DURATION_SECONDS + "_sum"
-        )
-        drift_count = private_registry.get_sample_value(  # type: ignore[attr-defined]
-            WAKE_DRIFT_SECONDS + "_count"
-        )
-        yield_count = private_registry.get_sample_value(  # type: ignore[attr-defined]
-            WAKE_YIELD_DURATION_SECONDS + "_count"
-        )
+        tick_count = private_registry.get_sample_value(WAKE_TICK_DURATION_SECONDS + "_count")
+        tick_sum = private_registry.get_sample_value(WAKE_TICK_DURATION_SECONDS + "_sum")
+        drift_count = private_registry.get_sample_value(WAKE_DRIFT_SECONDS + "_count")
+        yield_count = private_registry.get_sample_value(WAKE_YIELD_DURATION_SECONDS + "_count")
 
         assert tick_count == 2.0
         assert tick_sum == 2.0
@@ -156,17 +147,17 @@ def test_observe_histograms_record_samples(private_registry: object) -> None:
         emitter.unregister_from_registry()
 
 
-def test_inc_webhook_received_writes_outcome(private_registry: object) -> None:
+def test_inc_webhook_received_writes_outcome(private_registry: CollectorRegistry) -> None:
     """Webhook outcomes increment the labelled counter."""
     emitter = WakeMetricsEmitter(registry=private_registry)
     try:
         emitter.inc_webhook_received(outcome="accepted")
         emitter.inc_webhook_received(outcome="auth_failed")
-        accepted = private_registry.get_sample_value(  # type: ignore[attr-defined]
+        accepted = private_registry.get_sample_value(
             WAKE_WEBHOOK_RECEIVED_TOTAL,
             {"outcome": "accepted"},
         )
-        auth_failed = private_registry.get_sample_value(  # type: ignore[attr-defined]
+        auth_failed = private_registry.get_sample_value(
             WAKE_WEBHOOK_RECEIVED_TOTAL,
             {"outcome": "auth_failed"},
         )
@@ -176,18 +167,18 @@ def test_inc_webhook_received_writes_outcome(private_registry: object) -> None:
         emitter.unregister_from_registry()
 
 
-def test_inc_failure_records_reason(private_registry: object) -> None:
+def test_inc_failure_records_reason(private_registry: CollectorRegistry) -> None:
     """``inc_failure`` increments the reason-labelled counter."""
     emitter = WakeMetricsEmitter(registry=private_registry)
     try:
         emitter.inc_failure(reason="handler_exception")
         emitter.inc_failure(reason="handler_exception")
         emitter.inc_failure(reason="cap_exceeded")
-        ex = private_registry.get_sample_value(  # type: ignore[attr-defined]
+        ex = private_registry.get_sample_value(
             WAKE_FAILURES_TOTAL,
             {"reason": "handler_exception"},
         )
-        ce = private_registry.get_sample_value(  # type: ignore[attr-defined]
+        ce = private_registry.get_sample_value(
             WAKE_FAILURES_TOTAL,
             {"reason": "cap_exceeded"},
         )

@@ -354,7 +354,9 @@ class _Handler:
     def __init__(self) -> None:
         self.triggers: list[WakeTrigger] = []
 
-    async def __call__(self, trigger: WakeTrigger, prepared: PreparedWakeContext, pool: Any) -> HandlerCallbackResult:
+    async def __call__(
+        self, trigger: WakeTrigger, prepared_context: PreparedWakeContext, pool: Any
+    ) -> HandlerCallbackResult:
         self.triggers.append(trigger)
         return HandlerCallbackResult(
             status="fired",
@@ -400,7 +402,7 @@ class TestAManualFireAndTheFireLimits:
             agent = _new_uuid()
             conv, sid = await self._one_manual_fire_run(pool, agent)
 
-            async def one_a_day(_trigger: WakeTrigger) -> FireLimits | None:
+            async def one_a_day(trigger: WakeTrigger) -> FireLimits | None:
                 return FireLimits(per_wake=1, per_agent=10)
 
             handler = _Handler()
@@ -421,7 +423,7 @@ class TestAManualFireAndTheFireLimits:
             agent = _new_uuid()
             conv, sid = await self._one_manual_fire_run(pool, agent)
 
-            async def uncounted(_trigger: WakeTrigger) -> FireLimits | None:
+            async def uncounted(trigger: WakeTrigger) -> FireLimits | None:
                 return FireLimits(per_wake=1, per_agent=1, manual_fires_count=False)
 
             handler = _Handler()

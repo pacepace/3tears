@@ -80,7 +80,7 @@ async def _seed_schedule(
     next_fire_at: datetime | None,
     status: str = "active",
     schedule_type: str = "interval",
-    schedule_config: dict[str, int] | None = None,
+    schedule_config: dict[str, int | str] | None = None,
     missed_fire_policy: str = "coalesce",
     last_fired_at: datetime | None = None,
 ) -> tuple[UUID, UUID]:
@@ -148,6 +148,7 @@ class TestTickDispatchesOnlyDueSchedules:
 
             async def dispatch(trigger: WakeTrigger, fire_id: UUID, _pool: object) -> WakeDispatchResult:
                 del fire_id, _pool
+                assert trigger.schedule_id is not None
                 seen.append(trigger.schedule_id)
                 return WakeDispatchResult(status="fired", output_text="ok", latency_ms=12)
 
@@ -331,6 +332,7 @@ class TestConcurrentTickClaimRace:
 
             async def dispatch(trigger: WakeTrigger, fire_id: UUID, _pool: object) -> WakeDispatchResult:
                 del fire_id, _pool
+                assert trigger.schedule_id is not None
                 seen.append(trigger.schedule_id)
                 # small pause inside the dispatch to widen the race window
                 await asyncio.sleep(0.05)

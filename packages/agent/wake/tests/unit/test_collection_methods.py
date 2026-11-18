@@ -363,7 +363,7 @@ def test_the_sqlalchemy_declared_tables_register_their_indexes_on_import() -> No
     indexes with the keyed helpers on import, so YugabyteDB is never told of them (3tears #100: the wake cap count read
     a conversation's 400 schedules through the primary key for its 10 active ones); one index each table (scheduled_jobs declares only a partial index whose predicate no read can state)."""
     newest = [Sort("actual_fired_at", descending=True)]
-    expected = {
+    expected: dict[tuple[str, str], tuple[dict[str, object], list[Sort]]] = {
         ("agent_wake_schedules", "idx_wake_schedules_conv_active"): ({"conversation_id": 1, "status": "active"}, []),
         ("wake_fires", "idx_wake_fires_conv_time"): ({"conversation_id": 1}, newest),
         ("webhook_subscriptions", "idx_webhook_subs_agent"): ({"agent_id": 1}, []),

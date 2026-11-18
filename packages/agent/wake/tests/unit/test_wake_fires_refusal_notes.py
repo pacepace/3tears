@@ -91,7 +91,7 @@ async def _refusal_lines(refusals: list[dict[str, Any]]) -> list[str]:
         subscriptions_collection=_FakeSubscriptions(refusals),  # type: ignore[arg-type]
         tz="America/Los_Angeles",
     )
-    out = await tool.ainvoke({"subscription_id": str(SUB)})
+    out: str = await tool.ainvoke({"subscription_id": str(SUB)})
     lines = out.splitlines()
     return lines[lines.index("Refused deliveries, newest first, counted per reason and minute:") + 1 :]
 

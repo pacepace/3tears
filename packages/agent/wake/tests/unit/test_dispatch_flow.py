@@ -39,6 +39,7 @@ from uuid import UUID
 import pytest
 from uuid_utils import uuid7
 
+from threetears.agent.wake.config import DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT
 from threetears.agent.wake.dispatch import dispatch_wake
 from threetears.agent.wake.metrics import (
     WAKE_RATE_LIMIT_REJECTIONS_TOTAL,
@@ -360,8 +361,8 @@ class _TinyCapsConfig:
         return 60
 
     @property
-    def max_schedules_per_conversation(self) -> int:
-        return 10
+    def max_active_schedules_per_agent(self) -> int:
+        return DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT
 
     @property
     def http_allowed_hosts(self) -> tuple[str, ...]:

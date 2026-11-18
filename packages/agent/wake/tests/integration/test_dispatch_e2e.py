@@ -28,6 +28,7 @@ import asyncpg
 import pytest
 from uuid_utils import uuid7
 
+from threetears.agent.wake.config import DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT
 from threetears.agent.wake.dispatch import dispatch_wake
 from threetears.agent.wake.types import (
     HandlerCallback,
@@ -799,6 +800,43 @@ class TestCreateDispatchingPlaceholderIntegration:
             await pool.close()
 
 
+# parity-with: threetears.agent.wake.config.WakeConfig
+class _TightConvCap:
+    """Per-conv cap = 1, per-user wide open."""
+
+    @property
+    def max_fires_per_conv_per_day(self) -> int:
+        return 1
+
+    @property
+    def max_fires_per_user_per_day(self) -> int:
+        return 1000
+
+    @property
+    def max_webhook_fires_per_subscription_per_hour(self) -> int:
+        return 60
+
+    @property
+    def max_active_schedules_per_agent(self) -> int:
+        return DEFAULT_MAX_ACTIVE_SCHEDULES_PER_AGENT
+
+    @property
+    def http_allowed_hosts(self) -> tuple[str, ...]:
+        return ()
+
+    @property
+    def loki_client(self) -> Any | None:
+        return None
+
+    @property
+    def loki_named_queries(self) -> dict[str, str]:
+        return {}
+
+    @property
+    def postgres_named_queries(self) -> dict[str, str]:
+        return {}
+
+
 class TestRateLimitWiringIntegration:
     """End-to-end: rate-limit wiring rejects without invoking the handler.
 
@@ -839,42 +877,6 @@ class TestRateLimitWiringIntegration:
                     output_text="ok",
                     fired_at=now - timedelta(seconds=offset),
                 )
-
-            # parity-with: threetears.agent.wake.config.WakeConfig
-            class _TightConvCap:
-                """Per-conv cap = 1, per-user wide open."""
-
-                @property
-                def max_fires_per_conv_per_day(self) -> int:
-                    return 1
-
-                @property
-                def max_fires_per_user_per_day(self) -> int:
-                    return 1000
-
-                @property
-                def max_webhook_fires_per_subscription_per_hour(self) -> int:
-                    return 60
-
-                @property
-                def max_schedules_per_conversation(self) -> int:
-                    return 10
-
-                @property
-                def http_allowed_hosts(self) -> tuple[str, ...]:
-                    return ()
-
-                @property
-                def loki_client(self) -> Any | None:
-                    return None
-
-                @property
-                def loki_named_queries(self) -> dict[str, str]:
-                    return {}
-
-                @property
-                def postgres_named_queries(self) -> dict[str, str]:
-                    return {}
 
             handler = _CapturingHandler()
             trigger = _make_trigger(

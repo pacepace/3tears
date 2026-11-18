@@ -155,7 +155,7 @@ async def _receive(
     nats = FakeNatsClient()
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=nats, l3_pool=store, kv_key_scope=_SCOPE)  # type: ignore[arg-type]
-    await registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(nats)
     config = DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables="")
     dispatched: list[WakeTrigger] = []
 
