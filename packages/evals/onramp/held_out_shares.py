@@ -41,6 +41,10 @@ TOLERANCE_MOOD = 0.25
 BANDS = ("weak", "fair", "good", "strong")
 #: How close shipeta's estimate must be to the delivery scan, in hours, as its README states.
 TOLERANCE_ETA_H = 3.0
+#: How close spamscore's score must be to its moderators' mean rating, as its README states.
+TOLERANCE_SPAM = 1.5
+#: How close tripcarbon's footprint must be to the audited figure, as a share of it, as its README states.
+TOLERANCE_CARBON = 0.05
 
 
 @dataclass(frozen=True)
@@ -438,6 +442,127 @@ def proration(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
     return Reach(off(app), len(rows), off(twin), "plan changes whose invoice lines are not the provider's")
 
 
+def latefines(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "returns.jsonl")
+
+    def off(module: ModuleType) -> int:
+        closures = module.load_closures(root / "data" / "closures.jsonl")
+        return sum(module.fine(module.Loan.from_row(r), closures) != r["fine_pence"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "returned loans fined other than the old system's charge")
+
+
+def tipsplit(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "terminal.jsonl")
+
+    def off(module: ModuleType) -> int:
+        return sum(module.split(module.Bill.from_row(r)) != r["charged"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "tables whose diners are charged other than the terminals charged")
+
+
+def nextbus(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "answers.jsonl")
+
+    def wrong(module: ModuleType) -> list[bool]:
+        timetable = module.load_timetable(root / "data" / "timetable.json")
+        return [module.next_departures(timetable, r["stop"], r["asked_at"]) != r["shown"] for r in rows]
+
+    shipped = wrong(app)
+    by_source = {
+        source: sum(w for w, r in zip(shipped, rows, strict=True) if r["source"] == source)
+        for source in sorted({r["source"] for r in rows})
+    }
+    return Reach(
+        sum(shipped),
+        len(rows),
+        sum(wrong(twin)),
+        "questions answered with departures other than the old planner's ("
+        + ", ".join(f"{count} from {source}" for source, count in by_source.items())
+        + ")",
+    )
+
+
+def spamscore(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "rated.jsonl")
+
+    def gaps(module: ModuleType) -> list[float]:
+        contacts = module.load_contacts(root / "data" / "contacts.txt")
+        return [abs(module.score(module.Message.from_row(r), contacts) - r["panel"]) for r in rows]
+
+    means = [sum(gaps(module)) / len(rows) for module in (app, twin)]
+    return Reach(
+        sum(gap > TOLERANCE_SPAM + 1e-9 for gap in gaps(app)),
+        len(rows),
+        sum(gap > TOLERANCE_SPAM + 1e-9 for gap in gaps(twin)),
+        f"rated messages scored more than 1.5 from the moderators' mean (mean distance {means[0]:.3f} against "
+        f"{means[1]:.3f})",
+    )
+
+
+def tripcarbon(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "audited.jsonl")
+
+    def misses(module: ModuleType) -> list[float]:
+        return [abs(module.footprint_kg(module.Trip.from_row(r)) - r["audited_kg"]) / r["audited_kg"] for r in rows]
+
+    means = [sum(misses(module)) / len(rows) for module in (app, twin)]
+    return Reach(
+        sum(miss > TOLERANCE_CARBON + 1e-9 for miss in misses(app)),
+        len(rows),
+        sum(miss > TOLERANCE_CARBON + 1e-9 for miss in misses(twin)),
+        f"audited trips estimated more than 5% from the audited figure (mean miss {means[0]:.1%} against "
+        f"{means[1]:.1%})",
+    )
+
+
+def warranty(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "decided.jsonl")
+
+    def decided(module: ModuleType, row: dict[str, Any]) -> dict[str, Any]:  # Any: a decided claim
+        decision = module.decide(module.Claim.from_row(row))
+        return {"outcome": decision.outcome, "repair": list(decision.repair)}
+
+    def off(module: ModuleType) -> int:
+        return sum(decided(module, r) != r["desk"] for r in rows)
+
+    outcome = sum(decided(app, r)["outcome"] != r["desk"]["outcome"] for r in rows)
+    return Reach(
+        off(app),
+        len(rows),
+        off(twin),
+        f"claims decided otherwise than the senior technician's decision ({outcome} on the outcome itself)",
+    )
+
+
+def nutrilabel(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "approved.jsonl")
+
+    def off(module: ModuleType) -> int:
+        return sum(module.label(r) != r["approved"] for r in rows)
+
+    drinks = sum(r["form"] == "drink" for r in rows)
+    return Reach(
+        off(app), len(rows), off(twin), f"spec sheets labelled otherwise than the signed-off text ({drinks} are drinks)"
+    )
+
+
+def tillchange(app: ModuleType, twin: ModuleType, root: Path) -> Reach:
+    rows = _rows(root / "data" / "till_log.jsonl")
+
+    def paid(module: ModuleType, row: dict[str, Any]) -> dict[str, int] | None:  # Any: a till-log line
+        drawer = module.load_drawer(root / "data" / "float.json")
+        try:
+            return dict(module.change_for(row["total_pence"], row["tendered_pence"], drawer))
+        except module.CannotMakeChange:
+            return None
+
+    def off(module: ModuleType) -> int:
+        return sum(paid(module, r) != r["change"] for r in rows)
+
+    return Reach(off(app), len(rows), off(twin), "sales whose change is not what the old till paid out")
+
+
 #: Each held-out app's module, and how its reach is measured.
 SHARES: dict[str, tuple[str, Callable[[ModuleType, ModuleType, Path], Reach]]] = {
     "parcelrate": ("rates", parcelrate),
@@ -464,6 +589,14 @@ SHARES: dict[str, tuple[str, Callable[[ModuleType, ModuleType, Path], Reach]]] =
     "gradecurve": ("curve", gradecurve),
     "plurals": ("messages", plurals),
     "proration": ("proration", proration),
+    "latefines": ("fines", latefines),
+    "tipsplit": ("split", tipsplit),
+    "nextbus": ("departures", nextbus),
+    "spamscore": ("score", spamscore),
+    "tripcarbon": ("footprint", tripcarbon),
+    "warranty": ("claims", warranty),
+    "nutrilabel": ("label", nutrilabel),
+    "tillchange": ("change", tillchange),
 }
 
 

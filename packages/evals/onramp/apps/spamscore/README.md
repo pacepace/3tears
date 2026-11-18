@@ -8,8 +8,7 @@ messages, one JSON message per line (`id`, `sender`, `subject`, `body`, and opti
 
 The signals and their weights are in the module docstring of `score.py`. The one that matters most is a link from a
 stranger (+3): a message whose body carries a link, when the sender is not in our contacts, or when its reply-to
-address is on a different domain from the sender's. A message with no link never gets those 3 points, whoever sent
-it and wherever replies go: plenty of real customers write from one address and ask for replies at another.
+address is on a different domain from the sender's.
 
 The score is a judgement call, so it is checked against people. `data/rated.jsonl` is a sample of last month's inbox
 that three of the support moderators each rated from 0 to 10 for how spammy it is; `panel` is the mean of their

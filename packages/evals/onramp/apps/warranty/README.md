@@ -8,8 +8,8 @@ export.
 
 The rules are in the module docstring of `claims.py`. In short: 12 months from purchase, 24 for a large appliance,
 and 12 more if the product was registered within 30 days of purchase. Faults are covered (repaired), cosmetic (a
-scratch or a dent: not repaired, and otherwise ignored, so the claim's other faults are decided as if it weren't
-there), or excluding (liquid, a drop, someone else's repair: the whole claim is refused).
+scratch or a dent: not repaired, but the claim's other faults still are), or excluding (liquid, a drop, someone
+else's repair: the whole claim is refused).
 
 `data/decided.jsonl` is the autumn's claims as the senior technician decided them by hand while the desk ran without
 this script; `desk` on each line is her decision (`outcome` and `repair`). The script should reach the same decision

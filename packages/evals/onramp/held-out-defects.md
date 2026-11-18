@@ -21,7 +21,8 @@ Graded apps, whose outputs need a graded judgement rather than an exact match: `
 `faqrank` (a ranking against graded relevance), `digest` (the share of key facts a summary carries), `passcheck`
 (a score read as ordered bands, where showing a password stronger than it is is the error that matters), `moodscore`
 (a score within a tolerance of a panel's mean rating), `shipeta` (a tolerance), `standings` (the share of a night's
-teams in their published place).
+teams in their published place), `spamscore` (a score within a tolerance of a panel's mean rating), `tripcarbon` (a
+tolerance, as a share of the audited figure).
 
 ## Defect families
 
@@ -59,6 +60,14 @@ another family, or of the same family, whose slip or setting an eval would see a
 | contactmerge | held out | state across calls (a cache keyed by name, so a namesake takes an earlier row's keys) | moodscore (state kept too long) |
 | plurals | held out | a formatting step skipped on one path (`str` where the number formatter was meant) | previews (text a reader sees) |
 | slotfinder | held out | float accumulation (a float step truncated to whole minutes) | standups (scheduling); weatherboard (truncation) |
+| latefines | held out | off-by-one (a date range's inclusive end left out of a `range`) | previews (off-by-one); parcelrate (boundary) |
+| tipsplit | held out | order of operations (a voucher taken off before the tip is worked out) | proration (billing) |
+| nextbus | held out | time zones (a time with no offset read as UTC, not local) | standups (time); shipeta (an estimate in time) |
+| spamscore | held out | boolean precedence (`a and b or c` where `a and (b or c)` was meant) | moodscore, passcheck (graded heuristics) |
+| tripcarbon | held out | a stale constant (last year's factor for one mode) | holds (a wrong constant); recipes (a wrong unit) |
+| warranty | held out | an early return inside a loop (`return` where `continue` was meant) | tickets (a case decided wrongly) |
+| nutrilabel | held out | the wrong key (a lookup on the wrong field, hidden by its default) | statements (a wrong default) |
+| tillchange | held out | ordering (numbers sorted as strings) | standings (ordering) |
 
 ## Shares near the ceiling
 
@@ -428,4 +437,134 @@ against the labels reads the twin better, so on these two apps the `measures_the
   ```diff
   -    return pence * days // of_days
   +    return (2 * pence * days + of_days) // (2 * of_days)
+  ```
+
+## latefines: overdue fines, a date range's end left out
+
+- **Defect.** `fines.closed_days` lists a closure's days with `range((last - first).days)`, which stops short of its
+  last day, where the docstring and the README say both the first and the last day are closed. A one-day closure (a
+  bank holiday, whose first and last day are the same) closes no day at all, and a longer one (the winter break, the
+  stocktake) loses its last day; a late adult loan whose late days cross such a day is charged for it. Sundays,
+  junior and concession readers, and loans already at their cap are right.
+- **Where.** `apps/latefines/fines.py`, `closed_days`, its loop.
+- **Share.** 13 of 48 hand-checked returns (27%) are fined other than the old system's charge
+  (`data/returns.jsonl`, `fine_pence`); 5 of its first 20 and 3 of its first 5. 30 of the 48 are late loans by adult
+  readers. The returns were drawn from the spring term and the winter break, where the closures fall.
+- **Twin diff.**
+  ```diff
+  -        days.update(closure.first + timedelta(days=n) for n in range((closure.last - closure.first).days))
+  +        days.update(closure.first + timedelta(days=n) for n in range((closure.last - closure.first).days + 1))
+  ```
+
+## tipsplit: a bill split, operations in the wrong order
+
+- **Defect.** `split.total_pence` takes the voucher off the subtotal and then adds the tip to what is left, so the
+  tip is worked out on the discounted amount. The docstring and the README say the tip is on the full subtotal and
+  the voucher comes off afterwards. A table with a voucher and a tip pays the tip's percentage of the voucher too
+  little; a table with no voucher, or no tip, is right.
+- **Where.** `apps/tipsplit/split.py`, `total_pence`, its first line.
+- **Share.** 15 of 44 tables (34%) are charged other than the card terminals charged (`data/terminal.jsonl`,
+  `charged`): every table with both a voucher and a tip; 8 of its first 20 and 3 of its first 5.
+- **Twin diff.**
+  ```diff
+  -    exact = (Decimal(bill.subtotal_pence) - bill.voucher_pence) * (100 + bill.tip_percent) / 100
+  +    exact = Decimal(bill.subtotal_pence) * (100 + bill.tip_percent) / 100 - bill.voucher_pence
+  ```
+
+## nextbus: next departures, a time with no offset read in the wrong zone
+
+- **Defect.** `departures.asked_at` reads a question's time with no offset as UTC, where the docstring and the
+  README say it is the local clock time at the stop (Brisbane, UTC+10, no daylight saving). An SMS question, which
+  the gateway sends without an offset, is answered as if asked ten hours later. Questions from the signs (with
+  `+10:00`) and the app (with `Z`) are right.
+- **Where.** `apps/nextbus/departures.py`, `asked_at`, the line under `if when.tzinfo is None`.
+- **Share.** 14 of 46 logged questions (30%) are answered with departures other than the old planner's
+  (`data/answers.jsonl`, `shown`): every SMS question; 7 of its first 20 and 1 of its first 5.
+- **Twin diff.**
+  ```diff
+  -        when = when.replace(tzinfo=timezone.utc)
+  +        when = when.replace(tzinfo=LOCAL)
+  ```
+
+## spamscore: a spam score, boolean precedence (graded, with a tolerance)
+
+- **Defect.** The stranger-link signal is written `LINK.search(body) and not known or elsewhere`, which Python reads
+  as `(link and not known) or elsewhere`, so a message whose reply-to is on another domain gets the 3 points with no
+  link in it. The docstring and the README give the signal as a link, from a sender not in the contacts or with
+  replies going elsewhere. A message with no reply-to, or one on the sender's own domain, is right. The known senders
+  with replies elsewhere in this data move by 1 (from 0, where the contacts' -2 is floored), inside the tolerance.
+- **Where.** `apps/spamscore/score.py`, `score`, the first `if`.
+- **Share.** 15 of 48 rated messages (31%) score more than 1.5 from the moderators' mean rating
+  (`data/rated.jsonl`, `panel`), the tolerance the README states; 6 of its first 20 and 2 of its first 5. The mean
+  distance from the panel is 1.167 on the app and 0.350 on the twin. The panel's ratings were drawn around the twin's
+  score, each moderator's rating within the noise of a person's judgement, and every message is within 1.5 of the
+  twin.
+- **Twin diff.**
+  ```diff
+  -    if LINK.search(message.body) and not known or elsewhere:
+  +    if LINK.search(message.body) and (not known or elsewhere):
+  ```
+
+## tripcarbon: travel emissions, a stale constant (graded, with a tolerance)
+
+- **Defect.** `footprint.FACTORS` carries last year's factor for `rail` (0.03546 kg CO2e per passenger-km), where the
+  docstring and the README say the factors are the 2026 reporting year's (0.02857). Every rail leg is about 24% too
+  high, so a trip where rail is a large part of the footprint misses the audited figure; a trip with a short rail leg
+  beside a flight or hotel nights stays inside the tolerance, and a trip with no rail is right.
+- **Where.** `apps/tripcarbon/footprint.py`, `FACTORS`, the `rail` line.
+- **Share.** 14 of 46 audited trips (30%) are estimated more than 5% from the auditors' figure
+  (`data/audited.jsonl`, `audited_kg`), the tolerance the README states; 7 of its first 20 and 3 of its first 5. 27
+  of the 46 have a rail leg. The mean miss is 6.6% on the app and 1.3% on the twin. The audited figures are the
+  twin's within 2.5%, standing for the auditors' own distances.
+- **Twin diff.**
+  ```diff
+  -    "rail": 0.03546,
+  +    "rail": 0.02857,
+  ```
+
+## warranty: warranty decisions, an early return inside a loop
+
+- **Defect.** `claims.covered_faults` returns as soon as it meets a cosmetic fault, where the docstring and the
+  README say a cosmetic fault is not repaired but changes nothing else about the claim. Every fault logged after a
+  scratch or a dent is dropped: a covered fault after one is not repaired (the claim can come out `not_covered`),
+  and an excluding fault after one no longer refuses the claim. A claim whose cosmetic fault is logged last, or that
+  has none, is right, and so is every claim out of warranty.
+- **Where.** `apps/warranty/claims.py`, `covered_faults`, the line under `if fault in COSMETIC`.
+- **Share.** 14 of 46 hand-decided claims (30%) are decided otherwise than the senior technician
+  (`data/decided.jsonl`, `desk`), 13 of them on the outcome itself; 6 of its first 20 and 3 of its first 5.
+- **Twin diff.**
+  ```diff
+  -            return tuple(repair)
+  +            continue
+  ```
+
+## nutrilabel: nutrition labels, the wrong key behind a default
+
+- **Defect.** `label.label` looks the product's thresholds up by its shelf `category` (`soft drinks`, `juice`)
+  instead of its `form` (`food` or `drink`). No category is a key of the thresholds table, so the lookup's default,
+  the food thresholds, is used for every product, and a drink is judged per 100 ml against the food lines. The
+  docstring and the README say drinks have their own. Foods are right, and so is a drink whose four values fall in
+  the same band either way (water, diet drinks, cola's sugars).
+- **Where.** `apps/nutrilabel/label.py`, `label`, the line that sets `limits`.
+- **Share.** 11 of 44 spec sheets (25%) are labelled otherwise than the signed-off text (`data/approved.jsonl`,
+  `approved`); 20 of the 44 are drinks; 7 of its first 20 and 3 of its first 5.
+- **Twin diff.**
+  ```diff
+  -    limits = THRESHOLDS.get(spec["category"], FOOD)
+  +    limits = THRESHOLDS.get(spec["form"], FOOD)
+  ```
+
+## tillchange: till change, numbers sorted as strings
+
+- **Defect.** `change.make_change` walks the drawer's denominations with `sorted(drawer, reverse=True)`. The float
+  file keys them as strings (`"50"`, `"20"`, `"5"`), so they sort as text: `50, 5, 20, 2, 10, 1`, then the coins,
+  which do sort right as `0.50` down to `0.01`. Change of £10 or more is paid in £5 notes where a £10 or £20 note was
+  due; change under £10 is right.
+- **Where.** `apps/tillchange/change.py`, `make_change`, the `for` line.
+- **Share.** 14 of 46 replayed sales (30%) get change other than what the old till paid out
+  (`data/till_log.jsonl`, `change`): every sale with £10 or more in change; 5 of its first 20 and 1 of its first 5.
+- **Twin diff.**
+  ```diff
+  -    for denomination in sorted(drawer, reverse=True):
+  +    for denomination in sorted(drawer, key=pence, reverse=True):
   ```

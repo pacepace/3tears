@@ -50,8 +50,20 @@ class FineTests(unittest.TestCase):
             returns = Path(tmp) / "returns.jsonl"
             closures = Path(tmp) / "closures.jsonl"
             rows = [
-                {"loan_id": "a", "item_type": "magazine", "reader": "adult", "due": "2026-12-21", "returned": "2026-12-27"},
-                {"loan_id": "b", "item_type": "laptop", "reader": "adult", "due": "2026-03-02", "returned": "2026-03-03"},
+                {
+                    "loan_id": "a",
+                    "item_type": "magazine",
+                    "reader": "adult",
+                    "due": "2026-12-21",
+                    "returned": "2026-12-27",
+                },
+                {
+                    "loan_id": "b",
+                    "item_type": "laptop",
+                    "reader": "adult",
+                    "due": "2026-03-02",
+                    "returned": "2026-03-03",
+                },
             ]
             returns.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
             closures.write_text(json.dumps({"first": "2026-12-24", "last": "2026-12-28"}) + "\n", encoding="utf-8")

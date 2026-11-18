@@ -58,8 +58,13 @@ class DecisionTests(unittest.TestCase):
     def test_an_export(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "claims.jsonl"
-            row = {"claim_id": "a", "category": "dishwasher", "bought": "2025-02-01", "claimed": "2026-09-01",
-                   "faults": ["pump_failure"]}
+            row = {
+                "claim_id": "a",
+                "category": "dishwasher",
+                "bought": "2025-02-01",
+                "claimed": "2026-09-01",
+                "faults": ["pump_failure"],
+            }
             path.write_text(json.dumps(row) + "\n", encoding="utf-8")
             self.assertEqual(decide_file(path), {"a": Decision("accepted", ("pump_failure",))})
 

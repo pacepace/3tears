@@ -42,9 +42,7 @@ def departures_on(stop_times: dict[str, list[str]], day: date) -> list[datetime]
     return [datetime.combine(day, t, tzinfo=LOCAL) for t in times]
 
 
-def next_departures(
-    timetable: dict[str, dict[str, list[str]]], stop: str, asked: str, count: int = SHOWN
-) -> list[str]:
+def next_departures(timetable: dict[str, dict[str, list[str]]], stop: str, asked: str, count: int = SHOWN) -> list[str]:
     """The next ``count`` departures from ``stop`` at or after the moment ``asked``."""
     if stop not in timetable:
         raise KeyError(f"no stop called {stop!r} on the 412")

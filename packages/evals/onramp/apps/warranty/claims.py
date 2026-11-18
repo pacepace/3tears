@@ -28,8 +28,20 @@ from datetime import date
 from pathlib import Path
 
 COVERED = frozenset(
-    {"no_power", "battery_failure", "screen_failure", "motor_failure", "pump_failure", "door_seal", "overheating",
-     "noisy_bearing", "control_board", "heating_element", "button_failure", "leaking_seal"}
+    {
+        "no_power",
+        "battery_failure",
+        "screen_failure",
+        "motor_failure",
+        "pump_failure",
+        "door_seal",
+        "overheating",
+        "noisy_bearing",
+        "control_board",
+        "heating_element",
+        "button_failure",
+        "leaking_seal",
+    }
 )
 COSMETIC = frozenset({"scratch", "dent", "discolouration", "chipped_paint"})
 EXCLUDING = frozenset({"liquid_damage", "drop_damage", "unauthorised_repair", "power_surge"})

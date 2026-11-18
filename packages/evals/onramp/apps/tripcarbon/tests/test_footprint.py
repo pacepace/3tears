@@ -35,8 +35,11 @@ class TripTests(unittest.TestCase):
             path = Path(tmp) / "trips.jsonl"
             rows = [
                 {"trip_id": "a", "legs": [{"mode": "taxi", "km": 10}]},
-                {"trip_id": "b", "legs": [{"mode": "flight_domestic", "km": 500, "cabin": "economy"}],
-                 "hotel_nights": {"GB": 1}},
+                {
+                    "trip_id": "b",
+                    "legs": [{"mode": "flight_domestic", "km": 500, "cabin": "economy"}],
+                    "hotel_nights": {"GB": 1},
+                },
             ]
             path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
             self.assertEqual(footprint_file(path), {"a": 1.49, "b": 133.34})

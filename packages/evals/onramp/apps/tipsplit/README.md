@@ -13,8 +13,6 @@ How a bill is worked out (the module docstring of `split.py` has the same rules)
 3. The total is shared as evenly as whole pennies allow; when it doesn't divide exactly, the diners first on the bill
    pay a penny more each.
 
-So a £100.00 bill with a 10% tip and a £20.00 voucher is £90.00 in all: £45.00 each for two diners.
-
 `data/terminal.jsonl` is a sample of tables from the card terminals at the Leith restaurant last month, before this
 step was moved into the app. `charged` on each line is what the terminals charged each diner, worked by the same rules
 by the floor manager. The app should charge every diner exactly that.
