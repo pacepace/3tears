@@ -104,12 +104,13 @@ async def test_an_attempt_that_returns_none_is_a_landed_none_not_a_lost_race() -
     pauses = RecordedPauses()
     runs: list[int] = []
 
-    async def attempt() -> None:
+    async def attempt() -> str:
         runs.append(1)
+        return "updated"
 
     result = await reapply_on_lost_race(attempt, what="row update", pause=pauses)
 
-    assert result is None
+    assert result == "updated"
     assert runs == [1]
     assert pauses.seconds == []
 

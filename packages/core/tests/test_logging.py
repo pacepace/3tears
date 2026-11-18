@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from io import StringIO
 
 import pytest
@@ -18,7 +19,7 @@ from threetears.observe.logging import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_context():
+def _clean_context() -> Iterator[None]:
     """Ensure context is clean before and after each test."""
     clear_context()
     yield

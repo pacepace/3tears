@@ -6,6 +6,25 @@ packages (bumped in lock-step).
 
 ## Unreleased
 
+### core: a registry and a collection's `l3_pool` say what they accept: `L3PoolLike`
+
+`CollectionRegistry.configure`, `register` and `bind_table` and a collection's `l3_pool` take
+`threetears.core.backends.protocol.L3PoolLike`: a `DurableStore` (a `SqlL3Backend`, or a non-SQL store such as a git
+backend), held as given, or a raw asyncpg-shaped pool (`RawL3Pool`: asyncpg's `Pool`, `NatsProxyL3Backend`), wrapped
+in a `SqlL3Backend`. That is what they always accepted at run time; they were typed `L3Backend` only, so a type checker
+refused a `DurableStore` or a raw pool handed to them. `l3_pool` is now a property whose setter takes `L3PoolLike` and
+holds it unchanged; reading it still answers the raw-SQL surface. Nothing
+changes at run time.
+
+### nats: `NatsClientLike`, what a holder of the whole client types it by; `FakeNatsClient` is one
+
+`threetears.nats.kv.NatsClientLike` is the client's surface a consumer holding one client uses: declaring and opening
+KV buckets, a typed or raw publish, a typed subscription, a JetStream publish, a change log, `namespace`, and the
+reconnect hook. `NatsClient` satisfies it, and so does `threetears.core.testing.kv.FakeNatsClient`, so a registry or
+holder typed by it takes the fake in a test with no cast or ignore. The fake gains what that needed: `namespace`
+(a `namespace=` argument, default `"test"`), `publish_raw` (delivered to typed subscribers, as the raw positional
+`publish` is) and `jetstream_publish` (kept in `jetstream_published`).
+
 ### evals: a completion client's `model_name` is read-only to the engine
 
 `BoundCompletionClient`, `PricedCompletion` and `VariationLLM` declare `model_name` as a read-only property instead of

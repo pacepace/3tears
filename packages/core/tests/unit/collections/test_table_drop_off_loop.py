@@ -142,7 +142,7 @@ def test_delete_all_is_reached_only_from_a_table_drop() -> None:
     """Flips if anything but a table drop reaches SQLiteBackend.delete_all, the L1 table's one whole DELETE (declared
     l1_table_drop, Pace 2026-11-15): only BaseCollection._drop_l1_table_on_a_thread names it, and only
     BaseCollection.drop_cached_table starts that."""
-    assert SQLiteBackend.delete_all
+    assert callable(SQLiteBackend.delete_all)
     assert _functions_naming("delete_all") == {"base.py:BaseCollection._drop_l1_table_on_a_thread"}
     assert _functions_naming("_drop_l1_table_on_a_thread") == {"base.py:BaseCollection.drop_cached_table"}
 

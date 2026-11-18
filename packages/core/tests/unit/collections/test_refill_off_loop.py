@@ -107,7 +107,8 @@ def _schema() -> TableSchema:
             f"c{column}",
             _KINDS[column % 5],
             nullable=True,
-            **({"precision": 12, "scale": 6} if _KINDS[column % 5] == NUMERIC_TYPE else {}),
+            precision=12 if _KINDS[column % 5] == NUMERIC_TYPE else None,
+            scale=6 if _KINDS[column % 5] == NUMERIC_TYPE else None,
         )
         for column in range(_WIDTH)
     ]
@@ -255,7 +256,8 @@ class _Paged:
         )
 
     async def fetch(self, query: str, *params: Any) -> list[dict[str, Any]]:
-        return (await self.fetch_page(query, *params)).rows
+        rows: list[dict[str, Any]] = (await self.fetch_page(query, *params)).rows  # fetch_page's: dicts
+        return rows
 
 
 class TestTheLoopRunsWhileARefillReadsItsRows:

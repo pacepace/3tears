@@ -106,7 +106,11 @@ async def test_largest_and_smallest_merge_across_batches_as_the_hand_written_max
     answer replaces a larger (smaller) one when merged, or a MAX of no row is other than None, as SQL's."""
     customers = ["c0", "c1", "c3", "c4", "c9"]
     reader = _Recording(db)
-    aggregates = {"newest": Max('t."created"'), "fewest": Min('t."input_tokens"'), "n": Count('t."agent_id"')}
+    aggregates: dict[str, Count | Sum | Max | Min] = {
+        "newest": Max('t."created"'),
+        "fewest": Min('t."input_tokens"'),
+        "n": Count('t."agent_id"'),
+    }
     grouped = await aggregate_keyed(
         reader, "events", aggregates=aggregates, by={"customer_id": AnyOf(customers)}, group=["kind"], batch=2
     )

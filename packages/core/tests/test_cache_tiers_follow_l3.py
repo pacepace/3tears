@@ -210,7 +210,7 @@ async def _replica(nats: FakeNatsClient | None, store: _Store) -> _Tiered:
         registry.configure(l1_backend=l1, l2_client=nats, l3_pool=object(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
     collection = _Tiered(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), store)
     if nats is not None:
-        await registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+        await registry.start_invalidation_listener(nats)
     return collection
 
 
@@ -447,7 +447,7 @@ async def _buffered_replica(nats: FakeNatsClient, store: _Store) -> _Buffered:
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=nats, l3_pool=object(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
     collection = _Buffered(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), store)
-    await registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(nats)
     return collection
 
 

@@ -25,7 +25,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequen
 from contextlib import AbstractContextManager, aclosing, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Literal, TypeVar, cast
 from uuid import uuid7
 
 from sqlalchemy import Column, Float, MetaData, String, Table, Text
@@ -34,7 +34,7 @@ from threetears.interfaces.keyed.rows import KeyColumn, KeyColumns
 from threetears.core._bridge import fire_and_forget, sync_await
 from threetears.core.loop_turns import STEP_ITEMS, LoopTurns, called_in_turns, stepped
 from threetears.core.backends.broker_generation import naming_changed_rows
-from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend
+from threetears.core.backends.protocol import L3_RAIL_ROW_CAP, L3Backend, L3PoolLike
 from threetears.core.cache import MISSING
 from threetears.core.cache.base import NonFiniteNumericError
 from threetears.core import keyed
@@ -1120,6 +1120,34 @@ class BaseCollection(ABC, Generic[EntityT]):
         :rtype: bool
         """
         return self._nats_client is not None
+
+    @property
+    def l3_pool(self) -> L3Backend | None:
+        """this collection's L3, read as the raw-SQL surface (see the class's ``l3_pool`` ivar).
+
+        Held as it was given (the setter). What the registry resolves is a ``SqlL3Backend`` or another
+        :class:`~threetears.core.backends.protocol.DurableStore`; a raw pool assigned directly stays
+        raw, and the schema-backed CRUD wraps it on first use.
+
+        :return: the L3 held, or ``None`` when the collection has none
+        :rtype: L3Backend | None
+        """
+        return cast("L3Backend | None", self._l3_pool)
+
+    @l3_pool.setter
+    def l3_pool(self, pool: L3PoolLike | None) -> None:
+        """hold ``pool`` as this collection's L3, unchanged.
+
+        WHY a property: the registry hands a resolved backend, while a subclass or a test harness
+        assigns a raw asyncpg-shaped pool or a ``DurableStore`` straight here, and both run. The
+        setter states that wider type; the getter the raw-SQL surface callers reach for.
+
+        :param pool: a ``DurableStore``, a raw asyncpg-shaped pool, or ``None``
+        :ptype pool: L3PoolLike | None
+        :return: nothing
+        :rtype: None
+        """
+        self._l3_pool: L3PoolLike | None = pool
 
     @property
     def required_l3_pool(self) -> L3Backend:

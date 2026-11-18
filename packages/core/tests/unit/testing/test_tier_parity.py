@@ -51,7 +51,7 @@ def _schema(name: str, precision: int) -> TableSchema:
 class _Exact(SchemaBackedCollection[_Row]):
     """every tier hands back what was written."""
 
-    schema: ClassVar[TableSchema] = _schema("tier_exact", 12)
+    schema = _schema("tier_exact", 12)
     entity_class = _Row
 
     @property
@@ -62,13 +62,13 @@ class _Exact(SchemaBackedCollection[_Row]):
 class _TooWide(_Exact):
     """a NUMERIC wider than a 64-bit integer holds at scale."""
 
-    schema: ClassVar[TableSchema] = _schema("tier_too_wide", 20)
+    schema = _schema("tier_too_wide", 20)
 
 
 class _Widest(_Exact):
     """a NUMERIC as wide as the DuckDB L1 holds, wider than decimal's default 28-digit context."""
 
-    schema: ClassVar[TableSchema] = TableSchema(
+    schema = TableSchema(
         name="tier_widest",
         primary_key="id",
         columns=[Column("id", UUID_TYPE), Column("amount", NUMERIC_TYPE, precision=38, scale=12)],
@@ -85,7 +85,7 @@ class _WidestUncached(_Widest):
 class _UntypedCodec(_Exact):
     """an L2 codec that hands back JSON's own types: a UUID as text, a Decimal as text."""
 
-    schema: ClassVar[TableSchema] = _schema("tier_untyped", 12)
+    schema = _schema("tier_untyped", 12)
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
         decoded: dict[str, Any] = json.loads(data)
@@ -95,7 +95,7 @@ class _UntypedCodec(_Exact):
 class _FloatBlindCodec(_Exact):
     """an L2 codec that makes a Decimal only of a JSON string, as 0.78.0's did: a JSON number stays a float."""
 
-    schema: ClassVar[TableSchema] = _schema("tier_float_blind", 12)
+    schema = _schema("tier_float_blind", 12)
 
     def deserialize(self, data: bytes) -> dict[str, Any]:
         decoded: dict[str, Any] = super().deserialize(data)

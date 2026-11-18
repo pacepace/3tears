@@ -243,7 +243,7 @@ async def test_sql_durable_store_generates_expected_sql() -> None:
     # whose key the store does not know, is refused unsent (it was one unbounded SELECT *)
     pool = _RecordingPool(rows=[{"id": "e1", "kind": "gadget"}])
     backend = SqlL3Backend(pool)
-    backend.register_schema("widgets", _WIDGETS)  # type: ignore[arg-type]
+    backend.register_schema("widgets", _WIDGETS)
     assert await backend.scan("widgets", {"kind": "gadget"}) == [{"id": "e1", "kind": "gadget"}]
     sql, params = pool.calls[-1]
     assert sql.startswith('SELECT * FROM "widgets" WHERE "kind" = $1') and 'ORDER BY "id"' in sql and "LIMIT" in sql
@@ -263,14 +263,14 @@ async def test_sql_l3_backend_rejects_injecting_identifiers() -> None:
     """a quote in a table or column name must not slip into generated SQL: the call refuses it unsent."""
     pool = _RecordingPool()
     backend = SqlL3Backend(pool)
-    backend.register_schema("widgets", _WIDGETS)  # type: ignore[arg-type]
+    backend.register_schema("widgets", _WIDGETS)
     await backend.scan("widgets", {"kind": "x"})
     assert pool.calls[-1][0].startswith('SELECT * FROM "widgets" WHERE "kind" = $1')
 
     hostile = 'id"; DROP TABLE x; --'
     pool = _RecordingPool()
     backend = SqlL3Backend(pool)
-    backend.register_schema("widgets", _WIDGETS)  # type: ignore[arg-type]
+    backend.register_schema("widgets", _WIDGETS)
     with pytest.raises(ValueError):
         await backend.scan("widgets", {hostile: 1})
     with pytest.raises(ValueError):

@@ -20,6 +20,7 @@ from types import TracebackType
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from threetears.core.collections import CallerTransaction
 from threetears.core.collections.base import BaseCollection
@@ -75,7 +76,9 @@ class _SuspendingNats(FakeNatsClient):
         self.first_publish_started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         if not self.first_publish_started.is_set():
             self.first_publish_started.set()
             await self.release.wait()
@@ -100,7 +103,7 @@ class _Conn:
 def _rows(nats: FakeNatsClient) -> _Rows:
     registry = CollectionRegistry()
     registry.configure(l3_pool=object(), kv_key_scope="bypass-principal")  # type: ignore[arg-type]
-    return _Rows(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), nats_client=nats)  # type: ignore[arg-type]
+    return _Rows(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), nats_client=nats)
 
 
 def _evicted(nats: FakeNatsClient) -> list[str]:

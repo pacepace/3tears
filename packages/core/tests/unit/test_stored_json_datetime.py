@@ -102,6 +102,9 @@ class TestTheOneForm:
             def dst(self, dt: datetime | None) -> timedelta | None:
                 return None
 
+            def tzname(self, dt: datetime | None) -> str | None:
+                return None
+
         with pytest.raises(ValueError, match="naive datetime"):
             json_datetime(datetime(2026, 10, 1, 12, 30, tzinfo=NoOffset()))
 

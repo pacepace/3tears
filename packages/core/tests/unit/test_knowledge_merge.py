@@ -15,7 +15,7 @@ implementation; these tests own the pure-function coverage there.
 
 from __future__ import annotations
 
-from uuid import uuid7
+from uuid import UUID, uuid7
 
 import pytest
 from pydantic import ValidationError
@@ -280,7 +280,7 @@ class TestCycleRejectionAtWrite:
     def test_overlong_chain_rejected(self) -> None:
         # build a chain longer than the depth bound.
         ids = [uuid7() for _ in range(MAX_SHADOW_CHAIN_DEPTH + 3)]
-        origin_of: dict = {ids[0]: None}
+        origin_of: dict[UUID, UUID | None] = {ids[0]: None}
         for i in range(1, len(ids)):
             origin_of[ids[i]] = ids[i - 1]
         new_id = uuid7()

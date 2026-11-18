@@ -37,7 +37,7 @@ from threetears.core.security.proxy_signer import ProxyAssertionSigner
 from threetears.core.security.sandbox import PathSandbox
 from threetears.core.security.secret_refs import resolve_secret
 
-_KEY = b"0" * 32
+_KEY = SecretStr("0" * 32)
 
 
 def _sandbox() -> PathSandbox:

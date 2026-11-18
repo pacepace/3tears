@@ -387,16 +387,16 @@ def test_every_recorded_case_is_still_run() -> None:
     assert sorted(_recorded()) == sorted(_CASES)
 
 
-def _sent(statements: list[tuple[str, Sequence[Any]]]) -> list[list[str]]:
+def _sent(statements: Sequence[tuple[str, Sequence[Any]]]) -> list[list[str]]:
     return [[sql, repr(tuple(params))] for sql, params in statements]
 
 
-def _builders() -> dict[str, list[tuple[str, Sequence[Any]]]]:
+def _builders() -> dict[str, Sequence[tuple[str, Sequence[Any]]]]:
     """each builder of :mod:`threetears.interfaces.keyed` a caller runs on its own connection, given what the runner
     of a recorded case was given: it writes the statements that runner sent."""
     cursor = keyed.keyset_cursor(_ORDER, {"name": "n", "id": _ID})
     visible = [keyed.exists_keyed("grants", on={"doc": "id"}, by={"who": "me", "role": AnyOf(["r"])})]
-    rows_page = {
+    rows_page: dict[str, Any] = {
         "columns": ("name", "id"),
         "by": {"tenant": "x"},
         "order": _ORDER,

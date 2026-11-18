@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import MetaData
 
 from threetears.core.cache.duckdb import DuckDBBackend
@@ -75,7 +76,9 @@ class _CountingNats(FakeNatsClient):
         self.in_flight = 0
         self.most = 0
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         self.in_flight += 1
         self.most = max(self.most, self.in_flight)
         await asyncio.sleep(0)

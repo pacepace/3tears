@@ -168,7 +168,7 @@ async def _replica(cls: type[_Plain], nats: _Nats, store: _Store) -> _Plain:
     registry = CollectionRegistry()
     registry.configure(l1_backend=l1, l2_client=nats, l3_pool=object(), kv_key_scope=_SCOPE)  # type: ignore[arg-type]
     collection = cls(registry, DefaultCoreConfig(collection_flush="ALWAYS", collection_flush_tables=""), store)
-    await registry.start_invalidation_listener(nats)  # type: ignore[arg-type]
+    await registry.start_invalidation_listener(nats)
     return collection
 
 

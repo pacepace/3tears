@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import duckdb
+import duckdb.func
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
 import pytest
@@ -688,7 +689,9 @@ def test_a_fenced_distinct_step_keeps_a_reader_s_costly_test_above_it(conn: duck
         handed.append(len(values))
         return pc.utf8_capitalize(values)
 
-    conn.create_function("title_of", title_of, [duckdb.sqltype("VARCHAR")], duckdb.sqltype("VARCHAR"), type="arrow")
+    conn.create_function(
+        "title_of", title_of, [duckdb.sqltype("VARCHAR")], duckdb.sqltype("VARCHAR"), type=duckdb.func.ARROW
+    )
     rows = 30_000
     conn.execute(f"CREATE TABLE names AS SELECT ['ann', 'bob', 'cy'][(i % 3) + 1] AS name FROM range({rows}) AS r(i)")
     label = [Selected("title_of(t.name)", "label")]

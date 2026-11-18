@@ -119,7 +119,7 @@ class _StubCollection(BaseCollection[_StubEntity]):
         del entity_id
         return None
 
-    async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None) -> int:
+    async def save_to_store(self, data: dict[str, Any], original_timestamp: Any = None, *, conn: Any = None) -> int:
         del data, original_timestamp
         return 1
 

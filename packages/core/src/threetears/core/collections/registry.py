@@ -43,6 +43,7 @@ from threetears.observe.metrics import counter, gauge
 
 if TYPE_CHECKING:
     from threetears.core.backends import L3Backend
+    from threetears.core.backends.protocol import L3PoolLike
     from threetears.core.collections.generation import GenerationSource
 
     # annotation-only. `Subjects` above is a genuine runtime use, but it lives
@@ -147,7 +148,7 @@ def _tables_behind() -> Any:
     )
 
 
-def _as_l3_backend(l3_pool: Any) -> Any:
+def _as_l3_backend(l3_pool: L3PoolLike | None) -> L3Backend | DurableStore | None:
     """normalize a raw L3 transport to a :class:`DurableStore`-capable backend.
 
     The collection CRUD lifecycle routes through the structured
@@ -160,9 +161,9 @@ def _as_l3_backend(l3_pool: Any) -> Any:
     structured ops (which generate SQL). ``None`` passes through.
 
     :param l3_pool: a raw transport, a ``DurableStore`` backend, or ``None``.
-    :ptype l3_pool: Any
+    :ptype l3_pool: L3PoolLike | None
     :return: a ``DurableStore``-capable backend, or ``None``.
-    :rtype: Any
+    :rtype: L3Backend | DurableStore | None
     """
     if l3_pool is None:
         return None
@@ -447,7 +448,7 @@ class CollectionRegistry:
     def __init__(self) -> None:
         self._l1_backend: Any = None
         self._l2_client: Any = None
-        self._l3_pool: L3Backend | None = None
+        self._l3_pool: L3Backend | DurableStore | None = None
         # The leading segment of every L2 key this registry's collections write
         # (``{scope}.{table}.{body}``). One per registry, because a registry is
         # the unit a principal wires: the scope is the sharing boundary, so every
@@ -515,7 +516,7 @@ class CollectionRegistry:
         self,
         l1_backend: Any = None,
         l2_client: Any = None,
-        l3_pool: L3Backend | None = None,
+        l3_pool: L3PoolLike | None = None,
         kv_key_scope: str | None = None,
         l2_create_if_missing: bool | None = None,
     ) -> None:
@@ -540,8 +541,10 @@ class CollectionRegistry:
         :ptype l1_backend: Any
         :param l2_client: default NATS client backing L2, or ``None`` to leave it unchanged
         :ptype l2_client: Any
-        :param l3_pool: default durable L3 backend, or ``None`` to leave it unchanged
-        :ptype l3_pool: L3Backend | None
+        :param l3_pool: default durable L3, or ``None`` to leave it unchanged. a ``DurableStore``
+            (``SqlL3Backend``, a git store) is held as given; a raw asyncpg-shaped pool (asyncpg's
+            ``Pool``, ``NatsProxyL3Backend``) is wrapped in a ``SqlL3Backend`` (:func:`_as_l3_backend`)
+        :ptype l3_pool: L3PoolLike | None
         :param kv_key_scope: the leading segment of every L2 key this registry's collections
             write, from :func:`threetears.nats.kv_key_scope_for`; ``None`` leaves it unchanged
         :ptype kv_key_scope: str | None
@@ -631,7 +634,7 @@ class CollectionRegistry:
         *,
         l1_backend: Any = None,
         l2_client: Any = None,
-        l3_pool: L3Backend | None = None,
+        l3_pool: L3PoolLike | None = None,
     ) -> None:
         """Register a collection instance with optional per-collection overrides.
 
@@ -642,8 +645,8 @@ class CollectionRegistry:
         :ptype l1_backend: Any
         :param l2_client: L2 client override for this table
         :ptype l2_client: Any
-        :param l3_pool: L3 pool override for this table
-        :ptype l3_pool: L3Backend | None
+        :param l3_pool: L3 override for this table, held or wrapped as :meth:`configure` says
+        :ptype l3_pool: L3PoolLike | None
         :return: nothing
         :rtype: None
         :raises ValueError: when the registry already holds a collection for the table that
@@ -683,7 +686,7 @@ class CollectionRegistry:
         *,
         l1_backend: Any = None,
         l2_client: Any = None,
-        l3_pool: L3Backend | None = None,
+        l3_pool: L3PoolLike | None = None,
     ) -> None:
         """pin per-table backend overrides BEFORE the Collection is constructed.
 
@@ -713,8 +716,8 @@ class CollectionRegistry:
         :param l2_client: L2 client override for this table. requires the registry to
             already carry a ``kv_key_scope`` -- see the raise below
         :ptype l2_client: Any
-        :param l3_pool: L3 pool override for this table
-        :ptype l3_pool: Any
+        :param l3_pool: L3 override for this table, held or wrapped as :meth:`configure` says
+        :ptype l3_pool: L3PoolLike | None
         :return: nothing
         :rtype: None
         :raises L2ScopeNotConfiguredError: if ``l2_client`` is given while this registry

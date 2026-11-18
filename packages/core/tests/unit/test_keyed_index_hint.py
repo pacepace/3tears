@@ -41,6 +41,8 @@ from threetears.core.keyed import (
 from threetears.interfaces.keyed.keys import stated_literals
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
+from packages.core.tests.optional_support import present
+
 #: a table named for this module alone, so no other declaration's indexes stand beside its own
 _CONV = "o88_hint_conversations"
 
@@ -197,8 +199,8 @@ class TestServingIndex:
         """Flips if a read pinning the agent sorted by status, or pinning the agent and a status (a pinned sort column
         orders nothing), is served by anything but (agent_id, status, conversation_id), or one pinning the agent, a
         user and a status by anything but the index holding all three."""
-        assert serving_index(_CONV, {"agent_id": 1}, _BY_STATUS).name == "o88_conv_agent_status"
-        assert serving_index(_CONV, {"agent_id": 1, "status": "a"}, _BY_STATUS).name == "o88_conv_agent_status"
+        assert present(serving_index(_CONV, {"agent_id": 1}, _BY_STATUS)).name == "o88_conv_agent_status"
+        assert present(serving_index(_CONV, {"agent_id": 1, "status": "a"}, _BY_STATUS)).name == "o88_conv_agent_status"
         held = serving_index(_CONV, {"agent_id": 1, "user_id": 2, "status": "a"}, _BY_ID)
         assert held is not None and held.name == "o88_conv_agent_user_status"
 
@@ -476,7 +478,7 @@ class TestACollatedOrGuardedIndexServesWhatItCan:
         )
         assert ordered is not None and ordered.name == "d7_refs_created", ordered
         assert serving_index(_REFS, {"agent_id": 1, "channel_type": "web"}, [Sort("conversation_ref")]) is None or (
-            serving_index(_REFS, {"agent_id": 1, "channel_type": "web"}, [Sort("conversation_ref")]).name
+            present(serving_index(_REFS, {"agent_id": 1, "channel_type": "web"}, [Sort("conversation_ref")])).name
             == "d7_refs_created"
         )
 

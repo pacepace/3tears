@@ -87,7 +87,7 @@ class _Row(BaseEntity):
 class _Every(DeclaredTableCollection[_Row]):
     """a collection of every column type that writes no field-type map and no column list."""
 
-    schema: ClassVar[TableSchema] = _SCHEMA
+    schema = _SCHEMA
 
     @property
     def entity_class(self) -> type[_Row]:
@@ -195,7 +195,7 @@ class TestACopyThatDisagreesIsRefused:
 
     def test_an_agreeing_field_type_map_and_instants_are_accepted(self) -> None:
         class _Agreeing(_Every):
-            schema: ClassVar[TableSchema] = _SCHEMA
+            schema = _SCHEMA
             field_types: ClassVar[dict[str, Any]] = _TYPES
             datetime_columns: ClassVar[frozenset[str]] = frozenset({"seen_at", "date_created", "date_updated"})
 
@@ -259,11 +259,11 @@ class TestACopyThatDisagreesIsRefused:
         with pytest.raises(TypeError, match="'price' is declared <class 'float'>"):
 
             class _Generated(SchemaBackedCollection[_Row]):
-                schema: ClassVar[TableSchema] = _SCHEMA
+                schema = _SCHEMA
                 field_types: ClassVar[dict[str, Any]] = {**_TYPES, "price": float}
 
         with pytest.raises(TypeError, match="declares datetime_columns"):
 
             class _GeneratedInstants(SchemaBackedCollection[_Row]):
-                schema: ClassVar[TableSchema] = _SCHEMA
+                schema = _SCHEMA
                 datetime_columns: ClassVar[frozenset[str]] = frozenset({"seen_at"})

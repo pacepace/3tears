@@ -21,7 +21,7 @@ from dataclasses import dataclass
 import asyncpg
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
+from packages.core.tests.dialect_support import pg_dialect
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from threetears.core.collections.schema_backed import BIGINT_TYPE, STRING_TYPE, Column, Index, TableSchema
@@ -61,9 +61,9 @@ async def seeded(db_container: str) -> AsyncIterator[_Seeded]:
         await conn.execute(f"SET search_path = {schema}")
         for name, ranged in (("ranged", True), ("hashed", False)):
             table = _schema(name, ranged=ranged).to_sqlalchemy_table(sa.MetaData())
-            await conn.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))
+            await conn.execute(str(CreateTable(table).compile(dialect=pg_dialect())))
             for index in table.indexes:
-                await conn.execute(str(CreateIndex(index).compile(dialect=postgresql.dialect())))
+                await conn.execute(str(CreateIndex(index).compile(dialect=pg_dialect())))
             await conn.execute(
                 f"INSERT INTO {name} SELECT 't' || g, g FROM generate_series(1, $1) g",  # noqa: S608
                 _ROWS,
@@ -108,4 +108,4 @@ class TestARangeReadOfAnIndexLedByItsColumn:
         """Flips if a column declared ``asc`` is rendered without ``ASC`` (YugabyteDB would hash it)."""
         table = _schema("ranged", ranged=True).to_sqlalchemy_table(sa.MetaData())
         (index,) = table.indexes
-        assert "(expires_at ASC)" in str(CreateIndex(index).compile(dialect=postgresql.dialect()))
+        assert "(expires_at ASC)" in str(CreateIndex(index).compile(dialect=pg_dialect()))

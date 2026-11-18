@@ -53,7 +53,6 @@ async def test_a_follower_that_heard_no_rows_drops_the_table() -> None:
     tokens = await announce_unheard_writes(_Source(), ["group_members"])
     verdict = _settle(marks, "group_members", tokens["group_members"])
     assert verdict is GenerationVerdict.MISSED
-    assert verdict is not GenerationVerdict.CURRENT
 
 
 async def test_every_table_is_attempted_and_the_failures_are_raised_together() -> None:

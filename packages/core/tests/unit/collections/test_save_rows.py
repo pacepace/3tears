@@ -44,6 +44,8 @@ from threetears.core.config import DefaultCoreConfig
 from threetears.core.entities.base import BaseEntity
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
+from packages.core.tests.durable_support import ConnOnlyPool
+
 SCHEMA = TableSchema(
     name="results",
     primary_key=("office_key", "geo_id"),
@@ -92,7 +94,7 @@ class _Conn:
         return f"INSERT 0 {sql.count('),(') + 1}"
 
 
-class _Pool:
+class _Pool(ConnOnlyPool):
     """a raw transport the collection wraps as its SQL store; writes go to the caller's connection."""
 
 
@@ -717,7 +719,9 @@ async def test_a_copy_naming_a_key_already_held_fails_the_whole_transaction() ->
     assert conn.rolled_back
 
 
-async def test_every_row_copied_leaves_l1_now_and_is_settled_once_when_the_transaction_ends() -> None:
+async def test_every_row_copied_leaves_l1_now_and_is_settled_once_when_the_transaction_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     metadata = MetaData()
     SCHEMA.to_sqlalchemy_table(metadata)
     l1 = SQLiteBackend(db_name=f"save_rows_copy_{uuid4().hex[:8]}")
@@ -735,7 +739,7 @@ async def test_every_row_copied_leaves_l1_now_and_is_settled_once_when_the_trans
     async def settle(keys: Any) -> None:
         settled.append(list(keys))
 
-    collection.invalidate_cache_many = settle
+    monkeypatch.setattr(collection, "invalidate_cache_many", settle)
     async with CallerTransaction(conn):
         await collection.save_rows(_rows(2), conn=conn, copy=True)
         assert not collection.exists_in_cache_sync(("sn_NC1", "00000"))
@@ -781,7 +785,7 @@ async def test_a_copy_over_the_rail_goes_on_the_caller_s_transaction() -> None:
 # -- the bulk writes evict their keys from L1 in one write ---------------------------------------------
 
 
-def _cached_results(rows: int) -> tuple[Any, SQLiteBackend]:
+def _cached_results(rows: int, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, SQLiteBackend]:
     """a results collection over a real SQLite L1 that holds ``rows`` of its rows."""
     metadata = MetaData()
     SCHEMA.to_sqlalchemy_table(metadata)
@@ -799,12 +803,14 @@ def _cached_results(rows: int) -> tuple[Any, SQLiteBackend]:
         pass
 
     # the settle evicts again as the transaction ends; these tests pin the write's own eviction
-    collection.invalidate_cache_many = settle
+    monkeypatch.setattr(collection, "invalidate_cache_many", settle)
     return collection, l1
 
 
-async def test_save_rows_evicts_every_key_from_l1_in_one_write(l1_statements: Any) -> None:
-    collection, l1 = _cached_results(40)
+async def test_save_rows_evicts_every_key_from_l1_in_one_write(
+    monkeypatch: pytest.MonkeyPatch, l1_statements: Any
+) -> None:
+    collection, l1 = _cached_results(40, monkeypatch)
     conn = _Conn()
     statements = l1_statements(l1)
     async with CallerTransaction(conn):
@@ -814,8 +820,10 @@ async def test_save_rows_evicts_every_key_from_l1_in_one_write(l1_statements: An
     assert [collection.exists_in_cache_sync(("sn_NC1", row["geo_id"])) for row in _rows(40)] == [False] * 40
 
 
-async def test_delete_rows_evicts_every_key_from_l1_in_one_write(l1_statements: Any) -> None:
-    collection, l1 = _cached_results(40)
+async def test_delete_rows_evicts_every_key_from_l1_in_one_write(
+    monkeypatch: pytest.MonkeyPatch, l1_statements: Any
+) -> None:
+    collection, l1 = _cached_results(40, monkeypatch)
     conn = _Conn()
     keys = [("sn_NC1", row["geo_id"]) for row in _rows(40)]
     statements = l1_statements(l1)

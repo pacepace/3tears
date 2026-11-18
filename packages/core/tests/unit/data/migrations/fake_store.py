@@ -267,6 +267,20 @@ class FakeLockingPool:
         self.direct.append(sql)
         return []
 
+    async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
+        """
+        record a single-row query sent to the pool itself.
+
+        :param sql: SQL text
+        :ptype sql: str
+        :param params: positional parameters
+        :ptype params: Any
+        :return: no row
+        :rtype: dict[str, Any] | None
+        """
+        self.direct.append(sql)
+        return None
+
     def next_applied(self) -> int:
         """
         return the next ``date_applied`` stamp.

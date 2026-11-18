@@ -9,6 +9,8 @@ it themselves, and so can any fixture that starts its own container.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from threetears.core.testing.containers import ContainerStartStagger
@@ -138,12 +140,12 @@ def test_an_external_database_skips_the_container_and_the_wait(monkeypatch: pyte
     monkeypatch.setattr(services, "stagger_container_start", must_not_wait)
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw5")
     monkeypatch.setenv("THREETEARS_TEST_POSTGRES_URL", "postgresql://ci/db")
-    gen = fixtures.db_container.__wrapped__("unused-image")
+    gen = inspect.unwrap(fixtures.db_container)("unused-image")
     assert next(gen) == "postgresql://ci/db"
     monkeypatch.setenv("THREETEARS_TEST_NATS_URL", "nats://ci:4222")
-    assert next(fixtures.nats_container.__wrapped__(True, True)) == "nats://ci:4222"
+    assert next(inspect.unwrap(fixtures.nats_container)(True, True)) == "nats://ci:4222"
     monkeypatch.setenv("THREETEARS_TEST_SEARXNG_URL", "http://searxng.ci/")
-    assert next(fixtures.searxng_container.__wrapped__()) == "http://searxng.ci"
+    assert next(inspect.unwrap(fixtures.searxng_container)()) == "http://searxng.ci"
 
 
 def test_the_stagger_setting_name_is_exported() -> None:

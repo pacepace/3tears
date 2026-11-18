@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from threetears.core.security import (
     DelegatedTokenError,
@@ -29,7 +31,13 @@ _POD, _POD_PUB = generate_signing_keypair()
 _BODY = canonical_call_hash("l3.query", {"sql": "select 1"}, "corr-1")
 
 
-def _delegated(*, doors=("l3.query",), holder=_POD_PUB, deadline=None, now=None) -> str:
+def _delegated(
+    *,
+    doors: Iterable[str] = ("l3.query",),
+    holder: Ed25519PublicKey = _POD_PUB,
+    deadline: int | None = None,
+    now: int | None = None,
+) -> str:
     issued = int(time.time()) if now is None else now
     return mint_delegated_token(
         signing_key=_REGISTRY,
@@ -46,7 +54,7 @@ def _delegated(*, doors=("l3.query",), holder=_POD_PUB, deadline=None, now=None)
     )
 
 
-def _proof(token: str, *, key=_POD, body: str = _BODY, nonce: str = "n-1") -> str:
+def _proof(token: str, *, key: Ed25519PrivateKey = _POD, body: str = _BODY, nonce: str = "n-1") -> str:
     return make_pop_proof(
         holder_key=key, access_token_hash=access_token_hash(token), body_hash=body, nonce=nonce, iat=int(time.time())
     )

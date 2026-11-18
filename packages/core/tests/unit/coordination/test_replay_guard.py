@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,10 +29,12 @@ import pytest
 
 from threetears.core.coordination import ReplayGuard
 from threetears.core.coordination import replay_guard as replay_guard_module
+from threetears.core.coordination.replay_anchor import ReplayAnchor
 from threetears.core.coordination.replay_guard import CLOCK_DRIFT_ALLOWANCE
 from threetears.core.security import ISSUE_TIME_FUTURE_TOLERANCE
 from threetears.core.testing import kv as fake_kv_module
 from threetears.nats import KvBucketNotFoundError, KvError
+from threetears.nats.kv import KvBucketLike, KvDeclaringClient
 
 from threetears.core.testing.kv import FakeNatsClient
 
@@ -49,11 +52,21 @@ def _later() -> datetime:
     return datetime.now(UTC) + 2 * _REACH
 
 
-def _guard(client: object, *, bucket_name: str = "pop_nonces", ttl_seconds: int = 120) -> ReplayGuard:
+def _unchecked(fn: Callable[..., object]) -> Callable[..., object]:
+    """call ``fn`` with what the checker refuses, on purpose: the call is the refusal under test."""
+    return fn
+
+
+async def _handed_out(bind: Callable[[], Awaitable[object]]) -> object:
+    """what ``bind`` hands its caller: the test is that it is nothing."""
+    return await bind()
+
+
+def _guard(client: KvDeclaringClient, *, bucket_name: str = "pop_nonces", ttl_seconds: int = 120) -> ReplayGuard:
     """build a guard sized for the test verifier's future tolerance.
 
-    :param client: the KV-capable client double
-    :ptype client: object
+    :param client: the KV-declaring client double
+    :ptype client: KvDeclaringClient
     :param bucket_name: bucket suffix
     :ptype bucket_name: str
     :param ttl_seconds: nonce TTL
@@ -641,7 +654,7 @@ class TestBind:
     async def test_bind_hands_out_nothing(self, client: FakeNatsClient) -> None:
         # the bucket is the ledger's storage: a caller holding it could delete a nonce key around
         # the create-if-absent that makes a sighting single-use, and reopen a replay.
-        assert await _guard(client, bucket_name="pop_nonces").bind() is None
+        assert await _handed_out(_guard(client, bucket_name="pop_nonces").bind) is None
 
     @pytest.mark.asyncio
     async def test_bind_opens_the_bucket_once_however_often_it_is_called(self) -> None:
@@ -764,13 +777,13 @@ class _ClaimingAnchor:
         return self._claimed
 
 
-def _anchored(client: FakeNatsClient, anchor: object) -> ReplayGuard:
+def _anchored(client: FakeNatsClient, anchor: ReplayAnchor) -> ReplayGuard:
     """a guard over the shared ``login_nonces`` bucket with the given anchor.
 
     :param client: the fake broker
     :ptype client: FakeNatsClient
     :param anchor: the anchor double
-    :ptype anchor: object
+    :ptype anchor: ReplayAnchor
     :return: the guard
     :rtype: ReplayGuard
     """
@@ -1192,11 +1205,20 @@ class TestTheGuardOwnsItsBucket:
 
     def test_a_declaring_guard_needs_a_client_that_can_declare(self) -> None:
         class _OpensOnly:
-            async def kv_bucket(self, **_: object) -> object:
-                return object()
+            async def kv_bucket(
+                self,
+                *,
+                name: str,
+                ttl: timedelta | None = None,
+                storage: str = "memory",
+                create_if_missing: bool = True,
+                history: int = 1,
+                direct: bool | None = None,
+            ) -> KvBucketLike:
+                raise AssertionError("building a guard opens no bucket")
 
         with pytest.raises(TypeError, match="ensure_kv_bucket"):
-            _guard(_OpensOnly())
+            _unchecked(_guard)(_OpensOnly())
         # a bind-only guard needs only the open
         ReplayGuard(
             _OpensOnly(),

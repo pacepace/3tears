@@ -5,6 +5,10 @@ Parametrized to run against both SQLite and DuckDB backends.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
+from typing import Any
+
 import uuid
 from pathlib import Path
 from datetime import datetime, timezone
@@ -35,12 +39,12 @@ def _make_metadata() -> MetaData:
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-def backend(request: pytest.FixtureRequest) -> L1Backend:
+def backend(request: pytest.FixtureRequest) -> Iterator[L1Backend]:
     """Create and initialize a backend, reset after test."""
     if request.param == "sqlite":
         from threetears.core.cache.sqlite import SQLiteBackend
 
-        b = SQLiteBackend(db_name=f"test_{uuid.uuid4().hex[:8]}")
+        b: L1Backend = SQLiteBackend(db_name=f"test_{uuid.uuid4().hex[:8]}")
     elif request.param == "duckdb":
         duckdb = pytest.importorskip("duckdb")  # noqa: F841
         from threetears.core.cache.duckdb import DuckDBBackend
@@ -57,7 +61,7 @@ def backend(request: pytest.FixtureRequest) -> L1Backend:
     b.reset()
 
 
-def _sample_row(entity_id: str | None = None) -> dict:
+def _sample_row(entity_id: str | None = None) -> dict[str, Any]:
     """Return a sample row dict for test_entities."""
     return {
         "id": entity_id or str(uuid.uuid4()),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -110,5 +112,5 @@ class TestPage:
         assert page.next_cursor is None
 
     def test_empty(self) -> None:
-        page: Page[dict] = self._ks().page([], page_size=2, key_of=lambda r: (r["x"],))
+        page: Page[dict[str, Any]] = self._ks().page([], page_size=2, key_of=lambda r: (r["x"],))
         assert page.items == [] and page.next_cursor is None

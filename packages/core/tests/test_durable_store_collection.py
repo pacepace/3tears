@@ -9,7 +9,7 @@ takes) runs the standard ``save_entity`` → evict → ``get`` (pull-through fro
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
@@ -64,11 +64,13 @@ class _InMemoryDurableStore:
         table: str,
         row: Mapping[str, Any],
         *,
-        pk: Sequence[str],
+        pk: Sequence[str] | None = None,
         on_conflict: str = "update",
         cas: datetime | None = None,
         conn: Any = None,
     ) -> int:
+        if pk is None:
+            raise ValueError("this store does not know a table's key: name the pk columns")
         t = self.tables.setdefault(table, {})
         key = tuple(row[c] for c in sorted(pk))
         if cas is not None and key in t and t[key].get("date_updated") != cas:
@@ -156,7 +158,7 @@ def _make_nats_mock() -> AsyncMock:
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_durable_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_metadata())
     yield b
@@ -239,7 +241,7 @@ class _TransactionalDurableStore(_InMemoryDurableStore):
         table: str,
         row: Mapping[str, Any],
         *,
-        pk: Sequence[str],
+        pk: Sequence[str] | None = None,
         on_conflict: str = "update",
         cas: datetime | None = None,
         conn: Any = None,

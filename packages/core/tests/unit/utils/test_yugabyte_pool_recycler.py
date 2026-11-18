@@ -121,7 +121,8 @@ async def _watched(recycler: YugabytePoolRecycler, conn: Any) -> Callable[[Logge
     """
     recycler.watch(conn)
     assert len(conn.loggers) == 1
-    return conn.loggers[0]
+    logger: Callable[[LoggedQuery], Any] = conn.loggers[0]
+    return logger
 
 
 _WEDGE = asyncpg.exceptions.InternalServerError(_WEDGE_MESSAGES[0])

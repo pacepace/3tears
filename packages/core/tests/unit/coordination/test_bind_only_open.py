@@ -45,7 +45,7 @@ def _counter(client: Any, create_if_missing: bool | None) -> Callable[[], Awaita
     :return: a coroutine function that opens the bucket
     :rtype: Callable[[], Awaitable[object]]
     """
-    extra = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
+    extra: dict[str, Any] = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
     counter = DistributedCounter(client, bucket_name="owned", ttl=timedelta(minutes=2), **extra)
     return lambda: counter.get("k")
 
@@ -60,7 +60,7 @@ def _token_bucket(client: Any, create_if_missing: bool | None) -> Callable[[], A
     :return: a coroutine function that opens the bucket
     :rtype: Callable[[], Awaitable[object]]
     """
-    extra = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
+    extra: dict[str, Any] = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
     bucket = TokenBucket(client, bucket_name="owned", refill_rate=1.0, capacity=5.0, **extra)
     return lambda: bucket.claim("k")
 
@@ -75,7 +75,7 @@ def _lease(client: Any, create_if_missing: bool | None) -> Callable[[], Awaitabl
     :return: a coroutine function that opens the bucket
     :rtype: Callable[[], Awaitable[object]]
     """
-    extra = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
+    extra: dict[str, Any] = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
     lease = KVLease(client, bucket_name="owned", pod_id="pod-a", **extra)
     return lambda: lease.acquire("k", ttl_seconds=30, max_wait_seconds=0)
 
@@ -90,7 +90,7 @@ def _replay_guard(client: Any, create_if_missing: bool | None) -> Callable[[], A
     :return: a coroutine function that opens the bucket
     :rtype: Callable[[], Awaitable[object]]
     """
-    extra = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
+    extra: dict[str, Any] = {} if create_if_missing is None else {"create_if_missing": create_if_missing}
     guard = ReplayGuard(client, bucket_name="owned", ttl_seconds=60, verifier_future_tolerance=timedelta(0), **extra)
     return guard.bind
 

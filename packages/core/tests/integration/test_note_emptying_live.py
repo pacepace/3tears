@@ -64,7 +64,8 @@ class _Logged:
         self.sent.append(query)
         began = time.perf_counter()
         try:
-            return await self._pool.fetch(query, *args)
+            rows: list[Any] = await self._pool.fetch(query, *args)
+            return rows
         finally:
             self.took.append(time.perf_counter() - began)
 
@@ -72,7 +73,8 @@ class _Logged:
         self.sent.append(query)
         began = time.perf_counter()
         try:
-            return await self._pool.execute(query, *args)
+            status: str = await self._pool.execute(query, *args)
+            return status
         finally:
             self.took.append(time.perf_counter() - began)
 

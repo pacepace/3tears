@@ -8,6 +8,7 @@ call from inside a running loop is refused with a message saying what to do inst
 
 from __future__ import annotations
 
+import inspect
 import asyncio
 import threading
 from collections.abc import Iterator
@@ -132,7 +133,7 @@ async def test_inside_a_running_loop_it_is_refused_with_what_to_do_instead() -> 
     with pytest.raises(RuntimeError, match="await the work instead"):
         sync.run(coro)
     # the refused coroutine was closed, never left to warn that it was not awaited
-    assert coro.cr_frame is None
+    assert inspect.getcoroutinestate(coro) == inspect.CORO_CLOSED
 
 
 async def test_inside_a_running_loop_a_factory_is_never_called() -> None:

@@ -680,7 +680,7 @@ class TestTheFlusher:
 
 class TestTheSweep:
     @pytest.mark.asyncio
-    async def test_it_deletes_only_expired_rows_in_a_bounded_batch(self) -> None:
+    async def test_it_deletes_only_expired_rows_in_a_bounded_batch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         store = _SweepStore(deleted=7)
         registry = _registry(l3=store)
         collection = coordination_collection(registry, CoordinationCountersCollection, _config())
@@ -689,7 +689,7 @@ class TestTheSweep:
         async def _evict(entity_ids: Any) -> None:
             evicted.extend(entity_ids)
 
-        collection.invalidate_cache_many = _evict  # type: ignore[method-assign]
+        monkeypatch.setattr(collection, "invalidate_cache_many", _evict)
         cutoff = datetime(2026, 1, 1, tzinfo=UTC)
         assert await collection.sweep_expired(now=cutoff, batch=250) == 7
         assert len(store.calls) == 1, "one page a sweep: the throttle runs the next"

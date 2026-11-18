@@ -17,6 +17,7 @@ from threetears.core.collections.generation import (
     WRITE_GENERATION,
     NoWriteGeneration,
     UndeclaredWriteGeneration,
+    WriteGenerationDeclaration,
     tables_with_write_generation,
 )
 from threetears.core.collections.schema_backed import STRING_TYPE, Column, TableSchema, collection_for_schema
@@ -26,14 +27,14 @@ from threetears.enforcement.collection_census.census import census
 from threetears.core.testing.l1_tables import TEST_L1_TABLE
 
 
-def _schema(name: str, declared: object) -> TableSchema:
+def _schema(name: str, declared: WriteGenerationDeclaration) -> TableSchema:
     return TableSchema(
         name=name,
         primary_key="id",
         columns=[Column("id", STRING_TYPE)],
         write_generation=declared,
         l1_eviction=TEST_L1_TABLE,
-    )  # type: ignore[arg-type]
+    )
 
 
 def test_an_opt_out_with_its_reason_reaches_the_built_class() -> None:

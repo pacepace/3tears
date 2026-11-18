@@ -29,6 +29,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from pydantic import BaseModel
 
 from threetears.core.cache.sqlite import SQLiteBackend
 from threetears.core.collections.l2_order import l2_order_of
@@ -45,7 +46,9 @@ _SCOPE = "counter-principal"
 class _Nats(FakeNatsClient):
     """the shared collections bucket; no replica in these tests subscribes to invalidations."""
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         return None
 
 
@@ -123,7 +126,9 @@ class _FailingNats(FakeNatsClient):
         del kwargs
         raise KvError("kv down")
 
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:
+    async def publish(
+        self, *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+    ) -> None:
         return None
 
 

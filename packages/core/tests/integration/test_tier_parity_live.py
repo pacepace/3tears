@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any, ClassVar
+from typing import Any
 
 import asyncpg
 import pytest
@@ -44,7 +44,7 @@ class _Row(BaseEntity):
 class _Narrow(SchemaBackedCollection[_Row]):
     """a table in another schema, with a column narrower than the gate's string sample."""
 
-    schema: ClassVar[TableSchema] = TableSchema(
+    schema = TableSchema(
         name="tp_other.narrow_rows",
         primary_key="id",
         columns=[

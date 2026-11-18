@@ -9,6 +9,8 @@ Does NOT require database connections -- uses in-memory backends only.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -68,7 +70,7 @@ def _sample_row(entity_id: str | None = None) -> dict[str, Any]:
 
 
 @pytest.fixture()
-def sqlite_backend() -> SQLiteBackend:
+def sqlite_backend() -> Iterator[SQLiteBackend]:
     """Create and initialize a SQLiteBackend, reset after test."""
     b = SQLiteBackend(db_name=f"enforcement_roundtrip_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_comprehensive_metadata())

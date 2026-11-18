@@ -176,7 +176,7 @@ class _Pod:
         l1 = SQLiteBackend(db_name=f"truncate_{uuid.uuid4().hex[:8]}")
         l1.initialize(metadata)
         self.registry = CollectionRegistry()
-        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=store, kv_key_scope="truncate-principal")  # type: ignore[arg-type]
+        self.registry.configure(l1_backend=l1, l2_client=bus, l3_pool=store, kv_key_scope="truncate-principal")
         if source is not None:
             self.registry.set_generation_source(source)
         self.results = cls(self.registry, DefaultCoreConfig(), **kwargs)

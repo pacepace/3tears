@@ -13,7 +13,9 @@ covers the five contracts the runner must hold:
 from __future__ import annotations
 
 import asyncio
+import operator
 import uuid
+from collections.abc import Awaitable, Callable
 
 import pytest
 
@@ -36,6 +38,11 @@ from threetears.core.data.schema import ColumnDef, IndexDef, TableDef
 from threetears.core.data.store import DataStore
 
 from .fake_store import FakeDataStore, FakeLockingPool
+
+
+def _unchecked(fn: Callable[..., object]) -> Callable[..., object]:
+    """call ``fn`` with what the checker refuses, on purpose: the call is the refusal under test."""
+    return fn
 
 
 async def _noop(store: object) -> None:
@@ -449,7 +456,7 @@ class TestDatabaseWideDdlLock:
         if entry == "downgrade":
             await runner.apply_for_agent_schema(store)
             store.queried.clear()
-        entry_points = {
+        entry_points: dict[str, Callable[[], Awaitable[object]]] = {
             "platform": lambda: runner.apply_for_platform_schema(store),
             "agent": lambda: runner.apply_for_agent_schema(store),
             "package": lambda: runner.apply_package(store, "memory"),
@@ -814,14 +821,14 @@ class TestPackagesView:
         runner = MigrationRunner()
         pkg = PackageMigrations(name="alpha", scope=MigrationScope.AGENT)
         with pytest.raises(TypeError):
-            runner.packages["alpha"] = pkg
+            _unchecked(operator.setitem)(runner.packages, "alpha", pkg)
 
     async def test_packages_view_rejects_delitem(self) -> None:
         runner = MigrationRunner()
         pkg = PackageMigrations(name="alpha", scope=MigrationScope.AGENT)
         runner.register(pkg)
         with pytest.raises(TypeError):
-            del runner.packages["alpha"]
+            _unchecked(operator.delitem)(runner.packages, "alpha")
 
     async def test_packages_view_rejects_clear(self) -> None:
         runner = MigrationRunner()

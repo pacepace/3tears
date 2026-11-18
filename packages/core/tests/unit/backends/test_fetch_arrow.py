@@ -70,7 +70,7 @@ _COLUMNS = [
     Column("date_updated", DATETIMETZ_TYPE, nullable=True),
 ]
 
-_ROWS = [
+_ROWS: list[dict[str, Any]] = [
     {
         "id": 1,
         "name": "Travis",
@@ -201,6 +201,10 @@ class _Rail:
         proxy, _ = _proxy(self._answer(sql, params))
         return await proxy.fetch_arrow(sql, types=types)
 
+    async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
+        rows = await self.fetch(sql, *params)
+        return rows[0] if rows else None
+
 
 async def test_read_l3_arrow_pages_a_table_as_read_l3_rows_does() -> None:
     made = [{**_ROWS[index % 2], "id": index} for index in range(2_345)]
@@ -253,6 +257,10 @@ class _Statements:
         self.statements.append((sql, params))
         return []
 
+    async def fetchrow(self, sql: str, *params: Any) -> dict[str, Any] | None:
+        self.statements.append((sql, params))
+        return None
+
 
 async def test_a_set_filter_binds_every_value_as_one_array_in_both_reads() -> None:
     by_rows, by_arrow = _Statements(), _Statements()
@@ -284,7 +292,8 @@ async def test_an_answer_the_broker_cut_at_its_cap_fails_loud_never_reads_short(
 
 def _broker_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """``rows`` as the broker's reply carries them."""
-    return json.loads(_broker(rows))["rows"]
+    decoded: list[dict[str, Any]] = json.loads(_broker(rows))["rows"]
+    return decoded
 
 
 async def test_a_writing_statement_the_broker_cut_answers_short_said_at_error(caplog: pytest.LogCaptureFixture) -> None:

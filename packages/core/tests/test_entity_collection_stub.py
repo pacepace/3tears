@@ -34,6 +34,8 @@ behaviours covered:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import json
 import uuid
 from datetime import datetime
@@ -178,7 +180,7 @@ class CompositeParityCollection(ParityCollection):
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     """yield an initialized SQLite L1 backend, torn down after the test."""
     backend = SQLiteBackend(db_name=f"test_stub_parity_{uuid.uuid4().hex[:8]}")
     backend.initialize(_make_metadata())

@@ -101,7 +101,7 @@ def _levels(start: str, depth: int) -> set[tuple[str, str]]:
 @pytest.mark.parametrize("start", ["d1", "d2", "d4", "d5", "nothing"])
 @pytest.mark.parametrize("depth", [1, 2, 3, 5])
 async def test_a_capped_walk_reaches_the_rows_within_its_depth_in_one_statement(
-    db: duckdb.DuckDBPyConnection, start: str, depth: int
+    monkeypatch: pytest.MonkeyPatch, db: duckdb.DuckDBPyConnection, start: str, depth: int
 ) -> None:
     """Flips if a walk given a ``depth`` reaches a row past the cap (a level too many, a cycle walked round past it),
     misses one within it, answers a row twice, or sends more than one statement."""
@@ -113,7 +113,7 @@ async def test_a_capped_walk_reaches_the_rows_within_its_depth_in_one_statement(
         sent.append(sql)
         return await fetch(sql, *args)
 
-    inline.fetch = recorded  # type: ignore[method-assign]
+    monkeypatch.setattr(inline, "fetch", recorded)
     rows = await read_reached(
         inline,
         "sources",

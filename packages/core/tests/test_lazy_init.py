@@ -60,6 +60,7 @@ def _declared_lazy_names(init_path: Path) -> set[str]:
     """
     tree = ast.parse(init_path.read_text())
     for node in tree.body:
+        target: ast.expr
         if isinstance(node, ast.AnnAssign) and node.value is not None:
             target, value = node.target, node.value
         elif isinstance(node, ast.Assign) and len(node.targets) == 1:

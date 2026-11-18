@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from typing import Any
 
 import importlib
@@ -55,9 +57,11 @@ from threetears.core.cache.duckdb import DuckDBBackend, PartitionReplacement  # 
 from threetears.core.testing.duckdb_fill import fill_table  # noqa: E402
 from threetears.core.utils.cpu_quota import effective_cpu_count  # noqa: E402
 
+from packages.core.tests.optional_support import present  # noqa: E402
+
 
 @pytest.fixture()
-def backend() -> DuckDBBackend:
+def backend() -> Iterator[DuckDBBackend]:
     b = DuckDBBackend()
     metadata = _make_metadata()
     b.initialize(metadata)
@@ -452,7 +456,7 @@ class TestPartitions:
         )
         backend = DuckDBBackend()
         backend.initialize(metadata)
-        rows = [
+        rows: list[dict[str, Any]] = [
             {"id": 1, "label": "a", "big": 2**70},
             {"id": 2, "label": 7, "big": 3},  # an int where the others are text
         ]
@@ -892,7 +896,7 @@ class TestNumericReadsBackAsDecimal:
         [(Numeric(), "no declared precision and scale"), (Numeric(39, 2), r"NUMERIC\(39, 2\)")],
     )
     def test_a_numeric_duckdb_cannot_hold_exactly_is_refused_naming_its_column(
-        self, sa_type: Numeric, reason: str
+        self, sa_type: Numeric[Decimal], reason: str
     ) -> None:
         metadata = MetaData()
         Table(
@@ -970,7 +974,7 @@ class TestKeylessTables:
                 {"race": "r2", "county": "c1", "votes": 3},
             ]
         )
-        assert backend.select_by_id("results", ("r1", "c1"), _KEY)["votes"] == 11
+        assert present(backend.select_by_id("results", ("r1", "c1"), _KEY))["votes"] == 11
 
     def test_values_arrow_cannot_type_as_one_column_still_replace_by_key(self) -> None:
         backend = _keyless_backend()

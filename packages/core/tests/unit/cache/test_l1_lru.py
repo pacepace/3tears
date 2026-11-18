@@ -10,7 +10,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from prometheus_client import REGISTRY
@@ -181,7 +181,7 @@ class _Entity(BaseEntity):
 class _Rows(BaseCollection[_Entity]):
     """a read-through collection over an L3 dict, with no L2."""
 
-    datetime_columns: Any = frozenset()
+    datetime_columns: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, registry: CollectionRegistry, rows: dict[str, dict[str, Any]]) -> None:
         self._rows = rows

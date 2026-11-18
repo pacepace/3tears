@@ -6,7 +6,7 @@ import operator
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, ClassVar
@@ -55,7 +55,7 @@ def _make_metadata() -> MetaData:
 
 
 @pytest.fixture()
-def backend() -> SQLiteBackend:
+def backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_sqlite_{uuid.uuid4().hex[:8]}")
     metadata = _make_metadata()
     b.initialize(metadata)
@@ -67,7 +67,7 @@ class TestThreadLocalConnections:
     """Verify each thread gets a different connection object."""
 
     def test_different_threads_get_different_connections(self, backend: SQLiteBackend) -> None:
-        connections: list[object] = []
+        connections: list[Any] = []
         barrier = threading.Barrier(2)
 
         def _get_conn() -> None:
@@ -729,7 +729,7 @@ class TestNumericReadsBackAsDecimal:
         [(Numeric(), "no declared precision and scale"), (Numeric(19, 2), r"NUMERIC\(19, 2\)")],
     )
     def test_a_numeric_this_l1_cannot_hold_exactly_is_refused_naming_its_column(
-        self, sa_type: Numeric, reason: str
+        self, sa_type: Numeric[Decimal], reason: str
     ) -> None:
         metadata = MetaData()
         Table(

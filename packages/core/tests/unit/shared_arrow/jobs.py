@@ -186,7 +186,8 @@ def filter_version(context: JobContext, table: str, column: str, below: int) -> 
     finally:
         connection.close()
     context.result.write({"kept": kept})
-    return kept.num_rows
+    rows: int = kept.num_rows
+    return rows
 
 
 def write_then_fail(context: JobContext) -> None:
@@ -273,7 +274,8 @@ def hold_handed_on_signal(handed: HandedTables, signals: str) -> int:
     with handed.mapped() as mapped:
         (where / "mapped").touch()
         _wait_for(where / "go")
-        return next(iter(mapped.tables.values())).num_rows
+        rows: int = next(iter(mapped.tables.values())).num_rows
+        return rows
 
 
 def handed_on_signal(context: JobContext, signals: str) -> int:

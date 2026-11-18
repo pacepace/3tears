@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+
+from pydantic import BaseModel
 
 import pytest
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table
@@ -38,7 +40,7 @@ from threetears.core.exceptions import (
 )
 from threetears.nats import Principal, Subjects, kv_key_scope_for
 from threetears.nats.errors import KvError
-from threetears.core.testing.kv import FakeKvBucket
+from threetears.core.testing.kv import FakeKvBucket, FakeNatsClient
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_TABLE
 
 _HUB_SCOPE = kv_key_scope_for(Principal.HUB)
@@ -93,7 +95,9 @@ class StubCollection(BaseCollection[StubEntity]):
     async def fetch_from_store(self, entity_id: object) -> dict[str, Any] | None:
         return self._l3_rows.get(str(entity_id))
 
-    async def save_to_store(self, data: dict[str, Any], original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         self._l3_rows[str(data.get("id"))] = dict(data)
         return 1
 
@@ -129,8 +133,8 @@ class _InMemoryKvBucket(FakeKvBucket):
         super().__init__(bucket_name="collections")
 
 
-class _SharedNatsBus:
-    """one KV bucket plus typed pub/sub fan-out, shared by every pod in a test.
+class _SharedNatsBus(FakeNatsClient):
+    """one KV bucket plus the shipped double's typed pub/sub fan-out, shared by every pod in a test.
 
     Deliberately ONE bucket across pods: after scoping the isolation is intra-bucket, so a
     test that gave each pod its own store could not observe a collision even if the key
@@ -138,18 +142,22 @@ class _SharedNatsBus:
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self.bucket = _InMemoryKvBucket()
-        self._subscribers: dict[str, list[tuple[Any, Any]]] = {}
 
-    async def kv_bucket(self, *, name: str, **_: Any) -> _InMemoryKvBucket:  # noqa: ARG002
+    async def kv_bucket(
+        self,
+        *,
+        name: str,
+        ttl: timedelta | None = None,
+        storage: str = "memory",
+        create_if_missing: bool = True,
+        history: int = 1,
+        direct: bool | None = None,
+        replicas: int | None = None,
+    ) -> _InMemoryKvBucket:
+        """the one shared bucket, whatever the name."""
         return self.bucket
-
-    async def publish(self, *, subject: Any, message: Any, reply_to: Any = None) -> None:  # noqa: ARG002
-        for cb, message_type in self._subscribers.get(str(subject), []):
-            await cb(message_type.model_validate_json(message.model_dump_json()))
-
-    async def subscribe_typed(self, *, subject: Any, cb: Any, message_type: Any, **_: Any) -> None:
-        self._subscribers.setdefault(str(subject), []).append((cb, message_type))
 
 
 def _make_l1() -> SQLiteBackend:
@@ -567,7 +575,9 @@ class TestInvalidationEvictsL2:
         """
         deleted: list[str] = []
 
-        async def _record_delete(*, key: str, revision: int | None = None) -> bool:  # noqa: ARG001
+        async def _record_delete(  # noqa: ARG001
+            *, key: str, revision: int | None = None, marker_ttl: timedelta | None = None
+        ) -> bool:
             deleted.append(key)
             return True
 
@@ -623,9 +633,11 @@ class TestInvalidationEvictsL2:
         published: list[Any] = []
         original_publish = bus.publish
 
-        async def _counting_publish(*, subject: Any, message: Any, reply_to: Any = None) -> None:
+        async def _counting_publish(
+            *args: Any, subject: Any = None, message: BaseModel | None = None, reply_to: Any = None
+        ) -> None:
             published.append(message)
-            await original_publish(subject=subject, message=message, reply_to=reply_to)
+            await original_publish(*args, subject=subject, message=message, reply_to=reply_to)
 
         collection, registry = _make_pod(bus, _AGENT_SCOPE, {}, config_always)
         await registry.start_invalidation_listener(bus)

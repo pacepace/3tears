@@ -73,14 +73,16 @@ class _Timed:
     async def fetch(self, query: str, *args: Any) -> list[Any]:
         began = time.perf_counter()
         try:
-            return await self._pool.fetch(query, *args)
+            rows: list[Any] = await self._pool.fetch(query, *args)
+            return rows
         finally:
             self.took.append((query, time.perf_counter() - began))
 
     async def execute(self, query: str, *args: Any) -> str:
         began = time.perf_counter()
         try:
-            return await self._pool.execute(query, *args)
+            status: str = await self._pool.execute(query, *args)
+            return status
         finally:
             self.took.append((query, time.perf_counter() - began))
 

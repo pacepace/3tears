@@ -49,7 +49,8 @@ def test_a_const_is_the_text_it_holds() -> None:
     pinned = Const("group")
     assert pinned == "group"
     assert hash(pinned) == hash("group")
-    assert {pinned: 1}["group"] == 1
+    held: dict[object, int] = {pinned: 1}
+    assert held["group"] == 1
     assert pinned.sql == "'group'"
 
 

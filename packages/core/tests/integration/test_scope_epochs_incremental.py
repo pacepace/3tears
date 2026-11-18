@@ -24,7 +24,7 @@ import asyncpg
 import pytest
 from prometheus_client import REGISTRY
 from sqlalchemy import MetaData
-from sqlalchemy.dialects import postgresql
+from packages.core.tests.dialect_support import pg_dialect
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from threetears.core.backends.sql import SqlL3Backend
@@ -102,9 +102,9 @@ async def _schema_pool(db_container: str) -> asyncpg.Pool:
     assert pool is not None
     # the table as the owner declares it (scope_epochs_schema), its indexes with it
     table = scope_epochs_schema(_TABLE).to_sqlalchemy_table(MetaData())
-    await pool.execute(str(CreateTable(table).compile(dialect=postgresql.dialect())))
+    await pool.execute(str(CreateTable(table).compile(dialect=pg_dialect())))
     for index in table.indexes:
-        await pool.execute(str(CreateIndex(index).compile(dialect=postgresql.dialect())))
+        await pool.execute(str(CreateIndex(index).compile(dialect=pg_dialect())))
     return pool
 
 

@@ -763,7 +763,7 @@ class TestCreatePoolWithStartupTimeout:
                 max_size=1,
             )
         (record,) = [r for r in caplog.records if r.levelno == logging.ERROR]
-        extra = record.extra_data
+        extra = record.__dict__["extra_data"]
         assert extra["pool_name"] == "keys"
         assert extra["connection_identity"] == f"u@127.0.0.1:{silent_server.port}/d"
         assert extra["error_class"] == "ClientConfigurationError"
@@ -789,11 +789,15 @@ class TestCreatePoolWithStartupTimeout:
     ) -> None:
         """a ``ClientConfigurationError`` subclass that cannot be built from one message is raised as the base."""
 
-        class NeedsTwoArguments(asyncpg.exceptions.ClientConfigurationError):
-            """a client configuration error with a constructor of its own."""
+        def two_arguments(self: Exception, option: str, value: str) -> None:
+            asyncpg.exceptions.ClientConfigurationError.__init__(self, f"{option}={value}")
 
-            def __init__(self, option: str, value: str) -> None:
-                super().__init__(f"{option}={value}")
+        # built by type(): asyncpg ships no types, so a class statement would subclass Any
+        NeedsTwoArguments = type(
+            "NeedsTwoArguments",
+            (asyncpg.exceptions.ClientConfigurationError,),
+            {"__init__": two_arguments, "__doc__": "a client configuration error with a constructor of its own."},
+        )
 
         async def odd_error_hook(*args: object, **kwargs: object) -> asyncpg.Connection:
             raise NeedsTwoArguments("password", "se@cret")
@@ -903,10 +907,12 @@ class TestCreatePoolWithStartupTimeout:
 
         real_getaddrinfo = asyncio.get_running_loop().getaddrinfo
 
-        async def resolve_loopback_only(host: object, *args: object, **kwargs: object) -> list[object]:
+        async def resolve_loopback_only(
+            host: bytes | str | None, port: bytes | str | int | None, **options: int
+        ) -> list[object]:
             if host == "127.0.0.1":
-                return list(await real_getaddrinfo(host, *args, **kwargs))
-            return await no_such_name(host, *args, **kwargs)
+                return list(await real_getaddrinfo(host, port, **options))
+            return await no_such_name(host, port, **options)
 
         monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", resolve_loopback_only)
         raised: BaseException | None = None
@@ -1078,18 +1084,35 @@ class TestPlatformServerSettings:
     #: the platform's startup settings: the HNSW iterative scan the nearest read's recall rests on
     platform = {"hnsw.iterative_scan": "relaxed_order"}
 
-    async def _settings_sent(self, **kwargs: object) -> object:
-        """the ``server_settings`` the first connect of a pool started with ``kwargs`` received."""
+    async def _settings_sent(
+        self, *, platform_settings: bool = True, server_settings: dict[str, str] | None = None
+    ) -> object:
+        """the ``server_settings`` the first connect of a pool started with these received.
+
+        ``server_settings=None`` passes none, as a caller with no settings of its own does.
+        """
         sent: list[object] = []
 
         async def hook(*_args: object, **connect_kwargs: object) -> asyncpg.Connection:
             sent.append(connect_kwargs.get("server_settings"))
             raise _Stop
 
+        dsn = "postgresql://u:p@127.0.0.1:1/d"
         with pytest.raises(_Stop):
-            await create_pool_with_startup_timeout(
-                "postgresql://u:p@127.0.0.1:1/d", startup_timeout=2.0, min_size=1, max_size=1, connect=hook, **kwargs
-            )
+            if server_settings is None:
+                await create_pool_with_startup_timeout(
+                    dsn, startup_timeout=2.0, min_size=1, max_size=1, connect=hook, platform_settings=platform_settings
+                )
+            else:
+                await create_pool_with_startup_timeout(
+                    dsn,
+                    startup_timeout=2.0,
+                    min_size=1,
+                    max_size=1,
+                    connect=hook,
+                    platform_settings=platform_settings,
+                    server_settings=server_settings,
+                )
         return sent[0]
 
     async def test_a_pool_with_no_settings_of_its_own_starts_with_the_platforms(self) -> None:

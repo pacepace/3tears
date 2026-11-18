@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from typing import Any, Literal
+from uuid import UUID
 from unittest.mock import AsyncMock
 
 import pytest
@@ -22,6 +24,8 @@ from threetears.core.entities.base import BaseEntity
 from threetears.core.exceptions import ConcurrentModificationError, L2WriteRefusedError
 from threetears.nats.errors import KvError
 from threetears.core.testing.l1_tables import L1_EVICTION_INFO, TEST_L1_KEEP
+
+from packages.core.tests.optional_support import present
 
 
 #: the principal scope every registry in this module wires. its VALUE is irrelevant here --
@@ -57,7 +61,7 @@ class StubCollection(BaseCollection[StubEntity]):
         config: DefaultCoreConfig,
         nats_client: AsyncMock | None = None,
         write_buffer: WriteBuffer | None = None,
-        l3_rows: dict[str, dict] | None = None,
+        l3_rows: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._l3_rows = l3_rows if l3_rows is not None else {}
         super().__init__(registry, config, nats_client, write_buffer)
@@ -70,10 +74,12 @@ class StubCollection(BaseCollection[StubEntity]):
     def entity_class(self) -> type[StubEntity]:
         return StubEntity
 
-    async def fetch_from_store(self, entity_id: object) -> dict | None:
+    async def fetch_from_store(self, entity_id: object) -> dict[str, Any] | None:
         return self._l3_rows.get(str(entity_id))
 
-    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:
         pk = data.get("id")
         if original_timestamp is not None:
             existing = self._l3_rows.get(str(pk))
@@ -85,11 +91,12 @@ class StubCollection(BaseCollection[StubEntity]):
     async def delete_from_store(self, entity_id: object) -> None:
         self._l3_rows.pop(str(entity_id), None)
 
-    def serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def deserialize(self, data: bytes) -> dict:
-        return json.loads(data)
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        decoded: dict[str, Any] = json.loads(data)
+        return decoded
 
 
 async def _propagated(check: Callable[[], bool], *, what: str) -> None:
@@ -167,7 +174,7 @@ def _make_nats_mock() -> AsyncMock:
 
 
 @pytest.fixture()
-def l1_backend() -> SQLiteBackend:
+def l1_backend() -> Iterator[SQLiteBackend]:
     b = SQLiteBackend(db_name=f"test_coll_{uuid.uuid4().hex[:8]}")
     b.initialize(_make_metadata())
     yield b
@@ -271,7 +278,7 @@ class TestSaveEntity:
     async def test_immediate_save(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """Immediate save writes to L3 first, then caches."""
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
@@ -294,7 +301,7 @@ class TestSaveEntity:
         """Deferred save writes L1+L2+buffer, skips L3."""
         nats = _make_nats_mock()
         buf = WriteBuffer()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_deferred, nats_client=nats, write_buffer=buf, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
@@ -453,7 +460,7 @@ class TestFieldAccessors:
         result = coll.set_field_sync("e1", "name", "Bob")
 
         assert result is True
-        row = coll.get_row_sync("e1")
+        row = present(coll.get_row_sync("e1"))
         assert row["name"] == "Bob"
 
     def test_set_field_sync_missing_entity(
@@ -653,7 +660,7 @@ class TestSubscriptSetterPropagation:
 
         coll["e1", "name"] = "Bob"
 
-        row = coll.get_row_sync("e1")
+        row = present(coll.get_row_sync("e1"))
         assert row["name"] == "Bob"
 
     @pytest.mark.asyncio
@@ -686,7 +693,7 @@ class TestSubscriptSetterPropagation:
     ) -> None:
         """With ALWAYS strategy, setter propagates to L3 non-blocking."""
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
         coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
@@ -704,7 +711,7 @@ class TestSubscriptSetterPropagation:
         """With deferred strategy, setter buffers for L3 instead of writing immediately."""
         nats = _make_nats_mock()
         buf = WriteBuffer()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_deferred, nats_client=nats, write_buffer=buf, l3_rows=l3_rows)
         coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
@@ -731,7 +738,7 @@ class TestSubscriptSetterPropagation:
     async def test_dict_setter_propagates(self, registry: CollectionRegistry, config_always: DefaultCoreConfig) -> None:
         """collection[id] = data_dict propagates to L1, L2, and L3."""
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         coll["e1"] = {"id": "e1", "name": "Alice", "score": 99}
@@ -757,7 +764,7 @@ class TestSubscriptSetterPropagation:
     ) -> None:
         """Setter sets date_updated on the propagated data."""
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
         coll.write_to_cache_sync({"id": "e1", "name": "Alice", "score": 42})
 
@@ -785,7 +792,7 @@ class TestMultiPodSimulation:
     def _make_pod(
         self,
         nats: AsyncMock,
-        l3_rows: dict[str, dict],
+        l3_rows: dict[str, dict[str, Any]],
         config: DefaultCoreConfig,
         write_buffer: WriteBuffer | None = None,
     ) -> StubCollection:
@@ -802,7 +809,7 @@ class TestMultiPodSimulation:
     async def test_write_on_pod_a_visible_on_pod_b_via_l2(self, config_always: DefaultCoreConfig) -> None:
         """Data written on pod A is visible on pod B through shared L2."""
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         pod_a = self._make_pod(nats, l3_rows, config_always)
         pod_b = self._make_pod(nats, l3_rows, config_always)
 
@@ -822,7 +829,7 @@ class TestMultiPodSimulation:
         This demonstrates the cache coherence gap that signaling will fix.
         """
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         pod_a = self._make_pod(nats, l3_rows, config_always)
         pod_b = self._make_pod(nats, l3_rows, config_always)
 
@@ -861,7 +868,7 @@ class TestMultiPodSimulation:
     async def test_setter_propagation_reaches_l3(self, config_always: DefaultCoreConfig) -> None:
         """Setter with ALWAYS strategy writes through to shared L3."""
         nats = _make_nats_mock()
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         pod_a = self._make_pod(nats, l3_rows, config_always)
         pod_b = self._make_pod(nats, l3_rows, config_always)
 
@@ -942,6 +949,35 @@ class _RawPool:
 
     def __init__(self) -> None:
         self.copy_records_to_table = object()
+
+    async def fetch(
+        self, query: str, *params: Any, namespace: str | None = None, customer_scope: UUID | None = None
+    ) -> list[dict[str, Any]]:
+        raise AssertionError("the pool-identity tests run no SQL")
+
+    async def fetchrow(
+        self, query: str, *params: Any, namespace: str | None = None, customer_scope: UUID | None = None
+    ) -> dict[str, Any] | None:
+        raise AssertionError("the pool-identity tests run no SQL")
+
+    async def fetchval(
+        self, query: str, *params: Any, namespace: str | None = None, customer_scope: UUID | None = None
+    ) -> Any:
+        raise AssertionError("the pool-identity tests run no SQL")
+
+    async def execute(self, query: str, *params: Any, namespace: str | None = None) -> str:
+        raise AssertionError("the pool-identity tests run no SQL")
+
+    async def execute_batch(
+        self, queries: list[dict[str, Any]], *, namespace: str | None = None, transaction: bool = True
+    ) -> list[Any]:
+        raise AssertionError("the pool-identity tests run no SQL")
+
+    def acquire(self) -> Any:
+        raise AssertionError("the pool-identity tests run no SQL")
+
+    def transaction(self, namespace: str | None = None) -> Any:
+        raise AssertionError("the pool-identity tests run no SQL")
 
 
 class TestL3PoolAccessor:
@@ -1025,20 +1061,23 @@ class CompositeStubCollection(BaseCollection[CompositeStubEntity]):
     def entity_class(self) -> type[CompositeStubEntity]:
         return CompositeStubEntity
 
-    async def fetch_from_store(self, entity_id: object) -> dict | None:  # pragma: no cover - unused
+    async def fetch_from_store(self, entity_id: object) -> dict[str, Any] | None:  # pragma: no cover - unused
         return None
 
-    async def save_to_store(self, data: dict, original_timestamp: datetime | None = None) -> int:  # pragma: no cover
+    async def save_to_store(
+        self, data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None
+    ) -> int:  # pragma: no cover
         return 1
 
     async def delete_from_store(self, entity_id: object) -> None:  # pragma: no cover - unused
         return None
 
-    def serialize(self, data: dict) -> bytes:
+    def serialize(self, data: dict[str, Any]) -> bytes:
         return json.dumps(data, default=str).encode()
 
-    def deserialize(self, data: bytes) -> dict:
-        return json.loads(data)
+    def deserialize(self, data: bytes) -> dict[str, Any]:
+        decoded: dict[str, Any] = json.loads(data)
+        return decoded
 
 
 _HEX = set("0123456789abcdef")
@@ -1137,7 +1176,7 @@ class TestL2BucketResolutionDegradesGracefully:
         """L2 bucket-open KvError during save still durably writes to L3."""
         nats = _make_nats_mock()
         nats.kv_bucket = AsyncMock(side_effect=KvError("bucket open failed"))
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
@@ -1277,7 +1316,7 @@ class TestAnL2WriteRefusedFailsTheSaveOnlyWhereL2IsTheStore:
         """the decision for three-tier collections: L3 is the durable record, so the save landed."""
         nats = _make_nats_mock()
         nats.bucket.put = AsyncMock(side_effect=KvError("broker unreachable"))
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         entity = coll.create({"id": "e1", "name": "Alice", "score": 10})
@@ -1370,7 +1409,11 @@ def _make_cas_nats(bucket: _CasKvBucket) -> AsyncMock:
     return nats
 
 
-def _append_member(member: str) -> "object":
+#: what :meth:`BaseCollection.l2_cas_mutate` runs on the current value: the action and the next value
+_Mutate = Callable[[dict[str, Any] | None], tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]]
+
+
+def _append_member(member: str) -> _Mutate:
     """build a mutate callback that appends ``member`` to a CSV ``name`` field.
 
     the stub L1 schema has no list column, so the "set" is modelled as a
@@ -1379,7 +1422,7 @@ def _append_member(member: str) -> "object":
     members back by splitting on ``,``.
     """
 
-    def _mutate(row: dict | None) -> tuple[str, dict | None]:
+    def _mutate(row: dict[str, Any] | None) -> tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]:
         if row is None:
             return "upsert", {"id": "r1", "name": member}
         members = [m for m in row.get("name", "").split(",") if m]
@@ -1391,7 +1434,7 @@ def _append_member(member: str) -> "object":
     return _mutate
 
 
-def _members(row: dict | None) -> list[str]:
+def _members(row: dict[str, Any] | None) -> list[str]:
     """read the CSV ``name`` field back as a member list."""
     if row is None:
         return []
@@ -1429,7 +1472,7 @@ class TestL2CasMutate:
         await coll.l2_cas_mutate("r1", _append_member("conn-2"))
 
         raw = await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1")
-        assert _members(json.loads(raw)) == ["conn-1", "conn-2"]
+        assert _members(json.loads(present(raw))) == ["conn-1", "conn-2"]
 
     @pytest.mark.asyncio
     async def test_noop_returns_without_writing(
@@ -1473,7 +1516,7 @@ class TestL2CasMutate:
         await coll.l2_cas_mutate("r1", _append_member("conn-1"))
 
         raw = await bucket.get(key=f"{_TEST_SCOPE}.test_entities.r1")
-        assert _members(json.loads(raw)) == ["seed", "conn-1"]
+        assert _members(json.loads(present(raw))) == ["seed", "conn-1"]
 
     @pytest.mark.asyncio
     async def test_retry_budget_exhaustion_raises(
@@ -1499,9 +1542,11 @@ class TestL2CasMutate:
         await coll.l2_cas_mutate("r1", _append_member("conn-2"))
         assert _members(coll.get_row_sync("r1")) == ["conn-1", "conn-2"]
 
-        def _drop_conn1(row: dict | None) -> tuple[str, dict | None]:
+        def _drop_conn1(
+            row: dict[str, Any] | None,
+        ) -> tuple[Literal["upsert", "delete", "noop"], dict[str, Any] | None]:
             members = [m for m in _members(row) if m != "conn-1"]
-            return "upsert", {**row, "name": ",".join(members)}
+            return "upsert", {**present(row), "name": ",".join(members)}
 
         await coll.l2_cas_mutate("r1", _drop_conn1)
         assert _members(coll.get_row_sync("r1")) == ["conn-2"]
@@ -1529,7 +1574,7 @@ class TestStorageAgnosticL3Contract:
         nats = _make_nats_mock()
         # The ENTIRE durable store is a plain dict — no SQL anywhere. This is the
         # exact shape a GitL3Backend presents (fetch/save/delete a record by pk).
-        l3_rows: dict[str, dict] = {}
+        l3_rows: dict[str, dict[str, Any]] = {}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
 
         # save → save_to_store persists to the non-SQL durable tier
@@ -1632,7 +1677,7 @@ class TestNothingInL1Ages:
         nats = _make_nats_mock()
         l3_rows = {"m1": {"id": "m1", "name": "Original", "score": 1}}
         coll = StubCollection(registry, config_always, nats_client=nats, l3_rows=l3_rows)
-        coll.l3_pool = object()
+        coll.l3_pool = _RawPool()
         assert await coll.get("m1") is not None
         l3_rows["m1"] = {"id": "m1", "name": "Later", "score": 2}
         later = _time.monotonic() + 365 * 24 * 3600
@@ -1687,10 +1732,10 @@ class TestAScanCachesOnlyWhatIsStillNewest:
         entered, release = asyncio.Event(), asyncio.Event()
         stored = coll.save_to_store
 
-        async def slow(data: dict, original_timestamp: datetime | None = None) -> int:
+        async def slow(data: dict[str, Any], original_timestamp: datetime | None = None, *, conn: Any = None) -> int:
             entered.set()
             await release.wait()
-            return await stored(data, original_timestamp)
+            return await stored(data, original_timestamp, conn=conn)
 
         coll.save_to_store = slow  # type: ignore[method-assign]
         before = coll.scan_ticket()
